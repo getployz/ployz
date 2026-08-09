@@ -3,15 +3,15 @@ use ployz_core::corrosion::{
     MachineDocument, MachineStatusDocument, MalformedDocument, MeshProvider, NamespaceDocument,
     RowSkipReason, StoredRow, read_named_roster_rows, read_named_rows, read_roster_rows, read_rows,
 };
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 use serde_json::json;
 
-const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const LOWER_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const HIGHER_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+const CLUSTER_ID: &str = "main";
+const LOWER_ROW_ID: &str = "edge-b";
+const HIGHER_ROW_ID: &str = "edge-a";
 
-fn cluster_id() -> ClusterId {
-    ClusterId::try_new(CLUSTER_ID).expect("fixture cluster id is canonical")
+fn cluster_id() -> ClusterName {
+    ClusterName::try_new(CLUSTER_ID).expect("fixture cluster id is canonical")
 }
 
 fn namespace_document(name: &str) -> String {
@@ -40,11 +40,11 @@ fn cluster_document(provider: MeshProvider) -> ClusterDocument {
     .expect("cluster fixture")
 }
 
-fn machine_document(transport: serde_json::Value) -> String {
+fn machine_document(name: &str, transport: serde_json::Value) -> String {
     json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "name": "edge-a",
+        "name": name,
         "lifecycle": "active",
         "transport": transport,
         "storage": {
@@ -80,20 +80,23 @@ fn roster_reader_accepts_a_transport_matching_the_cluster_provider() {
         &cluster,
         [StoredRow::new(
             LOWER_ROW_ID,
-            machine_document(json!({
-                "kind": "wireguard",
-                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                "addr_v6": "fd00::20",
-                "endpoint": "192.0.2.10:51820",
-                "subnet_v4": "10.210.20.0/24"
-            })),
+            machine_document(
+                LOWER_ROW_ID,
+                json!({
+                    "kind": "wireguard",
+                    "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    "addr_v6": "fd00::20",
+                    "endpoint": "192.0.2.10:51820",
+                    "subnet_v4": "10.210.20.0/24"
+                }),
+            ),
         )],
     );
 
     assert!(report.skipped.is_empty());
     assert!(matches!(
         report.accepted.as_slice(),
-        [accepted] if accepted.value.name.as_str() == "edge-a"
+        [accepted] if accepted.value.name.as_str() == LOWER_ROW_ID
     ));
 }
 
@@ -104,11 +107,14 @@ fn roster_reader_skips_and_surfaces_a_transport_for_the_wrong_provider() {
         &cluster,
         [StoredRow::new(
             LOWER_ROW_ID,
-            machine_document(json!({
-                "kind": "tailscale",
-                "ip": "100.64.0.10",
-                "subnet_v4": "10.210.20.0/24"
-            })),
+            machine_document(
+                LOWER_ROW_ID,
+                json!({
+                    "kind": "tailscale",
+                    "ip": "100.64.0.10",
+                    "subnet_v4": "10.210.20.0/24"
+                }),
+            ),
         )],
     );
 
@@ -128,37 +134,42 @@ fn roster_reader_skips_and_surfaces_a_transport_for_the_wrong_provider() {
 }
 
 #[test]
-fn wrong_provider_lower_ulid_cannot_win_or_shadow_a_valid_named_roster_row() {
+fn wrong_provider_named_row_does_not_hide_a_valid_machine() {
     let cluster = cluster_document(MeshProvider::BuiltinWireguard);
     let report = read_named_roster_rows::<MachineDocument>(
         &cluster,
         [
             StoredRow::new(
                 LOWER_ROW_ID,
-                machine_document(json!({
-                    "kind": "tailscale",
-                    "ip": "100.64.0.10",
-                    "subnet_v4": "10.210.20.0/24"
-                })),
+                machine_document(
+                    LOWER_ROW_ID,
+                    json!({
+                        "kind": "tailscale",
+                        "ip": "100.64.0.10",
+                        "subnet_v4": "10.210.20.0/24"
+                    }),
+                ),
             ),
             StoredRow::new(
                 HIGHER_ROW_ID,
-                machine_document(json!({
-                    "kind": "wireguard",
-                    "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                    "addr_v6": "fd00::20",
-                    "endpoint": "192.0.2.10:51820",
-                    "subnet_v4": "10.210.20.0/24"
-                })),
+                machine_document(
+                    HIGHER_ROW_ID,
+                    json!({
+                        "kind": "wireguard",
+                        "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                        "addr_v6": "fd00::20",
+                        "endpoint": "192.0.2.10:51820",
+                        "subnet_v4": "10.210.20.0/24"
+                    }),
+                ),
             ),
         ],
     );
 
     assert!(matches!(
         report.accepted.as_slice(),
-        [accepted] if accepted.id.as_str() == HIGHER_ROW_ID
+        [accepted] if accepted.source.key == HIGHER_ROW_ID
     ));
-    assert!(report.shadows.is_empty());
     assert!(matches!(
         report.skipped.as_slice(),
         [skipped]
@@ -217,8 +228,8 @@ fn raw_cluster_fence_wins_before_other_header_validation() {
     let report = read_rows::<NamespaceDocument>(
         &cluster_id(),
         [StoredRow::new(
-            LOWER_ROW_ID,
-            r#"{"v":"not-an-integer","cluster_id":"not-a-ulid","name":42}"#,
+            "alpha",
+            r#"{"v":"not-an-integer","cluster_id":"foreign-cluster","name":42}"#,
         )],
     );
 
@@ -229,7 +240,7 @@ fn raw_cluster_fence_wins_before_other_header_validation() {
             if matches!(
                 &skipped.reason,
                 RowSkipReason::ForeignCluster { expected, found }
-                    if expected == CLUSTER_ID && found == "not-a-ulid"
+                    if expected == CLUSTER_ID && found == "foreign-cluster"
             )
     ));
 }
@@ -260,7 +271,7 @@ fn additive_unknown_fields_do_not_hide_a_current_document() {
     let report = read_rows::<NamespaceDocument>(
         &cluster_id(),
         [StoredRow::new(
-            LOWER_ROW_ID,
+            "alpha",
             format!(
                 r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"alpha","written_by":{{"kind":"machine","machine_id":"{LOWER_ROW_ID}"}},"written_at":"2026-08-04T10:00:00Z","future":{{"enabled":true}}}}"#
             ),
@@ -285,7 +296,7 @@ fn missing_or_malformed_operator_provenance_is_skipped_and_surfaced() {
             StoredRow::new(
                 HIGHER_ROW_ID,
                 format!(
-                    r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"beta","written_by":{{"kind":"machine","machine_id":"not-a-ulid"}},"written_at":"not-a-time"}}"#
+                    r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"beta","written_by":{{"kind":"machine","machine_id":"not/a/name"}},"written_at":"not-a-time"}}"#
                 ),
             ),
         ],
@@ -326,7 +337,7 @@ fn noncanonical_corrosion_reference_is_skipped_and_surfaced() {
 }
 
 #[test]
-fn ordinary_reader_rejects_a_noncanonical_ulid_row_key() {
+fn ordinary_reader_rejects_a_row_key_that_disagrees_with_the_document_identity() {
     let document = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
@@ -349,7 +360,7 @@ fn ordinary_reader_rejects_a_noncanonical_ulid_row_key() {
         report.skipped.as_slice(),
         [skipped]
             if skipped.source.key == "machine_edge_a"
-                && matches!(skipped.reason, RowSkipReason::InvalidRowId { .. })
+                && matches!(skipped.reason, RowSkipReason::InvalidRowKey { .. })
     ));
 }
 
@@ -358,21 +369,59 @@ fn ordinary_reader_accepts_a_natural_container_row_key() {
     let document = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "machine_id": LOWER_ROW_ID,
-        "service_id": HIGHER_ROW_ID,
-        "namespace_id": HIGHER_ROW_ID,
+        "runtime_id": "docker-container-a",
+        "machine_id": "edge-a",
+        "namespace_id": "production",
+        "service_name": "api",
+        "replica_slot": { "kind": "global" },
         "ip": "10.210.20.2",
-        "deploy": HIGHER_ROW_ID
+        "deploy": "release-1"
     });
     let report = read_rows::<ContainerDocument>(
         &cluster_id(),
-        [StoredRow::new("docker-container-id", document.to_string())],
+        [StoredRow::new(
+            "production/api/release-1/edge-a/global",
+            document.to_string(),
+        )],
     );
 
     assert!(report.skipped.is_empty());
     assert!(matches!(
         report.accepted.as_slice(),
-        [accepted] if accepted.source.key == "docker-container-id"
+        [accepted] if accepted.source.key == "production/api/release-1/edge-a/global"
+    ));
+}
+
+#[test]
+fn container_reader_rejects_a_composite_key_that_disagrees_with_the_document() {
+    let document = json!({
+        "v": 1,
+        "cluster_id": CLUSTER_ID,
+        "runtime_id": "docker-container-a",
+        "machine_id": "edge-a",
+        "namespace_id": "production",
+        "service_name": "api",
+        "replica_slot": { "kind": "global" },
+        "ip": "10.210.20.2",
+        "deploy": "release-1"
+    });
+    let report = read_rows::<ContainerDocument>(
+        &cluster_id(),
+        [StoredRow::new(
+            "production/worker/release-1/edge-a/global",
+            document.to_string(),
+        )],
+    );
+
+    assert!(report.accepted.is_empty());
+    assert!(matches!(
+        report.skipped.as_slice(),
+        [skipped]
+            if matches!(
+                &skipped.reason,
+                RowSkipReason::InvalidRowKey { expected }
+                    if expected == "production/api/release-1/edge-a/global"
+            )
     ));
 }
 
@@ -494,47 +543,21 @@ fn certificate_times_are_validated_compared_as_instants_and_canonicalized() {
 }
 
 #[test]
-fn lowest_canonical_ulid_wins_and_the_duplicate_remains_visible() {
+fn named_reader_requires_the_row_key_to_equal_the_name() {
     let report = read_named_rows::<NamespaceDocument>(
         &cluster_id(),
         [
-            StoredRow::new(HIGHER_ROW_ID, namespace_document("alpha")),
-            StoredRow::new(LOWER_ROW_ID, namespace_document("alpha")),
-        ],
-    );
-
-    assert!(report.skipped.is_empty());
-    assert!(matches!(
-        report.accepted.as_slice(),
-        [winner] if winner.id.as_str() == LOWER_ROW_ID && winner.value.name.as_str() == "alpha"
-    ));
-    assert!(matches!(
-        report.shadows.as_slice(),
-        [conflict]
-            if conflict.winner.id.as_str() == LOWER_ROW_ID
-                && conflict.loser.id.as_str() == HIGHER_ROW_ID
-                && conflict.winner.source.document == namespace_document("alpha")
-                && conflict.loser.source.document == namespace_document("alpha")
-    ));
-}
-
-#[test]
-fn invalid_row_id_cannot_win_or_become_a_shadow() {
-    let report = read_named_rows::<NamespaceDocument>(
-        &cluster_id(),
-        [
-            StoredRow::new("0000000000000000000000000!", namespace_document("alpha")),
-            StoredRow::new(HIGHER_ROW_ID, namespace_document("alpha")),
+            StoredRow::new("other", namespace_document("alpha")),
+            StoredRow::new("alpha", namespace_document("alpha")),
         ],
     );
 
     assert!(matches!(
         report.accepted.as_slice(),
-        [winner] if winner.id.as_str() == HIGHER_ROW_ID
+        [accepted] if accepted.source.key == "alpha"
     ));
-    assert!(report.shadows.is_empty());
     assert!(matches!(
         report.skipped.as_slice(),
-        [skipped] if matches!(skipped.reason, RowSkipReason::InvalidRowId { .. })
+        [skipped] if matches!(skipped.reason, RowSkipReason::InvalidRowKey { .. })
     ));
 }

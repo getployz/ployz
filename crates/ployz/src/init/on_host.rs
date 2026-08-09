@@ -216,7 +216,7 @@ pub async fn execute(command: InitCommand) -> Result<OnHostSuccess, OnHostInitEr
 
 async fn report_preflight_refusal(
     driver: &InitDriver,
-    cluster_id: Option<&ployz_core::ids::ClusterId>,
+    cluster_id: Option<&ployz_core::ids::ClusterName>,
     refusal: FoundingRefusal,
 ) -> Result<OnHostSuccess, OnHostInitError> {
     if let InitDriver::Cloud(token) = driver {
@@ -324,7 +324,7 @@ fn validate_resume_driver_enrollment(
                 ));
             };
             if *peer_id == envelope.peer_id
-                && document.name == envelope.peer_name
+                && document.name == envelope.peer_id
                 && *pubkey == envelope.public_key
             {
                 Ok(())
@@ -350,7 +350,7 @@ fn validate_resume_driver_enrollment(
                     "canonical SSH peer is not WireGuard".to_owned(),
                 ));
             };
-            if *peer_id == peer.id && document.name == peer.name && *pubkey == peer.public_key {
+            if *peer_id == peer.id && document.name == peer.id && *pubkey == peer.public_key {
                 Ok(())
             } else {
                 Err(OnHostInitError::Input(
@@ -373,8 +373,8 @@ fn validate_resume_driver_enrollment(
 
 struct CloudProgressReporter<'a> {
     envelope: &'a CloudEnvelope,
-    cluster_id: ployz_core::ids::ClusterId,
-    machine_id: ployz_core::ids::MachineRowId,
+    cluster_id: ployz_core::ids::ClusterName,
+    machine_id: ployz_core::ids::MachineName,
     machine_public_key: WireGuardPublicKey,
 }
 
@@ -422,12 +422,10 @@ fn driver_input(
         (InitDriver::OnHost, None) => Ok(FoundingDriverInput::OnHost),
         (InitDriver::SshPeer(peer), None) => Ok(FoundingDriverInput::Ssh {
             peer_id: peer.id.clone(),
-            name: peer.name.clone(),
             public_key: peer.public_key.clone(),
         }),
         (InitDriver::Cloud(_), Some(cloud)) => Ok(FoundingDriverInput::Cloud {
             peer_id: cloud.peer_id.clone(),
-            name: cloud.peer_name.clone(),
             public_key: cloud.public_key.clone(),
         }),
         (InitDriver::SshTarget(_), None)
@@ -464,7 +462,7 @@ pub struct OnHostSuccess {
     pub cluster_name: String,
     pub machine_name: String,
     pub storage: ployz_core::corrosion::MachineStorageSelection,
-    pub cluster_id: ployz_core::ids::ClusterId,
+    pub cluster_id: ployz_core::ids::ClusterName,
     pub provider: ployz_core::corrosion::MeshProvider,
     pub machine_transport: ployz_core::corrosion::MachineTransport,
 }
@@ -504,7 +502,7 @@ mod tests {
         CorrosionDocumentVersion, OperatorWriteProvenance, PeerDocument, PeerTransport,
         derive_builtin_wireguard_member,
     };
-    use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+    use ployz_core::ids::{ClusterName, MachineName, PeerName};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
 
@@ -513,9 +511,9 @@ mod tests {
     const CLOUD_PUBLIC_KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
     fn cloud_driver() -> (FoundingDriverEnrollment, CloudToken, CloudEnvelope) {
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
-        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("machine id");
-        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
+        let cluster_id = ClusterName::try_new("main").expect("cluster id");
+        let machine_id = MachineName::try_new("node-one").expect("machine id");
+        let peer_id = PeerName::try_new("ployz-cloud").expect("peer id");
         let public_key = WireGuardPublicKey::try_new(CLOUD_PUBLIC_KEY).expect("Cloud public key");
         let provenance = OperatorWriteProvenance {
             written_by: ployz_core::corrosion::OperationInitiator::Machine { machine_id },
@@ -527,7 +525,7 @@ mod tests {
                 v: CorrosionDocumentVersion::V1,
                 cluster_id: cluster_id.clone(),
                 provenance,
-                name: "Ployz Cloud".to_owned(),
+                name: PeerName::try_new("ployz-cloud").expect("peer name"),
                 transport: PeerTransport::Wireguard {
                     addr_v6: derive_builtin_wireguard_member(&cluster_id, &public_key)
                         .bind_address()
@@ -544,7 +542,7 @@ mod tests {
 
     fn cloud_token(
         callback_url: &str,
-        peer_id: &PeerId,
+        peer_id: &PeerName,
         public_key: &WireGuardPublicKey,
     ) -> CloudToken {
         let wire = serde_json::json!({
@@ -612,7 +610,7 @@ mod tests {
                 .expect("callback response");
             request
         });
-        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
+        let peer_id = PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
         let public_key = WireGuardPublicKey::try_new(CLOUD_PUBLIC_KEY).expect("Cloud public key");
         let token = cloud_token(
             &format!("http://{address}/bootstrap"),
@@ -622,8 +620,8 @@ mod tests {
         let envelope = CloudEnvelope::decode(&token).expect("Cloud envelope");
         let mut reporter = CloudProgressReporter {
             envelope: &envelope,
-            cluster_id: ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id"),
-            machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("machine id"),
+            cluster_id: ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id"),
+            machine_id: MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("machine id"),
             machine_public_key: WireGuardPublicKey::try_new(
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             )
@@ -654,7 +652,7 @@ mod tests {
                 .expect("callback response");
             request
         });
-        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
+        let peer_id = PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
         let public_key = WireGuardPublicKey::try_new(CLOUD_PUBLIC_KEY).expect("public key");
         let token = cloud_token(
             &format!("http://{address}/bootstrap"),
@@ -662,9 +660,9 @@ mod tests {
             &public_key,
         );
         let requested_cluster_id =
-            ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("requested cluster");
+            ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("requested cluster");
         let found_cluster_id =
-            ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("found cluster");
+            ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("found cluster");
         let refusal = FoundingRefusal::ForeignState {
             requested_cluster_id: requested_cluster_id.clone(),
             found_cluster_id: found_cluster_id.clone(),
@@ -703,14 +701,14 @@ mod tests {
                 .expect("callback response");
             request
         });
-        let peer_id = PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
+        let peer_id = PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id");
         let public_key = WireGuardPublicKey::try_new(CLOUD_PUBLIC_KEY).expect("public key");
         let token = cloud_token(
             &format!("http://{address}/bootstrap"),
             &peer_id,
             &public_key,
         );
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
         let refusal = FoundingRefusal::IncompleteDoorMaterial {
             repair_command: ployz_core::founding::FoundingRepairCommand::ResetMachine,
         };

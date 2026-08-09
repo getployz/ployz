@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use bollard::Docker;
 use ployz_core::corrosion::{ServiceDocument, Sha256Hex};
-use ployz_core::ids::OperationRowId;
+use ployz_core::ids::DeployName;
 use ployz_core::{LensCollection, LensSnapshot};
 use ployz_e2e::dind::{DindMachine, public_lens, require};
 
@@ -13,7 +13,7 @@ const WAIT_DELAY: Duration = Duration::from_millis(250);
 pub(super) struct PublicDeployRows {
     service: ServiceDocument,
     pub(super) container_ip: Ipv4Addr,
-    service_container_deploys: Vec<OperationRowId>,
+    service_container_deploys: Vec<DeployName>,
     encoded: String,
 }
 
@@ -22,7 +22,7 @@ pub(super) async fn wait_for_public_deploy_rows(
     requester: &DindMachine,
     api_address: &str,
     service_name: &str,
-    operation_id: &OperationRowId,
+    operation_id: &DeployName,
 ) -> Result<PublicDeployRows, String> {
     let deadline = Instant::now() + WAIT_BUDGET;
     let mut last = String::from("public lenses were not queried");
@@ -44,18 +44,25 @@ pub(super) async fn wait_for_public_deploy_rows(
             ) => {
                 let service = service_rows.iter().find(|row| {
                     row.document.name.as_str() == service_name
-                        && &row.document.operation_id == operation_id
+                        && &row.document.active_deploy == operation_id
                 });
                 if let Some(service) = service {
                     let container = container_rows.iter().find(|row| {
-                        row.document.service_id == service.id
+                        row.document.namespace_id == service.document.namespace_id
+                            && row.document.service_name == service.document.name
                             && &row.document.deploy == operation_id
                     });
-                    let operation = operation_rows.iter().find(|row| &row.id == operation_id);
+                    let operation = operation_rows.iter().find(|row| {
+                        row.namespace_name == service.document.namespace_id
+                            && &row.deploy_name == operation_id
+                    });
                     if let (Some(container), Some(_operation)) = (container, operation) {
                         let service_container_deploys = container_rows
                             .iter()
-                            .filter(|row| row.document.service_id == service.id)
+                            .filter(|row| {
+                                row.document.namespace_id == service.document.namespace_id
+                                    && row.document.service_name == service.document.name
+                            })
                             .map(|row| row.document.deploy.clone())
                             .collect::<Vec<_>>();
                         let service = service.document.clone();
@@ -134,7 +141,7 @@ pub(super) fn assert_public_rows_are_digest_pinned_and_secret_free(
 pub(super) fn assert_cutover_rows(
     second: &PublicDeployRows,
     first: &PublicDeployRows,
-    second_operation: &OperationRowId,
+    second_operation: &DeployName,
 ) -> Result<(), String> {
     require(
         second.service.active_deploy == *second_operation,

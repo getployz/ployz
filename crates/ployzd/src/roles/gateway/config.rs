@@ -4,7 +4,7 @@ use std::env;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 
 use crate::corrosion::{BearerToken, CorrosionClientBounds, CorrosionClientConfig};
 
@@ -24,8 +24,8 @@ const CORROSION_MAX_ERROR_BODY_BYTES: usize = 65_536;
 #[derive(Debug, Clone)]
 pub struct GatewayRoleConfig {
     corrosion: CorrosionClientConfig,
-    cluster_id: ClusterId,
-    local_machine_id: MachineRowId,
+    cluster_id: ClusterName,
+    local_machine_id: MachineName,
     listen_addr: SocketAddr,
 }
 
@@ -43,12 +43,12 @@ impl GatewayRoleConfig {
             CorrosionClientConfig::new(corrosion_api_addr, bearer_token, corrosion_bounds())
                 .map_err(GatewayRoleConfigError::CorrosionConfiguration)?;
         let cluster_id =
-            ClusterId::try_new(required_environment(CLUSTER_ID_ENV)?).map_err(|error| {
+            ClusterName::try_new(required_environment(CLUSTER_ID_ENV)?).map_err(|error| {
                 GatewayRoleConfigError::InvalidClusterId {
                     detail: error.to_string(),
                 }
             })?;
-        let local_machine_id = MachineRowId::try_new(required_environment(MACHINE_ID_ENV)?)
+        let local_machine_id = MachineName::try_new(required_environment(MACHINE_ID_ENV)?)
             .map_err(|error| GatewayRoleConfigError::InvalidMachineId {
                 detail: error.to_string(),
             })?;
@@ -70,8 +70,8 @@ impl GatewayRoleConfig {
     #[must_use]
     pub const fn new(
         corrosion: CorrosionClientConfig,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         listen_addr: SocketAddr,
     ) -> Self {
         Self {
@@ -88,12 +88,12 @@ impl GatewayRoleConfig {
     }
 
     #[must_use]
-    pub const fn cluster_id(&self) -> &ClusterId {
+    pub const fn cluster_id(&self) -> &ClusterName {
         &self.cluster_id
     }
 
     #[must_use]
-    pub const fn local_machine_id(&self) -> &MachineRowId {
+    pub const fn local_machine_id(&self) -> &MachineName {
         &self.local_machine_id
     }
 

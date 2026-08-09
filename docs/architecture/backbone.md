@@ -40,7 +40,7 @@ inside a sub-second convergence window. Rare, and priced in.
 - Docker is execution reality. Status rows are testimony about it, never a
   substitute for it, and no read path infers truth from silence — freshness
   rides mesh handshake age and row timestamps.
-- Schema changes are additive-only, primary keys are never-reused ULIDs, and
+- Schema changes are additive-only, primary keys are canonical names or named composites, and
   full-cluster refound is the escape hatch and upgrade path.
 
 ## Trust Ceiling

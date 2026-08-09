@@ -1,7 +1,5 @@
 #[path = "token_door_join/admission.rs"]
 mod admission;
-#[path = "token_door_join/collision.rs"]
-mod collision;
 #[path = "token_door_join/fixture.rs"]
 mod fixture;
 #[path = "token_door_join/repair.rs"]
@@ -14,7 +12,6 @@ use admission::{
     wait_for_joined_reachability,
 };
 use bollard::Docker;
-use collision::force_collision_and_wait_for_higher_ulid_repair;
 use fixture::{
     CorrosionAccess, assert_missing_endpoint_refuses_without_a_token, extract_join_blob,
     extract_token_id, handoff_with_known_endpoint, machine_subnet, require_success, run_cli,
@@ -40,7 +37,7 @@ const WAIT_BUDGET: Duration = Duration::from_secs(60);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn public_token_door_grows_the_cluster_and_repairs_a_surviving_collision() {
+async fn public_token_door_grows_and_repairs_the_cluster() {
     if !e2e_enabled() {
         eprintln!("skipping token-door DinD proof; set PLOYZ_DIND_E2E=1 to enable it");
         return;
@@ -136,7 +133,7 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     let created = run_cli(
         &cli,
         temporary_home.path(),
-        ["token", "create", "--ttl", "1h"].map(str::to_owned),
+        ["token", "create", "bootstrap", "--ttl", "1h"].map(str::to_owned),
     )?;
     require_success(&created, "token create")?;
     let created_stdout = String::from_utf8_lossy(&created.stdout);
@@ -202,8 +199,6 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     admit_concurrent_machines_with_distinct_subnets(&blob).await?;
     assert_revoked_and_expired_refusals(store, &cli, temporary_home.path(), blob, token_id).await?;
 
-    force_collision_and_wait_for_higher_ulid_repair(store, joiner, founder_row, &repaired_joiner)
-        .await?;
     refound_cluster(
         RefoundContext {
             docker,

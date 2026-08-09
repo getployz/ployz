@@ -11,13 +11,11 @@ use crate::corrosion::{
     AcmeHttp01Document, CORROSION_NO_P99_LAG_SAMPLE, CertHoldingDocument, ClusterDocument,
     ContainerDocument, ControllerDocument, CorrosionDocument, CorrosionHealthResponse,
     CorrosionTable, GatewayObservationDocument, MachineDocument, MachineStatusDocument,
-    MachineTransport, MalformedDocument, MeshProvider, NameClaim, NamespaceDocument,
-    OperationDocument, PeerDocument, Principal, RouteBindingDocument, RowSkipReason,
-    ServiceDocument, ShadowConflict, SkippedRow, StoredRow, TokenDocument,
-    WireGuardHandshakeEvidence, read_named_roster_rows, read_named_rows, read_rows,
+    MachineTransport, MalformedDocument, MeshProvider, NamespaceDocument, OperationDocument,
+    PeerDocument, Principal, RouteBindingDocument, RowSkipReason, ServiceDocument, SkippedRow,
+    StoredRow, TokenDocument, WireGuardHandshakeEvidence, read_named_roster_rows, read_rows,
 };
-use crate::ids::{ClusterId, CorrosionUlid, MachineRowId, PeerId, TokenId};
-use crate::machine::MachineName;
+use crate::ids::{ClusterName, MachineName, PeerName, TokenName};
 use crate::network::MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS;
 
 /// A transport-neutral health observation supplied to the status projection.
@@ -33,9 +31,9 @@ pub enum StatusCorrosionHealth {
 pub struct StatusProjectionInput {
     pub cluster: Option<ClusterDocument>,
     pub machines: Vec<MachineLensRow>,
-    pub answering_machine_id: MachineRowId,
+    pub answering_machine_id: MachineName,
     pub health: StatusCorrosionHealth,
-    pub wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+    pub wireguard_handshakes: Option<BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
     pub now_unix_seconds: u64,
 }
 
@@ -57,7 +55,7 @@ pub struct StatusDocument {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct StatusClusterSummary {
-    pub id: ClusterId,
+    pub id: ClusterName,
     pub name: String,
     pub machine_count: usize,
 }
@@ -67,8 +65,8 @@ pub struct StatusClusterSummary {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum StatusAnsweringMachine {
-    Known { id: MachineRowId, name: MachineName },
-    Unknown { id: MachineRowId },
+    Known { id: MachineName, name: MachineName },
+    Unknown { id: MachineName },
 }
 
 /// The answering Corrosion replica's sync observation.
@@ -113,7 +111,7 @@ pub enum StatusBarrier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct StatusMachineRow {
-    pub id: MachineRowId,
+    pub id: MachineName,
     pub name: MachineName,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub address: IpAddr,
@@ -255,9 +253,9 @@ fn machine_address(transport: &MachineTransport) -> IpAddr {
 }
 
 fn project_handshake(
-    machine_id: &MachineRowId,
-    answering_machine_id: &MachineRowId,
-    testimony: Option<&BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+    machine_id: &MachineName,
+    answering_machine_id: &MachineName,
+    testimony: Option<&BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
     now_unix_seconds: u64,
 ) -> StatusHandshakeEvidence {
     if machine_id == answering_machine_id {
@@ -388,7 +386,6 @@ pub struct DoctorProjectionInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DoctorDocument {
-    pub shadows: Vec<DoctorShadowFinding>,
     #[serde(default)]
     pub skipped_roster_rows: Vec<DoctorSkippedRosterRow>,
     pub skipped_newer_versions: Vec<DoctorSkippedNewerVersion>,
@@ -426,7 +423,6 @@ pub enum DoctorRosterRowSkipReason {
     MalformedDocument {
         class: DoctorMalformedRosterDocumentClass,
     },
-    InvalidRowId,
 }
 
 /// A same-cluster malformed-document class with parser messages removed.
@@ -438,15 +434,6 @@ pub enum DoctorMalformedRosterDocumentClass {
     InvalidVersion,
     UnsupportedVersion { found: u64 },
     InvalidPayload,
-}
-
-/// A valid row hidden by the lowest-ULID name-claim law.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct DoctorShadowFinding {
-    pub claim: NameClaim,
-    pub winner_id: CorrosionUlid,
-    pub loser_id: CorrosionUlid,
 }
 
 /// One row skipped because its additive document version is newer than Core.
@@ -463,7 +450,7 @@ pub struct DoctorSkippedNewerVersion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DoctorMachineIdentity {
-    pub id: MachineRowId,
+    pub id: MachineName,
     pub name: MachineName,
 }
 
@@ -515,9 +502,9 @@ pub struct DoctorForeignRowEvidence {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DoctorForeignAuthorship {
     CurrentMachine { machine: DoctorMachineIdentity },
-    NonCurrentMachine { machine_id: MachineRowId },
-    Peer { peer_id: PeerId },
-    ApiToken { token_id: TokenId },
+    NonCurrentMachine { machine_id: MachineName },
+    Peer { peer_id: PeerName },
+    ApiToken { token_id: TokenName },
     Unparseable,
 }
 
@@ -530,7 +517,7 @@ pub fn project_doctor(input: DoctorProjectionInput) -> DoctorDocument {
         .accepted
         .iter()
         .filter_map(|row| {
-            MachineRowId::try_new(row.id.as_str()).ok().map(|id| {
+            MachineName::try_new(row.source.key.clone()).ok().map(|id| {
                 (
                     id.clone(),
                     DoctorMachineIdentity {
@@ -555,25 +542,11 @@ pub fn project_doctor(input: DoctorProjectionInput) -> DoctorDocument {
             .then_with(|| left.key.cmp(&right.key))
     });
 
-    let mut shadows = map_shadows(machine_report.shadows);
-    shadows.extend(map_shadows(peer_report.shadows));
-    shadows.extend(map_shadows(
-        read_named_rows::<NamespaceDocument>(&cluster.cluster_id, rows.namespaces.clone()).shadows,
-    ));
-    shadows.extend(map_shadows(
-        read_named_rows::<ServiceDocument>(&cluster.cluster_id, rows.services.clone()).shadows,
-    ));
-    shadows.extend(map_shadows(
-        read_named_rows::<RouteBindingDocument>(&cluster.cluster_id, rows.route_bindings.clone())
-            .shadows,
-    ));
-
     DoctorDocument {
         skipped_roster_rows,
         skipped_newer_versions: newer_version_evidence(&cluster.cluster_id, &rows),
         versions: project_versions(&cluster.cluster_id, &rows.machine_status, &current_machines),
         foreign_clusters: project_foreign_clusters(&cluster.cluster_id, &rows, &current_machines),
-        shadows,
     }
 }
 
@@ -593,7 +566,6 @@ fn map_roster_skips(
                         class: map_malformed_roster_document(malformed)?,
                     }
                 }
-                RowSkipReason::InvalidRowId { error: _ } => DoctorRosterRowSkipReason::InvalidRowId,
                 RowSkipReason::Empty
                 | RowSkipReason::ForeignCluster { .. }
                 | RowSkipReason::NewerVersion { .. }
@@ -631,19 +603,8 @@ fn map_malformed_roster_document(
     }
 }
 
-fn map_shadows(shadows: Vec<ShadowConflict>) -> Vec<DoctorShadowFinding> {
-    shadows
-        .into_iter()
-        .map(|shadow| DoctorShadowFinding {
-            claim: shadow.claim,
-            winner_id: shadow.winner.id,
-            loser_id: shadow.loser.id,
-        })
-        .collect()
-}
-
 fn newer_version_evidence(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     rows: &DoctorRawRows,
 ) -> Vec<DoctorSkippedNewerVersion> {
     let mut evidence = Vec::new();
@@ -692,9 +653,9 @@ fn supported_version(table: CorrosionTable) -> u32 {
 }
 
 fn project_versions(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     rows: &[StoredRow],
-    current_machines: &BTreeMap<MachineRowId, DoctorMachineIdentity>,
+    current_machines: &BTreeMap<MachineName, DoctorMachineIdentity>,
 ) -> DoctorVersionReport {
     let report = read_rows::<MachineStatusDocument>(cluster_id, rows.iter().cloned());
     let mut valid = Vec::<(semver::Version, String, DoctorMachineIdentity)>::new();
@@ -763,9 +724,9 @@ fn project_versions(
 }
 
 fn project_foreign_clusters(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     rows: &DoctorRawRows,
-    current_machines: &BTreeMap<MachineRowId, DoctorMachineIdentity>,
+    current_machines: &BTreeMap<MachineName, DoctorMachineIdentity>,
 ) -> Vec<DoctorForeignClusterRows> {
     let mut grouped = BTreeMap::<String, Vec<DoctorForeignRowEvidence>>::new();
     for table in CorrosionTable::ALL {
@@ -798,7 +759,7 @@ fn project_foreign_clusters(
 fn extract_authorship(
     table: CorrosionTable,
     fields: &serde_json::Map<String, Value>,
-    current_machines: &BTreeMap<MachineRowId, DoctorMachineIdentity>,
+    current_machines: &BTreeMap<MachineName, DoctorMachineIdentity>,
 ) -> DoctorForeignAuthorship {
     match table {
         CorrosionTable::Cluster
@@ -826,7 +787,7 @@ fn extract_authorship(
         CorrosionTable::Controller => fields
             .get("preferred_machine_id")
             .and_then(Value::as_str)
-            .and_then(|value| MachineRowId::try_new(value).ok())
+            .and_then(|value| MachineName::try_new(value).ok())
             .map_or(DoctorForeignAuthorship::Unparseable, |machine_id| {
                 machine_authorship(machine_id, current_machines)
             }),
@@ -838,7 +799,7 @@ fn extract_authorship(
         | CorrosionTable::AcmeHttp01 => fields
             .get("machine_id")
             .and_then(Value::as_str)
-            .and_then(|value| MachineRowId::try_new(value).ok())
+            .and_then(|value| MachineName::try_new(value).ok())
             .map_or(DoctorForeignAuthorship::Unparseable, |machine_id| {
                 machine_authorship(machine_id, current_machines)
             }),
@@ -846,8 +807,8 @@ fn extract_authorship(
 }
 
 fn machine_authorship(
-    machine_id: MachineRowId,
-    current_machines: &BTreeMap<MachineRowId, DoctorMachineIdentity>,
+    machine_id: MachineName,
+    current_machines: &BTreeMap<MachineName, DoctorMachineIdentity>,
 ) -> DoctorForeignAuthorship {
     match current_machines.get(&machine_id) {
         Some(machine) => DoctorForeignAuthorship::CurrentMachine {

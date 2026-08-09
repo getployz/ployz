@@ -31,7 +31,7 @@ use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRuntimeSpec,
     ImageReference, VolumeName,
 };
-use ployz_core::ids::{ContainerId, NamespaceRowId, SubjectTokenError};
+use ployz_core::ids::{ContainerId, CorrosionNamespaceName, SubjectTokenError};
 use ployz_core::machine::runtime::{ContainerHealth, ManagedContainerHealthStatus};
 use ployz_core::network::internal_dns::InternalDnsSearchDomain;
 use ployz_core::network::{
@@ -441,9 +441,10 @@ fn v2_container_name(identity: &V2ManagedContainerIdentity) -> String {
         ployz_core::deploy::ReplicaSlot::Replicated { number } => number.get().to_string(),
     };
     format!(
-        "plz-{}-{}-{slot}",
+        "plz-{}-{}-{}-{slot}",
+        identity.namespace_id.as_str(),
+        identity.service_name.as_str(),
         identity.operation_id.as_str(),
-        identity.service_id.as_str()
     )
 }
 impl V2MachineLogReader for DockerManagedContainerRunner {
@@ -971,7 +972,10 @@ fn docker_container_state(
 }
 
 /// Storage identity of a row-scoped v2 named volume on the local Docker host.
-fn v2_volume_storage_name(namespace_id: &NamespaceRowId, volume_name: &VolumeName) -> String {
+fn v2_volume_storage_name(
+    namespace_id: &CorrosionNamespaceName,
+    volume_name: &VolumeName,
+) -> String {
     let namespace = namespace_id.as_str();
     format!(
         "ployz-v2-n{}-{namespace}-v{}-{}",
@@ -1753,7 +1757,7 @@ mod tests {
         };
         assert_eq!(
             mount.source.as_deref(),
-            Some("ployz-v2-n26-01K00000000000000000000001-v4-data")
+            Some("ployz-v2-n10-production-v4-data")
         );
     }
 
@@ -1886,7 +1890,7 @@ mod tests {
         let (runner, requests, _socket_dir) =
             recording_runner_with_responses(vec![(200, list)]).await;
         let mut wrong = v2_managed_identity();
-        wrong.operation_id = ployz_core::ids::OperationRowId::try_new("01K00000000000000000000009")
+        wrong.operation_id = ployz_core::ids::DeployName::try_new("01K00000000000000000000009")
             .expect("operation row");
 
         let error = runner
@@ -2120,24 +2124,23 @@ mod tests {
         let mut identity = v2_managed_identity();
         assert_eq!(
             v2_container_name(&identity),
-            "plz-01K00000000000000000000003-01K00000000000000000000002-global"
+            "plz-production-api-release-1-global"
         );
         identity.replica_slot = ployz_core::deploy::ReplicaSlot::Replicated {
             number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(2).expect("slot"),
         };
         assert_eq!(
             v2_container_name(&identity),
-            "plz-01K00000000000000000000003-01K00000000000000000000002-2"
+            "plz-production-api-release-1-2"
         );
     }
     fn v2_managed_identity() -> V2ManagedContainerIdentity {
         V2ManagedContainerIdentity {
-            namespace_id: ployz_core::ids::NamespaceRowId::try_new("01K00000000000000000000001")
+            namespace_id: ployz_core::ids::CorrosionNamespaceName::try_new("production")
                 .expect("namespace row"),
-            service_id: ployz_core::ids::ServiceRowId::try_new("01K00000000000000000000002")
-                .expect("service row"),
-            operation_id: ployz_core::ids::OperationRowId::try_new("01K00000000000000000000003")
-                .expect("operation row"),
+            service_name: ployz_core::corrosion::CorrosionServiceName::try_new("api")
+                .expect("service"),
+            operation_id: ployz_core::ids::DeployName::try_new("release-1").expect("operation row"),
             replica_slot: ployz_core::deploy::ReplicaSlot::Global,
         }
     }

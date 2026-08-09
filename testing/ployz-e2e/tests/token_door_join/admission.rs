@@ -9,12 +9,11 @@ use ployz::init::ssh::SshPeerKey;
 use ployz_core::corrosion::{
     CorrosionTimestamp, MachineDocument, PeerDocument, SqliteValue, StorageMode, TokenDocument,
 };
-use ployz_core::ids::{MachineRowId, TokenId};
+use ployz_core::ids::{MachineName, TokenName};
 use ployz_core::join::{
     JoinBlob, JoinDoorCertFingerprint, JoinDoorRefusal, JoinStorageChoice, JoinStorageFacts,
     MachineJoinRequest, PeerJoinRequest, ValidatedPeerJoinAccepted,
 };
-use ployz_core::machine::MachineName;
 use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
 use ployz_e2e::dind::{
     DindMachine, ExecOutcome, assert_keeper_isolation_root, corrosion_query, exec_in_container,
@@ -66,7 +65,7 @@ pub(super) async fn assert_wrong_door_fingerprint_is_rejected(
 
 pub(super) async fn assert_token_row_is_hash_only(
     store: CorrosionAccess<'_>,
-    token_id: &TokenId,
+    token_id: &TokenName,
     blob: &JoinBlob,
 ) -> Result<(), String> {
     let rows = corrosion_query(
@@ -222,8 +221,7 @@ pub(super) async fn admit_roaming_peer_and_assert_no_subnet(
     let peer =
         SshPeerKey::generate("roaming peer".to_owned()).map_err(|error| error.to_string())?;
     let request = PeerJoinRequest {
-        peer_id: peer.peer_id.clone(),
-        name: peer.peer_name.clone(),
+        name: peer.peer_id.clone(),
         public_key: peer.public_key.clone(),
         endpoint: None,
     };
@@ -286,7 +284,6 @@ pub(super) async fn admit_concurrent_machines_with_distinct_subnets(
 fn machine_request(name: &str) -> Result<MachineJoinRequest, String> {
     let key = SshPeerKey::generate(name.to_owned()).map_err(|error| error.to_string())?;
     Ok(MachineJoinRequest {
-        machine_id: MachineRowId::generate(),
         name: MachineName::try_new(name).map_err(|error| error.to_string())?,
         public_key: key.public_key,
         endpoint: None,
@@ -305,7 +302,7 @@ pub(super) async fn assert_revoked_and_expired_refusals(
     cli: &Path,
     home: &Path,
     live_blob: JoinBlob,
-    live_token_id: TokenId,
+    live_token_id: TokenName,
 ) -> Result<(), String> {
     expire_token_row(store, &live_token_id).await?;
     let expired = JoinDoorClient::default()
@@ -337,7 +334,7 @@ pub(super) async fn assert_revoked_and_expired_refusals(
     let created = run_cli(
         cli,
         home,
-        ["token", "create", "--ttl", "1h"].map(str::to_owned),
+        ["token", "create", "revoked", "--ttl", "1h"].map(str::to_owned),
     )?;
     require_success(&created, "second token create")?;
     let stdout = String::from_utf8_lossy(&created.stdout);
@@ -529,14 +526,13 @@ fn record_revocation_probe(
 fn peer_request(name: &str) -> Result<PeerJoinRequest, String> {
     let peer = SshPeerKey::generate(name.to_owned()).map_err(|error| error.to_string())?;
     Ok(PeerJoinRequest {
-        peer_id: peer.peer_id,
-        name: name.to_owned(),
+        name: peer.peer_id,
         public_key: peer.public_key,
         endpoint: None,
     })
 }
 
-async fn expire_token_row(store: CorrosionAccess<'_>, token_id: &TokenId) -> Result<(), String> {
+async fn expire_token_row(store: CorrosionAccess<'_>, token_id: &TokenName) -> Result<(), String> {
     let rows = corrosion_query(
         store.docker,
         store.machine,

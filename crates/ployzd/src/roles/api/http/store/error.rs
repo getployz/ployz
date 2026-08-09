@@ -1,5 +1,5 @@
 use ployz_core::corrosion::CorrosionTable;
-use ployz_core::ids::MachineRowId;
+use ployz_core::ids::MachineName;
 
 use crate::corrosion::{CorrosionClientError, StoredRowCollectionError};
 
@@ -18,11 +18,6 @@ pub(in crate::roles::api::http) enum MutationStoreError {
         table: CorrosionTable,
         detail: String,
     },
-    #[error("accepted {table:?} shadow could not be decoded: {detail}")]
-    InvalidAcceptedShadow {
-        table: CorrosionTable,
-        detail: String,
-    },
     #[error("{table:?} contains duplicate primary key {id}")]
     DuplicatePrimaryKey { table: CorrosionTable, id: String },
     #[error("could not encode {table:?} document: {detail}")]
@@ -37,5 +32,5 @@ pub(in crate::roles::api::http) enum MutationStoreError {
         detail: String,
     },
     #[error("machine {machine_id} changed while its endpoint mutation was being committed")]
-    ConcurrentMachineMutation { machine_id: MachineRowId },
+    ConcurrentMachineMutation { machine_id: MachineName },
 }

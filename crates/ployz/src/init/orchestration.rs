@@ -415,8 +415,8 @@ mod tests {
         StorageMode, derive_builtin_wireguard_member,
     };
     use ployz_core::founding::{FoundingDriverEnrollment, FoundingRepairCommand, FoundingRequest};
-    use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
-    use ployz_core::machine::{MachineLifecycle, MachineName};
+    use ployz_core::ids::{ClusterName, MachineName, PeerName};
+    use ployz_core::machine::MachineLifecycle;
     use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 
     use super::*;
@@ -855,13 +855,13 @@ mod tests {
         }
     }
 
-    fn cluster_id(value: &str) -> ClusterId {
-        ClusterId::try_new(value).expect("fixture cluster id")
+    fn cluster_id(value: &str) -> ClusterName {
+        ClusterName::try_new(value).expect("fixture cluster id")
     }
 
     fn request(cluster: &str) -> ValidatedFoundingRequest {
         let cluster_id = cluster_id(cluster);
-        let machine_id = MachineRowId::try_new(MACHINE).expect("fixture machine id");
+        let machine_id = MachineName::try_new(MACHINE).expect("fixture machine id");
         let pubkey = WireGuardPublicKey::try_new(MACHINE_KEY).expect("fixture machine key");
         let provenance = OperatorWriteProvenance {
             written_by: OperationInitiator::Machine {
@@ -913,7 +913,7 @@ mod tests {
 
     fn assisted_request(cluster: &str) -> ValidatedFoundingRequest {
         let mut request = request(cluster).into_request();
-        let peer_id = PeerId::try_new(PEER).expect("peer id");
+        let peer_id = PeerName::try_new(PEER).expect("peer id");
         let public_key = WireGuardPublicKey::try_new(PEER_KEY).expect("peer key");
         request.driver = FoundingDriverEnrollment::Ssh {
             peer_id,
@@ -921,7 +921,7 @@ mod tests {
                 v: CorrosionDocumentVersion::V1,
                 cluster_id: request.cluster_id.clone(),
                 provenance: request.machine.provenance.clone(),
-                name: "operator-laptop".to_owned(),
+                name: PeerName::try_new("operator-laptop").expect("peer name"),
                 transport: PeerTransport::Wireguard {
                     addr_v6: derive_builtin_wireguard_member(&request.cluster_id, &public_key)
                         .bind_address()

@@ -30,10 +30,14 @@ async fn list(command: OpsListCommand) -> Result<String, OpsExecutionError> {
     let LensSnapshot::Operations { mut rows } = snapshot else {
         return Err(OpsExecutionError::WrongLens);
     };
-    rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
-    let mut output = String::from("ID\tKIND\tSTATE\tCONTROLLER\n");
+    rows.sort_by(|left, right| {
+        (&left.namespace_name, &left.deploy_name).cmp(&(&right.namespace_name, &right.deploy_name))
+    });
+    let mut output = String::from("NAMESPACE\tDEPLOY\tKIND\tSTATE\tCONTROLLER\n");
     for row in rows {
-        output.push_str(row.id.as_str());
+        output.push_str(row.namespace_name.as_str());
+        output.push('\t');
+        output.push_str(row.deploy_name.as_str());
         output.push_str("\tdeploy\t");
         output.push_str(operation_state(&row.document));
         output.push('\t');
@@ -72,7 +76,7 @@ pub async fn watch_to(
             tokio::time::timeout_at(appear_by, next)
                 .await
                 .map_err(|_| OpsExecutionError::NotFound {
-                    operation_id: command.operation_id.to_string(),
+                    operation_id: format!("{}/{}", command.namespace_name, command.deploy_name),
                 })?
         };
         let Some(envelope) = next.map_err(OperatorRemoteError::from)? else {
@@ -94,10 +98,10 @@ pub async fn watch_to(
         let LensSnapshot::Operations { rows } = snapshot else {
             return Err(OpsExecutionError::WrongLens);
         };
-        let Some(operation) = rows
-            .into_iter()
-            .find(|operation| operation.id == command.operation_id)
-        else {
+        let Some(operation) = rows.into_iter().find(|operation| {
+            operation.namespace_name == command.namespace_name
+                && operation.deploy_name == command.deploy_name
+        }) else {
             continue;
         };
         appeared = true;
@@ -120,8 +124,9 @@ pub async fn watch_to(
 
 fn render_operation(operation: &OperationLensRow) -> String {
     format!(
-        "{} deploy {}",
-        operation.id,
+        "{}/{} deploy {}",
+        operation.namespace_name,
+        operation.deploy_name,
         operation_state(&operation.document)
     )
 }

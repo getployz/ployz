@@ -10,8 +10,20 @@ use super::document::{
     CorrosionDocumentVersion, CorrosionServiceName, CorrosionTimestamp, OperationDocument,
 };
 use super::principal::OperationInitiator;
-use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, ServiceRowId};
+use crate::ids::{ClusterName, CorrosionNamespaceName, DeployName, MachineName};
 use crate::placement::PlacementRefusal;
+
+/// Canonical Corrosion key for one independently deployable service.
+#[must_use]
+pub fn service_key(namespace: &CorrosionNamespaceName, service: &CorrosionServiceName) -> String {
+    format!("{}/{}", namespace.as_str(), service.as_str())
+}
+
+/// Namespace-scoped Corrosion key for one caller-named deploy attempt.
+#[must_use]
+pub fn deploy_key(namespace: &CorrosionNamespaceName, deploy: &DeployName) -> String {
+    format!("{}/{}", namespace.as_str(), deploy.as_str())
+}
 
 /// The only two snapshots visible for a deploy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +65,7 @@ impl CorrosionDeployOutcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CorrosionDeployWarning {
     HealthGateSkipped,
-    CleanupIncomplete { machines: Vec<MachineRowId> },
+    CleanupIncomplete { machines: Vec<MachineName> },
 }
 
 /// Coarse, redaction-safe deploy failure classes.
@@ -61,10 +73,6 @@ pub enum CorrosionDeployWarning {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CorrosionDeployFailure {
-    DifferentService {
-        incumbent_name: CorrosionServiceName,
-    },
-    MultipleServices,
     RoutesWithoutService,
     ReplicasOnGlobalService,
     UnknownPinnedMachine {
@@ -74,13 +82,13 @@ pub enum CorrosionDeployFailure {
         refusal: PlacementRefusal,
     },
     PrepareFailed {
-        machine_id: MachineRowId,
+        machine_id: MachineName,
     },
     PrepareRefused {
-        machine_id: MachineRowId,
+        machine_id: MachineName,
     },
     PreparedReplicaMismatch {
-        machine_id: MachineRowId,
+        machine_id: MachineName,
     },
     ResolvedImageMismatch,
     RuntimeRealityUnavailable,
@@ -90,11 +98,11 @@ impl OperationDocument {
     #[must_use]
     pub fn deploy_created(
         v: CorrosionDocumentVersion,
-        cluster_id: ClusterId,
-        machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        machine_id: MachineName,
         initiator: OperationInitiator,
-        namespace_id: NamespaceRowId,
-        service_id: ServiceRowId,
+        namespace_id: CorrosionNamespaceName,
+        deploy_name: DeployName,
         created_at: CorrosionTimestamp,
     ) -> Self {
         Self {
@@ -103,7 +111,7 @@ impl OperationDocument {
             machine_id,
             initiator,
             namespace_id,
-            service_id,
+            deploy_name,
             created_at,
             state: CorrosionDeployState::Created,
         }
@@ -131,7 +139,7 @@ impl OperationDocument {
             machine_id,
             initiator,
             namespace_id,
-            service_id,
+            deploy_name,
             created_at,
             ..
         } = self;
@@ -141,7 +149,7 @@ impl OperationDocument {
             machine_id,
             initiator,
             namespace_id,
-            service_id,
+            deploy_name,
             created_at,
             state: CorrosionDeployState::Terminal {
                 completed_at,

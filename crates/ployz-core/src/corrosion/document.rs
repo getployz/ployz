@@ -12,9 +12,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::deploy::{EnvValue, ImageReference, ReplicaSlot};
-use crate::ids::{
-    ClusterId, MachineRowId, NamespaceRowId, OperationRowId, RouteBindingRowId, ServiceRowId,
-};
+use crate::ids::{ClusterName, ContainerId, DeployName, PeerName};
 use crate::ingress::RouteBindingOrigin;
 use crate::machine::{GatewayProcessHealth, GatewayServingStatus, MachineLifecycle, MachineName};
 use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
@@ -177,7 +175,7 @@ pub trait CorrosionDocument: private::Sealed + Serialize + DeserializeOwned {
     const SUPPORTED_VERSION: CorrosionDocumentVersion = CorrosionDocumentVersion::V1;
 
     fn version(&self) -> CorrosionDocumentVersion;
-    fn cluster_id(&self) -> &ClusterId;
+    fn cluster_id(&self) -> &ClusterName;
 }
 
 /// A non-roster document accepted through the ordinary cluster/version fence.
@@ -191,34 +189,6 @@ pub trait RosterCorrosionDocument:
     CorrosionDocument + private::RosterCorrosionDocumentSealed
 {
     fn mesh_provider(&self) -> MeshProvider;
-}
-
-/// The collision domain of one named operator-authority document.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "table", rename_all = "snake_case")]
-pub enum NameClaim {
-    Machine {
-        name: String,
-    },
-    Peer {
-        name: String,
-    },
-    Namespace {
-        name: String,
-    },
-    Service {
-        namespace_id: NamespaceRowId,
-        name: String,
-    },
-    RouteBinding {
-        hostname: RouteHostname,
-    },
-}
-
-/// A document whose human handle is resolved by the lowest-ULID reader law.
-pub trait NamedCorrosionDocument: CorrosionDocument {
-    fn name_claim(&self) -> NameClaim;
 }
 
 mod private {
@@ -362,6 +332,14 @@ macro_rules! corrosion_dns_label {
             }
         }
 
+        impl std::str::FromStr for $name {
+            type Err = $error;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::try_new(value)
+            }
+        }
+
         #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
         pub enum $error {
             #[error("DNS label is empty")]
@@ -404,11 +382,8 @@ pub enum StorageMode {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AutomaticHostnameMode {
-    #[serde(alias = "ployz")]
     Disabled,
-    Custom {
-        suffix: RouteHostname,
-    },
+    Custom { suffix: RouteHostname },
 }
 
 /// Mesh implementation fixed for the life of a cluster.
@@ -753,7 +728,7 @@ pub struct OperatorWriteProvenance {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ClusterDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
@@ -770,7 +745,7 @@ pub struct ClusterDocument {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
@@ -784,11 +759,11 @@ pub struct MachineDocument {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PeerDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
-    pub name: String,
+    pub name: PeerName,
     pub transport: PeerTransport,
 }
 
@@ -796,7 +771,7 @@ pub struct PeerDocument {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
@@ -809,46 +784,46 @@ pub struct TokenDocument {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NamespaceDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
     pub name: CorrosionNamespaceName,
 }
 
+/// One independently deployable service in a namespace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ServiceDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
-    pub namespace_id: NamespaceRowId,
+    pub namespace_id: CorrosionNamespaceName,
     pub name: CorrosionServiceName,
     pub image: ImageReference,
     pub env_fingerprints: BTreeMap<String, Sha256Hex>,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub placement: ServicePlacement,
-    pub pinned_machines: BTreeSet<MachineRowId>,
-    pub active_deploy: OperationRowId,
+    pub pinned_machines: BTreeSet<MachineName>,
+    pub active_deploy: DeployName,
     pub previous_image: Option<ImageReference>,
     pub deployed_at: CorrosionTimestamp,
-    pub operation_id: OperationRowId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RouteBindingDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
     pub hostname: RouteHostname,
-    pub service_id: ServiceRowId,
-    pub namespace_id: NamespaceRowId,
+    pub namespace_id: CorrosionNamespaceName,
+    pub service_name: CorrosionServiceName,
     pub endpoint_port: RoutePort,
     pub origin: RouteBindingOrigin,
     pub ingress_mode: IngressMode,
@@ -862,42 +837,32 @@ pub struct ControllerDocument {
     pub cluster_id: ClusterName,
     pub preferred_machine_id: MachineName,
     pub appointment_id: ControllerRevision,
-    #[serde(default = "ancient_controller_heartbeat")]
     pub heartbeat_at: CorrosionTimestamp,
-}
-
-fn ancient_controller_heartbeat() -> CorrosionTimestamp {
-    CorrosionTimestamp::try_new("1970-01-01T00:00:00Z")
-        .expect("the Unix epoch is a valid Corrosion timestamp")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ContainerDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
-    pub machine_id: MachineRowId,
-    pub service_id: ServiceRowId,
-    pub namespace_id: NamespaceRowId,
+    pub cluster_id: ClusterName,
+    /// Docker-owned runtime handle; it is evidence, not the Corrosion key.
+    pub runtime_id: ContainerId,
+    pub machine_id: MachineName,
+    pub namespace_id: CorrosionNamespaceName,
+    pub service_name: CorrosionServiceName,
     /// Stable replica identity used to authorize logs and exact retirement.
-    /// Rows written before replica slots existed represented global services.
-    #[serde(default = "global_replica_slot")]
     pub replica_slot: ReplicaSlot,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub ip: Ipv4Addr,
-    pub deploy: OperationRowId,
-}
-
-const fn global_replica_slot() -> ReplicaSlot {
-    ReplicaSlot::Global
+    pub deploy: DeployName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineStatusDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
-    pub machine_id: MachineRowId,
+    pub cluster_id: ClusterName,
+    pub machine_id: MachineName,
     pub ployz_version: String,
     pub corrosion_version: String,
     pub architecture: String,
@@ -915,7 +880,7 @@ pub struct MachineStatusDocument {
     /// `None` denotes a row written before live peer-handshake testimony existed.
     /// A current writer publishes `Some`, including an empty map on a one-machine roster.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+    pub wireguard_handshakes: Option<BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
 }
 
 /// Machine-owned testimony from one gateway process.
@@ -923,8 +888,8 @@ pub struct MachineStatusDocument {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct GatewayObservationDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
-    pub machine_id: MachineRowId,
+    pub cluster_id: ClusterName,
+    pub machine_id: MachineName,
     pub observed_at: CorrosionTimestamp,
     pub listen_addr: SocketAddr,
     pub serving: GatewayServingStatus,
@@ -937,7 +902,6 @@ pub struct GatewayObservationDocument {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct GatewayRouteObservation {
-    pub route_binding_id: RouteBindingRowId,
     pub hostname: RouteHostname,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
@@ -973,7 +937,6 @@ pub enum GatewayRouteAvailability {
 #[serde(rename_all = "snake_case")]
 pub enum GatewayRouteUnavailableReason {
     ServiceMissing,
-    ServiceNamespaceMismatch,
     NoUpstream,
 }
 
@@ -981,12 +944,7 @@ pub enum GatewayRouteUnavailableReason {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "failure", rename_all = "snake_case")]
 pub enum GatewayRouteProjectionFailure {
-    Shadowed {
-        winner_route_binding_id: RouteBindingRowId,
-    },
-    UnsupportedIngressMode {
-        ingress_mode: IngressMode,
-    },
+    UnsupportedIngressMode { ingress_mode: IngressMode },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1136,11 +1094,11 @@ pub enum MeshConvergenceTestimony {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct OperationDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
-    pub machine_id: MachineRowId,
+    pub cluster_id: ClusterName,
+    pub machine_id: MachineName,
     pub initiator: OperationInitiator,
-    pub namespace_id: NamespaceRowId,
-    pub service_id: ServiceRowId,
+    pub namespace_id: CorrosionNamespaceName,
+    pub deploy_name: DeployName,
     pub created_at: CorrosionTimestamp,
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
@@ -1151,8 +1109,8 @@ pub struct OperationDocument {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CertHoldingDocument {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
-    pub machine_id: MachineRowId,
+    pub cluster_id: ClusterName,
+    pub machine_id: MachineName,
     pub hostname: RouteHostname,
     pub fingerprint: Sha256Hex,
     pub issued_at: CorrosionTimestamp,
@@ -1163,8 +1121,8 @@ pub struct CertHoldingDocument {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AcmeHttp01Document {
     pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterId,
-    pub machine_id: MachineRowId,
+    pub cluster_id: ClusterName,
+    pub machine_id: MachineName,
     pub hostname: RouteHostname,
     pub key_authorization: String,
     pub created_at: CorrosionTimestamp,
@@ -1181,7 +1139,7 @@ macro_rules! corrosion_document {
                 self.v
             }
 
-            fn cluster_id(&self) -> &ClusterId {
+            fn cluster_id(&self) -> &ClusterName {
                 &self.cluster_id
             }
         }
@@ -1243,46 +1201,5 @@ impl private::RosterCorrosionDocumentSealed for PeerDocument {}
 impl RosterCorrosionDocument for PeerDocument {
     fn mesh_provider(&self) -> MeshProvider {
         self.transport.mesh_provider()
-    }
-}
-
-impl NamedCorrosionDocument for MachineDocument {
-    fn name_claim(&self) -> NameClaim {
-        NameClaim::Machine {
-            name: self.name.as_str().to_owned(),
-        }
-    }
-}
-
-impl NamedCorrosionDocument for PeerDocument {
-    fn name_claim(&self) -> NameClaim {
-        NameClaim::Peer {
-            name: self.name.clone(),
-        }
-    }
-}
-
-impl NamedCorrosionDocument for NamespaceDocument {
-    fn name_claim(&self) -> NameClaim {
-        NameClaim::Namespace {
-            name: self.name.as_str().to_owned(),
-        }
-    }
-}
-
-impl NamedCorrosionDocument for ServiceDocument {
-    fn name_claim(&self) -> NameClaim {
-        NameClaim::Service {
-            namespace_id: self.namespace_id.clone(),
-            name: self.name.as_str().to_owned(),
-        }
-    }
-}
-
-impl NamedCorrosionDocument for RouteBindingDocument {
-    fn name_claim(&self) -> NameClaim {
-        NameClaim::RouteBinding {
-            hostname: self.hostname.clone(),
-        }
     }
 }

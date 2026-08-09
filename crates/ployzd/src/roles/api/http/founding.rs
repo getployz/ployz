@@ -492,8 +492,8 @@ mod tests {
         StorageMode, derive_builtin_wireguard_member,
     };
     use ployz_core::founding::{FoundingDriverEnrollment, FoundingRequest};
-    use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
-    use ployz_core::machine::{MachineLifecycle, MachineName};
+    use ployz_core::ids::{ClusterName, MachineName, PeerName};
+    use ployz_core::machine::MachineLifecycle;
     use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 
     use super::*;
@@ -504,12 +504,12 @@ mod tests {
     const MACHINE_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     const PEER_KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
-    fn cluster_id() -> ClusterId {
-        ClusterId::try_new(CLUSTER).expect("fixture cluster id")
+    fn cluster_id() -> ClusterName {
+        ClusterName::try_new(CLUSTER).expect("fixture cluster id")
     }
 
-    fn machine_id() -> MachineRowId {
-        MachineRowId::try_new(MACHINE).expect("fixture machine id")
+    fn machine_id() -> MachineName {
+        MachineName::try_new(MACHINE).expect("fixture machine id")
     }
 
     fn provenance() -> OperatorWriteProvenance {
@@ -529,12 +529,12 @@ mod tests {
         let driver = if with_peer {
             let peer_key = WireGuardPublicKey::try_new(PEER_KEY).expect("fixture peer public key");
             FoundingDriverEnrollment::Ssh {
-                peer_id: PeerId::try_new(PEER).expect("fixture peer id"),
+                peer_id: PeerName::try_new(PEER).expect("fixture peer id"),
                 document: PeerDocument {
                     v: CorrosionDocumentVersion::V1,
                     cluster_id: cluster_id.clone(),
                     provenance: provenance(),
-                    name: "operator-laptop".to_owned(),
+                    name: ployz_core::ids::PeerName::try_new("operator-laptop").expect("peer name"),
                     transport: PeerTransport::Wireguard {
                         addr_v6: derive_builtin_wireguard_member(&cluster_id, &peer_key)
                             .bind_address()

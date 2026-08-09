@@ -1,13 +1,12 @@
 //! Machine command execution, mesh HTTP, and human presentation.
 
 use std::cmp::Ordering;
-use std::fmt;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
 use ployz_core::corrosion::MachineTransport;
 use ployz_core::founding::InitStorageChoice;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::ClusterName;
 use ployz_core::install::{ExactPloyzVersion, InstallArtifactVersion};
 use ployz_core::join::{
     JoinStorageChoice, MachineEndpointSetRefusal, MachineEndpointSetReply,
@@ -235,7 +234,7 @@ fn upgrade_halted(machine: &str, confirmed: usize, reason: String) -> MachineExe
 
 async fn confirm_upgrade(
     remote: &OperatorRemote,
-    machine_id: &MachineRowId,
+    machine_id: &MachineName,
     expected_version: &InstallArtifactVersion,
 ) -> bool {
     let deadline = Instant::now() + UPGRADE_CONFIRM_TIMEOUT;
@@ -455,7 +454,7 @@ fn select_upgrade_machines<'a>(
 
 fn machine_status_for<'a>(
     statuses: &'a [MachineStatusLensRow],
-    machine_id: &MachineRowId,
+    machine_id: &MachineName,
 ) -> Option<&'a MachineStatusLensRow> {
     statuses.iter().find(|status| status.id == *machine_id)
 }
@@ -722,7 +721,6 @@ async fn remove(command: MachineRemoveCommand) -> Result<String, MachineExecutio
     let remote = OperatorRemote::load(command.target.as_ref())?;
     let request = MachineRemoveRequest {
         machine_name: command.machine.clone(),
-        machine_id: command.machine_id.clone(),
     };
     let reply = remote
         .request_json_with_refusal::<_, MachineRemoveReply, MachineRemoveRefusal>(
@@ -736,31 +734,12 @@ async fn remove(command: MachineRemoveCommand) -> Result<String, MachineExecutio
         JsonReply::Refused(MachineRemoveRefusal::NotFound { machine_name }) => {
             return Err(MachineExecutionError::MachineRemovalNotFound { machine_name });
         }
-        JsonReply::Refused(MachineRemoveRefusal::Ambiguous {
-            machine_name,
-            machine_ids,
-        }) => {
-            return Err(MachineExecutionError::MachineRemovalAmbiguous(
-                MachineRemovalAmbiguity {
-                    machine_name,
-                    machine_ids,
-                },
-            ));
-        }
-        JsonReply::Refused(MachineRemoveRefusal::IdMismatch {
-            machine_name,
-            machine_id,
-        }) => {
-            return Err(MachineExecutionError::MachineRemovalIdMismatch {
-                machine_name,
-                machine_id,
-            });
-        }
     };
-    if !machine_removal_reply_matches_requested_identity(&reply, command.machine_id.as_ref()) {
+    if !matches!(&reply, MachineRemoveReply::Removed { machine_name } if machine_name == &command.machine)
+    {
         return Err(MachineExecutionError::MachineRemovalReplyMismatch);
     }
-    Ok(render_machine_removal(&command.machine, &reply))
+    Ok(render_machine_removal(&reply))
 }
 
 fn reset() -> Result<String, MachineExecutionError> {
@@ -816,7 +795,7 @@ pub enum MachineExecutionError {
         reason: String,
     },
     #[error("machine {machine_id} does not use builtin WireGuard; its endpoint cannot be set")]
-    EndpointProviderMismatch { machine_id: MachineRowId },
+    EndpointProviderMismatch { machine_id: MachineName },
     #[error("machine {machine} endpoint must use a nonzero WireGuard port")]
     EndpointPortZero { machine: String },
     #[error("cluster API endpoint-set reply did not match the requested machine and endpoint")]
@@ -826,16 +805,6 @@ pub enum MachineExecutionError {
         machine_name.as_str()
     )]
     MachineRemovalNotFound { machine_name: MachineName },
-    #[error(transparent)]
-    MachineRemovalAmbiguous(#[from] MachineRemovalAmbiguity),
-    #[error(
-        "machine {} does not match identity {machine_id}; omit `--id` to resolve the name again, or retry with a matching identity",
-        machine_name.as_str()
-    )]
-    MachineRemovalIdMismatch {
-        machine_name: MachineName,
-        machine_id: MachineRowId,
-    },
     #[error("cluster API machine-removal reply did not match the requested identity")]
     MachineRemovalReplyMismatch,
     #[error(transparent)]
@@ -850,38 +819,10 @@ pub enum MachineSnapshotError {
     WrongLens { actual: LensCollection },
     #[error("cluster API answered for cluster {actual}, expected {expected}")]
     WrongCluster {
-        expected: ClusterId,
-        actual: ClusterId,
+        expected: ClusterName,
+        actual: ClusterName,
     },
 }
-
-/// The actionable choices returned when a roster name has multiple identities.
-#[derive(Debug)]
-pub struct MachineRemovalAmbiguity {
-    machine_name: MachineName,
-    machine_ids: Vec<MachineRowId>,
-}
-
-impl fmt::Display for MachineRemovalAmbiguity {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "machine {} is ambiguous; retry with one of:",
-            self.machine_name.as_str()
-        )?;
-        for machine_id in &self.machine_ids {
-            write!(
-                formatter,
-                "\n  ployz machine rm {} --id {}",
-                self.machine_name.as_str(),
-                machine_id.as_str()
-            )?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for MachineRemovalAmbiguity {}
 
 pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, MachineSnapshotError> {
     let LensSnapshot::Machines { rows, .. } = snapshot else {
@@ -919,7 +860,7 @@ pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, Machine
 
 fn validate_snapshot_cluster(
     snapshot: &LensSnapshot,
-    expected: &ClusterId,
+    expected: &ClusterName,
 ) -> Result<(), MachineSnapshotError> {
     let LensSnapshot::Machines { cluster, .. } = snapshot else {
         return Err(MachineSnapshotError::WrongLens {
@@ -951,34 +892,11 @@ pub fn render_endpoint_set(machine: &MachineName, endpoint: std::net::SocketAddr
 }
 
 #[must_use]
-pub fn render_machine_removal(machine_name: &MachineName, reply: &MachineRemoveReply) -> String {
+pub fn render_machine_removal(reply: &MachineRemoveReply) -> String {
     match reply {
-        MachineRemoveReply::Removed { machine_id } => format!(
-            "Removed machine {} ({}).\n",
-            machine_name.as_str(),
-            machine_id.as_str()
-        ),
-        MachineRemoveReply::AlreadyAbsent { machine_id } => format!(
-            "Machine {} ({}) was already absent.\n",
-            machine_name.as_str(),
-            machine_id.as_str()
-        ),
-    }
-}
-
-fn machine_removal_reply_matches_requested_identity(
-    reply: &MachineRemoveReply,
-    requested_machine_id: Option<&MachineRowId>,
-) -> bool {
-    match (reply, requested_machine_id) {
-        (MachineRemoveReply::Removed { .. }, None) => true,
-        (MachineRemoveReply::Removed { machine_id }, Some(requested_machine_id)) => {
-            machine_id == requested_machine_id
+        MachineRemoveReply::Removed { machine_name } => {
+            format!("Removed machine {}.\n", machine_name.as_str())
         }
-        (MachineRemoveReply::AlreadyAbsent { machine_id }, Some(requested_machine_id)) => {
-            machine_id == requested_machine_id
-        }
-        (MachineRemoveReply::AlreadyAbsent { .. }, None) => false,
     }
 }
 
@@ -986,7 +904,7 @@ fn machine_removal_reply_matches_requested_identity(
 pub fn render_machine_join(
     outcome: MachineJoinOutcomeKind,
     machine_name: &MachineName,
-    machine_id: &MachineRowId,
+    machine_id: &MachineName,
 ) -> String {
     let verb = match outcome {
         MachineJoinOutcomeKind::Joined => "Joined",
@@ -1109,42 +1027,17 @@ mod tests {
     #[test]
     fn machine_removal_uses_the_typed_route_and_renders_terminal_outcomes() {
         let machine_name = MachineName::try_new("edge-b").expect("machine name");
-        let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
         let request = MachineRemoveRequest {
             machine_name: machine_name.clone(),
-            machine_id: Some(machine_id.clone()),
         };
         assert_eq!(MACHINE_REMOVE_ROUTE, "/machines/remove");
         assert_eq!(request.machine_name, machine_name);
-        assert_eq!(request.machine_id, Some(machine_id.clone()));
         assert_eq!(
-            render_machine_removal(
-                &machine_name,
-                &MachineRemoveReply::Removed {
-                    machine_id: machine_id.clone(),
-                },
-            ),
-            format!("Removed machine edge-b ({MACHINE_A}).\n")
+            render_machine_removal(&MachineRemoveReply::Removed {
+                machine_name: machine_name.clone(),
+            }),
+            "Removed machine edge-b.\n"
         );
-        assert_eq!(
-            render_machine_removal(
-                &machine_name,
-                &MachineRemoveReply::AlreadyAbsent {
-                    machine_id: machine_id.clone(),
-                },
-            ),
-            format!("Machine edge-b ({MACHINE_A}) was already absent.\n")
-        );
-        assert!(machine_removal_reply_matches_requested_identity(
-            &MachineRemoveReply::AlreadyAbsent {
-                machine_id: machine_id.clone(),
-            },
-            Some(&machine_id),
-        ));
-        assert!(!machine_removal_reply_matches_requested_identity(
-            &MachineRemoveReply::AlreadyAbsent { machine_id },
-            None,
-        ));
     }
 
     #[test]
@@ -1256,36 +1149,11 @@ mod tests {
     }
 
     #[test]
-    fn machine_removal_refusals_tell_the_operator_how_to_continue() {
+    fn machine_removal_not_found_tells_the_operator_how_to_continue() {
         let machine_name = MachineName::try_new("edge-b").expect("machine name");
-        let lower = MachineRowId::try_new(MACHINE_A).expect("machine id");
-        let higher = MachineRowId::try_new(MACHINE_B).expect("machine id");
-        let ambiguity = MachineExecutionError::MachineRemovalAmbiguous(MachineRemovalAmbiguity {
-            machine_name: machine_name.clone(),
-            machine_ids: vec![lower.clone(), higher.clone()],
-        });
         assert_eq!(
-            ambiguity.to_string(),
-            format!(
-                "machine edge-b is ambiguous; retry with one of:\n  ployz machine rm edge-b --id {MACHINE_A}\n  ployz machine rm edge-b --id {MACHINE_B}"
-            )
-        );
-        assert_eq!(
-            MachineExecutionError::MachineRemovalNotFound {
-                machine_name: machine_name.clone(),
-            }
-            .to_string(),
+            MachineExecutionError::MachineRemovalNotFound { machine_name }.to_string(),
             "machine edge-b is not in the roster; run `ployz machine ls` to inspect current machines"
-        );
-        assert_eq!(
-            MachineExecutionError::MachineRemovalIdMismatch {
-                machine_name,
-                machine_id: lower,
-            }
-            .to_string(),
-            format!(
-                "machine edge-b does not match identity {MACHINE_A}; omit `--id` to resolve the name again, or retry with a matching identity"
-            )
         );
     }
 
@@ -1308,7 +1176,7 @@ mod tests {
     #[test]
     fn join_outcomes_name_the_accepted_machine_identity() {
         let machine_name = MachineName::try_new("edge-b").expect("machine name");
-        let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
+        let machine_id = MachineName::try_new(MACHINE_A).expect("machine id");
         for (outcome, expected) in [
             (MachineJoinOutcomeKind::Joined, "Joined"),
             (MachineJoinOutcomeKind::Resumed, "Resumed"),
@@ -1331,7 +1199,7 @@ mod tests {
 
     #[test]
     fn machine_snapshot_must_belong_to_the_selected_cluster() {
-        let wrong = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAZ").expect("cluster id");
+        let wrong = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAZ").expect("cluster id");
         assert!(matches!(
             validate_snapshot_cluster(&machines_snapshot(), &wrong),
             Err(MachineSnapshotError::WrongCluster { expected, actual })

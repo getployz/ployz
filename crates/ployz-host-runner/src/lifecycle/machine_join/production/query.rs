@@ -57,11 +57,10 @@ pub(super) fn corrosion_roster_query(
 ) -> Result<CorrosionRosterQuery, FailureMessage> {
     let accepted = accepted.accepted();
     let statement = Statement::with_params(
-        "SELECT id, document FROM machines WHERE id = ?1 OR name = ?2",
-        vec![
-            SqliteParameter::Text(accepted.machine.machine_id.as_str().to_owned()),
-            SqliteParameter::Text(accepted.machine.document.name.as_str().to_owned()),
-        ],
+        "SELECT id, document FROM machines WHERE id = ?",
+        vec![SqliteParameter::Text(
+            accepted.machine.document.name.as_str().to_owned(),
+        )],
     );
     Ok(CorrosionRosterQuery {
         url: format!("http://127.0.0.1:{CORROSION_API_PORT}/v1/queries"),
@@ -155,7 +154,6 @@ pub(super) enum RosterConvergenceDisposition {
     Converged,
     Missing,
     Skipped,
-    Shadowed,
     Divergent,
 }
 
@@ -165,7 +163,6 @@ impl std::fmt::Display for RosterConvergenceDisposition {
             Self::Converged => formatter.write_str("converged"),
             Self::Missing => formatter.write_str("accepted machine row is missing"),
             Self::Skipped => formatter.write_str("accepted machine row is invalid locally"),
-            Self::Shadowed => formatter.write_str("accepted machine name is shadowed locally"),
             Self::Divergent => formatter.write_str("accepted machine row differs locally"),
         }
     }
@@ -183,7 +180,7 @@ pub(super) fn roster_convergence_disposition(
         .find(|row| row.value.name == accepted.machine.document.name);
     if let Some(winner) = winner {
         if winner.source.key != accepted.machine.machine_id.as_str() {
-            return RosterConvergenceDisposition::Shadowed;
+            return RosterConvergenceDisposition::Skipped;
         }
         if winner.value == accepted.machine.document {
             return RosterConvergenceDisposition::Converged;
@@ -196,8 +193,6 @@ pub(super) fn roster_convergence_disposition(
         .any(|row| row.source.key == accepted.machine.machine_id.as_str())
     {
         RosterConvergenceDisposition::Skipped
-    } else if !report.shadows.is_empty() {
-        RosterConvergenceDisposition::Shadowed
     } else {
         RosterConvergenceDisposition::Missing
     }

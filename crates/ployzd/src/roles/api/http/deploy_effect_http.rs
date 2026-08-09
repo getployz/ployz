@@ -3,9 +3,7 @@
 use std::time::Duration;
 
 use hyper::{Response, StatusCode};
-use ployz_core::corrosion::{
-    ControllerAppointmentId, Principal, owns_current_controller_appointment,
-};
+use ployz_core::corrosion::{ControllerRevision, Principal, owns_current_controller_appointment};
 use ployz_core::{
     DeployInspectOutcome, DeployInspectRequest, DeployPrepareOutcome, DeployPrepareRequest,
     DeployRetireOutcome, DeployRetireRequest,
@@ -77,7 +75,7 @@ pub(super) async fn retire(
 async fn authorize(
     service: &ApiService,
     principal: &Principal,
-    appointment_id: &ControllerAppointmentId,
+    appointment_id: &ControllerRevision,
 ) -> Result<(), Response<HttpBody>> {
     let Principal::Machine { machine_id } = principal else {
         return Err(error_response(StatusCode::NOT_FOUND, "unsupported_route"));

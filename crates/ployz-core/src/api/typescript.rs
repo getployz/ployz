@@ -9,12 +9,12 @@ use super::v2::{
     CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
     CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
     CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
-    DeployAccepted, DeployRefusal, DeployRequest, KNOWN_API_FEATURES, KnownApiFeature,
-    LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow, MachineRemoveRefusal,
-    MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow, MachineUpgradeRefusal,
-    MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor, MachineUpgradeUrl,
-    OperationLensRow, PinnedMachineNames, RequestedPins, RequestedPlacement, ServiceLensRow,
-    ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
+    DeployAccepted, DeployRefusal, DeployRequest, DeployServiceRequest, KNOWN_API_FEATURES,
+    KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow,
+    MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow,
+    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor,
+    MachineUpgradeUrl, OperationLensRow, PinnedMachineNames, RequestedPins, RequestedPlacement,
+    ServiceLensRow, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
     ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
@@ -26,15 +26,15 @@ use super::{
 use crate::corrosion::{
     AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
     GatewayObservationDocument, HostPortBinding, HostPortBindings, HostPortProtocol,
-    MachineDocument, MachineStatusDocument, NameClaim, NamespaceDocument, OperationDocument,
-    PeerDocument, Principal, RouteBindingDocument, ServiceDocument, TokenDocument,
+    MachineDocument, MachineStatusDocument, NamespaceDocument, OperationDocument, PeerDocument,
+    Principal, RouteBindingDocument, ServiceDocument, TokenDocument,
 };
 use crate::deploy::{EnvName, EnvValue};
 use crate::founding::{
     FoundingDriverEnrollment, FoundingRefusal, FoundingRepairCommand, FoundingRequest,
     FoundingResult, FoundingRow, FoundingValidationError,
 };
-use crate::ids::{MachineRowId, NamespaceRowId, OperationRowId, RouteBindingRowId, ServiceRowId};
+use crate::ids::{CorrosionNamespaceName, DeployName, MachineName, RouteHostname};
 use crate::join::{
     JoinAdmissionReply, JoinAdmissionRequest, JoinMachineSubstrate, MachineEndpointSetRefusal,
     MachineEndpointSetReply, MachineEndpointSetRequest, TokenCreateRefusal, TokenCreateReply,
@@ -79,13 +79,11 @@ pub fn api_typescript() -> String {
 }
 
 fn collect_corrosion_contracts(declarations: &mut DeclarationCollector<'_>) {
-    declarations.visit::<MachineRowId>();
-    declarations.visit::<NamespaceRowId>();
-    declarations.visit::<ServiceRowId>();
-    declarations.visit::<OperationRowId>();
-    declarations.visit::<RouteBindingRowId>();
+    declarations.visit::<MachineName>();
+    declarations.visit::<CorrosionNamespaceName>();
+    declarations.visit::<DeployName>();
+    declarations.visit::<RouteHostname>();
     declarations.visit::<CorrosionTable>();
-    declarations.visit::<NameClaim>();
     declarations.visit::<Principal>();
     declarations.visit::<ClusterDocument>();
     declarations.visit::<MachineDocument>();
@@ -167,6 +165,7 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<CorrosionNamespaceRemoveReply>();
     declarations.visit::<CorrosionNamespaceRemoveRefusal>();
     declarations.visit::<DeployRequest>();
+    declarations.visit::<DeployServiceRequest>();
     declarations.visit::<RequestedPlacement>();
     declarations.visit::<RequestedPins>();
     declarations.visit::<PinnedMachineNames>();
@@ -278,12 +277,10 @@ mod tests {
             "MachineTransport",
             "PeerTransport",
             "CorrosionTimestamp",
-            "MachineRowId",
-            "NamespaceRowId",
-            "ServiceRowId",
-            "OperationRowId",
-            "RouteBindingRowId",
-            "NameClaim",
+            "MachineName",
+            "CorrosionNamespaceName",
+            "DeployName",
+            "RouteHostname",
         ] {
             assert!(
                 generated.contains(&format!("export type {name} =")),
@@ -377,10 +374,6 @@ mod tests {
                 "missing declaration for {name}"
             );
         }
-        assert!(generated.contains("export type ServiceRemoveRowRequest ="));
-        assert!(generated.contains(
-            "namespace_id: NamespaceRowId, name: string, service_id: ServiceRowId | null"
-        ));
         for local_only in [
             "InitStorageChoice",
             "InitStorageSelectionError",

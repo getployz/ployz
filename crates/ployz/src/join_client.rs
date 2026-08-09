@@ -351,12 +351,11 @@ impl ServerCertVerifier for DoorFingerprintVerifier {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::ids::{MachineRowId, PeerId, TokenId};
+    use ployz_core::ids::{MachineName, PeerName, TokenName};
     use ployz_core::join::{
         JoinAdmissionRequest, JoinDoorCertFingerprint, JoinDoorRefusal, JoinStorageChoice,
         JoinStorageFacts, JoinTokenSecret, PeerJoinRequest,
     };
-    use ployz_core::machine::MachineName;
     use ployz_core::network::WireGuardPublicKey;
     use rcgen::generate_simple_self_signed;
     use rustls::ServerConfig;
@@ -445,7 +444,7 @@ mod tests {
             second_listener.local_addr().expect("second address"),
         ];
         let fingerprint = first.fingerprint;
-        let token_id = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id");
+        let token_id = TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id");
         let second_acceptor = first.acceptor.clone();
         let first_task = tokio::spawn(serve_join_reply(
             first.listener,
@@ -497,7 +496,7 @@ mod tests {
         )
         .expect("door fingerprint");
         let blob = JoinBlob::try_new(
-            TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
+            TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
             JoinTokenSecret::try_from_bytes([0x5a; 32]),
             fingerprint,
             vec![endpoint],
@@ -553,8 +552,6 @@ mod tests {
             .admit_machine(
                 &blob,
                 MachineJoinRequest {
-                    machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW")
-                        .expect("machine id"),
                     name: MachineName::try_new("edge-a").expect("machine name"),
                     public_key: WireGuardPublicKey::try_new(
                         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -581,8 +578,7 @@ mod tests {
             .admit_peer(
                 &blob,
                 PeerJoinRequest {
-                    peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("peer id"),
-                    name: "operator-laptop".to_owned(),
+                    name: PeerName::try_new("operator-laptop").expect("peer name"),
                     public_key: WireGuardPublicKey::try_new(
                         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                     )

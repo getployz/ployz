@@ -7,7 +7,7 @@ use ployz_core::corrosion::{
     GatewayProjectionAggregateFailure, GatewayRouteObservation, SqliteParameter, Statement,
     TransactionResult,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::machine::{GatewayProcessHealth, GatewayServingStatus};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -17,8 +17,8 @@ use crate::corrosion::{CorrosionClient, CorrosionClientError};
 #[derive(Clone)]
 pub(super) struct GatewayObservationPublisher {
     client: CorrosionClient,
-    cluster_id: ClusterId,
-    local_machine_id: MachineRowId,
+    cluster_id: ClusterName,
+    local_machine_id: MachineName,
     listen_addr: SocketAddr,
 }
 
@@ -26,8 +26,8 @@ impl GatewayObservationPublisher {
     #[must_use]
     pub(super) const fn new(
         client: CorrosionClient,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         listen_addr: SocketAddr,
     ) -> Self {
         Self {
@@ -121,8 +121,8 @@ mod tests {
     fn observation_upsert_derives_the_row_key_from_document_identity() {
         let document = GatewayObservationDocument {
             v: CorrosionDocumentVersion::V1,
-            cluster_id: ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster"),
-            machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
+            cluster_id: ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster"),
+            machine_id: MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
             observed_at: CorrosionTimestamp::try_new("2026-08-08T00:00:00Z").expect("timestamp"),
             listen_addr: SocketAddr::from(([0, 0, 0, 0], 80)),
             serving: GatewayServingStatus::Current,

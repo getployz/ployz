@@ -9,7 +9,7 @@ use crate::corrosion::{
     ClusterDocument, ContainerDocument, MachineDocument, MachineTransport, NamespaceDocument,
     ServiceDocument, StoredRow, read_named_roster_rows, read_named_rows, read_rows,
 };
-use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, ServiceRowId};
+use crate::ids::{ClusterName, CorrosionNamespaceName, MachineName};
 
 const MAX_DNS_LABEL_LEN: usize = 63;
 pub const INTERNAL_DNS_SUFFIX: &str = "internal";
@@ -145,8 +145,8 @@ fn is_dns_label(label: &str) -> bool {
 /// DNS view from scratch.
 #[derive(Debug)]
 pub struct InternalDnsRowProjectionInput {
-    pub cluster_id: ClusterId,
-    pub local_machine_id: MachineRowId,
+    pub cluster_id: ClusterName,
+    pub local_machine_id: MachineName,
     pub cluster_rows: Vec<StoredRow>,
     pub machine_rows: Vec<StoredRow>,
     pub namespace_rows: Vec<StoredRow>,
@@ -165,15 +165,15 @@ pub struct InternalDnsRowProjection {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InternalDnsRowProjectionError {
     #[error("cluster {cluster_id} is not present in the accepted cluster rows")]
-    MissingCluster { cluster_id: ClusterId },
+    MissingCluster { cluster_id: ClusterName },
     #[error("cluster {cluster_id} does not have one valid canonical cluster row")]
-    InvalidCluster { cluster_id: ClusterId },
+    InvalidCluster { cluster_id: ClusterName },
     #[error("local machine {machine_id} is not present in the accepted machine roster")]
-    LocalMachineMissing { machine_id: MachineRowId },
+    LocalMachineMissing { machine_id: MachineName },
 }
 
-/// Applies the shared tolerant-reader, provider-roster, and lowest-ULID name
-/// laws before joining current service intent to retained container rows.
+/// Applies the shared tolerant-reader and provider-roster laws before joining
+/// current service intent to retained container rows.
 #[must_use = "the internal DNS projection or startup error must be applied"]
 pub fn project_internal_dns_rows(
     input: InternalDnsRowProjectionInput,
@@ -206,7 +206,7 @@ pub fn project_internal_dns_rows(
     let mut accepted_machine_ids = BTreeSet::new();
     let mut endpoint_subnet = None;
     for row in machine_report.accepted {
-        let Ok(machine_id) = MachineRowId::try_new(row.id.as_str().to_owned()) else {
+        let Ok(machine_id) = MachineName::try_new(row.source.key) else {
             continue;
         };
         if machine_id == local_machine_id {
@@ -228,20 +228,20 @@ pub fn project_internal_dns_rows(
         .accepted
         .into_iter()
         .filter_map(|row| {
-            NamespaceRowId::try_new(row.id.as_str().to_owned())
+            CorrosionNamespaceName::try_new(row.source.key)
                 .ok()
                 .map(|id| (id, row.value.name))
         })
         .collect::<BTreeMap<_, _>>();
 
-    let service_report = read_named_rows::<ServiceDocument>(&cluster_id, service_rows);
-    let services = service_report
+    let services = read_rows::<ServiceDocument>(&cluster_id, service_rows)
         .accepted
         .into_iter()
-        .filter_map(|row| {
-            ServiceRowId::try_new(row.id.as_str().to_owned())
-                .ok()
-                .map(|id| (id, row.value))
+        .map(|row| {
+            (
+                (row.value.namespace_id.clone(), row.value.name.clone()),
+                row.value,
+            )
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -263,12 +263,13 @@ pub fn project_internal_dns_rows(
         if !accepted_machine_ids.contains(&container.machine_id) {
             continue;
         }
-        let Some(service) = services.get(&container.service_id) else {
+        let Some(service) = services.get(&(
+            container.namespace_id.clone(),
+            container.service_name.clone(),
+        )) else {
             continue;
         };
-        if container.namespace_id != service.namespace_id
-            || container.deploy != service.active_deploy
-        {
+        if container.deploy != service.active_deploy {
             continue;
         }
         let Some(namespace_name) = namespaces.get(&service.namespace_id) else {

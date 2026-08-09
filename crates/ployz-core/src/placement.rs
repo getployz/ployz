@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{ServicePlacement, ServiceReplicaCount};
-use crate::ids::{MachineRowId, OperationRowId};
-use crate::machine::{MachineLifecycle, MachineName};
+use crate::ids::{DeployName, MachineName};
+use crate::machine::MachineLifecycle;
 
 /// Placement never targets a machine reporting less free disk than this
 /// floor. It protects the machine's OS, Docker daemon, and Corrosion replica
@@ -20,7 +20,7 @@ pub const PLACEMENT_FREE_DISK_FLOOR_BYTES: u64 = 1024 * 1024 * 1024;
 /// One machine's live input to a placement pick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementBid {
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub machine_name: MachineName,
     pub lifecycle: MachineLifecycle,
     pub free_disk_bytes: u64,
@@ -32,7 +32,7 @@ pub struct PlacementBid {
 /// One local container fact used only to prefer the incumbent generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceContainerObservation {
-    pub deploy: OperationRowId,
+    pub deploy: DeployName,
 }
 
 /// Everything the pick may consult. Gathering is the driver's job; the pick
@@ -43,11 +43,11 @@ pub struct PlacementPickInputs {
     /// row's when the deploy carried none.
     pub placement: ServicePlacement,
     /// The effective pin set; empty means unpinned.
-    pub pinned_machines: BTreeSet<MachineRowId>,
+    pub pinned_machines: BTreeSet<MachineName>,
     /// Whether this first deploy declares any named volume mounts.
     pub has_named_volumes: bool,
     /// The incumbent's active deploy; `None` on a first deploy.
-    pub active_deploy: Option<OperationRowId>,
+    pub active_deploy: Option<DeployName>,
     /// The live bids gathered from responding machines.
     pub bids: Vec<PlacementBid>,
 }
@@ -58,7 +58,7 @@ pub struct PlacementPickInputs {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct PlacementElimination {
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub machine_name: MachineName,
     pub reason: PlacementEliminationReason,
 }
@@ -92,10 +92,10 @@ pub enum PlacementRefusal {
 /// [`PLACEMENT_FREE_DISK_FLOOR_BYTES`], outside the pin set), then sticky
 /// (runs the incumbent's active deploy), then spread
 /// (fewest total managed containers), then load band (idle before normal
-/// before hot), then lowest machine ULID. Replicas fill round-robin over the
+/// before hot), then lexicographically lowest machine name. Replicas fill round-robin over the
 /// tier-sorted survivors; stacking is allowed.
 /// A global service targets every tier-0 survivor exactly once.
-pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineRowId>, PlacementRefusal> {
+pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineName>, PlacementRefusal> {
     let PlacementPickInputs {
         placement,
         pinned_machines,
@@ -146,7 +146,7 @@ pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineRowId>,
 
 fn tier_zero_drop(
     bid: &PlacementBid,
-    pinned_machines: &BTreeSet<MachineRowId>,
+    pinned_machines: &BTreeSet<MachineName>,
 ) -> Option<PlacementEliminationReason> {
     match bid.lifecycle {
         MachineLifecycle::Draining => return Some(PlacementEliminationReason::Draining),
@@ -164,11 +164,11 @@ fn tier_zero_drop(
 }
 
 /// The replicated preference key: sticky bids first, then fewest total
-/// containers, then the lowest load band, then the lowest machine ULID.
+/// containers, then the lowest load band, then the lowest machine name.
 fn preference_key(
     bid: &PlacementBid,
-    active_deploy: Option<&OperationRowId>,
-) -> (bool, usize, crate::corrosion::MachineLoadBand, MachineRowId) {
+    active_deploy: Option<&DeployName>,
+) -> (bool, usize, crate::corrosion::MachineLoadBand, MachineName) {
     let sticky = active_deploy.is_some_and(|active| {
         bid.service_containers
             .iter()
@@ -185,7 +185,7 @@ fn preference_key(
 fn round_robin_fill(
     survivors: &[&PlacementBid],
     replicas: ServiceReplicaCount,
-) -> Vec<MachineRowId> {
+) -> Vec<MachineName> {
     survivors
         .iter()
         .cycle()

@@ -484,7 +484,7 @@ mod tests {
                 .body(())
                 .expect("request"),
             hyper::Request::builder()
-                .header(FORWARDED_PEER_HEADER, "not-a-peer")
+                .header(FORWARDED_PEER_HEADER, "not/a/peer")
                 .header(APPOINTMENT_HEADER, "1")
                 .body(())
                 .expect("request"),

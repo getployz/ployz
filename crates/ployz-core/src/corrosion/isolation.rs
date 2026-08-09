@@ -6,7 +6,7 @@ use std::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use super::{ContainerDocument, ReadReport, SkippedRow};
-use crate::ids::NamespaceRowId;
+use crate::ids::CorrosionNamespaceName;
 use crate::network::MachineEndpointSupernet;
 
 /// One accepted `container_ip -> namespace` mapping.
@@ -15,7 +15,7 @@ use crate::network::MachineEndpointSupernet;
 pub struct ContainerIsolationEntry {
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub ip: Ipv4Addr,
-    pub namespace_id: NamespaceRowId,
+    pub namespace_id: CorrosionNamespaceName,
 }
 
 /// The complete desired map. Absence from this set is deliberately fail-closed.
@@ -46,7 +46,7 @@ pub struct RejectedContainerIsolationAddress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerIsolationConflict {
     pub ip: Ipv4Addr,
-    pub namespaces: Vec<NamespaceRowId>,
+    pub namespaces: Vec<CorrosionNamespaceName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +76,7 @@ pub fn project_container_isolation(
         mut skipped,
     } = report;
     let observed_rows = accepted.len().saturating_add(skipped.len());
-    let mut candidates = BTreeMap::<Ipv4Addr, Vec<NamespaceRowId>>::new();
+    let mut candidates = BTreeMap::<Ipv4Addr, Vec<CorrosionNamespaceName>>::new();
     let mut rejected_addresses = Vec::new();
 
     for row in accepted {
@@ -141,28 +141,31 @@ pub fn project_container_isolation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corrosion::{AcceptedRow, CorrosionDocumentVersion, StoredRow};
-    use crate::ids::{ClusterId, MachineRowId, OperationRowId, ServiceRowId};
+    use crate::corrosion::{
+        AcceptedRow, CorrosionDocumentVersion, CorrosionServiceName, StoredRow,
+    };
+    use crate::ids::{ClusterName, CorrosionNamespaceName, DeployName, MachineName};
 
-    const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-    const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    const SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-    const DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-    const NAMESPACE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
-    const NAMESPACE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+    const CLUSTER: &str = "main";
+    const MACHINE: &str = "edge-a";
+    const SERVICE: &str = "web";
+    const DEPLOY: &str = "release-1";
+    const NAMESPACE_A: &str = "production";
+    const NAMESPACE_B: &str = "staging";
 
     fn row(key: &str, ip: &str, namespace: &str) -> AcceptedRow<ContainerDocument> {
         AcceptedRow {
             source: StoredRow::new(key, "accepted"),
             value: ContainerDocument {
                 v: CorrosionDocumentVersion::V1,
-                cluster_id: ClusterId::try_new(CLUSTER).expect("cluster"),
-                machine_id: MachineRowId::try_new(MACHINE).expect("machine"),
-                service_id: ServiceRowId::try_new(SERVICE).expect("service"),
-                namespace_id: NamespaceRowId::try_new(namespace).expect("namespace"),
+                cluster_id: ClusterName::try_new(CLUSTER).expect("cluster"),
+                runtime_id: crate::ids::ContainerId::try_new(key).expect("runtime id"),
+                machine_id: MachineName::try_new(MACHINE).expect("machine"),
+                namespace_id: CorrosionNamespaceName::try_new(namespace).expect("namespace"),
+                service_name: CorrosionServiceName::try_new(SERVICE).expect("service"),
                 replica_slot: crate::deploy::ReplicaSlot::Global,
                 ip: ip.parse().expect("ip"),
-                deploy: OperationRowId::try_new(DEPLOY).expect("deploy"),
+                deploy: DeployName::try_new(DEPLOY).expect("deploy"),
             },
         }
     }

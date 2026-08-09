@@ -8,7 +8,7 @@ use ployz_core::corrosion::{
     BuiltinWireguardRosterEvidence, DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh,
     DesiredBuiltinWireguardRoamingPeer, derive_builtin_wireguard_member,
 };
-use ployz_core::ids::{ClusterId, PeerId};
+use ployz_core::ids::{ClusterName, PeerName};
 use ployz_core::operation::FailureMessage;
 
 use crate::{HostRunnerCommandOutput, HostRunnerCommandRunner, SupervisorBackend};
@@ -98,7 +98,7 @@ impl TestFixture {
             peer_private_key.public_key().to_string(),
         )
         .expect("peer public key");
-        let cluster = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster");
+        let cluster = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster");
         let local = derive_builtin_wireguard_member(&cluster, &local_key);
         let peer = derive_builtin_wireguard_member(&cluster, &peer_key);
         let desired = DesiredBuiltinWireguardMesh {
@@ -117,7 +117,7 @@ impl TestFixture {
             .expect("cluster prefix"),
             machine_peers: Vec::new(),
             roaming_peers: vec![DesiredBuiltinWireguardRoamingPeer {
-                peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("peer id"),
+                peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("peer id"),
                 public_key: peer_key.clone(),
                 subnet_v6: peer.subnet(),
                 endpoint: None,
@@ -163,9 +163,7 @@ fn no_peers_dump() -> WireguardDump {
 fn empty_roster_evidence() -> BuiltinWireguardRosterEvidence {
     BuiltinWireguardRosterEvidence {
         machine_skipped: Vec::new(),
-        machine_shadows: Vec::new(),
         peer_skipped: Vec::new(),
-        peer_shadows: Vec::new(),
         address_mismatches: Vec::new(),
         identity_conflicts: Vec::new(),
     }

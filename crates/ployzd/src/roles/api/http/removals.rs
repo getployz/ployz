@@ -64,8 +64,8 @@ pub(super) async fn handle_removal(
         | V2Route::DeployInspect
         | V2Route::DeployPrepare
         | V2Route::DeployRetire
-        | V2Route::ServiceLogsTail(_)
-        | V2Route::ServiceLogsFollow(_)
+        | V2Route::ServiceLogsTail(_, _)
+        | V2Route::ServiceLogsFollow(_, _)
         | V2Route::RouteAttach
         | V2Route::LensWatch(_) => refusal_response(ployz_core::ApiRefusal::UnsupportedRoute),
     }
@@ -81,21 +81,21 @@ async fn remove_peer(service: &ApiService, request: PeerRemoveRequest) -> Respon
         Err(error) => return store_failure("read peers for removal", error),
     };
     match select_peer_removal(&cluster.document, rows, &request) {
-        Ok(PeerRemoveSelection::AlreadyAbsent { peer_id }) => typed_response(
+        Ok(PeerRemoveSelection::AlreadyAbsent { peer_name }) => typed_response(
             StatusCode::OK,
             &PeerRemoveReply {
-                peer_id,
+                peer_name,
                 outcome: NamedRemovalOutcome::AlreadyAbsent,
             },
         ),
         Ok(PeerRemoveSelection::Delete {
-            peer_id,
+            peer_name,
             stored_document,
         }) => match delete_peer_if_cluster_and_row_match(
             &service.corrosion,
             &service.cluster_id,
             cluster.stored_document,
-            &peer_id,
+            &peer_name,
             stored_document,
         )
         .await
@@ -103,13 +103,13 @@ async fn remove_peer(service: &ApiService, request: PeerRemoveRequest) -> Respon
             Ok(ConditionalNamedDelete::Deleted) => typed_response(
                 StatusCode::OK,
                 &PeerRemoveReply {
-                    peer_id,
+                    peer_name,
                     outcome: NamedRemovalOutcome::Removed,
                 },
             ),
             Ok(ConditionalNamedDelete::ConcurrentMutation) => typed_response(
                 StatusCode::CONFLICT,
-                &PeerRemoveRefusal::ConcurrentMutation { peer_id },
+                &PeerRemoveRefusal::ConcurrentMutation { peer_name },
             ),
             Err(error) => store_failure("delete peer", error),
         },
@@ -126,20 +126,21 @@ async fn remove_service(
         Err(error) => return store_failure("read services for removal", error),
     };
     match select_service_removal(&service.cluster_id, rows, &request) {
-        Ok(ServiceRemoveRowSelection::AlreadyAbsent { service_id }) => typed_response(
+        Ok(ServiceRemoveRowSelection::AlreadyAbsent { .. }) => typed_response(
             StatusCode::OK,
             &ServiceRemoveRowReply {
-                service_id,
+                namespace_name: request.namespace_name,
+                service_name: request.service_name,
                 outcome: NamedRemovalOutcome::AlreadyAbsent,
             },
         ),
         Ok(ServiceRemoveRowSelection::Delete {
-            service_id,
+            key,
             stored_document,
         }) => match delete_named_if_matches(
             &service.corrosion,
             CorrosionTable::Services,
-            service_id.as_str(),
+            &key,
             stored_document,
         )
         .await
@@ -147,13 +148,17 @@ async fn remove_service(
             Ok(ConditionalNamedDelete::Deleted) => typed_response(
                 StatusCode::OK,
                 &ServiceRemoveRowReply {
-                    service_id,
+                    namespace_name: request.namespace_name,
+                    service_name: request.service_name,
                     outcome: NamedRemovalOutcome::Removed,
                 },
             ),
             Ok(ConditionalNamedDelete::ConcurrentMutation) => typed_response(
                 StatusCode::CONFLICT,
-                &ServiceRemoveRowRefusal::ConcurrentMutation { service_id },
+                &ServiceRemoveRowRefusal::ConcurrentMutation {
+                    namespace_name: request.namespace_name,
+                    service_name: request.service_name,
+                },
             ),
             Err(error) => store_failure("delete service", error),
         },
@@ -168,20 +173,20 @@ async fn remove_route(service: &ApiService, request: RouteRemoveRequest) -> Resp
             Err(error) => return store_failure("read route bindings for removal", error),
         };
     match select_route_removal(&service.cluster_id, rows, &request) {
-        Ok(RouteRemoveSelection::AlreadyAbsent { route_id }) => typed_response(
+        Ok(RouteRemoveSelection::AlreadyAbsent { hostname }) => typed_response(
             StatusCode::OK,
             &RouteRemoveReply {
-                route_id,
+                hostname,
                 outcome: NamedRemovalOutcome::AlreadyAbsent,
             },
         ),
         Ok(RouteRemoveSelection::Delete {
-            route_id,
+            hostname,
             stored_document,
         }) => match delete_named_if_matches(
             &service.corrosion,
             CorrosionTable::RouteBindings,
-            route_id.as_str(),
+            hostname.as_str(),
             stored_document,
         )
         .await
@@ -189,13 +194,13 @@ async fn remove_route(service: &ApiService, request: RouteRemoveRequest) -> Resp
             Ok(ConditionalNamedDelete::Deleted) => typed_response(
                 StatusCode::OK,
                 &RouteRemoveReply {
-                    route_id,
+                    hostname,
                     outcome: NamedRemovalOutcome::Removed,
                 },
             ),
             Ok(ConditionalNamedDelete::ConcurrentMutation) => typed_response(
                 StatusCode::CONFLICT,
-                &RouteRemoveRefusal::ConcurrentMutation { route_id },
+                &RouteRemoveRefusal::ConcurrentMutation { hostname },
             ),
             Err(error) => store_failure("delete route binding", error),
         },
@@ -206,10 +211,7 @@ async fn remove_route(service: &ApiService, request: RouteRemoveRequest) -> Resp
 fn peer_refusal_status(refusal: &PeerRemoveRefusal) -> StatusCode {
     match refusal {
         PeerRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
-        PeerRemoveRefusal::Ambiguous { .. }
-        | PeerRemoveRefusal::NameMismatch { .. }
-        | PeerRemoveRefusal::IdMismatch { .. }
-        | PeerRemoveRefusal::StoredRowUnselectable { .. }
+        PeerRemoveRefusal::StoredRowUnselectable { .. }
         | PeerRemoveRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }
 }
@@ -217,10 +219,7 @@ fn peer_refusal_status(refusal: &PeerRemoveRefusal) -> StatusCode {
 fn service_refusal_status(refusal: &ServiceRemoveRowRefusal) -> StatusCode {
     match refusal {
         ServiceRemoveRowRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
-        ServiceRemoveRowRefusal::Ambiguous { .. }
-        | ServiceRemoveRowRefusal::IdentityMismatch { .. }
-        | ServiceRemoveRowRefusal::IdMismatch { .. }
-        | ServiceRemoveRowRefusal::StoredRowUnselectable { .. }
+        ServiceRemoveRowRefusal::StoredRowUnselectable { .. }
         | ServiceRemoveRowRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }
 }
@@ -228,10 +227,7 @@ fn service_refusal_status(refusal: &ServiceRemoveRowRefusal) -> StatusCode {
 fn route_refusal_status(refusal: &RouteRemoveRefusal) -> StatusCode {
     match refusal {
         RouteRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
-        RouteRemoveRefusal::Ambiguous { .. }
-        | RouteRemoveRefusal::NameMismatch { .. }
-        | RouteRemoveRefusal::IdMismatch { .. }
-        | RouteRemoveRefusal::StoredRowUnselectable { .. }
+        RouteRemoveRefusal::StoredRowUnselectable { .. }
         | RouteRemoveRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }
 }

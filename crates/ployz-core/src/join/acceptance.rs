@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::corrosion::{
     ClusterDocument, MachineTransport, MeshProvider, derive_builtin_wireguard_member,
 };
-use crate::ids::MachineRowId;
+use crate::ids::MachineName;
 
 use super::JoinAcceptanceValidationError;
 use super::admission::{AcceptedMachineRow, AcceptedPeerRow, MachineJoinRequest, PeerJoinRequest};
@@ -18,13 +18,13 @@ use super::token::{JoinDoorCertFingerprint, JoinDoorMaterial};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ReachableSeedMachine {
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub transport: MachineTransport,
 }
 
 impl ReachableSeedMachine {
     pub fn try_new(
-        machine_id: MachineRowId,
+        machine_id: MachineName,
         transport: MachineTransport,
     ) -> Result<Self, JoinAcceptanceValidationError> {
         if matches!(
@@ -81,7 +81,7 @@ impl MachineJoinAccepted {
         if self.cluster.provider != MeshProvider::BuiltinWireguard {
             return Err(JoinAcceptanceValidationError::ProviderMismatch);
         }
-        if self.machine.machine_id != request.machine_id {
+        if self.machine.machine_id != request.name {
             return Err(JoinAcceptanceValidationError::AcceptedIdentityMismatch);
         }
         if self.machine.document.cluster_id != self.cluster.cluster_id {
@@ -118,7 +118,7 @@ impl MachineJoinAccepted {
         validate_seed(
             &self.cluster,
             &self.seed,
-            Some(&request.machine_id),
+            Some(&request.name),
             &self.corrosion,
         )?;
         Ok(ValidatedMachineJoinAccepted(self))
@@ -158,7 +158,7 @@ impl PeerJoinAccepted {
         if self.cluster.provider != MeshProvider::BuiltinWireguard {
             return Err(JoinAcceptanceValidationError::ProviderMismatch);
         }
-        if self.peer.peer_id != request.peer_id
+        if self.peer.peer_id != request.name
             || self.peer.document.cluster_id != self.cluster.cluster_id
         {
             return Err(JoinAcceptanceValidationError::AcceptedIdentityMismatch);
@@ -192,7 +192,7 @@ impl PeerJoinAccepted {
 fn validate_seed(
     cluster: &ClusterDocument,
     seed: &ReachableSeedMachine,
-    joining_machine_id: Option<&MachineRowId>,
+    joining_machine_id: Option<&MachineName>,
     corrosion: &CorrosionBootstrapFacts,
 ) -> Result<(), JoinAcceptanceValidationError> {
     ReachableSeedMachine::try_new(seed.machine_id.clone(), seed.transport.clone())?;

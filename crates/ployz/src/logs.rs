@@ -3,11 +3,9 @@
 use std::time::{Duration, Instant};
 
 use hyper::Method;
-use ployz_core::ids::ServiceRowId;
 use ployz_core::{
-    LensCollection, LensSnapshot, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent,
-    ServiceLogsRefusal, ServiceLogsRequest, ServiceLogsTailReply, service_logs_follow_route,
-    service_logs_tail_route,
+    ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
+    ServiceLogsRequest, ServiceLogsTailReply, service_logs_follow_route, service_logs_tail_route,
 };
 
 use crate::commands::LogsCommand;
@@ -41,8 +39,6 @@ pub async fn execute_to(
     output: &mut impl std::io::Write,
 ) -> Result<(), LogsExecutionError> {
     let remote = OperatorRemote::load(command.target.as_ref())?;
-    let snapshot = remote.lens(LensCollection::Services).await?;
-    let service_id = resolve_service(&snapshot, &command)?;
     let request = ServiceLogsRequest {
         tail_lines: Some(command.tail_lines),
         machine: command.machine.clone(),
@@ -51,7 +47,7 @@ pub async fn execute_to(
         let tail = remote
             .request_json_with_refusal::<_, ServiceLogsTailReply, ServiceLogsRefusal>(
                 Method::POST,
-                &service_logs_tail_route(&service_id),
+                &service_logs_tail_route(&command.namespace_name, &command.service_name),
                 Some(&request),
             )
             .await?;
@@ -64,7 +60,7 @@ pub async fn execute_to(
         return Ok(());
     }
 
-    let route = service_logs_follow_route(&service_id);
+    let route = service_logs_follow_route(&command.namespace_name, &command.service_name);
     // A reconnect keeps its machine selector but replays no existing lines.
     let reconnect_request = ServiceLogsRequest {
         tail_lines: None,
@@ -212,56 +208,6 @@ fn render_follow_event(
     }
 }
 
-fn resolve_service(
-    snapshot: &LensSnapshot,
-    command: &LogsCommand,
-) -> Result<ServiceRowId, LogsExecutionError> {
-    let LensSnapshot::Services { rows } = snapshot else {
-        return Err(LogsExecutionError::WrongLens);
-    };
-    let mut named_ids = rows
-        .iter()
-        .filter(|row| row.document.name == command.service)
-        .map(|row| row.id.clone())
-        .collect::<Vec<_>>();
-    named_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-    select_service_id(
-        command.service.as_str(),
-        command.service_id.as_ref(),
-        &named_ids,
-    )
-}
-
-fn select_service_id(
-    service: &str,
-    requested: Option<&ServiceRowId>,
-    named_ids: &[ServiceRowId],
-) -> Result<ServiceRowId, LogsExecutionError> {
-    if let Some(requested) = requested {
-        if named_ids.iter().any(|id| id == requested) {
-            return Ok(requested.clone());
-        }
-        return Err(LogsExecutionError::IdMismatch {
-            service: service.to_owned(),
-            service_id: requested.to_string(),
-        });
-    }
-    match named_ids {
-        [] => Err(LogsExecutionError::NameNotFound {
-            service: service.to_owned(),
-        }),
-        [id] => Ok(id.clone()),
-        [_, _, ..] => Err(LogsExecutionError::NameAmbiguous {
-            service: service.to_owned(),
-            service_ids: named_ids
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-        }),
-    }
-}
-
 fn render_line(
     output: &mut impl std::io::Write,
     log: &ServiceLogLine,
@@ -295,19 +241,6 @@ async fn wait_to_reconnect(
 pub enum LogsExecutionError {
     #[error(transparent)]
     Remote(#[from] OperatorRemoteError),
-    #[error("services lens returned the wrong collection")]
-    WrongLens,
-    #[error("service {service} was not found")]
-    NameNotFound { service: String },
-    #[error(
-        "service {service} is ambiguous; retry with `ployz logs {service} --id <ID>` using one of: {service_ids}"
-    )]
-    NameAmbiguous {
-        service: String,
-        service_ids: String,
-    },
-    #[error("service id {service_id} does not have name {service}")]
-    IdMismatch { service: String, service_id: String },
     #[error("log stream event name was {found:?}, expected {expected}")]
     UnexpectedEventName {
         expected: &'static str,
@@ -317,16 +250,20 @@ pub enum LogsExecutionError {
     StreamDown { last_error: String },
     #[error("cannot write service logs: {0}")]
     Output(std::io::Error),
-    #[error("service row {service_id} was not found")]
-    ServiceNotFound { service_id: String },
-    #[error("service {service_id} has no active deploy")]
-    NoActiveDeploy { service_id: String },
-    #[error("service {service_id} has no current container testimony")]
-    ContainerNotFound { service_id: String },
+    #[error("service {namespace_name}/{service_name} was not found")]
+    ServiceNotFound {
+        namespace_name: String,
+        service_name: String,
+    },
+    #[error("service {namespace_name}/{service_name} has no current container testimony")]
+    ContainerNotFound {
+        namespace_name: String,
+        service_name: String,
+    },
     #[error("container {container_id} is not a managed v2 container")]
     UnmanagedContainer { container_id: String },
     #[error(
-        "this service runs containers on machines {machines}; pick one with `ployz logs <service> --machine <machine>`"
+        "this service runs containers on machines {machines}; pick one with `ployz logs <namespace> <service> --machine <machine>`"
     )]
     MachineSelectorRequired { machines: String },
     #[error(
@@ -346,14 +283,19 @@ pub enum LogsExecutionError {
 impl From<ServiceLogsRefusal> for LogsExecutionError {
     fn from(refusal: ServiceLogsRefusal) -> Self {
         match refusal {
-            ServiceLogsRefusal::ServiceNotFound { service_id } => Self::ServiceNotFound {
-                service_id: service_id.to_string(),
+            ServiceLogsRefusal::ServiceNotFound {
+                namespace_name,
+                service_name,
+            } => Self::ServiceNotFound {
+                namespace_name: namespace_name.to_string(),
+                service_name: service_name.to_string(),
             },
-            ServiceLogsRefusal::NoActiveDeploy { service_id } => Self::NoActiveDeploy {
-                service_id: service_id.to_string(),
-            },
-            ServiceLogsRefusal::ContainerNotFound { service_id } => Self::ContainerNotFound {
-                service_id: service_id.to_string(),
+            ServiceLogsRefusal::ContainerNotFound {
+                namespace_name,
+                service_name,
+            } => Self::ContainerNotFound {
+                namespace_name: namespace_name.to_string(),
+                service_name: service_name.to_string(),
             },
             ServiceLogsRefusal::UnmanagedContainer { container_id } => Self::UnmanagedContainer {
                 container_id: container_id.as_str().to_owned(),
@@ -470,7 +412,7 @@ mod tests {
         let copy = stacked.to_string();
         assert!(copy.contains("stack on machine edge-a"), "{copy:?}");
 
-        let machine_id = ployz_core::ids::MachineRowId::generate();
+        let machine_id = ployz_core::ids::MachineName::try_new("machine-a").expect("machine");
         let remote = LogsExecutionError::from(ServiceLogsRefusal::RemoteOwner {
             machine_id: machine_id.clone(),
             machine_name: Some(name("edge-b")),
@@ -498,28 +440,5 @@ mod tests {
             serde_json::to_value(&request).expect("request serializes"),
             serde_json::json!({ "machine": "edge-a" })
         );
-    }
-
-    #[test]
-    fn human_name_resolution_requires_id_only_for_collisions() {
-        let first = ServiceRowId::generate();
-        let second = ServiceRowId::generate();
-        assert_eq!(
-            select_service_id("web", None, std::slice::from_ref(&first)).expect("unique name"),
-            first
-        );
-        assert!(matches!(
-            select_service_id("web", None, &[first.clone(), second.clone()]),
-            Err(LogsExecutionError::NameAmbiguous { .. })
-        ));
-        assert_eq!(
-            select_service_id("web", Some(&second), &[first, second.clone()])
-                .expect("qualified collision"),
-            second
-        );
-        assert!(matches!(
-            select_service_id("web", Some(&ServiceRowId::generate()), &[]),
-            Err(LogsExecutionError::IdMismatch { .. })
-        ));
     }
 }

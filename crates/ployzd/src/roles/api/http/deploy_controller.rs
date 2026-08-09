@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use hyper::{Response, StatusCode};
-use ployz_core::corrosion::{ControllerAppointmentId, Principal};
-use ployz_core::ids::OperationRowId;
+use ployz_core::corrosion::{ControllerRevision, Principal};
 use ployz_core::{DeployAccepted, DeployRefusal, DeployRequest};
 
 use super::server::{ApiService, HttpBody, corrosion_unavailable_response, refusal_response};
@@ -13,7 +12,7 @@ use super::simple_deploy::{DeployCommand, DeployStartError};
 pub(super) async fn handle(
     service: &ApiService,
     principal: Principal,
-    appointment_id: ControllerAppointmentId,
+    appointment_id: ControllerRevision,
     request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
     let Some(deploy) = &service.simple_deploy else {
@@ -27,7 +26,8 @@ pub(super) async fn handle(
         Ok(permit) => permit,
         Err(_) => return controller_busy(),
     };
-    let operation_id = OperationRowId::generate();
+    let operation_id = request.deploy_name.clone();
+    let namespace_name = request.namespace_name.clone();
     let command = DeployCommand {
         operation_id: operation_id.clone(),
         request,
@@ -58,8 +58,9 @@ pub(super) async fn handle(
     super::mutations::typed_response(
         StatusCode::ACCEPTED,
         &DeployAccepted {
-            operation_id,
-            driver_machine_id: service.local_machine_id.clone(),
+            namespace_name,
+            deploy_name: operation_id,
+            controller_machine_name: service.local_machine_id.clone(),
         },
     )
 }
@@ -67,7 +68,7 @@ pub(super) async fn handle(
 fn deploy_refusal(refusal: DeployRefusal) -> Response<HttpBody> {
     let status = match &refusal {
         DeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
-        DeployRefusal::NamespaceAmbiguous { .. }
+        DeployRefusal::DeployNameAlreadyUsed { .. }
         | DeployRefusal::NamedVolumeRedeployUnsupported => StatusCode::CONFLICT,
     };
     super::mutations::typed_response(status, &refusal)

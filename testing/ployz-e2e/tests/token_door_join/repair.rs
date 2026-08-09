@@ -14,7 +14,7 @@ use ployz_core::corrosion::{
     CorrosionTimestamp, MachineLoadBand, MachineStatusDocument, MachineTransport,
     OperationDocument, Principal,
 };
-use ployz_core::ids::{NamespaceRowId, OperationRowId, ServiceRowId};
+use ployz_core::ids::{ContainerId, CorrosionNamespaceName, DeployName};
 use ployz_core::join::JoinBlob;
 use ployz_core::operation::RouteHostname;
 use ployz_e2e::dind::{
@@ -63,7 +63,7 @@ pub(super) async fn repair_contaminated_and_wiped_machine(
 
     let preserved_operation = seed_machine_evidence(context.store, initial_row).await?;
     start_workload(context.docker, context.joiner).await?;
-    remove_machine(context.cli, context.home, initial_row, false)?;
+    remove_machine(context.cli, context.home, initial_row)?;
     wait_for_removal(
         context.store,
         context.founder,
@@ -75,29 +75,29 @@ pub(super) async fn repair_contaminated_and_wiped_machine(
     reset_machine(context.docker, context.joiner).await?;
     assert_workload_survived(context.docker, context.joiner).await?;
 
-    let fresh_blob = create_join_blob(context.cli, context.home)?;
+    let fresh_blob = create_join_blob(context.cli, context.home, "repair-reset")?;
     join_fresh_machine(context.docker, context.joiner, &fresh_blob).await?;
     let rejoined =
         wait_for_machine_named(context.store, initial_row.document.name.as_str()).await?;
     require(
-        rejoined.id != initial_row.id,
-        "machine reset rejoined the fenced identity instead of minting a new one",
+        rejoined.id == initial_row.id,
+        "machine reset changed the machine's canonical name identity",
     )?;
 
     wipe_ployz_state(context.docker, context.joiner).await?;
-    let rejected_blob = create_join_blob(context.cli, context.home)?;
+    let rejected_blob = create_join_blob(context.cli, context.home, "repair-rejected")?;
     assert_join_refuses_with_corpse(context.docker, context.joiner, &rejected_blob).await?;
 
-    remove_machine(context.cli, context.home, &rejoined, true)?;
+    remove_machine(context.cli, context.home, &rejoined)?;
     wait_for_removal(context.store, context.founder, &rejoined, None).await?;
 
-    let replacement_blob = create_join_blob(context.cli, context.home)?;
+    let replacement_blob = create_join_blob(context.cli, context.home, "repair-replacement")?;
     join_fresh_machine(context.docker, context.joiner, &replacement_blob).await?;
     let replacement =
         wait_for_machine_named(context.store, rejoined.document.name.as_str()).await?;
     require(
-        replacement.id != rejoined.id,
-        "wiped host rejoined its corpse identity instead of receiving a new one",
+        replacement.id == rejoined.id,
+        "wiped host changed the machine's canonical name identity",
     )?;
     Ok(replacement)
 }
@@ -138,7 +138,7 @@ pub(super) async fn refound_cluster(
     )?;
     require_success(&endpoint_set, "refounded machine endpoint set")?;
 
-    let blob = create_join_blob(context.cli, context.home)?;
+    let blob = create_join_blob(context.cli, context.home, "refound")?;
     join_fresh_machine(context.docker, context.joiner, &blob).await?;
     let (corrosion_address, corrosion_token) =
         ployz_e2e::dind::corrosion_access(context.docker, context.founder).await?;
@@ -159,8 +159,8 @@ pub(super) async fn refound_cluster(
         .ok_or_else(|| "refounded roster omitted the reset joiner".to_owned())?;
     require(
         founder_row.document.cluster_id == joiner_row.document.cluster_id
-            && founder_row.document.cluster_id != previous_cluster_id,
-        "refound did not mint one new cluster identity for the rebuilt roster",
+            && founder_row.document.cluster_id == previous_cluster_id,
+        "refound changed the cluster's canonical name identity",
     )?;
     assert_workload_survived(context.docker, context.joiner).await
 }
@@ -209,30 +209,22 @@ async fn assert_foreign_identity_refuses(
     )
 }
 
-fn create_join_blob(cli: &Path, home: &Path) -> Result<JoinBlob, String> {
+fn create_join_blob(cli: &Path, home: &Path, name: &str) -> Result<JoinBlob, String> {
     let created = run_cli(
         cli,
         home,
-        ["token", "create", "--ttl", "1h"].map(str::to_owned),
+        ["token", "create", name, "--ttl", "1h"].map(str::to_owned),
     )?;
     require_success(&created, "repair token create")?;
     extract_join_blob(&String::from_utf8_lossy(&created.stdout))
 }
 
-fn remove_machine(
-    cli: &Path,
-    home: &Path,
-    machine: &RosterMachine,
-    include_id: bool,
-) -> Result<(), String> {
-    let mut arguments = vec![
+fn remove_machine(cli: &Path, home: &Path, machine: &RosterMachine) -> Result<(), String> {
+    let arguments = vec![
         "machine".to_owned(),
         "rm".to_owned(),
         machine.document.name.as_str().to_owned(),
     ];
-    if include_id {
-        arguments.extend(["--id".to_owned(), machine.id.to_string()]);
-    }
     let removed = run_cli(cli, home, arguments)?;
     require_success(&removed, "machine rm")
 }
@@ -240,12 +232,14 @@ fn remove_machine(
 async fn seed_machine_evidence(
     store: CorrosionAccess<'_>,
     machine: &RosterMachine,
-) -> Result<OperationRowId, String> {
+) -> Result<DeployName, String> {
     let timestamp =
         CorrosionTimestamp::try_new("2026-08-05T12:00:00Z").map_err(|error| error.to_string())?;
-    let namespace_id = NamespaceRowId::generate();
-    let service_id = ServiceRowId::generate();
-    let operation_id = OperationRowId::generate();
+    let namespace_id =
+        CorrosionNamespaceName::try_new("repair").map_err(|error| error.to_string())?;
+    let service_name = ployz_core::corrosion::CorrosionServiceName::try_new("proof")
+        .map_err(|error| error.to_string())?;
+    let operation_id = DeployName::try_new("repair-evidence").map_err(|error| error.to_string())?;
     let status = MachineStatusDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: machine.document.cluster_id.clone(),
@@ -264,9 +258,11 @@ async fn seed_machine_evidence(
     let container = ContainerDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: machine.document.cluster_id.clone(),
+        runtime_id: ContainerId::try_new("repair-proof-container")
+            .map_err(|error| error.to_string())?,
         machine_id: machine.id.clone(),
-        service_id: service_id.clone(),
         namespace_id: namespace_id.clone(),
+        service_name,
         ip: Ipv4Addr::new(10, 210, 250, 2),
         deploy: operation_id.clone(),
         replica_slot: ployz_core::deploy::ReplicaSlot::Global,
@@ -300,7 +296,7 @@ async fn seed_machine_evidence(
             machine_id: machine.id.clone(),
         },
         namespace_id,
-        service_id,
+        operation_id.clone(),
         timestamp,
     );
     let status = serde_json::to_string(&status).map_err(|error| error.to_string())?;
@@ -460,7 +456,7 @@ async fn wait_for_removal(
     store: CorrosionAccess<'_>,
     founder: &DindMachine,
     machine: &RosterMachine,
-    preserved_operation: Option<&OperationRowId>,
+    preserved_operation: Option<&DeployName>,
 ) -> Result<(), String> {
     let MachineTransport::Wireguard { pubkey, .. } = &machine.document.transport else {
         return Err("repair proof requires builtin WireGuard machines".to_owned());
@@ -504,7 +500,7 @@ async fn wait_for_removal(
 async fn evidence_counts(
     store: CorrosionAccess<'_>,
     machine: &RosterMachine,
-    operation_id: &OperationRowId,
+    operation_id: &DeployName,
 ) -> Result<[i64; 6], String> {
     let [machine, status, containers, cert_holdings, acme_http01] =
         removal_evidence_counts(store, machine).await?;
@@ -558,7 +554,7 @@ async fn removal_evidence_counts(
 
 async fn operation_count(
     store: CorrosionAccess<'_>,
-    operation_id: &OperationRowId,
+    operation_id: &DeployName,
 ) -> Result<i64, String> {
     let rows = corrosion_query(
         store.docker,

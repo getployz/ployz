@@ -7,7 +7,7 @@ use ployz_core::LensCollection;
 use ployz_core::corrosion::{
     ChangeId, CorrosionTable, QueryIdentity, SqliteParameter, SqliteValue, Statement, StoredRow,
 };
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 
 use crate::corrosion::{
     CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
@@ -47,7 +47,7 @@ impl LensInput {
         }
     }
 
-    pub(super) fn statement(self, cluster_id: &ClusterId) -> Statement {
+    pub(super) fn statement(self, cluster_id: &ClusterName) -> Statement {
         match self {
             Self::Cluster => Statement::with_params(
                 "SELECT id, document FROM cluster WHERE id = ?",
@@ -124,20 +124,20 @@ pub(super) trait LensStore: Send + Sync {
     async fn query_rows(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
         max_rows: usize,
     ) -> Result<Vec<StoredRow>, LensStoreError>;
 
     async fn subscribe(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError>;
 
     async fn resume(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
         identity: &QueryIdentity,
         cursor: ChangeId,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError>;
@@ -148,7 +148,7 @@ impl LensStore for CorrosionClient {
     async fn query_rows(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
         max_rows: usize,
     ) -> Result<Vec<StoredRow>, LensStoreError> {
         let mut stream = self.query(&input.statement(cluster_id)).await?;
@@ -158,7 +158,7 @@ impl LensStore for CorrosionClient {
     async fn subscribe(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError> {
         let stream = self.subscribe(&input.statement(cluster_id)).await?;
         Ok(Box::new(ClientLensSubscription::snapshot(input, stream)))
@@ -167,7 +167,7 @@ impl LensStore for CorrosionClient {
     async fn resume(
         &self,
         input: LensInput,
-        _cluster_id: &ClusterId,
+        _cluster_id: &ClusterName,
         identity: &QueryIdentity,
         cursor: ChangeId,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError> {

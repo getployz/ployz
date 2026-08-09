@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use ployz_core::corrosion::{
     HostPortBindings, MachineLoadBand, ServicePlacement, ServiceReplicaCount,
 };
-use ployz_core::ids::{MachineRowId, OperationRowId};
-use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::ids::{DeployName, MachineName};
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::placement::{
     PLACEMENT_FREE_DISK_FLOOR_BYTES, PlacementBid, PlacementEliminationReason, PlacementPickInputs,
     PlacementRefusal, ServiceContainerObservation, pick_placement,
@@ -15,8 +15,8 @@ const MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAB";
 const MACHINE_C: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAC";
 const ACTIVE_DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAD";
 
-fn machine(value: &str) -> MachineRowId {
-    MachineRowId::try_new(value).expect("fixture machine id")
+fn machine(value: &str) -> MachineName {
+    MachineName::try_new(value).expect("fixture machine id")
 }
 
 fn machine_name(machine_id: &str) -> MachineName {
@@ -29,8 +29,8 @@ fn machine_name(machine_id: &str) -> MachineName {
     MachineName::try_new(name).expect("fixture machine name")
 }
 
-fn operation(value: &str) -> OperationRowId {
-    OperationRowId::try_new(value).expect("fixture operation id")
+fn operation(value: &str) -> DeployName {
+    DeployName::try_new(value).expect("fixture operation id")
 }
 
 fn replicas(value: u16) -> ServiceReplicaCount {
@@ -186,7 +186,7 @@ fn load_band_breaks_spread_ties_idle_before_normal_before_hot() {
 }
 
 #[test]
-fn the_lowest_machine_ulid_breaks_the_final_tie() {
+fn the_lowest_machine_name_breaks_the_final_tie() {
     let targets =
         pick_placement(&inputs(vec![bid(MACHINE_B), bid(MACHINE_A)])).expect("pick succeeds");
     assert_eq!(targets, vec![machine(MACHINE_A)]);

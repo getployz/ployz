@@ -7,8 +7,8 @@ use ployz_core::corrosion::{
     MachineStorageSelection, MachineStorageSelectionReason, MachineTransport, MeshProvider,
     OperatorWriteProvenance, Principal, StorageMode, StoredRow, WireGuardHandshakeEvidence,
 };
-use ployz_core::ids::{ClusterId, CorrosionUlid, MachineRowId, PeerId, TokenId};
-use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::ids::{ClusterName, MachineName, PeerName, TokenName};
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::{
     DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorMalformedRosterDocumentClass,
@@ -23,8 +23,8 @@ use serde_json::json;
 const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 
-fn machine_id(value: &str) -> MachineRowId {
-    MachineRowId::try_new(value).expect("fixture machine id")
+fn machine_id(value: &str) -> MachineName {
+    MachineName::try_new(value).expect("fixture machine id")
 }
 
 fn timestamp(value: &str) -> CorrosionTimestamp {
@@ -34,10 +34,10 @@ fn timestamp(value: &str) -> CorrosionTimestamp {
 fn cluster() -> ClusterDocument {
     ClusterDocument {
         v: CorrosionDocumentVersion::V1,
-        cluster_id: ClusterId::try_new(CLUSTER).expect("fixture cluster id"),
+        cluster_id: ClusterName::try_new(CLUSTER).expect("fixture cluster id"),
         provenance: OperatorWriteProvenance {
             written_by: Principal::Peer {
-                peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture peer id"),
+                peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture peer id"),
             },
             written_at: timestamp("2026-08-04T10:00:00Z"),
         },
@@ -56,10 +56,10 @@ fn machine(value: &str, name: &str, addr_v6: Ipv6Addr) -> MachineLensRow {
         id: machine_id(value),
         document: MachineDocument {
             v: CorrosionDocumentVersion::V1,
-            cluster_id: ClusterId::try_new(CLUSTER).expect("fixture cluster id"),
+            cluster_id: ClusterName::try_new(CLUSTER).expect("fixture cluster id"),
             provenance: OperatorWriteProvenance {
                 written_by: Principal::Peer {
-                    peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX")
+                    peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX")
                         .expect("fixture peer id"),
                 },
                 written_at: timestamp("2026-08-04T10:00:00Z"),
@@ -85,9 +85,9 @@ fn machine(value: &str, name: &str, addr_v6: Ipv6Addr) -> MachineLensRow {
 fn status_input(
     cluster: Option<ClusterDocument>,
     machines: Vec<MachineLensRow>,
-    answering_machine_id: MachineRowId,
+    answering_machine_id: MachineName,
     health: StatusCorrosionHealth,
-    wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+    wireguard_handshakes: Option<BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
 ) -> StatusProjectionInput {
     StatusProjectionInput {
         cluster,
@@ -127,28 +127,6 @@ fn named_document(table: &str, name: &str) -> serde_json::Value {
             "name": name,
             "transport": {"kind": "wireguard", "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "addr_v6": "fd00::30", "endpoint": null}
         }),
-        "namespaces" => json!({
-            "v": 1, "cluster_id": CLUSTER,
-            "written_by": written_by, "written_at": written_at,
-            "name": name
-        }),
-        "services" => json!({
-            "v": 1, "cluster_id": CLUSTER,
-            "written_by": written_by, "written_at": written_at,
-            "namespace_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": name,
-            "image": "ghcr.io/acme/api:latest", "env_fingerprints": {},
-            "mode": "global", "pinned_machines": [],
-            "active_deploy": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "previous_image": null,
-            "deployed_at": "2026-08-04T10:00:00.000000000Z",
-            "operation_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-        }),
-        "route_bindings" => json!({
-            "v": 1, "cluster_id": CLUSTER,
-            "written_by": written_by, "written_at": written_at,
-            "hostname": name, "service_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "namespace_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "endpoint_port": 8080,
-            "origin": "declared", "ingress_mode": "direct"
-        }),
         _ => panic!("unknown fixture table"),
     }
 }
@@ -171,10 +149,10 @@ fn diagnostics_routes_and_corrosion_health_wire_shape_are_stable() {
         machine_id: machine_id(MACHINE),
     };
     let peer = Principal::Peer {
-        peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture peer id"),
+        peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture peer id"),
     };
     let token = Principal::ApiToken {
-        token_id: TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("fixture token id"),
+        token_id: TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("fixture token id"),
     };
 
     for (path, route) in [
@@ -539,58 +517,6 @@ fn future_handshake_timestamps_saturate_to_zero_age_and_276_seconds_warns() {
 }
 
 #[test]
-fn doctor_shadow_claims_alone_identify_each_repair_primitive() {
-    let winner = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    let loser = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-    let mut rows = DoctorRawRows::empty();
-    rows.machines = vec![
-        row(winner, named_document("machines", "edge")),
-        row(loser, named_document("machines", "edge")),
-    ];
-    rows.peers = vec![
-        row(winner, named_document("peers", "laptop")),
-        row(loser, named_document("peers", "laptop")),
-    ];
-    rows.namespaces = vec![
-        row(winner, named_document("namespaces", "production")),
-        row(loser, named_document("namespaces", "production")),
-    ];
-    rows.services = vec![
-        row(winner, named_document("services", "api")),
-        row(loser, named_document("services", "api")),
-    ];
-    rows.route_bindings = vec![
-        row(winner, named_document("route_bindings", "api.example.com")),
-        row(loser, named_document("route_bindings", "api.example.com")),
-    ];
-
-    let doctor = project_doctor(DoctorProjectionInput {
-        cluster: cluster(),
-        rows,
-    });
-    assert_eq!(
-        doctor
-            .shadows
-            .iter()
-            .map(|shadow| {
-                serde_json::to_value(&shadow.claim)
-                    .expect("name claim serializes")
-                    .get("table")
-                    .expect("name claim table field")
-                    .as_str()
-                    .expect("name claim table")
-                    .to_owned()
-            })
-            .collect::<Vec<_>>(),
-        vec!["machine", "peer", "namespace", "service", "route_binding",]
-    );
-    assert!(doctor.shadows.iter().all(|shadow| {
-        shadow.winner_id == CorrosionUlid::try_new(winner).expect("winner id")
-            && shadow.loser_id == CorrosionUlid::try_new(loser).expect("loser id")
-    }));
-}
-
-#[test]
 fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence() {
     let foreign_cluster = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
     let mut machine_provider_mismatch = named_document("machines", "machine-provider");
@@ -613,12 +539,8 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
 
     let mut rows = DoctorRawRows::empty();
     rows.machines = vec![
-        row(MACHINE, machine_provider_mismatch),
-        row("01ARZ3NDEKTSV4RRFFQ69G5FAX", malformed_machine),
-        row(
-            "invalid-machine-id",
-            named_document("machines", "machine-id"),
-        ),
+        row("machine-provider", machine_provider_mismatch),
+        row("machine-malformed", malformed_machine),
         row(
             "01ARZ3NDEKTSV4RRFFQ69G5FAY",
             json!({"v": 2, "cluster_id": CLUSTER}),
@@ -629,9 +551,8 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
         ),
     ];
     rows.peers = vec![
-        row(MACHINE, peer_provider_mismatch),
-        row("01ARZ3NDEKTSV4RRFFQ69G5FAX", malformed_peer),
-        row("invalid-peer-id", named_document("peers", "peer-id")),
+        row("peer-provider", peer_provider_mismatch),
+        row("peer-malformed", malformed_peer),
         row(
             "01ARZ3NDEKTSV4RRFFQ69G5FAY",
             json!({"v": 2, "cluster_id": CLUSTER}),
@@ -652,27 +573,14 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
         vec![
             ployz_core::DoctorSkippedRosterRow {
                 table: DoctorRosterTable::Machines,
-                key: MACHINE.to_owned(),
-                reason: DoctorRosterRowSkipReason::MeshProviderMismatch {
-                    expected: MeshProvider::BuiltinWireguard,
-                    found: MeshProvider::Tailscale,
-                },
-            },
-            ployz_core::DoctorSkippedRosterRow {
-                table: DoctorRosterTable::Machines,
-                key: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+                key: "machine-malformed".to_owned(),
                 reason: DoctorRosterRowSkipReason::MalformedDocument {
                     class: DoctorMalformedRosterDocumentClass::InvalidPayload,
                 },
             },
             ployz_core::DoctorSkippedRosterRow {
                 table: DoctorRosterTable::Machines,
-                key: "invalid-machine-id".to_owned(),
-                reason: DoctorRosterRowSkipReason::InvalidRowId,
-            },
-            ployz_core::DoctorSkippedRosterRow {
-                table: DoctorRosterTable::Peers,
-                key: MACHINE.to_owned(),
+                key: "machine-provider".to_owned(),
                 reason: DoctorRosterRowSkipReason::MeshProviderMismatch {
                     expected: MeshProvider::BuiltinWireguard,
                     found: MeshProvider::Tailscale,
@@ -680,15 +588,18 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
             },
             ployz_core::DoctorSkippedRosterRow {
                 table: DoctorRosterTable::Peers,
-                key: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+                key: "peer-malformed".to_owned(),
                 reason: DoctorRosterRowSkipReason::MalformedDocument {
                     class: DoctorMalformedRosterDocumentClass::InvalidPayload,
                 },
             },
             ployz_core::DoctorSkippedRosterRow {
                 table: DoctorRosterTable::Peers,
-                key: "invalid-peer-id".to_owned(),
-                reason: DoctorRosterRowSkipReason::InvalidRowId,
+                key: "peer-provider".to_owned(),
+                reason: DoctorRosterRowSkipReason::MeshProviderMismatch {
+                    expected: MeshProvider::BuiltinWireguard,
+                    found: MeshProvider::Tailscale,
+                },
             },
         ]
     );
@@ -708,9 +619,7 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
     let Some(malformed_machine_reason) = doctor
         .skipped_roster_rows
         .iter()
-        .find(|row| {
-            row.table == DoctorRosterTable::Machines && row.key == "01ARZ3NDEKTSV4RRFFQ69G5FAX"
-        })
+        .find(|row| row.table == DoctorRosterTable::Machines && row.key == "machine-malformed")
         .map(|row| &row.reason)
     else {
         panic!("expected malformed machine evidence");
@@ -726,9 +635,9 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
 
 #[test]
 fn doctor_compares_valid_versions_semantically_and_retains_newer_row_evidence() {
-    let alpha = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    let zeta = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-    let invalid = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+    let alpha = "alpha";
+    let zeta = "zeta";
+    let invalid = "invalid";
     let mut rows = DoctorRawRows::empty();
     rows.machines = vec![
         row(alpha, named_document("machines", "alpha")),
@@ -792,12 +701,12 @@ fn doctor_omits_newest_when_no_valid_machine_version_exists() {
 
 #[test]
 fn doctor_groups_foreign_rows_and_only_current_machine_authors_are_actionable() {
-    let current = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    let non_current = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+    let current = "edge-a";
+    let non_current = "edge-b";
     let foreign_active = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
     let foreign_orphan = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
     let mut rows = DoctorRawRows::empty();
-    rows.machines = vec![row(current, named_document("machines", "edge-a"))];
+    rows.machines = vec![row(current, named_document("machines", current))];
     rows.namespaces = vec![row(
         "01ARZ3NDEKTSV4RRFFQ69G5FAT",
         json!({
@@ -821,7 +730,7 @@ fn doctor_groups_foreign_rows_and_only_current_machine_authors_are_actionable() 
     )];
     rows.containers = vec![row(
         "container-raw-key",
-        json!({"v": 1, "cluster_id": foreign_orphan, "machine_id": "not-a-ulid"}),
+        json!({"v": 1, "cluster_id": foreign_orphan, "machine_id": "not/a/name"}),
     )];
 
     let doctor = project_doctor(DoctorProjectionInput {

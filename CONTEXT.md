@@ -4,10 +4,10 @@ Ployz is a small-cluster orchestrator for deploying and operating services throu
 
 ## Language
 
-Current v2 is deliberately narrower than some retained product vocabulary: a namespace admits one service; deploy accepts one typed service request using a prebuilt registry image; only deploy creates public Operation rows; and there is no namespace-revision, phase, dependency, or hook planner. Entries describing those removed models are historical or target vocabulary, not claims about current implementation.
+Current v2 is deliberately narrower than some retained product vocabulary: a namespace deploy accepts one complete list of independently named services using prebuilt registry images; only deploy creates public Operation rows; and there is no namespace-revision, phase, dependency, or hook planner. Entries describing those removed models are historical or target vocabulary, not claims about current implementation.
 
 **Namespace**:
-A named deploy boundary. Current v2 admits one service per namespace. A deploy observes its Corrosion rows and live target-host Docker state, prepares the desired replicas, commits the serving rows, and retires obsolete containers.
+A canonically named deploy boundary whose name is its durable identity. Its services are separate rows keyed by namespace and service names; deleting and recreating the same namespace name continues that logical namespace.
 _Avoid_: Environment
 
 **Namespace Revision**:
@@ -19,7 +19,7 @@ A historical target-model term for one service inside a Namespace Revision. It i
 _Avoid_: Service revision, service-equivalence identity, container spec hash
 
 **Namespace Revision Entry Identity**:
-A historical versioned digest from the removed planner. Current v2 container identity is namespace id, service id, deploy Operation id, and replica slot; serving selects the service's `active_deploy`.
+A historical versioned digest from the removed planner. Current v2 Managed Container Identity is the namespace name, service name, deploy name, machine name, and replica slot.
 _Avoid_: Current serving generation, target revision
 
 **Endpoint Reroute**:
@@ -31,7 +31,7 @@ The caller-supplied runtime settings used by a target node when it creates a ser
 _Avoid_: Route binding, machine observation, controller-resolved image
 
 **Serving Target**:
-The `active_deploy` on a service row. Gateways combine it with Route Bindings and container rows and serve only containers whose deploy id matches it.
+The `active_deploy` name in a Service row. Gateways combine it with Route Bindings and container rows and serve only containers whose namespace, service, and deploy names match it.
 _Avoid_: Namespace revision entry, completed phase pointer
 
 **Phase**:
@@ -39,7 +39,7 @@ A historical target-model layer derived from service dependencies. Current v2 de
 _Avoid_: Manual phase, route promotion phase
 
 **Service Dependency**:
-A historical target-model relationship between services. Current v2 admits one service per namespace and does not accept dependencies.
+A historical target-model relationship between services. Current v2 admits multiple services in a namespace but does not accept dependencies between them.
 _Avoid_: Workflow dependency, runtime dependency, Compose condition
 
 **Dependency Condition**:
@@ -55,12 +55,12 @@ A historical container kind for Pre-Start Hooks. Current v2 creates only service
 _Avoid_: Job service, replica, sidecar
 
 **Route Binding**:
-A Corrosion row binding an external hostname to one service id and internal endpoint port inside a namespace. Standalone preferred-controller commands attach and remove bindings. Deploy only inserts a missing deterministic automatic port-80 binding; it does not reconcile a manifest route set. Gateways keep binding state separate from container state and return unavailable when no active-deploy container can serve it.
+A hostname-keyed Corrosion row binding that hostname to one named service and internal endpoint port. Standalone preferred-controller commands attach and remove bindings. Deploy inserts missing deterministic automatic port-80 bindings; it does not reconcile a manifest route set. Gateways keep binding state separate from container state and return unavailable when the named Service cannot serve it.
 _Avoid_: Active route, the route (as if a service has at most one), deploy-owned route
 
 **Route Binding Identity**:
-The stable identity of one attached route binding. It changes when a route is detached and later recreated, even if the external hostname is reused.
-_Avoid_: Host identity, route name, route target
+The canonical external hostname of a Route Binding. Detaching and recreating the same hostname continues the same logical Route Binding; access-session invalidation follows the current protection fingerprint or an explicit named revision.
+_Avoid_: Generated route id, host identity, route target
 
 **Route Binding Origin**:
 Whether a Route Binding hostname was declared by an operator or generated from the Automatic Hostname Namespace. Origin is durable intent and is never inferred from the hostname text.
@@ -73,10 +73,6 @@ _Avoid_: Automatic domain, public URL mode, per-route namespace
 **Automatic Hostname Configuration**:
 The durable operator decision selecting no automatic hostnames or one custom Automatic Hostname Namespace. Disabled is the default; Ployz does not allocate or own a managed public suffix.
 _Avoid_: Public URL mode, namespace readiness, DNS provider mode
-
-**Automatic Hostname Label**:
-The caller-supplied single lowercase DNS label combined with the Automatic Hostname Namespace to form a generated Route Binding hostname directly beneath that namespace. It is 1–63 ASCII letters, digits, or hyphens without an edge hyphen; an identical request reuses its Route Binding, while Ployz never rewrites invalid input or collisions.
-_Avoid_: Service label, generated prefix, collision suffix
 
 **Automatic Hostname Verification**:
 A point-of-use check that a concrete generated hostname reaches the cluster. DNS preflight produces warning evidence, while successful exact-certificate issuance is the hard reachability proof for a custom automatic hostname.
@@ -198,7 +194,7 @@ Certificate material an operator provides directly rather than material Ployz ob
 _Avoid_: Certificate provider, custom certificate, BYO issuer, ACME account swap, renewable certificate
 
 **Operation**:
-A user-visible coarse record of one deploy attempt. Current v2 writes only Created and Terminal snapshots; terminal is Completed (possibly with warnings), Failed, or Interrupted. A controller crash may leave Created forever, and no replacement resumes or projects it. Other glossary uses of “operation” name explicit commands or future product behavior, not additional current `OperationDocument` variants.
+A user-visible coarse record keyed by namespace name and deploy name. Current v2 writes only Created and Terminal snapshots. Deploy names are one-shot within a namespace; retrying an accepted or abandoned attempt requires a fresh name.
 _Avoid_: Workflow, source of truth
 
 **Preferred Controller**:
@@ -214,7 +210,7 @@ The private Duroxide and SQLite runtime on each machine. It records only that ma
 _Avoid_: Distributed workflow engine, controller queue, cluster truth
 
 **Deploy**:
-A bounded attempt to create or update the sole service in a namespace. The Preferred Controller observes Corrosion and target-host Docker, computes placement, asks nodes to prepare exact replicas, commits serving rows after an immediate appointment recheck, then asks nodes to retire obsolete identities. The commit is not appointment-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
+A bounded attempt to make an entire namespace match one complete desired service list. The Preferred Controller observes Corrosion and target-host Docker, computes placement for every service, asks nodes to prepare exact replicas, commits the namespace's complete service and container projection after an immediate appointment recheck, then asks nodes to retire obsolete identities. The commit is not appointment-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
 _Avoid_: Distributed workflow, namespace revision reconciliation
 
 **Deploy Outcome**:
@@ -222,11 +218,11 @@ The terminal result of a current v2 deploy: Completed with optional warnings, Fa
 _Avoid_: Progress state, resubmit instruction
 
 **Service Deploy Result**:
-A historical target-model result for one service inside a multi-service deploy. Current v2 has no separate Service Deploy Result because a deploy contains exactly one service.
+A historical target-model result for one service inside a namespace deploy. Current v2 keeps one coarse namespace-level outcome and does not persist separate per-service results.
 _Avoid_: Current deploy outcome, service status
 
 **Deploy Input**:
-The typed current-v2 request for one service: namespace and service names, a prebuilt registry image reference, optional pull credential, runtime shape, health-gate policy, placement, and machine pins. It contains no source build, Compose document, dependency, hook, phase, or route set.
+The typed current-v2 request for one complete namespace snapshot: namespace and deploy names plus every desired service's name, prebuilt registry image reference, optional pull credential, runtime shape, health-gate policy, placement, and machine pins. Omitting an incumbent service requests its removal. It contains no source build, dependency, hook, phase, or route set.
 _Avoid_: Source build request, namespace revision
 
 **Resolved Image Identity**:
@@ -300,11 +296,11 @@ A read-side or data-plane view built from durable control-plane state and fresh 
 _Avoid_: Mutating operation snapshot, live RPC requirement, hidden reconciliation
 
 **Managed Container Identity**:
-The exact current-v2 identity rendered into Docker labels and carried through host requests and inspection: namespace row id, service row id, deploy Operation id, and replica slot. Retirement refuses when the observed identity differs.
+The exact current-v2 identity rendered into Docker labels and carried through host requests and inspection: namespace name, service name, deploy name, machine name, and replica slot. Retirement refuses when the observed identity differs.
 _Avoid_: Namespace revision entry, workflow step id, flattened identity fields
 
 **Container Provenance**:
-The deploy Operation id within Managed Container Identity. Current v2 has no separate provenance type or workflow step id.
+The deploy name within Managed Container Identity. Current v2 has no separate provenance type or workflow step id.
 _Avoid_: Audit trail, workflow history
 
 **Service Container**:
@@ -312,7 +308,7 @@ A Docker container that belongs to a service in a namespace. Service containers 
 _Avoid_: Replica as container identity
 
 **Replica**:
-A desired capacity slot for the namespace's sole service: either a numbered replicated slot or the global slot on one eligible machine. The slot participates in Managed Container Identity; it is not a Docker container id.
+A desired capacity slot for one named service: either a numbered replicated slot or the global slot on one eligible machine. The slot participates in Managed Container Identity; it is not a Docker container id.
 _Avoid_: Container
 
 **Usable Service Container**:
@@ -373,7 +369,7 @@ The best-effort post-commit retirement of exact obsolete container identities on
 _Avoid_: Garbage collection
 
 **Service**:
-A named workload represented by one Corrosion service row and one active deploy generation. Current v2 allows one service per namespace; its runtime presence is the matching container rows and live Docker containers.
+A named workload stored as `<namespace>/<service>` with one active deploy name. A namespace may contain many services; its runtime presence is the matching container rows and live Docker containers.
 _Avoid_: Cluster-global service
 
 **Service Mode**:
@@ -429,7 +425,7 @@ A declared network entry point for a service container. Ports may describe host-
 _Avoid_: Route, endpoint
 
 **Cluster**:
-The set of machines sharing one cluster identity and one shared cluster config store. A machine belongs to exactly one cluster for as long as it is current; reaching another cluster is operator context, not membership.
+The set of machines sharing one canonical cluster name and one shared cluster config store. The canonical name is the cluster identity; independently operated clusters that may ever meet must use distinct names.
 _Avoid_: Fleet, mesh, multi-cluster machine membership, Cloud organization
 
 **Machine**:
@@ -449,19 +445,19 @@ A target-model operator-facing selection for host features. Current v2 has no so
 _Avoid_: Build worker, profile, preset
 
 **Machine Identity**:
-The stable, non-reused identity of an accepted machine. Machine identity owns credentials, endpoint subnet assignment, observations, and operation history.
-_Avoid_: MachineId as product identity, machine name as identity, name-keyed observations
+The canonical machine name. It owns credentials, endpoint subnet assignment, observations, and operation history; reusing the name replaces the current snapshot of the same logical Machine rather than creating a new identity.
+_Avoid_: Generated machine id, host identity
 
 **Machine Name**:
-A current-machine-unique operator-facing label for a machine. Machine names help humans search and recognize current machines, but they are not authority for subjects, credentials, endpoint subnets, observations, or operation identity. Removed machine history does not reserve names.
-_Avoid_: Hostname, machine identity, permanent name reservation
+A canonical cluster-unique name that is both the operator-facing label and durable Machine Identity. It is immutable; a rename creates a differently named Machine.
+_Avoid_: Hostname, display name, mutable label
 
 **Machine Reservation**:
 A pre-activation claim created while a machine add is waiting for join. A reservation may hold a name and join material, but it does not own a machine endpoint subnet.
 _Avoid_: Active machine, subnet allocation, accepted machine identity
 
 **Machine Endpoint Subnet**:
-A cluster-assigned IPv4 or IPv6 CIDR reserved for service container endpoints on one current machine. It is assigned when the machine identity is accepted into the cluster, remains stable while that machine is current, is released when the machine is removed, may be reused immediately after release, and must not be independently chosen by the machine — with the row law's one named exception (ADR 0040): after a door-allocation collision survives convergence, the lowest-ULID machine re-picks its own transport subnet.
+A cluster-assigned IPv4 or IPv6 CIDR reserved for service container endpoints on one current machine. The Preferred Controller chooses the lowest free subnet during admission. A split-controller collision fails closed after convergence and requires explicit repair rather than automatic reallocation.
 _Avoid_: Runtime-derived subnet, local subnet choice, Docker network subnet as authority, first-boot local allocation, subnet cooldown
 
 **Pending Machine Endpoint Claim**:

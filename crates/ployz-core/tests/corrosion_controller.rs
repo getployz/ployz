@@ -67,23 +67,6 @@ fn controller_document_is_the_single_cluster_keyed_controller_row() {
 }
 
 #[test]
-fn controller_rows_without_a_heartbeat_are_immediately_stale() {
-    let legacy = serde_json::from_value::<ControllerDocument>(json!({
-        "v": 1,
-        "cluster_id": CLUSTER_ID,
-        "preferred_machine_id": MACHINE_ID,
-        "appointment_id": APPOINTMENT_ID
-    }))
-    .expect("legacy controller document");
-
-    assert!(controller_heartbeat_is_stale(
-        CorrosionTimestamp::try_new("2026-08-09T12:00:00Z").expect("current timestamp"),
-        legacy.heartbeat_at,
-        Duration::from_secs(30),
-    ));
-}
-
-#[test]
 fn controller_revisions_are_positive_and_monotonic() {
     let appointment = ControllerRevision::try_new(APPOINTMENT_ID).expect("controller revision");
 

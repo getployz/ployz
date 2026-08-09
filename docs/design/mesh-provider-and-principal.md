@@ -88,22 +88,21 @@ IPv6 before wiring `bind_ip` to it; the spike ran IPv4.
 
 The admitting machine (the door handler) allocates the /24 at admission:
 
-1. Read the roster; pick **randomly among free subnets** (random, not
-   next-free, so concurrent joins across different doors spread out).
+1. Read the roster; pick the lowest free subnet.
 2. Write the machines row — the row is the claim.
 3. Courtesy re-read (fixed 1–2 s, no correctness weight) before answering
    the joiner; on a lost race, re-allocate and rewrite before replying.
-4. Reader law is the backstop: duplicate subnets adjudicate by lowest
-   ULID; `doctor` names the loser.
+4. Reader law is the backstop: duplicate subnets adjudicate by canonical
+   machine-name order.
 
 **Self-heal.** A partition can still birth a surviving duplicate, and 200
 unattended cloud-init joins cannot end in "operator re-joins it". Keeper's
 converge already reads the full roster, so the losing machine detects "my
-`subnet_v4` duplicates a lower ULID" and re-runs the allocation recipe
-itself: random free pick, rewrite own row, courtesy re-read. This is the
+`subnet_v4` duplicates a lower machine name" and re-runs the allocation recipe
+itself: lowest free pick, rewrite own row, courtesy re-read. This is the
 **one named exception to the row-ownership law**: a machine may rewrite
 *its own* machines-row `transport.subnet_v4`, and only to exit a
-lowest-ULID duplicate loss — a deterministic trigger completing the
+name-ordered duplicate loss — a deterministic trigger completing the
 admission the operator already commanded. The heal renumbers that
 machine's containers (restart-heal, doctor-visible); its control-plane
 identity is IPv6-derived and never moves, so gossip, the API, and live
@@ -122,12 +121,12 @@ addresses or keys themselves:
 ```rust
 enum Principal {
     /// cryptokey-routed source → machines row
-    Machine(MachineRowId),
+    Machine(MachineName),
     /// cryptokey-routed source → peers row (operator laptop, Cloud)
-    Peer(PeerId),
+    Peer(PeerName),
     /// join-token secret presented at the public join door;
     /// honored at exactly one endpoint: join
-    ApiToken(TokenId),
+    ApiToken(TokenName),
     // future variants additive
 }
 ```
@@ -212,8 +211,8 @@ structurally unable to claim container address space.
 Roster acceptance requires the accepted `ClusterDocument` as context. The
 roster reader parses the row, compares the transport `kind` to
 `ClusterDocument.provider`, and only then admits the row to a name or subnet
-claim fold. A mismatch is skipped and surfaced to `doctor`; it cannot shadow a
-valid row by carrying a lower ULID. An unknown `kind` fails to parse and lands
+claim fold. A mismatch is skipped and surfaced to `doctor`; it cannot enter the
+accepted roster. An unknown `kind` fails to parse and lands
 in the row model's existing skip-unparseable guard.
 
 ## Join: one public door, token in hand
@@ -222,7 +221,7 @@ Every machine serves one **public join-only HTTPS endpoint** — the
 Kubernetes bootstrap-token shape, chosen because admission must survive
 200 simultaneous cloud-init joiners:
 
-- The join string embeds the token secret (`pz_<ulid>.<secret>`, hashed
+- The join string embeds the token name and secret (hashed
   in the row per the row model), the **cluster door-cert fingerprint**,
   and one or more member endpoints. The joiner pins TLS by fingerprint —
   no hostnames, no CA machinery. Exact join-string UX belongs to the

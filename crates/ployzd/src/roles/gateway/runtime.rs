@@ -114,7 +114,7 @@ async fn run_listener(
 }
 
 async fn run_projection_loop(
-    cluster_id: ployz_core::ids::ClusterId,
+    cluster_id: ployz_core::ids::ClusterName,
     source: CorrosionGatewaySource,
     publisher: GatewayObservationPublisher,
     registry: PingoraRouteRegistry,
@@ -224,7 +224,7 @@ async fn run_projection_loop(
     }
 }
 
-fn project_rows(cluster_id: ployz_core::ids::ClusterId, rows: GatewayRows) -> GatewayFold {
+fn project_rows(cluster_id: ployz_core::ids::ClusterName, rows: GatewayRows) -> GatewayFold {
     project_gateway_rows(GatewayProjectionInput {
         cluster_id,
         cluster: rows.cluster,

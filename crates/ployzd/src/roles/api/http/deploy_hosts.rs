@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use hyper::StatusCode;
 use ployz_core::corrosion::MachineTransport;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
     DeployInspectOutcome, DeployInspectRequest, DeployPrepareOutcome, DeployPrepareRequest,
     DeployRetireOutcome, DeployRetireRequest, V2Route,
@@ -28,8 +28,8 @@ const RETIRE_TIMEOUT: Duration = Duration::from_secs(75);
 const MAX_REPLY_BYTES: usize = 1_048_576;
 
 pub(super) struct MeshDeployHosts {
-    local_machine_id: MachineRowId,
-    cluster_id: ClusterId,
+    local_machine_id: MachineName,
+    cluster_id: ClusterName,
     api_port: u16,
     corrosion: CorrosionClient,
     controller: Arc<ControllerStore>,
@@ -40,8 +40,8 @@ pub(super) struct MeshDeployHosts {
 
 impl MeshDeployHosts {
     pub(super) fn new(
-        local_machine_id: MachineRowId,
-        cluster_id: ClusterId,
+        local_machine_id: MachineName,
+        cluster_id: ClusterName,
         api_port: u16,
         corrosion: CorrosionClient,
         controller: Arc<ControllerStore>,
@@ -67,7 +67,7 @@ impl MeshDeployHosts {
 
     async fn require_local_appointment(
         &self,
-        appointment_id: &ployz_core::corrosion::ControllerAppointmentId,
+        appointment_id: &ployz_core::corrosion::ControllerRevision,
     ) -> Result<(), DeployHostError> {
         match self
             .controller
@@ -80,7 +80,7 @@ impl MeshDeployHosts {
         }
     }
 
-    async fn target(&self, machine_id: &MachineRowId) -> Result<SocketAddr, DeployHostError> {
+    async fn target(&self, machine_id: &MachineName) -> Result<SocketAddr, DeployHostError> {
         let roster = read_accepted_roster(&self.corrosion, &self.cluster_id)
             .await
             .map_err(|_| DeployHostError::Failed)?;
@@ -97,7 +97,7 @@ impl MeshDeployHosts {
 
     async fn post<Request, Reply>(
         &self,
-        machine_id: &MachineRowId,
+        machine_id: &MachineName,
         route: V2Route,
         request: &Request,
         timeout: Duration,
@@ -129,7 +129,7 @@ impl MeshDeployHosts {
 impl DeployHosts for MeshDeployHosts {
     async fn inspect(
         &self,
-        machine_id: &MachineRowId,
+        machine_id: &MachineName,
         request: DeployInspectRequest,
     ) -> Result<DeployInspectOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
@@ -148,7 +148,7 @@ impl DeployHosts for MeshDeployHosts {
 
     async fn prepare(
         &self,
-        machine_id: &MachineRowId,
+        machine_id: &MachineName,
         request: DeployPrepareRequest,
     ) -> Result<DeployPrepareOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
@@ -167,7 +167,7 @@ impl DeployHosts for MeshDeployHosts {
 
     async fn retire(
         &self,
-        machine_id: &MachineRowId,
+        machine_id: &MachineName,
         request: DeployRetireRequest,
     ) -> Result<DeployRetireOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {

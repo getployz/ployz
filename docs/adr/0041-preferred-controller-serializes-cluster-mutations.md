@@ -86,8 +86,8 @@ step events, heartbeats, worker claims, ownership takeover, or replay journal.
 An executing deploy that observes a foreign Controller Appointment may write
 an interrupted terminal result. A controller crash can instead leave a created
 row behind; no other controller projects, resumes, or rewrites it. Operation
-rows are evidence, not a recovery queue. A caller retries from Corrosion and
-host reality rather than invoking a resubmission protocol or consulting
+rows are evidence, not a recovery queue. A caller retries with a fresh deploy
+name from Corrosion and host reality rather than invoking a resubmission protocol or consulting
 operation or Duroxide history.
 
 ## Partition contract
@@ -105,9 +105,11 @@ The only cluster-wide brake blocks an isolated member:
 This is deliberately not majority quorum. Equal partitions may both operate.
 Immediate appointment rechecks reduce stale commits after convergence but
 cannot make partitioned execution exclusive or reject a commit atomically.
-Concurrent namespace or route writes may therefore both report success. Named
-row readers select the lowest canonical ULID after convergence; other valid
-rows remain `doctor`-visible shadows until explicit removal.
+Concurrent namespace or route writes may therefore both report success. They
+target the same canonical name, so Corrosion converges the competing whole
+documents at one row key; the losing intent may disappear without a retained
+shadow. A later command observes that converged document and reconciles from
+reality.
 
 Named-volume support is intentionally one-shot. A namespace may receive its
 first volume-bearing service deploy, but a later volume-bearing deploy is

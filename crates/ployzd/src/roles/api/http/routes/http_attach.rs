@@ -4,9 +4,9 @@ use hyper::{Response, StatusCode};
 use ployz_core::corrosion::{
     CorrosionDocumentVersion, CorrosionTable, IngressMode, NamespaceDocument,
     OperatorWriteProvenance, Principal, RouteBindingDocument, ServiceDocument, StoredRow,
-    read_named_rows,
+    read_named_rows, read_rows, service_key,
 };
-use ployz_core::ids::{NamespaceRowId, RouteBindingRowId, ServiceRowId};
+use ployz_core::ids::CorrosionNamespaceName;
 use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::{
     RouteAttachIntent, RouteAttachOutcome, RouteAttachRefusal, RouteAttachReply,
@@ -53,13 +53,13 @@ async fn attach(
         &service.corrosion,
         ployz_core::corrosion::CorrosionTable::Namespaces,
     );
-    let services = read_named_removal_rows(
-        &service.corrosion,
-        ployz_core::corrosion::CorrosionTable::Services,
-    );
     let routes = read_named_removal_rows(
         &service.corrosion,
         ployz_core::corrosion::CorrosionTable::RouteBindings,
+    );
+    let services = read_named_removal_rows(
+        &service.corrosion,
+        ployz_core::corrosion::CorrosionTable::Services,
     );
     let (namespace_rows, service_rows, route_rows) =
         tokio::try_join!(namespaces, services, routes)?;
@@ -68,39 +68,37 @@ async fn attach(
         &service.cluster_id,
         &namespace_rows,
         &request.namespace_name,
-        request.namespace_id.as_ref(),
     ) {
         Ok(namespace_id) => namespace_id,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let service_id = match select_service(
+    let service_name = match select_service(
         &service.cluster_id,
         &service_rows,
         &namespace_id,
         &request.service_name,
-        request.service_id.as_ref(),
     ) {
-        Ok(service_id) => service_id,
+        Ok(service_name) => service_name,
         Err(refusal) => return Ok(Err(refusal)),
     };
     let intent = RouteAttachIntent {
         hostname: request.hostname,
         namespace_id: namespace_id.clone(),
-        service_id: service_id.clone(),
+        service_name: service_name.clone(),
         endpoint_port: request.endpoint_port,
         ingress_mode: request.ingress_mode,
     };
     match select_existing_route(&service.cluster_id, route_rows, &intent) {
         ExistingRoute::Absent => {}
-        ExistingRoute::Present { route_id, outcome } => {
-            return Ok(Ok(RouteAttachReply { route_id, outcome }));
+        ExistingRoute::Present { outcome } => {
+            return Ok(Ok(RouteAttachReply { outcome }));
         }
-        ExistingRoute::Conflict { route_id } => {
-            return Ok(Err(hostname_conflict(&intent, route_id)));
+        ExistingRoute::Conflict => {
+            return Ok(Err(hostname_conflict(&intent)));
         }
     }
 
-    let route_id = RouteBindingRowId::generate();
+    let route_id = intent.hostname.clone();
     let written_at = now_timestamp()
         .map_err(|()| RouteAttachStoreError::Protocol("clock was unavailable".to_owned()))?;
     let document = RouteBindingDocument {
@@ -111,8 +109,8 @@ async fn attach(
             written_at,
         },
         hostname: intent.hostname.clone(),
-        service_id,
         namespace_id,
+        service_name,
         endpoint_port: intent.endpoint_port,
         origin: RouteBindingOrigin::Declared,
         ingress_mode: intent.ingress_mode,
@@ -125,137 +123,67 @@ async fn attach(
     )
     .await?;
     Ok(Ok(RouteAttachReply {
-        route_id,
         outcome: RouteAttachOutcome::Attached,
     }))
 }
 
 fn select_namespace(
-    cluster_id: &ployz_core::ids::ClusterId,
+    cluster_id: &ployz_core::ids::ClusterName,
     rows: &[StoredRow],
     name: &ployz_core::corrosion::CorrosionNamespaceName,
-    requested_id: Option<&NamespaceRowId>,
-) -> Result<NamespaceRowId, RouteAttachRefusal> {
+) -> Result<CorrosionNamespaceName, RouteAttachRefusal> {
     let report = read_named_rows::<NamespaceDocument>(cluster_id, rows.iter().cloned());
-    let accepted = report.accepted;
-    if let Some(requested) = requested_id {
-        if let Some(row) = accepted
-            .iter()
-            .find(|row| row.id.as_str() == requested.as_str())
-        {
-            if &row.value.name == name {
-                return NamespaceRowId::try_new(row.id.as_str().to_owned()).map_err(|_| {
-                    RouteAttachRefusal::NamespaceStoredRowUnselectable {
-                        namespace_id: requested.clone(),
-                    }
-                });
-            }
-            return Err(RouteAttachRefusal::NamespaceIdentityMismatch {
-                namespace_id: requested.clone(),
-                requested_name: name.clone(),
-                found_name: row.value.name.clone(),
-            });
-        }
-        if rows.iter().any(|row| row.key == requested.as_str()) {
-            return Err(RouteAttachRefusal::NamespaceStoredRowUnselectable {
-                namespace_id: requested.clone(),
-            });
-        }
+    if report
+        .accepted
+        .iter()
+        .any(|row| row.source.key == name.as_str())
+    {
+        return Ok(name.clone());
     }
-    let mut candidates = accepted
-        .into_iter()
-        .filter(|row| &row.value.name == name)
-        .map(|row| NamespaceRowId::try_new(row.id.into_string()).expect("accepted namespace id"))
-        .collect::<Vec<_>>();
-    candidates.sort();
-    match candidates.as_slice() {
-        [] => Err(RouteAttachRefusal::NamespaceNotFound {
+    if rows.iter().any(|row| row.key == name.as_str()) {
+        return Err(RouteAttachRefusal::NamespaceStoredRowUnselectable {
             namespace_name: name.clone(),
-        }),
-        [found] if requested_id.is_some() => Err(RouteAttachRefusal::NamespaceIdMismatch {
-            namespace_name: name.clone(),
-            requested: requested_id.expect("checked").clone(),
-            found: found.clone(),
-        }),
-        [found] => Ok(found.clone()),
-        [_, _, ..] => Err(RouteAttachRefusal::NamespaceAmbiguous {
-            namespace_name: name.clone(),
-            namespace_ids: candidates,
-        }),
+        });
     }
+    Err(RouteAttachRefusal::NamespaceNotFound {
+        namespace_name: name.clone(),
+    })
 }
 
 fn select_service(
-    cluster_id: &ployz_core::ids::ClusterId,
+    cluster_id: &ployz_core::ids::ClusterName,
     rows: &[StoredRow],
-    namespace_id: &NamespaceRowId,
+    namespace_id: &CorrosionNamespaceName,
     name: &ployz_core::corrosion::CorrosionServiceName,
-    requested_id: Option<&ServiceRowId>,
-) -> Result<ServiceRowId, RouteAttachRefusal> {
-    let report = read_named_rows::<ServiceDocument>(cluster_id, rows.iter().cloned());
-    let accepted = report.accepted;
-    if let Some(requested) = requested_id {
-        if let Some(row) = accepted
-            .iter()
-            .find(|row| row.id.as_str() == requested.as_str())
-        {
-            if &row.value.namespace_id == namespace_id && &row.value.name == name {
-                return ServiceRowId::try_new(row.id.as_str().to_owned()).map_err(|_| {
-                    RouteAttachRefusal::ServiceStoredRowUnselectable {
-                        service_id: requested.clone(),
-                    }
-                });
-            }
-            return Err(RouteAttachRefusal::ServiceIdentityMismatch {
-                service_id: requested.clone(),
-                requested_namespace_id: namespace_id.clone(),
-                requested_name: name.clone(),
-                found_namespace_id: row.value.namespace_id.clone(),
-                found_name: row.value.name.clone(),
-            });
-        }
-        if rows.iter().any(|row| row.key == requested.as_str()) {
-            return Err(RouteAttachRefusal::ServiceStoredRowUnselectable {
-                service_id: requested.clone(),
-            });
-        }
-    }
-    let mut candidates = accepted
+) -> Result<ployz_core::corrosion::CorrosionServiceName, RouteAttachRefusal> {
+    let report = read_rows::<ServiceDocument>(cluster_id, rows.iter().cloned());
+    let expected_key = service_key(namespace_id, name);
+    let Some(service) = report
+        .accepted
         .into_iter()
-        .filter(|row| &row.value.namespace_id == namespace_id && &row.value.name == name)
-        .map(|row| ServiceRowId::try_new(row.id.into_string()).expect("accepted service id"))
-        .collect::<Vec<_>>();
-    candidates.sort();
-    match candidates.as_slice() {
-        [] => Err(RouteAttachRefusal::ServiceNotFound {
-            namespace_id: namespace_id.clone(),
+        .find(|row| row.source.key == expected_key)
+    else {
+        if rows.iter().any(|row| row.key == expected_key) {
+            return Err(RouteAttachRefusal::ServiceStoredRowUnselectable {
+                namespace_name: namespace_id.clone(),
+                service_name: name.clone(),
+            });
+        }
+        return Err(RouteAttachRefusal::ServiceNotFound {
+            namespace_name: namespace_id.clone(),
             service_name: name.clone(),
-        }),
-        [found] if requested_id.is_some() => Err(RouteAttachRefusal::ServiceIdMismatch {
-            namespace_id: namespace_id.clone(),
-            service_name: name.clone(),
-            requested: requested_id.expect("checked").clone(),
-            found: found.clone(),
-        }),
-        [found] => Ok(found.clone()),
-        [_, _, ..] => Err(RouteAttachRefusal::ServiceAmbiguous {
-            namespace_id: namespace_id.clone(),
-            service_name: name.clone(),
-            service_ids: candidates,
-        }),
-    }
+        });
+    };
+    debug_assert_eq!(service.value.namespace_id, *namespace_id);
+    debug_assert_eq!(&service.value.name, name);
+    Ok(name.clone())
 }
 
-fn hostname_conflict(
-    intent: &RouteAttachIntent,
-    route_id: RouteBindingRowId,
-) -> RouteAttachRefusal {
+fn hostname_conflict(intent: &RouteAttachIntent) -> RouteAttachRefusal {
     RouteAttachRefusal::HostnameAlreadyAttached {
         hostname: intent.hostname.clone(),
-        route_id: route_id.clone(),
         remove: RouteRemoveRequest {
             hostname: intent.hostname.clone(),
-            route_id: Some(route_id),
         },
     }
 }
@@ -265,13 +193,7 @@ fn route_attach_status(refusal: &RouteAttachRefusal) -> StatusCode {
         RouteAttachRefusal::UnsupportedIngressMode { .. } => StatusCode::BAD_REQUEST,
         RouteAttachRefusal::NamespaceNotFound { .. }
         | RouteAttachRefusal::ServiceNotFound { .. } => StatusCode::NOT_FOUND,
-        RouteAttachRefusal::NamespaceAmbiguous { .. }
-        | RouteAttachRefusal::NamespaceIdMismatch { .. }
-        | RouteAttachRefusal::NamespaceIdentityMismatch { .. }
-        | RouteAttachRefusal::NamespaceStoredRowUnselectable { .. }
-        | RouteAttachRefusal::ServiceAmbiguous { .. }
-        | RouteAttachRefusal::ServiceIdMismatch { .. }
-        | RouteAttachRefusal::ServiceIdentityMismatch { .. }
+        RouteAttachRefusal::NamespaceStoredRowUnselectable { .. }
         | RouteAttachRefusal::ServiceStoredRowUnselectable { .. }
         | RouteAttachRefusal::HostnameAlreadyAttached { .. } => StatusCode::CONFLICT,
     }
@@ -288,32 +210,24 @@ enum RouteAttachStoreError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ExistingRoute {
     Absent,
-    Present {
-        route_id: RouteBindingRowId,
-        outcome: RouteAttachOutcome,
-    },
-    Conflict {
-        route_id: RouteBindingRowId,
-    },
+    Present { outcome: RouteAttachOutcome },
+    Conflict,
 }
 
 fn select_existing_route(
-    cluster_id: &ployz_core::ids::ClusterId,
+    cluster_id: &ployz_core::ids::ClusterName,
     rows: Vec<StoredRow>,
     intent: &RouteAttachIntent,
 ) -> ExistingRoute {
     let Some(winner) = route_for_hostname(cluster_id, rows, &intent.hostname) else {
         return ExistingRoute::Absent;
     };
-    if intent.matches(&winner.document) {
+    if intent.matches(&winner) {
         ExistingRoute::Present {
-            route_id: winner.id,
             outcome: RouteAttachOutcome::AlreadyAttached,
         }
     } else {
-        ExistingRoute::Conflict {
-            route_id: winner.id,
-        }
+        ExistingRoute::Conflict
     }
 }
 
@@ -323,20 +237,19 @@ mod tests {
         CorrosionDocumentVersion, IngressMode, OperatorWriteProvenance, RouteBindingDocument,
         StoredRow,
     };
-    use ployz_core::ids::{ClusterId, NamespaceRowId, RouteBindingRowId, ServiceRowId};
+    use ployz_core::ids::{ClusterName, CorrosionNamespaceName, RouteHostname};
     use ployz_core::ingress::RouteBindingOrigin;
-    use ployz_core::operation::{RouteHostname, RoutePort};
+    use ployz_core::operation::RoutePort;
     use ployz_core::{RouteAttachIntent, RouteAttachOutcome};
 
     use super::*;
 
     #[test]
     fn identical_declared_binding_is_idempotent() {
-        let cluster_id = ClusterId::try_new("01J00000000000000000000010").expect("cluster");
-        let route_id = RouteBindingRowId::try_new("01J00000000000000000000011").expect("route");
-        let namespace_id =
-            NamespaceRowId::try_new("01J00000000000000000000012").expect("namespace");
-        let service_id = ServiceRowId::try_new("01J00000000000000000000013").expect("service");
+        let cluster_id = ClusterName::try_new("main").expect("cluster");
+        let namespace_id = CorrosionNamespaceName::try_new("prod").expect("namespace");
+        let service_name =
+            ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service");
         let hostname = RouteHostname::try_new("api.example.com").expect("hostname");
         let endpoint_port = RoutePort::try_new(8080).expect("port");
         let document = RouteBindingDocument {
@@ -344,8 +257,7 @@ mod tests {
             cluster_id: cluster_id.clone(),
             provenance: OperatorWriteProvenance {
                 written_by: ployz_core::corrosion::Principal::Peer {
-                    peer_id: ployz_core::ids::PeerId::try_new("01J00000000000000000000019")
-                        .expect("peer"),
+                    peer_id: ployz_core::ids::PeerName::try_new("operator").expect("peer"),
                 },
                 written_at: ployz_core::corrosion::CorrosionTimestamp::try_new(
                     "2026-08-08T00:00:00Z",
@@ -353,20 +265,20 @@ mod tests {
                 .expect("timestamp"),
             },
             hostname: hostname.clone(),
-            service_id: service_id.clone(),
             namespace_id: namespace_id.clone(),
+            service_name: service_name.clone(),
             endpoint_port,
             origin: RouteBindingOrigin::Declared,
             ingress_mode: IngressMode::Direct,
         };
         let rows = vec![StoredRow::new(
-            route_id.as_str(),
+            hostname.as_str(),
             serde_json::to_string(&document).expect("document"),
         )];
         let intent = RouteAttachIntent {
             hostname,
             namespace_id,
-            service_id,
+            service_name,
             endpoint_port,
             ingress_mode: IngressMode::Direct,
         };
@@ -374,7 +286,6 @@ mod tests {
         assert_eq!(
             select_existing_route(&cluster_id, rows, &intent),
             ExistingRoute::Present {
-                route_id,
                 outcome: RouteAttachOutcome::AlreadyAttached,
             }
         );

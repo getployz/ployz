@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use hyper::Method;
-use ployz_core::corrosion::NameClaim;
 use ployz_core::{
     DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorMalformedRosterDocumentClass,
     DoctorRosterRowSkipReason, DoctorRosterTable, HandshakeFreshness, STATUS_ROUTE,
@@ -220,8 +219,7 @@ fn render_handshake(handshake: &StatusHandshakeEvidence) -> String {
 #[must_use]
 pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
     let actionable_foreign_authors = actionable_foreign_authors(document);
-    let has_findings = !document.shadows.is_empty()
-        || !document.skipped_roster_rows.is_empty()
+    let has_findings = !document.skipped_roster_rows.is_empty()
         || !document.skipped_newer_versions.is_empty()
         || !document.versions.behind.is_empty()
         || !document.versions.invalid.is_empty()
@@ -231,30 +229,6 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
     } else {
         String::from("doctor\tclean — no actionable anomalies found\n")
     };
-
-    for shadow in &document.shadows {
-        let noun = shadow_noun(&shadow.claim);
-        writeln!(
-            output,
-            "\n⚠ name conflict: {noun} \"{}\"",
-            render_claim(&shadow.claim)
-        )
-        .expect("writing to a String cannot fail");
-        writeln!(
-            output,
-            "    {}  kept (lowest ULID)",
-            shadow.winner_id.as_str()
-        )
-        .expect("writing to a String cannot fail");
-        writeln!(output, "    {}  shadowed, inert", shadow.loser_id.as_str())
-            .expect("writing to a String cannot fail");
-        writeln!(
-            output,
-            "  remove the shadow:  {}",
-            shadow_repair_command(&shadow.claim, shadow.loser_id.as_str())
-        )
-        .expect("writing to a String cannot fail");
-    }
 
     for skipped in &document.skipped_roster_rows {
         writeln!(
@@ -367,8 +341,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
         .expect("writing to a String cannot fail");
         writeln!(
             output,
-            "    ployz machine rm --id {} -- {}",
-            machine.id.as_str(),
+            "    ployz machine rm -- {}",
             shell_quote(machine.name.as_str())
         )
         .expect("writing to a String cannot fail");
@@ -378,7 +351,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             machine.name.as_str()
         )
         .expect("writing to a String cannot fail");
-        output.push_str("    ployz token create  →  paste the join line on that machine\n");
+        output.push_str("    ployz token create <name>  →  paste the join line on that machine\n");
     }
 
     (output, has_findings)
@@ -395,27 +368,6 @@ fn render_roster_skip_reason(reason: DoctorRosterRowSkipReason) -> &'static str 
             }
             DoctorMalformedRosterDocumentClass::InvalidPayload => "invalid document payload",
         },
-        DoctorRosterRowSkipReason::InvalidRowId => "invalid row id",
-    }
-}
-
-fn shadow_repair_command(claim: &NameClaim, loser_id: &str) -> String {
-    match claim {
-        NameClaim::Machine { name } | NameClaim::Peer { name } | NameClaim::Namespace { name } => {
-            format!(
-                "ployz {} rm --id {loser_id} -- {}",
-                shadow_noun(claim),
-                shell_quote(name)
-            )
-        }
-        NameClaim::Service { namespace_id, name } => format!(
-            "ployz service rm --namespace-id {} --id {loser_id} -- {}",
-            namespace_id.as_str(),
-            shell_quote(name)
-        ),
-        NameClaim::RouteBinding { hostname } => {
-            format!("ployz route rm {} --id {loser_id}", hostname.as_str())
-        }
     }
 }
 
@@ -433,28 +385,6 @@ fn actionable_foreign_authors(
         }
     }
     machines
-}
-
-const fn shadow_noun(claim: &NameClaim) -> &'static str {
-    match claim {
-        NameClaim::Machine { .. } => "machine",
-        NameClaim::Peer { .. } => "peer",
-        NameClaim::Namespace { .. } => "namespace",
-        NameClaim::Service { .. } => "service",
-        NameClaim::RouteBinding { .. } => "route",
-    }
-}
-
-fn render_claim(claim: &NameClaim) -> String {
-    match claim {
-        NameClaim::Machine { name } | NameClaim::Peer { name } | NameClaim::Namespace { name } => {
-            name.clone()
-        }
-        NameClaim::Service { namespace_id, name } => {
-            format!("{}/{name}", namespace_id.as_str())
-        }
-        NameClaim::RouteBinding { hostname } => hostname.as_str().to_owned(),
-    }
 }
 
 fn render_foreign_authorship(authorship: &DoctorForeignAuthorship) -> String {
@@ -494,10 +424,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::commands::{
-        Command, MachineCommand, MachineUpgradeSelector, NamespaceCommand, PeerCommand,
-        ServiceCommand,
-    };
+    use crate::commands::{Command, MachineCommand, MachineUpgradeSelector};
     use crate::remote::ContextSelectionError;
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -567,47 +494,7 @@ mod tests {
 
     fn doctor_fixture() -> DoctorDocument {
         serde_json::from_value(json!({
-            "shadows": [
-                {
-                    "claim": { "table": "machine", "name": "edge-a" },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                },
-                {
-                    "claim": { "table": "peer", "name": "laptop" },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                },
-                {
-                    "claim": { "table": "namespace", "name": "prod" },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                },
-                {
-                    "claim": {
-                        "table": "service",
-                        "namespace_id": ROW_WINNER,
-                        "name": "web"
-                    },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                },
-                {
-                    "claim": {
-                        "table": "route_binding",
-                        "hostname": "web.example.com"
-                    },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                }
-            ],
-            "skipped_roster_rows": [
-                {
-                    "table": "peers",
-                    "key": "unsafe-peer-row",
-                    "reason": { "kind": "invalid_row_id" }
-                }
-            ],
+            "skipped_roster_rows": [],
             "skipped_newer_versions": [
                 {
                     "table": "services",
@@ -738,187 +625,6 @@ mod tests {
     }
 
     #[test]
-    fn doctor_prints_every_shadow_repair_and_ordered_composed_repairs() {
-        let (output, has_findings) = render_doctor(&doctor_fixture());
-
-        assert!(has_findings);
-        assert!(output.contains("skipped roster row: peer unsafe-peer-row (invalid row id)"));
-        assert!(output.contains(&format!("ployz machine rm --id {ROW_LOSER} -- 'edge-a'")));
-        assert!(output.contains(&format!("ployz peer rm --id {ROW_LOSER} -- 'laptop'")));
-        assert!(output.contains(&format!("ployz namespace rm --id {ROW_LOSER} -- 'prod'")));
-        assert!(output.contains(&format!(
-            "ployz service rm --namespace-id {ROW_WINNER} --id {ROW_LOSER} -- 'web'"
-        )));
-        assert!(output.contains(&format!("ployz route rm web.example.com --id {ROW_LOSER}")));
-        for command in [
-            vec!["machine", "rm", "--id", ROW_LOSER, "--", "edge-a"],
-            vec!["peer", "rm", "--id", ROW_LOSER, "--", "laptop"],
-            vec!["namespace", "rm", "--id", ROW_LOSER, "--", "prod"],
-            vec![
-                "service",
-                "rm",
-                "--namespace-id",
-                ROW_WINNER,
-                "--id",
-                ROW_LOSER,
-                "--",
-                "web",
-            ],
-            vec!["route", "rm", "web.example.com", "--id", ROW_LOSER],
-        ] {
-            crate::commands::parse_command(command.into_iter().map(ToOwned::to_owned))
-                .expect("doctor repair command parses");
-        }
-        assert!(output.contains("ployz machine upgrade -- 'edge-a'"));
-        let fence = output
-            .find(&format!("ployz machine rm --id {MACHINE_B} -- 'edge-a'"))
-            .expect("fence repair");
-        let reset = output
-            .find("on edge-a:  sudo ployz machine reset")
-            .expect("reset repair");
-        let rejoin = output.find("ployz token create").expect("rejoin repair");
-        assert!(fence < reset && reset < rejoin);
-        assert!(output.contains(&format!("authored by peer {PEER}; inert, no repair action")));
-        assert!(!output.contains(&format!("ployz machine rm --id {MACHINE_C}")));
-    }
-
-    #[test]
-    fn shadow_repairs_survive_option_looking_and_metacharacter_handles() {
-        let machine_handle = "edge-a";
-        let peer_handle = "--help";
-        // A parsed namespace document carries a validated DNS label, so an
-        // option-looking handle is unrepresentable here; peers keep that case.
-        let namespace_handle = "prod-blue";
-        let service_handle = "dind laptop'; touch /tmp/not-run #";
-        let namespace_id =
-            ployz_core::ids::NamespaceRowId::try_new(ROW_WINNER).expect("namespace row id");
-
-        assert_eq!(
-            shadow_repair_command(
-                &NameClaim::Machine {
-                    name: machine_handle.to_owned(),
-                },
-                ROW_LOSER,
-            ),
-            format!(
-                "ployz machine rm --id {ROW_LOSER} -- {}",
-                shell_quote(machine_handle)
-            )
-        );
-        assert!(matches!(
-            crate::commands::parse_command(
-                ["machine", "rm", "--id", ROW_LOSER, "--", machine_handle]
-                    .into_iter()
-                    .map(ToOwned::to_owned),
-            ),
-            Ok(Command::Machine(MachineCommand::Remove(command)))
-                if command.machine.as_str() == machine_handle
-                    && command.machine_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
-        ));
-
-        assert_eq!(
-            shadow_repair_command(
-                &NameClaim::Peer {
-                    name: peer_handle.to_owned(),
-                },
-                ROW_LOSER,
-            ),
-            format!(
-                "ployz peer rm --id {ROW_LOSER} -- {}",
-                shell_quote(peer_handle)
-            )
-        );
-        assert!(matches!(
-            crate::commands::parse_command(
-                ["peer", "rm", "--id", ROW_LOSER, "--", peer_handle]
-                    .into_iter()
-                    .map(ToOwned::to_owned),
-            ),
-            Ok(Command::Peer(PeerCommand::Remove(command)))
-                if command.name == peer_handle
-                    && command.peer_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
-        ));
-
-        assert_eq!(
-            shadow_repair_command(
-                &NameClaim::Namespace {
-                    name: namespace_handle.to_owned(),
-                },
-                ROW_LOSER,
-            ),
-            format!(
-                "ployz namespace rm --id {ROW_LOSER} -- {}",
-                shell_quote(namespace_handle)
-            )
-        );
-        assert!(matches!(
-            crate::commands::parse_command(
-                [
-                    "namespace",
-                    "rm",
-                    "--id",
-                    ROW_LOSER,
-                    "--",
-                    namespace_handle,
-                ]
-                .into_iter()
-                .map(ToOwned::to_owned),
-            ),
-            Ok(Command::Namespace(NamespaceCommand::Remove(command)))
-                if command.namespace.as_str() == namespace_handle
-                    && command.namespace_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
-        ));
-
-        assert_eq!(
-            shadow_repair_command(
-                &NameClaim::Service {
-                    namespace_id,
-                    name: service_handle.to_owned(),
-                },
-                ROW_LOSER,
-            ),
-            format!(
-                "ployz service rm --namespace-id {ROW_WINNER} --id {ROW_LOSER} -- {}",
-                shell_quote(service_handle)
-            )
-        );
-        assert!(matches!(
-            crate::commands::parse_command(
-                [
-                    "service",
-                    "rm",
-                    "--namespace-id",
-                    ROW_WINNER,
-                    "--id",
-                    ROW_LOSER,
-                    "--",
-                    service_handle,
-                ]
-                .into_iter()
-                .map(ToOwned::to_owned),
-            ),
-            Ok(Command::Service(ServiceCommand::Remove(command)))
-                if command.name == service_handle
-                    && command.namespace_id.as_str() == ROW_WINNER
-                    && command.service_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
-        ));
-    }
-
-    #[test]
-    fn foreign_current_machine_repair_disambiguates_a_same_name_shadow() {
-        let document = doctor_fixture();
-        assert!(document.shadows.iter().any(|shadow| {
-            matches!(&shadow.claim, NameClaim::Machine { name } if name == "edge-a")
-        }));
-
-        let (output, has_findings) = render_doctor(&document);
-
-        assert!(has_findings);
-        assert!(output.contains(&format!("ployz machine rm --id {ROW_LOSER} -- 'edge-a'")));
-        assert!(output.contains(&format!("ployz machine rm --id {MACHINE_B} -- 'edge-a'")));
-    }
-
-    #[test]
     fn foreign_machine_repair_parses_an_option_looking_exact_name() {
         let mut document = doctor_fixture();
         for foreign in &mut document.foreign_clusters {
@@ -933,23 +639,19 @@ mod tests {
         let (output, has_findings) = render_doctor(&document);
 
         assert!(has_findings);
-        assert!(output.contains(&format!("ployz machine rm --id {MACHINE_B} -- '--help'")));
+        assert!(output.contains("ployz machine rm -- '--help'"));
         assert!(matches!(
             crate::commands::parse_command(
-                ["machine", "rm", "--id", MACHINE_B, "--", "--help"]
-                    .into_iter()
-                    .map(ToOwned::to_owned),
+                ["machine", "rm", "--", "--help"].into_iter().map(ToOwned::to_owned),
             ),
             Ok(Command::Machine(MachineCommand::Remove(command)))
                 if command.machine.as_str() == "--help"
-                    && command.machine_id.as_ref().is_some_and(|id| id.as_str() == MACHINE_B)
         ));
     }
 
     #[test]
     fn inert_foreign_cluster_rows_are_still_doctor_findings() {
         let mut document = doctor_fixture();
-        document.shadows.clear();
         document.skipped_newer_versions.clear();
         document.versions.behind.clear();
         document.versions.invalid.clear();
@@ -973,7 +675,6 @@ mod tests {
     #[test]
     fn skipped_newer_rows_with_a_lagging_machine_name_the_upgrade_handoff() {
         let document: DoctorDocument = serde_json::from_value(json!({
-            "shadows": [],
             "skipped_newer_versions": [
                 {
                     "table": "services",
@@ -1034,7 +735,6 @@ mod tests {
     #[test]
     fn clean_findings_and_unreachable_have_distinct_exit_outcomes() {
         let clean: DoctorDocument = serde_json::from_value(json!({
-            "shadows": [],
             "skipped_newer_versions": [],
             "versions": { "newest": null, "behind": [], "invalid": [] },
             "foreign_clusters": []

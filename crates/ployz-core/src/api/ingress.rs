@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use crate::corrosion::{
     CorrosionNamespaceName, CorrosionServiceName, IngressMode, RouteBindingDocument,
 };
-use crate::ids::{NamespaceRowId, RouteBindingRowId, ServiceRowId};
 use crate::operation::{RouteHostname, RoutePort};
 
 use super::removal::RouteRemoveRequest;
@@ -15,11 +14,7 @@ use super::removal::RouteRemoveRequest;
 pub struct RouteAttachRequest {
     pub hostname: RouteHostname,
     pub namespace_name: CorrosionNamespaceName,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub namespace_id: Option<NamespaceRowId>,
     pub service_name: CorrosionServiceName,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_id: Option<ServiceRowId>,
     pub endpoint_port: RoutePort,
     pub ingress_mode: IngressMode,
 }
@@ -38,12 +33,10 @@ pub enum RouteAttachOutcome {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct RouteAttachReply {
-    pub route_id: RouteBindingRowId,
     pub outcome: RouteAttachOutcome,
 }
 
-/// A route attach refusal. Each identity conflict retains enough evidence for
-/// the operator to select an exact existing row or remove the occupying route.
+/// A route attach refusal for canonical named resources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -54,51 +47,19 @@ pub enum RouteAttachRefusal {
     NamespaceNotFound {
         namespace_name: CorrosionNamespaceName,
     },
-    NamespaceAmbiguous {
-        namespace_name: CorrosionNamespaceName,
-        namespace_ids: Vec<NamespaceRowId>,
-    },
-    NamespaceIdMismatch {
-        namespace_name: CorrosionNamespaceName,
-        requested: NamespaceRowId,
-        found: NamespaceRowId,
-    },
-    NamespaceIdentityMismatch {
-        namespace_id: NamespaceRowId,
-        requested_name: CorrosionNamespaceName,
-        found_name: CorrosionNamespaceName,
-    },
     NamespaceStoredRowUnselectable {
-        namespace_id: NamespaceRowId,
+        namespace_name: CorrosionNamespaceName,
     },
     ServiceNotFound {
-        namespace_id: NamespaceRowId,
+        namespace_name: CorrosionNamespaceName,
         service_name: CorrosionServiceName,
-    },
-    ServiceAmbiguous {
-        namespace_id: NamespaceRowId,
-        service_name: CorrosionServiceName,
-        service_ids: Vec<ServiceRowId>,
-    },
-    ServiceIdMismatch {
-        namespace_id: NamespaceRowId,
-        service_name: CorrosionServiceName,
-        requested: ServiceRowId,
-        found: ServiceRowId,
-    },
-    ServiceIdentityMismatch {
-        service_id: ServiceRowId,
-        requested_namespace_id: NamespaceRowId,
-        requested_name: CorrosionServiceName,
-        found_namespace_id: NamespaceRowId,
-        found_name: CorrosionServiceName,
     },
     ServiceStoredRowUnselectable {
-        service_id: ServiceRowId,
+        namespace_name: CorrosionNamespaceName,
+        service_name: CorrosionServiceName,
     },
     HostnameAlreadyAttached {
         hostname: RouteHostname,
-        route_id: RouteBindingRowId,
         remove: RouteRemoveRequest,
     },
 }
@@ -107,8 +68,8 @@ pub enum RouteAttachRefusal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteAttachIntent {
     pub hostname: RouteHostname,
-    pub namespace_id: NamespaceRowId,
-    pub service_id: ServiceRowId,
+    pub namespace_id: CorrosionNamespaceName,
+    pub service_name: CorrosionServiceName,
     pub endpoint_port: RoutePort,
     pub ingress_mode: IngressMode,
 }
@@ -119,7 +80,7 @@ impl RouteAttachIntent {
     pub fn matches(&self, document: &RouteBindingDocument) -> bool {
         document.hostname == self.hostname
             && document.namespace_id == self.namespace_id
-            && document.service_id == self.service_id
+            && document.service_name == self.service_name
             && document.endpoint_port == self.endpoint_port
             && document.ingress_mode == self.ingress_mode
             && document.origin == crate::ingress::RouteBindingOrigin::Declared

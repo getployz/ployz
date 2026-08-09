@@ -7,7 +7,7 @@ use ployz_core::corrosion::{
     MeshProvider, OperationInitiator, OperatorWriteProvenance, PeerTransport, Sha256Hex,
     StorageMode, TokenDocument, derive_builtin_wireguard_member,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId, TokenId};
+use ployz_core::ids::{ClusterName, MachineName, PeerName, TokenName};
 use ployz_core::install::{
     AbsoluteInstallPath, ExactPloyzVersion, InstallArtifactSource, InstallArtifactSpec,
     InstallArtifactVersion, InstallSha256Digest,
@@ -23,16 +23,16 @@ use ployz_core::join::{
     classify_join_arrival, prepare_machine_admission, prepare_peer_admission, select_join_storage,
     set_machine_endpoint, token_list_reply, validate_join_token,
 };
-use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::{
     JOIN_ROUTE, KnownApiFeature, MACHINE_ENDPOINT_ROUTE_PREFIX, TOKEN_CREATE_ROUTE,
     TOKEN_LIST_ROUTE, TOKEN_REVOKE_ROUTE_PREFIX, V2Method, V2Route, token_revoke_route,
 };
 
-const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const TOKEN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+const CLUSTER: &str = "main";
+const MACHINE: &str = "edge-a";
+const TOKEN: &str = "bootstrap";
 
 fn timestamp(value: &str) -> CorrosionTimestamp {
     CorrosionTimestamp::try_new(value).expect("fixture timestamp")
@@ -41,7 +41,7 @@ fn timestamp(value: &str) -> CorrosionTimestamp {
 fn provenance() -> OperatorWriteProvenance {
     OperatorWriteProvenance {
         written_by: OperationInitiator::Machine {
-            machine_id: MachineRowId::try_new(MACHINE).expect("fixture id"),
+            machine_id: MachineName::try_new(MACHINE).expect("fixture id"),
         },
         written_at: timestamp("2026-08-05T12:00:00Z"),
     }
@@ -50,7 +50,7 @@ fn provenance() -> OperatorWriteProvenance {
 fn token_provenance() -> OperatorWriteProvenance {
     OperatorWriteProvenance {
         written_by: OperationInitiator::ApiToken {
-            token_id: TokenId::try_new(TOKEN).expect("fixture token id"),
+            token_id: TokenName::try_new(TOKEN).expect("fixture token id"),
         },
         written_at: timestamp("2026-08-05T12:00:00Z"),
     }
@@ -59,7 +59,7 @@ fn token_provenance() -> OperatorWriteProvenance {
 fn token_document(secret: &JoinTokenSecret, expires_at: &str) -> TokenDocument {
     TokenDocument {
         v: CorrosionDocumentVersion::V1,
-        cluster_id: ClusterId::try_new(CLUSTER).expect("fixture cluster id"),
+        cluster_id: ClusterName::try_new(CLUSTER).expect("fixture cluster id"),
         provenance: provenance(),
         secret_sha256: Sha256Hex::try_new(secret.sha256().as_str()).expect("fixture digest"),
         created_at: timestamp("2026-08-05T10:00:00Z"),
@@ -70,7 +70,7 @@ fn token_document(secret: &JoinTokenSecret, expires_at: &str) -> TokenDocument {
 fn cluster() -> ClusterDocument {
     ClusterDocument {
         v: CorrosionDocumentVersion::V1,
-        cluster_id: ClusterId::try_new(CLUSTER).expect("fixture id"),
+        cluster_id: ClusterName::try_new(CLUSTER).expect("fixture id"),
         provenance: provenance(),
         name: "acme".to_owned(),
         storage_default: StorageMode::Plain,
@@ -85,7 +85,7 @@ fn cluster() -> ClusterDocument {
 fn machine(endpoint: Option<SocketAddr>) -> MachineDocument {
     MachineDocument {
         v: CorrosionDocumentVersion::V1,
-        cluster_id: ClusterId::try_new(CLUSTER).expect("fixture id"),
+        cluster_id: ClusterName::try_new(CLUSTER).expect("fixture id"),
         provenance: provenance(),
         name: MachineName::try_new("door-one").expect("fixture name"),
         lifecycle: MachineLifecycle::Active,
@@ -131,7 +131,7 @@ fn opaque_join_blob_round_trips_canonically_and_redacts_secrets() {
     let secret = JoinTokenSecret::try_from_bytes(std::array::from_fn(|index| index as u8));
     let fingerprint = JoinDoorCertFingerprint::try_new("ab".repeat(32)).expect("fingerprint");
     let blob = JoinBlob::try_new(
-        TokenId::try_new(TOKEN).expect("token id"),
+        TokenName::try_new(TOKEN).expect("token id"),
         secret.clone(),
         fingerprint,
         vec![
@@ -210,7 +210,7 @@ fn token_ttl_is_bounded() {
 
 #[test]
 fn token_validation_is_o1_by_embedded_id_and_refuses_expiry_or_wrong_secret() {
-    let token_id = TokenId::try_new(TOKEN).expect("token id");
+    let token_id = TokenName::try_new(TOKEN).expect("token id");
     let secret = JoinTokenSecret::try_from_bytes([7; 32]);
     let proof = JoinTokenProof {
         token_id: token_id.clone(),
@@ -258,8 +258,8 @@ fn token_validation_is_o1_by_embedded_id_and_refuses_expiry_or_wrong_secret() {
 #[test]
 fn token_list_hides_expired_rows_unless_all_is_requested() {
     let secret = JoinTokenSecret::try_from_bytes([9; 32]);
-    let expired = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("expired id");
-    let live = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAZ").expect("live id");
+    let expired = TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("expired id");
+    let live = TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAZ").expect("live id");
     let rows = || {
         vec![
             (
@@ -360,8 +360,7 @@ fn join_storage_and_arrival_policy_are_explicit_and_idempotent() {
 fn machine_and_peer_admission_are_structurally_separate() {
     let machine_request = JoinMemberRequest::Machine {
         request: MachineJoinRequest {
-            machine_id: MachineRowId::try_new(MACHINE).expect("machine id"),
-            name: MachineName::try_new("edge-a").expect("machine name"),
+            name: MachineName::try_new(MACHINE).expect("machine name"),
             public_key: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                 .expect("public key"),
             endpoint: None,
@@ -374,8 +373,7 @@ fn machine_and_peer_admission_are_structurally_separate() {
     };
     let peer_request = JoinMemberRequest::Peer {
         request: PeerJoinRequest {
-            peer_id: PeerId::try_new(MACHINE).expect("peer id"),
-            name: "operator-laptop".to_owned(),
+            name: PeerName::try_new("operator-laptop").expect("peer name"),
             public_key: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                 .expect("public key"),
             endpoint: None,
@@ -392,8 +390,7 @@ fn machine_and_peer_admission_are_structurally_separate() {
 #[test]
 fn public_join_requests_tolerate_additive_fields() {
     let mut machine = serde_json::to_value(MachineJoinRequest {
-        machine_id: MachineRowId::try_new(MACHINE).expect("machine id"),
-        name: MachineName::try_new("edge-a").expect("machine name"),
+        name: MachineName::try_new(MACHINE).expect("machine name"),
         public_key: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
             .expect("public key"),
         endpoint: None,
@@ -412,8 +409,7 @@ fn public_join_requests_tolerate_additive_fields() {
         .expect("machine request ignores additive fields");
 
     let mut peer = serde_json::to_value(PeerJoinRequest {
-        peer_id: PeerId::try_new(MACHINE).expect("peer id"),
-        name: "operator-laptop".to_owned(),
+        name: PeerName::try_new("operator-laptop").expect("peer name"),
         public_key: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
             .expect("public key"),
         endpoint: None,
@@ -427,7 +423,7 @@ fn public_join_requests_tolerate_additive_fields() {
 
 #[test]
 fn every_join_door_refusal_names_a_repair_command() {
-    let token_id = TokenId::try_new(TOKEN).expect("token id");
+    let token_id = TokenName::try_new(TOKEN).expect("token id");
     let refusals = [
         JoinDoorRefusal::TokenNotFound {
             token_id: token_id.clone(),
@@ -488,8 +484,7 @@ fn admission_derives_addresses_and_keeps_peer_rows_subnet_free() {
     let key = WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
         .expect("public key");
     let machine_request = MachineJoinRequest {
-        machine_id: MachineRowId::try_new(MACHINE).expect("machine id"),
-        name: MachineName::try_new("edge-a").expect("machine name"),
+        name: MachineName::try_new(MACHINE).expect("machine name"),
         public_key: key.clone(),
         endpoint: None,
         storage_choice: JoinStorageChoice::Automatic,
@@ -529,8 +524,7 @@ fn admission_derives_addresses_and_keeps_peer_rows_subnet_free() {
     let accepted_peer = prepare_peer_admission(
         &cluster,
         PeerJoinRequest {
-            peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id"),
-            name: "operator-laptop".to_owned(),
+            name: PeerName::try_new("operator-laptop").expect("peer name"),
             public_key: key,
             endpoint: None,
         },
@@ -550,7 +544,7 @@ fn admission_derives_addresses_and_keeps_peer_rows_subnet_free() {
 
 #[test]
 fn endpoint_set_refuses_port_zero_without_mutating_the_machine() {
-    let machine_id = MachineRowId::try_new(MACHINE).expect("machine id");
+    let machine_id = MachineName::try_new(MACHINE).expect("machine id");
     let machine_name = MachineName::try_new("door-one").expect("machine name");
     let request = MachineEndpointSetRequest {
         machine_name: machine_name.clone(),
@@ -642,7 +636,7 @@ fn join_routes_are_centralized_and_token_principals_are_join_only() {
     assert_eq!(V2Route::Join.feature(), KnownApiFeature::JoinDoor);
 
     let token_principal = OperationInitiator::ApiToken {
-        token_id: TokenId::try_new(TOKEN).expect("token id"),
+        token_id: TokenName::try_new(TOKEN).expect("token id"),
     };
     assert!(V2Route::Join.accepts_principal(&token_principal));
     assert!(!V2Route::TokenCreate.accepts_principal(&token_principal));
@@ -650,7 +644,7 @@ fn join_routes_are_centralized_and_token_principals_are_join_only() {
 
 #[test]
 fn token_revoke_route_round_trips_the_typed_token_id() {
-    let token_id = TokenId::try_new(TOKEN).expect("token id");
+    let token_id = TokenName::try_new(TOKEN).expect("token id");
     let path = token_revoke_route(&token_id);
 
     assert_eq!(path, format!("{TOKEN_REVOKE_ROUTE_PREFIX}/{TOKEN}"));
@@ -665,16 +659,16 @@ fn token_revoke_route_round_trips_the_typed_token_id() {
 #[test]
 fn operator_authority_routes_accept_peers_and_refuse_machines() {
     let machine_principal = OperationInitiator::Machine {
-        machine_id: MachineRowId::try_new(MACHINE).expect("machine id"),
+        machine_id: MachineName::try_new(MACHINE).expect("machine id"),
     };
     let peer_principal = OperationInitiator::Peer {
-        peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id"),
+        peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("peer id"),
     };
 
     for route in [
         V2Route::TokenCreate,
         V2Route::TokenList,
-        V2Route::TokenRevoke(TokenId::try_new(TOKEN).expect("token id")),
+        V2Route::TokenRevoke(TokenName::try_new(TOKEN).expect("token id")),
         V2Route::MachineEndpointSet,
     ] {
         assert!(route.accepts_principal(&peer_principal));

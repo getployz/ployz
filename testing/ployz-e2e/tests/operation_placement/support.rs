@@ -14,7 +14,7 @@ use ployz::mesh::context::{LoadedOperatorContext, OperatorContextStore};
 use ployz::mesh::http::{JsonReply, MeshApiClient};
 use ployz::mesh::{BuiltinWireguardDial, BuiltinWireguardPeer, MeshConnector, MeshDialTimeouts};
 use ployz_core::corrosion::ServiceDocument;
-use ployz_core::ids::{MachineRowId, OperationRowId};
+use ployz_core::ids::{DeployName, MachineName};
 use ployz_core::{
     DEPLOY_ROUTE, DeployAccepted, DeployRefusal, DeployRequest, LensCollection, LensSnapshot,
 };
@@ -33,7 +33,7 @@ pub(super) const DATA_VOLUME_SUFFIX: &str = "-v4-data";
 /// `(machine, ip)` entry per container row owned by the given operation.
 pub(super) struct PlacedRows {
     pub(super) service: ServiceDocument,
-    pub(super) containers: Vec<(MachineRowId, Ipv4Addr)>,
+    pub(super) containers: Vec<(MachineName, Ipv4Addr)>,
 }
 
 /// Sends one typed deploy request over the operator's persisted WireGuard
@@ -80,7 +80,7 @@ pub(super) async fn wait_for_placed_rows(
     requester: &DindMachine,
     api_address: &str,
     service_name: &str,
-    operation_id: &OperationRowId,
+    operation_id: &DeployName,
     expected_containers: usize,
 ) -> Result<PlacedRows, String> {
     let deadline = Instant::now() + WAIT_BUDGET;
@@ -98,12 +98,15 @@ pub(super) async fn wait_for_placed_rows(
             ) => {
                 let service = service_rows.iter().find(|row| {
                     row.document.name.as_str() == service_name
-                        && &row.document.operation_id == operation_id
+                        && &row.document.active_deploy == operation_id
                 });
                 if let Some(service) = service {
                     let placed = container_rows
                         .iter()
-                        .filter(|row| row.document.service_id == service.id)
+                        .filter(|row| {
+                            row.document.namespace_id == service.document.namespace_id
+                                && row.document.service_name == service.document.name
+                        })
                         .collect::<Vec<_>>();
                     if placed.len() == expected_containers
                         && placed

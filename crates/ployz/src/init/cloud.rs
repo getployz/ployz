@@ -4,7 +4,7 @@ use std::fmt;
 use std::time::Duration;
 
 use base64::Engine as _;
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+use ployz_core::ids::{ClusterName, MachineName, PeerName};
 use ployz_core::network::WireGuardPublicKey;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ const CALLBACK_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 pub struct CloudEnvelope {
     pub callback_url: Url,
     callback_token: String,
-    pub peer_id: PeerId,
+    pub peer_id: PeerName,
     pub peer_name: String,
     pub public_key: WireGuardPublicKey,
 }
@@ -86,7 +86,7 @@ impl CloudEnvelope {
         Ok(Self {
             callback_url,
             callback_token: wire.callback_token,
-            peer_id: PeerId::try_new(wire.peer_id).map_err(|_| CloudError::InvalidToken)?,
+            peer_id: PeerName::try_new(wire.peer_id).map_err(|_| CloudError::InvalidToken)?,
             peer_name: wire.peer_name,
             public_key: WireGuardPublicKey::try_new(wire.public_key)
                 .map_err(|_| CloudError::InvalidToken)?,
@@ -136,19 +136,19 @@ fn is_loopback_http(url: &Url) -> bool {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CloudProgress {
     Enrolled {
-        cluster_id: ClusterId,
-        machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        machine_id: MachineName,
         machine_public_key: WireGuardPublicKey,
     },
     Ready {
-        cluster_id: ClusterId,
-        machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        machine_id: MachineName,
         machine_public_key: WireGuardPublicKey,
     },
     Failed {
-        cluster_id: ClusterId,
+        cluster_id: ClusterName,
         #[serde(skip_serializing_if = "Option::is_none")]
-        machine_id: Option<MachineRowId>,
+        machine_id: Option<MachineName>,
         reason: String,
         repair_command: Option<String>,
     },
@@ -210,7 +210,7 @@ mod tests {
         let envelope = CloudEnvelope::decode(&token(serde_json::json!({
             "callback_url": "https://cloud.example/bootstrap",
             "callback_token": "callback-secret",
-            "peer_id": PeerId::generate().as_str(),
+            "peer_id": "cloud-peer",
             "peer_name": "Ployz Cloud",
             "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         })))
@@ -224,8 +224,8 @@ mod tests {
     #[test]
     fn callback_payload_has_no_bootstrap_answers_or_credentials() {
         let progress = CloudProgress::Failed {
-            cluster_id: ClusterId::generate(),
-            machine_id: Some(MachineRowId::generate()),
+            cluster_id: ClusterName::try_new("cluster-a").expect("cluster"),
+            machine_id: Some(MachineName::try_new("machine-a").expect("machine")),
             reason: "bounded failure".to_owned(),
             repair_command: None,
         };
@@ -243,8 +243,8 @@ mod tests {
     #[test]
     fn repeated_progress_has_identical_body_and_idempotency_key() {
         let progress = CloudProgress::Ready {
-            cluster_id: ClusterId::generate(),
-            machine_id: MachineRowId::generate(),
+            cluster_id: ClusterName::try_new("cluster-a").expect("cluster"),
+            machine_id: MachineName::try_new("machine-a").expect("machine"),
             machine_public_key: WireGuardPublicKey::try_new(
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             )
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn preflight_failure_has_no_fake_machine_and_a_stable_key() {
-        let cluster_id = ClusterId::generate();
+        let cluster_id = ClusterName::try_new("cluster-a").expect("cluster");
         let progress = CloudProgress::Failed {
             cluster_id: cluster_id.clone(),
             machine_id: None,
@@ -291,7 +291,7 @@ mod tests {
             let opaque = token(serde_json::json!({
                 "callback_url": callback_url,
                 "callback_token": "callback-secret",
-                "peer_id": PeerId::generate().as_str(),
+                "peer_id": "cloud-peer",
                 "peer_name": "Ployz Cloud",
                 "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             }));

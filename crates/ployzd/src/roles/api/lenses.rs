@@ -8,7 +8,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 use ployz_core::{ApiRefusal, LensCollection, LensSnapshot};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -25,14 +25,14 @@ mod tests;
 /// The fixed scope and recovery bound of one local API lens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LensEngineConfig {
-    cluster_id: ClusterId,
+    cluster_id: ClusterName,
     recovery: LensRecoveryPolicy,
     limits: LensLimits,
 }
 
 impl LensEngineConfig {
     #[must_use]
-    pub fn new(cluster_id: ClusterId, recovery: LensRecoveryPolicy) -> Self {
+    pub fn new(cluster_id: ClusterName, recovery: LensRecoveryPolicy) -> Self {
         Self {
             cluster_id,
             recovery,
@@ -41,7 +41,7 @@ impl LensEngineConfig {
     }
 
     #[must_use]
-    pub fn cluster_id(&self) -> &ClusterId {
+    pub fn cluster_id(&self) -> &ClusterName {
         &self.cluster_id
     }
 

@@ -110,10 +110,10 @@ async fn exercise_laptop_dial(docker: &Docker, cluster: &DindCluster) -> Result<
     let peer = SshPeerKey::load(&config_home, &target)
         .map_err(|error| format!("shipped SSH init did not persist its peer key: {error}"))?;
     require(
-        peer.peer_name == PEER_NAME,
+        peer.peer_id.as_str() == PEER_NAME,
         format!(
             "SSH init persisted peer name {:?}, expected {PEER_NAME:?}",
-            peer.peer_name
+            peer.peer_id
         ),
     )?;
     let machine_api_v6 = match loaded {
@@ -208,7 +208,7 @@ fn assert_only_peer_is_operator(
     };
     require(
         id == &peer.peer_id.to_string()
-            && document.name == peer.peer_name
+            && document.name == peer.peer_id
             && public_key == &peer.public_key,
         format!("peer row does not match persisted operator identity: id={id} {document:?}"),
     )
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn status_output_reports_a_ready_machine_table_with_settled_sync() {
-        let output = "cluster\tdind-laptop-dial\t01ARZ3NDEKTSV4RRFFQ69G5FAV\t1 machine\n\
+        let output = "cluster\tdind-laptop-dial\tdind-laptop-dial\t1 machine\n\
 sync\tcaught up\tlag p99 0\t(as seen from machine-one)\n\
 barrier\tready\n\
 \n\

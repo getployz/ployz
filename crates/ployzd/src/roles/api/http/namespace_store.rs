@@ -1,10 +1,11 @@
 //! Direct Corrosion access for the two synchronous namespace primitives.
 
 use ployz_core::corrosion::{
-    CorrosionNamespaceName, CorrosionTable, NamespaceDocument, ServiceDocument, SqliteParameter,
-    Statement, StoredRow, TransactionResponse, TransactionResult, read_named_rows, read_rows,
+    CorrosionNamespaceName, CorrosionServiceName, CorrosionTable, NamespaceDocument,
+    SqliteParameter, Statement, StoredRow, TransactionResponse, TransactionResult, read_named_rows,
+    read_rows,
 };
-use ployz_core::ids::{ClusterId, NamespaceRowId, ServiceRowId};
+use ployz_core::ids::ClusterName;
 
 use crate::corrosion::{
     CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
@@ -13,20 +14,21 @@ use crate::corrosion::{
 
 use super::store::{MutationStoreError, insert_document};
 
-const MAX_KEYED_ROWS: usize = 2;
-const MAX_NAMESPACE_ROWS: usize = 1_000;
+const MAX_KEYED_ROWS: usize = 1;
+const MAX_DEPENDENT_ROWS: usize = 1_000;
 
 #[derive(Debug)]
 pub(super) enum NamespaceCreateOutcome {
-    Created { namespace_id: NamespaceRowId },
-    NameUnavailable { winner: NamespaceRowId },
+    Created {
+        namespace_name: CorrosionNamespaceName,
+    },
+    AlreadyExists,
 }
 
 #[derive(Debug)]
 pub(super) struct ObservedNamespace {
-    pub(super) id: NamespaceRowId,
+    pub(super) id: CorrosionNamespaceName,
     pub(super) exact_document: String,
-    pub(super) document: NamespaceDocument,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +37,7 @@ pub(super) enum NamespaceDeleteOutcome {
     AlreadyAbsent,
     Changed,
     NotEmpty {
-        service_ids: Vec<ServiceRowId>,
+        service_names: Vec<CorrosionServiceName>,
         route_binding_count: usize,
     },
 }
@@ -43,26 +45,25 @@ pub(super) enum NamespaceDeleteOutcome {
 #[derive(Clone)]
 pub(super) struct NamespaceStore {
     client: CorrosionClient,
-    cluster_id: ClusterId,
+    cluster_id: ClusterName,
 }
 
 impl NamespaceStore {
     #[must_use]
-    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterId) -> Self {
+    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterName) -> Self {
         Self { client, cluster_id }
     }
 
     pub(super) async fn create(
         &self,
-        namespace_id: &NamespaceRowId,
+        namespace_id: &CorrosionNamespaceName,
         document: &NamespaceDocument,
     ) -> Result<NamespaceCreateOutcome, NamespaceStoreError> {
         if document.cluster_id != self.cluster_id {
             return Err(NamespaceStoreError::ForeignNamespace);
         }
-        let existing = self.named(&document.name).await?;
-        if let Some(winner) = existing.into_iter().next() {
-            return Ok(NamespaceCreateOutcome::NameUnavailable { winner: winner.id });
+        if self.by_id(namespace_id).await?.is_some() {
+            return Ok(NamespaceCreateOutcome::AlreadyExists);
         }
         insert_document(
             &self.client,
@@ -72,42 +73,19 @@ impl NamespaceStore {
         )
         .await?;
         Ok(NamespaceCreateOutcome::Created {
-            namespace_id: namespace_id.clone(),
+            namespace_name: namespace_id.clone(),
         })
-    }
-
-    pub(super) async fn named(
-        &self,
-        name: &CorrosionNamespaceName,
-    ) -> Result<Vec<ObservedNamespace>, NamespaceStoreError> {
-        let rows = self
-            .query(
-                Statement::with_params(
-                    "SELECT id, document FROM namespaces WHERE json_extract(document, '$.cluster_id') = ? AND json_extract(document, '$.name') = ?",
-                    vec![
-                        SqliteParameter::Text(self.cluster_id.as_str().to_owned()),
-                        SqliteParameter::Text(name.as_str().to_owned()),
-                    ],
-                ),
-                MAX_NAMESPACE_ROWS,
-            )
-            .await?;
-        accepted_namespaces(&self.cluster_id, rows)
     }
 
     pub(super) async fn by_id(
         &self,
-        namespace_id: &NamespaceRowId,
+        namespace_id: &CorrosionNamespaceName,
     ) -> Result<Option<ObservedNamespace>, NamespaceStoreError> {
         let rows = self
             .query(select_by_id(namespace_id), MAX_KEYED_ROWS)
             .await?;
         let mut namespaces = accepted_namespaces(&self.cluster_id, rows)?;
-        match namespaces.as_slice() {
-            [] => Ok(None),
-            [_] => Ok(namespaces.pop()),
-            [_, _, ..] => Err(NamespaceStoreError::AmbiguousNamespace),
-        }
+        Ok(namespaces.pop())
     }
 
     pub(super) async fn delete_if_empty(
@@ -136,13 +114,13 @@ impl NamespaceStore {
         observed: &ObservedNamespace,
     ) -> Result<NamespaceDeleteOutcome, NamespaceStoreError> {
         let namespace = self.query(select_by_id(&observed.id), MAX_KEYED_ROWS);
-        let services = self.query(
-            dependents_statement(CorrosionTable::Services, &observed.id),
-            MAX_NAMESPACE_ROWS,
-        );
         let routes = self.query(
             dependents_statement(CorrosionTable::RouteBindings, &observed.id),
-            MAX_NAMESPACE_ROWS,
+            MAX_DEPENDENT_ROWS,
+        );
+        let services = self.query(
+            dependents_statement(CorrosionTable::Services, &observed.id),
+            MAX_DEPENDENT_ROWS,
         );
         let (namespace, services, routes) = tokio::try_join!(namespace, services, routes)?;
         if namespace.is_empty() {
@@ -155,28 +133,14 @@ impl NamespaceStore {
             return Ok(NamespaceDeleteOutcome::Changed);
         }
 
-        let report = read_rows::<ServiceDocument>(&self.cluster_id, services);
-        if !report.skipped.is_empty() {
-            return Err(NamespaceStoreError::RejectedRows {
-                table: CorrosionTable::Services,
-                count: report.skipped.len(),
-            });
-        }
-        let mut service_ids = report
-            .accepted
-            .into_iter()
-            .map(|row| {
-                ServiceRowId::try_new(row.source.key.clone()).map_err(|_| {
-                    NamespaceStoreError::InvalidRowId {
-                        table: CorrosionTable::Services,
-                        id: row.source.key,
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        service_ids.sort();
+        let service_names =
+            read_rows::<ployz_core::corrosion::ServiceDocument>(&self.cluster_id, services)
+                .accepted
+                .into_iter()
+                .map(|row| row.value.name)
+                .collect();
         Ok(NamespaceDeleteOutcome::NotEmpty {
-            service_ids,
+            service_names,
             route_binding_count: routes.len(),
         })
     }
@@ -194,7 +158,7 @@ impl NamespaceStore {
 }
 
 fn accepted_namespaces(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     rows: Vec<StoredRow>,
 ) -> Result<Vec<ObservedNamespace>, NamespaceStoreError> {
     let report = read_named_rows::<NamespaceDocument>(cluster_id, rows);
@@ -202,7 +166,7 @@ fn accepted_namespaces(
         .accepted
         .into_iter()
         .map(|row| {
-            let id = NamespaceRowId::try_new(row.source.key.clone()).map_err(|_| {
+            let id = CorrosionNamespaceName::try_new(row.source.key.clone()).map_err(|_| {
                 NamespaceStoreError::InvalidRowId {
                     table: CorrosionTable::Namespaces,
                     id: row.source.key.clone(),
@@ -211,20 +175,22 @@ fn accepted_namespaces(
             Ok(ObservedNamespace {
                 id,
                 exact_document: row.source.document,
-                document: row.value,
             })
         })
         .collect()
 }
 
-fn select_by_id(namespace_id: &NamespaceRowId) -> Statement {
+fn select_by_id(namespace_id: &CorrosionNamespaceName) -> Statement {
     Statement::with_params(
         "SELECT id, document FROM namespaces WHERE id = ?",
         vec![SqliteParameter::Text(namespace_id.as_str().to_owned())],
     )
 }
 
-fn delete_empty_statement(namespace_id: &NamespaceRowId, exact_document: &str) -> Statement {
+fn delete_empty_statement(
+    namespace_id: &CorrosionNamespaceName,
+    exact_document: &str,
+) -> Statement {
     Statement::with_params(
         "DELETE FROM namespaces WHERE id = ? AND document = ? AND NOT EXISTS (SELECT 1 FROM services WHERE namespace_id = ?) AND NOT EXISTS (SELECT 1 FROM route_bindings WHERE namespace_id = ?)",
         vec![
@@ -236,7 +202,7 @@ fn delete_empty_statement(namespace_id: &NamespaceRowId, exact_document: &str) -
     )
 }
 
-fn dependents_statement(table: CorrosionTable, namespace_id: &NamespaceRowId) -> Statement {
+fn dependents_statement(table: CorrosionTable, namespace_id: &CorrosionNamespaceName) -> Statement {
     Statement::with_params(
         format!(
             "SELECT id, document FROM {} WHERE namespace_id = ?",
@@ -247,7 +213,7 @@ fn dependents_statement(table: CorrosionTable, namespace_id: &NamespaceRowId) ->
 }
 
 fn affected_rows(
-    namespace_id: &NamespaceRowId,
+    namespace_id: &CorrosionNamespaceName,
     response: &TransactionResponse,
 ) -> Result<usize, NamespaceStoreError> {
     match response.results.as_slice() {
@@ -270,17 +236,13 @@ pub(super) enum NamespaceStoreError {
     Store(#[from] MutationStoreError),
     #[error("namespace belongs to another cluster")]
     ForeignNamespace,
-    #[error("Corrosion returned rejected {table:?} rows: {count}")]
-    RejectedRows { table: CorrosionTable, count: usize },
     #[error("Corrosion returned invalid {table:?} row id {id}")]
     InvalidRowId { table: CorrosionTable, id: String },
-    #[error("Corrosion returned ambiguous namespace rows")]
-    AmbiguousNamespace,
     #[error("Corrosion returned an unexpected namespace write result for {id}")]
-    UnexpectedWriteResult { id: NamespaceRowId },
+    UnexpectedWriteResult { id: CorrosionNamespaceName },
     #[error("Corrosion namespace write for {id} affected {rows_affected} rows")]
     UnexpectedWriteCount {
-        id: NamespaceRowId,
+        id: CorrosionNamespaceName,
         rows_affected: usize,
     },
 }
@@ -291,7 +253,7 @@ mod tests {
 
     #[test]
     fn delete_is_one_exact_conditional_statement() {
-        let id = NamespaceRowId::try_new("01J00000000000000000000002").expect("namespace");
+        let id = CorrosionNamespaceName::try_new("production").expect("namespace");
         let Statement::WithParams(sql, parameters) =
             delete_empty_statement(&id, r#"{"name":"production"}"#)
         else {

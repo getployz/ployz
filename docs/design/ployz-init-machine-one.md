@@ -195,11 +195,10 @@ subset that applies, in order:
 - `machine rm` comes **first**: the removal fence stops a
   misconfigured member's writes at the source, and clearing a
   wiped machine's corpse row frees its name before the rejoin
-  (the corpse holds the lower ULID and would otherwise win the
-  name collision).
-- A wiped machine's old WG key is unrecoverable, so there is no
-  rejoin primitive and no identity resurrection — join is the only
-  door into any cluster, and a rejoining machine is a new machine.
+  before the canonical name can be admitted again).
+- A wiped machine's old WG key is unrecoverable, so join is the only door back
+  into the cluster. After the old row is removed, the host rejoins under the
+  same canonical machine name with fresh cryptographic material.
 - `machine reset` has no SSH driver form: the repair is an on-host
   line, which is also the only shape Cloud can relay (Cloud has no
   SSH path to customer machines). Cloud composes its own single
@@ -251,8 +250,8 @@ Keeper's never-fold-an-empty-roster guard is safe on machine one).
 ```
  sudo ployz init:
   0  stage ployzd + pinned corrosion + docker-if-missing (release channel)
-  1  mint cluster_id ULID → persist to /var/lib/ployz      ← resume anchor
-  2  mint machine ULID + WG keypair → derive ULA /48 + machine /112
+  1  persist the chosen cluster name to /var/lib/ployz     ← resume anchor
+  2  persist the chosen machine name + mint WG keypair
   3  mint cluster door keypair (TLS) → fingerprint kept for tokens
   4  allocate machine-one /24 from the chosen prefix       (first pick, no race)
   5  storage prep per resolved answer (zfs dataset root + docker

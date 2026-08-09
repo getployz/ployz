@@ -275,7 +275,6 @@ fn validate_prepare_request(
     if identity.operation_id != request.operation_id
         || request.replicas.iter().any(|replica| {
             replica.identity.namespace_id != identity.namespace_id
-                || replica.identity.service_id != identity.service_id
                 || replica.identity.operation_id != identity.operation_id
         })
     {

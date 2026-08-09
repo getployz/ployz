@@ -3,7 +3,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use ployz_core::corrosion::{MachineDocument, Principal, resolve_source_principal};
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+use ployz_core::ids::{ClusterName, MachineName, PeerName};
 use ployz_core::{ApiRefusal, CorrosionRetryAfterSeconds};
 
 use super::store::{AcceptedRoster, MutationStoreError, read_accepted_roster};
@@ -11,7 +11,7 @@ use crate::corrosion::CorrosionClient;
 
 pub(super) async fn resolve_peer_principal(
     corrosion: &CorrosionClient,
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     source: IpAddr,
 ) -> Result<(Principal, AcceptedRoster), PeerPrincipalError> {
     let roster = read_accepted_roster(corrosion, cluster_id)
@@ -30,8 +30,8 @@ pub(super) async fn resolve_peer_principal(
 
 pub(super) async fn validate_listener_identity(
     corrosion: &CorrosionClient,
-    cluster_id: &ClusterId,
-    local_machine_id: &MachineRowId,
+    cluster_id: &ClusterName,
+    local_machine_id: &MachineName,
     listen_addr: SocketAddr,
 ) -> Result<MachineDocument, ApiListenerValidationError> {
     let roster = read_accepted_roster(corrosion, cluster_id)
@@ -68,7 +68,7 @@ impl PeerPrincipalError {
 }
 
 pub(super) fn validate_listener_principal(
-    local_machine_id: &MachineRowId,
+    local_machine_id: &MachineName,
     listen_addr: SocketAddr,
     principal: Principal,
 ) -> Result<(), ApiListenerValidationError> {
@@ -102,9 +102,9 @@ fn accepted_roster_refusal(error: MutationStoreError) -> ApiRefusal {
     tracing::warn!(%error, "could not read the accepted API roster");
     match error {
         MutationStoreError::MissingCluster => ApiRefusal::MissingCluster,
-        MutationStoreError::InvalidCluster
-        | MutationStoreError::InvalidAcceptedId { .. }
-        | MutationStoreError::InvalidAcceptedShadow { .. } => ApiRefusal::InvalidCluster,
+        MutationStoreError::InvalidCluster | MutationStoreError::InvalidAcceptedId { .. } => {
+            ApiRefusal::InvalidCluster
+        }
         MutationStoreError::Client(_)
         | MutationStoreError::StoredRows(_)
         | MutationStoreError::DuplicatePrimaryKey { .. }
@@ -124,23 +124,23 @@ pub enum ApiListenerValidationError {
     )]
     OtherMachine {
         listen_addr: SocketAddr,
-        expected_machine_id: MachineRowId,
-        found_machine_id: MachineRowId,
+        expected_machine_id: MachineName,
+        found_machine_id: MachineName,
     },
     #[error(
         "API listener {listen_addr} resolves to peer {peer_id}, not local machine {expected_machine_id}"
     )]
     Peer {
         listen_addr: SocketAddr,
-        expected_machine_id: MachineRowId,
-        peer_id: PeerId,
+        expected_machine_id: MachineName,
+        peer_id: PeerName,
     },
     #[error(
         "API listener {listen_addr} resolves to API token {token_id}, not local machine {expected_machine_id}"
     )]
     ApiToken {
         listen_addr: SocketAddr,
-        expected_machine_id: MachineRowId,
-        token_id: ployz_core::ids::TokenId,
+        expected_machine_id: MachineName,
+        token_id: ployz_core::ids::TokenName,
     },
 }

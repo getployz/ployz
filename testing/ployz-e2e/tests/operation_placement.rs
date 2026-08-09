@@ -19,8 +19,8 @@ use ployz_core::corrosion::{
 use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, ImageReference, ServiceVolumeMount, VolumeName,
 };
-use ployz_core::ids::MachineRowId;
-use ployz_core::{DeployRefusal, DeployRequest};
+use ployz_core::ids::{DeployName, MachineName};
+use ployz_core::{DeployRefusal, DeployRequest, DeployServiceRequest};
 use ployz_e2e::dind as deploy_support;
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
@@ -98,19 +98,19 @@ async fn placement_bids_drive_spread_sticky_pins_global_and_one_shot_volumes() {
 /// One cluster member the scenario can address by roster id, name, and DinD
 /// container.
 struct Member<'a> {
-    id: MachineRowId,
+    id: MachineName,
     name: String,
     machine: &'a DindMachine,
 }
 
-fn member_for<'a>(members: &'a [Member<'a>], id: &MachineRowId) -> Result<&'a Member<'a>, String> {
+fn member_for<'a>(members: &'a [Member<'a>], id: &MachineName) -> Result<&'a Member<'a>, String> {
     members
         .iter()
         .find(|member| &member.id == id)
         .ok_or_else(|| format!("machine {id} is not a provisioned cluster member"))
 }
 
-fn distinct_machines(rows: &support::PlacedRows) -> BTreeSet<MachineRowId> {
+fn distinct_machines(rows: &support::PlacedRows) -> BTreeSet<MachineName> {
     rows.containers
         .iter()
         .map(|(machine, _)| machine.clone())
@@ -416,7 +416,7 @@ async fn exercise_operation_placement(
         m1,
         &j1.api_address,
         VOLUME_SERVICE,
-        &first_volume.operation_id,
+        &first_volume.deploy_name,
         1,
     )
     .await?;
@@ -445,7 +445,7 @@ async fn exercise_operation_placement(
         JsonReply::Success(accepted) => {
             return Err(format!(
                 "volume redeploy unexpectedly created operation {}",
-                accepted.operation_id
+                accepted.deploy_name
             ));
         }
         JsonReply::Refused(refusal) => {
@@ -505,13 +505,16 @@ fn volume_deploy_request(image: &str) -> Result<DeployRequest, String> {
     Ok(DeployRequest {
         namespace_name: CorrosionNamespaceName::try_new(VOLUME_NAMESPACE)
             .map_err(|error| error.to_string())?,
-        service_name: CorrosionServiceName::try_new(VOLUME_SERVICE)
-            .map_err(|error| error.to_string())?,
-        image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
-        credential: None,
-        runtime,
-        health_gate: HealthGatePolicy::Enforce,
-        placement: None,
-        machines: None,
+        deploy_name: DeployName::try_new("volume-first").map_err(|error| error.to_string())?,
+        services: vec![DeployServiceRequest {
+            service_name: CorrosionServiceName::try_new(VOLUME_SERVICE)
+                .map_err(|error| error.to_string())?,
+            image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
+            credential: None,
+            runtime,
+            health_gate: HealthGatePolicy::Enforce,
+            placement: None,
+            machines: None,
+        }],
     })
 }

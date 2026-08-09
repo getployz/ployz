@@ -1,28 +1,22 @@
 //! Command contracts for the local CLI and the machine-one bootstrap driver.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
+use ployz_core::MachineUpgradeUrl;
 use ployz_core::corrosion::{
-    AutomaticHostnameMode, CorrosionNamespaceName, CorrosionServiceName, HostPortBinding,
-    HostPortBindings, HostPortProtocol, ServiceReplicaCount, StorageMode,
+    AutomaticHostnameMode, CorrosionNamespaceName, CorrosionServiceName, StorageMode,
 };
-use ployz_core::deploy::{EnvName, EnvValue, ImageReference, ServiceEnvironment};
 use ployz_core::founding::InitStorageChoice;
-use ployz_core::ids::{
-    MachineRowId, NamespaceRowId, OperationRowId, PeerId, RouteBindingRowId, ServiceRowId,
-};
+use ployz_core::ids::{DeployName, PeerName};
 use ployz_core::install::{ExactPloyzVersion, InstallSha256Digest};
 use ployz_core::join::{JoinBlob, JoinTokenTtlSeconds};
 use ployz_core::machine::MachineName;
 use ployz_core::network::{DEFAULT_ENDPOINT_SUPERNET, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::{RouteHostname, RoutePort};
-use ployz_core::{
-    HealthGatePolicy, MachineUpgradeUrl, PinnedMachineNames, RequestedPins, RequestedPlacement,
-};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +43,7 @@ pub enum PeerCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRemoveCommand {
-    pub name: String,
-    pub peer_id: Option<PeerId>,
+    pub name: PeerName,
     pub target: Option<SshTarget>,
 }
 
@@ -69,21 +62,14 @@ pub struct NamespaceCreateCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamespaceRemoveCommand {
     pub namespace: CorrosionNamespaceName,
-    pub namespace_id: Option<NamespaceRowId>,
     pub target: Option<SshTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployCommand {
     pub namespace: CorrosionNamespaceName,
-    pub service: CorrosionServiceName,
-    pub image: ImageReference,
-    pub environment: ServiceEnvironment,
-    pub health_gate: HealthGatePolicy,
-    /// `None` inherits the service row's placement unchanged.
-    pub placement: Option<RequestedPlacement>,
-    /// `None` inherits the service row's pin set unchanged.
-    pub machines: Option<RequestedPins>,
+    pub deploy: DeployName,
+    pub services: Vec<ployz_core::DeployServiceRequest>,
     pub target: Option<SshTarget>,
 }
 
@@ -100,14 +86,15 @@ pub struct OpsListCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsWatchCommand {
-    pub operation_id: OperationRowId,
+    pub namespace_name: CorrosionNamespaceName,
+    pub deploy_name: DeployName,
     pub target: Option<SshTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogsCommand {
-    pub service: CorrosionServiceName,
-    pub service_id: Option<ServiceRowId>,
+    pub namespace_name: CorrosionNamespaceName,
+    pub service_name: CorrosionServiceName,
     pub tail_lines: ployz_core::CorrosionLogsTailLines,
     /// Selects the replica hosted by the named machine when the service runs
     /// containers on more than one machine.
@@ -123,9 +110,8 @@ pub enum ServiceCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceRemoveCommand {
-    pub namespace_id: NamespaceRowId,
-    pub name: String,
-    pub service_id: Option<ServiceRowId>,
+    pub namespace_name: CorrosionNamespaceName,
+    pub service_name: CorrosionServiceName,
     pub target: Option<SshTarget>,
 }
 
@@ -139,9 +125,7 @@ pub enum RouteCommand {
 pub struct RouteAttachCommand {
     pub hostname: RouteHostname,
     pub namespace: CorrosionNamespaceName,
-    pub namespace_id: Option<NamespaceRowId>,
     pub service: CorrosionServiceName,
-    pub service_id: Option<ServiceRowId>,
     pub endpoint_port: RoutePort,
     pub target: Option<SshTarget>,
 }
@@ -149,7 +133,6 @@ pub struct RouteAttachCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteRemoveCommand {
     pub hostname: RouteHostname,
-    pub route_id: Option<RouteBindingRowId>,
     pub target: Option<SshTarget>,
 }
 
@@ -176,7 +159,6 @@ pub struct MachineListCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineRemoveCommand {
     pub machine: MachineName,
-    pub machine_id: Option<MachineRowId>,
     pub target: Option<SshTarget>,
 }
 
@@ -227,6 +209,7 @@ pub enum TokenCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenCreateCommand {
+    pub name: ployz_core::ids::TokenName,
     pub ttl: JoinTokenTtlSeconds,
     pub target: Option<SshTarget>,
 }
@@ -239,7 +222,7 @@ pub struct TokenListCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenRevokeCommand {
-    pub token_id: ployz_core::ids::TokenId,
+    pub token_id: ployz_core::ids::TokenName,
     pub target: Option<SshTarget>,
 }
 
@@ -371,8 +354,7 @@ impl<'de> Deserialize<'de> for SshTarget {
 /// Public peer material carried across the already-authenticated SSH channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverPeerArgs {
-    pub id: PeerId,
-    pub name: String,
+    pub id: PeerName,
     pub public_key: WireGuardPublicKey,
 }
 
@@ -400,7 +382,6 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             MachineCli::Remove(args) => MachineCommand::Remove(MachineRemoveCommand {
                 machine: MachineName::try_new(args.machine)
                     .map_err(|error| clap_value_error(error.to_string()))?,
-                machine_id: args.machine_id,
                 target: args.target,
             }),
             MachineCli::Endpoint { command } => match command {
@@ -427,6 +408,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
         })),
         CommandCli::Token { command } => Ok(Command::Token(match command {
             TokenCli::Create(args) => TokenCommand::Create(TokenCreateCommand {
+                name: args.name,
                 ttl: parse_ttl(&args.ttl).map_err(clap_value_error)?,
                 target: args.target,
             }),
@@ -448,7 +430,6 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             NamespaceCli::Remove(args) => NamespaceCommand::Remove(NamespaceRemoveCommand {
                 namespace: CorrosionNamespaceName::try_new(args.namespace)
                     .map_err(|error| clap_value_error(error.to_string()))?,
-                namespace_id: args.namespace_id,
                 target: args.target,
             }),
         })),
@@ -461,14 +442,16 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
                 target: args.target,
             }),
             OpsCli::Watch(args) => OpsCommand::Watch(OpsWatchCommand {
-                operation_id: args.operation_id,
+                namespace_name: args.namespace_name,
+                deploy_name: args.deploy_name,
                 target: args.target,
             }),
         })),
         CommandCli::Logs(args) => Ok(Command::Logs(LogsCommand {
-            service: CorrosionServiceName::try_new(args.service)
+            namespace_name: CorrosionNamespaceName::try_new(args.namespace)
                 .map_err(|error| clap_value_error(error.to_string()))?,
-            service_id: args.service_id,
+            service_name: CorrosionServiceName::try_new(args.service)
+                .map_err(|error| clap_value_error(error.to_string()))?,
             tail_lines: ployz_core::CorrosionLogsTailLines::try_new(args.tail)
                 .map_err(|error| clap_value_error(error.to_string()))?,
             machine: args
@@ -481,16 +464,15 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
         })),
         CommandCli::Peer { command } => Ok(Command::Peer(match command {
             PeerCli::Remove(args) => PeerCommand::Remove(PeerRemoveCommand {
-                name: args.name,
-                peer_id: args.id,
+                name: PeerName::try_new(args.name)
+                    .map_err(|error| clap_value_error(error.to_string()))?,
                 target: args.target,
             }),
         })),
         CommandCli::Service { command } => Ok(Command::Service(match command {
             ServiceCli::Remove(args) => ServiceCommand::Remove(ServiceRemoveCommand {
-                namespace_id: args.namespace_id,
-                name: args.name,
-                service_id: args.id,
+                namespace_name: args.namespace_name,
+                service_name: args.service_name,
                 target: args.target,
             }),
         })),
@@ -500,10 +482,8 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
                     .map_err(|error| clap_value_error(error.to_string()))?,
                 namespace: CorrosionNamespaceName::try_new(args.namespace)
                     .map_err(|error| clap_value_error(error.to_string()))?,
-                namespace_id: args.namespace_id,
                 service: CorrosionServiceName::try_new(args.service)
                     .map_err(|error| clap_value_error(error.to_string()))?,
-                service_id: args.service_id,
                 endpoint_port: RoutePort::try_new(args.port)
                     .map_err(|error| clap_value_error(error.to_string()))?,
                 target: args.target,
@@ -511,7 +491,6 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<Command, 
             RouteCli::Remove(args) => RouteCommand::Remove(RouteRemoveCommand {
                 hostname: RouteHostname::try_new(args.hostname)
                     .map_err(|error| clap_value_error(error.to_string()))?,
-                route_id: args.id,
                 target: args.target,
             }),
         })),
@@ -609,8 +588,6 @@ enum PeerCli {
 struct PeerRemoveArgs {
     name: String,
     #[arg(long)]
-    id: Option<PeerId>,
-    #[arg(long)]
     target: Option<SshTarget>,
 }
 
@@ -633,9 +610,6 @@ struct NamespaceCreateArgs {
 #[derive(Debug, Args)]
 struct NamespaceRemoveArgs {
     namespace: String,
-    /// Select one exact row when this name is ambiguous.
-    #[arg(long = "id")]
-    namespace_id: Option<NamespaceRowId>,
     #[arg(long)]
     target: Option<SshTarget>,
 }
@@ -643,194 +617,34 @@ struct NamespaceRemoveArgs {
 #[derive(Debug, Args)]
 struct DeployArgs {
     namespace: String,
-    service: String,
-    image: String,
-    /// Set an environment value as NAME=VALUE. Values are redacted from diagnostics.
-    #[arg(long = "env", value_name = "NAME=VALUE")]
-    environment: Vec<String>,
-    /// Emergency skip: deploy without waiting for the container to prove healthy.
-    #[arg(long = "no-health-gate")]
-    no_health_gate: bool,
-    /// Service mode: replicated runs a chosen replica count; global runs one
-    /// replica on every eligible machine.
-    #[arg(long, value_enum)]
-    mode: Option<DeployModeArg>,
-    /// Replica count for a replicated service.
-    #[arg(long, value_name = "N")]
-    replicas: Option<u16>,
-    /// Publish a host port into a global service (protocol defaults to tcp).
-    #[arg(
-        short = 'p',
-        long = "publish",
-        value_name = "[HOST:]CONTAINER[/PROTOCOL]"
-    )]
-    publish: Vec<String>,
-    /// Pin placement to a named machine (repeatable); `--machine any` clears
-    /// the pin set.
-    #[arg(long = "machine", value_name = "NAME")]
-    machines: Vec<String>,
+    deploy: String,
+    /// JSON namespace manifest containing the complete `services` array.
+    #[arg(long, value_name = "PATH")]
+    file: PathBuf,
     #[arg(long)]
     target: Option<SshTarget>,
 }
 
-/// Service mode requested on the command line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum DeployModeArg {
-    Replicated,
-    Global,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeployManifest {
+    services: Vec<ployz_core::DeployServiceRequest>,
 }
-
-/// The pin-set literal that clears a service's pinned machines.
-const ANY_MACHINE_PIN: &str = "any";
 
 impl DeployArgs {
     fn into_command(self) -> Result<DeployCommand, String> {
-        let mut environment = BTreeMap::new();
-        for assignment in self.environment {
-            let Some((name, value)) = assignment.split_once('=') else {
-                return Err("--env must be NAME=VALUE".to_owned());
-            };
-            let name = EnvName::try_new(name).map_err(|error| error.to_string())?;
-            let value = EnvValue::try_new(value).map_err(|error| error.to_string())?;
-            if environment.insert(name.clone(), value).is_some() {
-                return Err(format!(
-                    "environment variable {} was supplied more than once",
-                    name.as_str()
-                ));
-            }
-        }
+        let bytes = std::fs::read(&self.file)
+            .map_err(|error| format!("could not read {}: {error}", self.file.display()))?;
+        let manifest: DeployManifest = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid deploy manifest {}: {error}", self.file.display()))?;
         Ok(DeployCommand {
             namespace: CorrosionNamespaceName::try_new(self.namespace)
                 .map_err(|error| error.to_string())?,
-            service: CorrosionServiceName::try_new(self.service)
-                .map_err(|error| error.to_string())?,
-            image: ImageReference::try_new(self.image).map_err(|error| error.to_string())?,
-            environment: ServiceEnvironment::from(environment),
-            health_gate: if self.no_health_gate {
-                HealthGatePolicy::Skip
-            } else {
-                HealthGatePolicy::Enforce
-            },
-            placement: requested_placement(self.mode, self.replicas, &self.publish)?,
-            machines: requested_pins(self.machines)?,
+            deploy: DeployName::try_new(self.deploy).map_err(|error| error.to_string())?,
+            services: manifest.services,
             target: self.target,
         })
     }
-}
-
-/// Maps the placement flags to a placement request. No flags means `None`:
-/// the deploy inherits the service row's placement unchanged.
-fn requested_placement(
-    mode: Option<DeployModeArg>,
-    replicas: Option<u16>,
-    publish: &[String],
-) -> Result<Option<RequestedPlacement>, String> {
-    let mut bindings = Vec::new();
-    for spec in publish {
-        bindings.push(parse_publish(spec)?);
-    }
-    match mode {
-        Some(DeployModeArg::Global) => {
-            if replicas.is_some() {
-                return Err(
-                    "global runs one replica on every eligible machine; drop --replicas".to_owned(),
-                );
-            }
-            let host_ports =
-                HostPortBindings::try_new(bindings).map_err(|error| error.to_string())?;
-            Ok(Some(RequestedPlacement::Global { host_ports }))
-        }
-        Some(DeployModeArg::Replicated) => {
-            if !bindings.is_empty() {
-                return Err(
-                    "published host ports are legal only on global services; expose a replicated service through a route binding"
-                        .to_owned(),
-                );
-            }
-            // A count-free `--mode replicated` keeps a replicated incumbent's
-            // count; the server defaults one replica on a first deploy or a
-            // global conversion.
-            let replicas = replicas
-                .map(ServiceReplicaCount::try_new)
-                .transpose()
-                .map_err(|error| error.to_string())?;
-            Ok(Some(RequestedPlacement::Replicated { replicas }))
-        }
-        None => {
-            if !bindings.is_empty() {
-                return Err(
-                    "published host ports are legal only on global services; expose a replicated service through a route binding"
-                        .to_owned(),
-                );
-            }
-            // A bare `--replicas N` is the mode-preserving count change.
-            match replicas {
-                Some(replicas) => {
-                    let replicas = ServiceReplicaCount::try_new(replicas)
-                        .map_err(|error| error.to_string())?;
-                    Ok(Some(RequestedPlacement::Replicas { replicas }))
-                }
-                None => Ok(None),
-            }
-        }
-    }
-}
-
-/// Maps repeated `--machine` flags to a pin request. `any` clears the pin
-/// set and cannot be combined with machine names.
-fn requested_pins(machines: Vec<String>) -> Result<Option<RequestedPins>, String> {
-    if machines.is_empty() {
-        return Ok(None);
-    }
-    let any_count = machines
-        .iter()
-        .filter(|machine| machine.as_str() == ANY_MACHINE_PIN)
-        .count();
-    if any_count > 0 {
-        if any_count < machines.len() {
-            return Err(
-                "--machine any clears the pin set and cannot be combined with machine names"
-                    .to_owned(),
-            );
-        }
-        return Ok(Some(RequestedPins::Any));
-    }
-    let mut names = Vec::new();
-    for machine in machines {
-        names.push(MachineName::try_new(machine).map_err(|error| error.to_string())?);
-    }
-    let names = PinnedMachineNames::try_new(names).map_err(|error| error.to_string())?;
-    Ok(Some(RequestedPins::Machines { names }))
-}
-
-/// Parses one `--publish` value: `[host:]container[/protocol]`, protocol
-/// defaulting to tcp, host defaulting to the container port.
-fn parse_publish(spec: &str) -> Result<HostPortBinding, String> {
-    let (ports, protocol) = match spec.rsplit_once('/') {
-        Some((ports, "tcp")) => (ports, HostPortProtocol::Tcp),
-        Some((ports, "udp")) => (ports, HostPortProtocol::Udp),
-        Some((_, other)) => {
-            return Err(format!(
-                "--publish protocol must be tcp or udp, got {other}"
-            ));
-        }
-        None => (spec, HostPortProtocol::Tcp),
-    };
-    let (host, container) = match ports.split_once(':') {
-        Some((host, container)) => (host, container),
-        None => (ports, ports),
-    };
-    Ok(HostPortBinding {
-        host_port: parse_published_port(host)?,
-        container_port: parse_published_port(container)?,
-        protocol,
-    })
-}
-
-fn parse_published_port(value: &str) -> Result<std::num::NonZeroU16, String> {
-    value
-        .parse::<std::num::NonZeroU16>()
-        .map_err(|_| format!("--publish ports must be between 1 and 65535, got {value:?}"))
 }
 
 #[derive(Debug, Subcommand)]
@@ -849,19 +663,15 @@ struct OpsListArgs {
 
 #[derive(Debug, Subcommand)]
 enum ServiceCli {
-    /// Remove one service row, refusing ambiguous names unless an id is supplied.
+    /// Remove one canonically named service from a namespace.
     #[command(name = "rm")]
     Remove(ServiceRemoveArgs),
 }
 
 #[derive(Debug, Args)]
 struct ServiceRemoveArgs {
-    name: String,
-    /// Namespace row that owns this service identity.
-    #[arg(long)]
-    namespace_id: NamespaceRowId,
-    #[arg(long)]
-    id: Option<ServiceRowId>,
+    namespace_name: CorrosionNamespaceName,
+    service_name: CorrosionServiceName,
     #[arg(long)]
     target: Option<SshTarget>,
 }
@@ -870,7 +680,7 @@ struct ServiceRemoveArgs {
 enum RouteCli {
     /// Attach one hostname to a named service.
     Attach(RouteAttachArgs),
-    /// Remove one route-binding row, refusing ambiguous hostnames unless an id is supplied.
+    /// Remove one canonically named route binding.
     #[command(name = "rm")]
     Remove(RouteRemoveArgs),
 }
@@ -885,10 +695,6 @@ struct RouteAttachArgs {
     #[arg(long)]
     port: u16,
     #[arg(long)]
-    namespace_id: Option<NamespaceRowId>,
-    #[arg(long)]
-    service_id: Option<ServiceRowId>,
-    #[arg(long)]
     target: Option<SshTarget>,
 }
 
@@ -896,24 +702,21 @@ struct RouteAttachArgs {
 struct RouteRemoveArgs {
     hostname: String,
     #[arg(long)]
-    id: Option<RouteBindingRowId>,
-    #[arg(long)]
     target: Option<SshTarget>,
 }
 
 #[derive(Debug, Args)]
 struct OpsWatchArgs {
-    operation_id: OperationRowId,
+    namespace_name: CorrosionNamespaceName,
+    deploy_name: DeployName,
     #[arg(long)]
     target: Option<SshTarget>,
 }
 
 #[derive(Debug, Args)]
 struct LogsArgs {
+    namespace: String,
     service: String,
-    /// Select one exact service row when this name is ambiguous.
-    #[arg(long = "id")]
-    service_id: Option<ServiceRowId>,
     /// Number of existing lines to print before following.
     #[arg(long, default_value_t = 100)]
     tail: u16,
@@ -975,9 +778,6 @@ struct MachineEndpointSetArgs {
 #[derive(Debug, Args)]
 struct MachineRemoveArgs {
     machine: String,
-    /// Match one exact machine identity when the name is ambiguous.
-    #[arg(long = "id")]
-    machine_id: Option<MachineRowId>,
     /// Select the cluster founded through this SSH target.
     #[arg(long)]
     target: Option<SshTarget>,
@@ -1102,6 +902,8 @@ enum TokenCli {
 
 #[derive(Debug, Args)]
 struct TokenCreateArgs {
+    /// Durable name for the token.
+    name: ployz_core::ids::TokenName,
     /// Token lifetime, expressed as whole seconds, minutes, hours, or days.
     #[arg(long, default_value = "24h")]
     ttl: String,
@@ -1122,7 +924,7 @@ struct TokenListArgs {
 
 #[derive(Debug, Args)]
 struct TokenRevokeArgs {
-    token_id: ployz_core::ids::TokenId,
+    token_id: ployz_core::ids::TokenName,
     /// Select the cluster founded through this SSH target.
     #[arg(long)]
     target: Option<SshTarget>,
@@ -1160,11 +962,9 @@ struct InitArgs {
     /// Cloud callback and public-enrollment envelope.
     #[arg(long, conflicts_with = "target")]
     cloud_token: Option<CloudToken>,
-    #[arg(long, hide = true, conflicts_with_all = ["target", "cloud_token"], requires_all = ["driver_peer_name", "driver_peer_public_key"])]
-    driver_peer_id: Option<PeerId>,
-    #[arg(long, hide = true, conflicts_with_all = ["target", "cloud_token"], requires_all = ["driver_peer_id", "driver_peer_public_key"])]
-    driver_peer_name: Option<String>,
-    #[arg(long, hide = true, conflicts_with_all = ["target", "cloud_token"], requires_all = ["driver_peer_id", "driver_peer_name"], value_parser = parse_wireguard_public_key)]
+    #[arg(long, hide = true, conflicts_with_all = ["target", "cloud_token"], requires = "driver_peer_public_key")]
+    driver_peer_id: Option<PeerName>,
+    #[arg(long, hide = true, conflicts_with_all = ["target", "cloud_token"], requires = "driver_peer_id", value_parser = parse_wireguard_public_key)]
     driver_peer_public_key: Option<WireGuardPublicKey>,
 }
 
@@ -1179,19 +979,14 @@ impl InitArgs {
             self.target,
             self.cloud_token,
             self.driver_peer_id,
-            self.driver_peer_name,
             self.driver_peer_public_key,
         ) {
-            (Some(target), None, None, None, None) => InitDriver::SshTarget(target),
-            (None, Some(token), None, None, None) => InitDriver::Cloud(token),
-            (None, None, Some(id), Some(name), Some(public_key)) => {
-                InitDriver::SshPeer(DriverPeerArgs {
-                    id,
-                    name,
-                    public_key,
-                })
+            (Some(target), None, None, None) => InitDriver::SshTarget(target),
+            (None, Some(token), None, None) => InitDriver::Cloud(token),
+            (None, None, Some(id), Some(public_key)) => {
+                InitDriver::SshPeer(DriverPeerArgs { id, public_key })
             }
-            (None, None, None, None, None) => InitDriver::OnHost,
+            (None, None, None, None) => InitDriver::OnHost,
             _ => return Err("init driver arguments are inconsistent".to_owned()),
         };
         Ok(InitCommand {
@@ -1335,773 +1130,51 @@ enum TelemetryCli {
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> Result<Command, clap::Error> {
-        parse_command(args.iter().map(ToString::to_string))
-    }
-
     #[test]
-    fn parses_local_telemetry_preferences() {
-        for (verb, expected) in [
-            ("enable", TelemetryCommand::Enable),
-            ("disable", TelemetryCommand::Disable),
-        ] {
-            assert_eq!(
-                parse(&["telemetry", verb]).expect("telemetry preference parses"),
-                Command::Telemetry(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn parses_each_named_remove_with_optional_exact_row_id() {
-        let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-        assert_eq!(
-            parse(&["peer", "rm", "operator", "--id", id]).expect("peer remove parses"),
-            Command::Peer(PeerCommand::Remove(PeerRemoveCommand {
-                name: "operator".to_owned(),
-                peer_id: Some(PeerId::try_new(id).expect("peer id")),
-                target: None,
-            }))
-        );
-        assert_eq!(
-            parse(&["namespace", "rm", "prod", "--id", id]).expect("namespace remove parses"),
-            Command::Namespace(NamespaceCommand::Remove(NamespaceRemoveCommand {
-                namespace: CorrosionNamespaceName::try_new("prod").expect("namespace name"),
-                namespace_id: Some(NamespaceRowId::try_new(id).expect("namespace id")),
-                target: None,
-            }))
-        );
-        assert_eq!(
-            parse(&["service", "rm", "web", "--namespace-id", id, "--id", id,])
-                .expect("service remove parses"),
-            Command::Service(ServiceCommand::Remove(ServiceRemoveCommand {
-                namespace_id: NamespaceRowId::try_new(id).expect("namespace id"),
-                name: "web".to_owned(),
-                service_id: Some(ServiceRowId::try_new(id).expect("service id")),
-                target: None,
-            }))
-        );
-        assert_eq!(
-            parse(&["route", "rm", "WEB.EXAMPLE.COM", "--id", id]).expect("route remove parses"),
-            Command::Route(RouteCommand::Remove(RouteRemoveCommand {
-                hostname: RouteHostname::try_new("web.example.com").expect("hostname"),
-                route_id: Some(RouteBindingRowId::try_new(id).expect("route id")),
-                target: None,
-            }))
-        );
-        assert!(matches!(
-            parse(&["service", "rm", "web", "--namespace-id", id])
-                .expect("unqualified remove parses"),
-            Command::Service(ServiceCommand::Remove(ServiceRemoveCommand {
-                namespace_id,
-                service_id: None,
-                ..
-            })) if namespace_id.as_str() == id
-        ));
-        assert!(parse(&["service", "rm", "web"]).is_err());
-    }
-
-    #[test]
-    fn parses_route_attach_with_named_and_optional_exact_selectors() {
-        let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-        assert_eq!(
-            parse(&[
-                "route",
-                "attach",
-                "WEB.EXAMPLE.COM",
-                "--namespace",
-                "production",
-                "--service",
-                "web",
-                "--port",
-                "8080",
-                "--namespace-id",
-                id,
-                "--service-id",
-                id,
-            ])
-            .expect("route attach parses"),
-            Command::Route(RouteCommand::Attach(RouteAttachCommand {
-                hostname: RouteHostname::try_new("web.example.com").expect("hostname"),
-                namespace: CorrosionNamespaceName::try_new("production").expect("namespace"),
-                namespace_id: Some(NamespaceRowId::try_new(id).expect("namespace id")),
-                service: CorrosionServiceName::try_new("web").expect("service"),
-                service_id: Some(ServiceRowId::try_new(id).expect("service id")),
-                endpoint_port: RoutePort::try_new(8080).expect("port"),
-                target: None,
-            }))
-        );
-        assert!(
-            parse(&[
-                "route",
-                "attach",
-                "web.example.com",
-                "--namespace",
-                "production",
-                "--service",
-                "web",
-                "--port",
-                "8080",
-                "--ingress",
-                "cloudflare-tunnel",
-            ])
-            .is_err(),
-            "unshipped ingress modes are not a CLI surface"
-        );
-    }
-
-    #[test]
-    fn machine_list_parses_with_optional_explicit_target() {
-        assert_eq!(
-            parse(&["machine", "ls"]).expect("machine list parses"),
-            Command::Machine(MachineCommand::List(MachineListCommand { target: None }))
-        );
-        assert_eq!(
-            parse(&["machine", "ls", "--target", "root@cluster.example"])
-                .expect("targeted machine list parses"),
-            Command::Machine(MachineCommand::List(MachineListCommand {
-                target: Some("root@cluster.example".parse().expect("SSH target")),
-            }))
-        );
-        assert!(parse(&["machine", "ls", "root@cluster.example"]).is_err());
-    }
-
-    #[test]
-    fn machine_remove_parses_name_and_optional_identity() {
-        let machine = MachineName::try_new("edge-b").expect("machine name");
-        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
-        assert_eq!(
-            parse(&["machine", "rm", "edge-b"]).expect("machine removal parses"),
-            Command::Machine(MachineCommand::Remove(MachineRemoveCommand {
-                machine: machine.clone(),
-                machine_id: None,
-                target: None,
-            }))
-        );
-        assert_eq!(
-            parse(&[
-                "machine",
-                "rm",
-                "edge-b",
-                "--id",
-                machine_id.as_str(),
-                "--target",
-                "root@cluster.example",
-            ])
-            .expect("identity-qualified machine removal parses"),
-            Command::Machine(MachineCommand::Remove(MachineRemoveCommand {
-                machine,
-                machine_id: Some(machine_id),
-                target: Some("root@cluster.example".parse().expect("SSH target")),
-            }))
-        );
-        assert!(parse(&["machine", "rm"]).is_err());
-        assert!(parse(&["machine", "rm", "edge-b", "--id", "not-a-machine-id"]).is_err());
-    }
-
-    #[test]
-    fn machine_upgrade_requires_one_selector_and_keeps_artifact_sources_distinct() {
-        let edge_a = MachineName::try_new("edge-a").expect("machine name");
-        let edge_b = MachineName::try_new("edge-b").expect("machine name");
-        assert_eq!(
-            parse(&["machine", "upgrade", "edge-a", "edge-b"]).expect("named upgrade parses"),
-            Command::Machine(MachineCommand::Upgrade(MachineUpgradeCommand {
-                selector: MachineUpgradeSelector::Names(vec![edge_a.clone(), edge_b]),
-                source: MachineUpgradeSource::Channel,
-                target: None,
-            }))
-        );
-        assert_eq!(
-            parse(&[
-                "machine",
-                "upgrade",
-                "--all",
-                "--version",
-                "v0.1.0-alpha.7",
-                "--target",
-                "root@cluster.example",
-            ])
-            .expect("versioned all upgrade parses"),
-            Command::Machine(MachineCommand::Upgrade(MachineUpgradeCommand {
-                selector: MachineUpgradeSelector::All,
-                source: MachineUpgradeSource::Version(
-                    "v0.1.0-alpha.7".parse().expect("exact release"),
-                ),
-                target: Some("root@cluster.example".parse().expect("SSH target")),
-            }))
-        );
-        for args in [
-            vec!["machine", "upgrade"],
-            vec!["machine", "upgrade", "edge-a", "--all"],
-            vec!["machine", "upgrade", "edge-a", "edge-a"],
-            vec!["machine", "upgrade", "--all", "--outdated"],
-            vec![
-                "machine",
-                "upgrade",
-                "--all",
-                "--url",
-                "https://releases.example/ployzd",
-            ],
-            vec![
-                "machine",
-                "upgrade",
-                "--all",
-                "--sha256",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ],
-            vec![
-                "machine",
-                "upgrade",
-                "--all",
-                "--version",
-                "v0.1.0",
-                "--url",
-                "https://releases.example/ployzd",
-                "--sha256",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ],
-            vec![
-                "machine",
-                "upgrade",
-                "--outdated",
-                "--url",
-                "https://releases.example/ployzd",
-                "--sha256",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ],
-        ] {
-            assert!(parse(&args).is_err(), "{args:?} must be refused");
-        }
-    }
-
-    #[test]
-    fn token_commands_parse_the_locked_surface() {
-        assert_eq!(
-            parse(&["token", "create"]).expect("default token create parses"),
-            Command::Token(TokenCommand::Create(TokenCreateCommand {
-                ttl: JoinTokenTtlSeconds::default_v1(),
-                target: None,
-            }))
-        );
-        assert_eq!(
-            parse(&[
-                "token",
-                "create",
-                "--ttl",
-                "15m",
-                "--target",
-                "root@cluster.example",
-            ])
-            .expect("explicit token create parses"),
-            Command::Token(TokenCommand::Create(TokenCreateCommand {
-                ttl: JoinTokenTtlSeconds::try_new(15 * 60).expect("TTL"),
-                target: Some("root@cluster.example".parse().expect("SSH target")),
-            }))
-        );
-        assert_eq!(
-            parse(&["token", "list", "--all"]).expect("token list parses"),
-            Command::Token(TokenCommand::List(TokenListCommand {
-                include_expired: true,
-                target: None,
-            }))
-        );
-        let token_id = ployz_core::ids::TokenId::generate();
-        assert_eq!(
-            parse(&["token", "revoke", token_id.as_str()]).expect("token revoke parses"),
-            Command::Token(TokenCommand::Revoke(TokenRevokeCommand {
-                token_id,
-                target: None,
-            }))
-        );
-        for invalid in [
-            "0h",
-            "59s",
-            "31d",
-            "1.5h",
-            "forever",
-            "18446744073709551615d",
-        ] {
-            assert!(parse(&["token", "create", "--ttl", invalid]).is_err());
-        }
-    }
-
-    #[test]
-    fn v2_operation_commands_parse_typed_names_ids_and_redact_env_values() {
-        let namespace_id = NamespaceRowId::generate();
-        let operation_id = OperationRowId::generate();
-        let service_id = ServiceRowId::generate();
-        assert!(matches!(
-            parse(&["namespace", "create", "production"]).expect("namespace create"),
-            Command::Namespace(NamespaceCommand::Create(_))
-        ));
-        assert!(matches!(
-            parse(&[
-                "namespace",
-                "rm",
-                "production",
-                "--id",
-                namespace_id.as_str(),
-            ])
-            .expect("namespace remove"),
-            Command::Namespace(NamespaceCommand::Remove(NamespaceRemoveCommand {
-                namespace_id: Some(id),
-                ..
-            })) if id == namespace_id
-        ));
-        let deploy = parse(&[
-            "deploy",
-            "production",
-            "web",
-            "registry.example/web:latest",
-            "--env",
-            "API_TOKEN=sentinel-secret",
-        ])
-        .expect("deploy");
-        assert!(matches!(
-            &deploy,
-            Command::Deploy(DeployCommand {
-                health_gate: HealthGatePolicy::Enforce,
-                ..
-            })
-        ));
-        assert!(!format!("{deploy:?}").contains("sentinel-secret"));
-        assert!(matches!(
-            parse(&[
-                "deploy",
-                "production",
-                "web",
-                "registry.example/web:latest",
-                "--no-health-gate",
-            ])
-            .expect("deploy without health gate"),
-            Command::Deploy(DeployCommand {
-                health_gate: HealthGatePolicy::Skip,
-                ..
-            })
-        ));
-        assert!(matches!(
-            parse(&["ops", "list"]).expect("ops list"),
-            Command::Ops(OpsCommand::List(_))
-        ));
-        assert!(matches!(
-            parse(&["ops", "watch", operation_id.as_str()]).expect("ops watch"),
-            Command::Ops(OpsCommand::Watch(OpsWatchCommand { operation_id: id, .. }))
-                if id == operation_id
-        ));
-        assert!(matches!(
-            parse(&[
-                "logs",
-                "web",
-                "--id",
-                service_id.as_str(),
-                "--tail",
-                "250",
-                "--follow",
-            ])
-            .expect("logs"),
-            Command::Logs(LogsCommand { service_id: Some(id), follow: true, machine: None, .. })
-                if id == service_id
-        ));
-        assert!(matches!(
-            parse(&["logs", "web", "--machine", "edge-a"]).expect("logs with machine selector"),
-            Command::Logs(LogsCommand { machine: Some(machine), .. })
-                if machine.as_str() == "edge-a"
-        ));
-    }
-
-    fn parsed_deploy(extra: &[&str]) -> DeployCommand {
-        let mut args = vec!["deploy", "production", "web", "registry.example/web:latest"];
-        args.extend_from_slice(extra);
-        let Command::Deploy(command) = parse(&args).expect("deploy parses") else {
-            panic!("expected deploy");
-        };
-        command
-    }
-
-    #[test]
-    fn deploy_placement_flags_map_to_the_wire_request() {
-        let inherit = parsed_deploy(&[]);
-        assert_eq!(inherit.placement, None);
-        assert_eq!(inherit.machines, None);
-
-        let count_only = parsed_deploy(&["--replicas", "3"]);
-        assert_eq!(
-            count_only.placement,
-            Some(RequestedPlacement::Replicas {
-                replicas: ServiceReplicaCount::try_new(3).expect("replica count"),
-            }),
-            "a bare --replicas is the mode-preserving count change"
-        );
-
-        let replicated_mode_only = parsed_deploy(&["--mode", "replicated"]);
-        assert_eq!(
-            replicated_mode_only.placement,
-            Some(RequestedPlacement::Replicated { replicas: None }),
-            "a count-free mode change never scales the incumbent"
-        );
-
-        let replicated_with_count = parsed_deploy(&["--mode", "replicated", "--replicas", "5"]);
-        assert_eq!(
-            replicated_with_count.placement,
-            Some(RequestedPlacement::Replicated {
-                replicas: Some(ServiceReplicaCount::try_new(5).expect("replica count")),
-            })
-        );
-
-        let global = parsed_deploy(&["--mode", "global"]);
-        assert_eq!(
-            global.placement,
-            Some(RequestedPlacement::Global {
-                host_ports: HostPortBindings::default(),
-            })
-        );
-
-        let published =
-            parsed_deploy(&["--mode", "global", "-p", "8080:80", "--publish", "53/udp"]);
-        assert_eq!(
-            published.placement,
-            Some(RequestedPlacement::Global {
-                host_ports: HostPortBindings::try_new([
-                    HostPortBinding {
-                        host_port: std::num::NonZeroU16::new(8080).expect("host port"),
-                        container_port: std::num::NonZeroU16::new(80).expect("container port"),
-                        protocol: HostPortProtocol::Tcp,
-                    },
-                    HostPortBinding {
-                        host_port: std::num::NonZeroU16::new(53).expect("host port"),
-                        container_port: std::num::NonZeroU16::new(53).expect("container port"),
-                        protocol: HostPortProtocol::Udp,
-                    },
-                ])
-                .expect("host ports"),
-            })
-        );
-
-        let pinned = parsed_deploy(&["--machine", "edge-b", "--machine", "edge-a"]);
-        let Some(RequestedPins::Machines { names }) = pinned.machines else {
-            panic!("expected machine pins");
-        };
-        assert_eq!(
-            names.iter().map(MachineName::as_str).collect::<Vec<_>>(),
-            vec!["edge-a", "edge-b"]
-        );
-
-        let unpinned = parsed_deploy(&["--machine", "any"]);
-        assert_eq!(unpinned.machines, Some(RequestedPins::Any));
-    }
-
-    #[test]
-    fn deploy_placement_flag_refusals_never_build_a_request() {
-        for (args, expected) in [
-            (
-                vec!["-p", "8080:80"],
-                "published host ports are legal only on global services",
-            ),
-            (
-                vec!["--mode", "replicated", "-p", "8080:80"],
-                "route binding",
-            ),
-            (
-                vec!["--mode", "global", "--replicas", "2"],
-                "drop --replicas",
-            ),
-            (
-                vec!["--machine", "any", "--machine", "edge-a"],
-                "cannot be combined with machine names",
-            ),
-            (vec!["--replicas", "0"], "at least one replica"),
-            (
-                vec!["--mode", "global", "-p", "0:80"],
-                "between 1 and 65535",
-            ),
-            (
-                vec!["--mode", "global", "-p", "80/sctp"],
-                "protocol must be tcp or udp",
-            ),
-            (
-                vec!["--mode", "global", "-p", "80:81", "-p", "80:82"],
-                "published more than once",
-            ),
-        ] {
-            let mut full = vec!["deploy", "production", "web", "registry.example/web:latest"];
-            full.extend_from_slice(&args);
-            let error = parse(&full).expect_err("placement flag combination must refuse");
-            assert!(
-                error.to_string().contains(expected),
-                "{args:?} produced {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn v2_operation_commands_reject_invalid_names_env_and_tail_bounds() {
-        for args in [
-            vec!["namespace", "create", "Production"],
-            vec!["deploy", "production", "Web", "busybox:latest"],
-            vec![
-                "deploy",
-                "production",
-                "web",
-                "busybox:latest",
-                "--env",
-                "MISSING",
-            ],
-            vec!["logs", "web", "--tail", "0"],
-            vec!["logs", "web", "--tail", "1001"],
-        ] {
-            assert!(parse(&args).is_err(), "{args:?} must be rejected");
-        }
-    }
-
-    #[test]
-    fn diagnostics_commands_parse_with_the_shared_target_selector() {
-        assert_eq!(
-            parse(&["status"]).expect("status parses"),
-            Command::Status(DiagnosticsCommand { target: None })
-        );
-        assert_eq!(
-            parse(&["doctor", "--target", "root@cluster.example"]).expect("targeted doctor parses"),
-            Command::Doctor(DiagnosticsCommand {
-                target: Some("root@cluster.example".parse().expect("SSH target")),
-            })
-        );
-        assert!(parse(&["doctor", "--fix"]).is_err());
-    }
-
-    #[test]
-    fn endpoint_set_and_on_host_join_parse_without_secret_debug_leaks() {
-        let endpoint = "203.0.113.7:51820".parse().expect("endpoint");
-        let machine = MachineName::try_new("edge-b").expect("machine name");
-        assert_eq!(
-            parse(&["machine", "endpoint", "set", "edge-b", "203.0.113.7:51820",])
-                .expect("endpoint set parses"),
-            Command::Machine(MachineCommand::EndpointSet(MachineEndpointSetCommand {
-                machine,
-                endpoint,
-                target: None,
-            }))
-        );
-
-        let blob = JoinBlob::try_new(
-            ployz_core::ids::TokenId::generate(),
-            ployz_core::join::JoinTokenSecret::try_from_bytes([0x5a; 32]),
-            ployz_core::join::JoinDoorCertFingerprint::try_new("11".repeat(32))
-                .expect("fingerprint"),
-            vec!["203.0.113.7:2021".parse().expect("door endpoint")],
-        )
-        .expect("join blob");
-        let opaque = blob.expose().to_owned();
-        let parsed = parse(&[
-            "machine",
-            "join",
-            &opaque,
-            "--storage",
-            "plain",
-            "--wireguard-endpoint",
-            "203.0.113.8:51820",
-        ])
-        .expect("machine join parses");
-        assert!(matches!(
-            parsed,
-            Command::Machine(MachineCommand::Join(MachineJoinCommand {
-                storage: InitStorageChoice::Flag {
-                    mode: StorageMode::Plain
+    fn deploy_manifest_is_a_complete_service_list() {
+        let manifest: DeployManifest = serde_json::from_value(serde_json::json!({
+            "services": [
+                {
+                    "service_name": "api",
+                    "image": "registry.example/api:latest",
+                    "runtime": {
+                        "environment": {},
+                        "volume_mounts": []
+                    }
                 },
-                ..
-            }))
-        ));
-        assert!(!format!("{parsed:?}").contains(&opaque));
-        assert!(parse(&["machine", "join", "not-a-join-blob"]).is_err());
-        assert!(parse(&["machine", "endpoint", "set", "edge-b", "203.0.113.7:0",]).is_err());
-        assert!(
-            parse(&[
-                "machine",
-                "join",
-                &opaque,
-                "--wireguard-endpoint",
-                "203.0.113.8:0",
-            ])
-            .is_err()
-        );
+                {
+                    "service_name": "worker",
+                    "image": "registry.example/worker:latest",
+                    "runtime": {
+                        "environment": {},
+                        "volume_mounts": []
+                    }
+                }
+            ]
+        }))
+        .expect("manifest");
+
+        let [api, worker] = manifest.services.as_slice() else {
+            panic!("manifest must contain exactly two services");
+        };
+        assert_eq!(api.service_name.as_str(), "api");
+        assert_eq!(worker.service_name.as_str(), "worker");
     }
 
     #[test]
-    fn machine_reset_is_on_host_only_and_has_no_force_form() {
-        assert_eq!(
-            parse(&["machine", "reset"]).expect("on-host reset parses"),
-            Command::Machine(MachineCommand::Reset)
-        );
-        for arguments in [
-            ["machine", "reset", "root@machine.example"].as_slice(),
-            ["machine", "reset", "--target", "root@machine.example"].as_slice(),
-            ["machine", "reset", "--force"].as_slice(),
-        ] {
-            assert!(parse(arguments).is_err(), "{arguments:?} must not parse");
-        }
-    }
-
-    #[test]
-    fn init_defaults_are_working_and_noninteractive() {
-        let Command::Init(command) = parse(&["init", "root@203.0.113.7"]).expect("init parses")
+    fn logs_are_selected_by_namespace_and_service_names() {
+        let Command::Logs(command) =
+            parse_command(["logs", "production", "api"].map(str::to_owned)).expect("logs command")
         else {
-            panic!("expected init")
+            panic!("logs command");
         };
-        assert_eq!(command.storage, InitStorageChoice::Automatic);
-        assert_eq!(
-            command.container_network,
-            MachineEndpointSupernet::default_v1()
-        );
-        assert_eq!(command.service_urls, AutomaticHostnameMode::Disabled);
-        assert!(matches!(command.driver, InitDriver::SshTarget(_)));
-    }
-
-    #[test]
-    fn parses_every_shared_answer_as_flags() {
-        let Command::Init(command) = parse(&[
-            "init",
-            "--storage",
-            "plain",
-            "--container-network",
-            "172.30.0.0/16",
-            "--service-urls",
-            "custom:apps.example.com",
-            "--cluster-name",
-            "lab",
-            "--machine-name",
-            "ares",
-            "--wireguard-endpoint",
-            "203.0.113.7:51820",
-        ])
-        .expect("flag-complete init parses") else {
-            panic!("expected init")
-        };
-        assert_eq!(
-            command.storage,
-            InitStorageChoice::Flag {
-                mode: StorageMode::Plain
-            }
-        );
-        assert_eq!(command.container_network.as_string(), "172.30.0.0/16");
-        assert!(matches!(
-            command.service_urls,
-            AutomaticHostnameMode::Custom { suffix } if suffix.as_str() == "apps.example.com"
-        ));
-    }
-
-    #[test]
-    fn cloud_is_on_host_only_and_secret_is_redacted() {
-        let error = parse(&["init", "root@203.0.113.7", "--cloud-token", "top-secret"])
-            .expect_err("Cloud and SSH are mutually exclusive");
-        assert!(!error.to_string().contains("top-secret"));
-
-        let Command::Init(command) =
-            parse(&["init", "--cloud-token", "top-secret"]).expect("Cloud init parses")
-        else {
-            panic!("expected init")
-        };
-        assert_eq!(
-            format!("{:?}", command.driver),
-            "Cloud(CloudToken([REDACTED]))"
-        );
-    }
-
-    #[test]
-    fn target_and_network_validation_are_strict() {
-        assert!(parse(&["init", "ubuntu@host"]).is_err());
-        assert!(parse(&["init", "root@host;reboot"]).is_err());
-        assert!(parse(&["init", "--container-network", "10.0.0.0/24"]).is_err());
-        assert!(parse(&["init", "--service-urls", "custom:*bad.example"]).is_err());
-    }
-
-    #[test]
-    fn hidden_ssh_peer_is_typed_and_driver_combinations_do_not_parse() {
-        let peer_id = PeerId::generate();
-        let Command::Init(command) = parse(&[
-            "init",
-            "--driver-peer-id",
-            peer_id.as_str(),
-            "--driver-peer-name",
-            "operator laptop",
-            "--driver-peer-public-key",
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        ])
-        .expect("typed SSH peer parses") else {
-            panic!("expected init")
-        };
-        assert!(matches!(
-            command.driver,
-            InitDriver::SshPeer(DriverPeerArgs { id, public_key, .. })
-                if id == peer_id
-                    && public_key.as_str()
-                        == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-        ));
-
-        assert!(
-            parse(&[
-                "init",
-                "--cloud-token",
-                "opaque",
-                "--driver-peer-id",
-                peer_id.as_str(),
-                "--driver-peer-name",
-                "operator laptop",
-                "--driver-peer-public-key",
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn init_value_parsers_and_renderers_are_canonical_round_trips() {
-        for value in ["auto", "zfs", "plain"] {
-            let parsed = parse_storage(value).expect("storage parses");
-            assert_eq!(render_storage(parsed), value);
-        }
-        for value in ["disabled", "custom:apps.example.com"] {
-            let parsed = parse_service_urls(value).expect("service URL mode parses");
-            assert_eq!(render_service_urls(&parsed), value);
-        }
-        assert!(parse_service_urls("ployz").is_err());
-    }
-
-    #[test]
-    fn ssh_ip_target_infers_machine_one_wireguard_endpoint() {
-        for (target, expected) in [
-            ("root@203.0.113.7", "203.0.113.7:51820"),
-            ("root@[2001:db8::7]", "[2001:db8::7]:51820"),
-        ] {
-            let target: SshTarget = target.parse().expect("SSH target");
-            assert_eq!(
-                target
-                    .inferred_wireguard_endpoint()
-                    .expect("IP endpoint")
-                    .to_string(),
-                expected
-            );
-        }
-        let hostname: SshTarget = "root@machine.example".parse().expect("hostname target");
-        assert_eq!(hostname.inferred_wireguard_endpoint(), None);
-    }
-
-    #[test]
-    fn ssh_target_json_is_the_validated_cli_wire_string() {
-        let target: SshTarget = "root@machine.example".parse().expect("target");
-        assert_eq!(
-            serde_json::to_string(&target).expect("target JSON"),
-            "\"root@machine.example\""
-        );
-        assert_eq!(
-            serde_json::from_str::<SshTarget>("\"root@machine.example\"").expect("decoded target"),
-            target
-        );
-        assert!(serde_json::from_str::<SshTarget>("\"machine.example\"").is_err());
+        assert_eq!(command.namespace_name.as_str(), "production");
+        assert_eq!(command.service_name.as_str(), "api");
     }
 
     #[test]
     fn bare_invocation_displays_help() {
-        let error = parse(&[]).expect_err("command is required");
+        let error = parse_command(std::iter::empty()).expect_err("command is required");
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        assert!(error.to_string().contains("init"));
     }
 }

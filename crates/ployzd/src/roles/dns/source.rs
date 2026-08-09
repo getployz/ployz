@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures_util::future::FutureExt;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use ployz_core::corrosion::{CorrosionTable, SqliteParameter, Statement, StoredRow};
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 
 use crate::corrosion::{
     CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
@@ -45,7 +45,7 @@ impl DnsInput {
         }
     }
 
-    fn statement(self, cluster_id: &ClusterId) -> Statement {
+    fn statement(self, cluster_id: &ClusterName) -> Statement {
         match self {
             Self::Cluster => Statement::with_params(
                 "SELECT id, document FROM cluster WHERE id = ?",
@@ -75,12 +75,12 @@ pub(super) struct DnsRows {
 
 pub(super) struct CorrosionDnsSource {
     client: CorrosionClient,
-    cluster_id: ClusterId,
+    cluster_id: ClusterName,
 }
 
 impl CorrosionDnsSource {
     #[must_use]
-    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterId) -> Self {
+    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterName) -> Self {
         Self { client, cluster_id }
     }
 
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn every_dns_input_is_cluster_scoped() {
-        let cluster_id = ClusterId::try_new("01HZZZZZZZZZZZZZZZZZZZZZZZ").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01HZZZZZZZZZZZZZZZZZZZZZZZ").expect("cluster id");
         for input in DnsInput::ALL {
             let Statement::WithParams(sql, parameters) = input.statement(&cluster_id) else {
                 panic!("DNS queries are parameterized");

@@ -8,7 +8,7 @@ use ployz_core::corrosion::{
     ClusterDocument, CorrosionTable, MachineDocument, MachineStatusDocument, Statement, StoredRow,
     read_named_roster_rows, read_rows,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
     ApiRefusal, DoctorProjectionInput, DoctorRawRows, MachineLensRow, StatusCorrosionHealth,
     StatusProjectionInput, project_doctor, project_status,
@@ -89,13 +89,13 @@ struct StatusInputs {
     cluster: Option<ClusterDocument>,
     machines: Vec<MachineLensRow>,
     wireguard_handshakes:
-        Option<BTreeMap<MachineRowId, ployz_core::corrosion::WireGuardHandshakeEvidence>>,
+        Option<BTreeMap<MachineName, ployz_core::corrosion::WireGuardHandshakeEvidence>>,
 }
 
 async fn read_status_inputs(
     corrosion: &CorrosionClient,
-    cluster_id: &ClusterId,
-    local_machine_id: &MachineRowId,
+    cluster_id: &ClusterName,
+    local_machine_id: &MachineName,
 ) -> Result<StatusInputs, DiagnosticsReadError> {
     let cluster_rows = query_rows(corrosion, select_cluster(cluster_id));
     let machine_rows = query_rows(corrosion, select_all(CorrosionTable::Machines));
@@ -115,7 +115,7 @@ async fn read_status_inputs(
         .accepted
         .into_iter()
         .map(|row| {
-            let id = MachineRowId::try_new(row.id.as_str().to_owned()).map_err(|error| {
+            let id = MachineName::try_new(row.source.key).map_err(|error| {
                 DiagnosticsReadError::InvalidAcceptedRow {
                     table: CorrosionTable::Machines,
                     detail: error.to_string(),
@@ -236,7 +236,7 @@ async fn read_doctor_rows(
 }
 
 fn accepted_cluster(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     rows: Vec<StoredRow>,
 ) -> Result<Option<ClusterDocument>, DiagnosticsReadError> {
     if rows.is_empty() {
@@ -271,7 +271,7 @@ fn doctor_statements() -> [Statement; 14] {
     CorrosionTable::ALL.map(select_all)
 }
 
-fn select_cluster(cluster_id: &ClusterId) -> Statement {
+fn select_cluster(cluster_id: &ClusterName) -> Statement {
     Statement::with_params(
         "SELECT id, document FROM cluster WHERE id = ?",
         vec![ployz_core::corrosion::SqliteParameter::Text(
@@ -302,7 +302,7 @@ fn select_all(table: CorrosionTable) -> Statement {
     }
 }
 
-fn select_local_machine_status(machine_id: &MachineRowId) -> Statement {
+fn select_local_machine_status(machine_id: &MachineName) -> Statement {
     Statement::with_params(
         "SELECT machine_id AS id, document FROM machine_status WHERE machine_id = ?",
         vec![ployz_core::corrosion::SqliteParameter::Text(

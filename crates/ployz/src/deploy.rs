@@ -3,7 +3,6 @@
 use std::io::Write as _;
 
 use hyper::Method;
-use ployz_core::deploy::ContainerRuntimeSpec;
 use ployz_core::{DEPLOY_ROUTE, DeployAccepted, DeployRefusal, DeployRequest};
 
 use crate::commands::{DeployCommand, OpsWatchCommand};
@@ -29,14 +28,15 @@ pub async fn execute(command: DeployCommand) -> Result<String, DeployExecutionEr
     let mut stdout = stdout.lock();
     writeln!(
         stdout,
-        "accepted operation {} on controller {}",
-        accepted.operation_id, accepted.driver_machine_id
+        "accepted deploy {}/{} on controller {}",
+        accepted.namespace_name, accepted.deploy_name, accepted.controller_machine_name
     )
     .map_err(DeployExecutionError::Output)?;
     stdout.flush().map_err(DeployExecutionError::Output)?;
     watch_to(
         &OpsWatchCommand {
-            operation_id: accepted.operation_id,
+            namespace_name: accepted.namespace_name,
+            deploy_name: accepted.deploy_name,
             target: command.target,
         },
         &mut stdout,
@@ -46,17 +46,10 @@ pub async fn execute(command: DeployCommand) -> Result<String, DeployExecutionEr
 }
 
 fn deploy_request(command: &DeployCommand) -> DeployRequest {
-    let mut runtime = ContainerRuntimeSpec::image_defaults();
-    runtime.environment = command.environment.clone();
     DeployRequest {
         namespace_name: command.namespace.clone(),
-        service_name: command.service.clone(),
-        image: command.image.clone(),
-        credential: None,
-        runtime,
-        health_gate: command.health_gate,
-        placement: command.placement.clone(),
-        machines: command.machines.clone(),
+        deploy_name: command.deploy.clone(),
+        services: command.services.clone(),
     }
 }
 
@@ -74,11 +67,11 @@ pub enum DeployExecutionError {
         create_command: String,
     },
     #[error(
-        "namespace {namespace_name} is ambiguous; remove duplicate namespace rows using one of these ids: {namespace_ids}"
+        "deploy name {deploy_name} has already been used in namespace {namespace_name}; choose a new deploy name"
     )]
-    NamespaceAmbiguous {
+    DeployNameAlreadyUsed {
         namespace_name: String,
-        namespace_ids: String,
+        deploy_name: String,
     },
     #[error(
         "named-volume redeploy is unsupported; remove the service row and local runtime explicitly before deploying again"
@@ -96,16 +89,12 @@ impl From<DeployRefusal> for DeployExecutionError {
                 namespace_name: namespace_name.as_str().to_owned(),
                 create_command,
             },
-            DeployRefusal::NamespaceAmbiguous {
+            DeployRefusal::DeployNameAlreadyUsed {
                 namespace_name,
-                namespace_ids,
-            } => Self::NamespaceAmbiguous {
-                namespace_name: namespace_name.as_str().to_owned(),
-                namespace_ids: namespace_ids
-                    .into_iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                deploy_name,
+            } => Self::DeployNameAlreadyUsed {
+                namespace_name: namespace_name.to_string(),
+                deploy_name: deploy_name.to_string(),
             },
             DeployRefusal::NamedVolumeRedeployUnsupported => Self::NamedVolumeRedeployUnsupported,
         }
@@ -114,25 +103,35 @@ impl From<DeployRefusal> for DeployExecutionError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use ployz_core::HealthGatePolicy;
     use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName};
-    use ployz_core::deploy::{ImageReference, ServiceEnvironment};
+    use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
 
     use super::*;
 
     fn command(health_gate: HealthGatePolicy) -> DeployCommand {
         DeployCommand {
             namespace: CorrosionNamespaceName::try_new("production").expect("namespace name"),
-            service: CorrosionServiceName::try_new("web").expect("service name"),
-            image: ImageReference::try_new("registry.example/web:latest").expect("image"),
-            environment: ServiceEnvironment::from(BTreeMap::new()),
-            health_gate,
-            placement: None,
-            machines: None,
+            deploy: ployz_core::ids::DeployName::try_new("release-1").expect("deploy"),
+            services: vec![ployz_core::DeployServiceRequest {
+                service_name: CorrosionServiceName::try_new("web").expect("service name"),
+                image: ImageReference::try_new("registry.example/web:latest").expect("image"),
+                credential: None,
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                health_gate,
+                placement: None,
+                machines: None,
+            }],
             target: None,
         }
+    }
+
+    fn first_service(value: &serde_json::Value) -> &serde_json::Value {
+        value
+            .get("services")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|services| services.first())
+            .expect("one serialized service")
     }
 
     #[test]
@@ -143,12 +142,18 @@ mod tests {
         ] {
             let body = serde_json::to_value(deploy_request(&command(policy)))
                 .expect("deploy request serializes");
-            assert_eq!(body.get("health_gate"), Some(&serde_json::json!(expected)));
+            assert_eq!(
+                first_service(&body).get("health_gate"),
+                Some(&serde_json::json!(expected))
+            );
             assert_eq!(
                 body.get("namespace_name"),
                 Some(&serde_json::json!("production"))
             );
-            assert_eq!(body.get("service_name"), Some(&serde_json::json!("web")));
+            assert_eq!(
+                first_service(&body).get("service_name"),
+                Some(&serde_json::json!("web"))
+            );
         }
     }
 
@@ -156,24 +161,25 @@ mod tests {
     fn deploy_request_forwards_placement_and_pins_only_when_commanded() {
         let inherit = serde_json::to_value(deploy_request(&command(HealthGatePolicy::Enforce)))
             .expect("deploy request serializes");
-        assert_eq!(inherit.get("placement"), None);
-        assert_eq!(inherit.get("machines"), None);
+        assert_eq!(first_service(&inherit).get("placement"), None);
+        assert_eq!(first_service(&inherit).get("machines"), None);
 
         let mut placed = command(HealthGatePolicy::Enforce);
-        placed.placement = Some(ployz_core::RequestedPlacement::Replicated {
+        let service = placed.services.first_mut().expect("one service");
+        service.placement = Some(ployz_core::RequestedPlacement::Replicated {
             replicas: Some(
                 ployz_core::corrosion::ServiceReplicaCount::try_new(3).expect("replica count"),
             ),
         });
-        placed.machines = Some(ployz_core::RequestedPins::Any);
+        service.machines = Some(ployz_core::RequestedPins::Any);
         let body =
             serde_json::to_value(deploy_request(&placed)).expect("deploy request serializes");
         assert_eq!(
-            body.get("placement"),
+            first_service(&body).get("placement"),
             Some(&serde_json::json!({ "mode": "replicated", "replicas": 3 }))
         );
         assert_eq!(
-            body.get("machines"),
+            first_service(&body).get("machines"),
             Some(&serde_json::json!({ "kind": "any" }))
         );
     }

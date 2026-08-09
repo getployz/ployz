@@ -10,8 +10,7 @@ use ployz_e2e::dind::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-const DRIVER_PEER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAP";
-const DRIVER_PEER_NAME: &str = "dind-driver";
+const DRIVER_PEER_ID: &str = "dind-driver";
 const CLUSTER_NAME: &str = "dind-init";
 const MACHINE_NAME: &str = "machine-one";
 
@@ -209,8 +208,6 @@ async fn run_init_allow_failure(
         MACHINE_NAME,
         "--driver-peer-id",
         DRIVER_PEER_ID,
-        "--driver-peer-name",
-        DRIVER_PEER_NAME,
         "--driver-peer-public-key",
         peer_key,
     ];
@@ -559,7 +556,7 @@ fn assert_documents(rows: &[Vec<SqliteValue>], peer_key: &str) -> Result<(), Str
     )?;
     let peer = kinds.get("peer").ok_or("driver peer document missing")?;
     require(
-        peer.get("name").and_then(Value::as_str) == Some(DRIVER_PEER_NAME)
+        peer.get("name").and_then(Value::as_str) == Some(DRIVER_PEER_ID)
             && peer.pointer("/transport/pubkey").and_then(Value::as_str) == Some(peer_key),
         format!("driver peer document does not match the supplied driver: {peer}"),
     )

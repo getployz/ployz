@@ -1,14 +1,15 @@
 //! Public join-door request handling and admission.
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use hyper::{Method, Response, StatusCode};
 use ployz_core::corrosion::{
     MachineDocument, MachineTransport, MeshProvider, OperatorWriteProvenance, PeerDocument,
-    PeerTransport, Principal, RosterMemberId, TokenDocument, derive_builtin_wireguard_member,
+    PeerTransport, Principal, TokenDocument, derive_builtin_wireguard_member,
 };
-use ployz_core::ids::{MachineRowId, PeerId, TokenId};
+use ployz_core::ids::{MachineName, PeerName, TokenName};
 use ployz_core::join::{
     AcceptedMachineRow, AcceptedPeerRow, CorrosionBootstrapFacts, JoinAcceptanceValidationError,
     JoinAdmissionAccepted, JoinAdmissionReply, JoinAdmissionRequest, JoinAdmissionValidationError,
@@ -31,25 +32,50 @@ use super::server::{
     read_bounded_body, refusal_response_with_allow,
 };
 use super::store::{
-    AcceptedMachine, AcceptedPeer, AcceptedRoster, ConditionalMachineReplace, MutationStoreError,
-    TokenAuthorizedInsert, delete_machine_if_matches, delete_peer_if_matches,
-    insert_machine_if_token_matches, insert_peer_if_token_matches, read_accepted_roster,
-    read_machine, read_peer, read_token, replace_machine_if_matches,
+    AcceptedMachine, AcceptedPeer, AcceptedRoster, MutationStoreError, TokenAuthorizedInsert,
+    delete_machine_if_matches, delete_peer_if_matches, insert_machine_if_token_matches,
+    insert_peer_if_token_matches, read_accepted_roster, read_machine, read_peer, read_token,
 };
 
 const MAX_JOIN_REQUEST_BYTES: usize = 64 * 1024;
 const JOIN_BODY_READ_TIMEOUT: Duration = Duration::from_secs(10);
-const ADMISSION_COURTESY_WAIT: Duration = Duration::from_secs(1);
-const MAX_SUBNET_ALLOCATION_ATTEMPTS: usize = 5;
 
 pub(super) async fn handle_join(
     service: &ApiService,
     _peer: SocketAddr,
-    request: hyper::Request<hyper::body::Incoming>,
+    mut request: hyper::Request<hyper::body::Incoming>,
+    controller_admitted: bool,
 ) -> Response<HttpBody> {
     if let Err(error) = validate_join_door_route(request.method(), request.uri().path()) {
         return refusal_response_with_allow(error.refusal, error.allow);
     }
+    let _controller_guard = if controller_admitted {
+        None
+    } else {
+        let roster = match read_accepted_roster(&service.corrosion, &service.cluster_id).await {
+            Ok(roster) => roster,
+            Err(error) => {
+                tracing::warn!(%error, "join door could not read the accepted roster");
+                return corrosion_unavailable_response();
+            }
+        };
+        match service
+            .controller_forwarder
+            .route_join(&roster, request)
+            .await
+        {
+            super::controller_forwarding::MutationRouting::Local(admitted) => {
+                request = admitted.request;
+            }
+            super::controller_forwarding::MutationRouting::Forwarded(response) => {
+                return response;
+            }
+        }
+        match Arc::clone(&service.controller_lock).try_lock_owned() {
+            Ok(guard) => Some(guard),
+            Err(_) => return super::deploy_controller::controller_busy(),
+        }
+    };
     let body = match read_bounded_join_body(request.into_body()).await {
         Ok(body) => body,
         Err(JoinBodyError::TooLarge) => {
@@ -140,7 +166,7 @@ async fn admit(
 }
 
 struct ValidatedTokenAuthority {
-    token_id: TokenId,
+    token_id: TokenName,
     document: TokenDocument,
 }
 
@@ -153,17 +179,8 @@ async fn admit_machine(
     principal: Principal,
     authority: &ValidatedTokenAuthority,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
-    let cross_kind_peer_id = PeerId::try_new(request.machine_id.as_str().to_owned())
-        .map_err(|_| AdmissionError::Invariant("machine id was not a canonical roster ULID"))?;
-    if read_peer(&service.corrosion, &roster.cluster, &cross_kind_peer_id)
-        .await?
-        .is_some()
-    {
-        return Err(JoinDoorRefusal::IdentityConflict.into());
-    }
-    reachable_seed(service, &roster, Some(&request.machine_id))?;
-    if let Some(existing) =
-        read_machine(&service.corrosion, &roster.cluster, &request.machine_id).await?
+    reachable_seed(service, &roster, Some(&request.name))?;
+    if let Some(existing) = read_machine(&service.corrosion, &roster.cluster, &request.name).await?
     {
         return reuse_machine(
             service, roster, &request, existing, door, substrate, principal,
@@ -195,7 +212,7 @@ async fn admit_machine(
 
     match insert_machine_if_token_matches(
         &service.corrosion,
-        &request.machine_id,
+        &request.name,
         &document,
         &authority.token_id,
         &authority.document,
@@ -209,7 +226,7 @@ async fn admit_machine(
         Err(write_error) => {
             let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
             if let Some(existing) =
-                read_machine(&service.corrosion, &refreshed.cluster, &request.machine_id).await?
+                read_machine(&service.corrosion, &refreshed.cluster, &request.name).await?
             {
                 return reuse_machine(
                     service, refreshed, &request, existing, door, substrate, principal,
@@ -227,9 +244,6 @@ async fn admit_machine(
             document,
             door,
             substrate,
-            principal,
-            origin: AdmissionRowOrigin::Created,
-            pending_write: PendingMachineWrite::None,
         },
     )
     .await
@@ -239,9 +253,6 @@ struct MachineSettlement {
     document: MachineDocument,
     door: JoinDoorMaterial,
     substrate: JoinMachineSubstrate,
-    principal: Principal,
-    origin: AdmissionRowOrigin,
-    pending_write: PendingMachineWrite,
 }
 
 async fn settle_machine(
@@ -250,88 +261,48 @@ async fn settle_machine(
     settlement: MachineSettlement,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     let MachineSettlement {
-        mut document,
+        document,
         door,
         substrate,
-        principal,
-        origin,
-        mut pending_write,
     } = settlement;
-    for attempt in 0..MAX_SUBNET_ALLOCATION_ATTEMPTS {
-        if let PendingMachineWrite::Replace { observed } = &pending_write {
-            match replace_machine_if_matches(
-                &service.corrosion,
-                &request.machine_id,
-                observed,
-                &document,
-            )
-            .await?
-            {
-                ConditionalMachineReplace::Replaced | ConditionalMachineReplace::Stale => {}
-            }
-        }
-        tokio::time::sleep(ADMISSION_COURTESY_WAIT).await;
-        let roster = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
-        let Some(accepted) = roster
-            .machines
-            .iter()
-            .find(|machine| machine.id == request.machine_id)
-            .cloned()
-        else {
-            cleanup_machine(service, &request.machine_id, &document, origin).await?;
-            return Err(machine_name_conflict(request.name.as_str()).into());
-        };
-        if let Err(error) = ensure_machine_matches(&roster, request, &accepted) {
-            cleanup_machine(service, &request.machine_id, &document, origin).await?;
-            return Err(error);
-        }
-
-        let own_id = RosterMemberId::Machine {
-            machine_id: request.machine_id.clone(),
-        };
-        if identity_winner(&roster, &request.public_key).as_ref() != Some(&own_id) {
-            cleanup_machine(service, &request.machine_id, &document, origin).await?;
-            return Err(JoinDoorRefusal::IdentityConflict.into());
-        }
-        if machine_owns_subnet(&roster, &accepted) {
-            let acceptance =
-                machine_acceptance(service, &roster, request, accepted, door, substrate);
-            if acceptance.is_err() {
-                cleanup_machine(service, &request.machine_id, &document, origin).await?;
-            }
-            return acceptance;
-        }
-        if attempt + 1 < MAX_SUBNET_ALLOCATION_ATTEMPTS {
-            let replacement = allocate_subnet(&roster)?;
-            let observed = accepted.stored_document.clone();
-            document = accepted.document;
-            document.provenance = OperatorWriteProvenance {
-                written_by: principal.clone(),
-                written_at: now_timestamp()?,
-            };
-            let MachineTransport::Wireguard { subnet_v4, .. } = &mut document.transport else {
-                unreachable!("new v1 machine admissions use WireGuard");
-            };
-            *subnet_v4 = replacement;
-            pending_write = PendingMachineWrite::Replace { observed };
-        }
+    let roster = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
+    let Some(accepted) = roster
+        .machines
+        .iter()
+        .find(|machine| machine.id == request.name)
+        .cloned()
+    else {
+        cleanup_machine(service, &request.name, &document).await?;
+        return Err(machine_name_conflict(request.name.as_str()).into());
+    };
+    if let Err(error) = ensure_machine_matches(&roster, request, &accepted) {
+        cleanup_machine(service, &request.name, &document).await?;
+        return Err(error);
     }
-
-    cleanup_machine(service, &request.machine_id, &document, origin).await?;
-    Err(JoinDoorRefusal::EndpointSubnetExhausted.into())
+    if roster_has_identity(&roster, &request.public_key, Some(&request.name), None)
+        || !machine_owns_subnet(&roster, &accepted)
+    {
+        cleanup_machine(service, &request.name, &document).await?;
+        return Err(JoinDoorRefusal::IdentityConflict.into());
+    }
+    let acceptance = machine_acceptance(service, &roster, request, accepted, door, substrate);
+    if acceptance.is_err() {
+        cleanup_machine(service, &request.name, &document).await?;
+    }
+    acceptance
 }
 
 async fn reuse_machine(
     service: &ApiService,
     roster: AcceptedRoster,
     request: &MachineJoinRequest,
-    mut document: MachineDocument,
+    document: MachineDocument,
     door: JoinDoorMaterial,
     substrate: JoinMachineSubstrate,
-    principal: Principal,
+    _principal: Principal,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     let row = AcceptedMachineRow {
-        machine_id: request.machine_id.clone(),
+        machine_id: request.name.clone(),
         document: document.clone(),
     };
     match classify_machine_admission(&roster.cluster, request, Some(&row)) {
@@ -346,43 +317,17 @@ async fn reuse_machine(
     let Some(accepted) = roster
         .machines
         .iter()
-        .find(|machine| machine.id == request.machine_id)
+        .find(|machine| machine.id == request.name)
         .cloned()
     else {
         return Err(machine_name_conflict(request.name.as_str()).into());
     };
-    let own_id = RosterMemberId::Machine {
-        machine_id: request.machine_id.clone(),
-    };
-    if identity_winner(&roster, &request.public_key).as_ref() != Some(&own_id) {
+    if roster_has_identity(&roster, &request.public_key, Some(&request.name), None)
+        || !machine_owns_subnet(&roster, &accepted)
+    {
         return Err(JoinDoorRefusal::IdentityConflict.into());
     }
-    if machine_owns_subnet(&roster, &accepted) {
-        return machine_acceptance(service, &roster, request, accepted, door, substrate);
-    }
-    let replacement = allocate_subnet(&roster)?;
-    let observed = accepted.stored_document;
-    document.provenance = OperatorWriteProvenance {
-        written_by: principal.clone(),
-        written_at: now_timestamp()?,
-    };
-    let MachineTransport::Wireguard { subnet_v4, .. } = &mut document.transport else {
-        return Err(JoinDoorRefusal::IdentityConflict.into());
-    };
-    *subnet_v4 = replacement;
-    settle_machine(
-        service,
-        request,
-        MachineSettlement {
-            document,
-            door,
-            substrate,
-            principal,
-            origin: AdmissionRowOrigin::Reused,
-            pending_write: PendingMachineWrite::Replace { observed },
-        },
-    )
-    .await
+    machine_acceptance(service, &roster, request, accepted, door, substrate)
 }
 
 fn ensure_machine_matches(
@@ -405,27 +350,11 @@ fn ensure_machine_matches(
 
 async fn cleanup_machine(
     service: &ApiService,
-    machine_id: &MachineRowId,
+    machine_id: &MachineName,
     expected: &MachineDocument,
-    origin: AdmissionRowOrigin,
 ) -> Result<(), AdmissionError> {
-    if matches!(origin, AdmissionRowOrigin::Reused) {
-        return Ok(());
-    }
     delete_machine_if_matches(&service.corrosion, machine_id, expected).await?;
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AdmissionRowOrigin {
-    Created,
-    Reused,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PendingMachineWrite {
-    None,
-    Replace { observed: String },
 }
 
 async fn admit_peer(
@@ -435,17 +364,8 @@ async fn admit_peer(
     principal: Principal,
     authority: &ValidatedTokenAuthority,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
-    let cross_kind_machine_id = MachineRowId::try_new(request.peer_id.as_str().to_owned())
-        .map_err(|_| AdmissionError::Invariant("peer id was not a canonical roster ULID"))?;
-    if read_machine(&service.corrosion, &roster.cluster, &cross_kind_machine_id)
-        .await?
-        .is_some()
-    {
-        return Err(JoinDoorRefusal::IdentityConflict.into());
-    }
     reachable_seed(service, &roster, None)?;
-    if let Some(existing) = read_peer(&service.corrosion, &roster.cluster, &request.peer_id).await?
-    {
+    if let Some(existing) = read_peer(&service.corrosion, &roster.cluster, &request.name).await? {
         return reuse_peer(service, &roster, &request, existing);
     }
     if roster
@@ -453,7 +373,7 @@ async fn admit_peer(
         .iter()
         .any(|peer| peer.document.name == request.name)
     {
-        return Err(peer_name_conflict(&request.name).into());
+        return Err(peer_name_conflict(request.name.as_str()).into());
     }
     if roster_has_identity(&roster, &request.public_key, None, None) {
         return Err(JoinDoorRefusal::IdentityConflict.into());
@@ -471,7 +391,7 @@ async fn admit_peer(
     let document = row.document;
     match insert_peer_if_token_matches(
         &service.corrosion,
-        &request.peer_id,
+        &request.name,
         &document,
         &authority.token_id,
         &authority.document,
@@ -485,7 +405,7 @@ async fn admit_peer(
         Err(write_error) => {
             let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
             if let Some(existing) =
-                read_peer(&service.corrosion, &refreshed.cluster, &request.peer_id).await?
+                read_peer(&service.corrosion, &refreshed.cluster, &request.name).await?
             {
                 return reuse_peer(service, &refreshed, &request, existing);
             }
@@ -493,31 +413,27 @@ async fn admit_peer(
         }
     }
 
-    tokio::time::sleep(ADMISSION_COURTESY_WAIT).await;
     roster = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
     let Some(accepted) = roster
         .peers
         .iter()
-        .find(|peer| peer.id == request.peer_id)
+        .find(|peer| peer.id == request.name)
         .cloned()
     else {
-        delete_created_peer(service, &request.peer_id, &document).await?;
-        return Err(peer_name_conflict(&request.name).into());
+        delete_created_peer(service, &request.name, &document).await?;
+        return Err(peer_name_conflict(request.name.as_str()).into());
     };
     if let Err(error) = ensure_peer_matches(&roster, &request, &accepted) {
-        delete_created_peer(service, &request.peer_id, &document).await?;
+        delete_created_peer(service, &request.name, &document).await?;
         return Err(error);
     }
-    let own_id = RosterMemberId::Peer {
-        peer_id: request.peer_id.clone(),
-    };
-    if identity_winner(&roster, &request.public_key).as_ref() != Some(&own_id) {
-        delete_created_peer(service, &request.peer_id, &document).await?;
+    if roster_has_identity(&roster, &request.public_key, None, Some(&request.name)) {
+        delete_created_peer(service, &request.name, &document).await?;
         return Err(JoinDoorRefusal::IdentityConflict.into());
     }
     let acceptance = peer_acceptance(service, &roster, &request, accepted);
     if acceptance.is_err() {
-        delete_created_peer(service, &request.peer_id, &document).await?;
+        delete_created_peer(service, &request.name, &document).await?;
     }
     acceptance
 }
@@ -529,7 +445,7 @@ fn reuse_peer(
     document: PeerDocument,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     let row = AcceptedPeerRow {
-        peer_id: request.peer_id.clone(),
+        peer_id: request.name.clone(),
         document,
     };
     match classify_peer_admission(&roster.cluster, request, Some(&row)) {
@@ -544,15 +460,12 @@ fn reuse_peer(
     let Some(accepted) = roster
         .peers
         .iter()
-        .find(|peer| peer.id == request.peer_id)
+        .find(|peer| peer.id == request.name)
         .cloned()
     else {
-        return Err(peer_name_conflict(&request.name).into());
+        return Err(peer_name_conflict(request.name.as_str()).into());
     };
-    let own_id = RosterMemberId::Peer {
-        peer_id: request.peer_id.clone(),
-    };
-    if identity_winner(roster, &request.public_key).as_ref() != Some(&own_id) {
+    if roster_has_identity(roster, &request.public_key, None, Some(&request.name)) {
         return Err(JoinDoorRefusal::IdentityConflict.into());
     }
     peer_acceptance(service, roster, request, accepted)
@@ -578,7 +491,7 @@ fn ensure_peer_matches(
 
 async fn delete_created_peer(
     service: &ApiService,
-    peer_id: &PeerId,
+    peer_id: &PeerName,
     expected: &PeerDocument,
 ) -> Result<(), AdmissionError> {
     delete_peer_if_matches(&service.corrosion, peer_id, expected).await?;
@@ -593,7 +506,7 @@ fn machine_acceptance(
     door: JoinDoorMaterial,
     substrate: JoinMachineSubstrate,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
-    let (seed, corrosion) = reachable_seed(service, roster, Some(&request.machine_id))?;
+    let (seed, corrosion) = reachable_seed(service, roster, Some(&request.name))?;
     let fingerprint = door.fingerprint.clone();
     let accepted = MachineJoinAccepted {
         cluster: roster.cluster.clone(),
@@ -635,7 +548,7 @@ fn peer_acceptance(
 fn reachable_seed(
     service: &ApiService,
     roster: &AcceptedRoster,
-    joining_machine_id: Option<&MachineRowId>,
+    joining_machine_id: Option<&MachineName>,
 ) -> Result<(ReachableSeedMachine, CorrosionBootstrapFacts), AdmissionError> {
     if joining_machine_id == Some(&service.local_machine_id) {
         return Err(JoinDoorRefusal::NoReachableSeed.into());
@@ -675,12 +588,15 @@ fn allocate_subnet(roster: &AcceptedRoster) -> Result<MachineEndpointSubnet, Adm
     roster
         .cluster
         .prefix
-        .allocate_random_free(roster.machines.iter().map(
-            |machine| match &machine.document.transport {
-                MachineTransport::Wireguard { subnet_v4, .. }
-                | MachineTransport::Tailscale { subnet_v4, .. } => subnet_v4.clone(),
-            },
-        ))
+        .allocate_next(
+            roster
+                .machines
+                .iter()
+                .map(|machine| match &machine.document.transport {
+                    MachineTransport::Wireguard { subnet_v4, .. }
+                    | MachineTransport::Tailscale { subnet_v4, .. } => subnet_v4.clone(),
+                }),
+        )
         .map_err(|MachineEndpointSubnetAllocationError::Exhausted { .. }| {
             JoinDoorRefusal::EndpointSubnetExhausted.into()
         })
@@ -690,37 +606,28 @@ fn machine_owns_subnet(roster: &AcceptedRoster, accepted: &AcceptedMachine) -> b
     let MachineTransport::Wireguard { subnet_v4, .. } = &accepted.document.transport else {
         return false;
     };
-    lowest_machine_id_wins(
-        &accepted.id,
-        roster
-            .machines
-            .iter()
-            .filter(|machine| match &machine.document.transport {
-                MachineTransport::Wireguard {
-                    subnet_v4: candidate,
-                    ..
-                }
-                | MachineTransport::Tailscale {
-                    subnet_v4: candidate,
-                    ..
-                } => candidate == subnet_v4,
-            })
-            .map(|machine| &machine.id),
-    )
-}
-
-fn lowest_machine_id_wins<'id>(
-    claimant: &MachineRowId,
-    contenders: impl IntoIterator<Item = &'id MachineRowId>,
-) -> bool {
-    contenders.into_iter().min() == Some(claimant)
+    roster
+        .machines
+        .iter()
+        .filter(|machine| match &machine.document.transport {
+            MachineTransport::Wireguard {
+                subnet_v4: candidate,
+                ..
+            }
+            | MachineTransport::Tailscale {
+                subnet_v4: candidate,
+                ..
+            } => candidate == subnet_v4,
+        })
+        .count()
+        == 1
 }
 
 fn roster_has_identity(
     roster: &AcceptedRoster,
     public_key: &WireGuardPublicKey,
-    excluded_machine: Option<&MachineRowId>,
-    excluded_peer: Option<&PeerId>,
+    excluded_machine: Option<&MachineName>,
+    excluded_peer: Option<&PeerName>,
 ) -> bool {
     let target = derive_builtin_wireguard_member(&roster.cluster.cluster_id, public_key).subnet();
     roster.machines.iter().any(|machine| {
@@ -744,39 +651,6 @@ fn roster_has_identity(
             || derive_builtin_wireguard_member(&roster.cluster.cluster_id, pubkey).subnet()
                 == target
     })
-}
-
-fn identity_winner(
-    roster: &AcceptedRoster,
-    public_key: &WireGuardPublicKey,
-) -> Option<RosterMemberId> {
-    let target = derive_builtin_wireguard_member(&roster.cluster.cluster_id, public_key).subnet();
-    roster
-        .machines
-        .iter()
-        .filter_map(|machine| {
-            let MachineTransport::Wireguard { pubkey, .. } = &machine.document.transport else {
-                return None;
-            };
-            (pubkey == public_key
-                || derive_builtin_wireguard_member(&roster.cluster.cluster_id, pubkey).subnet()
-                    == target)
-                .then(|| RosterMemberId::Machine {
-                    machine_id: machine.id.clone(),
-                })
-        })
-        .chain(roster.peers.iter().filter_map(|peer| {
-            let PeerTransport::Wireguard { pubkey, .. } = &peer.document.transport else {
-                return None;
-            };
-            (pubkey == public_key
-                || derive_builtin_wireguard_member(&roster.cluster.cluster_id, pubkey).subnet()
-                    == target)
-                .then(|| RosterMemberId::Peer {
-                    peer_id: peer.id.clone(),
-                })
-        }))
-        .min()
 }
 
 fn machine_name_conflict(name: &str) -> JoinDoorRefusal {
@@ -884,15 +758,15 @@ fn join_http_error(status: StatusCode, kind: &'static str) -> Response<HttpBody>
 mod tests {
     use http_body_util::BodyExt as _;
     use hyper::StatusCode;
-    use ployz_core::ids::TokenId;
+    use ployz_core::ids::TokenName;
     use ployz_core::join::{JoinAdmissionReply, JoinDoorRefusal};
 
-    use super::{lowest_machine_id_wins, typed_join_response};
+    use super::typed_join_response;
 
     #[tokio::test]
     async fn typed_join_refusals_are_successful_http_replies() {
         let refusal = JoinDoorRefusal::TokenNotFound {
-            token_id: TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
+            token_id: TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
         };
         let response = typed_join_response(&JoinAdmissionReply::Refused {
             refusal: refusal.clone(),
@@ -908,16 +782,5 @@ mod tests {
             serde_json::from_slice::<JoinAdmissionReply>(&body).expect("typed reply"),
             JoinAdmissionReply::Refused { refusal }
         );
-    }
-
-    #[test]
-    fn concurrent_subnet_claims_converge_to_the_lowest_machine_id() {
-        let lower = ployz_core::ids::MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV")
-            .expect("lower machine id");
-        let higher = ployz_core::ids::MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW")
-            .expect("higher machine id");
-
-        assert!(lowest_machine_id_wins(&lower, [&higher, &lower]));
-        assert!(!lowest_machine_id_wins(&higher, [&lower, &higher]));
     }
 }

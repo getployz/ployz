@@ -10,6 +10,8 @@ use duroxide::runtime::{ObservabilityConfig, Runtime, RuntimeOptions};
 use duroxide::{
     Client, OrchestrationContext, OrchestrationRegistry, OrchestrationStatus, RetryPolicy,
 };
+use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName};
+use ployz_core::ids::DeployName;
 use ployz_core::{
     DeployPrepareOutcome, DeployPrepareRequest, DeployRetireOutcome, DeployRetireRequest,
 };
@@ -87,7 +89,11 @@ impl NodeWorkflows {
     /// Starts or resumes the operation's stable prepare instance and waits for
     /// its typed terminal result. Completed instances do no new host work.
     pub(super) async fn prepare(&self, request: DeployPrepareRequest) -> DeployPrepareOutcome {
-        let instance = format!("deploy-prepare-{}", request.operation_id.as_str());
+        let instance = prepare_instance(
+            &request.namespace_name,
+            &request.service_name,
+            &request.operation_id,
+        );
         self.run(&instance, PREPARE_WORKFLOW, &request, PREPARE_WAIT)
             .await
             .unwrap_or(DeployPrepareOutcome::Failed {})
@@ -96,7 +102,7 @@ impl NodeWorkflows {
     /// Starts or resumes the operation's stable retire instance and waits for
     /// its typed terminal result. Completed instances do no new host work.
     pub(super) async fn retire(&self, request: DeployRetireRequest) -> DeployRetireOutcome {
-        let instance = format!("deploy-retire-{}", request.operation_id.as_str());
+        let instance = retire_instance(&request.namespace_name, &request.operation_id);
         self.run(&instance, RETIRE_WORKFLOW, &request, RETIRE_WAIT)
             .await
             .unwrap_or(DeployRetireOutcome::Failed {})
@@ -137,6 +143,23 @@ impl NodeWorkflows {
             .shutdown(Some(SHUTDOWN_TIMEOUT_MILLIS))
             .await;
     }
+}
+
+fn prepare_instance(
+    namespace: &CorrosionNamespaceName,
+    service: &CorrosionServiceName,
+    deploy: &DeployName,
+) -> String {
+    format!(
+        "deploy-prepare-{}/{}/{}",
+        namespace.as_str(),
+        service.as_str(),
+        deploy.as_str()
+    )
+}
+
+fn retire_instance(namespace: &CorrosionNamespaceName, deploy: &DeployName) -> String {
+    format!("deploy-retire-{}/{}", namespace.as_str(), deploy.as_str())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -235,6 +258,31 @@ mod tests {
     use super::*;
     use crate::WireGuardMtuPolicy;
     use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
+
+    #[test]
+    fn workflow_instances_follow_prepare_and_retire_collision_scopes() {
+        let production = CorrosionNamespaceName::try_new("production").expect("namespace");
+        let staging = CorrosionNamespaceName::try_new("staging").expect("namespace");
+        let api = CorrosionServiceName::try_new("api").expect("service");
+        let worker = CorrosionServiceName::try_new("worker").expect("service");
+        let deploy = DeployName::try_new("release-1").expect("deploy");
+
+        assert_ne!(
+            prepare_instance(&production, &api, &deploy),
+            prepare_instance(&production, &worker, &deploy),
+            "services prepared on one machine must not share completed workflow state"
+        );
+        assert_ne!(
+            prepare_instance(&production, &api, &deploy),
+            prepare_instance(&staging, &api, &deploy),
+            "namespace-scoped deploy names must not collide during prepare"
+        );
+        assert_ne!(
+            retire_instance(&production, &deploy),
+            retire_instance(&staging, &deploy),
+            "namespace-scoped deploy names must not collide during retire"
+        );
+    }
 
     #[tokio::test]
     async fn workflow_directory_is_node_private() {

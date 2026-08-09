@@ -3,7 +3,7 @@ use bollard::Docker;
 use ployz::init::ssh::SshPeerKey;
 use ployz::mesh::context::{SSH_CONTEXT_HANDOFF_PREFIX, SshContextHandoff};
 use ployz_core::corrosion::{MachineDocument, MachineTransport, SqliteValue};
-use ployz_core::ids::{MachineRowId, TokenId};
+use ployz_core::ids::{MachineName, TokenName};
 use ployz_core::join::JoinBlob;
 use ployz_e2e::dind::{
     DindMachine, ExecOutcome, RELEASE_MANIFEST, assert_keeper_isolation_root, corrosion_query,
@@ -18,7 +18,7 @@ use std::time::Instant;
 
 #[derive(Clone)]
 pub(super) struct RosterMachine {
-    pub(super) id: MachineRowId,
+    pub(super) id: MachineName,
     pub(super) document: MachineDocument,
 }
 
@@ -53,8 +53,6 @@ pub(super) async fn run_founding(
         FOUNDER_NAME.to_owned(),
         "--driver-peer-id".to_owned(),
         operator.peer_id.to_string(),
-        "--driver-peer-name".to_owned(),
-        operator.peer_name.clone(),
         "--driver-peer-public-key".to_owned(),
         operator.public_key.as_str().to_owned(),
     ];
@@ -94,7 +92,7 @@ pub(super) async fn assert_missing_endpoint_refuses_without_a_token(
     let refused = run_cli(
         cli,
         home,
-        ["token", "create", "--ttl", "1h"].map(str::to_owned),
+        ["token", "create", "endpoint-probe", "--ttl", "1h"].map(str::to_owned),
     )?;
     require(
         !refused.status.success(),
@@ -190,19 +188,19 @@ pub(super) fn extract_join_blob(stdout: &str) -> Result<JoinBlob, String> {
     JoinBlob::try_parse(value).map_err(|error| error.to_string())
 }
 
-pub(super) fn extract_token_id(stdout: &str) -> Result<TokenId, String> {
+pub(super) fn extract_token_id(stdout: &str) -> Result<TokenName, String> {
     let value = stdout
         .lines()
         .find_map(|line| line.trim().strip_prefix("token  "))
         .and_then(|line| line.split_whitespace().next())
         .ok_or_else(|| format!("token create output omitted token id: {stdout}"))?;
-    TokenId::try_new(value).map_err(|error| error.to_string())
+    TokenName::try_new(value).map_err(|error| error.to_string())
 }
 
 pub(super) async fn wait_for_machine_roster(
     store: CorrosionAccess<'_>,
     minimum: usize,
-) -> Result<BTreeMap<MachineRowId, RosterMachine>, String> {
+) -> Result<BTreeMap<MachineName, RosterMachine>, String> {
     let deadline = Instant::now() + WAIT_BUDGET;
     let mut last = String::from("roster was not queried");
     while Instant::now() < deadline {
@@ -229,13 +227,13 @@ pub(super) async fn wait_for_machine_roster(
 
 fn parse_machine_rows(
     rows: Vec<Vec<SqliteValue>>,
-) -> Result<BTreeMap<MachineRowId, RosterMachine>, String> {
+) -> Result<BTreeMap<MachineName, RosterMachine>, String> {
     let mut roster = BTreeMap::new();
     for row in rows {
         let [SqliteValue::Text(id), SqliteValue::Text(document)] = row.as_slice() else {
             return Err(format!("machine query returned an invalid row: {row:?}"));
         };
-        let id = MachineRowId::try_new(id.clone()).map_err(|error| error.to_string())?;
+        let id = MachineName::try_new(id.clone()).map_err(|error| error.to_string())?;
         let document: MachineDocument = serde_json::from_str(document)
             .map_err(|error| format!("machine row was invalid: {error}"))?;
         roster.insert(id.clone(), RosterMachine { id, document });
@@ -314,7 +312,7 @@ mod tests {
     #[test]
     fn operator_handoff_uses_known_outer_endpoint_without_changing_mesh_identity() {
         let handoff = SshContextHandoff::decode_handoff(&format!(
-            "{SSH_CONTEXT_HANDOFF_PREFIX}{{\"cluster_id\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"provider\":\"builtin_wireguard\",\"machine_transport\":{{\"kind\":\"wireguard\",\"pubkey\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"addr_v6\":\"fd00::10\",\"endpoint\":null,\"subnet_v4\":\"10.210.10.0/24\"}}}}"
+            "{SSH_CONTEXT_HANDOFF_PREFIX}{{\"cluster_id\":\"main\",\"provider\":\"builtin_wireguard\",\"machine_transport\":{{\"kind\":\"wireguard\",\"pubkey\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"addr_v6\":\"fd00::10\",\"endpoint\":null,\"subnet_v4\":\"10.210.10.0/24\"}}}}"
         ))
         .expect("founding handoff");
         let cluster_id = handoff.cluster_id.clone();

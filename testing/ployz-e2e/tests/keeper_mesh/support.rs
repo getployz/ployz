@@ -1,6 +1,6 @@
 use bollard::Docker;
 use ployz_core::corrosion::derive_builtin_wireguard_member;
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 use ployz_core::install::{
     AbsoluteInstallPath, ExactPloyzVersion, InstallArtifactSource, InstallArtifactSpec,
     InstallArtifactVersion, InstallSha256Digest,
@@ -14,10 +14,10 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-pub const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-pub const MACHINE_A_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
-pub const MACHINE_B_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
-pub const PROBE_NAMESPACE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB3";
+pub const CLUSTER_ID: &str = "main";
+pub const MACHINE_A_ID: &str = "edge-a";
+pub const MACHINE_B_ID: &str = "edge-b";
+pub const PROBE_NAMESPACE_ID: &str = "gossip-proof";
 pub const CORROSION_TOKEN: &str = "ployz-dind-corrosion";
 pub const CORROSION_API_PORT: u16 = 8_080;
 pub const CORROSION_GOSSIP_PORT: u16 = 8_787;
@@ -444,14 +444,14 @@ pub async fn wait_for_public_key(
 }
 
 pub fn derived_address(public_key: &WireGuardPublicKey) -> Result<Ipv6Addr, String> {
-    let cluster_id = ClusterId::try_new(CLUSTER_ID).map_err(|error| error.to_string())?;
+    let cluster_id = ClusterName::try_new(CLUSTER_ID).map_err(|error| error.to_string())?;
     Ok(derive_builtin_wireguard_member(&cluster_id, public_key)
         .bind_address()
         .get())
 }
 
 pub fn derived_subnet(public_key: &WireGuardPublicKey) -> Result<String, String> {
-    let cluster_id = ClusterId::try_new(CLUSTER_ID).map_err(|error| error.to_string())?;
+    let cluster_id = ClusterName::try_new(CLUSTER_ID).map_err(|error| error.to_string())?;
     Ok(derive_builtin_wireguard_member(&cluster_id, public_key)
         .subnet()
         .to_string())

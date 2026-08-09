@@ -614,7 +614,7 @@ fn published_partial_door_material_requires_explicit_machine_reset() {
     let directory = tempfile::tempdir().expect("tempdir");
     let state = FoundingStateDirectory::initialize(directory.path().join("state"))
         .expect("state initializes");
-    let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+    let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
     state
         .persist_cluster_id_exclusive(&cluster_id)
         .expect("persist cluster id");

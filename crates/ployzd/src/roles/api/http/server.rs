@@ -13,7 +13,7 @@ use hyper::body::Frame;
 use hyper::header::{ALLOW, CONTENT_TYPE, HeaderValue, RETRY_AFTER};
 use hyper::{Method, Response, StatusCode};
 use ployz_core::MachineUpgradeSupervisor;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
     ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KNOWN_API_FEATURES, LensCollection,
     LensSnapshot, LensWatchEvent, V2Method, V2Route,
@@ -271,7 +271,7 @@ pub(super) struct ApiLenses {
 impl ApiLenses {
     fn start(
         corrosion: CorrosionClient,
-        cluster_id: ClusterId,
+        cluster_id: ClusterName,
         lifecycle_sender: mpsc::UnboundedSender<LensCollection>,
     ) -> Self {
         let config = lens_engine_config(cluster_id);
@@ -337,7 +337,7 @@ impl ApiLenses {
     }
 }
 
-fn lens_engine_config(cluster_id: ClusterId) -> LensEngineConfig {
+fn lens_engine_config(cluster_id: ClusterName) -> LensEngineConfig {
     let Some(max_attempts) = NonZeroU32::new(LENS_RECOVERY_MAX_ATTEMPTS) else {
         unreachable!("the fixed lens recovery attempt count is nonzero");
     };
@@ -352,8 +352,8 @@ fn lens_engine_config(cluster_id: ClusterId) -> LensEngineConfig {
 
 pub(super) struct ApiService {
     pub(super) corrosion: CorrosionClient,
-    pub(super) cluster_id: ClusterId,
-    pub(super) local_machine_id: MachineRowId,
+    pub(super) cluster_id: ClusterName,
+    pub(super) local_machine_id: MachineName,
     pub(super) listen_addr: SocketAddr,
     pub(super) join_door: Arc<JoinDoorRuntime>,
     pub(super) corrosion_gossip_port: u16,
@@ -377,8 +377,8 @@ pub(super) struct ApiService {
 
 pub(super) struct ApiServiceRuntime {
     pub(super) corrosion: CorrosionClient,
-    pub(super) cluster_id: ClusterId,
-    pub(super) local_machine_id: MachineRowId,
+    pub(super) cluster_id: ClusterName,
+    pub(super) local_machine_id: MachineName,
     pub(super) listen_addr: SocketAddr,
     pub(super) corrosion_gossip_port: u16,
     pub(super) build: String,
@@ -463,7 +463,7 @@ impl ApiService {
         peer: SocketAddr,
         request: hyper::Request<hyper::body::Incoming>,
     ) -> Response<HttpBody> {
-        super::join::handle_join(self, peer, request).await
+        super::join::handle_join(self, peer, request, false).await
     }
 
     pub(super) async fn handle(
@@ -545,7 +545,7 @@ impl ApiService {
         match route {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
-            V2Route::Join => refusal_response(ApiRefusal::UnsupportedRoute),
+            V2Route::Join => super::join::handle_join(self, peer, request, true).await,
             V2Route::Status => super::diagnostics::status_response(self).await,
             V2Route::Doctor => super::diagnostics::doctor_response(self).await,
             V2Route::TokenCreate
@@ -577,11 +577,25 @@ impl ApiService {
             V2Route::DeployRetire => {
                 super::deploy_effect_http::retire(self, &principal, request).await
             }
-            V2Route::ServiceLogsTail(service_id) => {
-                super::service_logs::handle_tail(self, service_id, request, shutdown).await
+            V2Route::ServiceLogsTail(namespace_name, service_name) => {
+                super::service_logs::handle_tail(
+                    self,
+                    namespace_name,
+                    service_name,
+                    request,
+                    shutdown,
+                )
+                .await
             }
-            V2Route::ServiceLogsFollow(service_id) => {
-                super::service_logs::handle_follow(self, service_id, request, shutdown).await
+            V2Route::ServiceLogsFollow(namespace_name, service_name) => {
+                super::service_logs::handle_follow(
+                    self,
+                    namespace_name,
+                    service_name,
+                    request,
+                    shutdown,
+                )
+                .await
             }
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
             V2Route::LensWatch(collection) => self.watch_response(collection, shutdown).await,
@@ -677,7 +691,7 @@ pub(super) fn founding_route_disabled(mode: &ApiRoleMode, path: &str) -> bool {
     matches!(mode, ApiRoleMode::Ordinary) && path == FOUNDING_ROUTE
 }
 
-async fn machines_lens_contains(lenses: &ApiLenses, machine_id: &MachineRowId) -> bool {
+async fn machines_lens_contains(lenses: &ApiLenses, machine_id: &MachineName) -> bool {
     let mut updates = lenses.watch(LensCollection::Machines).subscribe();
     let state = tokio::time::timeout(LENS_INITIAL_WAIT, await_lens_state(&mut updates)).await;
     matches!(

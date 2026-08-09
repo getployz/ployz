@@ -13,28 +13,28 @@ use ployz_core::founding::{
     InitStorageChoice, InitStorageFacts, InitStorageSelectionError, MINIMUM_ZFS_MEMORY_BYTES,
     classify_founding_arrival, select_init_storage,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
-use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::ids::{ClusterName, MachineName, PeerName};
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use serde_json::json;
 
-const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const OTHER_CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+const CLUSTER: &str = "main";
+const OTHER_CLUSTER: &str = "other";
+const MACHINE: &str = "ares";
+const PEER: &str = "operator-laptop";
 const MACHINE_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const PEER_KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
-fn cluster_id(value: &str) -> ClusterId {
-    ClusterId::try_new(value).expect("fixture cluster id")
+fn cluster_id(value: &str) -> ClusterName {
+    ClusterName::try_new(value).expect("fixture cluster id")
 }
 
-fn machine_id() -> MachineRowId {
-    MachineRowId::try_new(MACHINE).expect("fixture machine id")
+fn machine_id() -> MachineName {
+    MachineName::try_new(MACHINE).expect("fixture machine id")
 }
 
-fn peer_id() -> PeerId {
-    PeerId::try_new(PEER).expect("fixture peer id")
+fn peer_id() -> PeerName {
+    PeerName::try_new(PEER).expect("fixture peer id")
 }
 
 fn provenance() -> OperatorWriteProvenance {
@@ -46,13 +46,13 @@ fn provenance() -> OperatorWriteProvenance {
     }
 }
 
-fn peer_document(cluster_id: &ClusterId) -> PeerDocument {
+fn peer_document(cluster_id: &ClusterName) -> PeerDocument {
     let pubkey = WireGuardPublicKey::try_new(PEER_KEY).expect("fixture peer key");
     PeerDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: cluster_id.clone(),
         provenance: provenance(),
-        name: "operator-laptop".to_owned(),
+        name: peer_id(),
         transport: PeerTransport::Wireguard {
             addr_v6: derive_builtin_wireguard_member(cluster_id, &pubkey)
                 .bind_address()
@@ -131,7 +131,7 @@ fn on_host_founding_has_no_peer_while_ssh_and_cloud_carry_public_peer_rows() {
             .enrolled_peer()
             .expect("assisted init enrolls its driver");
         assert_eq!(enrolled_id, &peer_id());
-        assert_eq!(enrolled_document.name, "operator-laptop");
+        assert_eq!(enrolled_document.name, peer_id());
         assert!(request.clone().try_validate().is_ok());
 
         let wire = serde_json::to_string(&request).expect("founding request serializes");
@@ -171,7 +171,7 @@ fn founding_validation_rejects_divergent_row_ids_clusters_and_versions() {
 
     let mut wrong_machine_key = founding_request(FoundingDriverEnrollment::OnHost);
     wrong_machine_key.machine_id =
-        MachineRowId::try_new(OTHER_CLUSTER).expect("fixture other machine id");
+        MachineName::try_new(OTHER_CLUSTER).expect("fixture other machine id");
     assert!(matches!(
         wrong_machine_key.try_validate(),
         Err(FoundingValidationError::InvalidProvenance {

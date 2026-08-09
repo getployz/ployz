@@ -572,19 +572,9 @@ fn convergence_requires_exact_accepted_name_winner() {
         ),
         RosterConvergenceDisposition::Divergent
     );
-    assert_eq!(
-        roster_convergence_disposition(
-            &accepted,
-            vec![StoredRow::new(
-                "00000000000000000000000000",
-                serde_json::to_string(&expected.document).expect("document")
-            )]
-        ),
-        RosterConvergenceDisposition::Shadowed
-    );
-
     let mut foreign = expected.document;
-    foreign.cluster_id = ployz_core::ids::ClusterId::generate();
+    foreign.cluster_id =
+        ployz_core::ids::ClusterName::try_new("foreign-cluster").expect("cluster name");
     assert_eq!(
         roster_convergence_disposition(
             &accepted,
@@ -611,8 +601,8 @@ fn query_token_environment_and_artifact_contracts_are_exact() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&query.body).expect("body"),
         serde_json::json!([
-            "SELECT id, document FROM machines WHERE id = ?1 OR name = ?2",
-            [prepared.request().machine_id.as_str(), "edge-a"]
+            "SELECT id, document FROM machines WHERE id = ?",
+            [prepared.request().name.as_str()]
         ])
     );
 

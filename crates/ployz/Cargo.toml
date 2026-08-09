@@ -34,6 +34,7 @@ serde_json.workspace = true
 sha2.workspace = true
 smoltcp.workspace = true
 thiserror.workspace = true
+tempfile = "3"
 time.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
@@ -42,7 +43,6 @@ wait-timeout.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 rcgen = { version = "0.14.8", features = ["crypto", "pem"] }
-tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
 
 [[bin]]

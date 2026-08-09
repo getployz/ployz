@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ployz_core::corrosion::{ChangeId, QueryIdentity, SqliteParameter, Statement, StoredRow};
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 use ployz_core::{ApiRefusal, LensCollection, LensSnapshot};
 use serde_json::json;
 use tokio::sync::{Mutex, Notify, mpsc, watch};
@@ -20,13 +20,12 @@ use super::adapter::{
 use super::{LensEngineConfig, LensLimits, LensRecoveryPolicy};
 use crate::corrosion::CorrosionClientError;
 
-const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const WRONG_MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-const NAMESPACE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
-const SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
-const OPERATION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
+const CLUSTER: &str = "main";
+const WRONG_MACHINE: &str = "legacy-node";
+const MACHINE: &str = "edge";
+const PEER: &str = "operator";
+const NAMESPACE: &str = "production";
+const OPERATION: &str = "release-1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FakeCall {
@@ -190,7 +189,7 @@ impl LensStore for FakeStore {
     async fn query_rows(
         &self,
         input: LensInput,
-        _cluster_id: &ClusterId,
+        _cluster_id: &ClusterName,
         max_rows: usize,
     ) -> Result<Vec<StoredRow>, LensStoreError> {
         self.calls
@@ -218,7 +217,7 @@ impl LensStore for FakeStore {
     async fn subscribe(
         &self,
         input: LensInput,
-        _cluster_id: &ClusterId,
+        _cluster_id: &ClusterName,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError> {
         self.calls.lock().await.push(FakeCall::Subscribe(input));
         self.activity.notify_waiters();
@@ -230,7 +229,7 @@ impl LensStore for FakeStore {
     async fn resume(
         &self,
         input: LensInput,
-        _cluster_id: &ClusterId,
+        _cluster_id: &ClusterName,
         _identity: &QueryIdentity,
         cursor: ChangeId,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError> {
@@ -344,8 +343,8 @@ impl LensSubscription for FakeSubscription {
     }
 }
 
-fn cluster_id() -> ClusterId {
-    ClusterId::try_new(CLUSTER).expect("fixture cluster id")
+fn cluster_id() -> ClusterName {
+    ClusterName::try_new(CLUSTER).expect("fixture cluster id")
 }
 
 fn policy(max_attempts: u32) -> LensRecoveryPolicy {
@@ -428,7 +427,7 @@ fn machine_row(id: &str, provider: &str) -> StoredRow {
             "cluster_id": CLUSTER,
             "written_by": { "kind": "peer", "peer_id": PEER },
             "written_at": "2026-08-04T10:00:00Z",
-            "name": "edge",
+            "name": id,
             "lifecycle": "active",
             "transport": transport,
             "storage": { "mode": "plain", "reason": { "kind": "default" } }
@@ -438,7 +437,7 @@ fn machine_row(id: &str, provider: &str) -> StoredRow {
 
 fn service_row(name: &str) -> StoredRow {
     stored(
-        SERVICE,
+        &format!("{NAMESPACE}/{name}"),
         json!({
             "v": 1,
             "cluster_id": CLUSTER,

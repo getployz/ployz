@@ -1,7 +1,7 @@
 //! Join-token command execution and human presentation.
 
 use hyper::Method;
-use ployz_core::ids::TokenId;
+use ployz_core::ids::TokenName;
 use ployz_core::join::{
     TokenCreateRefusal, TokenCreateReply, TokenCreateRequest, TokenListReply, TokenListRequest,
     TokenListScope, TokenRevokeRefusal, TokenRevokeReply, TokenRevokeRequest,
@@ -29,6 +29,7 @@ async fn create(command: TokenCreateCommand) -> Result<String, TokenExecutionErr
             Method::POST,
             TOKEN_CREATE_ROUTE,
             Some(&TokenCreateRequest {
+                name: command.name,
                 ttl_seconds: command.ttl,
             }),
         )
@@ -113,19 +114,19 @@ pub enum TokenExecutionError {
     )]
     TooManyAdvertisedDoorEndpoints { found: usize, maximum: usize },
     #[error("join token {token_id} does not exist or was already revoked")]
-    TokenNotFound { token_id: TokenId },
+    TokenNotFound { token_id: TokenName },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenListView {
-    pub token_id: TokenId,
+    pub token_id: TokenName,
     pub created_at: String,
     pub expires_at: String,
 }
 
 #[must_use]
 pub fn render_token_create(
-    token_id: &TokenId,
+    token_id: &TokenName,
     blob: &str,
     expires_at: &str,
     ttl_seconds: u64,
@@ -169,7 +170,7 @@ pub fn render_token_list(rows: &[TokenListView], now: OffsetDateTime) -> String 
 }
 
 #[must_use]
-pub fn render_token_revoke(token_id: &TokenId) -> String {
+pub fn render_token_revoke(token_id: &TokenName) -> String {
     format!("revoked token {}\n", token_id.as_str())
 }
 
@@ -236,8 +237,8 @@ mod tests {
     const TOKEN_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const TOKEN_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 
-    fn token_id(value: &str) -> TokenId {
-        TokenId::try_new(value).expect("token id")
+    fn token_id(value: &str) -> TokenName {
+        TokenName::try_new(value).expect("token id")
     }
 
     #[test]

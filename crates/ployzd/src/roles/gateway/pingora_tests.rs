@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddr};
 
-use ployz_core::ids::{MachineRowId, RouteBindingRowId};
+use ployz_core::ids::{MachineName, RouteHostname};
 use ployz_core::ingress::RouteBindingOrigin;
-use ployz_core::operation::{RouteHostname, RouteTarget};
+use ployz_core::operation::RouteTarget;
 
 use super::{
     HttpRouteTargetError, PingoraRouteRegistry, PingoraRouteSelectionError,
@@ -119,13 +119,13 @@ fn projection(hostname: &str, port: u16) -> GatewayProjection {
 fn upstream(port: u16, key: &str) -> GatewayUpstream {
     GatewayUpstream {
         container_key: key.to_owned(),
-        machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
+        machine_id: MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
         address: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
     }
 }
 
-fn route_id() -> RouteBindingRowId {
-    RouteBindingRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("route")
+fn route_id() -> RouteHostname {
+    RouteHostname::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("route")
 }
 
 fn target(hostname: &str) -> RouteTarget {

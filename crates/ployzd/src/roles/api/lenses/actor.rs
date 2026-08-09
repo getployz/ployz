@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 use ployz_core::{ApiRefusal, CorrosionRetryAfterSeconds, LensCollection, LensSnapshot};
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -258,7 +258,7 @@ impl ActiveLens {
 async fn resume_input<Store>(
     store: &Store,
     input: &mut ActiveInput,
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
 ) -> Result<ActiveInput, LensStoreError>
 where
     Store: LensStore,

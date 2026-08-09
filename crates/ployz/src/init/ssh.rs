@@ -44,8 +44,6 @@ impl SshPeerKey {
         args.extend([
             "--driver-peer-id".to_owned(),
             self.peer_id.to_string(),
-            "--driver-peer-name".to_owned(),
-            self.peer_name.clone(),
             "--driver-peer-public-key".to_owned(),
             self.public_key.as_str().to_owned(),
         ]);
@@ -351,7 +349,7 @@ mod tests {
     use super::*;
     use crate::commands::{Command as CliCommand, parse_command};
     use ployz_core::corrosion::{MachineTransport, MeshProvider, derive_builtin_wireguard_member};
-    use ployz_core::ids::ClusterId;
+    use ployz_core::ids::ClusterName;
     use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
     use std::fs;
 
@@ -385,7 +383,7 @@ mod tests {
     fn remote_line_stages_then_runs_exact_on_host_primitive() {
         let temp = tempfile::tempdir().expect("temp dir");
         let target: SshTarget = "root@203.0.113.7".parse().expect("target");
-        let key = SshPeerKey::load_or_create(temp.path(), &target, "Nick's laptop".to_owned())
+        let key = SshPeerKey::load_or_create(temp.path(), &target, "nicks-laptop".to_owned())
             .expect("key");
         let script = key.remote_script(&init(&[
             "init",
@@ -400,7 +398,7 @@ mod tests {
         ));
         assert!(script.contains("'--driver-peer-public-key'"));
         assert!(script.contains("'--wireguard-endpoint' '203.0.113.7:51820'"));
-        assert!(script.contains("'Nick'\"'\"'s laptop'"));
+        assert!(script.contains("'nicks-laptop'"));
         let encoded = serde_json::to_value(&key).expect("key JSON");
         let private_key = encoded
             .get("private_key")
@@ -432,7 +430,7 @@ mod tests {
     }
 
     fn handoff() -> SshContextHandoff {
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
         let public_key =
             WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                 .expect("machine public key");

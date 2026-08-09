@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use ployz_core::founding::FoundingArrival;
-use ployz_core::ids::{ClusterId, CorrosionUlidError};
+use ployz_core::ids::{ClusterName, SubjectTokenError};
 
 const CLUSTER_ID_FILE: &str = "cluster-id";
 const COMPLETE_FILE: &str = "founding-complete";
@@ -98,7 +98,7 @@ impl FoundingStateDirectory {
         let joined = self.0.join(JOINED_FILE).exists();
         let cluster_id = match std::fs::read_to_string(&cluster_id_path) {
             Ok(value) => Some(
-                ClusterId::try_new(value.trim_end_matches(['\r', '\n'])).map_err(|source| {
+                ClusterName::try_new(value.trim_end_matches(['\r', '\n'])).map_err(|source| {
                     FoundingStateError::InvalidClusterId {
                         path: cluster_id_path.clone(),
                         source,
@@ -137,14 +137,14 @@ impl FoundingStateDirectory {
     /// Persists the resume anchor without replacing any existing identity.
     pub fn persist_cluster_id_exclusive(
         &self,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
     ) -> Result<(), FoundingStateError> {
         self.persist_cluster_id_exclusive_with(cluster_id, || Ok(()))
     }
 
     fn persist_cluster_id_exclusive_with(
         &self,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
         before_publish: impl FnOnce() -> io::Result<()>,
     ) -> Result<(), FoundingStateError> {
         let path = self.0.join(CLUSTER_ID_FILE);
@@ -336,7 +336,7 @@ pub enum FoundingStateError {
     #[error("cluster id file {} is invalid: {source}", path.display())]
     InvalidClusterId {
         path: PathBuf,
-        source: CorrosionUlidError,
+        source: SubjectTokenError,
     },
     #[error("founding or join completion marker exists without a cluster id")]
     MarkerWithoutClusterId,
@@ -387,8 +387,8 @@ mod tests {
     fn cluster_id_create_never_replaces_existing_identity() {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = FoundingStateDirectory::open(directory.path()).expect("state directory");
-        let first = ClusterId::generate();
-        let second = ClusterId::generate();
+        let first = ClusterName::try_new("alpha").expect("cluster name");
+        let second = ClusterName::try_new("beta").expect("cluster name");
 
         state
             .persist_cluster_id_exclusive(&first)
@@ -409,7 +409,7 @@ mod tests {
     fn failed_publication_never_exposes_a_partial_cluster_id() {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = FoundingStateDirectory::open(directory.path()).expect("state directory");
-        let cluster_id = ClusterId::generate();
+        let cluster_id = ClusterName::try_new("alpha").expect("cluster name");
 
         assert!(matches!(
             state.persist_cluster_id_exclusive_with(&cluster_id, || {

@@ -553,11 +553,11 @@ impl UdpTransportFactory for SingleUdpSocketFactory {
 mod tests {
     use super::*;
     use ployz_core::corrosion::derive_builtin_wireguard_member;
-    use ployz_core::ids::ClusterId;
+    use ployz_core::ids::ClusterName;
     use ployz_core::network::WireGuardPublicKey;
 
     fn builtin_dial(endpoint: SocketAddr) -> (BuiltinWireguardDial, Ipv6Addr) {
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
         let local_secret = StaticSecret::from([7_u8; 32]);
         let local_public = WireGuardPublicKey::try_new(base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,

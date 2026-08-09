@@ -9,7 +9,7 @@ use crate::corrosion::{
     MachineStorageSelection, MachineStorageSelectionReason, MachineTransport, MeshProvider,
     OperationInitiator, PeerDocument, PeerTransport, StorageMode, derive_builtin_wireguard_member,
 };
-use crate::ids::{ClusterId, MachineRowId, PeerId};
+use crate::ids::{ClusterName, MachineName, PeerName};
 use crate::machine::MachineLifecycle;
 use crate::network::MachineEndpointSubnet;
 
@@ -95,11 +95,11 @@ pub const fn select_init_storage(
 pub enum FoundingDriverEnrollment {
     OnHost,
     Ssh {
-        peer_id: PeerId,
+        peer_id: PeerName,
         document: PeerDocument,
     },
     Cloud {
-        peer_id: PeerId,
+        peer_id: PeerName,
         document: PeerDocument,
     },
 }
@@ -107,7 +107,7 @@ pub enum FoundingDriverEnrollment {
 impl FoundingDriverEnrollment {
     /// Returns the peer row carried by a driver-assisted founding request.
     #[must_use]
-    pub const fn enrolled_peer(&self) -> Option<(&PeerId, &PeerDocument)> {
+    pub const fn enrolled_peer(&self) -> Option<(&PeerName, &PeerDocument)> {
         match self {
             Self::OnHost => None,
             Self::Ssh { peer_id, document } | Self::Cloud { peer_id, document } => {
@@ -122,9 +122,9 @@ impl FoundingDriverEnrollment {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct FoundingRequest {
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     pub cluster: ClusterDocument,
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub machine: MachineDocument,
     pub driver: FoundingDriverEnrollment,
 }
@@ -170,14 +170,14 @@ pub enum FoundingRow {
 pub enum FoundingValidationError {
     #[error("cluster row key {key} disagrees with document cluster id {document_cluster_id}")]
     ClusterKeyMismatch {
-        key: ClusterId,
-        document_cluster_id: ClusterId,
+        key: ClusterName,
+        document_cluster_id: ClusterName,
     },
     #[error("{row:?} document belongs to cluster {found}, expected {expected}")]
     DocumentClusterMismatch {
         row: FoundingRow,
-        expected: ClusterId,
-        found: ClusterId,
+        expected: ClusterName,
+        found: ClusterName,
     },
     #[error("{row:?} document version {found} is unsupported")]
     UnsupportedDocumentVersion { row: FoundingRow, found: u32 },
@@ -218,7 +218,7 @@ pub enum FoundingValidationError {
     #[error("{row:?} founding provenance must be machine {expected_machine_id}, got {found:?}")]
     InvalidProvenance {
         row: FoundingRow,
-        expected_machine_id: MachineRowId,
+        expected_machine_id: MachineName,
         found: OperationInitiator,
     },
 }
@@ -337,8 +337,8 @@ fn validate_version(
 
 fn validate_cluster_id(
     row: FoundingRow,
-    expected: &ClusterId,
-    found: &ClusterId,
+    expected: &ClusterName,
+    found: &ClusterName,
 ) -> Result<(), FoundingValidationError> {
     if found != expected {
         return Err(FoundingValidationError::DocumentClusterMismatch {
@@ -352,7 +352,7 @@ fn validate_cluster_id(
 
 fn validate_provenance(
     row: FoundingRow,
-    expected_machine_id: &MachineRowId,
+    expected_machine_id: &MachineName,
     found: &OperationInitiator,
 ) -> Result<(), FoundingValidationError> {
     if matches!(
@@ -373,9 +373,9 @@ fn validate_provenance(
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FoundingArrival {
     Clean,
-    Partial { persisted_cluster_id: ClusterId },
-    Complete { persisted_cluster_id: ClusterId },
-    Joined { persisted_cluster_id: ClusterId },
+    Partial { persisted_cluster_id: ClusterName },
+    Complete { persisted_cluster_id: ClusterName },
+    Joined { persisted_cluster_id: ClusterName },
 }
 
 /// The successful meaning of a founding invocation.
@@ -417,8 +417,8 @@ pub enum FoundingRefusal {
         repair_command: FoundingRepairCommand,
     },
     ForeignState {
-        requested_cluster_id: ClusterId,
-        found_cluster_id: ClusterId,
+        requested_cluster_id: ClusterName,
+        found_cluster_id: ClusterName,
         repair_command: FoundingRepairCommand,
     },
 }
@@ -431,7 +431,7 @@ impl From<FoundingValidationError> for FoundingRefusal {
 
 /// Classifies a re-run without performing or planning any host work.
 pub fn classify_founding_arrival(
-    requested_cluster_id: &ClusterId,
+    requested_cluster_id: &ClusterName,
     arrival: FoundingArrival,
 ) -> Result<FoundingResult, FoundingRefusal> {
     match arrival {

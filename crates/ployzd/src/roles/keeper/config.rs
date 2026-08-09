@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::join::JOIN_DOOR_PORT;
 use ployz_host_runner::SupervisorBackend;
 use ployz_host_runner::builtin_wireguard::{
@@ -74,8 +74,8 @@ const MAX_DIAGNOSTIC_BYTES: usize = 512;
 #[derive(Debug, Clone)]
 pub struct KeeperRoleConfig {
     corrosion: CorrosionClientConfig,
-    cluster_id: ClusterId,
-    local_machine_id: MachineRowId,
+    cluster_id: ClusterName,
+    local_machine_id: MachineName,
     host: BuiltinWireguardHostConfig,
     isolation_host: ContainerIsolationHostConfig,
     corrosion_version: String,
@@ -134,12 +134,12 @@ impl KeeperRoleConfig {
         )
         .map_err(KeeperRoleConfigError::CorrosionConfig)?;
         let cluster_id =
-            ClusterId::try_new(required_environment(CLUSTER_ID_ENV)?).map_err(|error| {
+            ClusterName::try_new(required_environment(CLUSTER_ID_ENV)?).map_err(|error| {
                 KeeperRoleConfigError::InvalidClusterId {
                     detail: error.to_string(),
                 }
             })?;
-        let local_machine_id = MachineRowId::try_new(required_environment(MACHINE_ID_ENV)?)
+        let local_machine_id = MachineName::try_new(required_environment(MACHINE_ID_ENV)?)
             .map_err(|error| KeeperRoleConfigError::InvalidMachineId {
                 detail: error.to_string(),
             })?;
@@ -242,8 +242,8 @@ impl KeeperRoleConfig {
     /// Builds Keeper configuration without touching the process environment.
     pub fn new(
         corrosion: CorrosionClientConfig,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         hosts: KeeperHostConfig,
         corrosion_version: String,
         timing: KeeperTimingConfig,
@@ -300,11 +300,11 @@ impl KeeperRoleConfig {
         &self.corrosion
     }
     #[must_use]
-    pub fn cluster_id(&self) -> &ClusterId {
+    pub fn cluster_id(&self) -> &ClusterName {
         &self.cluster_id
     }
     #[must_use]
-    pub fn local_machine_id(&self) -> &MachineRowId {
+    pub fn local_machine_id(&self) -> &MachineName {
         &self.local_machine_id
     }
     #[must_use]

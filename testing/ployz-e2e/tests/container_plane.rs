@@ -15,12 +15,12 @@ use std::time::{Duration, Instant};
 mod mesh_support;
 use mesh_support::*;
 
-const NAMESPACE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB4";
-const OTHER_NAMESPACE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB9";
-const SERVICE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB5";
-const ACTIVE_DEPLOY_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB6";
-const INACTIVE_DEPLOY_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB7";
-const STALE_PROBE_NAMESPACE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB8";
+const NAMESPACE_ID: &str = "production";
+const OTHER_NAMESPACE_ID: &str = "staging";
+const SERVICE_ID: &str = "production/web";
+const ACTIVE_DEPLOY_ID: &str = "release-current";
+const INACTIVE_DEPLOY_ID: &str = "release-old";
+const STALE_PROBE_NAMESPACE_ID: &str = "darkness-probe";
 const ACTIVE_IP_A: &str = "10.210.10.10";
 const ACTIVE_IP_B: &str = "10.210.20.10";
 const SAME_NAMESPACE_IP_A: &str = "10.210.10.11";
@@ -48,6 +48,13 @@ const PROD_B: &str = "isolation-prod-b";
 const PROD_B_PEER: &str = "isolation-prod-b-peer";
 const OTHER_B: &str = "isolation-other-b";
 const FRESH_B: &str = "isolation-fresh-b";
+const ACTIVE_ROW_A: &str = "production/web/release-current/edge-a/1";
+const ACTIVE_ROW_B: &str = "production/web/release-current/edge-b/2";
+const PROD_PEER_ROW_A: &str = "production/web/release-old/edge-a/1";
+const PROD_PEER_ROW_B: &str = "production/web/release-old/edge-b/2";
+const OTHER_ROW_A: &str = "staging/web/release-old/edge-a/1";
+const OTHER_ROW_B: &str = "staging/web/release-old/edge-b/2";
+const FRESH_ROW_B: &str = "production/web/release-old/edge-b/3";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_machine_container_plane_converges_network_and_service_dns() {
@@ -138,7 +145,7 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     assert_inner_container_has_no_direct_attach(docker, machine_b, FRESH_B).await?;
 
     corrosion_transaction(docker, machine_a, &service_rows_transaction()?).await?;
-    wait_for_corrosion_row(docker, machine_b, "containers", "active-container-b").await?;
+    wait_for_corrosion_row(docker, machine_b, "containers", ACTIVE_ROW_B).await?;
     let expected = [ACTIVE_IP_A, ACTIVE_IP_B];
     wait_for_dns_answers(docker, machine_a, "10.210.10.1", INTERNAL_NAME, &expected).await?;
     wait_for_dns_answers(docker, machine_b, "10.210.20.1", INTERNAL_NAME, &expected).await?;
@@ -176,8 +183,8 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     .await?;
 
     exercise_namespace_isolation(docker, machine_a, machine_b).await?;
-    remove_isolation_workload(docker, machine_b, FRESH_B).await?;
-    wait_for_corrosion_row_absent(docker, machine_a, "containers", FRESH_B).await?;
+    remove_isolation_workload(docker, machine_b, FRESH_B, FRESH_ROW_B).await?;
+    wait_for_corrosion_row_absent(docker, machine_a, "containers", FRESH_ROW_B).await?;
     remove_isolation_containers(docker, machine_a, &[PROD_A, PROD_A_PEER, OTHER_A]).await?;
     remove_isolation_containers(docker, machine_b, &[PROD_B, PROD_B_PEER, OTHER_B]).await?;
     assert_stable_attachments(docker, machine_a, &attachments_before_a, &tc_before_a).await?;
@@ -189,7 +196,7 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     assert_corrosion_row_absent_now(docker, machine_b, "namespaces", STALE_PROBE_NAMESPACE_ID)
         .await?;
     wait_for_corrosion_row(docker, machine_a, "machines", MACHINE_B_ID).await?;
-    wait_for_corrosion_row(docker, machine_a, "containers", "active-container-b").await?;
+    wait_for_corrosion_row(docker, machine_a, "containers", ACTIVE_ROW_B).await?;
     assert_dns_answers(docker, machine_a, "10.210.10.1", INTERNAL_NAME, &expected).await?;
 
     let started_before = start_managed_nginx(docker, machine_a).await?;
@@ -363,7 +370,6 @@ fn service_rows_transaction() -> Result<Value, String> {
         "active_deploy": ACTIVE_DEPLOY_ID,
         "previous_image": null,
         "deployed_at": "2026-08-05T10:01:00.000000000Z",
-        "operation_id": ACTIVE_DEPLOY_ID,
         "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
         "written_at": "2026-08-05T10:01:00.000000000Z"
     });
@@ -374,31 +380,53 @@ fn service_rows_transaction() -> Result<Value, String> {
         "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
         "written_at": "2026-08-05T10:01:00.000000000Z"
     });
-    let active_a = container_document(MACHINE_A_ID, NAMESPACE_ID, ACTIVE_IP_A, ACTIVE_DEPLOY_ID);
-    let active_b = container_document(MACHINE_B_ID, NAMESPACE_ID, ACTIVE_IP_B, ACTIVE_DEPLOY_ID);
+    let active_a = container_document(
+        PROD_A,
+        MACHINE_A_ID,
+        NAMESPACE_ID,
+        ACTIVE_IP_A,
+        ACTIVE_DEPLOY_ID,
+        1,
+    );
+    let active_b = container_document(
+        PROD_B,
+        MACHINE_B_ID,
+        NAMESPACE_ID,
+        ACTIVE_IP_B,
+        ACTIVE_DEPLOY_ID,
+        2,
+    );
     let prod_a_peer = container_document(
+        PROD_A_PEER,
         MACHINE_A_ID,
         NAMESPACE_ID,
         SAME_NAMESPACE_IP_A,
         INACTIVE_DEPLOY_ID,
+        1,
     );
     let prod_b_peer = container_document(
+        PROD_B_PEER,
         MACHINE_B_ID,
         NAMESPACE_ID,
         SAME_NAMESPACE_IP_B,
         INACTIVE_DEPLOY_ID,
+        2,
     );
     let other_a = container_document(
+        OTHER_A,
         MACHINE_A_ID,
         OTHER_NAMESPACE_ID,
         OTHER_NAMESPACE_IP_A,
         INACTIVE_DEPLOY_ID,
+        1,
     );
     let other_b = container_document(
+        OTHER_B,
         MACHINE_B_ID,
         OTHER_NAMESPACE_ID,
         OTHER_NAMESPACE_IP_B,
         INACTIVE_DEPLOY_ID,
+        2,
     );
     Ok(json!([
         [
@@ -415,38 +443,47 @@ fn service_rows_transaction() -> Result<Value, String> {
         ],
         [
             "INSERT INTO containers (id, document) VALUES (?, ?)",
-            ["active-container-a", encode_document(&active_a)?]
+            [ACTIVE_ROW_A, encode_document(&active_a)?]
         ],
         [
             "INSERT INTO containers (id, document) VALUES (?, ?)",
-            ["active-container-b", encode_document(&active_b)?]
+            [ACTIVE_ROW_B, encode_document(&active_b)?]
         ],
         [
             "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [PROD_A_PEER, encode_document(&prod_a_peer)?]
+            [PROD_PEER_ROW_A, encode_document(&prod_a_peer)?]
         ],
         [
             "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [PROD_B_PEER, encode_document(&prod_b_peer)?]
+            [PROD_PEER_ROW_B, encode_document(&prod_b_peer)?]
         ],
         [
             "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [OTHER_A, encode_document(&other_a)?]
+            [OTHER_ROW_A, encode_document(&other_a)?]
         ],
         [
             "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [OTHER_B, encode_document(&other_b)?]
+            [OTHER_ROW_B, encode_document(&other_b)?]
         ]
     ]))
 }
 
-fn container_document(machine_id: &str, namespace_id: &str, ip: &str, deploy: &str) -> Value {
+fn container_document(
+    runtime_id: &str,
+    machine_id: &str,
+    namespace_id: &str,
+    ip: &str,
+    deploy: &str,
+    replica: u16,
+) -> Value {
     json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
+        "runtime_id": runtime_id,
         "machine_id": machine_id,
-        "service_id": SERVICE_ID,
         "namespace_id": namespace_id,
+        "service_name": "web",
+        "replica_slot": {"kind": "replicated", "number": replica},
         "ip": ip,
         "deploy": deploy
     })
@@ -907,18 +944,18 @@ async fn exercise_namespace_isolation(
     machine_b: &DindMachine,
 ) -> Result<(), String> {
     for id in [
-        "active-container-a",
-        "active-container-b",
-        PROD_A_PEER,
-        PROD_B_PEER,
-        OTHER_A,
-        OTHER_B,
+        ACTIVE_ROW_A,
+        ACTIVE_ROW_B,
+        PROD_PEER_ROW_A,
+        PROD_PEER_ROW_B,
+        OTHER_ROW_A,
+        OTHER_ROW_B,
     ] {
         wait_for_corrosion_row(docker, machine_a, "containers", id).await?;
         wait_for_corrosion_row(docker, machine_b, "containers", id).await?;
     }
-    assert_corrosion_row_absent_now(docker, machine_a, "containers", FRESH_B).await?;
-    assert_corrosion_row_absent_now(docker, machine_b, "containers", FRESH_B).await?;
+    assert_corrosion_row_absent_now(docker, machine_a, "containers", FRESH_ROW_B).await?;
+    assert_corrosion_row_absent_now(docker, machine_b, "containers", FRESH_ROW_B).await?;
 
     for (machine, source, destination) in [
         (machine_a, PROD_A, SAME_NAMESPACE_IP_A),
@@ -1015,19 +1052,21 @@ async fn exercise_namespace_isolation(
     }
 
     let fresh = container_document(
+        FRESH_B,
         MACHINE_B_ID,
         NAMESPACE_ID,
         FRESH_REMOTE_IP,
         INACTIVE_DEPLOY_ID,
+        3,
     );
     let transaction = json!([[
         "INSERT INTO containers (id, document) VALUES (?, ?)",
-        [FRESH_B, encode_document(&fresh)?]
+        [FRESH_ROW_B, encode_document(&fresh)?]
     ]]);
     let started = Instant::now();
     corrosion_transaction(docker, machine_b, &transaction).await?;
     let deadline = started + POLICY_CONVERGENCE_BUDGET;
-    wait_for_corrosion_row_before(docker, machine_a, "containers", FRESH_B, deadline).await?;
+    wait_for_corrosion_row_before(docker, machine_a, "containers", FRESH_ROW_B, deadline).await?;
     wait_for_container_http_before(docker, machine_a, PROD_A, FRESH_REMOTE_IP, deadline).await?;
     wait_for_container_http_before(docker, machine_b, FRESH_B, ACTIVE_IP_A, deadline).await?;
     if started.elapsed() > POLICY_CONVERGENCE_BUDGET {
@@ -1230,8 +1269,9 @@ async fn remove_isolation_workload(
     docker: &Docker,
     machine: &DindMachine,
     container: &str,
+    row_key: &str,
 ) -> Result<(), String> {
-    let transaction = json!([["DELETE FROM containers WHERE id = ?", [container]]]);
+    let transaction = json!([["DELETE FROM containers WHERE id = ?", [row_key]]]);
     corrosion_transaction(docker, machine, &transaction).await?;
     exec_ok(docker, machine, &["docker", "rm", "--force", container])
         .await

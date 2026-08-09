@@ -4,11 +4,11 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use ployz_core::corrosion::{
-    ClusterDocument, ContainerDocument, MachineDocument, MachineStatusDocument, NamedReadReport,
-    PeerDocument, Principal, ReadReport, SqliteParameter, SqliteValue, Statement, StoredRow,
-    TransactionResponse, TransactionResult, read_named_roster_rows, read_rows,
+    ClusterDocument, ContainerDocument, MachineDocument, MachineStatusDocument, PeerDocument,
+    ReadReport, SqliteParameter, SqliteValue, Statement, StoredRow, read_named_roster_rows,
+    read_rows,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 
 use crate::corrosion::{
     CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
@@ -20,8 +20,8 @@ const MAX_KEEPER_ROWS: usize = 10_000;
 #[derive(Debug)]
 pub(super) struct KeeperRosterSnapshot {
     pub(super) cluster: ClusterDocument,
-    pub(super) machines: NamedReadReport<MachineDocument>,
-    pub(super) peers: NamedReadReport<PeerDocument>,
+    pub(super) machines: ReadReport<MachineDocument>,
+    pub(super) peers: ReadReport<PeerDocument>,
     pub(super) local_status: Option<MachineStatusDocument>,
 }
 
@@ -101,8 +101,8 @@ impl SelfStatusEchoQueue {
 #[derive(Clone)]
 pub(super) struct KeeperCorrosion {
     client: CorrosionClient,
-    cluster_id: ClusterId,
-    local_machine_id: MachineRowId,
+    cluster_id: ClusterName,
+    local_machine_id: MachineName,
     self_status_echoes: Arc<Mutex<SelfStatusEchoQueue>>,
 }
 
@@ -110,8 +110,8 @@ impl KeeperCorrosion {
     #[must_use]
     pub(super) fn new(
         client: CorrosionClient,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
     ) -> Self {
         Self {
             client,
@@ -216,37 +216,6 @@ impl KeeperCorrosion {
         }
         Ok(())
     }
-
-    pub(super) async fn rewrite_local_machine(
-        &self,
-        machine_id: &MachineRowId,
-        observed_document: &str,
-        document: &MachineDocument,
-    ) -> Result<(), KeeperStoreError> {
-        if machine_id != &self.local_machine_id
-            || document.cluster_id != self.cluster_id
-            || !matches!(
-                &document.provenance.written_by,
-                Principal::Machine { machine_id } if machine_id == &self.local_machine_id
-            )
-        {
-            return Err(KeeperStoreError::InvalidLocalMachineRepairOwnership);
-        }
-        let encoded = serde_json::to_string(document).map_err(|source| {
-            KeeperStoreError::EncodeLocalMachineRepair {
-                detail: source.to_string(),
-            }
-        })?;
-        let response = self
-            .client
-            .execute(&[local_machine_repair_statement(
-                &self.local_machine_id,
-                observed_document,
-                encoded,
-            )])
-            .await?;
-        require_local_machine_repair(&self.local_machine_id, &response)
-    }
 }
 
 async fn query_container_rows(
@@ -277,46 +246,6 @@ fn status_document_parameter(statement: &Statement) -> Option<String> {
         return None;
     };
     Some(document.clone())
-}
-
-fn local_machine_repair_statement(
-    machine_id: &MachineRowId,
-    observed_document: &str,
-    replacement_document: String,
-) -> Statement {
-    Statement::with_params(
-        "UPDATE machines SET document = ? WHERE id = ? AND document = ?",
-        vec![
-            SqliteParameter::Text(replacement_document),
-            SqliteParameter::Text(machine_id.as_str().to_owned()),
-            SqliteParameter::Text(observed_document.to_owned()),
-        ],
-    )
-}
-
-fn require_local_machine_repair(
-    machine_id: &MachineRowId,
-    response: &TransactionResponse,
-) -> Result<(), KeeperStoreError> {
-    match response.results.as_slice() {
-        [TransactionResult::Success(success)] if success.rows_affected == 1 => Ok(()),
-        [TransactionResult::Success(success)] if success.rows_affected == 0 => {
-            Err(KeeperStoreError::StaleLocalMachineRepair {
-                machine_id: machine_id.clone(),
-            })
-        }
-        [TransactionResult::Success(success)] => {
-            Err(KeeperStoreError::UnexpectedLocalMachineRepairCount {
-                machine_id: machine_id.clone(),
-                rows_affected: success.rows_affected,
-            })
-        }
-        [TransactionResult::Error(_)] | [] | [_, _, ..] => {
-            Err(KeeperStoreError::UnexpectedLocalMachineRepairResult {
-                machine_id: machine_id.clone(),
-            })
-        }
-    }
 }
 
 async fn next_invalidation(stream: &mut SubscriptionStream) -> Result<(), KeeperStoreError> {
@@ -370,7 +299,7 @@ async fn query_rows(
 }
 
 fn accepted_cluster(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     rows: Vec<StoredRow>,
 ) -> Result<ClusterDocument, KeeperStoreError> {
     let report = read_rows::<ClusterDocument>(cluster_id, rows);
@@ -384,7 +313,7 @@ fn accepted_cluster(
     Ok(cluster.value)
 }
 
-fn cluster_statement(cluster_id: &ClusterId) -> Statement {
+fn cluster_statement(cluster_id: &ClusterName) -> Statement {
     Statement::with_params(
         "SELECT id, document FROM cluster WHERE id = ?",
         vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
@@ -395,7 +324,7 @@ fn table_statement(table: &'static str) -> Statement {
     Statement::simple(format!("SELECT id, document FROM {table}"))
 }
 
-fn local_status_statement(local_machine_id: &MachineRowId) -> Statement {
+fn local_status_statement(local_machine_id: &MachineName) -> Statement {
     Statement::with_params(
         "SELECT machine_id AS id, document FROM machine_status WHERE machine_id = ?",
         vec![SqliteParameter::Text(local_machine_id.as_str().to_owned())],
@@ -403,8 +332,8 @@ fn local_status_statement(local_machine_id: &MachineRowId) -> Statement {
 }
 
 fn accepted_local_status(
-    cluster_id: &ClusterId,
-    local_machine_id: &MachineRowId,
+    cluster_id: &ClusterName,
+    local_machine_id: &MachineName,
     rows: Vec<StoredRow>,
 ) -> Result<Option<MachineStatusDocument>, KeeperStoreError> {
     let report = read_rows::<MachineStatusDocument>(cluster_id, rows);
@@ -439,23 +368,6 @@ pub(super) enum KeeperStoreError {
     InvalidLocalStatusOwnership,
     #[error("Keeper self-status invalidation evidence was poisoned")]
     SelfStatusEchoPoisoned,
-    #[error("Keeper subnet repair did not target its own machine row and cluster")]
-    InvalidLocalMachineRepairOwnership,
-    #[error("Keeper could not encode its repaired local machine row: {detail}")]
-    EncodeLocalMachineRepair { detail: String },
-    #[error(
-        "Keeper subnet repair evidence for local machine {machine_id} became stale before the write"
-    )]
-    StaleLocalMachineRepair { machine_id: MachineRowId },
-    #[error(
-        "Keeper subnet repair for local machine {machine_id} changed an unexpected {rows_affected} rows"
-    )]
-    UnexpectedLocalMachineRepairCount {
-        machine_id: MachineRowId,
-        rows_affected: usize,
-    },
-    #[error("Keeper subnet repair for local machine {machine_id} returned an unexpected result")]
-    UnexpectedLocalMachineRepairResult { machine_id: MachineRowId },
 }
 
 #[cfg(test)]
@@ -470,7 +382,7 @@ mod tests {
                 Statement::simple(format!("SELECT id, document FROM {table}"))
             );
         }
-        let machine = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine");
+        let machine = MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine");
         assert!(matches!(
             local_status_statement(&machine),
             Statement::WithParams(_, _)
@@ -519,23 +431,5 @@ mod tests {
             SqliteValue::Text("disconnected".to_owned()),
         ];
         assert!(!queue.consume(&values));
-    }
-
-    #[test]
-    fn local_machine_repair_is_fenced_by_the_exact_observed_document() {
-        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine");
-        let observed = r#"{"lifecycle":"active"}"#;
-        let replacement = r#"{"lifecycle":"active","subnet":"10.210.2.0/24"}"#;
-        assert_eq!(
-            local_machine_repair_statement(&machine_id, observed, replacement.to_owned()),
-            Statement::with_params(
-                "UPDATE machines SET document = ? WHERE id = ? AND document = ?",
-                vec![
-                    SqliteParameter::Text(replacement.to_owned()),
-                    SqliteParameter::Text(machine_id.as_str().to_owned()),
-                    SqliteParameter::Text(observed.to_owned()),
-                ],
-            )
-        );
     }
 }

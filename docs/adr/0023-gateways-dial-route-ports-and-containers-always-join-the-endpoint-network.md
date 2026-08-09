@@ -1,6 +1,6 @@
 # Gateways Dial Route Ports And Containers Always Join The Endpoint Network
 
-> Current v2 amendment: route attach/remove are standalone preferred-controller mutations. Deploy only inserts a missing deterministic automatic port-80 binding. Gateways select a binding's service and require `container.deploy == service.active_deploy`; there is no manifest route reconciliation or namespace-revision lookup.
+> Current v2 amendment: route attach/remove are standalone preferred-controller mutations. A full namespace deploy replaces that namespace's deterministic automatic port-80 bindings while preserving declared bindings. Gateways select a named namespace/service and require `container.deploy == service.active_deploy`; there is no namespace-revision lookup.
 
 Every service container joins the gateway endpoint network unconditionally at creation; ports never influence network membership. Gateway upstream matching selects containers by the Route Binding's service row id and requires each container's deploy id to equal that service row's `active_deploy`, then dials the container's observed IP on the Route Binding's endpoint port. The port declared or exposed by the container itself is not part of upstream matching and carries no access-control meaning.
 

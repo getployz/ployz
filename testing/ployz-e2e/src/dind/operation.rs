@@ -12,7 +12,7 @@ use ployz::commands::SshTarget;
 use ployz::init::ssh::{SshPeerKey, default_config_home};
 use ployz::mesh::context::{OperatorContextStore, SSH_CONTEXT_HANDOFF_PREFIX, SshContextHandoff};
 use ployz_core::corrosion::{MachineDocument, MachineTransport, SqliteValue};
-use ployz_core::ids::{MachineRowId, OperationRowId};
+use ployz_core::ids::{DeployName, MachineName};
 use ployz_core::join::JoinBlob;
 use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
 use ployz_core::{LensCollection, LensSnapshot, lens_route};
@@ -28,7 +28,7 @@ const WAIT_BUDGET: Duration = Duration::from_secs(60);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
 const CLI_BUDGET: Duration = Duration::from_secs(180);
 pub const REGISTRY_PORT: u16 = 5_000;
-const OPERATION_ROW_ID_LABEL: &str = "plz.operation_row_id";
+const DEPLOY_NAME_LABEL: &str = "plz.deploy";
 const DNS_QUERY_PROGRAM: &str = r#"
 import ipaddress
 import socket
@@ -73,7 +73,7 @@ pub struct OperatorFixture {
     home: PathBuf,
     cli: PathBuf,
     pub founder_target: SshTarget,
-    pub founder_machine_id: MachineRowId,
+    pub founder_machine_id: MachineName,
     pub joiners: Vec<JoinedMachine>,
 }
 
@@ -88,7 +88,7 @@ impl OperatorFixture {
 /// One joined machine's operator-facing coordinates.
 pub struct JoinedMachine {
     pub name: String,
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub target: SshTarget,
     pub api_address: String,
     pub dns_address: Ipv4Addr,
@@ -309,7 +309,7 @@ pub fn create_namespace_and_deploy(
     image: &str,
     secret_name: &str,
     secret_value: &str,
-) -> Result<OperationRowId, String> {
+) -> Result<DeployName, String> {
     let founder_target = operator.founder_target.clone();
     create_namespace(operator, namespace, &founder_target)?;
     let environment = format!("{secret_name}={secret_value}");
@@ -333,7 +333,7 @@ pub fn parse_deploy_operation(
     output: &Output,
     description: &str,
     secret_value: &str,
-) -> Result<OperationRowId, String> {
+) -> Result<DeployName, String> {
     require_success(output, description)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     require(
@@ -346,12 +346,12 @@ pub fn parse_deploy_operation(
         .find_map(|line| line.strip_prefix("accepted operation "))
         .and_then(|line| line.split_whitespace().next())
         .ok_or_else(|| format!("{description} output omitted its operation id: {stdout}"))?;
-    OperationRowId::try_new(operation_id).map_err(|error| error.to_string())
+    DeployName::try_new(operation_id).map_err(|error| error.to_string())
 }
 
 pub fn assert_cluster_wide_operation_terminal(
     operator: &OperatorFixture,
-    operation_id: &OperationRowId,
+    operation_id: &DeployName,
 ) -> Result<(), String> {
     for target in std::iter::once(&operator.founder_target)
         .chain(operator.joiners.iter().map(|joined| &joined.target))
@@ -395,9 +395,9 @@ pub fn assert_cluster_wide_operation_terminal(
 pub async fn assert_first_revision_container_is_gone(
     docker: &Docker,
     machines: &[&DindMachine],
-    first_operation: &OperationRowId,
+    first_operation: &DeployName,
 ) -> Result<(), String> {
-    let filter = format!("label={OPERATION_ROW_ID_LABEL}={first_operation}");
+    let filter = format!("label={DEPLOY_NAME_LABEL}={first_operation}");
     for machine in machines.iter().copied() {
         let listed = exec_ok(
             docker,
@@ -669,8 +669,6 @@ async fn run_founding(
         endpoint.to_string(),
         "--driver-peer-id".to_owned(),
         operator.peer_id.to_string(),
-        "--driver-peer-name".to_owned(),
-        operator.peer_name.clone(),
         "--driver-peer-public-key".to_owned(),
         operator.public_key.as_str().to_owned(),
     ];
@@ -772,7 +770,7 @@ async fn wait_for_roster(
     address: &str,
     token: &str,
     minimum: usize,
-) -> Result<BTreeMap<MachineRowId, MachineDocument>, String> {
+) -> Result<BTreeMap<MachineName, MachineDocument>, String> {
     let deadline = Instant::now() + WAIT_BUDGET;
     let mut last = String::from("roster was not queried");
     while Instant::now() < deadline {
@@ -821,13 +819,13 @@ async fn wait_for_roster(
 
 fn parse_roster(
     rows: Vec<Vec<SqliteValue>>,
-) -> Result<BTreeMap<MachineRowId, MachineDocument>, String> {
+) -> Result<BTreeMap<MachineName, MachineDocument>, String> {
     let mut roster = BTreeMap::new();
     for row in rows {
         let [SqliteValue::Text(id), SqliteValue::Text(document)] = row.as_slice() else {
             return Err(format!("machine query returned an invalid row: {row:?}"));
         };
-        let id = MachineRowId::try_new(id.clone()).map_err(|error| error.to_string())?;
+        let id = MachineName::try_new(id.clone()).map_err(|error| error.to_string())?;
         let document = serde_json::from_str(document)
             .map_err(|error| format!("machine row was invalid: {error}"))?;
         roster.insert(id, document);

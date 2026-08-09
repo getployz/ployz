@@ -21,7 +21,7 @@ use hyper::{Method, Request, StatusCode};
 use ployz_core::corrosion::{
     AcceptedRosterPrincipal, MachineTransport, PeerTransport, Principal, resolve_source_principal,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+use ployz_core::ids::{ClusterName, MachineName, PeerName};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionRetryAfterSeconds, KnownApiFeature,
     LensCollection, LensSnapshot, LensWatchEvent, V2Route,
@@ -49,20 +49,20 @@ fn corrosion_config() -> CorrosionClientConfig {
     .expect("valid Corrosion configuration")
 }
 
-fn cluster_id() -> ClusterId {
-    ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid cluster id")
+fn cluster_id() -> ClusterName {
+    ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid cluster id")
 }
 
-fn machine_id() -> MachineRowId {
-    MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("valid machine id")
+fn machine_id() -> MachineName {
+    MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("valid machine id")
 }
 
-fn other_machine_id() -> MachineRowId {
-    MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("valid machine id")
+fn other_machine_id() -> MachineName {
+    MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("valid machine id")
 }
 
-fn peer_id() -> PeerId {
-    PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("valid peer id")
+fn peer_id() -> PeerName {
+    PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("valid peer id")
 }
 
 fn services_snapshot() -> LensSnapshot {
@@ -395,7 +395,7 @@ fn every_exact_v2_route_accepts_only_its_declared_method() {
         parse_route(&Method::POST, "/tokens/revoke/01ARZ3NDEKTSV4RRFFQ69G5FAV")
             .map_err(|error| error.refusal),
         Ok(V2Route::TokenRevoke(
-            ployz_core::ids::TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
+            ployz_core::ids::TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
         ))
     );
     assert_eq!(

@@ -9,8 +9,8 @@ use crate::corrosion::{
     MachineTransport, MeshProvider, OperationInitiator, OperatorWriteProvenance, PeerDocument,
     PeerTransport, derive_builtin_wireguard_member,
 };
-use crate::ids::{MachineRowId, PeerId, TokenId};
-use crate::machine::{MachineLifecycle, MachineName};
+use crate::ids::{MachineName, PeerName, TokenName};
+use crate::machine::MachineLifecycle;
 use crate::network::{MachineEndpointSubnet, WireGuardPublicKey};
 
 use super::acceptance::{MachineJoinAccepted, PeerJoinAccepted};
@@ -20,7 +20,6 @@ use super::token::JoinTokenProof;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineJoinRequest {
-    pub machine_id: MachineRowId,
     pub name: MachineName,
     pub public_key: WireGuardPublicKey,
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
@@ -32,8 +31,7 @@ pub struct MachineJoinRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PeerJoinRequest {
-    pub peer_id: PeerId,
-    pub name: String,
+    pub name: PeerName,
     pub public_key: WireGuardPublicKey,
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub endpoint: Option<SocketAddr>,
@@ -57,14 +55,14 @@ pub enum JoinAdmissionValidationError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AcceptedMachineRow {
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub document: MachineDocument,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AcceptedPeerRow {
-    pub peer_id: PeerId,
+    pub peer_id: PeerName,
     pub document: PeerDocument,
 }
 
@@ -90,7 +88,7 @@ pub fn prepare_machine_admission(
         request.storage_facts,
     );
     Ok(AcceptedMachineRow {
-        machine_id: request.machine_id,
+        machine_id: request.name.clone(),
         document: MachineDocument {
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster.cluster_id.clone(),
@@ -119,7 +117,7 @@ pub fn prepare_peer_admission(
         .bind_address()
         .get();
     Ok(AcceptedPeerRow {
-        peer_id: request.peer_id,
+        peer_id: request.name.clone(),
         document: PeerDocument {
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster.cluster_id.clone(),
@@ -207,7 +205,7 @@ pub fn classify_machine_admission(
         request.storage_choice,
         request.storage_facts,
     );
-    if existing.machine_id == request.machine_id
+    if existing.machine_id == request.name
         && existing.document.cluster_id == cluster.cluster_id
         && existing.document.name == request.name
         && pubkey == &request.public_key
@@ -241,7 +239,7 @@ pub fn classify_peer_admission(
         derive_builtin_wireguard_member(&cluster.cluster_id, &request.public_key)
             .bind_address()
             .get();
-    if existing.peer_id == request.peer_id
+    if existing.peer_id == request.name
         && existing.document.cluster_id == cluster.cluster_id
         && existing.document.name == request.name
         && pubkey == &request.public_key
@@ -267,15 +265,15 @@ pub enum JoinAdmissionAccepted {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JoinDoorRefusal {
-    #[error("join token {token_id} does not exist or was revoked; run `ployz token create`")]
-    TokenNotFound { token_id: TokenId },
-    #[error("join token {token_id} expired at {expires_at}; run `ployz token create`")]
+    #[error("join token {token_id} does not exist or was revoked; run `ployz token create <name>`")]
+    TokenNotFound { token_id: TokenName },
+    #[error("join token {token_id} expired at {expires_at}; run `ployz token create <name>`")]
     TokenExpired {
-        token_id: TokenId,
+        token_id: TokenName,
         expires_at: CorrosionTimestamp,
     },
-    #[error("join token {token_id} has the wrong secret; run `ployz token create`")]
-    TokenSecretMismatch { token_id: TokenId },
+    #[error("join token {token_id} has the wrong secret; run `ployz token create <name>`")]
+    TokenSecretMismatch { token_id: TokenName },
     #[error(
         "join admission is invalid ({reason}); correct the inputs and run `ployz machine join` again"
     )]

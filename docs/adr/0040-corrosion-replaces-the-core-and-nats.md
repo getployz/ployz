@@ -6,6 +6,9 @@
 > each node and runs only that node's host prepare/retire effects. Followers
 > replace the advisory appointment only after one hard connect failure, and
 > public deploy operations move only from created to terminal.
+>
+> Identity, conflict, and join-repair details are further superseded by
+> [ADR 0042](0042-canonical-names-are-resource-identities.md).
 
 Ployz v2 removes the Control-Plane Core, the sequencer, and NATS entirely.
 Cluster config is rows in a shared Corrosion store — stock, version-pinned,
@@ -26,7 +29,7 @@ Under the single-operator trust ceiling a hostile member is the deferred
 signing tier's threat model, not v1's. The door allocates each joiner's
 container /24 from the operator's supernet by random-free pick with a
 courtesy re-read; a collision that survives convergence is self-healed by
-the lowest-ULID machine re-picking — the row law's one named exception,
+the lowest canonical machine name re-picking — the row law's one named exception,
 on the transport subnet field. Each machine's Keeper converges that
 machine's mesh substrate toward rows it does not own and reports into status
 rows nobody else may write. Ordinary product rows have exactly one authority —
