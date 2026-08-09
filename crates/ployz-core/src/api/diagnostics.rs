@@ -9,12 +9,12 @@ use serde_json::Value;
 use super::MachineLensRow;
 use crate::corrosion::{
     AcmeHttp01Document, CORROSION_NO_P99_LAG_SAMPLE, CertHoldingDocument, ClusterDocument,
-    ContainerDocument, CorrosionDocument, CorrosionHealthResponse, CorrosionTable,
-    GatewayObservationDocument, MachineDocument, MachineStatusDocument, MachineTransport,
-    MalformedDocument, MeshProvider, NameClaim, NamespaceDocument, OperationDocument, PeerDocument,
-    Principal, RouteBindingDocument, RowSkipReason, ServiceDocument, ShadowConflict, SkippedRow,
-    StoredRow, TokenDocument, WireGuardHandshakeEvidence, read_named_roster_rows, read_named_rows,
-    read_rows,
+    ContainerDocument, ControllerDocument, CorrosionDocument, CorrosionHealthResponse,
+    CorrosionTable, GatewayObservationDocument, MachineDocument, MachineStatusDocument,
+    MachineTransport, MalformedDocument, MeshProvider, NameClaim, NamespaceDocument,
+    OperationDocument, PeerDocument, Principal, RouteBindingDocument, RowSkipReason,
+    ServiceDocument, ShadowConflict, SkippedRow, StoredRow, TokenDocument,
+    WireGuardHandshakeEvidence, read_named_roster_rows, read_named_rows, read_rows,
 };
 use crate::ids::{ClusterId, CorrosionUlid, MachineRowId, PeerId, TokenId};
 use crate::machine::MachineName;
@@ -326,6 +326,7 @@ pub struct DoctorRawRows {
     pub namespaces: Vec<StoredRow>,
     pub services: Vec<StoredRow>,
     pub route_bindings: Vec<StoredRow>,
+    pub controller: Vec<StoredRow>,
     pub containers: Vec<StoredRow>,
     pub machine_status: Vec<StoredRow>,
     pub gateway_observations: Vec<StoredRow>,
@@ -346,6 +347,7 @@ impl DoctorRawRows {
             namespaces: Vec::new(),
             services: Vec::new(),
             route_bindings: Vec::new(),
+            controller: Vec::new(),
             containers: Vec::new(),
             machine_status: Vec::new(),
             gateway_observations: Vec::new(),
@@ -364,6 +366,7 @@ impl DoctorRawRows {
             CorrosionTable::Namespaces => &self.namespaces,
             CorrosionTable::Services => &self.services,
             CorrosionTable::RouteBindings => &self.route_bindings,
+            CorrosionTable::Controller => &self.controller,
             CorrosionTable::Containers => &self.containers,
             CorrosionTable::MachineStatus => &self.machine_status,
             CorrosionTable::GatewayObservations => &self.gateway_observations,
@@ -678,6 +681,7 @@ fn supported_version(table: CorrosionTable) -> u32 {
         CorrosionTable::Namespaces => NamespaceDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::Services => ServiceDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::RouteBindings => RouteBindingDocument::SUPPORTED_VERSION.get(),
+        CorrosionTable::Controller => ControllerDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::Containers => ContainerDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::MachineStatus => MachineStatusDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::GatewayObservations => GatewayObservationDocument::SUPPORTED_VERSION.get(),
@@ -819,6 +823,13 @@ fn extract_authorship(
                     }
                 },
             ),
+        CorrosionTable::Controller => fields
+            .get("preferred_machine_id")
+            .and_then(Value::as_str)
+            .and_then(|value| MachineRowId::try_new(value).ok())
+            .map_or(DoctorForeignAuthorship::Unparseable, |machine_id| {
+                machine_authorship(machine_id, current_machines)
+            }),
         CorrosionTable::Containers
         | CorrosionTable::MachineStatus
         | CorrosionTable::GatewayObservations

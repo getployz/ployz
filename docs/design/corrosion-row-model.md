@@ -1,15 +1,14 @@
 # The Corrosion Row Model
 
-First-draft spec from the wayfinder ticket [Decide: the row model — tables,
+Row-model spec from the wayfinder ticket [Decide: the row model — tables,
 ownership map, and the row-ownership law](https://github.com/getployz/ployz/issues/785).
 The companion DDL draft is [corrosion-schema-v1.sql](corrosion-schema-v1.sql).
 This governs the coreless v2 design; it replaces the intent-file / evidence-log
 storage rules of the retired v1 design.
 
-Schema v1 is the first writable contract. No product path writes these v2
-documents yet, so required provenance, typed identifiers, transport separation,
-and canonical timestamps are part of v1 directly. There is no legacy v2 row
-shape to migrate or accept.
+Schema v1 is the first writable contract. Required provenance, typed identifiers,
+transport separation, and canonical timestamps are part of v1 directly. There
+is no legacy v2 row shape to migrate or accept.
 
 ## The admission lens
 
@@ -17,9 +16,9 @@ A table earns a Corrosion row only if someone must watch it live: the
 gateway, DNS, Cloud, or another machine. Everything else stays local.
 Deliberately outside Corrosion:
 
-- Per-machine desired container specs (deploy inputs) — machine-local
-  storage, as in Uncloud's `machine.db`. Nobody watches them.
-- Operation detail — driver-local JSONL, streamed over SSE on demand.
+- Duroxide workflow history — private SQLite on each execution node, limited to
+  that node's host-local prepare and retire effects. It is never controller
+  state, a public history, or a cluster recovery source.
 - WG private keys, TLS keys, secret env values, deploy-time secret
   payloads — never rows in any form.
 
@@ -30,6 +29,12 @@ Deliberately outside Corrosion:
 > two machines can ever address the same row. LWW therefore only ever
 > adjudicates the operator racing themselves — never machine-vs-machine,
 > never machine-vs-operator.
+
+The singleton `controller` row is the named exception introduced by ADR 0041.
+Any API machine that passes the visibility brake may replace it immediately
+after one hard connect failure. Timeouts, HTTP responses, and protocol failures
+do not replace it. Its LWW result is an advisory appointment, not product intent
+or runtime truth.
 
 Operator authority means a machine writes only while executing the
 operator's explicit command; Keeper and background loops never touch
@@ -48,9 +53,10 @@ runner, the CLI is in one operator's hand.
 | `namespaces` | operator | namespace create/rm | `NamespaceRowId` | namespace rm |
 | `services` | operator | deploy promotion | `ServiceRowId` | superseding deploy |
 | `route_bindings` | operator | route attach/detach | `RouteBindingRowId` | route rm |
-| `containers` | machine | the deploy driver, naming the hosting machine in `machine_id` | Docker container id | deploy driver sweep; `machine rm` keys on `machine_id` |
+| `controller` | API machines | initialization or visible replacement after one hard connect failure | `ClusterId` | replaced by the next appointment |
+| `containers` | deploy command stream | preferred controller after target prepare, naming the host in `machine_id` | Docker container id | superseding deploy; `machine rm` keys on `machine_id` |
 | `machine_status` | machine | the machine itself | `MachineRowId` | `machine rm` |
-| `operations` | machine | the executing machine | `OperationRowId` | never in v1 (refound compacts) |
+| `operations` | controller appointment | the preferred controller executing a deploy | `OperationRowId` | never in v1 (refound compacts) |
 | `cert_holdings` | machine | the holding gateway | `<MachineRowId>:<hostname>` | owning gateway's tick; `machine rm` |
 | `acme_http01` | machine | the issuing gateway | ACME challenge token | issuer on order settle; `machine rm` |
 
@@ -66,8 +72,8 @@ runner, the CLI is in one operator's hand.
 - These Corrosion identity types are the v2 row contract. The incumbent
   subject-token identifiers remain frozen and are not accepted in Corrosion
   keys or references.
-- Natural writer-scoped keys remain for testimony where the external fact is
-  the identity (Docker container id and ACME challenge token). Composite
+- Natural keys remain where the external fact is the identity (Docker
+  container id and ACME challenge token). Composite
   testimony keys embed typed canonical machine identity and are never reused by
   construction.
 - Never-reused PKs everywhere keeps every table reaper-eligible later
@@ -76,40 +82,34 @@ runner, the CLI is in one operator's hand.
   at admission, a token's hash. Mutation of identity = delete + new row
   with a new ULID. Route Binding Identity holds: detach + recreate is a
   new identity even for the same hostname.
-- An operation's terminal write is final (at most three summary-state writes
-  per op: created, optional running, terminal). Heartbeat refreshes are
-  excluded from that count: the executing machine — the row's one writer —
-  may rewrite the document's top-level `heartbeat_at` between summary-state
-  writes so readers can judge driver liveness. The heartbeat mutator refuses
-  terminal documents and can change no other field, so terminal stays final.
-  Liveness is judged in Rust from the parsed document; no SQL reader keys on
-  `heartbeat_at`, so it rides only in the document. `containers.deploy` rides
-  as a generated column in the DDL.
+- A deploy operation moves only from created to terminal; terminal outcomes are
+  completed, failed, or interrupted. A live attempt that observes a foreign
+  Controller Appointment may write interrupted. A crashed attempt may leave a
+  created row, which no replacement projects, resumes, or rewrites. There is no
+  running snapshot, resubmit flag, heartbeat, or takeover protocol.
+  `containers.deploy` rides as a generated column in the DDL.
 
-## Uniqueness without a coordinator: optimistic claims
+## Name uniqueness under partitions: deterministic readers
 
-This is the product-wide coordination primitive (fixed by the unified-cert
-ticket, #792, amending #785). There is no lock and no true mutual
-exclusion under multi-writer LWW — only a courtesy race-narrowing step
-with a deterministic backstop. No quorum locks exist anywhere in the
-product: a quorum lock stalls exactly when a majority is unreachable,
-the repair-before-command failure class the converged-over-coordinated
-thesis rejects.
+This remains the row-level tie-break for human-name uniqueness. It is not the
+cluster mutation scheduler; ADR 0041's preferred controller handles ordinary
+command serialization. For namespace and route mutations, a healthy controller
+reads the visible name or hostname, refuses an existing winner, and otherwise
+inserts one ordinary row. There is no wait, post-insert adjudication, or
+automatic loser cleanup.
 
-1. Read: name/hostname free? If taken, refuse normally.
-2. Insert the row (the row itself is the claim — no claims table).
-3. Courtesy re-read after a fixed short beat (1–2s). This narrows the
-   everyday race window; it carries no correctness weight. (An earlier
-   draft derived the wait from Corrosion `/v1/health` p99 lag; deleted —
-   unproven, and quiet-cluster lag semantics are unknown.)
-4. Re-read all rows for the claimed name: lowest ULID wins. Mine → claimed.
-   Another → I lost; delete my row, report who won.
+Competing controllers in a partition may both observe the name as free and both
+return success. After convergence, the lowest canonical ULID is the winner and
+every other valid row remains a shadow until an operator removes it explicitly.
+No quorum lock exists to prevent this: it would stall exactly when a majority is
+unreachable, the repair-before-command failure class the
+converged-over-coordinated thesis rejects.
 
 Reader law (where safety actually lives): every reader of a named table —
 gateway, DNS, Cloud, CLI — resolves duplicates by lowest ULID and
 surfaces losers as conflicts (`doctor` names the shadowed row and the
-command that removes it). A partition longer than the beat yields a
-visible repair, never silent merged truth. A future additive layer
+command that removes it). A partition yields a visible repair, never silent
+merged truth. A future additive layer
 (version-vector ack round for rare cluster-singleton mutations) is noted
 but not built.
 
@@ -124,10 +124,10 @@ it cannot win a name or subnet claim and shadow a valid row.
   No background deleter exists; every delete happens inside a command or
   the machine's own testimony maintenance.
 - **Removal transfers sweep duty.** The command that deletes a machine's
-  roster row also sweeps every testimony row that machine authored
-  (`machine_status`, `containers`). Deleting the author is the one act
-  that lets operator authority touch machine-authority rows.
-- **Never swept in v1:** `operations` rows (evidence; compact at refound).
+  roster row also sweeps its machine testimony and the committed container
+  rows naming that host. Deleting the author is the one act that lets operator
+  authority touch machine-authority rows.
+- **Never swept in v1:** `operations` rows (coarse command results; compact at refound).
   Expired tokens are invalid at point of use, deleted only by `token revoke`
   (verification is an O(1) lookup by the embedded ULID, so deleting the row is
   itself revocation — one act, no separate `token rm`; see the token/status/
@@ -152,6 +152,9 @@ it cannot win a name or subnet claim and shadow a valid row.
   principal for the explicit command that wrote the row. Missing or malformed
   provenance makes the document unparseable, so readers skip and surface it
   rather than invent attribution.
+- **Controller appointment provenance is structural.** The `controller` row
+  carries only the preferred machine id and opaque appointment id. It is
+  infrastructure coordination rather than an operator decision.
 - **One timestamp type everywhere.** Every Corrosion document time, including
   operation state times, testimony observations, token lifetime, deploy time,
   certificate issue and expiry, and operator `written_at`, is a
@@ -197,9 +200,7 @@ shareable with support without a single credential in it.
 ## Certificates
 
 Fixed by the unified-cert ticket (#792). One hostname, one certificate,
-unified across gateways (per-gateway *independent* issuance stays
-vetoed); coordination is the optimistic-claim primitive above, never a
-lock.
+unified across gateways; per-gateway independent issuance stays vetoed.
 
 - **Key material is machine-local on gateways only.** Never rows, never
   in the join payload, never through Cloud. Cert material is

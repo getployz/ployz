@@ -5,8 +5,7 @@ use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionHealthResponse,
     CorrosionTable, CorrosionTimestamp, MachineDocument, MachineStatusDocument,
     MachineStorageSelection, MachineStorageSelectionReason, MachineTransport, MeshProvider,
-    OperatorWriteProvenance, PloyzDnsTargetState, Principal, StorageMode, StoredRow,
-    WireGuardHandshakeEvidence,
+    OperatorWriteProvenance, Principal, StorageMode, StoredRow, WireGuardHandshakeEvidence,
 };
 use ployz_core::ids::{ClusterId, CorrosionUlid, MachineRowId, PeerId, TokenId};
 use ployz_core::machine::{MachineLifecycle, MachineName};
@@ -45,7 +44,6 @@ fn cluster() -> ClusterDocument {
         name: "acme-prod".to_owned(),
         storage_default: StorageMode::Plain,
         hostname_mode: AutomaticHostnameMode::Disabled,
-        ployz_dns_target: PloyzDnsTargetState::Disabled,
         prefix: MachineEndpointSupernet::try_new("10.210.0.0/16").expect("fixture supernet"),
         provider: MeshProvider::BuiltinWireguard,
         acme_directory_url: "https://acme.example/directory".to_owned(),
@@ -230,6 +228,7 @@ fn corrosion_table_catalog_covers_every_diagnostic_table_in_schema_order() {
             "namespaces",
             "services",
             "route_bindings",
+            "controller",
             "containers",
             "machine_status",
             "gateway_observations",

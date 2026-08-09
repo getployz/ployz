@@ -6,7 +6,6 @@ import {
   type MachineName,
   type RouteHostname,
   type RoutePort,
-  type StopGracePeriod,
   type VolumeName,
 } from "./generated.ts";
 
@@ -19,11 +18,8 @@ export function containerId(value: string): ContainerId {
 }
 
 export function imageReference(value: string): ImageReference {
-  if (value.trim() === "") {
-    throw new RangeError("image reference must not be empty");
-  }
-  if (/[\s\p{C}]/u.test(value)) {
-    throw new RangeError("image reference must not contain whitespace or control characters");
+  if (value.trim() === "" || /[\s\p{C}]/u.test(value)) {
+    throw new RangeError("image reference must be non-empty and contain no whitespace");
   }
 
   return value as ImageReference;
@@ -46,7 +42,11 @@ export function containerMountPath(value: string): ContainerMountPath {
 }
 
 export function installArtifactVersion(value: string): InstallArtifactVersion {
-  return visibleAscii(value, "install artifact version") as InstallArtifactVersion;
+  if (value === "" || /[^\x21-\x7E]/.test(value)) {
+    throw new RangeError("install artifact version must contain only visible ASCII");
+  }
+
+  return value as InstallArtifactVersion;
 }
 
 export function routeHostname(value: string): RouteHostname {
@@ -62,42 +62,16 @@ export function routeHostname(value: string): RouteHostname {
 }
 
 export function routePort(value: number): RoutePort {
-  return positiveU16(value, "route port") as RoutePort;
-}
-
-export function stopGracePeriod(value: number): StopGracePeriod {
-  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
-    throw new RangeError("stop grace period must be an integer number of seconds within u32 range");
+  if (!Number.isSafeInteger(value) || value < 1 || value > 65_535) {
+    throw new RangeError("route port must be an integer from 1 to 65535");
   }
 
-  return value as StopGracePeriod;
+  return value as RoutePort;
 }
 
 function subjectToken(value: string, label: string): string {
-  if (value === "") {
-    throw new RangeError(`${label} must not be empty`);
-  }
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+  if (value === "" || !/^[A-Za-z0-9_-]+$/.test(value)) {
     throw new RangeError(`${label} must contain only ASCII letters, numbers, underscores, or dashes`);
-  }
-
-  return value;
-}
-
-function visibleAscii(value: string, label: string): string {
-  if (value === "") {
-    throw new RangeError(`${label} must not be empty`);
-  }
-  if (/[^\x21-\x7E]/.test(value)) {
-    throw new RangeError(`${label} must contain only visible ASCII without whitespace`);
-  }
-
-  return value;
-}
-
-function positiveU16(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1 || value > 65_535) {
-    throw new RangeError(`${label} must be an integer from 1 to 65535`);
   }
 
   return value;

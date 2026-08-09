@@ -1,7 +1,6 @@
 use super::*;
 use crate::HostRunnerCommandOutput;
 use base64::Engine as _;
-use ployz_core::build::railpack_pins;
 use std::path::PathBuf;
 
 #[test]
@@ -90,7 +89,6 @@ fn founding_persists_the_complete_join_substrate_contract() {
         artifacts.ebpf_ctl.clone(),
         artifacts.corrosion.clone(),
         artifacts.corrosion_schema.clone(),
-        artifacts.railpack.clone(),
     ];
     let prepared = prepare_plain_founding(
         &state,
@@ -831,12 +829,6 @@ fn fixture_artifacts() -> ReleaseArtifacts {
         ebpf_ctl: spec("ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
         corrosion: spec("corrosion", "/usr/local/bin/corrosion"),
         corrosion_schema: spec("schema", "/usr/local/lib/ployz/corrosion-schema-v1.sql"),
-        railpack: spec(
-            "railpack",
-            railpack_pins()
-                .expect("checked-in Railpack pins")
-                .install_path(),
-        ),
     }
 }
 
@@ -859,7 +851,6 @@ fn remote_artifacts(directory: &Path, digest: &str) -> ReleaseArtifacts {
         ebpf_ctl: spec("ebpf-ctl"),
         corrosion: spec("corrosion"),
         corrosion_schema: spec("schema"),
-        railpack: spec("railpack"),
     }
 }
 

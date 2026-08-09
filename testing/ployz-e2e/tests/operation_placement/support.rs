@@ -1,6 +1,6 @@
 //! Placement-scenario helpers: multi-container row convergence, the typed
 //! operator mesh client for volume-bearing deploy requests (the CLI carries
-//! no volume flag), and machine-local assertions.
+//! no volume flag), and machine-local volume assertions.
 
 use std::net::Ipv4Addr;
 use std::net::{IpAddr, SocketAddr};
@@ -34,20 +34,6 @@ pub(super) const DATA_VOLUME_SUFFIX: &str = "-v4-data";
 pub(super) struct PlacedRows {
     pub(super) service: ServiceDocument,
     pub(super) containers: Vec<(MachineRowId, Ipv4Addr)>,
-}
-
-pub(super) fn require_contains(
-    description: &str,
-    haystack: &str,
-    needles: &[&str],
-) -> Result<(), String> {
-    for needle in needles {
-        require(
-            haystack.contains(needle),
-            format!("{description} lacked {needle:?}: {haystack}"),
-        )?;
-    }
-    Ok(())
 }
 
 /// Sends one typed deploy request over the operator's persisted WireGuard
@@ -152,30 +138,6 @@ pub(super) async fn wait_for_placed_rows(
         tokio::time::sleep(WAIT_DELAY).await;
     }
     Err(format!("placed rows did not converge: {last}"))
-}
-
-/// No file under the machine's durable evidence directory may contain the
-/// environment value. Non-driver machines execute deploy verbs with the
-/// forwarded value but never write it to disk evidence.
-pub(super) async fn assert_machine_evidence_is_secret_free(
-    docker: &Docker,
-    machine: &DindMachine,
-    secret_value: &str,
-) -> Result<(), String> {
-    let outcome = exec_in_container(
-        docker,
-        &machine.container_id,
-        &["grep", "-rF", secret_value, "/var/lib/ployz/api/evidence"],
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    require(
-        !outcome.success(),
-        format!(
-            "disk evidence on {} exposed an environment value: {outcome:?}",
-            machine.name
-        ),
-    )
 }
 
 /// Whether the machine's inner Docker holds the deterministic `data` volume.

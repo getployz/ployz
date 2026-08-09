@@ -9,29 +9,6 @@ pub use crate::image::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct PlatformImage {
-    pub seed: MachineId,
-    pub manifest_digest: OciDigest,
-    pub image_id: OciDigest,
-    pub availability_expires_at: ImageAvailabilityExpiresAt,
-}
-
-positive_u64_wire_newtype! {
-    /// The last Unix second before which a pushed platform is advertised as available.
-    pub struct ImageAvailabilityExpiresAt;
-    ts_brand: "Brand<string, \"ImageAvailabilityExpiresAt\">";
-    accessor: unix_seconds;
-    error: ImageAvailabilityTimestampError;
-}
-
-positive_u64_wire_error! {
-    pub enum ImageAvailabilityTimestampError;
-    noun: "image availability timestamp";
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(type = "Brand<string, \"ImageReference\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct ImageReference(String);

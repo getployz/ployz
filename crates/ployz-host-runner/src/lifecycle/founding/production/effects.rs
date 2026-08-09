@@ -34,7 +34,6 @@ impl<R: HostRunnerCommandRunner> LinuxFoundingHostEffects<R> {
                 self.artifacts.ebpf_ctl.clone(),
                 self.artifacts.corrosion.clone(),
                 self.artifacts.corrosion_schema.clone(),
-                self.artifacts.railpack.clone(),
             ],
         )
         .map_err(failure)

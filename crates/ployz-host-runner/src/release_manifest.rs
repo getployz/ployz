@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use ployz_core::build::railpack_pins;
 use ployz_core::install::{
     AbsoluteInstallPath, ExactPloyzVersion, InstallArtifactSource, InstallArtifactSpec,
     InstallArtifactVersion, InstallSha256Digest, ReleasePlatformFailure,
@@ -73,7 +72,6 @@ pub struct ReleaseManifest {
     corrosion_sha256: String,
     corrosion_schema_url: String,
     corrosion_schema_sha256: String,
-    railpack: RailpackManifestEntry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,15 +81,6 @@ pub struct ReleaseArtifacts {
     pub ebpf_ctl: InstallArtifactSpec,
     pub corrosion: InstallArtifactSpec,
     pub corrosion_schema: InstallArtifactSpec,
-    pub railpack: InstallArtifactSpec,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RailpackManifestEntry {
-    version: String,
-    url: String,
-    sha256: String,
-    install_path: String,
 }
 
 impl ReleaseManifest {
@@ -123,7 +112,6 @@ impl ReleaseManifest {
             corrosion_sha256: manifest_value(contents, "PLOYZ_CORROSION_SHA256")?,
             corrosion_schema_url: manifest_value(contents, "PLOYZ_CORROSION_SCHEMA_URL")?,
             corrosion_schema_sha256: manifest_value(contents, "PLOYZ_CORROSION_SCHEMA_SHA256")?,
-            railpack: railpack_entry(contents).map_err(invalid_manifest)?,
         })
     }
 
@@ -187,12 +175,6 @@ impl ReleaseManifest {
                 &self.corrosion_schema_sha256,
                 "/usr/local/lib/ployz/corrosion-schema-v1.sql",
             )?,
-            railpack: artifact_spec(
-                &self.railpack.version,
-                &self.railpack.url,
-                &self.railpack.sha256,
-                &self.railpack.install_path,
-            )?,
         })
     }
 
@@ -206,23 +188,6 @@ impl ReleaseManifest {
             local_platform.manifest_slug()
         ))
     }
-}
-
-fn railpack_entry(contents: &str) -> Result<RailpackManifestEntry, String> {
-    let pins = railpack_pins().map_err(|error| error.to_string())?;
-    let version = manifest_value(contents, "PLOYZ_RAILPACK_VERSION")?;
-    if version != pins.version() {
-        return Err(format!(
-            "release manifest has unsupported PLOYZ_RAILPACK_VERSION={version}; expected {}",
-            pins.version()
-        ));
-    }
-    Ok(RailpackManifestEntry {
-        version,
-        url: manifest_value(contents, "PLOYZ_RAILPACK_URL")?,
-        sha256: manifest_value(contents, "PLOYZ_RAILPACK_SHA256")?,
-        install_path: pins.install_path().to_owned(),
-    })
 }
 
 #[must_use]
@@ -343,10 +308,7 @@ mod tests {
              PLOYZ_CORROSION_URL=https://example.test/corrosion\n\
              PLOYZ_CORROSION_SHA256={SHA}\n\
              PLOYZ_CORROSION_SCHEMA_URL=https://example.test/corrosion-schema-v1.sql\n\
-             PLOYZ_CORROSION_SCHEMA_SHA256={SHA}\n\
-             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
-             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
-             PLOYZ_RAILPACK_SHA256={SHA}\n"
+             PLOYZ_CORROSION_SCHEMA_SHA256={SHA}\n"
         )
     }
 
@@ -412,11 +374,6 @@ mod tests {
         assert_eq!(
             artifacts.ployzd.install_path.as_str(),
             "/usr/local/bin/ployzd"
-        );
-        assert_eq!(artifacts.railpack.version.as_str(), "v0.31.0");
-        assert_eq!(
-            artifacts.railpack.install_path.as_str(),
-            "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
         );
         assert_eq!(
             artifacts.corrosion.install_path.as_str(),
@@ -514,46 +471,6 @@ mod tests {
             error.to_string(),
             "release manifest PLOYZ_VERSION is invalid: release version must be exact, got mutable \"alpha\""
         );
-    }
-
-    #[test]
-    fn release_manifest_requires_the_complete_railpack_tuple() {
-        let missing = ReleaseManifest::parse(&format!(
-            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
-             PLOYZ_VERSION=0.1.0\n\
-             PLOYZD_URL=https://example.test/ployzd\n\
-             PLOYZD_SHA256={SHA}\n\
-             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
-             PLOYZ_EBPF_TC_SHA256={SHA}\n\
-             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
-             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
-             PLOYZ_CORROSION_EMBEDDED_VERSION=corrosion 0.2.0-beta.0\n\
-             PLOYZ_CORROSION_URL=https://example.test/corrosion\n\
-             PLOYZ_CORROSION_SHA256={SHA}\n\
-             PLOYZ_CORROSION_SCHEMA_URL=https://example.test/corrosion-schema-v1.sql\n\
-             PLOYZ_CORROSION_SCHEMA_SHA256={SHA}\n"
-        ))
-        .expect_err("Railpack is required release material");
-        assert!(missing.to_string().contains("PLOYZ_RAILPACK_VERSION"));
-
-        let partial = ReleaseManifest::parse(&format!(
-            "PLOYZ_RELEASE_PLATFORM=linux-amd64\n\
-             PLOYZ_VERSION=0.1.0\n\
-             PLOYZD_URL=https://example.test/ployzd\n\
-             PLOYZD_SHA256={SHA}\n\
-             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
-             PLOYZ_EBPF_TC_SHA256={SHA}\n\
-             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
-             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
-             PLOYZ_CORROSION_EMBEDDED_VERSION=corrosion 0.2.0-beta.0\n\
-             PLOYZ_CORROSION_URL=https://example.test/corrosion\n\
-             PLOYZ_CORROSION_SHA256={SHA}\n\
-             PLOYZ_CORROSION_SCHEMA_URL=https://example.test/corrosion-schema-v1.sql\n\
-             PLOYZ_CORROSION_SCHEMA_SHA256={SHA}\n\
-             PLOYZ_RAILPACK_VERSION=v0.31.0\n"
-        ))
-        .expect_err("partial Railpack tuple is rejected");
-        assert!(partial.to_string().contains("PLOYZ_RAILPACK_URL"));
     }
 
     #[test]

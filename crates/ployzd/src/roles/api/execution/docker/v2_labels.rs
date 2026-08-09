@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::corrosion::V2ManagedContainerIdentity;
+use ployz_core::deploy::{ReplicaSlot, ReplicatedReplicaSlot};
 use ployz_core::ids::{CorrosionUlidError, NamespaceRowId, OperationRowId, ServiceRowId};
 
 pub(super) const MANAGED_LABEL: &str = "plz.managed";
@@ -12,6 +13,7 @@ pub const V2_IDENTITY_SCHEMA: &str = "corrosion_v2";
 pub const NAMESPACE_ROW_ID_LABEL: &str = "plz.namespace_row_id";
 pub const SERVICE_ROW_ID_LABEL: &str = "plz.service_row_id";
 pub const OPERATION_ROW_ID_LABEL: &str = "plz.operation_row_id";
+pub const REPLICA_SLOT_LABEL: &str = "plz.replica_slot";
 
 #[must_use]
 pub fn render(identity: &V2ManagedContainerIdentity) -> BTreeMap<String, String> {
@@ -33,6 +35,13 @@ pub fn render(identity: &V2ManagedContainerIdentity) -> BTreeMap<String, String>
             OPERATION_ROW_ID_LABEL.to_owned(),
             identity.operation_id.as_str().to_owned(),
         ),
+        (
+            REPLICA_SLOT_LABEL.to_owned(),
+            match identity.replica_slot {
+                ReplicaSlot::Global => "global".to_owned(),
+                ReplicaSlot::Replicated { number } => number.get().to_string(),
+            },
+        ),
     ])
 }
 
@@ -46,6 +55,7 @@ pub fn parse(
         namespace_id: parse_row_id(labels, NAMESPACE_ROW_ID_LABEL, NamespaceRowId::try_new)?,
         service_id: parse_row_id(labels, SERVICE_ROW_ID_LABEL, ServiceRowId::try_new)?,
         operation_id: parse_row_id(labels, OPERATION_ROW_ID_LABEL, OperationRowId::try_new)?,
+        replica_slot: parse_replica_slot(labels)?,
     })
 }
 
@@ -62,6 +72,9 @@ pub enum V2ManagedContainerLabelError {
     InvalidRowId {
         label: &'static str,
         source: CorrosionUlidError,
+    },
+    InvalidReplicaSlot {
+        value: String,
     },
 }
 
@@ -98,6 +111,23 @@ fn parse_row_id<Id>(
 ) -> Result<Id, V2ManagedContainerLabelError> {
     parse(required_label(labels, label)?.to_owned())
         .map_err(|source| V2ManagedContainerLabelError::InvalidRowId { label, source })
+}
+
+fn parse_replica_slot(
+    labels: &BTreeMap<String, String>,
+) -> Result<ReplicaSlot, V2ManagedContainerLabelError> {
+    let value = required_label(labels, REPLICA_SLOT_LABEL)?;
+    if value == "global" {
+        return Ok(ReplicaSlot::Global);
+    }
+    value
+        .parse::<u16>()
+        .ok()
+        .and_then(|number| ReplicatedReplicaSlot::try_new(number).ok())
+        .map(|number| ReplicaSlot::Replicated { number })
+        .ok_or_else(|| V2ManagedContainerLabelError::InvalidReplicaSlot {
+            value: value.to_owned(),
+        })
 }
 
 #[cfg(test)]

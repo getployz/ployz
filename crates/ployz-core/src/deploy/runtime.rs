@@ -2,6 +2,53 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReplicaSlot {
+    Replicated { number: ReplicatedReplicaSlot },
+    Global,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"ReplicatedReplicaSlot\">"))]
+#[serde(try_from = "u16", into = "u16")]
+pub struct ReplicatedReplicaSlot(NonZeroU16);
+
+impl ReplicatedReplicaSlot {
+    pub fn try_new(value: u16) -> Result<Self, ReplicaSlotError> {
+        NonZeroU16::new(value)
+            .map(Self)
+            .ok_or(ReplicaSlotError::Zero)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u16> for ReplicatedReplicaSlot {
+    type Error = ReplicaSlotError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<ReplicatedReplicaSlot> for u16 {
+    fn from(value: ReplicatedReplicaSlot) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReplicaSlotError {
+    #[error("replica slot must be greater than zero")]
+    Zero,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(type = "Brand<string, \"EnvName\">"))]
@@ -403,38 +450,6 @@ impl ContainerHealthcheck {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(rename_all = "kebab-case")]
-pub enum ContainerRestartPolicy {
-    DockerDefault,
-    No,
-    Always,
-    OnFailure,
-    UnlessStopped,
-}
-
-impl ContainerRestartPolicy {
-    #[must_use]
-    pub const fn as_docker_name(self) -> &'static str {
-        match self {
-            Self::DockerDefault => "",
-            Self::No => "no",
-            Self::Always => "always",
-            Self::OnFailure => "on-failure",
-            Self::UnlessStopped => "unless-stopped",
-        }
-    }
-}
-
-const fn default_restart_policy() -> ContainerRestartPolicy {
-    ContainerRestartPolicy::DockerDefault
-}
-
-fn is_default_restart_policy(value: &ContainerRestartPolicy) -> bool {
-    *value == ContainerRestartPolicy::DockerDefault
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(type = "Brand<string, \"LinuxCapability\">"))]
@@ -622,38 +637,6 @@ impl ContainerResourceLimits {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(type = "SafeInteger<\"StopGracePeriod\">"))]
-#[serde(from = "u32", into = "u32")]
-pub struct StopGracePeriod(u32);
-
-impl StopGracePeriod {
-    pub const DEFAULT_SECONDS: u32 = 10;
-
-    #[must_use]
-    pub const fn default_grace() -> Self {
-        Self(Self::DEFAULT_SECONDS)
-    }
-
-    #[must_use]
-    pub const fn as_seconds(self) -> u32 {
-        self.0
-    }
-}
-
-impl From<u32> for StopGracePeriod {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<StopGracePeriod> for u32 {
-    fn from(value: StopGracePeriod) -> Self {
-        value.as_seconds()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -661,16 +644,10 @@ pub struct ContainerRuntimeSpec {
     pub command: Option<ContainerCommand>,
     pub entrypoint: Option<ContainerEntrypoint>,
     pub environment: ServiceEnvironment,
-    pub stop_grace_period: StopGracePeriod,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_mounts: Vec<ServiceVolumeMount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub healthcheck: Option<ContainerHealthcheck>,
-    #[serde(
-        default = "default_restart_policy",
-        skip_serializing_if = "is_default_restart_policy"
-    )]
-    pub restart_policy: ContainerRestartPolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cap_add: Vec<LinuxCapability>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -686,10 +663,8 @@ impl ContainerRuntimeSpec {
             command: None,
             entrypoint: None,
             environment: ServiceEnvironment::empty(),
-            stop_grace_period: StopGracePeriod::default_grace(),
             volume_mounts: Vec::new(),
             healthcheck: None,
-            restart_policy: ContainerRestartPolicy::DockerDefault,
             cap_add: Vec::new(),
             cap_drop: Vec::new(),
             resources: ContainerResourceLimits::default(),

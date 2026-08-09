@@ -312,30 +312,9 @@ pub fn create_namespace_and_deploy(
 ) -> Result<OperationRowId, String> {
     let founder_target = operator.founder_target.clone();
     create_namespace(operator, namespace, &founder_target)?;
-    let deploy = spawn_deploy(
-        operator,
-        namespace,
-        service,
-        image,
-        secret_name,
-        secret_value,
-    )?;
-    let deployed = wait_for_child(deploy, CLI_BUDGET)?;
-    parse_deploy_operation(&deployed, "first deploy", secret_value)
-}
-
-pub fn spawn_deploy(
-    operator: &OperatorFixture,
-    namespace: &str,
-    service: &str,
-    image: &str,
-    secret_name: &str,
-    secret_value: &str,
-) -> Result<Child, String> {
     let environment = format!("{secret_name}={secret_value}");
-    spawn_cli(
-        &operator.cli,
-        &operator.home,
+    let deployed = run_cli(
+        operator,
         &[
             "deploy",
             namespace,
@@ -346,7 +325,8 @@ pub fn spawn_deploy(
             "--target",
             operator.founder_target.as_str(),
         ],
-    )
+    )?;
+    parse_deploy_operation(&deployed, "first deploy", secret_value)
 }
 
 pub fn parse_deploy_operation(
@@ -369,11 +349,10 @@ pub fn parse_deploy_operation(
     OperationRowId::try_new(operation_id).map_err(|error| error.to_string())
 }
 
-pub fn assert_cluster_wide_operation_replay(
+pub fn assert_cluster_wide_operation_terminal(
     operator: &OperatorFixture,
     operation_id: &OperationRowId,
-    secret_value: &str,
-) -> Result<String, String> {
+) -> Result<(), String> {
     for target in std::iter::once(&operator.founder_target)
         .chain(operator.joiners.iter().map(|joined| &joined.target))
     {
@@ -383,62 +362,33 @@ pub fn assert_cluster_wide_operation_replay(
             &["ops", "list", "--target", target.as_str()],
             |output| {
                 output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains(operation_id.as_str())
-                    && String::from_utf8_lossy(&output.stdout).contains("completed")
+                    && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                        line.contains(operation_id.as_str()) && line.contains("completed")
+                    })
             },
             &format!("terminal operation through {target}"),
         )?;
     }
-    let Some(replay_via) = operator.joiners.first() else {
-        return Err("operation replay requires at least one joined machine".to_owned());
+    let Some(watch_via) = operator.joiners.first() else {
+        return Err("cluster-wide operation proof requires a joined machine".to_owned());
     };
-    let mut replays = Vec::new();
-    for _ in 0..2 {
-        let replay = run_cli_bounded(
-            &operator.cli,
-            &operator.home,
-            &[
-                "ops",
-                "watch",
-                operation_id.as_str(),
-                "--target",
-                replay_via.target.as_str(),
-            ],
-        )?;
-        require_success(&replay, "operation replay through joined machine")?;
-        let stdout = String::from_utf8(replay.stdout).map_err(|error| error.to_string())?;
-        let sequences = evidence_sequences(&stdout)?;
-        let expected = (1..=u64::try_from(sequences.len()).map_err(|error| error.to_string())?)
-            .collect::<Vec<_>>();
-        require(
-            sequences == expected
-                && stdout.contains("terminal deploy completed")
-                && !stdout.contains(secret_value),
-            format!("operation replay was not complete and duplicate-free: {stdout}"),
-        )?;
-        replays.push(stdout);
-    }
-    require(
-        matches!(replays.as_slice(), [first, second] if first == second),
-        "two full operation replays returned different durable evidence",
+    let watched = run_cli_bounded(
+        &operator.cli,
+        &operator.home,
+        &[
+            "ops",
+            "watch",
+            operation_id.as_str(),
+            "--target",
+            watch_via.target.as_str(),
+        ],
     )?;
-    replays
-        .into_iter()
-        .next()
-        .ok_or_else(|| "operation replay was not captured".to_owned())
-}
-
-pub async fn assert_driver_local_evidence_is_secret_free(
-    docker: &Docker,
-    driver: &DindMachine,
-    operation_id: &OperationRowId,
-    secret_value: &str,
-) -> Result<(), String> {
-    let path = format!("/var/lib/ployz/api/evidence/{operation_id}.jsonl");
-    let evidence = exec_ok(docker, driver, &["cat", &path]).await?;
+    require_success(&watched, "operation watch through joined machine")?;
+    let stdout = String::from_utf8_lossy(&watched.stdout);
+    let terminal = format!("{operation_id} deploy completed");
     require(
-        !evidence.stdout.contains(secret_value) && !evidence.stderr.contains(secret_value),
-        format!("driver-local operation evidence exposed an environment value at {path}"),
+        stdout.lines().any(|line| line == terminal),
+        format!("operation watch omitted its terminal state: {stdout}"),
     )
 }
 
@@ -836,7 +786,29 @@ async fn wait_for_roster(
         .await
         {
             Ok(rows) => match parse_roster(rows) {
-                Ok(roster) if roster.len() >= minimum => return Ok(roster),
+                Ok(roster) if roster.len() >= minimum && minimum < 3 => return Ok(roster),
+                Ok(roster) if roster.len() >= minimum => {
+                    match corrosion_query(
+                        docker,
+                        machine,
+                        address,
+                        token,
+                        "SELECT COUNT(*) FROM __corro_members WHERE json_extract(foca_state, '$.state') = 'Alive'",
+                    )
+                    .await
+                    {
+                        Ok(rows)
+                            if matches!(
+                                rows.as_slice(),
+                                [row] if matches!(row.as_slice(), [SqliteValue::Integer(count)] if *count > 0)
+                            ) =>
+                        {
+                            return Ok(roster);
+                        }
+                        Ok(rows) => last = format!("Corrosion membership was not ready: {rows:?}"),
+                        Err(error) => last = error,
+                    }
+                }
                 Ok(roster) => last = format!("only {} roster rows", roster.len()),
                 Err(error) => last = error,
             },
@@ -890,23 +862,6 @@ async fn query_dns(
             line.trim()
                 .parse::<Ipv4Addr>()
                 .map_err(|error| format!("invalid DNS answer {line:?}: {error}"))
-        })
-        .collect()
-}
-
-fn evidence_sequences(output: &str) -> Result<Vec<u64>, String> {
-    output
-        .lines()
-        .filter(|line| !line.starts_with(' '))
-        .map(|line| {
-            let Some((sequence, _)) = line.split_once('\t') else {
-                return Err(format!(
-                    "operation evidence line omitted its sequence: {line:?}"
-                ));
-            };
-            sequence
-                .parse::<u64>()
-                .map_err(|error| format!("invalid evidence sequence {sequence:?}: {error}"))
         })
         .collect()
 }

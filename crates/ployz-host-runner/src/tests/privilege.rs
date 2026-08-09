@@ -46,8 +46,7 @@ fn api_access_matrix_is_narrow_and_excludes_an_unrelated_identity() {
         "/var/lib/ployz/door.crt root:ployz-api 0640",
         "/var/lib/ployz/door.fingerprint root:ployz-api 0640",
         "/var/lib/ployz/join-substrate.json root:ployz-api 0640",
-        "/var/lib/ployz/api/evidence ployz-api:ployz-api 0750",
-        "/var/lib/ployz/api/lease ployz-api:ployz-api 0700",
+        "/var/lib/ployz/api/workflows ployz-api:ployz-api 0700",
         "/var/lib/ployz/api/upgrade-staging ployz-api:ployz-control 0770",
         "/var/run/docker.sock root:docker 0660",
         "/run/ployz root:ployz-control 0750",
@@ -280,9 +279,6 @@ fn account_and_path_install_commands_are_idempotent_and_platform_specific() {
         }));
         assert!(commands.iter().any(|command| {
             command == "install -d -o root -g ployz-control -m 0750 /run/ployz-control"
-        }));
-        assert!(commands.iter().any(|command| {
-            command == "install -d -o ployz-api -g ployz-api -m 0700 /var/lib/ployz/api/lease"
         }));
         assert!(
             commands

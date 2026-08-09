@@ -56,10 +56,13 @@ pub fn resolve_answers(
         }
     }
     if command.prompt.service_urls {
-        let answer = prompt.ask("? service URLs [ployz] (ployz | custom:<suffix> | disabled): ")?;
-        command.service_urls =
-            parse_service_urls(if answer.is_empty() { "ployz" } else { &answer })
-                .map_err(PromptError::InvalidAnswer)?;
+        let answer = prompt.ask("? service URLs [disabled] (custom:<suffix> | disabled): ")?;
+        command.service_urls = parse_service_urls(if answer.is_empty() {
+            "disabled"
+        } else {
+            &answer
+        })
+        .map_err(PromptError::InvalidAnswer)?;
     }
     if command.storage
         == (InitStorageChoice::Flag {
@@ -123,7 +126,7 @@ mod tests {
             command.container_network,
             MachineEndpointSupernet::default_v1()
         );
-        assert_eq!(command.service_urls, AutomaticHostnameMode::Ployz);
+        assert_eq!(command.service_urls, AutomaticHostnameMode::Disabled);
     }
 
     #[test]

@@ -1,5 +1,12 @@
 # Corrosion Replaces The Core And NATS: The Control Plane Is Coreless
 
+> Partially superseded by [ADR 0041](0041-preferred-controller-serializes-cluster-mutations.md):
+> Corrosion remains the replicated store, while one disposable preferred
+> controller now serializes cluster mutations in memory. Duroxide is local to
+> each node and runs only that node's host prepare/retire effects. Followers
+> replace the advisory appointment only after one hard connect failure, and
+> public deploy operations move only from created to terminal.
+
 Ployz v2 removes the Control-Plane Core, the sequencer, and NATS entirely.
 Cluster config is rows in a shared Corrosion store — stock, version-pinned,
 multi-writer last-writer-wins, run as a plain systemd unit beside one
@@ -20,11 +27,12 @@ signing tier's threat model, not v1's. The door allocates each joiner's
 container /24 from the operator's supernet by random-free pick with a
 courtesy re-read; a collision that survives convergence is self-healed by
 the lowest-ULID machine re-picking — the row law's one named exception,
-on the transport subnet field only. Each machine's Keeper converges that
+on the transport subnet field. Each machine's Keeper converges that
 machine's mesh substrate toward rows it does not own and reports into status
-rows nobody else may write. Every row has exactly one authority — the
-operator command stream or exactly one machine — so LWW only ever
-adjudicates the operator racing themselves.
+rows nobody else may write. Ordinary product rows have exactly one authority —
+the operator command stream or exactly one machine — so LWW normally
+adjudicates the operator racing themselves. ADR 0041 adds the explicit
+multi-writer exception for advisory Controller Appointments.
 
 The consistency thesis this rests on — converged beats coordinated, with the
 LWW price stated and accepted — is `VISION.md` and
@@ -39,8 +47,9 @@ database to solve what this design would have hand-rolled." Shipping that
 database is exactly this decision: adopting Corrosion answers convergence
 with real anti-entropy instead of drumbeat rebroadcast, answers authority
 with the one-writer-per-row law under a single-operator trust ceiling, and
-answers evidence with per-operation summary rows plus driver-local detail
-logs. What it removes is the entire epoch/mirror/promote recovery apparatus
+answers evidence with coarse per-operation summary rows. Private node-local
+workflow history is executor state, not a public event log. What it removes is
+the entire epoch/mirror/promote recovery apparatus
 a disposable core required — the recovery drill collapses to "any surviving
 machine still holds everything." A three-node spike validated the bet
 hands-on: sub-second propagation, tens of MiB of RSS, single-digit CPU, and
@@ -63,8 +72,8 @@ drafted land with the consolidated spec.
 - **0017 (rollout orchestration lives above the core)** — the core-shaped
   preconditions are gone; the principle survives as caller-paced upgrades.
 - **0018 (machines keep a local fact ledger)** — machine testimony is rows
-  the machine exclusively writes; machine-local detail is per-operation
-  JSONL evidence, not a SQLite commit point.
+  the machine exclusively writes; private Duroxide/SQLite state records only
+  host-local prepare and retire execution.
 - **0019 (core recovery is local machine promotion)** — `core promote` is
   dead; repair is refound (teardown + fresh install + re-declared
   intent, #798) or fresh join, never promotion.
@@ -78,8 +87,8 @@ drafted land with the consolidated spec.
   the row model and the one-authority-per-row law; its corelessness
   rejection is reversed above.
 - **0029 (JetStream exits: core NATS is transport, disks are storage)** —
-  no NATS to classify; storage is Corrosion rows plus machine-local
-  evidence files.
+  no NATS to classify; cluster storage is Corrosion rows, while each node's
+  private SQLite database holds only its local workflow execution history.
 - **0030 (hub-loss recovery: machines re-point to a promoted core)** — no
   hub, no re-pointing, no epoch.
 - **0031 (recovery seams: hand-rolled epoch and mirrored intent snapshot)**
@@ -94,8 +103,8 @@ drafted land with the consolidated spec.
   threshold on the mesh provider's reported last-verified age (WireGuard's
   last handshake for builtin).
 - **0036 (deploy previews determine builds and receipts constrain
-  placement)** — build is its own caller-composed operation against a
-  bid-chosen builder serving an OCI facade; no preview, no receipts.
+  placement)** — source builds, previews, and receipts are removed; current v2
+  deploy accepts prebuilt registry image references.
 - **0037 (Keeper reconciles one machine assignment)** — replaced by
   Keeper's charter: no assignments, components, or profiles compiled by
   Control; Keeper's converge diet is the mesh, from roster rows.
@@ -107,22 +116,15 @@ drafted land with the consolidated spec.
 ## Surviving, reread in v2 terms
 
 The product-behavior ADRs carry over with their nouns translated: 0002,
-0006, 0007 (including strict Compose diagnostics), 0008 (including the
-one-time healthcheck gate), 0010, 0011, 0012, 0023, and 0024 as written;
-0003 (operations are informational records) with operations as
-summary rows plus driver-local detail; 0004 (deploys are namespace
-reconciliation attempts) with the namespace lock replaced by the deploy
-op row as an optimistic claim that narrows races without excluding them —
-partitioned drivers double-driving is the operator racing themselves,
-caught by the phase-boundary superseded check and swept by the next
-deploy; 0005 (rebuild full views from invalidation) with Corrosion
+0006, 0010, 0012, and the
+unamended parts of 0023 and 0024; 0003 (operations are informational records)
+with deploy operations as coarse summary rows only. ADR 0041 supersedes the
+old deploy planner described by 0004, 0008, 0011, and 0022. Its immediate
+pre-commit appointment recheck only narrows races: stale or partitioned
+commits remain accepted, and the next caller retry plans from reality. 0005
+(rebuild full views from invalidation) survives with Corrosion
 subscriptions as the wake signal and re-query as the correctness path;
-[0022 (revision entry identity is a versioned per-service digest)](0022-namespace-revision-entry-identity-is-a-versioned-per-service-digest.md) with the
-environment contribution as the row model's sha256 fingerprint —
-dictionary exposure of low-entropy values priced in under the membership
-trust ceiling — and the image frame as the digest-pinned reference; the
-Controller-seed HMAC and the receipt-index frame die with Control and
-receipts; 0027 (liveness surfaces at the point of use) with the mesh
+0027 (liveness surfaces at the point of use) with the mesh
 provider's reported last-verified age (WireGuard's last handshake for
 builtin) as the displayed evidence; 0034 (public ingress DNS is
 external) with internal resolution fed by Corrosion rows instead of the

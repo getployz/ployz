@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::build::railpack_pins;
 use crate::install::{ExactPloyzVersion, InstallArtifactSpec};
 
 use super::JoinAcceptanceValidationError;
@@ -17,31 +16,24 @@ pub enum JoinArtifactKind {
     EbpfCtl,
     Corrosion,
     CorrosionSchema,
-    Railpack,
 }
 
 impl JoinArtifactKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Ployzd,
         Self::EbpfBytecode,
         Self::EbpfCtl,
         Self::Corrosion,
         Self::CorrosionSchema,
-        Self::Railpack,
     ];
 
-    fn install_path(self) -> Result<&'static str, JoinAcceptanceValidationError> {
+    const fn install_path(self) -> &'static str {
         match self {
-            Self::Ployzd => Ok("/usr/local/bin/ployzd"),
-            Self::EbpfBytecode => Ok("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
-            Self::EbpfCtl => Ok("/usr/local/bin/ployz-ebpf-ctl"),
-            Self::Corrosion => Ok("/usr/local/bin/corrosion"),
-            Self::CorrosionSchema => Ok("/usr/local/lib/ployz/corrosion-schema-v1.sql"),
-            Self::Railpack => railpack_pins()
-                .map(|pins| pins.install_path())
-                .map_err(|error| JoinAcceptanceValidationError::InvalidRailpackPins {
-                    detail: error.to_string(),
-                }),
+            Self::Ployzd => "/usr/local/bin/ployzd",
+            Self::EbpfBytecode => "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+            Self::EbpfCtl => "/usr/local/bin/ployz-ebpf-ctl",
+            Self::Corrosion => "/usr/local/bin/corrosion",
+            Self::CorrosionSchema => "/usr/local/lib/ployz/corrosion-schema-v1.sql",
         }
     }
 }
@@ -102,10 +94,7 @@ impl JoinMachineSubstrate {
         &self,
     ) -> impl ExactSizeIterator<Item = (JoinArtifactKind, &InstallArtifactSpec)> {
         JoinArtifactKind::ALL.into_iter().map(|kind| {
-            let path = match kind.install_path() {
-                Ok(path) => path,
-                Err(_) => unreachable!("validated substrate retains checked-in Railpack pins"),
-            };
+            let path = kind.install_path();
             let Some(artifact) = self
                 .artifacts
                 .iter()
@@ -122,22 +111,17 @@ impl JoinMachineSubstrate {
             return Err(JoinAcceptanceValidationError::MissingCorrosionVersion);
         }
 
-        let required_install_paths = required_install_paths()?;
         let mut destinations = BTreeSet::new();
+        // Only required destinations are installed; extra metadata is inert.
         for artifact in &self.artifacts {
             let destination = artifact.install_path.as_str();
-            if !required_install_paths.contains(&destination) {
-                return Err(JoinAcceptanceValidationError::UnknownInstallArtifact {
-                    install_path: destination.to_owned(),
-                });
-            }
             if !destinations.insert(destination) {
                 return Err(JoinAcceptanceValidationError::DuplicateInstallArtifact {
                     install_path: destination.to_owned(),
                 });
             }
         }
-        for required in required_install_paths {
+        for required in JoinArtifactKind::ALL.map(JoinArtifactKind::install_path) {
             if !destinations.contains(required) {
                 return Err(JoinAcceptanceValidationError::MissingInstallArtifact {
                     install_path: required.to_owned(),
@@ -146,17 +130,6 @@ impl JoinMachineSubstrate {
         }
         Ok(())
     }
-}
-
-fn required_install_paths() -> Result<[&'static str; 6], JoinAcceptanceValidationError> {
-    Ok([
-        JoinArtifactKind::Ployzd.install_path()?,
-        JoinArtifactKind::EbpfBytecode.install_path()?,
-        JoinArtifactKind::EbpfCtl.install_path()?,
-        JoinArtifactKind::Corrosion.install_path()?,
-        JoinArtifactKind::CorrosionSchema.install_path()?,
-        JoinArtifactKind::Railpack.install_path()?,
-    ])
 }
 
 impl TryFrom<JoinMachineSubstrateWire> for JoinMachineSubstrate {

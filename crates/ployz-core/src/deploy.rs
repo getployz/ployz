@@ -5,8 +5,7 @@ use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{MachineId, NamespaceId};
-use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
+use crate::ids::NamespaceId;
 
 pub mod images;
 pub mod runtime;

@@ -14,7 +14,7 @@ use ployz_core::corrosion::{
     AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionTable,
     CorrosionTimestamp, MachineDocument, MachineStorageSelection, MachineStorageSelectionReason,
     MachineTransport, MeshProvider, OperationInitiator, OperatorWriteProvenance, PeerDocument,
-    PeerTransport, PloyzDnsTargetState, Statement, StorageMode, StoredRow,
+    PeerTransport, Statement, StorageMode, StoredRow,
 };
 use ployz_core::ids::{ClusterId, MachineRowId};
 use ployz_core::machine::{MachineLifecycle, MachineName};
@@ -163,8 +163,8 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
     let queries = corrosion.queries();
     assert_eq!(
         queries.len(),
-        16,
-        "three auth reads plus thirteen doctor reads"
+        17,
+        "three auth reads plus fourteen doctor reads"
     );
     assert!(queries.iter().all(|query| query.starts_with("SELECT ")));
     let [_, _, _, doctor_queries @ ..] = queries.as_slice() else {
@@ -185,7 +185,8 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
             | CorrosionTable::Containers
             | CorrosionTable::Operations
             | CorrosionTable::CertHoldings
-            | CorrosionTable::AcmeHttp01 => {
+            | CorrosionTable::AcmeHttp01
+            | CorrosionTable::Controller => {
                 format!("SELECT id, document FROM {}", table.as_str())
             }
         };
@@ -463,8 +464,7 @@ fn cluster_document() -> ClusterDocument {
         provenance: provenance(),
         name: "diagnostics".to_owned(),
         storage_default: StorageMode::Plain,
-        hostname_mode: AutomaticHostnameMode::Ployz,
-        ployz_dns_target: PloyzDnsTargetState::Pending,
+        hostname_mode: AutomaticHostnameMode::Disabled,
         prefix: MachineEndpointSupernet::default_v1(),
         provider: MeshProvider::Tailscale,
         acme_directory_url: "https://acme.invalid/directory".to_owned(),

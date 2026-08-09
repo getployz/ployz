@@ -1,4 +1,5 @@
 use ployz_core::corrosion::V2ManagedContainerIdentity;
+use ployz_core::deploy::ReplicaSlot;
 use ployz_core::ids::{NamespaceRowId, OperationRowId, ServiceRowId};
 use serde_json::json;
 
@@ -11,17 +12,19 @@ fn identity() -> V2ManagedContainerIdentity {
         namespace_id: NamespaceRowId::try_new(NAMESPACE).expect("namespace row id"),
         service_id: ServiceRowId::try_new(SERVICE).expect("service row id"),
         operation_id: OperationRowId::try_new(OPERATION).expect("operation row id"),
+        replica_slot: ReplicaSlot::Global,
     }
 }
 
 #[test]
-fn v2_identity_has_an_exact_row_id_only_wire_shape() {
+fn v2_identity_has_an_exact_row_and_replica_slot_wire_shape() {
     assert_eq!(
         serde_json::to_value(identity()).expect("identity serializes"),
         json!({
             "namespace_id": NAMESPACE,
             "service_id": SERVICE,
             "operation_id": OPERATION,
+            "replica_slot": { "kind": "global" },
         })
     );
 }

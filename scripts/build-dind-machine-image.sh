@@ -17,8 +17,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${ROOT_DIR}/scripts/lib.sh"
-# shellcheck source=config/railpack-pins.env
-source "${ROOT_DIR}/config/railpack-pins.env"
 
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
@@ -251,59 +249,6 @@ bytecode="$(PLOYZ_EBPF_TARGET_DIR=/ebpf-target scripts/build-ebpf-bytecode.sh | 
 install -m 0644 "${bytecode}" /target/release/ployz-ebpf-tc'
 }
 
-stage_railpack() {
-  local platform archive_name archive_sha256 stamp stamp_value
-  platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
-  case "${platform}" in
-    linux/amd64)
-      archive_name="${RAILPACK_AMD64_ARCHIVE}"
-      archive_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
-      ;;
-    linux/arm64)
-      archive_name="${RAILPACK_ARM64_ARCHIVE}"
-      archive_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
-      ;;
-    *)
-      echo "DinD Railpack staging supports linux/amd64 and linux/arm64, got ${platform}" >&2
-      exit 1
-      ;;
-  esac
-
-  stamp="${TARGET_DIR}/release/railpack.source"
-  stamp_value="${platform} ${RAILPACK_VERSION} ${archive_sha256}"
-  if [ -x "${TARGET_DIR}/release/railpack" ] \
-    && [ "$(cat "${stamp}" 2>/dev/null || true)" = "${stamp_value}" ]; then
-    return 0
-  fi
-
-  (
-    work_dir="$(mktemp -d "${TMPDIR:-/tmp}/ployz-dind-railpack.XXXXXX")"
-    trap 'rm -rf "${work_dir}"' EXIT
-    archive="${work_dir}/${archive_name}"
-    url="https://github.com/railwayapp/railpack/releases/download/${RAILPACK_VERSION}/${archive_name}"
-    curl --fail --location --silent --show-error "${url}" --output "${archive}"
-    actual_sha256="$(sha256_of "${archive}")"
-    if [ "${actual_sha256}" != "${archive_sha256}" ]; then
-      echo "Railpack release archive has SHA-256 ${actual_sha256}, expected ${archive_sha256}" >&2
-      exit 1
-    fi
-    tar -xzf "${archive}" -C "${work_dir}" railpack
-    printf '%s\n' "${stamp_value}" > "${work_dir}/railpack.source"
-    ensure_builder_image
-    docker run --rm \
-      --platform "${platform}" \
-      --volume "${TARGET_DIR}:/target" \
-      --volume "${work_dir}:/railpack-input:ro" \
-      "${BUILDER_IMAGE}" \
-      bash -c 'set -euo pipefail
-install -d -m 0755 /target/release
-install -m 0755 /railpack-input/railpack /target/release/railpack.tmp
-mv /target/release/railpack.tmp /target/release/railpack
-install -m 0644 /railpack-input/railpack.source /target/release/railpack.source.tmp
-mv /target/release/railpack.source.tmp /target/release/railpack.source'
-  )
-}
-
 stage_corrosion() {
   local platform corrosion_platform manifest_file pin_file release_tag archive_name archive_url archive_sha256
   local embedded_version archive cache_dir actual_sha256 work_dir host_uid host_gid
@@ -448,7 +393,6 @@ verify_machine_tools() {
 
 build_linux_artifacts
 build_ebpf_bytecode
-stage_railpack
 stage_corrosion
 
 if [ "${mode}" = "full" ]; then
@@ -467,5 +411,4 @@ cat <<EOF
   ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
   ployz-ebpf-tc:  ${TARGET_DIR}/release/ployz-ebpf-tc
   corrosion:      ${TARGET_DIR}/release/corrosion
-  railpack:       ${TARGET_DIR}/release/railpack
 EOF

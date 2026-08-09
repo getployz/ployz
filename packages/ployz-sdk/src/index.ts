@@ -8,6 +8,5 @@ export {
   machineName,
   routeHostname,
   routePort,
-  stopGracePeriod,
   volumeName,
 } from "./primitives.ts";

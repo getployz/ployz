@@ -11,6 +11,7 @@ use ployz_core::corrosion::{
     ContainerDocument, ServiceDocument, SqliteParameter, Statement, V2ManagedContainerIdentity,
     read_rows,
 };
+use ployz_core::deploy::ReplicaSlot;
 use ployz_core::ids::{ClusterId, ContainerId, MachineRowId, ServiceRowId};
 use ployz_core::machine::MachineName;
 use ployz_core::{
@@ -198,9 +199,7 @@ fn log_refusal_response(refusal: ServiceLogsRefusal) -> Response<HttpBody> {
         | ServiceLogsRefusal::MachineSelectorRequired { .. }
         | ServiceLogsRefusal::HostingMachinesUnresolved { .. }
         | ServiceLogsRefusal::RemoteOwner { .. } => StatusCode::CONFLICT,
-        ServiceLogsRefusal::DriverDark { .. } | ServiceLogsRefusal::RuntimeUnavailable { .. } => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
+        ServiceLogsRefusal::RuntimeUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
     };
     super::mutations::typed_response(status, &refusal)
 }
@@ -316,6 +315,7 @@ impl CorrosionServiceLogResolver {
             containers.push(ReplicaContainer {
                 container_id,
                 machine_id: container.value.machine_id,
+                replica_slot: container.value.replica_slot,
             });
         }
         let machine_names = self.machine_names(&containers).await?;
@@ -337,6 +337,7 @@ impl CorrosionServiceLogResolver {
                 namespace_id: service.value.namespace_id,
                 service_id: service_id.clone(),
                 operation_id: service.value.active_deploy,
+                replica_slot: selected.replica_slot,
             },
         }))
     }
@@ -385,6 +386,7 @@ impl CorrosionServiceLogResolver {
 struct ReplicaContainer {
     container_id: ContainerId,
     machine_id: MachineRowId,
+    replica_slot: ReplicaSlot,
 }
 
 /// Picks the one container this machine may serve logs for.
@@ -798,6 +800,7 @@ mod tests {
                 service_id: service_id("01J00000000000000000000001"),
                 operation_id: OperationRowId::try_new("01J00000000000000000000003")
                     .expect("operation"),
+                replica_slot: ployz_core::deploy::ReplicaSlot::Global,
             },
         }
     }
@@ -814,7 +817,6 @@ mod tests {
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,
-            named_volume_names: std::collections::BTreeSet::new(),
         }
     }
 
@@ -826,6 +828,7 @@ mod tests {
         ReplicaContainer {
             container_id: ContainerId::try_new(container).expect("container"),
             machine_id: machine_row(machine),
+            replica_slot: ployz_core::deploy::ReplicaSlot::Global,
         }
     }
 

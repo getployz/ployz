@@ -2,10 +2,11 @@
 
 use hyper::{Response, StatusCode};
 use ployz_core::corrosion::{
-    CorrosionDocumentVersion, IngressMode, NamespaceDocument, OperatorWriteProvenance, Principal,
-    RouteBindingDocument, ServiceDocument, StoredRow, read_named_rows,
+    CorrosionDocumentVersion, CorrosionTable, IngressMode, NamespaceDocument,
+    OperatorWriteProvenance, Principal, RouteBindingDocument, ServiceDocument, StoredRow,
+    read_named_rows,
 };
-use ployz_core::ids::{CorrosionUlid, NamespaceRowId, RouteBindingRowId, ServiceRowId};
+use ployz_core::ids::{NamespaceRowId, RouteBindingRowId, ServiceRowId};
 use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::{
     RouteAttachIntent, RouteAttachOutcome, RouteAttachRefusal, RouteAttachReply,
@@ -15,9 +16,8 @@ use ployz_core::{
 use super::super::mutations::{decode_request, now_timestamp, typed_response};
 use super::super::roster::corrosion_unavailable_refusal;
 use super::super::server::{ApiService, HttpBody, refusal_response};
-use super::super::store::{MutationStoreError, read_named_removal_rows};
+use super::super::store::{MutationStoreError, insert_document, read_named_removal_rows};
 use super::adjudication::route_for_hostname;
-use crate::corrosion::{NameClaimError, NameClaimOutcome};
 
 pub(crate) async fn handle_attach(
     service: &ApiService,
@@ -117,32 +117,17 @@ async fn attach(
         origin: RouteBindingOrigin::Declared,
         ingress_mode: intent.ingress_mode,
     };
-    let claim_id = CorrosionUlid::try_new(route_id.as_str().to_owned())
-        .map_err(|error| RouteAttachStoreError::Protocol(error.to_string()))?;
-    match service.corrosion.claim_named(claim_id, &document).await? {
-        NameClaimOutcome::Claimed { id, .. } => Ok(Ok(RouteAttachReply {
-            route_id: RouteBindingRowId::try_new(id.into_string())
-                .map_err(|error| RouteAttachStoreError::Protocol(error.to_string()))?,
-            outcome: RouteAttachOutcome::Attached,
-        })),
-        NameClaimOutcome::Lost { winner, report, .. } => {
-            let winner_id = RouteBindingRowId::try_new(winner.id.into_string())
-                .map_err(|error| RouteAttachStoreError::Protocol(error.to_string()))?;
-            let winner_document = report
-                .accepted
-                .iter()
-                .find(|row| row.id.as_str() == winner_id.as_str())
-                .map(|row| &row.value);
-            if winner_document.is_some_and(|winner| intent.matches(winner)) {
-                Ok(Ok(RouteAttachReply {
-                    route_id: winner_id,
-                    outcome: RouteAttachOutcome::AlreadyAttached,
-                }))
-            } else {
-                Ok(Err(hostname_conflict(&intent, winner_id)))
-            }
-        }
-    }
+    insert_document(
+        &service.corrosion,
+        CorrosionTable::RouteBindings,
+        route_id.as_str(),
+        &document,
+    )
+    .await?;
+    Ok(Ok(RouteAttachReply {
+        route_id,
+        outcome: RouteAttachOutcome::Attached,
+    }))
 }
 
 fn select_namespace(
@@ -296,8 +281,6 @@ fn route_attach_status(refusal: &RouteAttachRefusal) -> StatusCode {
 enum RouteAttachStoreError {
     #[error("route attach store failed: {0}")]
     Store(#[from] MutationStoreError),
-    #[error("route attach claim failed: {0}")]
-    Claim(#[from] NameClaimError),
     #[error("route attach protocol failed: {0}")]
     Protocol(String),
 }

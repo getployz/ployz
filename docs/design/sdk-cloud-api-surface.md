@@ -53,9 +53,10 @@ system beside the Principal rule's "no side door, no ambient identity."
 Credentials have moved, not disappeared: the sidecar's WG key *is* the
 operator credential, and code execution on an enrolled peer host is full
 operator authority — the trust ceiling #782 already accepted (membership =
-write authority; admission is the security decision). The API derives
-identity from the actual mesh source address and never trusts forwarding
-headers.
+write authority; admission is the security decision). The public API derives
+identity from the actual mesh source address. A follower uses private
+machine-authenticated headers for exactly one hop to the Preferred Controller;
+peer-supplied copies are ignored.
 
 ## One machine per client; no silent failover
 
@@ -64,10 +65,11 @@ between machines behind the caller's back: a silent failover can land on a
 machine with an older Corrosion view, making watched state visibly regress.
 Moving machines is the caller's explicit act — construct a new client (the
 roster is replicated, so any machine can name the others). The same rule
-covers mutations: **the SDK never auto-retries a mutation** (op creation is
-an optimistic claim; a blind retry could double-claim). Auto-reconnect
-exists only for reads and streams. Retrying a failed mutation is the
-caller's decision, per "retrying must not erase prior failure."
+covers mutations: the answering machine forwards to the current Preferred
+Controller, but **the SDK never auto-retries a mutation** because an accepted
+in-memory controller attempt may disappear before its first coarse Operation
+row is written. Auto-reconnect exists only for reads and streams. Retrying a
+failed mutation is the caller's decision after re-reading cluster state.
 
 ## The endpoint catalog (v1 wrapped surface)
 
@@ -78,10 +80,9 @@ hand-written client wraps and what Cloud may build against. CLI and SDK share
 1. **Reads via watch lenses** — machines, services, containers/machine-status,
    ops: each one snapshot query + the same lens as SSE watch. Cloud never
    touches raw Corrosion subscriptions or SQL; the lens is the contract.
-2. **The caller-composed ops** — `build` (→ digest) and `deploy`, each
-   returning an op handle; `ops list` from summary rows; **op lookup and
-   replay-attach by op id** plus the op-row snapshot backing handle
-   rehydration after a Cloud restart.
+2. **The caller-composed operation** — `deploy`, returning an op handle;
+   `ops list` and lookup from coarse summary rows;
+   operation watch is invalidation plus full re-query, not event replay.
 3. **Logs** — tail + follow for a service/container.
 4. **Tokens** — create, **list** (default-live, `--all`-equivalent flag for
    expired — mirroring the CLI semantics), revoke. Redemption stays at the
@@ -96,7 +97,7 @@ additive, no retrofit. The underlying endpoints exist for the CLI regardless;
 
 ## Stream shapes and the re-attach contract
 
-Two stream kinds, different re-attach semantics, both absorbed by the SDK so
+Stream re-attach semantics are absorbed by the SDK so
 Cloud never implements gap logic. Every stream carries server keepalives; the
 SDK owns bounded auto-reconnect with backoff and a typed `StreamDown`
 terminal state distinct from graceful completion (the "no external I/O waits
@@ -108,13 +109,12 @@ forever" rule, client-side). All stream methods accept an `AbortSignal`.
   The snapshot returns a watermark and the follow begins strictly after it —
   a literal "snapshot then subscribe" has a race. Cloud renders whatever
   arrives and never sees deltas, cursors, or gaps.
-- **Op progress is full-replay-always.** Per the evidence model, detail is
-  driver-local JSONL; every attach replays from the start, then follows. No
-  `Last-Event-ID`, no partial resume. Events carry stable monotonic sequence
-  numbers so the SDK dedups already-delivered events across reconnects. A
-  dark driver surfaces as a typed state carrying the refusal and the WG
-  handshake observation — as `observedAt` + the age observed then, never a
-  self-aging duration.
+- **Op progress is coarse state.** A Corrosion subscription is only an
+  invalidation; every wake or reconnect re-queries the full Operation row.
+  There are no event cursors, sequence numbers, replay gaps, or detailed
+  evidence attachment. A live deploy that detects a foreign Controller
+  Appointment ends as interrupted; a controller crash may leave a nonterminal
+  evidence row and requires the caller to re-read reality before retrying.
 - **Logs are a tail** — no replay guarantee. A reconnect that may have lost
   lines emits an explicit gap marker rather than splicing silently.
 
@@ -177,7 +177,7 @@ results through with redaction rather than re-wrapping.
 Named upgrade path: a types-only generated endpoint manifest driving one
 generic client function (the tRPC-flavored shape) replaces the hand-written
 methods if the catalog grows past a couple dozen entries; at the v1 size the
-contract fixture already tripwires drift.
+generated SDK diff already tripwires drift.
 
 ## Considered and rejected
 

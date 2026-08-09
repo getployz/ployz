@@ -6,7 +6,7 @@ pub mod runtime;
 pub mod storage;
 pub mod testimony;
 
-pub use lifecycle::{MachineLifecycle, MachineUsabilityReason, placement_rejection};
+pub use lifecycle::MachineLifecycle;
 pub use roles::{GatewayRole, InstallRolePolicy};
 pub use runtime::*;
 pub use storage::*;

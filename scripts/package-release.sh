@@ -15,8 +15,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${ROOT_DIR}/scripts/lib.sh"
-# shellcheck source=config/railpack-pins.env
-source "${ROOT_DIR}/config/railpack-pins.env"
 
 version="${PLOYZ_RELEASE_VERSION:-v0.0.1-alpha.1}"
 case "${version}" in
@@ -67,36 +65,6 @@ case "${platform_os}" in
       embedded_version)"; then
       exit 1
     fi
-    : "${PLOYZ_RAILPACK_VERSION:?PLOYZ_RAILPACK_VERSION is required for Linux release manifests}"
-    : "${PLOYZ_RAILPACK_ARCHIVE_URL:?PLOYZ_RAILPACK_ARCHIVE_URL is required for Linux release manifests}"
-    : "${PLOYZ_RAILPACK_ARCHIVE_SHA256:?PLOYZ_RAILPACK_ARCHIVE_SHA256 is required for Linux release manifests}"
-    case "${platform_arch}" in
-      amd64)
-        railpack_archive_name="${RAILPACK_AMD64_ARCHIVE}"
-        railpack_archive_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
-        ;;
-      arm64)
-        railpack_archive_name="${RAILPACK_ARM64_ARCHIVE}"
-        railpack_archive_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
-        ;;
-      *)
-        echo "unsupported linux release architecture: ${platform_arch} (supported: amd64, arm64)" >&2
-        exit 1
-        ;;
-    esac
-    railpack_archive_url="https://github.com/railwayapp/railpack/releases/download/${RAILPACK_VERSION}/${railpack_archive_name}"
-    if [ "${PLOYZ_RAILPACK_VERSION}" != "${RAILPACK_VERSION}" ]; then
-      echo "unsupported Railpack release version: ${PLOYZ_RAILPACK_VERSION} (expected ${RAILPACK_VERSION})" >&2
-      exit 1
-    fi
-    if [ "${PLOYZ_RAILPACK_ARCHIVE_URL}" != "${railpack_archive_url}" ]; then
-      echo "unexpected Railpack release URL: ${PLOYZ_RAILPACK_ARCHIVE_URL} (expected ${railpack_archive_url})" >&2
-      exit 1
-    fi
-    if [ "${PLOYZ_RAILPACK_ARCHIVE_SHA256}" != "${railpack_archive_sha256}" ]; then
-      echo "unexpected Railpack release SHA-256: ${PLOYZ_RAILPACK_ARCHIVE_SHA256} (expected ${railpack_archive_sha256})" >&2
-      exit 1
-    fi
     if [ "${PLOYZ_RELEASE_SKIP_BUILD:-0}" != "1" ]; then
       PLOYZ_DIND_PLATFORM="${platform}" \
         bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh" artifacts-only
@@ -145,14 +113,6 @@ done
 
 mkdir -p "${dist_dir}"
 
-work_dir=""
-cleanup() {
-  if [ -n "${work_dir}" ]; then
-    rm -rf "${work_dir}"
-  fi
-}
-trap cleanup EXIT
-
 copy_asset() {
   local name="$1"
   local mode="$2"
@@ -193,24 +153,12 @@ if [ "${platform_os}" = "linux" ]; then
   ebpf_tc_asset="$(copy_asset ployz-ebpf-tc 0644)"
   corrosion_asset="$(copy_asset corrosion 0755)"
   corrosion_schema_asset="$(copy_asset_as corrosion-schema-v1.sql "corrosion-schema-v1-${platform_slug}.sql" 0644)"
-  work_dir="$(mktemp -d)"
-  railpack_archive="${work_dir}/${railpack_archive_name}"
-  curl --fail --location --silent --show-error "${PLOYZ_RAILPACK_ARCHIVE_URL}" --output "${railpack_archive}"
-  actual_railpack_sha256="$(sha256_of "${railpack_archive}")"
-  if [ "${actual_railpack_sha256}" != "${railpack_archive_sha256}" ]; then
-    echo "Railpack release archive has SHA-256 ${actual_railpack_sha256}, expected ${railpack_archive_sha256}" >&2
-    exit 1
-  fi
-  tar -xzf "${railpack_archive}" -C "${work_dir}" railpack
-  railpack_asset="railpack-${platform_slug}"
-  install -m 0755 "${work_dir}/railpack" "${dist_dir}/${railpack_asset}"
   staged_assets+=(
     "${ployzd_asset}"
     "${ebpf_ctl_asset}"
     "${ebpf_tc_asset}"
     "${corrosion_asset}"
     "${corrosion_schema_asset}"
-    "${railpack_asset}"
   )
 fi
 
@@ -228,8 +176,6 @@ fi
     printf 'PLOYZ_CORROSION_EMBEDDED_VERSION=%s\n' "${corrosion_embedded_version}"
     write_manifest_pair PLOYZ_CORROSION "${corrosion_asset}"
     write_manifest_pair PLOYZ_CORROSION_SCHEMA "${corrosion_schema_asset}"
-    printf 'PLOYZ_RAILPACK_VERSION=%s\n' "${PLOYZ_RAILPACK_VERSION}"
-    write_manifest_pair PLOYZ_RAILPACK "${railpack_asset}"
   fi
 } > "${manifest_path}"
 

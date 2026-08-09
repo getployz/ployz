@@ -18,7 +18,6 @@ pub async fn install_local_release_channel(
         "ployz-ebpf-ctl",
         "corrosion",
         "corrosion-schema-v1.sql",
-        "railpack",
     ];
     let mut digests = BTreeMap::new();
     for name in required {
@@ -75,10 +74,7 @@ PLOYZ_CORROSION_EMBEDDED_VERSION=corrosion 0.2.0-beta.0\n\
 PLOYZ_CORROSION_URL={}\n\
 PLOYZ_CORROSION_SHA256={}\n\
 PLOYZ_CORROSION_SCHEMA_URL={}\n\
-PLOYZ_CORROSION_SCHEMA_SHA256={}\n\
-PLOYZ_RAILPACK_VERSION=v0.31.0\n\
-PLOYZ_RAILPACK_URL={}\n\
-PLOYZ_RAILPACK_SHA256={}\n",
+PLOYZ_CORROSION_SCHEMA_SHA256={}\n",
         url("ployzd"),
         digest("ployzd")?,
         url("ployz-ebpf-tc"),
@@ -89,8 +85,6 @@ PLOYZ_RAILPACK_SHA256={}\n",
         digest("corrosion")?,
         url("corrosion-schema-v1.sql"),
         digest("corrosion-schema-v1.sql")?,
-        url("railpack"),
-        digest("railpack")?,
     ))
 }
 

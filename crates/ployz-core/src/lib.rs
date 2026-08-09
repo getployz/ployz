@@ -8,7 +8,6 @@
 //! presentation.
 
 mod api;
-pub mod build;
 pub mod certificate;
 pub mod corrosion;
 pub mod deploy;

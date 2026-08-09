@@ -4,12 +4,11 @@ use std::io::Write as _;
 
 use hyper::Method;
 use ployz_core::deploy::ContainerRuntimeSpec;
-use ployz_core::placement::PlacementRefusal;
 use ployz_core::{DEPLOY_ROUTE, DeployAccepted, DeployRefusal, DeployRequest};
 
 use crate::commands::{DeployCommand, OpsWatchCommand};
 use crate::mesh::http::JsonReply;
-use crate::ops::{OpsExecutionError, elimination_reason, watch_to};
+use crate::ops::{OpsExecutionError, watch_to};
 use crate::remote::{OperatorRemote, OperatorRemoteError};
 
 pub async fn execute(command: DeployCommand) -> Result<String, DeployExecutionError> {
@@ -30,7 +29,7 @@ pub async fn execute(command: DeployCommand) -> Result<String, DeployExecutionEr
     let mut stdout = stdout.lock();
     writeln!(
         stdout,
-        "accepted operation {} on driver {}",
+        "accepted operation {} on controller {}",
         accepted.operation_id, accepted.driver_machine_id
     )
     .map_err(DeployExecutionError::Output)?;
@@ -53,6 +52,7 @@ fn deploy_request(command: &DeployCommand) -> DeployRequest {
         namespace_name: command.namespace.clone(),
         service_name: command.service.clone(),
         image: command.image.clone(),
+        credential: None,
         runtime,
         health_gate: command.health_gate,
         placement: command.placement.clone(),
@@ -81,45 +81,9 @@ pub enum DeployExecutionError {
         namespace_ids: String,
     },
     #[error(
-        "namespace {namespace_id} is held by service {incumbent_service_name}; deploy that service or run `ployz service remove {incumbent_service_name}` first"
+        "named-volume redeploy is unsupported; remove the service row and local runtime explicitly before deploying again"
     )]
-    DifferentService {
-        namespace_id: String,
-        incumbent_service_name: String,
-    },
-    #[error(
-        "namespace {namespace_id} holds multiple services ({service_ids}); run `ployz service remove <service>` on the extras before deploying"
-    )]
-    MultipleServices {
-        namespace_id: String,
-        service_ids: String,
-    },
-    #[error(
-        "namespace {namespace_id} has route bindings but no service; run `ployz route rm <hostname>` on each route before deploying"
-    )]
-    RoutesWithoutServices { namespace_id: String },
-    #[error(
-        "no machine can host this deploy: {eliminations}; run `ployz status` to inspect the machines"
-    )]
-    NoEligibleMachines { eliminations: String },
-    #[error(
-        "volume {volume} exists on machines {holders}; two copies of a data volume is a fork — pick one holder with `ployz deploy --machine <machine>`"
-    )]
-    VolumeHolderConflict { volume: String, holders: String },
-    #[error(
-        "machine(s) {machines} may hold this service's volumes but did not answer; recover them, or fence a lost machine with `ployz machine remove <machine>` before redeploying"
-    )]
-    DarkVolumeHolder { machines: String },
-    #[error("volume services run exactly one replica; drop --replicas (requested {requested})")]
-    VolumeReplicaLimit { requested: u16 },
-    #[error(
-        "--replicas alone cannot change a global service; convert it with `ployz deploy --mode replicated --replicas <n>`"
-    )]
-    ReplicasOnGlobalService,
-    #[error("machine {machine_name} is not in the roster; run `ployz status` to see the machines")]
-    UnknownPinnedMachine { machine_name: String },
-    #[error("the required ployz container bridge is unavailable on the driver")]
-    BridgeUnavailable,
+    NamedVolumeRedeployUnsupported,
 }
 
 impl From<DeployRefusal> for DeployExecutionError {
@@ -143,73 +107,7 @@ impl From<DeployRefusal> for DeployExecutionError {
                     .collect::<Vec<_>>()
                     .join(", "),
             },
-            DeployRefusal::DifferentService {
-                namespace_id,
-                incumbent_service_name,
-            } => Self::DifferentService {
-                namespace_id: namespace_id.to_string(),
-                incumbent_service_name: incumbent_service_name.as_str().to_owned(),
-            },
-            DeployRefusal::MultipleServices {
-                namespace_id,
-                service_ids,
-            } => Self::MultipleServices {
-                namespace_id: namespace_id.to_string(),
-                service_ids: service_ids
-                    .into_iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            },
-            DeployRefusal::RoutesWithoutServices { namespace_id } => Self::RoutesWithoutServices {
-                namespace_id: namespace_id.to_string(),
-            },
-            DeployRefusal::Placement { refusal } => Self::from(refusal),
-            DeployRefusal::ReplicasOnGlobalService => Self::ReplicasOnGlobalService,
-            DeployRefusal::UnknownPinnedMachine { machine_name } => Self::UnknownPinnedMachine {
-                machine_name: machine_name.as_str().to_owned(),
-            },
-            DeployRefusal::BridgeUnavailable => Self::BridgeUnavailable,
-        }
-    }
-}
-
-impl From<PlacementRefusal> for DeployExecutionError {
-    fn from(refusal: PlacementRefusal) -> Self {
-        match refusal {
-            PlacementRefusal::NoEligibleMachines { eliminations } => Self::NoEligibleMachines {
-                eliminations: eliminations
-                    .into_iter()
-                    .map(|elimination| {
-                        format!(
-                            "{} ({})",
-                            elimination.machine_name.as_str(),
-                            elimination_reason(&elimination.reason)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            },
-            PlacementRefusal::VolumeHolderConflict { volume, holders } => {
-                Self::VolumeHolderConflict {
-                    volume: volume.as_str().to_owned(),
-                    holders: holders
-                        .into_iter()
-                        .map(|holder| holder.machine_name.as_str().to_owned())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                }
-            }
-            PlacementRefusal::DarkVolumeHolder { machines } => Self::DarkVolumeHolder {
-                machines: machines
-                    .into_iter()
-                    .map(|machine| machine.machine_name.as_str().to_owned())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            },
-            PlacementRefusal::VolumeReplicaLimit { requested } => Self::VolumeReplicaLimit {
-                requested: requested.get(),
-            },
+            DeployRefusal::NamedVolumeRedeployUnsupported => Self::NamedVolumeRedeployUnsupported,
         }
     }
 }
@@ -281,74 +179,12 @@ mod tests {
     }
 
     #[test]
-    fn placement_refusal_copy_names_each_resolver() {
-        let machine = ployz_core::placement::PlacementMachine {
-            machine_id: ployz_core::ids::MachineRowId::generate(),
-            machine_name: ployz_core::machine::MachineName::try_new("edge-a")
-                .expect("machine name"),
-        };
-        let cases: Vec<(DeployRefusal, &[&str])> = vec![
-            (
-                DeployRefusal::Placement {
-                    refusal: PlacementRefusal::NoEligibleMachines {
-                        eliminations: vec![ployz_core::placement::PlacementElimination {
-                            machine_id: machine.machine_id.clone(),
-                            machine_name: machine.machine_name.clone(),
-                            reason:
-                                ployz_core::placement::PlacementEliminationReason::OutsidePinSet,
-                        }],
-                    },
-                },
-                &[
-                    "no machine can host this deploy",
-                    "edge-a",
-                    "outside the pin set",
-                    "ployz status",
-                ],
-            ),
-            (
-                DeployRefusal::Placement {
-                    refusal: PlacementRefusal::VolumeHolderConflict {
-                        volume: ployz_core::deploy::VolumeName::try_new("data").expect("volume"),
-                        holders: vec![machine.clone()],
-                    },
-                },
-                &["fork", "edge-a", "--machine <machine>"],
-            ),
-            (
-                DeployRefusal::Placement {
-                    refusal: PlacementRefusal::DarkVolumeHolder {
-                        machines: vec![machine.clone()],
-                    },
-                },
-                &["did not answer", "edge-a", "ployz machine remove"],
-            ),
-            (
-                DeployRefusal::Placement {
-                    refusal: PlacementRefusal::VolumeReplicaLimit {
-                        requested: ployz_core::corrosion::ServiceReplicaCount::try_new(3)
-                            .expect("replica count"),
-                    },
-                },
-                &["exactly one replica", "drop --replicas"],
-            ),
-            (
-                DeployRefusal::ReplicasOnGlobalService,
-                &["--replicas alone", "--mode replicated"],
-            ),
-            (
-                DeployRefusal::UnknownPinnedMachine {
-                    machine_name: ployz_core::machine::MachineName::try_new("edge-z")
-                        .expect("machine name"),
-                },
-                &["edge-z", "not in the roster", "ployz status"],
-            ),
-        ];
-        for (refusal, expected) in cases {
-            let copy = DeployExecutionError::from(refusal).to_string();
-            for needle in expected {
-                assert!(copy.contains(needle), "{copy:?} must contain {needle:?}");
-            }
-        }
+    fn named_volume_redeploy_refusal_is_explicit_about_manual_cleanup() {
+        let refusal = DeployRefusal::NamedVolumeRedeployUnsupported;
+
+        assert_eq!(
+            DeployExecutionError::from(refusal).to_string(),
+            "named-volume redeploy is unsupported; remove the service row and local runtime explicitly before deploying again"
+        );
     }
 }

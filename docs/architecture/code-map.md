@@ -5,12 +5,14 @@ This is the starting point for changing Ployz. Product language is canonical in
 [`VISION.md`](../../VISION.md), and accepted architecture in
 [`docs/adr/`](../adr/).
 
-**v2 is coreless.** [ADR 0040](../adr/0040-corrosion-replaces-the-core-and-nats.md)
+**v2 has no replicated core.** [ADR 0040](../adr/0040-corrosion-replaces-the-core-and-nats.md)
 replaces the incumbent core, sequencer, and NATS transport with Corrosion rows
-and HTTP/JSON/SSE over the mesh. The workspace collapse establishes the final
-crate boundaries before the Corrosion, API, mesh, Keeper, and command slices
-populate them; a present crate or role shell does not imply that every v2 slice
-is implemented yet.
+and HTTP/JSON/SSE over the mesh. [ADR 0041](../adr/0041-preferred-controller-serializes-cluster-mutations.md)
+adds one disposable, in-memory preferred controller plus a Duroxide/SQLite
+runtime on each node for that node's host effects. The workspace collapse
+establishes the final crate boundaries before the Corrosion, API, mesh, Keeper,
+and command slices populate them; a present crate or role shell does not imply
+that every v2 slice is implemented yet.
 
 ## Runtime shape
 
@@ -36,21 +38,22 @@ Classify state before choosing a module or store:
 | Operator decision | the operator command stream owns one Corrosion config row | typed row readers in `ployz-core`; the API fold validates and writes through the bounded Corrosion client |
 | Machine testimony | exactly one machine owns its status row | typed row readers; freshness stays visible and is never promoted into authority |
 | Wake signal | nobody owns truth in a subscription notification | re-query the scoped rows; a notification is invalidation, never an authoritative delta |
-| Operation summary | the command driver owns at most three Corrosion summary rows | typed operation queries from any machine |
-| Operation detail | the command driver owns machine-local JSONL | replay/follow from that driver over SSE; logs are evidence, not cluster truth |
+| Controller appointment | API admission writes one advisory Corrosion row | followers forward to its machine; a new appointment starts from current rows and host reality |
+| Operation summary | the preferred controller writes coarse Corrosion snapshots | typed operation queries and lens invalidation/re-query from any machine |
+| Controller execution | the appointed API process owns one in-memory mutation lock | overlapping mutations may be refused as busy; controller loss leaves nothing to migrate |
+| Node workflow history | each execution node owns one private Duroxide SQLite database | resume host-local prepare/retire work on that same node; never cluster truth or controller state |
 | Execution reality | Docker or machine-local substrate owns the fact | observe at the point of use; rows report reality but do not replace it |
 
 The one-authority-per-row law and tolerant reader rules live in the row-model
-spec. Do not add a second store or a hidden background writer.
+spec. Do not add a second cluster-truth store or a hidden background writer.
 
 ## Production dependency direction
 
-Six product crates remain:
+Five product crates remain:
 
 ```text
 ployz-core
   ^
-  +-- ployz-build-executor
   +-- ployz-host-runner
   +-- ployzd
   +-- ployz
@@ -59,8 +62,8 @@ ployz-telemetry ----> executable surfaces only
 ```
 
 The diagram omits direct edges that repeat the same inward dependency. Core is
-the compiler-checked domain and wire contract. Build Executor and Host Runner
-own process-neutral local mechanics. `ployzd` and `ployz` are downstream
+the compiler-checked domain and wire contract. Host Runner owns process-neutral
+local mechanics. `ployzd` and `ployz` are downstream
 executable surfaces. Telemetry contains no product policy.
 
 Test-only crates under [`testing/`](../../testing/) may depend outward for
@@ -73,9 +76,9 @@ program-workspace shape.
 ### Core contract
 
 [`crates/ployz-core/`](../../crates/ployz-core/) owns typed ids, Corrosion row
-documents, HTTP request/reply and SSE event shapes, operation states, and domain
-policy shared by callers and responders. TypeScript derives and the
-`export-typescript` bin live here behind the `ts` feature.
+documents, HTTP request/reply and SSE event shapes, coarse operation states, and
+domain policy shared by callers and responders. TypeScript derives and the
+`export-typescript` bin lives here behind the `ts` feature.
 
 Core does not own process wiring, concrete HTTP servers or clients, Corrosion
 process supervision, Docker clients, filesystem adapters, or CLI presentation.
@@ -86,6 +89,11 @@ process supervision, Docker clients, filesystem adapters, or CLI presentation.
 API, Gateway, and DNS process implementations. Keep role entrypoints small.
 Transport adapters may call domain policy; domain policy must not import role
 wiring.
+
+The API role owns controller forwarding and in-memory mutation serialization.
+Every API node also owns its private Duroxide/SQLite runtime for local deploy
+prepare and retire effects. Do not put controller admission or cross-node
+orchestration into that runtime.
 
 The shared concrete Corrosion exec/query/subscribe client lives under
 `crates/ployzd/src/corrosion/`; every daemon role uses that one adapter. Core
@@ -101,13 +109,6 @@ split per-role crates ahead of that pain.
 [`crates/ployz/`](../../crates/ployz/) owns command parsing, the mesh-aware
 HTTP/SSE client, execution, and presentation. A CLI refusal names the primitive
 that resolves it and performs no work itself.
-
-### Shared build executor
-
-[`crates/ployz-build-executor/`](../../crates/ployz-build-executor/) owns
-Dockerfile and Railpack execution mechanics: bounded workspaces, pinned
-toolchains, redacted logs, cleanup, and validated OCI layouts. Callers own
-admission, operation evidence, and image distribution.
 
 ### Host Runner
 
@@ -139,7 +140,6 @@ upstream Corrosion certification harness, not a workspace crate.
 | Row, HTTP DTO, typed refusal, id, invariant, or transition | `crates/ployz-core/` | daemon handles and CLI copy |
 | Corrosion query/exec/subscribe adapter | `crates/ployzd/src/corrosion/`, with wire DTOs and reader policy in Core | role-private convenience types |
 | Keeper/API/Gateway/DNS behavior | matching module under `crates/ployzd/` | another role's private implementation |
-| Dockerfile or Railpack execution mechanic | `crates/ployz-build-executor/` | admission and operation evidence |
 | CLI command, mesh dial, HTTP client, or presentation | `crates/ployz/` | Core presentation logic |
 | Privileged host effect or supervisor rendering | `crates/ployz-host-runner/` | cluster policy and row ownership |
 | Public SDK type | Rust definition in Core, then regenerate `packages/ployz-sdk/` | a second hand-written wire twin |
@@ -148,8 +148,8 @@ upstream Corrosion certification harness, not a workspace crate.
 
 ## Test and verification map
 
-Use the lowest level that proves the changed seam, then run the final gates in
-[`AGENTS.md`](../../AGENTS.md).
+Use the lowest level that proves the changed seam, then run the relevant gates
+from [`.github/workflows/pr.yml`](../../.github/workflows/pr.yml).
 
 | Level | Location | Use it when |
 | --- | --- | --- |

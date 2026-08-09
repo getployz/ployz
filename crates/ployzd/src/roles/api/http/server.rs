@@ -362,8 +362,12 @@ pub(super) struct ApiService {
     pub(super) upgrade_store: PloyzdArtifactStore,
     pub(super) keeper_upgrade_socket_path: std::path::PathBuf,
     pub(super) upgrade_supervisor: MachineUpgradeSupervisor,
-    pub(super) operations: Arc<super::operation_http::OperationRuntime>,
-    pub(super) deploy: Option<super::deploy::DeployDriver>,
+    pub(super) controller: Arc<super::controller::ControllerStore>,
+    pub(super) controller_forwarder: Arc<super::controller_forwarding::ControllerForwarder>,
+    pub(super) controller_lock: Arc<Mutex<()>>,
+    pub(super) simple_deploy: Option<Arc<super::simple_deploy::SimpleDeploy>>,
+    pub(super) deploy_effects: Option<Arc<super::deploy_effects::DeployHostEffects>>,
+    pub(super) node_workflows: Option<Arc<super::node_workflows::NodeWorkflows>>,
     pub(super) container_runner:
         Option<Arc<crate::roles::api::execution::docker::runner::DockerManagedContainerRunner>>,
     lenses: OnceCell<Arc<ApiLenses>>,
@@ -382,8 +386,12 @@ pub(super) struct ApiServiceRuntime {
     pub(super) upgrade_store: PloyzdArtifactStore,
     pub(super) keeper_upgrade_socket_path: std::path::PathBuf,
     pub(super) upgrade_supervisor: MachineUpgradeSupervisor,
-    pub(super) operations: Arc<super::operation_http::OperationRuntime>,
-    pub(super) deploy: Option<super::deploy::DeployDriver>,
+    pub(super) controller: Arc<super::controller::ControllerStore>,
+    pub(super) controller_forwarder: Arc<super::controller_forwarding::ControllerForwarder>,
+    pub(super) controller_lock: Arc<Mutex<()>>,
+    pub(super) simple_deploy: Option<Arc<super::simple_deploy::SimpleDeploy>>,
+    pub(super) deploy_effects: Option<Arc<super::deploy_effects::DeployHostEffects>>,
+    pub(super) node_workflows: Option<Arc<super::node_workflows::NodeWorkflows>>,
     pub(super) container_runner:
         Option<Arc<crate::roles::api::execution::docker::runner::DockerManagedContainerRunner>>,
 }
@@ -404,8 +412,12 @@ impl ApiService {
             upgrade_store,
             keeper_upgrade_socket_path,
             upgrade_supervisor,
-            operations,
-            deploy,
+            controller,
+            controller_forwarder,
+            controller_lock,
+            simple_deploy,
+            deploy_effects,
+            node_workflows,
             container_runner,
         } = runtime;
         let (lifecycle_sender, lifecycle_failures) = mpsc::unbounded_channel();
@@ -432,8 +444,12 @@ impl ApiService {
             upgrade_store,
             keeper_upgrade_socket_path,
             upgrade_supervisor,
-            operations,
-            deploy,
+            controller,
+            controller_forwarder,
+            controller_lock,
+            simple_deploy,
+            deploy_effects,
+            node_workflows,
             container_runner,
             lenses,
             lens_lifecycle: lifecycle_sender,
@@ -471,14 +487,14 @@ impl ApiService {
             parse_route(request.method(), request.uri().path()),
             Ok(V2Route::Status)
         );
-        let principal = match resolve_peer_principal(
+        let (principal, roster) = match resolve_peer_principal(
             &self.corrosion,
             &self.cluster_id,
             source_from_peer(peer, &request),
         )
         .await
         {
-            Ok(principal) => principal,
+            Ok(authenticated) => authenticated,
             Err(PeerPrincipalError::EmptyAcceptedRoster { .. }) if is_status_request => {
                 return super::diagnostics::status_response(self).await;
             }
@@ -496,9 +512,36 @@ impl ApiService {
                 return refusal_response_with_allow(error.refusal, error.allow);
             }
         };
+        let (principal, appointment_id, request) = if route.is_controller_mutation() {
+            match self
+                .controller_forwarder
+                .route(&route, &roster, principal, request)
+                .await
+            {
+                super::controller_forwarding::MutationRouting::Local(admitted) => (
+                    admitted.principal,
+                    Some(admitted.appointment_id),
+                    admitted.request,
+                ),
+                super::controller_forwarding::MutationRouting::Forwarded(response) => {
+                    return response;
+                }
+            }
+        } else {
+            (principal, None, request)
+        };
         if !route.accepts_principal(&principal) {
             return refusal_response(ApiRefusal::UnsupportedRoute);
         }
+        let _controller_guard =
+            if route.is_controller_mutation() && !matches!(&route, V2Route::Deploy) {
+                match Arc::clone(&self.controller_lock).try_lock_owned() {
+                    Ok(guard) => Some(guard),
+                    Err(_) => return super::deploy_controller::controller_busy(),
+                }
+            } else {
+                None
+            };
         match route {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
@@ -519,19 +562,20 @@ impl ApiService {
             }
             V2Route::RouteAttach => super::routes::handle_attach(self, principal, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
-            V2Route::Operation(operation_id) => {
-                super::operation_http::handle_lookup(self, operation_id).await
+            V2Route::Deploy => {
+                let Some(appointment_id) = appointment_id else {
+                    unreachable!("controller mutations carry an appointment")
+                };
+                super::deploy_controller::handle(self, principal, appointment_id, request).await
             }
-            V2Route::OperationWatch(operation_id) => {
-                super::operation_http::handle_watch(self, operation_id, &principal, shutdown).await
+            V2Route::DeployInspect => {
+                super::deploy_effect_http::inspect(self, &principal, request).await
             }
-            V2Route::Deploy => super::operation_http::handle_deploy(self, principal, request).await,
-            V2Route::PlacementBid => {
-                super::placement_http::handle_placement_bid(self, request).await
+            V2Route::DeployPrepare => {
+                super::deploy_effect_http::prepare(self, &principal, request).await
             }
-            V2Route::DeployExecute => {
-                super::placement_http::handle_deploy_execute(self, principal, request, shutdown)
-                    .await
+            V2Route::DeployRetire => {
+                super::deploy_effect_http::retire(self, &principal, request).await
             }
             V2Route::ServiceLogsTail(service_id) => {
                 super::service_logs::handle_tail(self, service_id, request, shutdown).await
@@ -589,6 +633,9 @@ impl ApiService {
     }
 
     pub(super) async fn shutdown(self) {
+        if let Some(workflows) = &self.node_workflows {
+            workflows.shutdown().await;
+        }
         let Some(lenses) = self.lenses.into_inner() else {
             return;
         };
@@ -596,11 +643,6 @@ impl ApiService {
             Ok(lenses) => lenses.shutdown().await,
             Err(_) => tracing::warn!("API lenses retained a connection reference during shutdown"),
         }
-    }
-
-    pub(super) async fn shutdown_operations(&self) {
-        let outcome = self.operations.shutdown().await;
-        tracing::info!(?outcome, "operation task shutdown finished");
     }
 
     pub(super) async fn start_founding_lenses_and_observe_machine(&self) -> bool {

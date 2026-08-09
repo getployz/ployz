@@ -16,7 +16,7 @@ const REGISTRY_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Durati
 const V2_IMAGE_PULL_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl DockerManagedContainerRunner {
-    pub(super) async fn resolve_registry_reference(
+    pub(crate) async fn resolve_registry_image(
         &self,
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
@@ -74,7 +74,7 @@ impl V2MachineImageRunner for DockerManagedContainerRunner {
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
     ) -> Result<OciDigest, MachineRegistryImageResolveError> {
-        self.resolve_registry_reference(reference, credential).await
+        DockerManagedContainerRunner::resolve_registry_image(self, reference, credential).await
     }
 
     async fn pull_v2_registry_image(

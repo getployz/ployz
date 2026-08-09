@@ -5,9 +5,6 @@
 //! Role selection is explicit and startup failures remain typed. Cluster
 //! storage and transport adapters stay behind their owning daemon roles.
 
-mod adapters {
-    pub(crate) mod atomic_file;
-}
 pub mod certificate {
     mod issuer;
     pub use issuer::{
@@ -17,7 +14,6 @@ pub mod certificate {
     };
 }
 pub mod corrosion;
-pub(crate) mod lease;
 pub mod roles {
     /// Advertised internal-DNS record TTL. The DNS role serves it on every
     /// answer, and the deploy drain wait must cover at least this long.

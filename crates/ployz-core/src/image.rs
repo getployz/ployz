@@ -2,14 +2,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-use crate::ids::{NamespaceId, ServiceId};
-use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
-
-pub const IMAGE_BLOB_CHUNK_MAX_BYTES: usize = 512 * 1024;
-pub const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-pub const OCI_IMAGE_CONFIG_MEDIA_TYPE: &str = "application/vnd.oci.image.config.v1+json";
-pub const OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(type = "string"))]
@@ -42,7 +34,6 @@ impl OciDigest {
         Self(format!("sha256:{:x}", Sha256::digest(bytes)))
     }
 }
-
 impl fmt::Display for OciDigest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
@@ -199,89 +190,6 @@ pub enum RegistryCredentialError {
     EmptyUsername,
     #[error("registry credential secret is empty")]
     EmptySecret,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ImageRepository(String);
-
-impl ImageRepository {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, ImageRepositoryError> {
-        let value = value.into();
-        let valid = !value.is_empty()
-            && value.split('/').all(|component| {
-                component
-                    .as_bytes()
-                    .first()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                    && component
-                        .as_bytes()
-                        .last()
-                        .is_some_and(u8::is_ascii_alphanumeric)
-                    && component.bytes().all(|byte| {
-                        byte.is_ascii_lowercase()
-                            || byte.is_ascii_digit()
-                            || matches!(byte, b'.' | b'_' | b'-')
-                    })
-            });
-        if !valid {
-            return Err(ImageRepositoryError::Invalid { value });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn for_service(namespace_id: &NamespaceId, service_id: &ServiceId) -> Self {
-        Self(format!(
-            "ployz/{:x}/{:x}",
-            Sha256::digest(namespace_id.as_str().as_bytes()),
-            Sha256::digest(service_id.as_str().as_bytes())
-        ))
-    }
-}
-
-impl fmt::Display for ImageRepository {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl TryFrom<String> for ImageRepository {
-    type Error = ImageRepositoryError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<ImageRepository> for String {
-    fn from(value: ImageRepository) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ImageRepositoryError {
-    #[error("image repository {value:?} is invalid")]
-    Invalid { value: String },
-}
-
-positive_u64_wire_newtype! {
-    /// The machine-reported containerd lease expiration for pushed image content.
-    pub struct ImageContentLeaseExpiresAt;
-    ts_brand: "Brand<string, \"ImageContentLeaseExpiresAt\">";
-    accessor: unix_seconds;
-    error: ImageContentLeaseTimestampError;
-}
-
-positive_u64_wire_error! {
-    pub enum ImageContentLeaseTimestampError;
-    noun: "image content lease timestamp";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

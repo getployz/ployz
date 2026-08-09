@@ -594,7 +594,6 @@ mod tests {
             "ployz-ebpf-ctl",
             "corrosion",
             "corrosion-schema-v1.sql",
-            "railpack",
         ]
         .into_iter()
         .map(|name| (name, "a".repeat(64)))
@@ -610,7 +609,6 @@ mod tests {
             "PLOYZ_EBPF_CTL_URL",
             "PLOYZ_CORROSION_URL",
             "PLOYZ_CORROSION_SCHEMA_URL",
-            "PLOYZ_RAILPACK_URL",
         ] {
             assert!(manifest.contains(&format!("{key}={ARTIFACT_ROOT}/")));
         }

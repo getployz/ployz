@@ -5,21 +5,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use ts_rs::{Config, Dependency, TS, TypeVisitor};
 
 use super::v2::{
-    API_MAJOR, AnomalousSilenceReason, ApiRefusal, ApiVersion, ContainerLensRow,
-    CorrosionLogsTailLines, CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
+    API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionLogsTailLines,
+    CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
     CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
     CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
-    DeployAccepted, DeployExecuteOutcome, DeployExecuteRequest, DeployRefusal, DeployRequest,
-    DeployVerb, HandshakeObservation, HandshakeObservationOutcome, HandshakeObservationUnavailable,
-    KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineLensRow, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
-    MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
-    MachineUpgradeSupervisor, MachineUpgradeUrl, OperationEvidence, OperationEvidenceEvent,
-    OperationEvidenceSequence, OperationLensRow, OperationLookupRefusal, OperationLookupReply,
-    OperationWatchEvent, OperationWatchRefusal, PinnedMachineNames, PlacementBid,
-    PlacementBidRequest, RequestedPins, RequestedPlacement, ServiceContainerObservation,
-    ServiceLensRow, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
-    ServiceLogsRequest, ServiceLogsTailReply, SilenceClassification, SilentMachine,
+    DeployAccepted, DeployRefusal, DeployRequest, KNOWN_API_FEATURES, KnownApiFeature,
+    LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow, MachineRemoveRefusal,
+    MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow, MachineUpgradeRefusal,
+    MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor, MachineUpgradeUrl,
+    OperationLensRow, PinnedMachineNames, RequestedPins, RequestedPlacement, ServiceLensRow,
+    ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
+    ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
     DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
@@ -45,10 +41,7 @@ use crate::join::{
     TokenCreateRequest, TokenListReply, TokenListRequest, TokenRevokeRefusal, TokenRevokeReply,
     TokenRevokeRequest,
 };
-use crate::placement::{
-    PlacementElimination, PlacementEliminationReason, PlacementMachine, PlacementPick,
-    PlacementRefusal, PlacementShortfall,
-};
+use crate::placement::{PlacementElimination, PlacementEliminationReason, PlacementRefusal};
 /// Generate the complete TypeScript API contract from the Rust domain types.
 #[must_use]
 pub fn api_typescript() -> String {
@@ -76,8 +69,8 @@ pub fn api_typescript() -> String {
     collect_corrosion_contracts(&mut declarations);
     collect_v2_contracts(&mut declarations);
 
-    // ServiceEnvironment uses an explicit TypeScript representation, so
-    // ts-rs cannot discover its key and value types from the field type.
+    // `ServiceEnvironment` uses an explicit record representation, so ts-rs cannot discover
+    // the branded key and value declarations from it.
     declarations.visit::<EnvName>();
     declarations.visit::<EnvValue>();
 
@@ -182,31 +175,9 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<HostPortBindings>();
     declarations.visit::<DeployAccepted>();
     declarations.visit::<DeployRefusal>();
-    declarations.visit::<PlacementBidRequest>();
-    declarations.visit::<PlacementBid>();
-    declarations.visit::<ServiceContainerObservation>();
-    declarations.visit::<DeployExecuteRequest>();
-    declarations.visit::<DeployVerb>();
-    declarations.visit::<DeployExecuteOutcome>();
-    declarations.visit::<PlacementMachine>();
     declarations.visit::<PlacementElimination>();
     declarations.visit::<PlacementEliminationReason>();
-    declarations.visit::<PlacementShortfall>();
-    declarations.visit::<PlacementPick>();
     declarations.visit::<PlacementRefusal>();
-    declarations.visit::<SilentMachine>();
-    declarations.visit::<SilenceClassification>();
-    declarations.visit::<AnomalousSilenceReason>();
-    declarations.visit::<OperationLookupReply>();
-    declarations.visit::<OperationLookupRefusal>();
-    declarations.visit::<OperationEvidenceSequence>();
-    declarations.visit::<OperationEvidence>();
-    declarations.visit::<OperationEvidenceEvent>();
-    declarations.visit::<HandshakeObservation>();
-    declarations.visit::<HandshakeObservationUnavailable>();
-    declarations.visit::<HandshakeObservationOutcome>();
-    declarations.visit::<OperationWatchRefusal>();
-    declarations.visit::<OperationWatchEvent>();
     declarations.visit::<CorrosionLogsTailLines>();
     declarations.visit::<ServiceLogsRequest>();
     declarations.visit::<ServiceLogStream>();
@@ -331,7 +302,7 @@ mod tests {
         assert!(generated.contains("\"v2.lenses\","));
         assert!(generated.contains("\"v2.namespace_primitives\","));
         assert!(generated.contains("\"v2.deploy\","));
-        assert!(generated.contains("\"v2.operation_evidence\","));
+        assert!(generated.contains("\"v2.operation_status\","));
         assert!(generated.contains("\"v2.logs\","));
         assert!(generated.contains("\"v2.machine_remove\","));
         assert!(generated.contains("\"v2.peer_remove\","));
@@ -387,16 +358,6 @@ mod tests {
             "DeployRequest",
             "DeployAccepted",
             "DeployRefusal",
-            "OperationLookupReply",
-            "OperationLookupRefusal",
-            "OperationEvidenceSequence",
-            "OperationEvidence",
-            "OperationEvidenceEvent",
-            "HandshakeObservation",
-            "HandshakeObservationUnavailable",
-            "HandshakeObservationOutcome",
-            "OperationWatchRefusal",
-            "OperationWatchEvent",
             "CorrosionLogsTailLines",
             "ServiceLogsRequest",
             "ServiceLogStream",

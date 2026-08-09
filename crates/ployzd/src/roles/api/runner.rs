@@ -1,8 +1,7 @@
-use std::collections::BTreeSet;
 use std::future::Future;
 
 use ployz_core::corrosion::V2ManagedContainerIdentity;
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
+use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
 use ployz_core::machine::runtime::ContainerHealth;
@@ -41,10 +40,6 @@ pub struct ExistingV2ManagedContainer {
     pub health_status: Option<ManagedContainerHealthStatus>,
     pub resolved_image_identity: Option<String>,
     pub created_at_unix_seconds: Option<i64>,
-    /// Named Docker volumes the container mounts, recovered from the
-    /// listing's mount points. A serving incumbent's set gates whether a
-    /// volume service may cut over.
-    pub named_volume_names: BTreeSet<VolumeName>,
 }
 
 /// Complete Docker input for one Corrosion-owned service container.
@@ -253,11 +248,7 @@ pub enum V2MachineLogReadError {
     Cancelled,
 }
 
-/// Docker effects and recovery testimony owned by the v2 operation driver.
-///
-/// Start is repeated here rather than routing v2 callers through the frozen
-/// incumbent trait. A container id remains sufficient for bounded log reads,
-/// which use the separate [`V2MachineLogReader`] seam below.
+/// Docker container effects and inventory used by node-local deploy workflows.
 pub trait V2MachineContainerRunner {
     fn existing_v2_managed_containers(
         &self,
@@ -268,9 +259,7 @@ pub trait V2MachineContainerRunner {
         command: CreateV2ManagedContainer,
     ) -> impl Future<Output = Result<ContainerId, MachineContainerCreateError>> + Send;
 
-    /// Starts an existing container by its Docker id — a just-created
-    /// container or a stopped incumbent being restarted after a failed
-    /// cutover gate.
+    /// Starts an existing container by its Docker id.
     fn start_v2_managed_container(
         &self,
         container_id: &ContainerId,

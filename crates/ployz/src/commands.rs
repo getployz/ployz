@@ -573,9 +573,9 @@ enum CommandCli {
         #[command(subcommand)]
         command: NamespaceCli,
     },
-    /// Deploy the first service in an empty namespace.
+    /// Deploy or update the sole service in a namespace.
     Deploy(DeployArgs),
-    /// List operations or watch durable operation evidence.
+    /// List or watch coarse deploy-operation state.
     Ops {
         #[command(subcommand)]
         command: OpsCli,
@@ -837,7 +837,7 @@ fn parse_published_port(value: &str) -> Result<std::num::NonZeroU16, String> {
 enum OpsCli {
     /// List converged operation summaries.
     List(OpsListArgs),
-    /// Replay and follow one operation's durable evidence.
+    /// Watch one deploy operation's coarse state.
     Watch(OpsWatchArgs),
 }
 
@@ -1145,7 +1145,7 @@ struct InitArgs {
     /// Cluster-fixed container network. Must be an IPv4 /16.
     #[arg(long)]
     container_network: Option<String>,
-    /// Automatic URLs: ployz, disabled, or custom:<suffix>.
+    /// Automatic URLs: disabled or custom:<suffix>.
     #[arg(long)]
     service_urls: Option<ServiceUrlsArg>,
     /// Cluster name. Defaults to machine one's hostname.
@@ -1206,7 +1206,7 @@ impl InitArgs {
             .map_err(|error| error.to_string())?,
             service_urls: self
                 .service_urls
-                .map_or(AutomaticHostnameMode::Ployz, |value| value.0),
+                .map_or(AutomaticHostnameMode::Disabled, |value| value.0),
             cluster_name: self.cluster_name,
             machine_name: self.machine_name,
             wireguard_endpoint: self.wireguard_endpoint,
@@ -1265,11 +1265,10 @@ pub(crate) const fn render_storage(value: InitStorageChoice) -> &'static str {
 
 pub(crate) fn parse_service_urls(value: &str) -> Result<AutomaticHostnameMode, String> {
     match value {
-        "ployz" => Ok(AutomaticHostnameMode::Ployz),
         "disabled" => Ok(AutomaticHostnameMode::Disabled),
         _ => {
             let Some(suffix) = value.strip_prefix("custom:") else {
-                return Err("service URLs must be ployz, disabled, or custom:<suffix>".to_owned());
+                return Err("service URLs must be disabled or custom:<suffix>".to_owned());
             };
             Ok(AutomaticHostnameMode::Custom {
                 suffix: RouteHostname::try_new(suffix).map_err(|error| error.to_string())?,
@@ -1281,7 +1280,6 @@ pub(crate) fn parse_service_urls(value: &str) -> Result<AutomaticHostnameMode, S
 #[must_use]
 pub(crate) fn render_service_urls(value: &AutomaticHostnameMode) -> String {
     match value {
-        AutomaticHostnameMode::Ployz => "ployz".to_owned(),
         AutomaticHostnameMode::Disabled => "disabled".to_owned(),
         AutomaticHostnameMode::Custom { suffix } => format!("custom:{}", suffix.as_str()),
     }
@@ -1953,7 +1951,7 @@ mod tests {
             command.container_network,
             MachineEndpointSupernet::default_v1()
         );
-        assert_eq!(command.service_urls, AutomaticHostnameMode::Ployz);
+        assert_eq!(command.service_urls, AutomaticHostnameMode::Disabled);
         assert!(matches!(command.driver, InitDriver::SshTarget(_)));
     }
 
@@ -2060,10 +2058,11 @@ mod tests {
             let parsed = parse_storage(value).expect("storage parses");
             assert_eq!(render_storage(parsed), value);
         }
-        for value in ["ployz", "disabled", "custom:apps.example.com"] {
+        for value in ["disabled", "custom:apps.example.com"] {
             let parsed = parse_service_urls(value).expect("service URL mode parses");
             assert_eq!(render_service_urls(&parsed), value);
         }
+        assert!(parse_service_urls("ployz").is_err());
     }
 
     #[test]
