@@ -657,9 +657,11 @@ pub enum DeployPrepareOutcome {
 /// Machine-authenticated request to retire exact observed containers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRetireRequest {
-    /// Namespace-scoped deploy identity for this cleanup request.
     pub operation_id: DeployName,
     pub namespace_name: CorrosionNamespaceName,
+    /// Exact service scope for removal after desired state was unpublished.
+    /// Ordinary deploy cleanup and rollback leave this absent.
+    pub removed_service: Option<CorrosionServiceName>,
     pub containers: Vec<DeployObservedContainer>,
     /// Exact displaced incumbents to restart after removing `containers`.
     pub restart_after_retire: Vec<DeployObservedContainer>,

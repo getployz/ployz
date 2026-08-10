@@ -211,8 +211,9 @@ impl SimpleDeploy {
             }
             retire.extend(by_deploy.into_iter().map(|(deploy, containers)| {
                 let request = DeployRetireRequest {
-                    operation_id: service_removal_operation_id(service_name, &deploy),
+                    operation_id: deploy,
                     namespace_name: namespace_name.clone(),
+                    removed_service: Some(service_name.clone()),
                     containers,
                     restart_after_retire: Vec::new(),
                 };
@@ -530,6 +531,7 @@ impl SimpleDeploy {
                         DeployRetireRequest {
                             operation_id: command.request.deploy_name.clone(),
                             namespace_name: context.reality.namespace.name.clone(),
+                            removed_service: None,
                             containers,
                             restart_after_retire,
                         },
@@ -594,6 +596,7 @@ impl SimpleDeploy {
                         DeployRetireRequest {
                             operation_id: command.request.deploy_name.clone(),
                             namespace_name: context.reality.namespace.name.clone(),
+                            removed_service: None,
                             containers,
                             restart_after_retire: Vec::new(),
                         },
@@ -666,19 +669,6 @@ impl SimpleDeploy {
         self.store.write_operation(&operation).await?;
         Ok(outcome)
     }
-}
-
-fn service_removal_operation_id(
-    service_name: &CorrosionServiceName,
-    deploy: &DeployName,
-) -> DeployName {
-    DeployName::try_new(format!(
-        "remove-{}-{}-{}",
-        service_name.as_str().len(),
-        service_name.as_str(),
-        deploy.as_str()
-    ))
-    .expect("validated names produce a valid deterministic removal name")
 }
 
 struct DeployContext {
@@ -1848,7 +1838,8 @@ mod tests {
         let [request] = requests.as_slice() else {
             panic!("one exact service retirement expected")
         };
-        assert_eq!(request.operation_id.as_str(), "remove-3-api-release-0");
+        assert_eq!(request.operation_id, deploy);
+        assert_eq!(request.removed_service, Some(service));
         assert_eq!(request.containers, vec![target]);
         assert!(request.restart_after_retire.is_empty());
     }

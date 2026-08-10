@@ -100,12 +100,24 @@ impl NodeWorkflows {
     }
 
     /// Starts or resumes the operation's stable retire instance and waits for
-    /// its typed terminal result. Completed instances do no new host work.
+    /// its typed terminal result. Failed cleanup is discardable so retry can
+    /// inspect Docker reality and try the same named operation again.
     pub(super) async fn retire(&self, request: DeployRetireRequest) -> DeployRetireOutcome {
-        let instance = retire_instance(&request.namespace_name, &request.operation_id);
-        self.run(&instance, RETIRE_WORKFLOW, &request, RETIRE_WAIT)
+        let instance = retire_instance(
+            &request.namespace_name,
+            request.removed_service.as_ref(),
+            &request.operation_id,
+        );
+        let outcome = self
+            .run(&instance, RETIRE_WORKFLOW, &request, RETIRE_WAIT)
             .await
-            .unwrap_or(DeployRetireOutcome::Failed)
+            .unwrap_or(DeployRetireOutcome::Failed);
+        if outcome == DeployRetireOutcome::Failed
+            && let Err(error) = self.client.delete_instance(&instance, false).await
+        {
+            tracing::warn!(%instance, %error, "could not discard failed retire workflow");
+        }
+        outcome
     }
 
     async fn run<Input, Output>(
@@ -158,8 +170,20 @@ fn prepare_instance(
     )
 }
 
-fn retire_instance(namespace: &CorrosionNamespaceName, deploy: &DeployName) -> String {
-    format!("deploy-retire-{}/{}", namespace.as_str(), deploy.as_str())
+fn retire_instance(
+    namespace: &CorrosionNamespaceName,
+    removed_service: Option<&CorrosionServiceName>,
+    deploy: &DeployName,
+) -> String {
+    match removed_service {
+        Some(service) => format!(
+            "service-remove/{}/{}/{}",
+            namespace.as_str(),
+            service.as_str(),
+            deploy.as_str()
+        ),
+        None => format!("deploy-retire/{}/{}", namespace.as_str(), deploy.as_str()),
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -278,9 +302,14 @@ mod tests {
             "namespace-scoped deploy names must not collide during prepare"
         );
         assert_ne!(
-            retire_instance(&production, &deploy),
-            retire_instance(&staging, &deploy),
+            retire_instance(&production, None, &deploy),
+            retire_instance(&staging, None, &deploy),
             "namespace-scoped deploy names must not collide during retire"
+        );
+        assert_ne!(
+            retire_instance(&production, None, &deploy),
+            retire_instance(&production, Some(&api), &deploy),
+            "deploy cleanup and service removal have disjoint named scopes"
         );
     }
 

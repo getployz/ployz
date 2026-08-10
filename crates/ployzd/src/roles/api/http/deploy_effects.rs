@@ -260,13 +260,30 @@ impl DeployHostEffects {
 
     async fn retire_inner(&self, request: DeployRetireRequest) -> Result<(), EffectError> {
         let is_rollback = !request.restart_after_retire.is_empty();
-        if request.containers.iter().any(|container| {
-            container.identity.namespace_id != request.namespace_name
-                || is_rollback && container.identity.operation_id != request.operation_id
-        }) || request.restart_after_retire.iter().any(|incumbent| {
-            incumbent.identity.namespace_id != request.namespace_name
-                || incumbent.identity.operation_id == request.operation_id
-        }) {
+        let invalid_scope = if let Some(service) = &request.removed_service {
+            is_rollback
+                || request.containers.iter().any(|container| {
+                    container.identity.service_name != *service
+                        || container.identity.operation_id != request.operation_id
+                })
+        } else {
+            request.containers.iter().any(|container| {
+                is_rollback && container.identity.operation_id != request.operation_id
+            }) || request
+                .restart_after_retire
+                .iter()
+                .any(|incumbent| incumbent.identity.operation_id == request.operation_id)
+        };
+        if invalid_scope
+            || request
+                .containers
+                .iter()
+                .any(|container| container.identity.namespace_id != request.namespace_name)
+            || request
+                .restart_after_retire
+                .iter()
+                .any(|incumbent| incumbent.identity.namespace_id != request.namespace_name)
+        {
             return Err(EffectError::Refused);
         }
         let container_identities = request

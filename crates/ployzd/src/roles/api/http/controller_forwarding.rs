@@ -20,6 +20,7 @@ use super::store::AcceptedRoster;
 const FORWARDED_PEER_HEADER: &str = "x-ployz-forwarded-peer";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(30);
+const SERVICE_REMOVE_FORWARD_TIMEOUT: Duration = Duration::from_secs(105);
 const BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BODY_BYTES: usize = 1_048_576;
 
@@ -254,6 +255,11 @@ impl ControllerForwarder {
         let request = self
             .client
             .post(format!("http://{target}{}", route.path()))
+            .timeout(if matches!(route, V2Route::ServiceRemove) {
+                SERVICE_REMOVE_FORWARD_TIMEOUT
+            } else {
+                FORWARD_TIMEOUT
+            })
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body);
         let request = match peer_id {
