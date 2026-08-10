@@ -213,20 +213,20 @@ fn desired_routes(
     command: &DeployCommand,
     namespace_id: &CorrosionNamespaceName,
     rows: Vec<StoredRow>,
-) -> Result<Vec<DesiredRouteRow>, String> {
+) -> Result<Vec<DesiredRouteRow>, DeployStartError> {
     let report = read_named_rows::<RouteBindingDocument>(&cluster.cluster_id, rows);
     let mut planned = Vec::new();
     if let AutomaticHostnameMode::Custom { suffix } = &cluster.hostname_mode {
         for service_name in command.request.services.keys() {
-            let hostname = automatic_hostname(namespace_id, service_name, suffix)?;
+            let hostname = automatic_hostname(namespace_id, service_name, suffix)
+                .map_err(DeployStartError::Unavailable)?;
             if report
                 .skipped
                 .iter()
                 .any(|row| row.source.key == hostname.as_str())
             {
-                return Err(format!(
-                    "automatic hostname {} is occupied by a rejected route row",
-                    hostname.as_str(),
+                return Err(DeployStartError::Refused(
+                    DeployRefusal::AutomaticHostnameConflict { hostname },
                 ));
             }
             match report
@@ -241,11 +241,9 @@ fn desired_routes(
                         service_name,
                         &hostname,
                     ) => {}
-                Some(row) => {
-                    return Err(format!(
-                        "automatic hostname {} conflicts with route {}",
-                        hostname.as_str(),
-                        row.source.key,
+                Some(_) => {
+                    return Err(DeployStartError::Refused(
+                        DeployRefusal::AutomaticHostnameConflict { hostname },
                     ));
                 }
                 None => {
@@ -655,7 +653,12 @@ mod tests {
                 )],
             )
             .expect_err("exact rejected hostname occupant conflicts");
-            assert!(error.contains("api.production.apps.example.test"));
+            assert!(matches!(
+                error,
+                DeployStartError::Refused(DeployRefusal::AutomaticHostnameConflict {
+                    hostname
+                }) if hostname.as_str() == "api.production.apps.example.test"
+            ));
         }
     }
 

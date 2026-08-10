@@ -525,6 +525,9 @@ pub enum DeployRefusal {
         namespace_name: CorrosionNamespaceName,
         deploy_name: DeployName,
     },
+    AutomaticHostnameConflict {
+        hostname: crate::operation::RouteHostname,
+    },
     HostPortConflict {
         host_port: u16,
         protocol: crate::corrosion::HostPortProtocol,

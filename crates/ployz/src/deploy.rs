@@ -73,6 +73,8 @@ pub enum DeployExecutionError {
         namespace_name: String,
         deploy_name: String,
     },
+    #[error("automatic hostname {hostname} is already occupied; remove or repair that route")]
+    AutomaticHostnameConflict { hostname: String },
     #[error(
         "services {first_service} and {second_service} both publish {protocol:?} host port {host_port}"
     )]
@@ -101,6 +103,11 @@ impl From<DeployRefusal> for DeployExecutionError {
                 namespace_name: namespace_name.to_string(),
                 deploy_name: deploy_name.to_string(),
             },
+            DeployRefusal::AutomaticHostnameConflict { hostname } => {
+                Self::AutomaticHostnameConflict {
+                    hostname: hostname.to_string(),
+                }
+            }
             DeployRefusal::HostPortConflict {
                 host_port,
                 protocol,

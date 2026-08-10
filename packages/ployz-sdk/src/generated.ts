@@ -105,7 +105,7 @@ export type DeployAccepted = { namespace_name: CorrosionNamespaceName, deploy_na
 
 export type DeployName = Brand<string, "DeployName">;
 
-export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "deploy_name_already_used", namespace_name: CorrosionNamespaceName, deploy_name: DeployName, } | { "kind": "host_port_conflict", host_port: number, protocol: HostPortProtocol, first_service: CorrosionServiceName, second_service: CorrosionServiceName, };
+export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "deploy_name_already_used", namespace_name: CorrosionNamespaceName, deploy_name: DeployName, } | { "kind": "automatic_hostname_conflict", hostname: RouteHostname, } | { "kind": "host_port_conflict", host_port: number, protocol: HostPortProtocol, first_service: CorrosionServiceName, second_service: CorrosionServiceName, };
 
 export type DeployRequest = { namespace_name: CorrosionNamespaceName,
 /**

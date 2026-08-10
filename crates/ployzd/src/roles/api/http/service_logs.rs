@@ -339,15 +339,21 @@ async fn probe_local(
     let Some(runner) = &service.container_runner else {
         return ServiceLogProbeReply::RuntimeUnavailable;
     };
-    let containers = match runner.existing_v2_managed_containers().await {
-        Ok(containers) => containers,
-        Err(error) => {
+    let containers = match tokio::time::timeout(
+        LOG_PROBE_TIMEOUT,
+        runner.existing_v2_managed_containers(),
+    )
+    .await
+    {
+        Ok(Ok(containers)) => containers,
+        Ok(Err(error)) => {
             tracing::warn!(
                 ?error,
                 "could not inventory local containers for service log probe"
             );
             return ServiceLogProbeReply::RuntimeUnavailable;
         }
+        Err(_) => return ServiceLogProbeReply::RuntimeUnavailable,
     };
     probe_containers(&containers, request)
 }
