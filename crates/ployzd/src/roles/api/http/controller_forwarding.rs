@@ -142,7 +142,7 @@ impl ControllerForwarder {
             Ok(current) => current,
             Err(response) => return MutationRouting::Forwarded(response),
         };
-        if current.preferred_machine_id == self.local_machine_id {
+        if current.preferred_machine_name == self.local_machine_id {
             return MutationRouting::Local(AdmittedMutation {
                 principal: Principal::Machine {
                     machine_id: self.local_machine_id.clone(),
@@ -153,7 +153,7 @@ impl ControllerForwarder {
         let target = roster
             .machines
             .iter()
-            .find(|machine| machine.document.name == current.preferred_machine_id)
+            .find(|machine| machine.document.name == current.preferred_machine_name)
             .map(|machine| machine_socket_addr(&machine.document.transport, self.api_port));
         let response = match target {
             Some(target) => self.forward(target, &V2Route::Join, None, request).await,
@@ -164,7 +164,7 @@ impl ControllerForwarder {
         match response {
             Ok(response) => MutationRouting::Forwarded(response),
             Err(ForwardError::Connect(detail)) => {
-                tracing::warn!(%detail, machine_id = %current.preferred_machine_id, "preferred controller is unreachable during join");
+                tracing::warn!(%detail, machine_name = %current.preferred_machine_name, "preferred controller is unreachable during join");
                 unavailable()
             }
             Err(ForwardError::Other(detail)) => {
@@ -191,7 +191,7 @@ impl ControllerForwarder {
             Ok(current) => current,
             Err(response) => return MutationRouting::Forwarded(response),
         };
-        if current.preferred_machine_id == self.local_machine_id {
+        if current.preferred_machine_name == self.local_machine_id {
             return MutationRouting::Local(AdmittedMutation {
                 principal: Principal::Peer { peer_id },
                 request,
@@ -201,7 +201,7 @@ impl ControllerForwarder {
         let target = roster
             .machines
             .iter()
-            .find(|machine| machine.document.name == current.preferred_machine_id)
+            .find(|machine| machine.document.name == current.preferred_machine_name)
             .map(|machine| machine_socket_addr(&machine.document.transport, self.api_port));
         let response = match target {
             Some(target) => self.forward(target, route, Some(&peer_id), request).await,
@@ -212,7 +212,7 @@ impl ControllerForwarder {
         match response {
             Ok(response) => MutationRouting::Forwarded(response),
             Err(ForwardError::Connect(detail)) => {
-                tracing::warn!(%detail, machine_id = %current.preferred_machine_id, "preferred controller is unreachable");
+                tracing::warn!(%detail, machine_name = %current.preferred_machine_name, "preferred controller is unreachable");
                 unavailable()
             }
             Err(ForwardError::Other(detail)) => {

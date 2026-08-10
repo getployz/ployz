@@ -17,12 +17,8 @@ const EFFECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) async fn inspect(
     service: &ApiService,
-    principal: &Principal,
     _request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
-    if let Err(response) = authorize(service, principal).await {
-        return response;
-    }
     let outcome = match &service.deploy_effects {
         Some(effects) => effects.inspect().await,
         None => DeployInspectOutcome::Failed,

@@ -8,7 +8,7 @@ use super::document::{ControllerDocument, CorrosionTimestamp};
 /// Whether `machine_id` is preferred in this node's current view.
 #[must_use]
 pub fn is_preferred_controller(controller: &ControllerDocument, machine_id: &MachineName) -> bool {
-    &controller.preferred_machine_id == machine_id
+    &controller.preferred_machine_name == machine_id
 }
 
 /// Whether an appointment has missed its full heartbeat timeout.

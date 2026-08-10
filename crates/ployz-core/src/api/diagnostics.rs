@@ -824,7 +824,7 @@ fn extract_authorship(
                 },
             ),
         CorrosionTable::Controller => fields
-            .get("preferred_machine_id")
+            .get("preferred_machine_name")
             .and_then(Value::as_str)
             .and_then(|value| MachineName::try_new(value).ok())
             .map_or(DoctorForeignAuthorship::Unparseable, |machine_id| {

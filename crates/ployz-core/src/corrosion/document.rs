@@ -832,7 +832,7 @@ pub struct RouteBindingDocument {
 pub struct ControllerDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterName,
-    pub preferred_machine_id: MachineName,
+    pub preferred_machine_name: MachineName,
     pub heartbeat_at: CorrosionTimestamp,
 }
 

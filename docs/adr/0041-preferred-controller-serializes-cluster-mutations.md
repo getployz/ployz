@@ -33,12 +33,11 @@ still refresh Corrosion. That rare failure waits for process restart or operator
 intervention.
 
 The appointment is advisory. Each node admits work from the machine named by
-its own current Corrosion view. A deploy rechecks that machine before
-dispatching more host work and once immediately before committing cluster rows.
-The commit itself is an ordinary unconditional Corrosion transaction. This
-narrows the everyday race but is not fencing: a stale or partitioned controller
-commit may still be accepted, and the next attempt repairs from current rows and
-host reality.
+its own current Corrosion view. A deploy checks its local view when execution
+starts, and target nodes independently admit effects using their own views.
+The commit itself is an ordinary unconditional Corrosion transaction. A stale
+or partitioned controller commit may still be accepted, and the next attempt
+repairs from current rows and host reality.
 
 ## Controller execution
 
@@ -47,8 +46,8 @@ One deploy attempt is a plain function, as amended by ADR 0043:
 1. read roster/config intent and inspect target hosts over bounded HTTP;
 2. compute one placement from the complete request and fresh host reality;
 3. ask each target node to prepare its local runtime;
-4. recheck the locally preferred controller machine, then replace the namespace's one
-   complete serving-intent row and insert missing automatic routes;
+4. replace the namespace's one complete serving-intent row and insert missing
+   automatic routes;
 5. ask target nodes to retire exact obsolete runtime identities;
 6. publish the coarse terminal Operation result.
 
@@ -83,12 +82,12 @@ Corrosion exposes only two deploy snapshots: created and terminal. Terminal
 outcomes are completed, failed, or interrupted. There are no running snapshots,
 step events, heartbeats, worker claims, ownership takeover, or replay journal.
 
-An executing deploy that observes a foreign Controller Appointment may write
-an interrupted terminal result. A controller crash can instead leave a created
-row behind; no other controller projects, resumes, or rewrites it. Operation
-rows are evidence, not a recovery queue. A caller retries with a fresh deploy
-name from Corrosion and host reality rather than invoking a resubmission protocol or consulting
-operation or Duroxide history.
+A deploy whose controller sees a foreign Controller Appointment when execution
+starts may write an interrupted terminal result. A controller crash can instead
+leave a created row behind; no other controller projects, resumes, or rewrites
+it. Operation rows are evidence, not a recovery queue. A caller retries with a
+fresh deploy name from Corrosion and host reality rather than invoking a
+resubmission protocol or consulting operation or Duroxide history.
 
 ## Partition contract
 
@@ -96,9 +95,8 @@ Partitions may create competing preferred controllers. This is accepted. We do
 not add quorum or fencing to disguise it.
 
 Each machine is allowed to act from its own local Corrosion view. Equal
-partitions may both operate. Immediate controller-name rechecks reduce stale
-commits after convergence but cannot make partitioned execution exclusive or
-reject a commit atomically.
+partitions may both operate. Local admission checks do not make partitioned
+execution exclusive or reject a commit atomically.
 Concurrent namespace or route writes may therefore both report success. They
 target the same canonical name, so Corrosion converges the competing whole
 documents at one row key; the losing intent may disappear without a retained

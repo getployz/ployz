@@ -122,9 +122,9 @@ The product-behavior ADRs carry over with their nouns translated: 0002,
 0006, 0010, 0012, and the
 unamended parts of 0023 and 0024; 0003 (operations are informational records)
 with deploy operations as coarse summary rows only. ADR 0041 supersedes the
-old deploy planner described by 0004, 0008, 0011, and 0022. Its immediate
-pre-commit appointment recheck only narrows races: stale or partitioned
-commits remain accepted, and the next caller retry plans from reality. 0005
+old deploy planner described by 0004, 0008, 0011, and 0022. Its local advisory
+admission checks do not prevent stale or partitioned commits; the next caller
+retry plans from reality. 0005
 (rebuild full views from invalidation) survives with Corrosion
 subscriptions as the wake signal and re-query as the correctness path;
 0027 (liveness surfaces at the point of use) with the mesh

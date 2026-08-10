@@ -103,7 +103,7 @@ impl ControllerStore {
         ControllerDocument {
             v: CorrosionDocumentVersion::V1,
             cluster_id: self.cluster_id.clone(),
-            preferred_machine_id: self.local_machine_id.clone(),
+            preferred_machine_name: self.local_machine_id.clone(),
             heartbeat_at,
         }
     }
@@ -144,11 +144,11 @@ fn replace_appointment_statement(
     current: &ControllerDocument,
 ) -> Result<Statement, serde_json::Error> {
     Ok(Statement::with_params(
-        "UPDATE controller SET document = ? WHERE id = ? AND json_extract(document, '$.preferred_machine_id') = ? AND COALESCE(json_extract(document, '$.heartbeat_at'), '1970-01-01T00:00:00.000000000Z') = ?",
+        "UPDATE controller SET document = ? WHERE id = ? AND json_extract(document, '$.preferred_machine_name') = ? AND COALESCE(json_extract(document, '$.heartbeat_at'), '1970-01-01T00:00:00.000000000Z') = ?",
         vec![
             SqliteParameter::Text(serde_json::to_string(replacement)?),
             SqliteParameter::Text(replacement.cluster_id.as_str().to_owned()),
-            SqliteParameter::Text(current.preferred_machine_id.as_str().to_owned()),
+            SqliteParameter::Text(current.preferred_machine_name.as_str().to_owned()),
             SqliteParameter::Text(current.heartbeat_at.to_string()),
         ],
     ))
@@ -208,7 +208,7 @@ mod tests {
         ControllerDocument {
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster_id(),
-            preferred_machine_id: MachineName::try_new(MACHINE_ID).expect("machine id"),
+            preferred_machine_name: MachineName::try_new(MACHINE_ID).expect("machine name"),
             heartbeat_at: CorrosionTimestamp::try_new("2026-08-09T12:00:00Z")
                 .expect("heartbeat timestamp"),
         }
@@ -253,7 +253,7 @@ mod tests {
         };
         let previous = document();
         let mut replacement = previous.clone();
-        replacement.preferred_machine_id = MachineName::try_new("edge-b").expect("machine");
+        replacement.preferred_machine_name = MachineName::try_new("edge-b").expect("machine");
         let Statement::WithParams(replace, replace_params) =
             replace_appointment_statement(&replacement, &previous).expect("replace statement")
         else {
@@ -261,7 +261,7 @@ mod tests {
         };
         assert!(initial.ends_with("ON CONFLICT(id) DO NOTHING"));
         assert!(replace.starts_with("UPDATE controller SET document = ?"));
-        assert!(replace.contains("json_extract(document, '$.preferred_machine_id') = ?"));
+        assert!(replace.contains("json_extract(document, '$.preferred_machine_name') = ?"));
         assert!(replace.contains("json_extract(document, '$.heartbeat_at')"));
         let [initial_cluster, _] = initial_params.as_slice() else {
             panic!("initial appointment must have two parameters")

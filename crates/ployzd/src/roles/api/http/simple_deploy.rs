@@ -208,9 +208,7 @@ impl SimpleDeploy {
         if let Some(failure) = context.admission_failure {
             return self.fail(command, &created, failure).await;
         }
-        let Some(inspections) = self.inspect_roster(&context.reality).await else {
-            return self.interrupt(command, &created).await;
-        };
+        let inspections = self.inspect_roster(&context.reality).await;
         let mut attempted_prepares = Vec::new();
         let mut prepared_services = Vec::with_capacity(command.request.services.len());
         for (service_name, service) in command.request.services.iter() {
@@ -411,7 +409,7 @@ impl SimpleDeploy {
     async fn inspect_roster(
         &self,
         reality: &DeployProjection,
-    ) -> Option<BTreeMap<MachineName, HostInspection>> {
+    ) -> BTreeMap<MachineName, HostInspection> {
         let calls = reality.roster.iter().map(|machine| async move {
             let outcome = self.hosts.inspect(&machine.name).await;
             (machine, outcome)
@@ -419,7 +417,6 @@ impl SimpleDeploy {
         let mut inspections = BTreeMap::new();
         for (machine, outcome) in join_all(calls).await {
             match outcome {
-                Err(DeployHostError::StaleController) => return None,
                 Ok(DeployInspectOutcome::Inspected {
                     bridge_ready,
                     free_disk_bytes,
@@ -436,10 +433,10 @@ impl SimpleDeploy {
                         },
                     );
                 }
-                Ok(DeployInspectOutcome::Failed) | Err(DeployHostError::Failed) => {}
+                Ok(DeployInspectOutcome::Failed) | Err(_) => {}
             }
         }
-        Some(inspections)
+        inspections
     }
 
     async fn rollback_prepared(
@@ -540,7 +537,13 @@ impl SimpleDeploy {
                 (machine_id, outcome)
             })
         });
-        let mut cleanup_failed = Vec::new();
+        let mut cleanup_failed = context
+            .reality
+            .roster
+            .iter()
+            .filter(|machine| !inspections.contains_key(&machine.name))
+            .map(|machine| machine.name.clone())
+            .collect::<Vec<_>>();
         for (machine_id, outcome) in join_all(retire_calls).await {
             if !matches!(outcome, Ok(DeployRetireOutcome::Retired)) {
                 cleanup_failed.push(machine_id.clone());
@@ -1026,6 +1029,7 @@ mod tests {
     struct FakeHosts {
         calls: Mutex<Vec<HostCall>>,
         inspections: Mutex<Vec<DeployObservedContainer>>,
+        stale_inspection_on: Mutex<Option<MachineName>>,
         prepare_requests: Mutex<Vec<DeployPrepareRequest>>,
         retire_requests: Mutex<Vec<DeployRetireRequest>>,
         fail_prepare_service: Option<CorrosionServiceName>,
@@ -1045,6 +1049,9 @@ mod tests {
                 .push(HostCall::Inspect(machine_id.clone()));
             if let Some(barrier) = &self.fanout_barrier {
                 barrier.wait().await;
+            }
+            if self.stale_inspection_on.lock().await.as_ref() == Some(machine_id) {
+                return Err(DeployHostError::StaleController);
             }
             Ok(DeployInspectOutcome::Inspected {
                 bridge_ready: true,
@@ -1169,7 +1176,7 @@ mod tests {
             controller: Mutex::new(ControllerDocument {
                 v: CorrosionDocumentVersion::V1,
                 cluster_id,
-                preferred_machine_id: machine_id.clone(),
+                preferred_machine_name: machine_id.clone(),
                 heartbeat_at: at,
             }),
             create_operation: AtomicBool::new(true),
@@ -1181,6 +1188,7 @@ mod tests {
         let hosts = Arc::new(FakeHosts {
             calls: Mutex::new(Vec::new()),
             inspections: Mutex::new(Vec::new()),
+            stale_inspection_on: Mutex::new(None),
             prepare_requests: Mutex::new(Vec::new()),
             retire_requests: Mutex::new(Vec::new()),
             fail_prepare_service: None,
@@ -1291,6 +1299,32 @@ mod tests {
                 HostCall::Inspect(machine_id.clone()),
                 HostCall::Prepare(machine_id),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn divergent_machine_view_does_not_block_deploy() {
+        let fixture = fixture(2);
+        let [_, unreachable] = fixture.machines.as_slice() else {
+            panic!("fixture must have two machines")
+        };
+        let unreachable = unreachable.clone();
+        *fixture.hosts.stale_inspection_on.lock().await = Some(unreachable.clone());
+        let started = fixture
+            .executor
+            .start(fixture.command.clone())
+            .await
+            .expect("start deploy");
+
+        let outcome = fixture.executor.run(started).await.expect("deploy");
+
+        assert_eq!(
+            outcome,
+            CorrosionDeployOutcome::Completed {
+                warnings: vec![CorrosionDeployWarning::CleanupIncomplete {
+                    machines: vec![unreachable],
+                }],
+            }
         );
     }
 
@@ -1536,6 +1570,7 @@ mod tests {
         fixture.hosts = Arc::new(FakeHosts {
             calls: Mutex::new(Vec::new()),
             inspections: Mutex::new(vec![incumbent.clone()]),
+            stale_inspection_on: Mutex::new(None),
             prepare_requests: Mutex::new(Vec::new()),
             retire_requests: Mutex::new(Vec::new()),
             fail_prepare_service: Some(CorrosionServiceName::try_new("worker").expect("service")),
@@ -1601,6 +1636,7 @@ mod tests {
         fixture.hosts = Arc::new(FakeHosts {
             calls: Mutex::new(Vec::new()),
             inspections: Mutex::new(Vec::new()),
+            stale_inspection_on: Mutex::new(None),
             prepare_requests: Mutex::new(Vec::new()),
             retire_requests: Mutex::new(Vec::new()),
             fail_prepare_service: None,
@@ -1677,7 +1713,7 @@ mod tests {
     #[tokio::test]
     async fn foreign_controller_interrupts_before_any_host_effect() {
         let fixture = fixture(1);
-        fixture.store.controller.lock().await.preferred_machine_id =
+        fixture.store.controller.lock().await.preferred_machine_name =
             MachineName::try_new("another-machine").expect("machine");
 
         let started = fixture

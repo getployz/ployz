@@ -126,7 +126,6 @@ impl DeployHosts for MeshDeployHosts {
         machine_id: &MachineName,
     ) -> Result<DeployInspectOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            self.require_local_controller().await?;
             return Ok(self.local_effects.inspect().await);
         }
         self.post(machine_id, V2Route::DeployInspect, &(), INSPECT_TIMEOUT)

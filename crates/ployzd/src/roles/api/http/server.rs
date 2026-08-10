@@ -562,9 +562,7 @@ impl ApiService {
             V2Route::RouteAttach => super::routes::handle_attach(self, principal, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
             V2Route::Deploy => super::deploy_controller::handle(self, principal, request).await,
-            V2Route::DeployInspect => {
-                super::deploy_effect_http::inspect(self, &principal, request).await
-            }
+            V2Route::DeployInspect => super::deploy_effect_http::inspect(self, request).await,
             V2Route::DeployPrepare => {
                 super::deploy_effect_http::prepare(self, &principal, request).await
             }

@@ -64,8 +64,8 @@ ids remain private implementation details of the local runtime adapter.
   each refresh.
 - The controller keeps no service database, container database, plan journal,
   or recovery history.
-- An ambiguous namespace publish reply is resolved by rereading that exact
-  intent row. This checks whether intent was published, not runtime reality.
+- An ambiguous namespace publish reply leaves the attempt interrupted. The
+  next full deploy observes intent and host reality again.
 
 This supersedes ADR 0041's Service/Container-row commit and ADR 0042's separate
 Service-row and stored-container-key consequences. It narrows ADR 0040's phrase

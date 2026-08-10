@@ -62,7 +62,7 @@ impl ControllerKernel {
             None => {
                 self.controller.initial_self_appointment(now).await?;
             }
-            Some(current) if &current.preferred_machine_id == local_machine_id => {
+            Some(current) if &current.preferred_machine_name == local_machine_id => {
                 self.controller.heartbeat(&current, now).await?;
             }
             Some(current)

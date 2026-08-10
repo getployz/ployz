@@ -17,7 +17,7 @@ fn controller_document() -> ControllerDocument {
     ControllerDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: ClusterName::try_new(CLUSTER_ID).expect("cluster id"),
-        preferred_machine_id: MachineName::try_new(MACHINE_ID).expect("machine id"),
+        preferred_machine_name: MachineName::try_new(MACHINE_ID).expect("machine name"),
         heartbeat_at: CorrosionTimestamp::try_new(HEARTBEAT_AT).expect("heartbeat timestamp"),
     }
 }
@@ -35,7 +35,7 @@ fn controller_document_is_the_single_cluster_keyed_controller_row() {
         json!({
             "v": 1,
             "cluster_id": CLUSTER_ID,
-            "preferred_machine_id": MACHINE_ID,
+            "preferred_machine_name": MACHINE_ID,
             "heartbeat_at": "2026-08-09T12:00:00.000000000Z"
         })
     );
