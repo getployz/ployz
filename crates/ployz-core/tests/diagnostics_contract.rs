@@ -536,9 +536,12 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
     *malformed_peer
         .get_mut("transport")
         .expect("peer fixture has transport") = json!({"kind": "unknown"});
+    let machine_wrong_key = named_document("machines", "machine-canonical");
+    let peer_wrong_key = named_document("peers", "peer-canonical");
 
     let mut rows = DoctorRawRows::empty();
     rows.machines = vec![
+        row("machine-wrong-key", machine_wrong_key),
         row("machine-provider", machine_provider_mismatch),
         row("machine-malformed", malformed_machine),
         row(
@@ -551,6 +554,7 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
         ),
     ];
     rows.peers = vec![
+        row("peer-wrong-key", peer_wrong_key),
         row("peer-provider", peer_provider_mismatch),
         row("peer-malformed", malformed_peer),
         row(
@@ -587,6 +591,13 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
                 },
             },
             ployz_core::DoctorSkippedRosterRow {
+                table: DoctorRosterTable::Machines,
+                key: "machine-wrong-key".to_owned(),
+                reason: DoctorRosterRowSkipReason::InvalidRowKey {
+                    expected: "machine-canonical".to_owned(),
+                },
+            },
+            ployz_core::DoctorSkippedRosterRow {
                 table: DoctorRosterTable::Peers,
                 key: "peer-malformed".to_owned(),
                 reason: DoctorRosterRowSkipReason::MalformedDocument {
@@ -599,6 +610,13 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
                 reason: DoctorRosterRowSkipReason::MeshProviderMismatch {
                     expected: MeshProvider::BuiltinWireguard,
                     found: MeshProvider::Tailscale,
+                },
+            },
+            ployz_core::DoctorSkippedRosterRow {
+                table: DoctorRosterTable::Peers,
+                key: "peer-wrong-key".to_owned(),
+                reason: DoctorRosterRowSkipReason::InvalidRowKey {
+                    expected: "peer-canonical".to_owned(),
                 },
             },
         ]
@@ -629,6 +647,19 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
         json!({
             "kind": "malformed_document",
             "class": {"kind": "invalid_payload"}
+        })
+    );
+    let wrong_key_reason = doctor
+        .skipped_roster_rows
+        .iter()
+        .find(|row| row.key == "machine-wrong-key")
+        .map(|row| &row.reason)
+        .expect("expected noncanonical machine evidence");
+    assert_eq!(
+        serde_json::to_value(wrong_key_reason).expect("roster skip reason serializes"),
+        json!({
+            "kind": "invalid_row_key",
+            "expected": "machine-canonical"
         })
     );
 }

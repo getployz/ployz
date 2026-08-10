@@ -69,7 +69,7 @@ pub struct NamespaceRemoveCommand {
 pub struct DeployCommand {
     pub namespace: CorrosionNamespaceName,
     pub deploy: DeployName,
-    pub services: Vec<ployz_core::DeployServiceRequest>,
+    pub services: ployz_core::DeployServices,
     pub target: Option<SshTarget>,
 }
 
@@ -618,7 +618,7 @@ struct NamespaceRemoveArgs {
 struct DeployArgs {
     namespace: String,
     deploy: String,
-    /// JSON namespace manifest containing the complete `services` array.
+    /// JSON namespace manifest containing the complete name-keyed `services` object.
     #[arg(long, value_name = "PATH")]
     file: PathBuf,
     #[arg(long)]
@@ -628,7 +628,7 @@ struct DeployArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeployManifest {
-    services: Vec<ployz_core::DeployServiceRequest>,
+    services: ployz_core::DeployServices,
 }
 
 impl DeployArgs {
@@ -1133,32 +1133,37 @@ mod tests {
     #[test]
     fn deploy_manifest_is_a_complete_service_list() {
         let manifest: DeployManifest = serde_json::from_value(serde_json::json!({
-            "services": [
-                {
-                    "service_name": "api",
+            "services": {
+                "api": {
                     "image": "registry.example/api:latest",
                     "runtime": {
                         "environment": {},
                         "volume_mounts": []
                     }
                 },
-                {
-                    "service_name": "worker",
+                "worker": {
                     "image": "registry.example/worker:latest",
                     "runtime": {
                         "environment": {},
                         "volume_mounts": []
                     }
                 }
-            ]
+            }
         }))
         .expect("manifest");
 
-        let [api, worker] = manifest.services.as_slice() else {
-            panic!("manifest must contain exactly two services");
-        };
-        assert_eq!(api.service_name.as_str(), "api");
-        assert_eq!(worker.service_name.as_str(), "worker");
+        assert!(
+            manifest
+                .services
+                .get(&CorrosionServiceName::try_new("api").expect("api"))
+                .is_some()
+        );
+        assert!(
+            manifest
+                .services
+                .get(&CorrosionServiceName::try_new("worker").expect("worker"))
+                .is_some()
+        );
     }
 
     #[test]

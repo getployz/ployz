@@ -69,7 +69,8 @@ fn deploy_refusal(refusal: DeployRefusal) -> Response<HttpBody> {
     let status = match &refusal {
         DeployRefusal::NamespaceNotFound { .. } => StatusCode::NOT_FOUND,
         DeployRefusal::DeployNameAlreadyUsed { .. }
-        | DeployRefusal::NamedVolumeRedeployUnsupported => StatusCode::CONFLICT,
+        | DeployRefusal::NamedVolumeRedeployUnsupported
+        | DeployRefusal::HostPortConflict { .. } => StatusCode::CONFLICT,
     };
     super::mutations::typed_response(status, &refusal)
 }

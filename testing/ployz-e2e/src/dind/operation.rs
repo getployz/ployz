@@ -21,7 +21,8 @@ use ployz_core::ids::{DeployName, MachineName};
 use ployz_core::join::JoinBlob;
 use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
 use ployz_core::{
-    DeployServiceRequest, HealthGatePolicy, LensCollection, LensSnapshot, lens_route,
+    DeployServiceRequest, DeployServices, HealthGatePolicy, LensCollection, LensSnapshot,
+    lens_route,
 };
 
 use super::{
@@ -344,34 +345,38 @@ pub fn image_service_request(
     image: &str,
     secret_name: &str,
     secret_value: &str,
-) -> Result<DeployServiceRequest, String> {
+) -> Result<(CorrosionServiceName, DeployServiceRequest), String> {
     let mut runtime = ContainerRuntimeSpec::image_defaults();
     runtime.environment = ServiceEnvironment::from(BTreeMap::from([(
         EnvName::try_new(secret_name).map_err(|error| error.to_string())?,
         EnvValue::try_new(secret_value).map_err(|error| error.to_string())?,
     )]));
-    Ok(DeployServiceRequest {
-        service_name: CorrosionServiceName::try_new(service).map_err(|error| error.to_string())?,
-        image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
-        credential: None,
-        runtime,
-        health_gate: HealthGatePolicy::Enforce,
-        placement: None,
-        machines: None,
-    })
+    Ok((
+        CorrosionServiceName::try_new(service).map_err(|error| error.to_string())?,
+        DeployServiceRequest {
+            image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
+            credential: None,
+            runtime,
+            health_gate: HealthGatePolicy::Enforce,
+            placement: None,
+            machines: None,
+        },
+    ))
 }
 
 pub fn deploy_namespace(
     operator: &OperatorFixture,
     namespace: &str,
     deploy_name: &str,
-    services: &[DeployServiceRequest],
+    services: &[(CorrosionServiceName, DeployServiceRequest)],
     description: &str,
     secret_value: &str,
 ) -> Result<DeployName, String> {
     let manifest_path = operator
         .home
         .join(format!("{namespace}-{deploy_name}.json"));
+    let services =
+        DeployServices::try_new(services.iter().cloned()).map_err(|error| error.to_string())?;
     let manifest = serde_json::to_vec(&serde_json::json!({ "services": services }))
         .map_err(|error| format!("serialize {description} manifest: {error}"))?;
     fs::write(&manifest_path, manifest)

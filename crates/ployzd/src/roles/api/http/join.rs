@@ -40,39 +40,56 @@ use super::store::{
 const MAX_JOIN_REQUEST_BYTES: usize = 64 * 1024;
 const JOIN_BODY_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(super) async fn handle_join(
+pub(super) async fn handle_join_door(
     service: &ApiService,
-    _peer: SocketAddr,
+    peer: SocketAddr,
     mut request: hyper::Request<hyper::body::Incoming>,
-    controller_admitted: bool,
 ) -> Response<HttpBody> {
     if let Err(error) = validate_join_door_route(request.method(), request.uri().path()) {
         return refusal_response_with_allow(error.refusal, error.allow);
     }
-    let _controller_guard = if controller_admitted {
-        None
-    } else {
-        let roster = match read_accepted_roster(&service.corrosion, &service.cluster_id).await {
-            Ok(roster) => roster,
-            Err(error) => {
-                tracing::warn!(%error, "join door could not read the accepted roster");
-                return corrosion_unavailable_response();
-            }
-        };
-        match service
-            .controller_forwarder
-            .route_join(&roster, request)
-            .await
-        {
-            super::controller_forwarding::MutationRouting::Local(admitted) => {
-                request = admitted.request;
-            }
-            super::controller_forwarding::MutationRouting::Forwarded(response) => {
-                return response;
-            }
+
+    let roster = match read_accepted_roster(&service.corrosion, &service.cluster_id).await {
+        Ok(roster) => roster,
+        Err(error) => {
+            tracing::warn!(%error, "join door could not read the accepted roster");
+            return corrosion_unavailable_response();
         }
-        Some(Arc::clone(&service.controller_lock).lock_owned().await)
     };
+    match service
+        .controller_forwarder
+        .route_join(&roster, request)
+        .await
+    {
+        super::controller_forwarding::MutationRouting::Local(admitted) => {
+            request = admitted.request;
+        }
+        super::controller_forwarding::MutationRouting::Forwarded(response) => return response,
+    }
+
+    handle_admitted_join(service, peer, request).await
+}
+
+pub(super) async fn handle_forwarded_join(
+    service: &ApiService,
+    peer: SocketAddr,
+    request: hyper::Request<hyper::body::Incoming>,
+) -> Response<HttpBody> {
+    if let Err(error) = validate_join_door_route(request.method(), request.uri().path()) {
+        return refusal_response_with_allow(error.refusal, error.allow);
+    }
+    handle_admitted_join(service, peer, request).await
+}
+
+async fn handle_admitted_join(
+    service: &ApiService,
+    _peer: SocketAddr,
+    request: hyper::Request<hyper::body::Incoming>,
+) -> Response<HttpBody> {
+    // Join is the one mutation that queues behind an admitted controller
+    // mutation. Bootstrapping callers may only have one reachable door, so a
+    // transient busy reply is not a useful alternative path.
+    let _controller_guard = Arc::clone(&service.controller_lock).lock_owned().await;
     let body = match read_bounded_join_body(request.into_body()).await {
         Ok(body) => body,
         Err(JoinBodyError::TooLarge) => {

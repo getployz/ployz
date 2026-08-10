@@ -77,6 +77,15 @@ pub enum DeployExecutionError {
         "named-volume redeploy is unsupported; remove the service row and local runtime explicitly before deploying again"
     )]
     NamedVolumeRedeployUnsupported,
+    #[error(
+        "services {first_service} and {second_service} both publish {protocol:?} host port {host_port}"
+    )]
+    HostPortConflict {
+        host_port: u16,
+        protocol: ployz_core::corrosion::HostPortProtocol,
+        first_service: String,
+        second_service: String,
+    },
 }
 
 impl From<DeployRefusal> for DeployExecutionError {
@@ -97,12 +106,24 @@ impl From<DeployRefusal> for DeployExecutionError {
                 deploy_name: deploy_name.to_string(),
             },
             DeployRefusal::NamedVolumeRedeployUnsupported => Self::NamedVolumeRedeployUnsupported,
+            DeployRefusal::HostPortConflict {
+                host_port,
+                protocol,
+                first_service,
+                second_service,
+            } => Self::HostPortConflict {
+                host_port,
+                protocol,
+                first_service: first_service.to_string(),
+                second_service: second_service.to_string(),
+            },
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::DeployServices;
     use ployz_core::HealthGatePolicy;
     use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName};
     use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
@@ -113,15 +134,18 @@ mod tests {
         DeployCommand {
             namespace: CorrosionNamespaceName::try_new("production").expect("namespace name"),
             deploy: ployz_core::ids::DeployName::try_new("release-1").expect("deploy"),
-            services: vec![ployz_core::DeployServiceRequest {
-                service_name: CorrosionServiceName::try_new("web").expect("service name"),
-                image: ImageReference::try_new("registry.example/web:latest").expect("image"),
-                credential: None,
-                runtime: ContainerRuntimeSpec::image_defaults(),
-                health_gate,
-                placement: None,
-                machines: None,
-            }],
+            services: DeployServices::try_new([(
+                CorrosionServiceName::try_new("web").expect("service name"),
+                ployz_core::DeployServiceRequest {
+                    image: ImageReference::try_new("registry.example/web:latest").expect("image"),
+                    credential: None,
+                    runtime: ContainerRuntimeSpec::image_defaults(),
+                    health_gate,
+                    placement: None,
+                    machines: None,
+                },
+            )])
+            .expect("unique services"),
             target: None,
         }
     }
@@ -129,8 +153,7 @@ mod tests {
     fn first_service(value: &serde_json::Value) -> &serde_json::Value {
         value
             .get("services")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|services| services.first())
+            .and_then(|services| services.get("web"))
             .expect("one serialized service")
     }
 
@@ -151,8 +174,8 @@ mod tests {
                 Some(&serde_json::json!("production"))
             );
             assert_eq!(
-                first_service(&body).get("service_name"),
-                Some(&serde_json::json!("web"))
+                body.pointer("/services/web/image"),
+                Some(&serde_json::json!("registry.example/web:latest"))
             );
         }
     }
@@ -165,7 +188,10 @@ mod tests {
         assert_eq!(first_service(&inherit).get("machines"), None);
 
         let mut placed = command(HealthGatePolicy::Enforce);
-        let service = placed.services.first_mut().expect("one service");
+        let service = placed
+            .services
+            .get_mut(&CorrosionServiceName::try_new("web").expect("service"))
+            .expect("one service");
         service.placement = Some(ployz_core::RequestedPlacement::Replicated {
             replicas: Some(
                 ployz_core::corrosion::ServiceReplicaCount::try_new(3).expect("replica count"),

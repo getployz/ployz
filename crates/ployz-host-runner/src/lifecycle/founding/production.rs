@@ -311,7 +311,7 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster_id.clone(),
             provenance: provenance.clone(),
-            name: input.cluster_name,
+            name: cluster_id.as_str().to_owned(),
             storage_default: storage.mode,
             hostname_mode: input.hostname_mode,
             prefix: input.prefix,
@@ -324,7 +324,7 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster_id.clone(),
             provenance,
-            name: input.machine_name,
+            name: seed.machine_id.clone(),
             lifecycle: MachineLifecycle::Active,
             transport: MachineTransport::Wireguard {
                 addr_v6: derive_builtin_wireguard_member(&cluster_id, &public_key)

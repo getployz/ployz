@@ -73,7 +73,6 @@ pub enum CorrosionDeployWarning {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CorrosionDeployFailure {
-    RoutesWithoutService,
     ReplicasOnGlobalService,
     UnknownPinnedMachine {
         machine_name: crate::machine::MachineName,

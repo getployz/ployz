@@ -850,6 +850,7 @@ mod tests {
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,
+            host_ports: ployz_core::corrosion::HostPortBindings::default(),
         }
     }
 

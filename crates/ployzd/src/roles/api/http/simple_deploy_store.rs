@@ -105,26 +105,29 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
 
         let cluster = decode_cluster(&self.cluster_id, cluster)?;
         let services = decode_services(&self.cluster_id, &namespace.id, services)?;
-        if command.request.services.iter().any(|requested| {
-            !requested.runtime.volume_mounts.is_empty()
-                && services
-                    .iter()
-                    .any(|service| service.document.name == requested.service_name)
-        }) {
+        if command
+            .request
+            .services
+            .iter()
+            .any(|(service_name, requested)| {
+                !requested.runtime.volume_mounts.is_empty()
+                    && services
+                        .iter()
+                        .any(|service| service.document.name == *service_name)
+            })
+        {
             return Err(DeployStartError::Refused(
                 DeployRefusal::NamedVolumeRedeployUnsupported,
             ));
         }
-        let (automatic_routes, routes_without_service) =
-            desired_routes(&cluster, command, &namespace.id, routes)?;
+        let missing_automatic_routes = desired_routes(&cluster, command, &namespace.id, routes)?;
         let roster = decode_roster(&cluster, machines, statuses)?;
 
         Ok(DeployReality {
             namespace_id: namespace.id,
             namespace: namespace.document,
             services,
-            automatic_routes,
-            routes_without_service,
+            missing_automatic_routes,
             roster,
         })
     }
@@ -256,24 +259,15 @@ fn desired_routes(
     command: &DeployCommand,
     namespace_id: &CorrosionNamespaceName,
     rows: Vec<StoredRow>,
-) -> Result<(Vec<DesiredRouteRow>, bool), String> {
+) -> Result<Vec<DesiredRouteRow>, String> {
     let report = read_named_rows::<RouteBindingDocument>(&cluster.cluster_id, rows);
     if !report.skipped.is_empty() {
         return Err("route lookup contained a rejected row".to_owned());
     }
-    let desired_names = command
-        .request
-        .services
-        .iter()
-        .map(|service| service.service_name.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    let routes_without_service = report.accepted.iter().any(|row| {
-        declared_route_targets_omitted_service(&row.value, namespace_id, &desired_names)
-    });
     let mut planned = Vec::new();
     if let AutomaticHostnameMode::Custom { suffix } = &cluster.hostname_mode {
-        for service in &command.request.services {
-            let hostname = automatic_hostname(namespace_id, &service.service_name, suffix)?;
+        for (service_name, _service) in command.request.services.iter() {
+            let hostname = automatic_hostname(namespace_id, service_name, suffix)?;
             match report
                 .accepted
                 .iter()
@@ -283,15 +277,9 @@ fn desired_routes(
                     if automatic_route_matches(
                         &row.value,
                         namespace_id,
-                        &service.service_name,
+                        service_name,
                         &hostname,
-                    ) =>
-                {
-                    planned.push(DesiredRouteRow {
-                        id: hostname,
-                        document: row.value.clone(),
-                    });
-                }
+                    ) => {}
                 Some(row) => {
                     return Err(format!(
                         "automatic hostname {} conflicts with route {}",
@@ -316,7 +304,7 @@ fn desired_routes(
                         },
                         hostname,
                         namespace_id: namespace_id.clone(),
-                        service_name: service.service_name.clone(),
+                        service_name: service_name.clone(),
                         endpoint_port: RoutePort::try_new(80).map_err(|error| error.to_string())?,
                         origin: RouteBindingOrigin::Automatic,
                         ingress_mode: IngressMode::Direct,
@@ -326,17 +314,7 @@ fn desired_routes(
             }
         }
     }
-    Ok((planned, routes_without_service))
-}
-
-fn declared_route_targets_omitted_service(
-    route: &RouteBindingDocument,
-    namespace_id: &CorrosionNamespaceName,
-    desired_names: &std::collections::BTreeSet<CorrosionServiceName>,
-) -> bool {
-    &route.namespace_id == namespace_id
-        && route.origin == RouteBindingOrigin::Declared
-        && !desired_names.contains(&route.service_name)
+    Ok(planned)
 }
 
 fn automatic_hostname(
@@ -406,7 +384,7 @@ fn decode_roster(
 fn commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>, String> {
     let namespace_id = &commit.namespace_id;
     let mut statements = Vec::with_capacity(
-        3 + commit.services.len() + commit.containers.len() + commit.automatic_routes.len(),
+        2 + commit.services.len() + commit.containers.len() + commit.missing_automatic_routes.len(),
     );
     statements.push(Statement::with_params(
         "DELETE FROM services WHERE namespace_id = ?",
@@ -430,11 +408,7 @@ fn commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>, String> {
             &container.document,
         )?);
     }
-    statements.push(Statement::with_params(
-        "DELETE FROM route_bindings WHERE namespace_id = ? AND json_extract(document, '$.origin') = 'automatic'",
-        vec![SqliteParameter::Text(namespace_id.as_str().to_owned())],
-    ));
-    for route in &commit.automatic_routes {
+    for route in &commit.missing_automatic_routes {
         statements.push(insert_document(
             CorrosionTable::RouteBindings,
             route.id.as_str(),
@@ -551,10 +525,14 @@ fn machine_status_rows(cluster_id: &ClusterName) -> Statement {
 #[cfg(test)]
 mod tests {
     use ployz_core::corrosion::{
-        CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionTimestamp,
-        OperatorWriteProvenance, Principal,
+        AutomaticHostnameMode, ControllerRevision, CorrosionDocumentVersion,
+        CorrosionNamespaceName, CorrosionTimestamp, OperatorWriteProvenance, Principal,
+        StorageMode,
     };
-    use ployz_core::ids::PeerName;
+    use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
+    use ployz_core::ids::{DeployName, PeerName};
+    use ployz_core::network::MachineEndpointSupernet;
+    use ployz_core::{DeployRequest, DeployServiceRequest, DeployServices, HealthGatePolicy};
 
     use super::*;
 
@@ -666,66 +644,89 @@ mod tests {
     }
 
     #[test]
-    fn omitted_service_only_conflicts_with_operator_declared_routes() {
+    fn namespace_commit_does_not_delete_route_bindings() {
         let namespace_id = CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace");
-        let service_name = CorrosionServiceName::try_new("api").expect("service");
-        let hostname = RouteHostname::try_new("api.example.test").expect("hostname");
-        let mut route = RouteBindingDocument {
+        let statements = commit_statements(&DeployCommit {
+            namespace_id: namespace_id.clone(),
+            services: Vec::new(),
+            containers: Vec::new(),
+            missing_automatic_routes: Vec::new(),
+        })
+        .expect("commit statements");
+
+        assert!(statements.iter().all(|statement| match statement {
+            Statement::WithParams(sql, _) | Statement::Simple(sql) => {
+                !sql.contains("route_bindings")
+            }
+        }));
+    }
+
+    #[test]
+    fn deploy_inserts_only_a_missing_automatic_route() {
+        let namespace_id = CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace");
+        let command = deploy_command();
+        let cluster = cluster_document();
+
+        let missing = desired_routes(&cluster, &command, &namespace_id, Vec::new())
+            .expect("missing route plans");
+        let [route] = missing.as_slice() else {
+            panic!("one missing automatic route expected")
+        };
+        assert_eq!(route.id.as_str(), "api.production.apps.example.test");
+
+        let existing = StoredRow::new(
+            route.id.as_str(),
+            serde_json::to_string(&route.document).expect("route serializes"),
+        );
+        assert!(
+            desired_routes(&cluster, &command, &namespace_id, vec![existing])
+                .expect("existing route is accepted")
+                .is_empty()
+        );
+    }
+
+    fn deploy_command() -> DeployCommand {
+        DeployCommand {
+            operation_id: DeployName::try_new("release-1").expect("deploy"),
+            request: DeployRequest {
+                namespace_name: CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace"),
+                deploy_name: DeployName::try_new("release-1").expect("deploy"),
+                services: DeployServices::try_new([(
+                    CorrosionServiceName::try_new("api").expect("service"),
+                    DeployServiceRequest {
+                        image: ImageReference::try_new("nginx:latest").expect("image"),
+                        credential: None,
+                        runtime: ContainerRuntimeSpec::image_defaults(),
+                        health_gate: HealthGatePolicy::Enforce,
+                        placement: None,
+                        machines: None,
+                    },
+                )])
+                .expect("unique services"),
+            },
+            initiator: initiator(),
+            appointment_id: ControllerRevision::try_new(1).expect("appointment"),
+        }
+    }
+
+    fn cluster_document() -> ClusterDocument {
+        ClusterDocument {
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster_id(),
             provenance: OperatorWriteProvenance {
                 written_by: initiator(),
                 written_at: timestamp(),
             },
-            hostname,
-            namespace_id: namespace_id.clone(),
-            service_name,
-            endpoint_port: RoutePort::try_new(80).expect("port"),
-            origin: RouteBindingOrigin::Automatic,
-            ingress_mode: IngressMode::Direct,
-        };
-        let no_services = std::collections::BTreeSet::new();
-
-        assert!(!declared_route_targets_omitted_service(
-            &route,
-            &namespace_id,
-            &no_services,
-        ));
-        route.origin = RouteBindingOrigin::Declared;
-        assert!(declared_route_targets_omitted_service(
-            &route,
-            &namespace_id,
-            &no_services,
-        ));
-    }
-
-    #[test]
-    fn namespace_commit_replaces_automatic_routes_without_touching_declared_routes() {
-        let namespace_id = CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace");
-        let statements = commit_statements(&DeployCommit {
-            namespace_id: namespace_id.clone(),
-            services: Vec::new(),
-            containers: Vec::new(),
-            automatic_routes: Vec::new(),
-        })
-        .expect("commit statements");
-
-        let automatic_delete = statements
-            .iter()
-            .find(|statement| match statement {
-                Statement::WithParams(sql, _) => sql.starts_with("DELETE FROM route_bindings"),
-                Statement::Simple(_) => false,
-            })
-            .expect("automatic route replacement");
-        let Statement::WithParams(sql, params) = automatic_delete else {
-            panic!("route replacement must be parameterized")
-        };
-        assert!(sql.contains("$.origin"));
-        assert!(sql.contains("'automatic'"));
-        assert_eq!(
-            params,
-            &vec![SqliteParameter::Text(namespace_id.as_str().to_owned())]
-        );
+            name: CLUSTER.to_owned(),
+            storage_default: StorageMode::Plain,
+            hostname_mode: AutomaticHostnameMode::Custom {
+                suffix: RouteHostname::try_new("apps.example.test").expect("suffix"),
+            },
+            prefix: MachineEndpointSupernet::default_v1(),
+            provider: ployz_core::corrosion::MeshProvider::BuiltinWireguard,
+            acme_directory_url: "https://acme.example/directory".to_owned(),
+            acme_contact: None,
+        }
     }
 
     fn cluster_id() -> ClusterName {

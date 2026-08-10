@@ -40,6 +40,7 @@ pub struct ExistingV2ManagedContainer {
     pub health_status: Option<ManagedContainerHealthStatus>,
     pub resolved_image_identity: Option<String>,
     pub created_at_unix_seconds: Option<i64>,
+    pub host_ports: ployz_core::corrosion::HostPortBindings,
 }
 
 /// Complete Docker input for one Corrosion-owned service container.

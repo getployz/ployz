@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
 use crate::roles::api::runner::{
     CreateV2ManagedContainer, ExistingManagedContainerState, ExistingV2ManagedContainer,
-    V2MachineContainerRunner, V2MachineImageRunner,
+    MachineContainerStopOutcome, V2MachineContainerRunner, V2MachineImageRunner,
 };
 
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -118,6 +118,7 @@ impl DeployHostEffects {
             .map(|container| DeployObservedContainer {
                 container_id: container.container_id,
                 identity: container.identity,
+                host_ports: container.host_ports,
             })
             .collect();
         Ok(DeployInspectOutcome::Inspected {
@@ -152,6 +153,21 @@ impl DeployHostEffects {
                 .map_err(|_| EffectError::Failed)?;
         }
 
+        let stopped_incumbents = self
+            .stop_conflicting_incumbents(&request.stop_before_start)
+            .await?;
+
+        let result = self.start_and_gate_replicas(&request).await;
+        if result.is_err() {
+            self.restart_incumbents(&stopped_incumbents).await;
+        }
+        result
+    }
+
+    async fn start_and_gate_replicas(
+        &self,
+        request: &DeployPrepareRequest,
+    ) -> Result<Vec<DeployPreparedReplica>, EffectError> {
         let mut prepared = Vec::with_capacity(request.replicas.len());
         for replica in &request.replicas {
             let observed = self.managed_containers().await?;
@@ -192,6 +208,52 @@ impl DeployHostEffects {
         }
 
         Ok(prepared)
+    }
+
+    async fn stop_conflicting_incumbents(
+        &self,
+        targets: &[DeployObservedContainer],
+    ) -> Result<Vec<DeployObservedContainer>, EffectError> {
+        let observed = self.managed_containers().await?;
+        for target in targets {
+            let Some(actual) = observed
+                .iter()
+                .find(|container| container.container_id == target.container_id)
+            else {
+                continue;
+            };
+            if actual.identity != target.identity {
+                return Err(EffectError::Refused);
+            }
+        }
+        let mut stopped = Vec::new();
+        for target in targets {
+            let outcome = self
+                .runtime
+                .stop_v2_managed_container(&target.container_id, &target.identity)
+                .await;
+            match outcome {
+                Ok(MachineContainerStopOutcome::StoppedRunning) => stopped.push(target.clone()),
+                Ok(
+                    MachineContainerStopOutcome::AlreadyStopped
+                    | MachineContainerStopOutcome::Missing,
+                ) => {}
+                Err(_) => {
+                    self.restart_incumbents(&stopped).await;
+                    return Err(EffectError::Failed);
+                }
+            }
+        }
+        Ok(stopped)
+    }
+
+    async fn restart_incumbents(&self, stopped: &[DeployObservedContainer]) {
+        for incumbent in stopped {
+            let _ = self
+                .runtime
+                .start_v2_managed_container(&incumbent.container_id)
+                .await;
+        }
     }
 
     async fn retire_inner(&self, request: DeployRetireRequest) -> Result<(), EffectError> {
@@ -292,6 +354,27 @@ fn validate_prepare_request(
         .map(|replica| replica.identity.clone())
         .collect::<HashSet<_>>();
     if unique.len() != request.replicas.len() {
+        return Err(());
+    }
+    let stop_ids = request
+        .stop_before_start
+        .iter()
+        .map(|container| container.container_id.clone())
+        .collect::<HashSet<_>>();
+    if stop_ids.len() != request.stop_before_start.len()
+        || request.stop_before_start.iter().any(|container| {
+            container.identity.namespace_id != identity.namespace_id
+                || container.identity.operation_id == request.operation_id
+                || !request.replicas.iter().any(|replica| {
+                    replica.host_ports.iter().any(|desired| {
+                        container.host_ports.iter().any(|incumbent| {
+                            desired.protocol == incumbent.protocol
+                                && desired.host_port == incumbent.host_port
+                        })
+                    })
+                })
+        })
+    {
         return Err(());
     }
     Ok(identity.clone())

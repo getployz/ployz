@@ -45,7 +45,7 @@ identified by canonical names.
 ## Namespace snapshots and services
 
 A deploy request names a namespace and deploy and supplies the complete desired
-service list for that namespace. The preferred controller observes reality,
+name-keyed service object for that namespace. The preferred controller observes reality,
 plans every requested service together, prepares bounded host effects, then
 commits the namespace snapshot. Services omitted from the request are removed,
 and obsolete containers are retired.

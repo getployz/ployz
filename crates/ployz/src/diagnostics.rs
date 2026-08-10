@@ -239,7 +239,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
                 DoctorRosterTable::Peers => "peer",
             },
             skipped.key,
-            render_roster_skip_reason(skipped.reason)
+            render_roster_skip_reason(&skipped.reason)
         )
         .expect("writing to a String cannot fail");
     }
@@ -357,17 +357,28 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
     (output, has_findings)
 }
 
-fn render_roster_skip_reason(reason: DoctorRosterRowSkipReason) -> &'static str {
+fn render_roster_skip_reason(reason: &DoctorRosterRowSkipReason) -> String {
     match reason {
-        DoctorRosterRowSkipReason::MeshProviderMismatch { .. } => "mesh provider mismatch",
+        DoctorRosterRowSkipReason::MeshProviderMismatch { .. } => {
+            "mesh provider mismatch".to_owned()
+        }
         DoctorRosterRowSkipReason::MalformedDocument { class } => match class {
-            DoctorMalformedRosterDocumentClass::MissingVersion => "missing document version",
-            DoctorMalformedRosterDocumentClass::InvalidVersion => "invalid document version",
-            DoctorMalformedRosterDocumentClass::UnsupportedVersion { .. } => {
-                "unsupported document version"
+            DoctorMalformedRosterDocumentClass::MissingVersion => {
+                "missing document version".to_owned()
             }
-            DoctorMalformedRosterDocumentClass::InvalidPayload => "invalid document payload",
+            DoctorMalformedRosterDocumentClass::InvalidVersion => {
+                "invalid document version".to_owned()
+            }
+            DoctorMalformedRosterDocumentClass::UnsupportedVersion { .. } => {
+                "unsupported document version".to_owned()
+            }
+            DoctorMalformedRosterDocumentClass::InvalidPayload => {
+                "invalid document payload".to_owned()
+            }
         },
+        DoctorRosterRowSkipReason::InvalidRowKey { expected } => {
+            format!("noncanonical row key; expected {expected}")
+        }
     }
 }
 
@@ -670,6 +681,25 @@ mod tests {
         assert!(output.starts_with("doctor\tfindings\n"));
         assert!(!output.contains("doctor\tclean"));
         assert!(output.contains("inert, no repair action"));
+    }
+
+    #[test]
+    fn noncanonical_roster_row_names_its_exact_expected_key() {
+        let mut document = doctor_fixture();
+        document.skipped_roster_rows = vec![ployz_core::DoctorSkippedRosterRow {
+            table: DoctorRosterTable::Machines,
+            key: "wrong-key".to_owned(),
+            reason: DoctorRosterRowSkipReason::InvalidRowKey {
+                expected: "edge-a".to_owned(),
+            },
+        }];
+
+        let (output, has_findings) = render_doctor(&document);
+
+        assert!(has_findings);
+        assert!(output.contains(
+            "skipped roster row: machine wrong-key (noncanonical row key; expected edge-a)"
+        ));
     }
 
     #[test]

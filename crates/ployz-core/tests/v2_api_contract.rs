@@ -18,9 +18,9 @@ use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, DEPLOY_INSPECT_ROUTE,
     DEPLOY_PREPARE_ROUTE, DEPLOY_RETIRE_ROUTE, DEPLOY_ROUTE, DeployRefusal, DeployRequest,
-    DeployServiceRequest, FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature,
-    LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot,
-    LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError,
+    DeployServiceRequest, DeployServices, FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES,
+    KnownApiFeature, LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection,
+    LensSnapshot, LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError,
     NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, RequestedPins, RequestedPlacement,
     ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
     ServiceLogsRequest, V2Method, V2Route, VERSION_ROUTE, lens_route, lens_watch_route,
@@ -324,26 +324,48 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
         namespace_name: CorrosionNamespaceName::try_new("payments")
             .expect("fixture namespace name"),
         deploy_name: ployz_core::ids::DeployName::try_new("release-1").expect("deploy"),
-        services: vec![DeployServiceRequest {
-            service_name: ployz_core::corrosion::CorrosionServiceName::try_new("api")
+        services: DeployServices::try_new([(
+            ployz_core::corrosion::CorrosionServiceName::try_new("api")
                 .expect("fixture service name"),
-            image: ImageReference::try_new("registry.example/api:latest")
-                .expect("fixture image reference"),
-            credential: None,
-            runtime,
-            health_gate: HealthGatePolicy::Enforce,
-            placement: None,
-            machines: None,
-        }],
+            DeployServiceRequest {
+                image: ImageReference::try_new("registry.example/api:latest")
+                    .expect("fixture image reference"),
+                credential: None,
+                runtime,
+                health_gate: HealthGatePolicy::Enforce,
+                placement: None,
+                machines: None,
+            },
+        )])
+        .expect("unique services"),
     };
 
     assert!(!format!("{request:?}").contains(secret));
     let serialized = serde_json::to_value(&request).expect("authenticated request serializes");
     assert_eq!(
         serialized
-            .pointer("/services/0/runtime/environment/TOKEN")
+            .pointer("/services/api/runtime/environment/TOKEN")
             .and_then(serde_json::Value::as_str),
         Some(secret)
+    );
+}
+
+#[test]
+fn deploy_services_are_name_keyed_and_duplicate_json_keys_are_refused() {
+    let request = r#"{
+        "namespace_name":"payments",
+        "deploy_name":"release-1",
+        "services":{
+            "api":{"image":"registry.example/api:latest","runtime":{"environment":{},"volume_mounts":[]}},
+            "api":{"image":"registry.example/api:v2","runtime":{"environment":{},"volume_mounts":[]}}
+        }
+    }"#;
+
+    let error = serde_json::from_str::<DeployRequest>(request).expect_err("duplicate service key");
+    assert!(
+        error
+            .to_string()
+            .contains("service api is declared more than once")
     );
 }
 
@@ -685,22 +707,23 @@ fn deploy_requests_without_placement_or_pins_inherit_by_omission() {
     let request: DeployRequest = serde_json::from_value(json!({
         "namespace_name": "payments",
         "deploy_name": "release-1",
-        "services": [{
-            "service_name": "api",
+        "services": {"api": {
             "image": "registry.example/api:latest",
             "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
                 .expect("runtime serializes"),
-        }],
+        }},
     }))
     .expect("request without placement deserializes");
-    let service = request.services.first().expect("one requested service");
+    let service = request
+        .services
+        .get(&ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service"))
+        .expect("one requested service");
     assert_eq!(service.placement, None);
     assert_eq!(service.machines, None);
     let serialized = serde_json::to_value(&request).expect("request serializes");
     let service = serialized
         .get("services")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|services| services.first())
+        .and_then(|services| services.get("api"))
         .expect("one serialized service");
     assert_eq!(service.get("placement"), None);
     assert_eq!(service.get("machines"), None);
@@ -734,18 +757,17 @@ fn deploy_request_health_gate_defaults_to_enforce_and_skip_is_explicit() {
     let request: DeployRequest = serde_json::from_value(json!({
         "namespace_name": "payments",
         "deploy_name": "release-1",
-        "services": [{
-            "service_name": "api",
+        "services": {"api": {
             "image": "registry.example/api:latest",
             "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
                 .expect("runtime serializes"),
-        }],
+        }},
     }))
     .expect("request without health_gate deserializes");
     assert_eq!(
         request
             .services
-            .first()
+            .get(&ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service"))
             .expect("one requested service")
             .health_gate,
         HealthGatePolicy::Enforce

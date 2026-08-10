@@ -1,9 +1,11 @@
 //! Public HTTP/JSON/SSE contract for the coreless v2 API.
 
-use serde::{Deserialize, Serialize};
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::net::Ipv4Addr;
 
 use crate::corrosion::{
@@ -363,7 +365,7 @@ pub enum HealthGatePolicy {
     Skip,
 }
 
-/// One service in a namespace-wide desired-state snapshot.
+/// One service declaration in a namespace-wide desired-state snapshot.
 ///
 /// Environment values are redacted by their value type and are never
 /// copied into durable operation evidence or Corrosion rows.
@@ -371,7 +373,6 @@ pub enum HealthGatePolicy {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployServiceRequest {
-    pub service_name: CorrosionServiceName,
     pub image: ImageReference,
     /// A deploy-scoped pull credential. It may enter node-local workflow
     /// history, but is never copied into Corrosion or operation rows.
@@ -389,6 +390,112 @@ pub struct DeployServiceRequest {
     pub machines: Option<RequestedPins>,
 }
 
+/// The complete name-keyed service set in one deploy request.
+///
+/// The object representation makes service identity structural. Its custom
+/// deserializer refuses duplicate JSON object keys instead of accepting the
+/// last value, and an empty object requests removal of every service.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts",
+    ts(type = "Record<CorrosionServiceName, DeployServiceRequest>")
+)]
+#[serde(transparent)]
+pub struct DeployServices(BTreeMap<CorrosionServiceName, DeployServiceRequest>);
+
+impl DeployServices {
+    pub fn try_new(
+        services: impl IntoIterator<Item = (CorrosionServiceName, DeployServiceRequest)>,
+    ) -> Result<Self, DeployServicesError> {
+        let mut keyed = BTreeMap::new();
+        for (name, service) in services {
+            if keyed.insert(name.clone(), service).is_some() {
+                return Err(DeployServicesError::DuplicateService { name });
+            }
+        }
+        Ok(Self(keyed))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&CorrosionServiceName, &DeployServiceRequest)> {
+        self.0.iter()
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &DeployServiceRequest> {
+        self.0.values()
+    }
+
+    #[must_use]
+    pub fn get(&self, name: &CorrosionServiceName) -> Option<&DeployServiceRequest> {
+        self.0.get(name)
+    }
+
+    pub fn get_mut(&mut self, name: &CorrosionServiceName) -> Option<&mut DeployServiceRequest> {
+        self.0.get_mut(name)
+    }
+
+    /// Inserts or replaces the declaration at one canonical service name.
+    pub fn insert(
+        &mut self,
+        name: CorrosionServiceName,
+        service: DeployServiceRequest,
+    ) -> Option<DeployServiceRequest> {
+        self.0.insert(name, service)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for DeployServices {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DeployServicesVisitor;
+
+        impl<'de> Visitor<'de> for DeployServicesVisitor {
+            type Value = DeployServices;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object keyed by unique service names")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut services = BTreeMap::new();
+                while let Some((name, service)) =
+                    map.next_entry::<CorrosionServiceName, DeployServiceRequest>()?
+                {
+                    if services.insert(name.clone(), service).is_some() {
+                        return Err(serde::de::Error::custom(
+                            DeployServicesError::DuplicateService { name },
+                        ));
+                    }
+                }
+                Ok(DeployServices(services))
+            }
+        }
+
+        deserializer.deserialize_map(DeployServicesVisitor)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployServicesError {
+    #[error("service {name} is declared more than once")]
+    DuplicateService { name: CorrosionServiceName },
+}
+
 /// The complete desired state for one namespace reconciliation attempt.
 ///
 /// Every deploy names every service that should remain in the namespace.
@@ -401,7 +508,7 @@ pub struct DeployRequest {
     pub namespace_name: CorrosionNamespaceName,
     /// Caller-chosen namespace-scoped identity for this deploy attempt.
     pub deploy_name: DeployName,
-    pub services: Vec<DeployServiceRequest>,
+    pub services: DeployServices,
 }
 
 /// Requested placement intent. Host-published ports exist only on the global
@@ -505,6 +612,12 @@ pub enum DeployRefusal {
         deploy_name: DeployName,
     },
     NamedVolumeRedeployUnsupported,
+    HostPortConflict {
+        host_port: u16,
+        protocol: crate::corrosion::HostPortProtocol,
+        first_service: CorrosionServiceName,
+        second_service: CorrosionServiceName,
+    },
 }
 
 impl DeployRefusal {
@@ -549,6 +662,8 @@ pub struct DeployDesiredReplica {
 pub struct DeployObservedContainer {
     pub container_id: ContainerId,
     pub identity: V2ManagedContainerIdentity,
+    #[serde(default, skip_serializing_if = "HostPortBindings::is_empty")]
+    pub host_ports: HostPortBindings,
 }
 
 /// One target host's complete service preparation request.
@@ -565,6 +680,10 @@ pub struct DeployPrepareRequest {
     pub runtime: ContainerRuntimeSpec,
     pub health_gate: HealthGatePolicy,
     pub replicas: Vec<DeployDesiredReplica>,
+    /// Exact observed containers whose published ports overlap this service's
+    /// desired bindings. The target creates replacements before stopping them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_before_start: Vec<DeployObservedContainer>,
 }
 
 /// One exact replica prepared and creation-gated on its target host.

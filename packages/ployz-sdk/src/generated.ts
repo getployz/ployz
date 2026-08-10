@@ -91,7 +91,7 @@ export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoin
 
 export type CorrosionBootstrapFacts = { seed_gossip_address: string, };
 
-export type CorrosionDeployFailure = { "kind": "routes_without_service" } | { "kind": "replicas_on_global_service" } | { "kind": "unknown_pinned_machine", machine_name: MachineName, } | { "kind": "placement", refusal: PlacementRefusal, } | { "kind": "prepare_failed", machine_id: MachineName, } | { "kind": "prepare_refused", machine_id: MachineName, } | { "kind": "prepared_replica_mismatch", machine_id: MachineName, } | { "kind": "resolved_image_mismatch" } | { "kind": "runtime_reality_unavailable" };
+export type CorrosionDeployFailure = { "kind": "replicas_on_global_service" } | { "kind": "unknown_pinned_machine", machine_name: MachineName, } | { "kind": "placement", refusal: PlacementRefusal, } | { "kind": "prepare_failed", machine_id: MachineName, } | { "kind": "prepare_refused", machine_id: MachineName, } | { "kind": "prepared_replica_mismatch", machine_id: MachineName, } | { "kind": "resolved_image_mismatch" } | { "kind": "runtime_reality_unavailable" };
 
 export type CorrosionDeployOutcome = { "kind": "completed", warnings?: Array<CorrosionDeployWarning>, } | { "kind": "failed", failure: CorrosionDeployFailure, } | { "kind": "interrupted" };
 
@@ -127,15 +127,15 @@ export type DeployAccepted = { namespace_name: CorrosionNamespaceName, deploy_na
 
 export type DeployName = Brand<string, "DeployName">;
 
-export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "deploy_name_already_used", namespace_name: CorrosionNamespaceName, deploy_name: DeployName, } | { "kind": "named_volume_redeploy_unsupported" };
+export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "deploy_name_already_used", namespace_name: CorrosionNamespaceName, deploy_name: DeployName, } | { "kind": "named_volume_redeploy_unsupported" } | { "kind": "host_port_conflict", host_port: number, protocol: HostPortProtocol, first_service: CorrosionServiceName, second_service: CorrosionServiceName, };
 
 export type DeployRequest = { namespace_name: CorrosionNamespaceName,
 /**
  * Caller-chosen namespace-scoped identity for this deploy attempt.
  */
-deploy_name: DeployName, services: Array<DeployServiceRequest>, };
+deploy_name: DeployName, services: DeployServices, };
 
-export type DeployServiceRequest = { service_name: CorrosionServiceName, image: ImageReference,
+export type DeployServiceRequest = { image: ImageReference,
 /**
  * A deploy-scoped pull credential. It may enter node-local workflow
  * history, but is never copied into Corrosion or operation rows.
@@ -150,6 +150,8 @@ placement?: RequestedPlacement | null,
  * `None` inherits the incumbent row's pin set unchanged.
  */
 machines?: RequestedPins | null, };
+
+export type DeployServices = Record<CorrosionServiceName, DeployServiceRequest>;
 
 export type DoctorDocument = { skipped_roster_rows: Array<DoctorSkippedRosterRow>, skipped_newer_versions: Array<DoctorSkippedNewerVersion>, versions: DoctorVersionReport, foreign_clusters: Array<DoctorForeignClusterRows>, };
 
@@ -167,7 +169,7 @@ export type DoctorMalformedRosterDocumentClass = { "kind": "missing_version" } |
 
 export type DoctorNewestVersion = { version: string, machines: Array<DoctorMachineIdentity>, };
 
-export type DoctorRosterRowSkipReason = { "kind": "mesh_provider_mismatch", expected: MeshProvider, found: MeshProvider, } | { "kind": "malformed_document", class: DoctorMalformedRosterDocumentClass, };
+export type DoctorRosterRowSkipReason = { "kind": "mesh_provider_mismatch", expected: MeshProvider, found: MeshProvider, } | { "kind": "malformed_document", class: DoctorMalformedRosterDocumentClass, } | { "kind": "invalid_row_key", expected: string, };
 
 export type DoctorRosterTable = "machines" | "peers";
 

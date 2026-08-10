@@ -21,8 +21,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{DeployName, MachineName};
 use ployz_core::{
-    DeployRefusal, DeployRequest, DeployServiceRequest, PinnedMachineNames, RequestedPins,
-    RequestedPlacement,
+    DeployRefusal, DeployRequest, DeployServiceRequest, DeployServices, PinnedMachineNames,
+    RequestedPins, RequestedPlacement,
 };
 use ployz_e2e::dind as deploy_support;
 use ployz_e2e::dind::{
@@ -156,7 +156,7 @@ async fn exercise_operation_placement(
     // Two replicas spread across two distinct machines.
     let mut spread_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
-    spread_service.placement = Some(RequestedPlacement::Replicas {
+    spread_service.1.placement = Some(RequestedPlacement::Replicas {
         replicas: ServiceReplicaCount::try_new(2).map_err(|error| error.to_string())?,
     });
     let spread_op = deploy_support::deploy_namespace(
@@ -224,10 +224,10 @@ async fn exercise_operation_placement(
     let [pin_a, pin_b, _] = &members;
     let mut pinned_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
-    pinned_service.placement = Some(RequestedPlacement::Replicas {
+    pinned_service.1.placement = Some(RequestedPlacement::Replicas {
         replicas: ServiceReplicaCount::try_new(3).map_err(|error| error.to_string())?,
     });
-    pinned_service.machines = Some(RequestedPins::Machines {
+    pinned_service.1.machines = Some(RequestedPins::Machines {
         names: PinnedMachineNames::try_new([pin_a.id.clone(), pin_b.id.clone()])
             .map_err(|error| error.to_string())?,
     });
@@ -265,10 +265,10 @@ async fn exercise_operation_placement(
     // Explicit Any clears the pins and three replicas spread one per machine.
     let mut any_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
-    any_service.placement = Some(RequestedPlacement::Replicas {
+    any_service.1.placement = Some(RequestedPlacement::Replicas {
         replicas: ServiceReplicaCount::try_new(3).map_err(|error| error.to_string())?,
     });
-    any_service.machines = Some(RequestedPins::Any);
+    any_service.1.machines = Some(RequestedPins::Any);
     let any_op = deploy_support::deploy_namespace(
         &operator,
         NAMESPACE,
@@ -300,7 +300,7 @@ async fn exercise_operation_placement(
     .map_err(|error| error.to_string())?;
     let mut global_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
-    global_service.placement = Some(RequestedPlacement::Global {
+    global_service.1.placement = Some(RequestedPlacement::Global {
         host_ports: expected_ports.clone(),
     });
     let global_op = deploy_support::deploy_namespace(
@@ -330,6 +330,41 @@ async fn exercise_operation_placement(
         host_ports == &expected_ports,
         format!("service row recorded the wrong host ports: {host_ports:?}"),
     )?;
+    for member in &members {
+        support::wait_for_http_body(
+            docker,
+            m1,
+            &format!("http://{}:{PUBLISHED_HOST_PORT}/", member.machine.bridge_ip),
+            SECOND_BODY,
+        )
+        .await?;
+    }
+
+    // A later complete snapshot inherits the global placement. Each target
+    // must transfer the already-bound host port before starting its new
+    // natural deploy identity.
+    let inherited_global_service =
+        deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
+    let global_replacement = deploy_support::deploy_namespace(
+        &operator,
+        NAMESPACE,
+        "global-replacement",
+        &[inherited_global_service],
+        "global host-port replacement",
+        SECRET_VALUE,
+    )?;
+    let replacement_rows =
+        support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &global_replacement, 3)
+            .await?;
+    require(
+        matches!(
+            replacement_rows.service.placement,
+            ServicePlacement::Global { ref host_ports } if host_ports == &expected_ports
+        ),
+        "global replacement did not inherit its host ports",
+    )?;
+    deploy_support::assert_first_revision_container_is_gone(docker, &[m1, m2, m3], &global_op)
+        .await?;
     for member in &members {
         support::wait_for_http_body(
             docker,
@@ -456,15 +491,17 @@ fn volume_deploy_request(image: &str) -> Result<DeployRequest, String> {
         namespace_name: CorrosionNamespaceName::try_new(VOLUME_NAMESPACE)
             .map_err(|error| error.to_string())?,
         deploy_name: DeployName::try_new("volume-first").map_err(|error| error.to_string())?,
-        services: vec![DeployServiceRequest {
-            service_name: CorrosionServiceName::try_new(VOLUME_SERVICE)
-                .map_err(|error| error.to_string())?,
-            image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
-            credential: None,
-            runtime,
-            health_gate: HealthGatePolicy::Enforce,
-            placement: None,
-            machines: None,
-        }],
+        services: DeployServices::try_new([(
+            CorrosionServiceName::try_new(VOLUME_SERVICE).map_err(|error| error.to_string())?,
+            DeployServiceRequest {
+                image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
+                credential: None,
+                runtime,
+                health_gate: HealthGatePolicy::Enforce,
+                placement: None,
+                machines: None,
+            },
+        )])
+        .map_err(|error| error.to_string())?,
     })
 }

@@ -412,7 +412,7 @@ pub enum DoctorRosterTable {
 }
 
 /// A closed reason a same-cluster roster row did not enter the accepted roster.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DoctorRosterRowSkipReason {
@@ -422,6 +422,9 @@ pub enum DoctorRosterRowSkipReason {
     },
     MalformedDocument {
         class: DoctorMalformedRosterDocumentClass,
+    },
+    InvalidRowKey {
+        expected: String,
     },
 }
 
@@ -566,10 +569,12 @@ fn map_roster_skips(
                         class: map_malformed_roster_document(malformed)?,
                     }
                 }
+                RowSkipReason::InvalidRowKey { expected } => {
+                    DoctorRosterRowSkipReason::InvalidRowKey { expected }
+                }
                 RowSkipReason::Empty
                 | RowSkipReason::ForeignCluster { .. }
-                | RowSkipReason::NewerVersion { .. }
-                | RowSkipReason::InvalidRowKey { .. } => return None,
+                | RowSkipReason::NewerVersion { .. } => return None,
             };
             Some(DoctorSkippedRosterRow {
                 table,

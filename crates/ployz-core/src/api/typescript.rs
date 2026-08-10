@@ -9,13 +9,13 @@ use super::v2::{
     CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
     CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
     CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
-    DeployAccepted, DeployRefusal, DeployRequest, DeployServiceRequest, KNOWN_API_FEATURES,
-    KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow,
-    MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow,
-    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor,
-    MachineUpgradeUrl, OperationLensRow, PinnedMachineNames, RequestedPins, RequestedPlacement,
-    ServiceLensRow, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
-    ServiceLogsRequest, ServiceLogsTailReply,
+    DeployAccepted, DeployRefusal, DeployRequest, DeployServiceRequest, DeployServices,
+    KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
+    MachineLensRow, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
+    MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
+    MachineUpgradeSupervisor, MachineUpgradeUrl, OperationLensRow, PinnedMachineNames,
+    RequestedPins, RequestedPlacement, ServiceLensRow, ServiceLogLine, ServiceLogStream,
+    ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
     DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
@@ -166,6 +166,7 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<CorrosionNamespaceRemoveRefusal>();
     declarations.visit::<DeployRequest>();
     declarations.visit::<DeployServiceRequest>();
+    declarations.visit::<DeployServices>();
     declarations.visit::<RequestedPlacement>();
     declarations.visit::<RequestedPins>();
     declarations.visit::<PinnedMachineNames>();

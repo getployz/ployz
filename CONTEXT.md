@@ -4,7 +4,7 @@ Ployz is a small-cluster orchestrator for deploying and operating services throu
 
 ## Language
 
-Current v2 is deliberately narrower than some retained product vocabulary: a namespace deploy accepts one complete list of independently named services using prebuilt registry images; only deploy creates public Operation rows; and there is no namespace-revision, phase, dependency, or hook planner. Entries describing those removed models are historical or target vocabulary, not claims about current implementation.
+Current v2 is deliberately narrower than some retained product vocabulary: a namespace deploy accepts one complete name-keyed service object using prebuilt registry images; only deploy creates public Operation rows; and there is no namespace-revision, phase, dependency, or hook planner. Entries describing those removed models are historical or target vocabulary, not claims about current implementation.
 
 **Namespace**:
 A canonically named deploy boundary whose name is its durable identity. Its services are separate rows keyed by namespace and service names; deleting and recreating the same namespace name continues that logical namespace.
@@ -210,7 +210,7 @@ The private Duroxide and SQLite runtime on each machine. It records only that ma
 _Avoid_: Distributed workflow engine, controller queue, cluster truth
 
 **Deploy**:
-A bounded attempt to make an entire namespace match one complete desired service list. The Preferred Controller observes Corrosion and target-host Docker, computes placement for every service, asks nodes to prepare exact replicas, commits the namespace's complete service and container projection after an immediate appointment recheck, then asks nodes to retire obsolete identities. The commit is not appointment-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
+A bounded attempt to make an entire namespace match one complete desired service object keyed by canonical service name. The Preferred Controller observes Corrosion and target-host Docker, computes placement for every service, asks nodes to prepare exact replicas, commits the namespace's complete service and container projection after an immediate appointment recheck, then asks nodes to retire obsolete identities. The commit is not appointment-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
 _Avoid_: Distributed workflow, namespace revision reconciliation
 
 **Deploy Outcome**:
@@ -222,7 +222,7 @@ A historical target-model result for one service inside a namespace deploy. Curr
 _Avoid_: Current deploy outcome, service status
 
 **Deploy Input**:
-The typed current-v2 request for one complete namespace snapshot: namespace and deploy names plus every desired service's name, prebuilt registry image reference, optional pull credential, runtime shape, health-gate policy, placement, and machine pins. Omitting an incumbent service requests its removal. It contains no source build, dependency, hook, phase, or route set.
+The typed current-v2 request for one complete namespace snapshot: namespace and deploy names plus a duplicate-rejecting object keyed by every desired service's canonical name. Each value carries its prebuilt registry image reference, optional pull credential, runtime shape, health-gate policy, placement, and machine pins. Omitting an incumbent service requests its removal. It contains no source build, dependency, hook, phase, or route set.
 _Avoid_: Source build request, namespace revision
 
 **Resolved Image Identity**:

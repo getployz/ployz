@@ -463,7 +463,7 @@ impl ApiService {
         peer: SocketAddr,
         request: hyper::Request<hyper::body::Incoming>,
     ) -> Response<HttpBody> {
-        super::join::handle_join(self, peer, request, false).await
+        super::join::handle_join_door(self, peer, request).await
     }
 
     pub(super) async fn handle(
@@ -533,19 +533,20 @@ impl ApiService {
         if !route.accepts_principal(&principal) {
             return refusal_response(ApiRefusal::UnsupportedRoute);
         }
-        let _controller_guard =
-            if route.is_controller_mutation() && !matches!(&route, V2Route::Deploy) {
-                match Arc::clone(&self.controller_lock).try_lock_owned() {
-                    Ok(guard) => Some(guard),
-                    Err(_) => return super::deploy_controller::controller_busy(),
-                }
-            } else {
-                None
-            };
+        let _controller_guard = if route.is_controller_mutation()
+            && !matches!(&route, V2Route::Deploy | V2Route::Join)
+        {
+            match Arc::clone(&self.controller_lock).try_lock_owned() {
+                Ok(guard) => Some(guard),
+                Err(_) => return super::deploy_controller::controller_busy(),
+            }
+        } else {
+            None
+        };
         match route {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
-            V2Route::Join => super::join::handle_join(self, peer, request, true).await,
+            V2Route::Join => super::join::handle_forwarded_join(self, peer, request).await,
             V2Route::Status => super::diagnostics::status_response(self).await,
             V2Route::Doctor => super::diagnostics::doctor_response(self).await,
             V2Route::TokenCreate
