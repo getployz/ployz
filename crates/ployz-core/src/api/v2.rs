@@ -579,6 +579,7 @@ pub struct DeployObservedContainer {
 /// One target host's complete service preparation request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPrepareRequest {
+    pub controller_machine_name: MachineName,
     /// Namespace-scoped deploy identity; every replica must carry it.
     pub operation_id: DeployName,
     pub namespace_name: CorrosionNamespaceName,
@@ -606,6 +607,8 @@ pub struct DeployPreparedReplica {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeployPrepareOutcome {
     Prepared {
+        /// Authenticated controller that originated this durable prepare.
+        controller_machine_name: MachineName,
         /// The canonical digest-pinned image used for every returned replica.
         image: ImageReference,
         replicas: Vec<DeployPreparedReplica>,
@@ -620,6 +623,7 @@ pub enum DeployPrepareOutcome {
 /// Machine-authenticated request to retire exact observed containers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRetireRequest {
+    pub controller_machine_name: MachineName,
     /// Namespace-scoped deploy identity for this cleanup request.
     pub operation_id: DeployName,
     pub namespace_name: CorrosionNamespaceName,

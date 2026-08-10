@@ -294,6 +294,7 @@ impl SimpleDeploy {
                     .unwrap_or_default();
                 async move {
                     let request = DeployPrepareRequest {
+                        controller_machine_name: self.machine_id.clone(),
                         operation_id,
                         namespace_name,
                         service_name,
@@ -317,6 +318,7 @@ impl SimpleDeploy {
                         image,
                         replicas,
                         displaced_incumbents: _,
+                        ..
                     }) => (image, replicas),
                     Ok(DeployPrepareOutcome::Refused) => {
                         prepare_failure
@@ -464,6 +466,7 @@ impl SimpleDeploy {
                     .retire(
                         &machine_id,
                         DeployRetireRequest {
+                            controller_machine_name: self.machine_id.clone(),
                             operation_id: command.operation_id.clone(),
                             namespace_name: context.reality.namespace.name.clone(),
                             containers: Vec::new(),
@@ -528,6 +531,7 @@ impl SimpleDeploy {
                     .retire(
                         machine_id,
                         DeployRetireRequest {
+                            controller_machine_name: self.machine_id.clone(),
                             operation_id: command.operation_id.clone(),
                             namespace_name: context.reality.namespace.name.clone(),
                             containers,
@@ -1082,6 +1086,7 @@ mod tests {
                 .image
                 .with_digest(&digest)
                 .map_err(|_| DeployHostError::Failed)?;
+            let controller_machine_name = request.controller_machine_name.clone();
             let displaced_incumbents = request.stop_before_start.clone();
             let replicas = request
                 .replicas
@@ -1092,6 +1097,7 @@ mod tests {
                 })
                 .collect();
             Ok(DeployPrepareOutcome::Prepared {
+                controller_machine_name,
                 image,
                 replicas,
                 displaced_incumbents,

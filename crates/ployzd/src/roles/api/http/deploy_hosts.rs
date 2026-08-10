@@ -139,6 +139,9 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployPrepareRequest,
     ) -> Result<DeployPrepareOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
+            if request.controller_machine_name != self.local_machine_id {
+                return Err(DeployHostError::Failed);
+            }
             self.require_local_controller().await?;
             return Ok(self.local_workflows.prepare(request).await);
         }
@@ -157,6 +160,9 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployRetireRequest,
     ) -> Result<DeployRetireOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
+            if request.controller_machine_name != self.local_machine_id {
+                return Err(DeployHostError::Failed);
+            }
             if request.rollback_services.is_empty() {
                 self.require_local_controller().await?;
             }

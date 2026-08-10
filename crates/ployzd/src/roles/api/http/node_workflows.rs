@@ -241,6 +241,7 @@ fn merge_completed_prepare(
     incumbents: &mut Vec<DeployObservedContainer>,
 ) -> Result<(), ()> {
     let DeployPrepareOutcome::Prepared {
+        controller_machine_name,
         replicas,
         displaced_incumbents,
         ..
@@ -248,11 +249,13 @@ fn merge_completed_prepare(
     else {
         return Ok(());
     };
-    if replicas.iter().any(|replica| {
-        replica.identity.namespace_id != request.namespace_name
-            || replica.identity.service_name != *service_name
-            || replica.identity.operation_id != request.operation_id
-    }) {
+    if controller_machine_name != request.controller_machine_name
+        || replicas.iter().any(|replica| {
+            replica.identity.namespace_id != request.namespace_name
+                || replica.identity.service_name != *service_name
+                || replica.identity.operation_id != request.operation_id
+        })
+    {
         return Err(());
     }
     extend_unique(
@@ -420,6 +423,7 @@ mod tests {
         let namespace = CorrosionNamespaceName::try_new("production").expect("namespace");
         let service = CorrosionServiceName::try_new("api").expect("service");
         let deploy = DeployName::try_new("release-1").expect("deploy");
+        let controller = ployz_core::ids::MachineName::try_new("node-1").expect("controller");
         let identity = V2ManagedContainerIdentity {
             namespace_id: namespace.clone(),
             service_name: service.clone(),
@@ -427,6 +431,7 @@ mod tests {
             replica_slot: ReplicaSlot::Global,
         };
         let request = DeployRetireRequest {
+            controller_machine_name: controller.clone(),
             operation_id: deploy,
             namespace_name: namespace,
             containers: Vec::new(),
@@ -434,6 +439,7 @@ mod tests {
             rollback_services: vec![service.clone()],
         };
         let prepared = DeployPrepareOutcome::Prepared {
+            controller_machine_name: controller,
             image: ImageReference::try_new(
                 "nginx@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             )
@@ -444,6 +450,7 @@ mod tests {
             }],
             displaced_incumbents: Vec::new(),
         };
+        let foreign_prepare = prepared.clone();
         let mut candidates = Vec::new();
         let mut incumbents = Vec::new();
 
@@ -461,6 +468,20 @@ mod tests {
         };
         assert_eq!(candidate.identity, identity);
         assert!(incumbents.is_empty());
+
+        let mut foreign_request = request;
+        foreign_request.controller_machine_name =
+            ployz_core::ids::MachineName::try_new("node-2").expect("controller");
+        assert!(
+            merge_completed_prepare(
+                &foreign_request,
+                &service,
+                foreign_prepare,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
