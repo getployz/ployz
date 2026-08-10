@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 use ployz_core::corrosion::{
-    ClusterDocument, GatewayProjectionAggregateFailure, GatewayProjectionInputKind,
-    GatewayRouteAvailability, GatewayRouteObservation, GatewayRouteProjectionFailure,
-    GatewayRouteProjectionOutcome, GatewayRouteUnavailableReason, IngressMode, MachineDocument,
-    MachineEndpointDocument, NamespaceDocument, RouteBindingDocument, StoredRow,
-    read_named_roster_rows, read_named_rows, read_rows, service_endpoint_key,
+    ClusterDocument, CorrosionTimestamp, GatewayProjectionAggregateFailure,
+    GatewayProjectionInputKind, GatewayRouteAvailability, GatewayRouteObservation,
+    GatewayRouteProjectionFailure, GatewayRouteProjectionOutcome, GatewayRouteUnavailableReason,
+    IngressMode, MachineDocument, MachineEndpointDocument, NamespaceDocument, RouteBindingDocument,
+    StoredRow, read_named_roster_rows, read_named_rows, read_rows, service_endpoint_key,
 };
 use ployz_core::ids::{ClusterName, MachineName, RouteHostname};
 use ployz_core::ingress::RouteBindingOrigin;
@@ -17,6 +17,7 @@ use ployz_core::operation::RouteTarget;
 /// The complete row reads that define one gateway snapshot.
 #[derive(Debug)]
 pub struct GatewayProjectionInput {
+    pub now: CorrosionTimestamp,
     pub cluster_id: ClusterName,
     pub cluster: Vec<StoredRow>,
     pub machines: Vec<StoredRow>,
@@ -32,6 +33,9 @@ pub struct GatewayFold {
     pub projection: GatewayProjection,
     pub route_observations: Vec<GatewayRouteObservation>,
     pub aggregate_failures: Vec<GatewayProjectionAggregateFailure>,
+    /// The next instant at which an installed upstream must be reprojected
+    /// even if Corrosion produces no invalidation.
+    pub next_endpoint_expiry: Option<std::time::Duration>,
 }
 
 /// One immutable routing view installed at the request boundary in one swap.
@@ -61,6 +65,7 @@ pub struct GatewayUpstream {
 #[must_use]
 pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
     let GatewayProjectionInput {
+        now,
         cluster_id,
         cluster,
         machines,
@@ -127,6 +132,23 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
         GatewayProjectionInputKind::MachineEndpoints,
         endpoint_report.skipped.len(),
     );
+    let serving_endpoint_rows = endpoint_report
+        .accepted
+        .iter()
+        .filter_map(|row| {
+            if !accepted_machine_ids.contains(&row.value.machine_id) {
+                return None;
+            }
+            row.value
+                .serving_freshness_remaining(now)
+                .map(|remaining| (row, remaining))
+        })
+        .collect::<Vec<_>>();
+    let next_endpoint_expiry = serving_endpoint_rows
+        .iter()
+        .filter(|(row, _)| !row.value.endpoints.is_empty())
+        .map(|(_, remaining)| *remaining)
+        .min();
 
     let route_report = read_rows::<RouteBindingDocument>(&cluster_id, route_bindings.clone());
     record_rejected(
@@ -172,11 +194,9 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
                 },
             ),
             Some(service) => {
-                let mut upstreams = endpoint_report
-                    .accepted
+                let mut upstreams = serving_endpoint_rows
                     .iter()
-                    .filter(|testimony| accepted_machine_ids.contains(&testimony.value.machine_id))
-                    .flat_map(|testimony| {
+                    .flat_map(|(testimony, _)| {
                         testimony
                             .value
                             .endpoints
@@ -233,6 +253,7 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
         },
         route_observations,
         aggregate_failures,
+        next_endpoint_expiry,
     }
 }
 

@@ -18,7 +18,6 @@ use crate::machine::{GatewayProcessHealth, GatewayServingStatus, MachineLifecycl
 use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use crate::operation::{RouteHostname, RoutePort};
 
-use super::controller::ControllerRevision;
 use super::mesh::{BuiltinWireguardKeyMismatch, BuiltinWireguardMemberAddress};
 use super::operation::CorrosionDeployState;
 use super::principal::OperationInitiator;
@@ -106,6 +105,12 @@ impl CorrosionDocumentVersion {
 pub struct CorrosionTimestamp(OffsetDateTime);
 
 impl CorrosionTimestamp {
+    /// Captures the current UTC instant without a formatting round trip.
+    #[must_use]
+    pub fn now_utc() -> Self {
+        Self(OffsetDateTime::now_utc())
+    }
+
     /// Parses any RFC 3339 offset spelling and stores the corresponding UTC instant.
     pub fn try_new(value: impl Into<String>) -> Result<Self, CorrosionTimestampError> {
         let value = value.into();
@@ -828,7 +833,6 @@ pub struct ControllerDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterName,
     pub preferred_machine_id: MachineName,
-    pub appointment_id: ControllerRevision,
     pub heartbeat_at: CorrosionTimestamp,
 }
 
@@ -841,6 +845,25 @@ pub struct MachineEndpointDocument {
     pub observed_at: CorrosionTimestamp,
     /// Complete routable endpoint testimony from this machine's Docker reality.
     pub endpoints: Vec<ServiceEndpoint>,
+}
+
+/// Endpoint reporters publish every five seconds. This allows several missed
+/// reports without letting testimony from a stopped reporter serve forever.
+pub const MACHINE_ENDPOINT_TESTIMONY_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+impl MachineEndpointDocument {
+    /// Returns how long this testimony may still contribute to serving state.
+    /// Testimony expires exactly at the maximum age.
+    #[must_use]
+    pub fn serving_freshness_remaining(
+        &self,
+        now: CorrosionTimestamp,
+    ) -> Option<std::time::Duration> {
+        let remaining = MACHINE_ENDPOINT_TESTIMONY_MAX_AGE
+            .saturating_sub(now.saturating_since(self.observed_at));
+        (!remaining.is_zero()).then_some(remaining)
+    }
 }
 
 /// One naturally identified routable endpoint in machine testimony.

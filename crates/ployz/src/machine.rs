@@ -713,7 +713,7 @@ async fn join(command: MachineJoinCommand) -> Result<String, MachineExecutionErr
     Ok(render_machine_join(
         outcome.kind,
         &outcome.machine_name,
-        &outcome.machine_id,
+        &outcome.machine_name,
     ))
 }
 

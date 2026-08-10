@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Frame;
 use hyper::{Response, StatusCode};
@@ -11,12 +11,14 @@ use ployz_core::corrosion::{
     CorrosionServiceName, NamespaceDocument, SqliteParameter, Statement,
     V2ManagedContainerIdentity, read_named_rows,
 };
-use ployz_core::ids::{ClusterName, ContainerId, CorrosionNamespaceName};
+use ployz_core::deploy::ReplicaSlot;
+use ployz_core::ids::{ClusterName, ContainerId, CorrosionNamespaceName, DeployName};
 use ployz_core::machine::MachineName;
 use ployz_core::{
     ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
-    ServiceLogsRequest, ServiceLogsTailReply,
+    ServiceLogsRequest, ServiceLogsTailReply, V2Route,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 use crate::roles::api::runner::{
@@ -35,6 +37,46 @@ const LOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const LOG_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const LOG_REATTACH_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const LOG_REATTACH_MAX_BACKOFF: Duration = Duration::from_secs(2);
+const LOG_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const LOG_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_LOG_PROBE_REPLY_BYTES: usize = 64 * 1024;
+const MAX_LOG_PROBES_IN_FLIGHT: usize = 16;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceLogProbeRequest {
+    namespace_name: CorrosionNamespaceName,
+    service_name: CorrosionServiceName,
+    deploy: DeployName,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ServiceLogProbeReply {
+    Inspected { replicas: Vec<ReplicaSlot> },
+    Ambiguous,
+    RuntimeUnavailable,
+}
+
+pub(super) async fn handle_probe(
+    service: &ApiService,
+    request: hyper::Request<hyper::body::Incoming>,
+) -> Response<HttpBody> {
+    let request = match read_bounded_body(
+        request.into_body(),
+        MAX_LOG_REQUEST_BYTES,
+        LOG_REQUEST_TIMEOUT,
+    )
+    .await
+    {
+        Ok(body) => match serde_json::from_slice::<ServiceLogProbeRequest>(&body) {
+            Ok(request) => request,
+            Err(_) => return log_request_error(StatusCode::BAD_REQUEST, "invalid_request"),
+        },
+        Err(error) => return log_body_error(error),
+    };
+    super::mutations::typed_response(StatusCode::OK, &probe_local(service, &request).await)
+}
 
 pub(super) async fn handle_tail(
     service: &ApiService,
@@ -175,9 +217,14 @@ async fn resolve_log_target(
     ),
     Response<HttpBody>,
 > {
-    let resolver =
-        CorrosionServiceLogResolver::new(service.corrosion.clone(), service.cluster_id.clone());
-    let generation = match resolver.resolve(namespace_name, service_name).await {
+    let generation = match resolve_generation(
+        &service.corrosion,
+        &service.cluster_id,
+        namespace_name,
+        service_name,
+    )
+    .await
+    {
         Ok(Ok(generation)) => generation,
         Ok(Err(refusal)) => return Err(log_refusal_response(refusal)),
         Err(error) => {
@@ -185,10 +232,82 @@ async fn resolve_log_target(
             return Err(corrosion_unavailable_response());
         }
     };
+    let roster =
+        match super::store::read_accepted_roster(&service.corrosion, &service.cluster_id).await {
+            Ok(roster) => roster,
+            Err(error) => {
+                tracing::warn!(%error, "could not read roster for service log ownership");
+                return Err(corrosion_unavailable_response());
+            }
+        };
+    let candidates = roster
+        .machines
+        .into_iter()
+        .filter(|candidate| machine.is_none_or(|selected| selected == &candidate.document.name))
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err(log_refusal_response(
+            ServiceLogsRefusal::ContainerNotFound {
+                namespace_name: namespace_name.clone(),
+                service_name: service_name.clone(),
+            },
+        ));
+    }
+    let probe = ServiceLogProbeRequest {
+        namespace_name: namespace_name.clone(),
+        service_name: service_name.clone(),
+        deploy: generation.clone(),
+    };
+    let client = match reqwest::Client::builder()
+        .connect_timeout(LOG_PROBE_CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(%error, "could not construct service log ownership client");
+            return Err(log_refusal_response(
+                ServiceLogsRefusal::RuntimeUnavailable {
+                    machine_name: service.local_machine_id.clone(),
+                },
+            ));
+        }
+    };
+    let probes = stream::iter(candidates).map(|candidate| {
+        let client = &client;
+        let probe = &probe;
+        async move {
+            let machine_id = candidate.document.name;
+            let reply = if machine_id == service.local_machine_id {
+                probe_local(service, probe).await
+            } else {
+                let target = super::deploy_hosts::machine_socket_addr(
+                    &candidate.document.transport,
+                    service.listen_addr.port(),
+                );
+                probe_remote(client, target, probe).await
+            };
+            (machine_id, reply)
+        }
+    });
+    let probe_results = probes
+        .buffer_unordered(MAX_LOG_PROBES_IN_FLIGHT)
+        .collect::<Vec<_>>()
+        .await;
+    let owner = match select_log_owner(namespace_name, service_name, probe_results) {
+        Ok(owner) => owner,
+        Err(refusal) => return Err(log_refusal_response(refusal)),
+    };
+    if owner != service.local_machine_id {
+        return Err(log_refusal_response(ServiceLogsRefusal::RemoteOwner {
+            machine_name: owner,
+        }));
+    }
     let Some(runner) = service.container_runner.clone() else {
         return Err(log_refusal_response(
             ServiceLogsRefusal::RuntimeUnavailable {
-                machine_id: service.local_machine_id.clone(),
+                machine_name: service.local_machine_id.clone(),
             },
         ));
     };
@@ -201,7 +320,7 @@ async fn resolve_log_target(
                 "could not inventory local containers for service logs"
             );
             log_refusal_response(ServiceLogsRefusal::RuntimeUnavailable {
-                machine_id: service.local_machine_id.clone(),
+                machine_name: service.local_machine_id.clone(),
             })
         })?;
     let target = select_local_log_container(
@@ -214,6 +333,128 @@ async fn resolve_log_target(
     )
     .map_err(log_refusal_response)?;
     Ok((runner, target))
+}
+
+async fn probe_local(
+    service: &ApiService,
+    request: &ServiceLogProbeRequest,
+) -> ServiceLogProbeReply {
+    let Some(runner) = &service.container_runner else {
+        return ServiceLogProbeReply::RuntimeUnavailable;
+    };
+    let containers = match runner.existing_v2_managed_containers().await {
+        Ok(containers) => containers,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                "could not inventory local containers for service log probe"
+            );
+            return ServiceLogProbeReply::RuntimeUnavailable;
+        }
+    };
+    probe_containers(&containers, request)
+}
+
+fn probe_containers(
+    containers: &[ExistingV2ManagedContainer],
+    request: &ServiceLogProbeRequest,
+) -> ServiceLogProbeReply {
+    let matching = containers
+        .iter()
+        .filter(|container| {
+            container.identity.namespace_id == request.namespace_name
+                && container.identity.service_name == request.service_name
+                && container.identity.operation_id == request.deploy
+        })
+        .map(|container| container.identity.replica_slot)
+        .collect::<Vec<_>>();
+    let unique = matching.iter().collect::<std::collections::HashSet<_>>();
+    if unique.len() != matching.len() {
+        ServiceLogProbeReply::Ambiguous
+    } else {
+        ServiceLogProbeReply::Inspected { replicas: matching }
+    }
+}
+
+async fn probe_remote(
+    client: &reqwest::Client,
+    target: std::net::SocketAddr,
+    request: &ServiceLogProbeRequest,
+) -> ServiceLogProbeReply {
+    let response = match client
+        .post(format!(
+            "http://{target}{}",
+            V2Route::ServiceLogsProbe.path()
+        ))
+        .timeout(LOG_PROBE_TIMEOUT)
+        .json(request)
+        .send()
+        .await
+    {
+        Ok(response) if response.status() == StatusCode::OK.as_u16() => response,
+        Ok(_) | Err(_) => return ServiceLogProbeReply::RuntimeUnavailable,
+    };
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            return ServiceLogProbeReply::RuntimeUnavailable;
+        };
+        let Some(total) = body.len().checked_add(chunk.len()) else {
+            return ServiceLogProbeReply::RuntimeUnavailable;
+        };
+        if total > MAX_LOG_PROBE_REPLY_BYTES {
+            return ServiceLogProbeReply::RuntimeUnavailable;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).unwrap_or(ServiceLogProbeReply::RuntimeUnavailable)
+}
+
+fn select_log_owner(
+    namespace_name: &CorrosionNamespaceName,
+    service_name: &CorrosionServiceName,
+    probes: Vec<(MachineName, ServiceLogProbeReply)>,
+) -> Result<MachineName, ServiceLogsRefusal> {
+    if probes
+        .iter()
+        .any(|(_, reply)| matches!(reply, ServiceLogProbeReply::Ambiguous))
+    {
+        return Err(ServiceLogsRefusal::ContainerAmbiguous {
+            namespace_name: namespace_name.clone(),
+            service_name: service_name.clone(),
+        });
+    }
+    let unavailable = probes
+        .iter()
+        .find(|(_, reply)| matches!(reply, ServiceLogProbeReply::RuntimeUnavailable))
+        .map(|(machine_id, _)| machine_id.clone());
+    // ponytail: logs use the runtime replies that arrived; require complete
+    // roster evidence only if log selection becomes an authority boundary.
+    let machines = probes
+        .into_iter()
+        .flat_map(|(machine_id, reply)| match reply {
+            ServiceLogProbeReply::Inspected { replicas } => {
+                vec![machine_id; replicas.len()]
+            }
+            ServiceLogProbeReply::Ambiguous | ServiceLogProbeReply::RuntimeUnavailable => {
+                Vec::new()
+            }
+        })
+        .collect::<Vec<_>>();
+    match machines.as_slice() {
+        [] => unavailable.map_or_else(
+            || {
+                Err(ServiceLogsRefusal::ContainerNotFound {
+                    namespace_name: namespace_name.clone(),
+                    service_name: service_name.clone(),
+                })
+            },
+            |machine_name| Err(ServiceLogsRefusal::RuntimeUnavailable { machine_name }),
+        ),
+        [machine_id] => Ok(machine_id.clone()),
+        [_, _, ..] => Err(ServiceLogsRefusal::MachineSelectorRequired { machines }),
+    }
 }
 
 fn log_refusal_response(refusal: ServiceLogsRefusal) -> Response<HttpBody> {
@@ -241,7 +482,7 @@ impl ServiceLogAccessError {
         match self {
             Self::Refusal(refusal) => refusal,
             Self::RuntimeUnavailable { .. } => ServiceLogsRefusal::RuntimeUnavailable {
-                machine_id: target.machine_id.clone(),
+                machine_name: target.machine_name.clone(),
             },
         }
     }
@@ -250,7 +491,7 @@ impl ServiceLogAccessError {
 /// A service-log target resolved from namespace intent and local Docker reality.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalServiceLogTarget {
-    pub(super) machine_id: MachineName,
+    pub(super) machine_name: MachineName,
     pub(super) container_id: ContainerId,
     pub(super) identity: V2ManagedContainerIdentity,
 }
@@ -263,66 +504,39 @@ pub(super) enum ServiceLogResolveError {
     Protocol(String),
 }
 
-/// Exact namespace-intent resolution for service logs.
-#[derive(Clone)]
-pub(super) struct CorrosionServiceLogResolver {
-    client: CorrosionClient,
-    cluster_id: ClusterName,
-}
-
-impl CorrosionServiceLogResolver {
-    #[must_use]
-    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterName) -> Self {
-        Self { client, cluster_id }
+async fn resolve_generation(
+    client: &CorrosionClient,
+    cluster_id: &ClusterName,
+    namespace_name: &CorrosionNamespaceName,
+    service_name: &CorrosionServiceName,
+) -> Result<Result<DeployName, ServiceLogsRefusal>, ServiceLogResolveError> {
+    let statement = Statement::with_params(
+        "SELECT id, document FROM namespaces WHERE id = ?",
+        vec![SqliteParameter::Text(namespace_name.as_str().to_owned())],
+    );
+    let mut stream = client.query(&statement).await?;
+    let rows = collect_stored_rows(&mut stream, StoredRowLimit::new(MAX_RESOLVED_ROWS))
+        .await
+        .map_err(|error| ServiceLogResolveError::Protocol(error.to_string()))?;
+    let report = read_named_rows::<NamespaceDocument>(cluster_id, rows);
+    if !report.skipped.is_empty() || report.accepted.len() > 1 {
+        return Err(ServiceLogResolveError::Protocol(
+            "namespace lookup contained rejected or ambiguous rows".to_owned(),
+        ));
     }
-
-    pub(super) async fn resolve(
-        &self,
-        namespace_name: &CorrosionNamespaceName,
-        service_name: &CorrosionServiceName,
-    ) -> Result<Result<ployz_core::ids::DeployName, ServiceLogsRefusal>, ServiceLogResolveError>
-    {
-        let namespace_rows = self
-            .query(
-                Statement::with_params(
-                    "SELECT id, document FROM namespaces WHERE id = ?",
-                    vec![SqliteParameter::Text(namespace_name.as_str().to_owned())],
-                ),
-                MAX_RESOLVED_ROWS,
-            )
-            .await?;
-        let namespace_report =
-            read_named_rows::<NamespaceDocument>(&self.cluster_id, namespace_rows);
-        if !namespace_report.skipped.is_empty() || namespace_report.accepted.len() > 1 {
-            return Err(ServiceLogResolveError::Protocol(
-                "namespace lookup contained rejected or ambiguous rows".to_owned(),
-            ));
-        }
-        let Some(namespace) = namespace_report.accepted.into_iter().next() else {
-            return Ok(Err(ServiceLogsRefusal::ServiceNotFound {
-                namespace_name: namespace_name.clone(),
-                service_name: service_name.clone(),
-            }));
-        };
-        let Some(service) = namespace.value.services.get(service_name) else {
-            return Ok(Err(ServiceLogsRefusal::ServiceNotFound {
-                namespace_name: namespace_name.clone(),
-                service_name: service_name.clone(),
-            }));
-        };
-        Ok(Ok(service.active_deploy.clone()))
-    }
-
-    async fn query(
-        &self,
-        statement: Statement,
-        limit: usize,
-    ) -> Result<Vec<ployz_core::corrosion::StoredRow>, ServiceLogResolveError> {
-        let mut stream = self.client.query(&statement).await?;
-        collect_stored_rows(&mut stream, StoredRowLimit::new(limit))
-            .await
-            .map_err(|error| ServiceLogResolveError::Protocol(error.to_string()))
-    }
+    let Some(namespace) = report.accepted.into_iter().next() else {
+        return Ok(Err(ServiceLogsRefusal::ServiceNotFound {
+            namespace_name: namespace_name.clone(),
+            service_name: service_name.clone(),
+        }));
+    };
+    let Some(service) = namespace.value.services.get(service_name) else {
+        return Ok(Err(ServiceLogsRefusal::ServiceNotFound {
+            namespace_name: namespace_name.clone(),
+            service_name: service_name.clone(),
+        }));
+    };
+    Ok(Ok(service.active_deploy.clone()))
 }
 
 /// Resolves one local Docker container from the generation selected by namespace intent.
@@ -338,8 +552,7 @@ fn select_local_log_container(
         && selector != local_machine_id
     {
         return Err(ServiceLogsRefusal::RemoteOwner {
-            machine_id: selector.clone(),
-            machine_name: Some(selector.clone()),
+            machine_name: selector.clone(),
         });
     }
     let matching = containers
@@ -366,7 +579,7 @@ fn select_local_log_container(
             service_name: service_name.clone(),
         }),
         [container] => Ok(LocalServiceLogTarget {
-            machine_id: local_machine_id.clone(),
+            machine_name: local_machine_id.clone(),
             container_id: container.container_id.clone(),
             identity: container.identity.clone(),
         }),
@@ -665,10 +878,10 @@ mod tests {
     use ployz_core::ids::ClusterName;
 
     use super::{
-        CorrosionServiceLogResolver, ExistingV2ManagedContainer, LocalServiceLogTarget,
-        LossyServiceLogFollow, RuntimeLogBatch, RuntimeLogFollow, RuntimeLogStream,
-        V2MachineLogReadError, V2MachineLogReader, public_lines, select_local_log_container,
-        tail_local_service_logs,
+        ExistingV2ManagedContainer, LocalServiceLogTarget, LossyServiceLogFollow, RuntimeLogBatch,
+        RuntimeLogFollow, RuntimeLogStream, ServiceLogProbeReply, ServiceLogProbeRequest,
+        V2MachineLogReadError, V2MachineLogReader, probe_containers, public_lines,
+        resolve_generation, select_local_log_container, select_log_owner, tail_local_service_logs,
     };
 
     fn namespace(value: &str) -> CorrosionNamespaceName {
@@ -681,7 +894,7 @@ mod tests {
 
     fn target() -> LocalServiceLogTarget {
         LocalServiceLogTarget {
-            machine_id: ployz_core::ids::MachineName::try_new("edge-a").expect("machine"),
+            machine_name: ployz_core::ids::MachineName::try_new("edge-a").expect("machine"),
             container_id: ContainerId::try_new("container-one").expect("container"),
             identity: V2ManagedContainerIdentity {
                 namespace_id: CorrosionNamespaceName::try_new("prod").expect("namespace"),
@@ -766,8 +979,7 @@ mod tests {
         assert_eq!(
             refusal,
             ServiceLogsRefusal::RemoteOwner {
-                machine_id: machine(REMOTE),
-                machine_name: Some(machine(REMOTE)),
+                machine_name: machine(REMOTE),
             }
         );
     }
@@ -829,6 +1041,68 @@ mod tests {
             refusal,
             ServiceLogsRefusal::ContainerAmbiguous { .. }
         ));
+    }
+
+    #[test]
+    fn runtime_probe_exposes_slots_without_docker_ids() {
+        let reply = probe_containers(
+            &[
+                replica("container-one", slot(1)),
+                replica("container-two", slot(2)),
+            ],
+            &ServiceLogProbeRequest {
+                namespace_name: namespace("prod"),
+                service_name: service("api"),
+                deploy: DeployName::try_new("blue").expect("deploy"),
+            },
+        );
+        assert!(matches!(
+            reply,
+            ServiceLogProbeReply::Inspected { replicas } if replicas == vec![slot(1), slot(2)]
+        ));
+    }
+
+    #[test]
+    fn owner_selection_uses_remote_runtime_evidence() {
+        let owner = select_log_owner(
+            &namespace("prod"),
+            &service("api"),
+            vec![
+                (
+                    machine(LOCAL),
+                    ServiceLogProbeReply::Inspected {
+                        replicas: Vec::new(),
+                    },
+                ),
+                (
+                    machine(REMOTE),
+                    ServiceLogProbeReply::Inspected {
+                        replicas: vec![slot(1)],
+                    },
+                ),
+            ],
+        )
+        .expect("remote owner");
+        assert_eq!(owner, machine(REMOTE));
+    }
+
+    #[test]
+    fn one_runtime_owner_is_enough_when_another_machine_is_unavailable() {
+        let owner = select_log_owner(
+            &namespace("prod"),
+            &service("api"),
+            vec![
+                (
+                    machine(LOCAL),
+                    ServiceLogProbeReply::Inspected {
+                        replicas: vec![slot(1)],
+                    },
+                ),
+                (machine(REMOTE), ServiceLogProbeReply::RuntimeUnavailable),
+            ],
+        )
+        .expect("one machine reported the service container");
+        assert_eq!(owner, machine(LOCAL));
     }
 
     struct Runtime {
@@ -1082,15 +1356,12 @@ mod tests {
     #[tokio::test]
     async fn resolver_reads_generation_only_from_exact_namespace_intent() {
         let addr = spawn_fake_corrosion(resolver_rows()).await;
-        let resolver = CorrosionServiceLogResolver::new(
-            corrosion_client(addr),
-            ClusterName::try_new(RESOLVER_CLUSTER).expect("cluster id"),
-        );
+        let client = corrosion_client(addr);
+        let cluster = ClusterName::try_new(RESOLVER_CLUSTER).expect("cluster id");
         let namespace = CorrosionNamespaceName::try_new(RESOLVER_NAMESPACE).expect("namespace");
         let service = CorrosionServiceName::try_new("api").expect("service");
 
-        let generation = resolver
-            .resolve(&namespace, &service)
+        let generation = resolve_generation(&client, &cluster, &namespace, &service)
             .await
             .expect("resolution reads succeed")
             .expect("service exists");

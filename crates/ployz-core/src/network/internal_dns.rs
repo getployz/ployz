@@ -6,8 +6,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{
-    ClusterDocument, MachineDocument, MachineEndpointDocument, MachineTransport, NamespaceDocument,
-    StoredRow, read_named_roster_rows, read_named_rows, read_rows,
+    ClusterDocument, CorrosionTimestamp, MachineDocument, MachineEndpointDocument,
+    MachineTransport, NamespaceDocument, StoredRow, read_named_roster_rows, read_named_rows,
+    read_rows,
 };
 use crate::ids::{ClusterName, CorrosionNamespaceName, MachineName};
 
@@ -145,6 +146,7 @@ fn is_dns_label(label: &str) -> bool {
 /// DNS view from scratch.
 #[derive(Debug)]
 pub struct InternalDnsRowProjectionInput {
+    pub now: CorrosionTimestamp,
     pub cluster_id: ClusterName,
     pub local_machine_id: MachineName,
     pub cluster_rows: Vec<StoredRow>,
@@ -159,6 +161,9 @@ pub struct InternalDnsRowProjectionInput {
 pub struct InternalDnsRowProjection {
     pub bind: SocketAddr,
     pub records: BTreeMap<InternalServiceName, Vec<Ipv4Addr>>,
+    /// The next instant at which installed records must be reprojected even
+    /// when Corrosion produces no invalidation.
+    pub next_endpoint_expiry: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -178,6 +183,7 @@ pub fn project_internal_dns_rows(
     input: InternalDnsRowProjectionInput,
 ) -> Result<InternalDnsRowProjection, InternalDnsRowProjectionError> {
     let InternalDnsRowProjectionInput {
+        now,
         cluster_id,
         local_machine_id,
         cluster_rows,
@@ -245,10 +251,21 @@ pub fn project_internal_dns_rows(
             records.entry(name).or_default();
         }
     }
+    let mut next_endpoint_expiry = None;
     for row in read_rows::<MachineEndpointDocument>(&cluster_id, machine_endpoint_rows).accepted {
         let testimony = row.value;
         if !accepted_machine_ids.contains(&testimony.machine_id) {
             continue;
+        }
+        let Some(remaining) = testimony.serving_freshness_remaining(now) else {
+            continue;
+        };
+        if !testimony.endpoints.is_empty() {
+            next_endpoint_expiry = Some(
+                next_endpoint_expiry.map_or(remaining, |current: std::time::Duration| {
+                    current.min(remaining)
+                }),
+            );
         }
         for endpoint in testimony.endpoints {
             let Some(namespace) = namespaces.get(&endpoint.namespace_id) else {
@@ -277,7 +294,11 @@ pub fn project_internal_dns_rows(
     }
 
     let bind = SocketAddr::from((endpoint_subnet.bridge_gateway_ipv4(), 53));
-    Ok(InternalDnsRowProjection { bind, records })
+    Ok(InternalDnsRowProjection {
+        bind,
+        records,
+        next_endpoint_expiry,
+    })
 }
 
 fn is_reserved_readiness_record(name: &InternalServiceName) -> bool {

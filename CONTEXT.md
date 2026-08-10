@@ -202,7 +202,7 @@ The machine currently named by the cluster's advisory Controller Appointment. It
 _Avoid_: Core, leader, primary truth, scheduler
 
 **Controller Appointment**:
-The singleton Corrosion row naming a Preferred Controller by machine name, a non-random revision, and its last heartbeat time. Every ordinary API node polls the row; the named node refreshes it and a visible follower may conditionally replace an appointment after its heartbeat is stale. The heartbeat is weak liveness evidence, not a lease, term, fencing token, or quorum claim; partitions may create competing appointments and Corrosion's ordinary convergence selects one row.
+The singleton Corrosion row naming a Preferred Controller by machine name and its last heartbeat time. Every ordinary API node polls the row; the named node refreshes it and a follower may conditionally replace the exact locally observed appointment after its heartbeat is stale. Each machine admits work using its own local view. The heartbeat is weak liveness evidence, not a lease, term, fencing token, or quorum claim; partitions may create competing appointments and Corrosion's ordinary convergence selects one row.
 _Avoid_: Election term, lease, leadership epoch, fencing token
 
 **Node Workflow Runtime**:
@@ -210,7 +210,7 @@ The private Duroxide and SQLite runtime on each machine. It records only that ma
 _Avoid_: Distributed workflow engine, controller queue, cluster truth
 
 **Deploy**:
-A bounded attempt to make an entire namespace match one complete desired service object keyed by canonical service name. The Preferred Controller reads durable intent from Corrosion and live runtime state from target-host RPC, computes placement for every service, asks nodes to prepare exact replicas, commits the namespace's complete serving intent after an immediate appointment recheck, then asks nodes to retire obsolete identities. The commit is not appointment-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
+A bounded attempt to make an entire namespace match one complete desired service object keyed by canonical service name. The Preferred Controller reads durable intent from Corrosion and live runtime state from target-host RPC, computes placement for every service, asks nodes to prepare exact replicas, commits the namespace's complete serving intent after checking that its local view still names it, then asks nodes to retire obsolete identities. The commit is not controller-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
 _Avoid_: Distributed workflow, namespace revision reconciliation
 
 **Deploy Outcome**:

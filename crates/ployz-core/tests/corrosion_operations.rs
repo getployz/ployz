@@ -47,7 +47,6 @@ fn deploy_is_one_created_snapshot_followed_by_one_terminal_snapshot() {
         Some("interrupted")
     );
     assert!(encoded.get("kind").is_none());
-    assert!(encoded.get("appointment_id").is_none());
     assert!(!outcome.contains_key("service_id"));
     assert!(!outcome.contains_key("resubmit"));
     assert_eq!(

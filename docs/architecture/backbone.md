@@ -27,11 +27,10 @@ inside a sub-second convergence window. Rare, and priced in.
   machine that owns the testimony. A new table names its row class and writer
   in the change that introduces it.
 - The Controller Appointment is the single named exception: any API machine
-  passing the visibility brake may replace the advisory row immediately after
-  one hard connect failure. Timeouts, HTTP responses, and protocol failures do
-  not replace it; Corrosion LWW resolves concurrent appointments.
+  may replace the advisory row after its locally observed heartbeat is stale;
+  Corrosion LWW resolves concurrent appointments.
 - Ordinary product rows carry writer identity and timestamp. The structural
-  Controller Appointment carries only machine and opaque appointment identity.
+  Controller Appointment carries only machine and weak heartbeat testimony.
   A fold is surfaced best-effort after the fact, never prevented by
   coordination.
 - Keeper converges its machine toward rows it does not own and reports into

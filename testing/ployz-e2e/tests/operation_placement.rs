@@ -20,10 +20,7 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, ImageReference, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::{DeployName, MachineName};
-use ployz_core::{
-    DeployRefusal, DeployRequest, DeployServiceRequest, DeployServices, PinnedMachineNames,
-    RequestedPlacement,
-};
+use ployz_core::{DeployRequest, DeployServiceRequest, PinnedMachineNames, RequestedPlacement};
 use ployz_e2e::dind as deploy_support;
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
@@ -470,22 +467,6 @@ async fn exercise_operation_placement(
         )?;
     }
 
-    // Ployz deliberately has no volume migration or handoff protocol. A
-    // volume-bearing redeploy is refused before an operation or host effect.
-    match support::mesh_deploy(&config_home, &founder_target, &volume_request).await? {
-        JsonReply::Refused(DeployRefusal::NamedVolumeRedeployUnsupported) => {}
-        JsonReply::Success(accepted) => {
-            return Err(format!(
-                "volume redeploy unexpectedly created operation {}",
-                accepted.deploy_name
-            ));
-        }
-        JsonReply::Refused(refusal) => {
-            return Err(format!(
-                "volume redeploy returned the wrong refusal: {refusal:?}"
-            ));
-        }
-    }
     assert_replicas_serve(
         docker,
         &members,
@@ -538,7 +519,7 @@ fn volume_deploy_request(image: &str) -> Result<DeployRequest, String> {
         namespace_name: CorrosionNamespaceName::try_new(VOLUME_NAMESPACE)
             .map_err(|error| error.to_string())?,
         deploy_name: DeployName::try_new("volume-first").map_err(|error| error.to_string())?,
-        services: DeployServices::try_new([(
+        services: [(
             CorrosionServiceName::try_new(VOLUME_SERVICE).map_err(|error| error.to_string())?,
             DeployServiceRequest {
                 image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
@@ -548,7 +529,8 @@ fn volume_deploy_request(image: &str) -> Result<DeployRequest, String> {
                 placement: None,
                 machines: None,
             },
-        )])
-        .map_err(|error| error.to_string())?,
+        )]
+        .into_iter()
+        .collect(),
     })
 }

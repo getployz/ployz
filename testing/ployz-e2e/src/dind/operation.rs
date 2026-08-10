@@ -375,8 +375,7 @@ pub fn deploy_namespace(
     let manifest_path = operator
         .home
         .join(format!("{namespace}-{deploy_name}.json"));
-    let services =
-        DeployServices::try_new(services.iter().cloned()).map_err(|error| error.to_string())?;
+    let services = services.iter().cloned().collect::<DeployServices>();
     let manifest = serde_json::to_vec(&serde_json::json!({ "services": services }))
         .map_err(|error| format!("serialize {description} manifest: {error}"))?;
     fs::write(&manifest_path, manifest)

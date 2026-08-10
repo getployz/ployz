@@ -67,15 +67,11 @@ impl DeployHostEffects {
             .map_err(|_| "prepare failed".to_owned())?;
         request.credential = None;
         let image = request.image.clone();
-        let controller_machine_id = request.controller_machine_id.clone();
-        let appointment_id = request.appointment_id;
         match self
             .prepare_inner(request, &target, has_named_volumes)
             .await
         {
             Ok((replicas, displaced_incumbents)) => Ok(DeployPrepareOutcome::Prepared {
-                controller_machine_id,
-                appointment_id,
                 image,
                 replicas,
                 displaced_incumbents,
@@ -558,9 +554,7 @@ fn require_ipv4(ip: IpAddr) -> Result<Ipv4Addr, EffectError> {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::corrosion::{
-        ControllerRevision, CorrosionNamespaceName, CorrosionServiceName, HostPortBindings,
-    };
+    use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName, HostPortBindings};
     use ployz_core::deploy::{ContainerRuntimeSpec, ReplicaSlot};
     use ployz_core::ids::{ContainerId, DeployName, MachineName};
     use ployz_core::machine::runtime::ManagedContainerHealthStatus;
@@ -664,7 +658,6 @@ mod tests {
     fn prepare_request(identity: V2ManagedContainerIdentity) -> DeployPrepareRequest {
         DeployPrepareRequest {
             controller_machine_id: MachineName::try_new("machine-one").expect("machine"),
-            appointment_id: ControllerRevision::try_new(1).expect("appointment"),
             operation_id: DeployName::try_new("release-1").expect("deploy"),
             namespace_name: CorrosionNamespaceName::try_new("production").expect("namespace"),
             service_name: CorrosionServiceName::try_new("api").expect("service"),

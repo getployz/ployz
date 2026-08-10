@@ -65,6 +65,7 @@ pub(super) async fn handle_removal(
         | V2Route::DeployInspect
         | V2Route::DeployPrepare
         | V2Route::DeployRetire
+        | V2Route::ServiceLogsProbe
         | V2Route::ServiceLogsTail(_, _)
         | V2Route::ServiceLogsFollow(_, _)
         | V2Route::RouteAttach

@@ -241,8 +241,6 @@ fn merge_completed_prepare(
     incumbents: &mut Vec<DeployObservedContainer>,
 ) -> Result<(), ()> {
     let DeployPrepareOutcome::Prepared {
-        controller_machine_id,
-        appointment_id,
         replicas,
         displaced_incumbents,
         ..
@@ -250,14 +248,11 @@ fn merge_completed_prepare(
     else {
         return Ok(());
     };
-    if controller_machine_id != request.controller_machine_id
-        || appointment_id != request.appointment_id
-        || replicas.iter().any(|replica| {
-            replica.identity.namespace_id != request.namespace_name
-                || replica.identity.service_name != *service_name
-                || replica.identity.operation_id != request.operation_id
-        })
-    {
+    if replicas.iter().any(|replica| {
+        replica.identity.namespace_id != request.namespace_name
+            || replica.identity.service_name != *service_name
+            || replica.identity.operation_id != request.operation_id
+    }) {
         return Err(());
     }
     extend_unique(
@@ -380,7 +375,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use ployz_core::DeployPreparedReplica;
-    use ployz_core::corrosion::{ControllerRevision, V2ManagedContainerIdentity};
+    use ployz_core::corrosion::V2ManagedContainerIdentity;
     use ployz_core::deploy::{ImageReference, ReplicaSlot};
     use ployz_core::ids::MachineName;
     use ployz_core::network::MachineEndpointSubnet;
@@ -427,7 +422,6 @@ mod tests {
         let service = CorrosionServiceName::try_new("api").expect("service");
         let deploy = DeployName::try_new("release-1").expect("deploy");
         let controller = MachineName::try_new("node-1").expect("controller");
-        let appointment = ControllerRevision::INITIAL;
         let identity = V2ManagedContainerIdentity {
             namespace_id: namespace.clone(),
             service_name: service.clone(),
@@ -435,8 +429,7 @@ mod tests {
             replica_slot: ReplicaSlot::Global,
         };
         let request = DeployRetireRequest {
-            controller_machine_id: controller.clone(),
-            appointment_id: appointment,
+            controller_machine_id: controller,
             operation_id: deploy,
             namespace_name: namespace,
             containers: Vec::new(),
@@ -444,8 +437,6 @@ mod tests {
             rollback_services: vec![service.clone()],
         };
         let prepared = DeployPrepareOutcome::Prepared {
-            controller_machine_id: controller,
-            appointment_id: appointment,
             image: ImageReference::try_new(
                 "nginx@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             )

@@ -18,13 +18,13 @@ use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, DEPLOY_INSPECT_ROUTE,
     DEPLOY_PREPARE_ROUTE, DEPLOY_RETIRE_ROUTE, DEPLOY_ROUTE, DeployRefusal, DeployRequest,
-    DeployServiceRequest, DeployServices, FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES,
-    KnownApiFeature, LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection,
-    LensSnapshot, LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError,
+    DeployServiceRequest, FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature,
+    LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot,
+    LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError,
     NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, PinnedMachineNames, RequestedPlacement,
-    ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
-    ServiceLogsRequest, V2Method, V2Route, VERSION_ROUTE, lens_route, lens_watch_route,
-    service_logs_follow_route, service_logs_tail_route,
+    SERVICE_LOGS_PROBE_ROUTE, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent,
+    ServiceLogsRefusal, ServiceLogsRequest, V2Method, V2Route, VERSION_ROUTE, lens_route,
+    lens_watch_route, service_logs_follow_route, service_logs_tail_route,
 };
 use serde_json::json;
 
@@ -302,15 +302,6 @@ fn missing_namespace_refusal_names_the_resolving_primitive() {
 }
 
 #[test]
-fn named_volume_redeploy_refusal_is_a_small_stable_contract() {
-    assert_eq!(
-        serde_json::to_value(DeployRefusal::NamedVolumeRedeployUnsupported)
-            .expect("refusal serializes"),
-        json!({ "kind": "named_volume_redeploy_unsupported" })
-    );
-}
-
-#[test]
 fn first_deploy_runtime_debug_redacts_environment_values() {
     let secret = "sentinel-secret-never-in-evidence";
     let mut environment = BTreeMap::new();
@@ -324,7 +315,7 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
         namespace_name: CorrosionNamespaceName::try_new("payments")
             .expect("fixture namespace name"),
         deploy_name: ployz_core::ids::DeployName::try_new("release-1").expect("deploy"),
-        services: DeployServices::try_new([(
+        services: [(
             ployz_core::corrosion::CorrosionServiceName::try_new("api")
                 .expect("fixture service name"),
             DeployServiceRequest {
@@ -336,8 +327,9 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
                 placement: None,
                 machines: None,
             },
-        )])
-        .expect("unique services"),
+        )]
+        .into_iter()
+        .collect(),
     };
 
     assert!(!format!("{request:?}").contains(secret));
@@ -347,25 +339,6 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
             .pointer("/services/api/runtime/environment/TOKEN")
             .and_then(serde_json::Value::as_str),
         Some(secret)
-    );
-}
-
-#[test]
-fn deploy_services_are_name_keyed_and_duplicate_json_keys_are_refused() {
-    let request = r#"{
-        "namespace_name":"payments",
-        "deploy_name":"release-1",
-        "services":{
-            "api":{"image":"registry.example/api:latest","runtime":{"environment":{},"volume_mounts":[]}},
-            "api":{"image":"registry.example/api:v2","runtime":{"environment":{},"volume_mounts":[]}}
-        }
-    }"#;
-
-    let error = serde_json::from_str::<DeployRequest>(request).expect_err("duplicate service key");
-    assert!(
-        error
-            .to_string()
-            .contains("service api is declared more than once")
     );
 }
 
@@ -431,24 +404,10 @@ fn log_requests_carry_an_optional_machine_selector_and_replay_free_reconnects() 
         selector_required
     );
 
-    let remote_owner = ServiceLogsRefusal::RemoteOwner {
-        machine_id: machine_id(MACHINE_A),
-        machine_name: Some(machine_name),
-    };
+    let remote_owner = ServiceLogsRefusal::RemoteOwner { machine_name };
     assert_eq!(
         serde_json::to_value(&remote_owner).expect("owner refusal serializes"),
-        json!({ "kind": "remote_owner", "machine_id": MACHINE_A, "machine_name": "edge-a" })
-    );
-    let unnamed = serde_json::from_value::<ServiceLogsRefusal>(
-        json!({ "kind": "remote_owner", "machine_id": MACHINE_A }),
-    )
-    .expect("pre-name owner refusal decodes");
-    assert_eq!(
-        unnamed,
-        ServiceLogsRefusal::RemoteOwner {
-            machine_id: machine_id(MACHINE_A),
-            machine_name: None,
-        }
+        json!({ "kind": "remote_owner", "machine_name": "edge-a" })
     );
 }
 
@@ -589,6 +548,27 @@ fn deploy_effect_routes_parse_build_and_authorize_only_machines() {
         assert!(!route.accepts_principal(&token));
         assert_eq!(V2Route::parse(&format!("{path}/extra")), None);
     }
+}
+
+#[test]
+fn service_log_probe_is_machine_only() {
+    let peer = Principal::Peer {
+        peer_id: peer_id(PEER_A),
+    };
+    let machine = Principal::Machine {
+        machine_id: machine_id(MACHINE_A),
+    };
+    let route = V2Route::ServiceLogsProbe;
+    assert_eq!(route.path(), SERVICE_LOGS_PROBE_ROUTE);
+    assert_eq!(
+        V2Route::parse(SERVICE_LOGS_PROBE_ROUTE),
+        Some(route.clone())
+    );
+    assert_eq!(route.method(), V2Method::Post);
+    assert_eq!(route.feature(), KnownApiFeature::Logs);
+    assert!(route.accepts_principal(&machine));
+    assert!(!route.accepts_principal(&peer));
+    assert_eq!(V2Route::parse("/services/logs/probe/extra"), None);
 }
 
 #[test]

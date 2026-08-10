@@ -515,7 +515,7 @@ fn admission_derives_addresses_and_keeps_peer_rows_subnet_free() {
         addr_v6,
         subnet_v4,
         ..
-    } = &accepted_machine.document.transport
+    } = &accepted_machine.transport
     else {
         panic!("builtin admission creates WireGuard transport")
     };
@@ -527,7 +527,7 @@ fn admission_derives_addresses_and_keeps_peer_rows_subnet_free() {
     );
     assert_eq!(subnet_v4.as_string(), "10.210.44.0/24");
     assert!(matches!(
-        accepted_machine.document.provenance.written_by,
+        accepted_machine.provenance.written_by,
         OperationInitiator::ApiToken { .. }
     ));
 
@@ -542,7 +542,7 @@ fn admission_derives_addresses_and_keeps_peer_rows_subnet_free() {
     )
     .expect("valid peer admission");
     assert!(matches!(
-        accepted_peer.document.transport,
+        accepted_peer.transport,
         PeerTransport::Wireguard { .. }
     ));
     assert!(

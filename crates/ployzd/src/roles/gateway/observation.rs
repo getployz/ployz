@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 
+use crate::corrosion::{CorrosionClient, CorrosionClientError};
 use ployz_core::corrosion::{
     CorrosionDocumentVersion, CorrosionTimestamp, GatewayObservationDocument,
     GatewayProjectionAggregateFailure, GatewayRouteObservation, SqliteParameter, Statement,
@@ -9,10 +10,6 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::machine::{GatewayProcessHealth, GatewayServingStatus};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
-
-use crate::corrosion::{CorrosionClient, CorrosionClientError};
 
 #[derive(Clone)]
 pub(super) struct GatewayObservationPublisher {
@@ -49,7 +46,7 @@ impl GatewayObservationPublisher {
             v: CorrosionDocumentVersion::V1,
             cluster_id: self.cluster_id.clone(),
             machine_id: self.local_machine_id.clone(),
-            observed_at: now()?,
+            observed_at: CorrosionTimestamp::now_utc(),
             listen_addr: self.listen_addr,
             serving,
             routes: routes.to_vec(),
@@ -88,23 +85,10 @@ fn statement(
     ))
 }
 
-fn now() -> Result<CorrosionTimestamp, GatewayObservationPublishError> {
-    let value = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|source| GatewayObservationPublishError::Timestamp {
-            detail: source.to_string(),
-        })?;
-    CorrosionTimestamp::try_new(value).map_err(|source| GatewayObservationPublishError::Timestamp {
-        detail: source.to_string(),
-    })
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(super) enum GatewayObservationPublishError {
     #[error(transparent)]
     Corrosion(#[from] CorrosionClientError),
-    #[error("could not construct Gateway Observation timestamp: {detail}")]
-    Timestamp { detail: String },
     #[error("could not encode Gateway Observation: {detail}")]
     Encode { detail: String },
     #[error("Gateway Observation write returned an unexpected result")]

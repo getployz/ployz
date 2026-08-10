@@ -33,9 +33,8 @@ for a resource that already has a durable name.
 | `acme_http01` | ACME challenge token | one public challenge |
 
 Docker container IDs remain private runtime handles on their owning machine.
-Controller revisions are monotonic integers. Randomness remains only where it
-is the substance of the value: secrets, cryptographic keys, Corrosion internals,
-and external runtime handles.
+Randomness remains only where it is the substance of the value: secrets,
+cryptographic keys, Corrosion internals, and external runtime handles.
 
 Machines and peers remain separate tables and principals. They have different
 admission, authorization, transport, and lifecycle laws even though both are

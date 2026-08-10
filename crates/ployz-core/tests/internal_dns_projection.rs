@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 
-use ployz_core::corrosion::StoredRow;
+use ployz_core::corrosion::{CorrosionTimestamp, StoredRow};
 use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::network::internal_dns::{
     INTERNAL_DNS_READINESS_NAME, InternalDnsRowProjectionError, InternalDnsRowProjectionInput,
@@ -154,6 +154,29 @@ fn corrosion_row_projection_retains_a_dark_draining_machine_without_liveness_tes
 }
 
 #[test]
+fn endpoint_testimony_expires_at_the_serving_freshness_boundary() {
+    let mut fresh_input = projection_input();
+    fresh_input.now = timestamp("2026-08-05T10:00:29Z");
+    let fresh = project_internal_dns_rows(fresh_input).expect("fresh projection");
+    assert_eq!(
+        fresh.next_endpoint_expiry,
+        Some(std::time::Duration::from_secs(1))
+    );
+    assert!(
+        fresh
+            .records
+            .values()
+            .any(|addresses| !addresses.is_empty())
+    );
+
+    let mut expired_input = projection_input();
+    expired_input.now = timestamp("2026-08-05T10:00:30Z");
+    let expired = project_internal_dns_rows(expired_input).expect("expired projection");
+    assert_eq!(expired.next_endpoint_expiry, None);
+    assert!(expired.records.values().all(Vec::is_empty));
+}
+
+#[test]
 fn internal_service_name_from_labels_rejects_non_dns_labels() {
     assert!(InternalServiceName::try_from_labels("api_v2", "prod").is_err());
     assert!(InternalServiceName::try_from_labels("-api", "prod").is_err());
@@ -193,6 +216,7 @@ fn cluster_id() -> ClusterName {
 
 fn projection_input() -> InternalDnsRowProjectionInput {
     InternalDnsRowProjectionInput {
+        now: timestamp("2026-08-05T10:00:00Z"),
         cluster_id: cluster_id(),
         local_machine_id: MachineName::try_new(LOCAL_MACHINE).expect("machine id"),
         cluster_rows: vec![stored_row(
@@ -273,6 +297,10 @@ fn projection_input() -> InternalDnsRowProjectionInput {
             ),
         ],
     }
+}
+
+fn timestamp(value: &str) -> CorrosionTimestamp {
+    CorrosionTimestamp::try_new(value).expect("timestamp")
 }
 
 fn machine_row(id: &str, name: &str, lifecycle: &str, provider: &str, subnet: &str) -> StoredRow {

@@ -4,8 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::corrosion::{CorrosionTimestamp, controller_heartbeat_is_stale};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 
@@ -36,11 +34,7 @@ impl ControllerKernel {
             tokio::select! {
                 _ = interval.tick() => {
                     if let Err(error) = self.tick().await {
-                        if matches!(error, KernelError::Controller(ControllerStoreError::InsufficientVisibility)) {
-                            tracing::debug!("controller heartbeat paused by visibility brake");
-                        } else {
-                            tracing::warn!(%error, "controller kernel tick failed");
-                        }
+                        tracing::warn!(%error, "controller kernel tick failed");
                     }
                 }
                 changed = shutdown.changed() => {
@@ -58,28 +52,24 @@ impl ControllerKernel {
         if !roster
             .machines
             .iter()
-            .any(|machine| &machine.id == local_machine_id)
+            .any(|machine| &machine.document.name == local_machine_id)
         {
             return Ok(());
         }
         let current = self.controller.current().await?;
-        let now = now()?;
+        let now = CorrosionTimestamp::now_utc();
         match current {
             None => {
-                self.controller
-                    .initial_self_appointment(roster.machines.len(), now)
-                    .await?;
+                self.controller.initial_self_appointment(now).await?;
             }
             Some(current) if &current.preferred_machine_id == local_machine_id => {
-                self.controller
-                    .heartbeat(roster.machines.len(), &current, now)
-                    .await?;
+                self.controller.heartbeat(&current, now).await?;
             }
             Some(current)
                 if controller_heartbeat_is_stale(now, current.heartbeat_at, STALE_AFTER) =>
             {
                 self.controller
-                    .appoint_self_if_current_is_stale(roster.machines.len(), &current, now)
+                    .appoint_self_if_current_is_stale(&current, now)
                     .await?;
             }
             Some(_) => {}
@@ -88,19 +78,10 @@ impl ControllerKernel {
     }
 }
 
-fn now() -> Result<CorrosionTimestamp, KernelError> {
-    let value = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|error| KernelError::Timestamp(error.to_string()))?;
-    CorrosionTimestamp::try_new(value).map_err(|error| KernelError::Timestamp(error.to_string()))
-}
-
 #[derive(Debug, thiserror::Error)]
 enum KernelError {
     #[error("could not read the accepted roster: {0}")]
     Roster(#[from] MutationStoreError),
     #[error("could not update the controller appointment: {0}")]
     Controller(#[from] ControllerStoreError),
-    #[error("could not read the wall clock: {0}")]
-    Timestamp(String),
 }

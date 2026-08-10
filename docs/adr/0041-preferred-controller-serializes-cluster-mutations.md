@@ -18,13 +18,12 @@ service, or NATS.
 
 ## Controller appointment
 
-The `controller` row contains the preferred machine name, a monotonic revision,
-and `heartbeat_at`. Every ordinary API process runs the same fixed five-second
-poll. The named machine refreshes the timestamp while it passes the visibility
-brake. A follower may replace an appointment after its heartbeat is more than
-30 seconds old; the write compares both the exact observed revision and machine.
-The first visible machine may similarly create revision one when the row is
-absent. Corrosion LWW resolves concurrent writes.
+The `controller` row contains the preferred machine name and `heartbeat_at`.
+Every ordinary API process runs the same fixed five-second poll. The named
+machine refreshes the timestamp. A follower may replace an appointment after
+its heartbeat is more than 30 seconds old; the write compares the exact
+observed machine and heartbeat. Any machine may similarly create the row when
+it is absent. Corrosion LWW resolves concurrent writes.
 
 The timestamp is weak wall-clock evidence, not a term, lease, expiry guarantee,
 or fencing token. Forwarding failures return unavailable and never elect; this
@@ -33,8 +32,8 @@ particular, an API listener failure is not detected while the same process can
 still refresh Corrosion. That rare failure waits for process restart or operator
 intervention.
 
-The appointment is advisory. Work is admitted against the exact machine and
-revision currently visible. A deploy rechecks that identity before
+The appointment is advisory. Each node admits work from the machine named by
+its own current Corrosion view. A deploy rechecks that machine before
 dispatching more host work and once immediately before committing cluster rows.
 The commit itself is an ordinary unconditional Corrosion transaction. This
 narrows the everyday race but is not fencing: a stale or partitioned controller
@@ -48,7 +47,7 @@ One deploy attempt is a plain function, as amended by ADR 0043:
 1. read roster/config intent and inspect target hosts over bounded HTTP;
 2. compute one placement from the complete request and fresh host reality;
 3. ask each target node to prepare its local runtime;
-4. recheck the exact controller appointment, then replace the namespace's one
+4. recheck the locally preferred controller machine, then replace the namespace's one
    complete serving-intent row and insert missing automatic routes;
 5. ask target nodes to retire exact obsolete runtime identities;
 6. publish the coarse terminal Operation result.
@@ -73,8 +72,8 @@ mutations. Read-only inspection bypasses Duroxide.
 
 The databases are not a distributed workflow system. They do not elect the
 controller, order cluster mutations, store cluster truth, or move between
-machines. A host effect admitted under an old appointment may finish after the
-appointment changes. Its controller may also win a later unconditional cluster
+machines. A host effect admitted under an old local view may finish after the
+controller changes. Its controller may also win a later unconditional cluster
 commit. Both races are accepted; a later attempt observes rows and hosts and
 reconciles from that reality.
 
@@ -96,16 +95,10 @@ operation or Duroxide history.
 Partitions may create competing preferred controllers. This is accepted. We do
 not add quorum or fencing to disguise it.
 
-The only cluster-wide brake blocks an isolated member:
-
-- one- and two-machine rosters may operate after the local roster query
-  succeeds;
-- a roster with three or more machines requires Corrosion health to report at
-  least one other visible member.
-
-This is deliberately not majority quorum. Equal partitions may both operate.
-Immediate appointment rechecks reduce stale commits after convergence but
-cannot make partitioned execution exclusive or reject a commit atomically.
+Each machine is allowed to act from its own local Corrosion view. Equal
+partitions may both operate. Immediate controller-name rechecks reduce stale
+commits after convergence but cannot make partitioned execution exclusive or
+reject a commit atomically.
 Concurrent namespace or route writes may therefore both report success. They
 target the same canonical name, so Corrosion converges the competing whole
 documents at one row key; the losing intent may disappear without a retained
@@ -125,8 +118,8 @@ explicitly before starting over.
 
 ## Failure and recovery
 
-Controller loss abandons its in-memory attempt. A replacement takes a new
-appointment after the old heartbeat is stale, and later caller retries observe
+Controller loss abandons its in-memory attempt. A replacement writes its
+machine name after the old heartbeat is stale, and later caller retries observe
 Corrosion and hosts. No controller history is recovered or migrated.
 
 A deploy acceptance response may be returned before its first coarse Operation

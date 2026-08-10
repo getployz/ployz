@@ -96,8 +96,9 @@ Rows normally have one writer class:
   serialized by the preferred controller, and converged everywhere. Keeper
   enforces them; it never authors them.
 - Status rows are machine testimony. Each machine writes only its own.
-- The Controller Appointment is the named exception: any API machine passing
-  the visibility brake may replace that advisory row, and LWW resolves races.
+- The Controller Appointment is the named exception: any API machine may
+  replace that advisory row after its heartbeat is stale, and LWW resolves
+  races.
 - Docker is execution reality. Controllers query it through bounded node HTTP;
   machine endpoint rows publish a serving projection but never replace it.
 

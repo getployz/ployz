@@ -1,12 +1,11 @@
 //! Public HTTP/JSON/SSE contract for the coreless v2 API.
 
-use serde::de::{MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::net::Ipv4Addr;
+use std::ops::{Deref, DerefMut};
 
 use crate::corrosion::{
     ClusterDocument, CorrosionNamespaceName, CorrosionServiceName, HostPortBindings,
@@ -59,6 +58,8 @@ pub const DEPLOY_PREPARE_ROUTE: &str = "/deploy/prepare";
 pub const DEPLOY_RETIRE_ROUTE: &str = "/deploy/retire";
 /// Stable prefix for service log access.
 pub const SERVICE_LOGS_ROUTE_PREFIX: &str = "/services";
+/// Machine-only endpoint for resolving service-log ownership from local runtime reality.
+pub const SERVICE_LOGS_PROBE_ROUTE: &str = "/services/logs/probe";
 /// The stable endpoint for the cheap cluster diagnostics projection.
 pub const STATUS_ROUTE: &str = "/status";
 /// The stable endpoint for the read-only deep diagnostics projection.
@@ -393,10 +394,9 @@ pub struct DeployServiceRequest {
 
 /// The complete name-keyed service set in one deploy request.
 ///
-/// The object representation makes service identity structural. Its custom
-/// deserializer refuses duplicate JSON object keys instead of accepting the
-/// last value, and an empty object requests removal of every service.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+/// The object representation makes service identity structural. An empty
+/// object requests removal of every service.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
     feature = "ts",
@@ -405,96 +405,26 @@ pub struct DeployServiceRequest {
 #[serde(transparent)]
 pub struct DeployServices(BTreeMap<CorrosionServiceName, DeployServiceRequest>);
 
-impl DeployServices {
-    pub fn try_new(
-        services: impl IntoIterator<Item = (CorrosionServiceName, DeployServiceRequest)>,
-    ) -> Result<Self, DeployServicesError> {
-        let mut keyed = BTreeMap::new();
-        for (name, service) in services {
-            if keyed.insert(name.clone(), service).is_some() {
-                return Err(DeployServicesError::DuplicateService { name });
-            }
-        }
-        Ok(Self(keyed))
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&CorrosionServiceName, &DeployServiceRequest)> {
-        self.0.iter()
-    }
-
-    pub fn values(&self) -> impl Iterator<Item = &DeployServiceRequest> {
-        self.0.values()
-    }
-
-    #[must_use]
-    pub fn get(&self, name: &CorrosionServiceName) -> Option<&DeployServiceRequest> {
-        self.0.get(name)
-    }
-
-    pub fn get_mut(&mut self, name: &CorrosionServiceName) -> Option<&mut DeployServiceRequest> {
-        self.0.get_mut(name)
-    }
-
-    /// Inserts or replaces the declaration at one canonical service name.
-    pub fn insert(
-        &mut self,
-        name: CorrosionServiceName,
-        service: DeployServiceRequest,
-    ) -> Option<DeployServiceRequest> {
-        self.0.insert(name, service)
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+impl FromIterator<(CorrosionServiceName, DeployServiceRequest)> for DeployServices {
+    fn from_iter<T: IntoIterator<Item = (CorrosionServiceName, DeployServiceRequest)>>(
+        iter: T,
+    ) -> Self {
+        Self(iter.into_iter().collect())
     }
 }
 
-impl<'de> Deserialize<'de> for DeployServices {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct DeployServicesVisitor;
+impl Deref for DeployServices {
+    type Target = BTreeMap<CorrosionServiceName, DeployServiceRequest>;
 
-        impl<'de> Visitor<'de> for DeployServicesVisitor {
-            type Value = DeployServices;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an object keyed by unique service names")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut services = BTreeMap::new();
-                while let Some((name, service)) =
-                    map.next_entry::<CorrosionServiceName, DeployServiceRequest>()?
-                {
-                    if services.insert(name.clone(), service).is_some() {
-                        return Err(serde::de::Error::custom(
-                            DeployServicesError::DuplicateService { name },
-                        ));
-                    }
-                }
-                Ok(DeployServices(services))
-            }
-        }
-
-        deserializer.deserialize_map(DeployServicesVisitor)
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DeployServicesError {
-    #[error("service {name} is declared more than once")]
-    DuplicateService { name: CorrosionServiceName },
+impl DerefMut for DeployServices {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 /// The complete desired state for one namespace reconciliation attempt.
@@ -595,7 +525,6 @@ pub enum DeployRefusal {
         namespace_name: CorrosionNamespaceName,
         deploy_name: DeployName,
     },
-    NamedVolumeRedeployUnsupported,
     HostPortConflict {
         host_port: u16,
         protocol: crate::corrosion::HostPortProtocol,
@@ -618,9 +547,7 @@ impl DeployRefusal {
 
 /// Machine-authenticated request for fresh target-host deploy facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeployInspectRequest {
-    pub appointment_id: crate::corrosion::ControllerRevision,
-}
+pub struct DeployInspectRequest {}
 
 /// Fresh target-host deploy facts or one bounded local failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -657,7 +584,6 @@ pub struct DeployObservedContainer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPrepareRequest {
     pub controller_machine_id: MachineName,
-    pub appointment_id: crate::corrosion::ControllerRevision,
     /// Namespace-scoped deploy identity; every replica must carry it.
     pub operation_id: DeployName,
     pub namespace_name: CorrosionNamespaceName,
@@ -685,9 +611,6 @@ pub struct DeployPreparedReplica {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeployPrepareOutcome {
     Prepared {
-        /// The exact controller appointment admitted for this durable prepare.
-        controller_machine_id: MachineName,
-        appointment_id: crate::corrosion::ControllerRevision,
         /// The canonical digest-pinned image used for every returned replica.
         image: ImageReference,
         replicas: Vec<DeployPreparedReplica>,
@@ -703,7 +626,6 @@ pub enum DeployPrepareOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRetireRequest {
     pub controller_machine_id: MachineName,
-    pub appointment_id: crate::corrosion::ControllerRevision,
     /// Namespace-scoped deploy identity for this cleanup request.
     pub operation_id: DeployName,
     pub namespace_name: CorrosionNamespaceName,
@@ -827,13 +749,10 @@ pub enum ServiceLogsRefusal {
         machines: Vec<MachineName>,
     },
     RemoteOwner {
-        machine_id: MachineName,
-        /// `None` when the owning machine's roster row is no longer readable.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        machine_name: Option<MachineName>,
+        machine_name: MachineName,
     },
     RuntimeUnavailable {
-        machine_id: MachineName,
+        machine_name: MachineName,
     },
 }
 
@@ -896,11 +815,11 @@ pub enum MachineRemoveRefusal {
 /// reader law. The machine name is the row key.
 pub fn select_machine_removal(
     request: &MachineRemoveRequest,
-    accepted: impl IntoIterator<Item = (MachineName, MachineName)>,
+    accepted: impl IntoIterator<Item = MachineName>,
 ) -> Result<MachineName, MachineRemoveRefusal> {
     accepted
         .into_iter()
-        .find_map(|(id, _)| (id == request.machine_name).then_some(id))
+        .find(|name| name == &request.machine_name)
         .ok_or_else(|| MachineRemoveRefusal::NotFound {
             machine_name: request.machine_name.clone(),
         })
@@ -924,6 +843,7 @@ pub enum V2Route {
     DeployInspect,
     DeployPrepare,
     DeployRetire,
+    ServiceLogsProbe,
     ServiceLogsTail(CorrosionNamespaceName, CorrosionServiceName),
     ServiceLogsFollow(CorrosionNamespaceName, CorrosionServiceName),
     Status,
@@ -1026,6 +946,9 @@ impl V2Route {
         if path == DEPLOY_RETIRE_ROUTE {
             return Some(Self::DeployRetire);
         }
+        if path == SERVICE_LOGS_PROBE_ROUTE {
+            return Some(Self::ServiceLogsProbe);
+        }
         if path == MACHINE_REMOVE_ROUTE {
             return Some(Self::MachineRemove);
         }
@@ -1090,6 +1013,7 @@ impl V2Route {
             Self::DeployInspect => DEPLOY_INSPECT_ROUTE.to_owned(),
             Self::DeployPrepare => DEPLOY_PREPARE_ROUTE.to_owned(),
             Self::DeployRetire => DEPLOY_RETIRE_ROUTE.to_owned(),
+            Self::ServiceLogsProbe => SERVICE_LOGS_PROBE_ROUTE.to_owned(),
             Self::ServiceLogsTail(namespace, service) => {
                 service_logs_tail_route(namespace, service)
             }
@@ -1127,6 +1051,7 @@ impl V2Route {
             | Self::DeployInspect
             | Self::DeployPrepare
             | Self::DeployRetire
+            | Self::ServiceLogsProbe
             | Self::ServiceLogsTail(_, _)
             | Self::ServiceLogsFollow(_, _)
             | Self::MachineRemove
@@ -1154,7 +1079,9 @@ impl V2Route {
             Self::Deploy | Self::DeployInspect | Self::DeployPrepare | Self::DeployRetire => {
                 KnownApiFeature::Deploy
             }
-            Self::ServiceLogsTail(_, _) | Self::ServiceLogsFollow(_, _) => KnownApiFeature::Logs,
+            Self::ServiceLogsProbe
+            | Self::ServiceLogsTail(_, _)
+            | Self::ServiceLogsFollow(_, _) => KnownApiFeature::Logs,
             Self::Status | Self::Doctor => KnownApiFeature::Diagnostics,
             Self::PeerRemove => KnownApiFeature::PeerRemove,
             Self::ServiceRemove => KnownApiFeature::ServiceRemove,
@@ -1171,7 +1098,10 @@ impl V2Route {
                 principal,
                 Principal::Machine { .. } | Principal::ApiToken { .. }
             ),
-            Self::DeployInspect | Self::DeployPrepare | Self::DeployRetire => {
+            Self::DeployInspect
+            | Self::DeployPrepare
+            | Self::DeployRetire
+            | Self::ServiceLogsProbe => {
                 matches!(principal, Principal::Machine { .. })
             }
             Self::TokenCreate

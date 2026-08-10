@@ -31,10 +31,6 @@ export type OperationInitiator = Principal;
 
 export type AbsoluteInstallPath = string;
 
-export type AcceptedMachineRow = { machine_id: MachineName, document: MachineDocument, };
-
-export type AcceptedPeerRow = { peer_id: PeerName, document: PeerDocument, };
-
 export type AcmeHttp01Document = { v: CorrosionDocumentVersion, cluster_id: ClusterName, machine_id: MachineName, hostname: RouteHostname, key_authorization: string, created_at: CorrosionTimestamp, };
 
 export type ApiRefusal = { "kind": "unknown_source", source: string, } | { "kind": "ambiguous_source", source: string, candidate_count: number, } | { "kind": "unsupported_route" } | { "kind": "unsupported_method", method: string, } | { "kind": "missing_cluster" } | { "kind": "invalid_cluster" } | { "kind": "corrosion_unavailable", retry_after_seconds: CorrosionRetryAfterSeconds, };
@@ -109,7 +105,7 @@ export type DeployAccepted = { namespace_name: CorrosionNamespaceName, deploy_na
 
 export type DeployName = Brand<string, "DeployName">;
 
-export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "deploy_name_already_used", namespace_name: CorrosionNamespaceName, deploy_name: DeployName, } | { "kind": "named_volume_redeploy_unsupported" } | { "kind": "host_port_conflict", host_port: number, protocol: HostPortProtocol, first_service: CorrosionServiceName, second_service: CorrosionServiceName, };
+export type DeployRefusal = { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, create_command: string, } | { "kind": "deploy_name_already_used", namespace_name: CorrosionNamespaceName, deploy_name: DeployName, } | { "kind": "host_port_conflict", host_port: number, protocol: HostPortProtocol, first_service: CorrosionServiceName, second_service: CorrosionServiceName, };
 
 export type DeployRequest = { namespace_name: CorrosionNamespaceName,
 /**
@@ -306,7 +302,7 @@ export type MachineEndpointSubnet = string;
 
 export type MachineEndpointSupernet = string;
 
-export type MachineJoinAccepted = { cluster: ClusterDocument, machine: AcceptedMachineRow, seed: ReachableSeedMachine, door: JoinDoorMaterial, corrosion: CorrosionBootstrapFacts, substrate: JoinMachineSubstrate, };
+export type MachineJoinAccepted = { cluster: ClusterDocument, machine: MachineDocument, seed: ReachableSeedMachine, door: JoinDoorMaterial, corrosion: CorrosionBootstrapFacts, substrate: JoinMachineSubstrate, };
 
 export type MachineJoinRequest = { name: MachineName, public_key: WireGuardPublicKey, endpoint: string | null, storage_choice: JoinStorageChoice, storage_facts: JoinStorageFacts, };
 
@@ -392,7 +388,7 @@ export type OperationLensRow = { namespace_name: CorrosionNamespaceName, deploy_
 
 export type PeerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, name: PeerName, transport: PeerTransport, written_by: Principal, written_at: CorrosionTimestamp, };
 
-export type PeerJoinAccepted = { cluster: ClusterDocument, peer: AcceptedPeerRow, seed: ReachableSeedMachine, corrosion: CorrosionBootstrapFacts, };
+export type PeerJoinAccepted = { cluster: ClusterDocument, peer: PeerDocument, seed: ReachableSeedMachine, corrosion: CorrosionBootstrapFacts, };
 
 export type PeerJoinRequest = { name: PeerName, public_key: WireGuardPublicKey, endpoint: string | null, };
 
@@ -424,7 +420,7 @@ export type PublishedService = { image: ImageReference, env_fingerprints: { [key
  */
 host_ports?: HostPortBindings, });
 
-export type ReachableSeedMachine = { machine_id: MachineName, transport: MachineTransport, };
+export type ReachableSeedMachine = { machine_name: MachineName, transport: MachineTransport, };
 
 export type RegistryCredential = { "kind": "basic", username: RegistryCredentialUsername, password: RegistryCredentialSecret, } | { "kind": "identity_token", token: RegistryCredentialSecret, };
 
@@ -474,11 +470,7 @@ export type ServiceLogStream = "stdout" | "stderr";
 
 export type ServiceLogsFollowEvent = { "kind": "line", log: ServiceLogLine, } | { "kind": "gap" } | { "kind": "terminal", refusal: ServiceLogsRefusal, };
 
-export type ServiceLogsRefusal = { "kind": "service_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_ambiguous", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "machine_selector_required", machines: Array<MachineName>, } | { "kind": "remote_owner", machine_id: MachineName,
-/**
- * `None` when the owning machine's roster row is no longer readable.
- */
-machine_name?: MachineName | null, } | { "kind": "runtime_unavailable", machine_id: MachineName, };
+export type ServiceLogsRefusal = { "kind": "service_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_ambiguous", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "machine_selector_required", machines: Array<MachineName>, } | { "kind": "remote_owner", machine_name: MachineName, } | { "kind": "runtime_unavailable", machine_name: MachineName, };
 
 export type ServiceLogsRequest = { tail_lines?: CorrosionLogsTailLines | null,
 /**

@@ -327,7 +327,7 @@ impl LinuxMachineJoinHostEffects {
             &format!("127.0.0.1:{CORROSION_API_PORT}"),
             corrosion_token,
             accepted.accepted().cluster.cluster_id.as_str(),
-            accepted.accepted().machine.machine_id.as_str(),
+            accepted.accepted().machine.name.as_str(),
         )?;
         write_durable_file(
             self.state.path(),
@@ -388,7 +388,7 @@ fn render_environment(
     format!(
         "PLOYZ_CORROSION_API_ADDR=127.0.0.1:{CORROSION_API_PORT}\nPLOYZ_CORROSION_BEARER_TOKEN={corrosion_token}\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_API_LISTEN_ADDR=[{addr_v6}]:{API_PORT}\nPLOYZ_API_DOOR_LISTEN_ADDR=[::]:{JOIN_DOOR_PORT}\nPLOYZ_API_DOOR_PRIVATE_KEY_PATH={}\nPLOYZ_API_DOOR_CERTIFICATE_PATH={}\nPLOYZ_API_DOOR_FINGERPRINT_PATH={}\n{JOIN_SUBSTRATE_ENV}={}\nPLOYZ_CORROSION_GOSSIP_PORT={CORROSION_GOSSIP_PORT}\nPLOYZ_BUILD={}\nPLOYZ_WIREGUARD_PRIVATE_KEY_PATH={}\nPLOYZ_CORROSION_VERSION={}\n",
         accepted.cluster.cluster_id,
-        accepted.machine.machine_id,
+        accepted.machine.name,
         state.path().join(DOOR_KEY_FILE).display(),
         state.path().join(DOOR_CERTIFICATE_FILE).display(),
         state.path().join(DOOR_FINGERPRINT_FILE).display(),
@@ -558,10 +558,7 @@ impl LinuxMachineJoinHostEffects {
         &mut self,
         accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        match selected_storage_action(
-            &self.state,
-            accepted.accepted().machine.document.storage.mode,
-        )? {
+        match selected_storage_action(&self.state, accepted.accepted().machine.storage.mode)? {
             SelectedStorageAction::Plain { volumes_path } => {
                 fs::create_dir_all(volumes_path).map_err(failure)
             }
@@ -616,8 +613,7 @@ impl LinuxMachineJoinHostEffects {
         &mut self,
         accepted: &ValidatedMachineJoinAccepted,
     ) -> Result<(), FailureMessage> {
-        let MachineTransport::Wireguard { addr_v6, .. } =
-            &accepted.accepted().machine.document.transport
+        let MachineTransport::Wireguard { addr_v6, .. } = &accepted.accepted().machine.transport
         else {
             return Err(failure("accepted machine transport is not WireGuard"));
         };
@@ -860,7 +856,7 @@ impl MachineJoinHostEffects for LinuxMachineJoinHostEffects {
 }
 
 fn accepted_endpoint_gateway(accepted: &ValidatedMachineJoinAccepted) -> std::net::Ipv4Addr {
-    machine_endpoint_gateway(&accepted.accepted().machine.document.transport)
+    machine_endpoint_gateway(&accepted.accepted().machine.transport)
 }
 
 fn wireguard_config(

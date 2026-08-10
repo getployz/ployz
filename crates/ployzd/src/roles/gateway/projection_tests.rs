@@ -260,12 +260,53 @@ fn accepted_service_without_current_upstream_is_visibly_unavailable() {
     ));
 }
 
+#[test]
+fn endpoint_testimony_expires_at_the_serving_freshness_boundary() {
+    let fresh = project_gateway_rows(GatewayProjectionInput {
+        now: timestamp_at("2026-08-08T00:00:29Z"),
+        ..input(
+            vec![stored(NAMESPACE, &namespace(DEPLOY_GREEN))],
+            vec![stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE))],
+            vec![stored_endpoint(
+                MACHINE,
+                &endpoint(NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3]),
+            )],
+        )
+    });
+    assert_eq!(
+        fresh.next_endpoint_expiry,
+        Some(std::time::Duration::from_secs(1))
+    );
+    let [fresh_route] = fresh.projection.routes.as_slice() else {
+        panic!("fresh projection must retain the route");
+    };
+    assert_eq!(fresh_route.upstreams.len(), 1);
+
+    let expired = project_gateway_rows(GatewayProjectionInput {
+        now: timestamp_at("2026-08-08T00:00:30Z"),
+        ..input(
+            vec![stored(NAMESPACE, &namespace(DEPLOY_GREEN))],
+            vec![stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE))],
+            vec![stored_endpoint(
+                MACHINE,
+                &endpoint(NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3]),
+            )],
+        )
+    });
+    assert_eq!(expired.next_endpoint_expiry, None);
+    let [expired_route] = expired.projection.routes.as_slice() else {
+        panic!("expired projection must retain the route");
+    };
+    assert!(expired_route.upstreams.is_empty());
+}
+
 fn input(
     namespaces: Vec<StoredRow>,
     route_bindings: Vec<StoredRow>,
     machine_endpoints: Vec<StoredRow>,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
+        now: timestamp(),
         cluster_id: cluster_id(),
         cluster: vec![stored(CLUSTER, &cluster())],
         machines: vec![stored(MACHINE, &machine())],
@@ -410,7 +451,11 @@ fn machine_id_for(value: &str) -> MachineName {
 }
 
 fn timestamp() -> CorrosionTimestamp {
-    CorrosionTimestamp::try_new("2026-08-08T00:00:00Z").expect("timestamp")
+    timestamp_at("2026-08-08T00:00:00Z")
+}
+
+fn timestamp_at(value: &str) -> CorrosionTimestamp {
+    CorrosionTimestamp::try_new(value).expect("timestamp")
 }
 
 fn provenance() -> OperatorWriteProvenance {

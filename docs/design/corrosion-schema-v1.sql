@@ -55,9 +55,9 @@ CREATE TABLE route_bindings (
 CREATE INDEX route_bindings_namespace_id ON route_bindings (namespace_id);
 CREATE INDEX route_bindings_service ON route_bindings (namespace_id, service_name);
 
--- Singleton per cluster, PK = cluster name. The document carries preferred
--- machine name, a monotonically increasing comparison revision, and a weak
--- heartbeat timestamp. The timestamp is not a lease, term, or fence.
+-- Singleton per cluster, PK = cluster name. The document carries a preferred
+-- machine name and weak heartbeat timestamp. The timestamp is not a lease,
+-- term, or fence.
 CREATE TABLE controller (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}'

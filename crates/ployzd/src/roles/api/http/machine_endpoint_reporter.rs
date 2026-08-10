@@ -10,8 +10,6 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::network::EndpointBridgeStatus;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 
@@ -100,7 +98,7 @@ impl MachineEndpointReporter {
         let document = document(
             self.cluster_id.clone(),
             self.local_machine_id.clone(),
-            now()?,
+            CorrosionTimestamp::now_utc(),
             endpoint_network_ready,
             containers,
         );
@@ -187,25 +185,12 @@ fn statement(document: &MachineEndpointDocument) -> Result<Statement, MachineEnd
     ))
 }
 
-fn now() -> Result<CorrosionTimestamp, MachineEndpointPublishError> {
-    let value = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|error| MachineEndpointPublishError::Timestamp {
-            detail: error.to_string(),
-        })?;
-    CorrosionTimestamp::try_new(value).map_err(|error| MachineEndpointPublishError::Timestamp {
-        detail: error.to_string(),
-    })
-}
-
 #[derive(Debug, thiserror::Error)]
 enum MachineEndpointPublishError {
     #[error(transparent)]
     Corrosion(#[from] CorrosionClientError),
     #[error("could not list local managed containers: {detail}")]
     Docker { detail: String },
-    #[error("could not construct endpoint testimony timestamp: {detail}")]
-    Timestamp { detail: String },
     #[error("could not encode endpoint testimony: {detail}")]
     Encode { detail: String },
     #[error("endpoint testimony write returned an unexpected result")]

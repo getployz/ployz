@@ -231,8 +231,8 @@ pub(super) async fn admit_roaming_peer_and_assert_no_subnet(
         .admit_peer(blob, request)
         .await
         .map_err(|error| error.to_string())?;
-    let encoded = serde_json::to_string(&accepted.accepted().peer.document)
-        .map_err(|error| error.to_string())?;
+    let encoded =
+        serde_json::to_string(&accepted.accepted().peer).map_err(|error| error.to_string())?;
     require(
         !encoded.contains("subnet_v4"),
         "roaming peer acceptance carried a machine endpoint subnet",
@@ -277,8 +277,7 @@ pub(super) async fn admit_concurrent_machines_with_distinct_subnets(
     let left = left_reply.map_err(|error| error.to_string())?;
     let right = right_reply.map_err(|error| error.to_string())?;
     require(
-        machine_subnet(&left.accepted().machine.document)?
-            != machine_subnet(&right.accepted().machine.document)?,
+        machine_subnet(&left.accepted().machine)? != machine_subnet(&right.accepted().machine)?,
         "concurrent machine admissions allocated the same endpoint subnet",
     )
 }

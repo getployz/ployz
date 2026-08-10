@@ -59,7 +59,7 @@ pub(super) fn corrosion_roster_query(
     let statement = Statement::with_params(
         "SELECT id, document FROM machines WHERE id = ?",
         vec![SqliteParameter::Text(
-            accepted.machine.document.name.as_str().to_owned(),
+            accepted.machine.name.as_str().to_owned(),
         )],
     );
     Ok(CorrosionRosterQuery {
@@ -177,12 +177,12 @@ pub(super) fn roster_convergence_disposition(
     let winner = report
         .accepted
         .iter()
-        .find(|row| row.value.name == accepted.machine.document.name);
+        .find(|row| row.value.name == accepted.machine.name);
     if let Some(winner) = winner {
-        if winner.source.key != accepted.machine.machine_id.as_str() {
+        if winner.source.key != accepted.machine.name.as_str() {
             return RosterConvergenceDisposition::Skipped;
         }
-        if winner.value == accepted.machine.document {
+        if winner.value == accepted.machine {
             return RosterConvergenceDisposition::Converged;
         }
         return RosterConvergenceDisposition::Divergent;
@@ -190,7 +190,7 @@ pub(super) fn roster_convergence_disposition(
     if report
         .skipped
         .iter()
-        .any(|row| row.source.key == accepted.machine.machine_id.as_str())
+        .any(|row| row.source.key == accepted.machine.name.as_str())
     {
         RosterConvergenceDisposition::Skipped
     } else {

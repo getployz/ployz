@@ -13,10 +13,9 @@ use ployz_core::corrosion::{
     SqliteParameter, Statement, StoredRow, TransactionResult, read_named_roster_rows,
     read_named_rows, read_rows,
 };
-use ployz_core::ids::{ClusterName, MachineName};
+use ployz_core::ids::ClusterName;
 use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::operation::{RouteHostname, RoutePort};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
@@ -94,19 +93,6 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             tokio::try_join!(cluster, machines, routes).map_err(|error| error.to_string())?;
 
         let cluster = decode_cluster(&self.cluster_id, cluster)?;
-        if command
-            .request
-            .services
-            .iter()
-            .any(|(service_name, requested)| {
-                !requested.runtime.volume_mounts.is_empty()
-                    && namespace.document.services.contains_key(service_name)
-            })
-        {
-            return Err(DeployStartError::Refused(
-                DeployRefusal::NamedVolumeRedeployUnsupported,
-            ));
-        }
         let missing_automatic_routes = desired_routes(&cluster, command, &namespace.id, routes)?;
         let roster = decode_roster(&cluster, machines)?;
 
@@ -277,18 +263,12 @@ fn desired_routes(
                 }
                 None => {
                     let id = hostname.clone();
-                    let written_at = OffsetDateTime::now_utc()
-                        .format(&Rfc3339)
-                        .map_err(|error| error.to_string())?;
                     let document = RouteBindingDocument {
                         v: CorrosionDocumentVersion::V1,
                         cluster_id: cluster.cluster_id.clone(),
                         provenance: OperatorWriteProvenance {
                             written_by: command.initiator.clone(),
-                            written_at: ployz_core::corrosion::CorrosionTimestamp::try_new(
-                                written_at,
-                            )
-                            .map_err(|error| error.to_string())?,
+                            written_at: ployz_core::corrosion::CorrosionTimestamp::now_utc(),
                         },
                         hostname,
                         namespace_id: namespace_id.clone(),
@@ -341,16 +321,12 @@ fn decode_roster(
     let mut roster = machines
         .accepted
         .into_iter()
-        .map(|row| {
-            let id = MachineName::try_new(row.source.key).map_err(|error| error.to_string())?;
-            Ok(DeployRosterMachine {
-                id,
-                name: row.value.name,
-                lifecycle: row.value.lifecycle,
-            })
+        .map(|row| DeployRosterMachine {
+            name: row.value.name,
+            lifecycle: row.value.lifecycle,
         })
-        .collect::<Result<Vec<_>, String>>()?;
-    roster.sort_by(|left, right| left.id.cmp(&right.id));
+        .collect::<Vec<_>>();
+    roster.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(roster)
 }
 
@@ -468,14 +444,13 @@ fn all_rows(table: CorrosionTable) -> Statement {
 #[cfg(test)]
 mod tests {
     use ployz_core::corrosion::{
-        AutomaticHostnameMode, ControllerRevision, CorrosionDocumentVersion,
-        CorrosionNamespaceName, CorrosionTimestamp, OperatorWriteProvenance, Principal,
-        StorageMode,
+        AutomaticHostnameMode, CorrosionDocumentVersion, CorrosionNamespaceName,
+        CorrosionTimestamp, OperatorWriteProvenance, Principal, StorageMode,
     };
     use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
     use ployz_core::ids::{DeployName, PeerName};
     use ployz_core::network::MachineEndpointSupernet;
-    use ployz_core::{DeployRequest, DeployServiceRequest, DeployServices, HealthGatePolicy};
+    use ployz_core::{DeployRequest, DeployServiceRequest, HealthGatePolicy};
 
     use super::*;
 
@@ -723,7 +698,7 @@ mod tests {
             request: DeployRequest {
                 namespace_name: CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace"),
                 deploy_name: DeployName::try_new("release-1").expect("deploy"),
-                services: DeployServices::try_new([(
+                services: [(
                     CorrosionServiceName::try_new("api").expect("service"),
                     DeployServiceRequest {
                         image: ImageReference::try_new("nginx:latest").expect("image"),
@@ -733,11 +708,11 @@ mod tests {
                         placement: None,
                         machines: None,
                     },
-                )])
-                .expect("unique services"),
+                )]
+                .into_iter()
+                .collect(),
             },
             initiator: initiator(),
-            appointment_id: ControllerRevision::try_new(1).expect("appointment"),
         }
     }
 

@@ -2,16 +2,13 @@
 
 use std::collections::BTreeMap;
 
+use crate::roles::system_observation::{SystemObservation, SystemObservationError};
 use ployz_core::corrosion::{
     ContainerIsolationTestimony, CorrosionDocumentVersion, CorrosionTimestamp,
     MachineStatusDocument, MeshConvergenceTestimony, SqliteParameter, Statement,
     WireGuardHandshakeEvidence,
 };
 use ployz_core::ids::{ClusterName, MachineName};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
-
-use crate::roles::system_observation::{SystemObservation, SystemObservationError};
 
 /// The only constructor for Keeper's machine_status UPSERT.
 ///
@@ -48,7 +45,7 @@ impl LocalMachineStatusWriter {
             container_isolation,
             wireguard_handshakes,
             SystemObservation::read()?,
-            now()?,
+            CorrosionTimestamp::now_utc(),
         )
     }
 
@@ -97,17 +94,6 @@ impl From<SystemObservationError> for MachineStatusWriteError {
     }
 }
 
-pub(super) fn now() -> Result<CorrosionTimestamp, MachineStatusWriteError> {
-    let value = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|source| MachineStatusWriteError::Timestamp {
-            detail: source.to_string(),
-        })?;
-    CorrosionTimestamp::try_new(value).map_err(|source| MachineStatusWriteError::Timestamp {
-        detail: source.to_string(),
-    })
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(super) enum MachineStatusWriteError {
     #[error("could not observe {resource}: {detail}")]
@@ -115,8 +101,6 @@ pub(super) enum MachineStatusWriteError {
         resource: &'static str,
         detail: String,
     },
-    #[error("could not construct machine status timestamp: {detail}")]
-    Timestamp { detail: String },
     #[error("could not encode machine status document: {detail}")]
     Encode { detail: String },
 }

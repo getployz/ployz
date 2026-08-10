@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use hyper::{Response, StatusCode};
 use ployz_core::V2Route;
-use ployz_core::corrosion::{ControllerRevision, Principal, owns_current_controller_appointment};
+use ployz_core::corrosion::{Principal, is_preferred_controller};
 use ployz_core::ids::{MachineName, PeerName};
 
 use super::controller::ControllerStore;
@@ -19,7 +19,6 @@ use super::store::AcceptedRoster;
 
 const FORWARDED_PEER_HEADER: &str = "x-ployz-forwarded-peer";
 const FORWARDED_JOIN_HEADER: &str = "x-ployz-forwarded-join";
-const APPOINTMENT_HEADER: &str = "x-ployz-controller-appointment";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(30);
 const BODY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -27,7 +26,6 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 
 pub(super) struct AdmittedMutation {
     pub(super) principal: Principal,
-    pub(super) appointment_id: ControllerRevision,
     pub(super) request: hyper::Request<hyper::body::Incoming>,
 }
 
@@ -98,19 +96,16 @@ impl ControllerForwarder {
                 .headers()
                 .get(FORWARDED_JOIN_HEADER)
                 .is_some_and(|value| value == "1");
-        let (peer_id, appointment_id) = if forwarded_join {
-            let Some(appointment) = forwarded_appointment(&request) else {
-                return unsupported();
-            };
-            (None, appointment)
+        let peer_id = if forwarded_join {
+            None
         } else {
-            let Some((peer, appointment)) = forwarded_headers(&request) else {
+            let Some(peer) = forwarded_peer(&request) else {
                 return unsupported();
             };
-            if !roster.peers.iter().any(|accepted| accepted.id == peer) {
+            if !roster.peers.iter().any(|accepted| accepted.name == peer) {
                 return unsupported();
             }
-            (Some(peer), appointment)
+            Some(peer)
         };
         let current = match self.controller.current().await {
             Ok(Some(current)) => current,
@@ -120,30 +115,18 @@ impl ControllerForwarder {
                 return unavailable();
             }
         };
-        if !owns_current_controller_appointment(&current, &self.local_machine_id, &appointment_id) {
+        if !is_preferred_controller(&current, &self.local_machine_id) {
             return stale_controller();
         }
-        match self
-            .controller
-            .has_work_visibility(roster.machines.len())
-            .await
-        {
-            Ok(true) => MutationRouting::Local(AdmittedMutation {
-                principal: peer_id.map_or(
-                    Principal::Machine {
-                        machine_id: source_machine,
-                    },
-                    |peer_id| Principal::Peer { peer_id },
-                ),
-                appointment_id,
-                request,
-            }),
-            Ok(false) => unavailable(),
-            Err(error) => {
-                tracing::warn!(%error, "could not apply controller visibility brake");
-                unavailable()
-            }
-        }
+        MutationRouting::Local(AdmittedMutation {
+            principal: peer_id.map_or(
+                Principal::Machine {
+                    machine_id: source_machine,
+                },
+                |peer_id| Principal::Peer { peer_id },
+            ),
+            request,
+        })
     }
 
     /// Routes a token-bearing public join request to the appointed controller.
@@ -160,35 +143,20 @@ impl ControllerForwarder {
             Err(response) => return MutationRouting::Forwarded(response),
         };
         if current.preferred_machine_id == self.local_machine_id {
-            return match self
-                .controller
-                .has_work_visibility(roster.machines.len())
-                .await
-            {
-                Ok(true) => MutationRouting::Local(AdmittedMutation {
-                    principal: Principal::Machine {
-                        machine_id: self.local_machine_id.clone(),
-                    },
-                    appointment_id: current.appointment_id,
-                    request,
-                }),
-                Ok(false) => unavailable(),
-                Err(error) => {
-                    tracing::warn!(%error, "could not apply controller visibility brake");
-                    unavailable()
-                }
-            };
+            return MutationRouting::Local(AdmittedMutation {
+                principal: Principal::Machine {
+                    machine_id: self.local_machine_id.clone(),
+                },
+                request,
+            });
         }
         let target = roster
             .machines
             .iter()
-            .find(|machine| machine.id == current.preferred_machine_id)
+            .find(|machine| machine.document.name == current.preferred_machine_id)
             .map(|machine| machine_socket_addr(&machine.document.transport, self.api_port));
         let response = match target {
-            Some(target) => {
-                self.forward_join(target, &current.appointment_id, request)
-                    .await
-            }
+            Some(target) => self.forward(target, &V2Route::Join, None, request).await,
             None => Err(ForwardError::Connect(
                 "appointed machine is absent from the accepted roster".to_owned(),
             )),
@@ -224,34 +192,19 @@ impl ControllerForwarder {
             Err(response) => return MutationRouting::Forwarded(response),
         };
         if current.preferred_machine_id == self.local_machine_id {
-            return match self
-                .controller
-                .has_work_visibility(roster.machines.len())
-                .await
-            {
-                Ok(true) => MutationRouting::Local(AdmittedMutation {
-                    principal: Principal::Peer { peer_id },
-                    appointment_id: current.appointment_id,
-                    request,
-                }),
-                Ok(false) => unavailable(),
-                Err(error) => {
-                    tracing::warn!(%error, "could not apply controller visibility brake");
-                    unavailable()
-                }
-            };
+            return MutationRouting::Local(AdmittedMutation {
+                principal: Principal::Peer { peer_id },
+                request,
+            });
         }
 
         let target = roster
             .machines
             .iter()
-            .find(|machine| machine.id == current.preferred_machine_id)
+            .find(|machine| machine.document.name == current.preferred_machine_id)
             .map(|machine| machine_socket_addr(&machine.document.transport, self.api_port));
         let response = match target {
-            Some(target) => {
-                self.forward(target, route, &peer_id, &current.appointment_id, request)
-                    .await
-            }
+            Some(target) => self.forward(target, route, Some(&peer_id), request).await,
             None => Err(ForwardError::Connect(
                 "appointed machine is absent from the accepted roster".to_owned(),
             )),
@@ -298,60 +251,28 @@ impl ControllerForwarder {
         &self,
         target: std::net::SocketAddr,
         route: &V2Route,
-        peer_id: &PeerName,
-        appointment_id: &ControllerRevision,
+        peer_id: Option<&PeerName>,
         request: hyper::Request<hyper::body::Incoming>,
     ) -> Result<Response<HttpBody>, ForwardError> {
         let body = read_bounded_body(request.into_body(), MAX_BODY_BYTES, BODY_TIMEOUT)
             .await
             .map_err(ForwardError::Body)?;
-        let response = self
+        let request = self
             .client
             .post(format!("http://{target}{}", route.path()))
-            .header(FORWARDED_PEER_HEADER, peer_id.as_str())
-            .header(APPOINTMENT_HEADER, appointment_id.to_string())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_connect() && !error.is_timeout() {
-                    ForwardError::Connect(error.to_string())
-                } else {
-                    ForwardError::Other(error.to_string())
-                }
-            })?;
-        let status = StatusCode::from_u16(response.status().as_u16())
-            .map_err(|error| ForwardError::Other(error.to_string()))?;
-        let body = response_body(response).await?;
-        Ok(json_response(status, body))
-    }
-
-    async fn forward_join(
-        &self,
-        target: std::net::SocketAddr,
-        appointment_id: &ControllerRevision,
-        request: hyper::Request<hyper::body::Incoming>,
-    ) -> Result<Response<HttpBody>, ForwardError> {
-        let body = read_bounded_body(request.into_body(), MAX_BODY_BYTES, BODY_TIMEOUT)
-            .await
-            .map_err(ForwardError::Body)?;
-        let response = self
-            .client
-            .post(format!("http://{target}{}", V2Route::Join.path()))
-            .header(FORWARDED_JOIN_HEADER, "1")
-            .header(APPOINTMENT_HEADER, appointment_id.to_string())
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_connect() && !error.is_timeout() {
-                    ForwardError::Connect(error.to_string())
-                } else {
-                    ForwardError::Other(error.to_string())
-                }
-            })?;
+            .body(body);
+        let request = match peer_id {
+            Some(peer_id) => request.header(FORWARDED_PEER_HEADER, peer_id.as_str()),
+            None => request.header(FORWARDED_JOIN_HEADER, "1"),
+        };
+        let response = request.send().await.map_err(|error| {
+            if error.is_connect() && !error.is_timeout() {
+                ForwardError::Connect(error.to_string())
+            } else {
+                ForwardError::Other(error.to_string())
+            }
+        })?;
         let status = StatusCode::from_u16(response.status().as_u16())
             .map_err(|error| ForwardError::Other(error.to_string()))?;
         Ok(json_response(status, response_body(response).await?))
@@ -362,7 +283,7 @@ fn accepts_machine(roster: &AcceptedRoster, machine_id: &MachineName) -> bool {
     roster
         .machines
         .iter()
-        .any(|machine| &machine.id == machine_id)
+        .any(|machine| &machine.document.name == machine_id)
 }
 
 enum ForwardError {
@@ -397,34 +318,13 @@ async fn response_body(response: reqwest::Response) -> Result<Vec<u8>, ForwardEr
     Ok(body)
 }
 
-fn forwarded_headers<Body>(
-    request: &hyper::Request<Body>,
-) -> Option<(PeerName, ControllerRevision)> {
-    let peer_id = request
+fn forwarded_peer<Body>(request: &hyper::Request<Body>) -> Option<PeerName> {
+    request
         .headers()
         .get(FORWARDED_PEER_HEADER)?
         .to_str()
         .ok()
-        .and_then(|value| PeerName::try_new(value.to_owned()).ok())?;
-    let appointment_id = request
-        .headers()
-        .get(APPOINTMENT_HEADER)?
-        .to_str()
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .and_then(|value| ControllerRevision::try_new(value).ok())?;
-    Some((peer_id, appointment_id))
-}
-
-fn forwarded_appointment<Body>(request: &hyper::Request<Body>) -> Option<ControllerRevision> {
-    request
-        .headers()
-        .get(APPOINTMENT_HEADER)?
-        .to_str()
-        .ok()?
-        .parse::<u64>()
-        .ok()
-        .and_then(|value| ControllerRevision::try_new(value).ok())
+        .and_then(|value| PeerName::try_new(value.to_owned()).ok())
 }
 
 fn body_error_response(error: BoundedBodyError) -> Response<HttpBody> {
@@ -463,38 +363,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn forwarded_headers_require_both_typed_ids() {
+    fn forwarded_peer_requires_a_typed_name() {
         let peer_id = PeerName::try_new("peer-a").expect("peer name");
-        let appointment_id = ControllerRevision::INITIAL;
         let valid = hyper::Request::builder()
             .header(FORWARDED_PEER_HEADER, peer_id.as_str())
-            .header(APPOINTMENT_HEADER, appointment_id.to_string())
             .body(())
             .expect("request");
 
-        assert_eq!(forwarded_headers(&valid), Some((peer_id, appointment_id)));
+        assert_eq!(forwarded_peer(&valid), Some(peer_id));
 
         for request in [
-            hyper::Request::builder()
-                .header(FORWARDED_PEER_HEADER, "peer-a")
-                .body(())
-                .expect("request"),
-            hyper::Request::builder()
-                .header(APPOINTMENT_HEADER, "1")
-                .body(())
-                .expect("request"),
+            hyper::Request::builder().body(()).expect("request"),
             hyper::Request::builder()
                 .header(FORWARDED_PEER_HEADER, "not/a/peer")
-                .header(APPOINTMENT_HEADER, "1")
-                .body(())
-                .expect("request"),
-            hyper::Request::builder()
-                .header(FORWARDED_PEER_HEADER, "peer-a")
-                .header(APPOINTMENT_HEADER, "not-an-appointment")
                 .body(())
                 .expect("request"),
         ] {
-            assert_eq!(forwarded_headers(&request), None);
+            assert_eq!(forwarded_peer(&request), None);
         }
     }
 

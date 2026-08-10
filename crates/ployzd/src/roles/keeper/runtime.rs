@@ -26,7 +26,7 @@ use crate::corrosion::CorrosionClient;
 
 use super::control::KeeperControlSocket;
 use super::provider::{BoundKeeperIdentity, KeeperMeshProvider, KeeperProviderError};
-use super::status::{LocalMachineStatusWriter, MachineStatusWriteError, now};
+use super::status::{LocalMachineStatusWriter, MachineStatusWriteError};
 use super::store::{KeeperCorrosion, KeeperStoreError};
 use super::upgrade::{KeeperUpgradeSocket, migrate_api_privileges, restart_systemd_role};
 use super::{KeeperRoleConfig, KeeperRoleConfigError};
@@ -433,7 +433,7 @@ async fn reconcile_once(
                 ?evidence,
                 "Keeper refused a roster with mismatched WireGuard identities"
             );
-            let attempted_at = now().map_err(retry_status)?;
+            let attempted_at = ployz_core::corrosion::CorrosionTimestamp::now_utc();
             write_testimony(
                 store,
                 writer,
@@ -456,7 +456,7 @@ async fn reconcile_once(
                 evidence = ?desired.evidence,
                 "Keeper is applying the accepted builtin mesh roster"
             );
-            let attempted_at = now().map_err(retry_status)?;
+            let attempted_at = ployz_core::corrosion::CorrosionTimestamp::now_utc();
             let (isolation_testimony, isolation_error) = match isolation_projection {
                 Ok(projection) => {
                     tracing::info!(
@@ -658,7 +658,7 @@ async fn reconcile_isolation_only(
         return Ok(ReconcileProgress::Settled);
     }
 
-    let attempted_at = now().map_err(retry_status)?;
+    let attempted_at = ployz_core::corrosion::CorrosionTimestamp::now_utc();
     let (testimony, error) = converge_isolation(
         provider,
         &projection.desired,

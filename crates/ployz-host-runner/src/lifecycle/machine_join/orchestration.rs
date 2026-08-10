@@ -146,7 +146,6 @@ pub enum MachineJoinOutcomeKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineJoinOutcome {
     pub kind: MachineJoinOutcomeKind,
-    pub machine_id: ployz_core::ids::MachineName,
     pub machine_name: MachineName,
 }
 
@@ -174,10 +173,9 @@ pub(crate) async fn execute_machine_join_locked(
         MachineJoinInspection::Clean => return Err(MachineJoinFailure::IdentityNotPrepared),
         MachineJoinInspection::ReadyToRedeem { identity } => (identity, false),
         MachineJoinInspection::ReadyToActivate { identity } => (identity, true),
-        MachineJoinInspection::NoOp { identity } => {
+        MachineJoinInspection::NoOp { .. } => {
             return Ok(MachineJoinOutcome {
                 kind: MachineJoinOutcomeKind::NoOp,
-                machine_id: identity.machine_id().clone(),
                 machine_name: prepared.request.name.clone(),
             });
         }
@@ -212,8 +210,7 @@ pub(crate) async fn execute_machine_join_locked(
         } else {
             MachineJoinOutcomeKind::Joined
         },
-        machine_id: accepted.accepted().machine.machine_id.clone(),
-        machine_name: accepted.accepted().machine.document.name.clone(),
+        machine_name: accepted.accepted().machine.name.clone(),
     })
 }
 
@@ -292,9 +289,9 @@ pub(crate) mod tests {
         InstallArtifactVersion, InstallSha256Digest,
     };
     use ployz_core::join::{
-        AcceptedMachineRow, CorrosionBootstrapFacts, JOIN_DOOR_PORT, JoinDoorCertFingerprint,
-        JoinDoorCertificatePem, JoinDoorMaterial, JoinDoorPrivateKeyPem, JoinMachineSubstrate,
-        JoinTokenSecret, ReachableSeedMachine,
+        CorrosionBootstrapFacts, JOIN_DOOR_PORT, JoinDoorCertFingerprint, JoinDoorCertificatePem,
+        JoinDoorMaterial, JoinDoorPrivateKeyPem, JoinMachineSubstrate, JoinTokenSecret,
+        ReachableSeedMachine,
     };
     use ployz_core::machine::MachineLifecycle;
     use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
@@ -490,7 +487,7 @@ pub(crate) mod tests {
         let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
         let prepared = prepared(&state);
         let mut invalid = accepted(prepared.request(), prepared.blob().door_cert_fingerprint());
-        invalid.machine.machine_id = MachineName::try_new("other-machine").expect("machine name");
+        invalid.machine.name = MachineName::try_new("other-machine").expect("machine name");
         let mut door = RecordingDoor {
             accepted: invalid,
             calls: 0,
@@ -504,7 +501,7 @@ pub(crate) mod tests {
         assert!(matches!(
             error,
             MachineJoinFailure::InvalidAcceptance(
-                JoinAcceptanceValidationError::AcceptedIdentityMismatch
+                JoinAcceptanceValidationError::AcceptedNameMismatch
             )
         ));
         assert!(matches!(
@@ -596,24 +593,21 @@ pub(crate) mod tests {
         let member_addr = derive_builtin_wireguard_member(&cluster_id, &request.public_key)
             .bind_address()
             .get();
-        let machine = AcceptedMachineRow {
-            machine_id: request.name.clone(),
-            document: MachineDocument {
-                v: CorrosionDocumentVersion::V1,
-                cluster_id: cluster_id.clone(),
-                provenance,
-                name: request.name.clone(),
-                lifecycle: MachineLifecycle::Active,
-                transport: MachineTransport::Wireguard {
-                    pubkey: request.public_key.clone(),
-                    addr_v6: member_addr,
-                    endpoint: request.endpoint,
-                    subnet_v4: MachineEndpointSubnet::try_new("10.210.20.0/24").expect("subnet"),
-                },
-                storage: MachineStorageSelection {
-                    mode: StorageMode::Plain,
-                    reason: MachineStorageSelectionReason::Default,
-                },
+        let machine = MachineDocument {
+            v: CorrosionDocumentVersion::V1,
+            cluster_id: cluster_id.clone(),
+            provenance,
+            name: request.name.clone(),
+            lifecycle: MachineLifecycle::Active,
+            transport: MachineTransport::Wireguard {
+                pubkey: request.public_key.clone(),
+                addr_v6: member_addr,
+                endpoint: request.endpoint,
+                subnet_v4: MachineEndpointSubnet::try_new("10.210.20.0/24").expect("subnet"),
+            },
+            storage: MachineStorageSelection {
+                mode: StorageMode::Plain,
+                reason: MachineStorageSelectionReason::Default,
             },
         };
         let seed_public_key =

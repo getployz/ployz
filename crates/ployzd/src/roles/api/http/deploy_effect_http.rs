@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use hyper::{Response, StatusCode};
-use ployz_core::corrosion::{ControllerRevision, Principal, owns_current_controller_appointment};
+use ployz_core::corrosion::{Principal, is_preferred_controller};
 use ployz_core::{
     DeployInspectOutcome, DeployInspectRequest, DeployPrepareOutcome, DeployPrepareRequest,
     DeployRetireOutcome, DeployRetireRequest,
@@ -24,7 +24,7 @@ pub(super) async fn inspect(
         Ok(request) => request,
         Err(response) => return response,
     };
-    if let Err(response) = authorize(service, principal, &request.appointment_id).await {
+    if let Err(response) = authorize(service, principal).await {
         return response;
     }
     let outcome = match &service.deploy_effects {
@@ -46,7 +46,7 @@ pub(super) async fn prepare(
     if !is_authorized_machine(principal, &request.controller_machine_id) {
         return error_response(StatusCode::NOT_FOUND, "unsupported_route");
     }
-    if let Err(response) = authorize(service, principal, &request.appointment_id).await {
+    if let Err(response) = authorize(service, principal).await {
         return response;
     }
     let outcome = match &service.node_workflows {
@@ -69,7 +69,7 @@ pub(super) async fn retire(
         return error_response(StatusCode::NOT_FOUND, "unsupported_route");
     }
     if request.rollback_services.is_empty()
-        && let Err(response) = authorize(service, principal, &request.appointment_id).await
+        && let Err(response) = authorize(service, principal).await
     {
         return response;
     }
@@ -90,11 +90,7 @@ fn is_authorized_machine(
     }
 }
 
-async fn authorize(
-    service: &ApiService,
-    principal: &Principal,
-    appointment_id: &ControllerRevision,
-) -> Result<(), Response<HttpBody>> {
+async fn authorize(service: &ApiService, principal: &Principal) -> Result<(), Response<HttpBody>> {
     let Principal::Machine { machine_id } = principal else {
         return Err(error_response(StatusCode::NOT_FOUND, "unsupported_route"));
     };
@@ -102,9 +98,10 @@ async fn authorize(
         service.controller.current().await.map_err(|_| {
             error_response(StatusCode::SERVICE_UNAVAILABLE, "controller_unavailable")
         })?;
-    if current.as_ref().is_some_and(|controller| {
-        owns_current_controller_appointment(controller, machine_id, appointment_id)
-    }) {
+    if current
+        .as_ref()
+        .is_some_and(|controller| is_preferred_controller(controller, machine_id))
+    {
         Ok(())
     } else {
         Err(error_response(StatusCode::CONFLICT, "stale_controller"))

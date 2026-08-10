@@ -66,15 +66,8 @@ impl MeshDeployHosts {
         })
     }
 
-    async fn require_local_appointment(
-        &self,
-        appointment_id: &ployz_core::corrosion::ControllerRevision,
-    ) -> Result<(), DeployHostError> {
-        match self
-            .controller
-            .exact_local_appointment_is_current(appointment_id)
-            .await
-        {
+    async fn require_local_controller(&self) -> Result<(), DeployHostError> {
+        match self.controller.local_machine_is_preferred().await {
             Ok(true) => Ok(()),
             Ok(false) => Err(DeployHostError::StaleController),
             Err(_) => Err(DeployHostError::Failed),
@@ -88,7 +81,7 @@ impl MeshDeployHosts {
         let machine = roster
             .machines
             .into_iter()
-            .find(|machine| &machine.id == machine_id)
+            .find(|machine| &machine.document.name == machine_id)
             .ok_or(DeployHostError::Failed)?;
         Ok(machine_socket_addr(
             &machine.document.transport,
@@ -134,8 +127,7 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployInspectRequest,
     ) -> Result<DeployInspectOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            self.require_local_appointment(&request.appointment_id)
-                .await?;
+            self.require_local_controller().await?;
             return Ok(self.local_effects.inspect(request).await);
         }
         self.post(
@@ -156,8 +148,7 @@ impl DeployHosts for MeshDeployHosts {
             if request.controller_machine_id != self.local_machine_id {
                 return Err(DeployHostError::Failed);
             }
-            self.require_local_appointment(&request.appointment_id)
-                .await?;
+            self.require_local_controller().await?;
             return Ok(self.local_workflows.prepare(request).await);
         }
         self.post(
@@ -179,8 +170,7 @@ impl DeployHosts for MeshDeployHosts {
                 return Err(DeployHostError::Failed);
             }
             if request.rollback_services.is_empty() {
-                self.require_local_appointment(&request.appointment_id)
-                    .await?;
+                self.require_local_controller().await?;
             }
             return Ok(self.local_workflows.retire(request).await);
         }

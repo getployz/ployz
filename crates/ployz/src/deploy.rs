@@ -74,10 +74,6 @@ pub enum DeployExecutionError {
         deploy_name: String,
     },
     #[error(
-        "named-volume redeploy is unsupported; remove the service and local runtime explicitly before deploying again"
-    )]
-    NamedVolumeRedeployUnsupported,
-    #[error(
         "services {first_service} and {second_service} both publish {protocol:?} host port {host_port}"
     )]
     HostPortConflict {
@@ -105,7 +101,6 @@ impl From<DeployRefusal> for DeployExecutionError {
                 namespace_name: namespace_name.to_string(),
                 deploy_name: deploy_name.to_string(),
             },
-            DeployRefusal::NamedVolumeRedeployUnsupported => Self::NamedVolumeRedeployUnsupported,
             DeployRefusal::HostPortConflict {
                 host_port,
                 protocol,
@@ -123,7 +118,6 @@ impl From<DeployRefusal> for DeployExecutionError {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::DeployServices;
     use ployz_core::HealthGatePolicy;
     use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName};
     use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
@@ -134,7 +128,7 @@ mod tests {
         DeployCommand {
             namespace: CorrosionNamespaceName::try_new("production").expect("namespace name"),
             deploy: ployz_core::ids::DeployName::try_new("release-1").expect("deploy"),
-            services: DeployServices::try_new([(
+            services: [(
                 CorrosionServiceName::try_new("web").expect("service name"),
                 ployz_core::DeployServiceRequest {
                     image: ImageReference::try_new("registry.example/web:latest").expect("image"),
@@ -144,8 +138,9 @@ mod tests {
                     placement: None,
                     machines: None,
                 },
-            )])
-            .expect("unique services"),
+            )]
+            .into_iter()
+            .collect(),
             target: None,
         }
     }
@@ -212,16 +207,6 @@ mod tests {
         assert_eq!(
             first_service(&body).get("machines"),
             Some(&serde_json::json!(["edge-a"]))
-        );
-    }
-
-    #[test]
-    fn named_volume_redeploy_refusal_is_explicit_about_manual_cleanup() {
-        let refusal = DeployRefusal::NamedVolumeRedeployUnsupported;
-
-        assert_eq!(
-            DeployExecutionError::from(refusal).to_string(),
-            "named-volume redeploy is unsupported; remove the service and local runtime explicitly before deploying again"
         );
     }
 }

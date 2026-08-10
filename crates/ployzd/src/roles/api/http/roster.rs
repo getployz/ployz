@@ -45,7 +45,7 @@ pub(super) async fn validate_listener_identity(
     roster
         .machines
         .into_iter()
-        .find(|machine| machine.id == *local_machine_id)
+        .find(|machine| machine.document.name == *local_machine_id)
         .map(|machine| machine.document)
         .ok_or(ApiListenerValidationError::Refusal {
             refusal: ApiRefusal::InvalidCluster,

@@ -275,8 +275,8 @@ pub enum LogsExecutionError {
     StackedReplicas { machine: String },
     #[error("service logs are owned by machine {machine}; point --target at that machine")]
     RemoteOwner { machine: String },
-    #[error("service log runtime is unavailable on machine {machine_id}")]
-    RuntimeUnavailable { machine_id: String },
+    #[error("service log runtime is unavailable on machine {machine}")]
+    RuntimeUnavailable { machine: String },
 }
 
 impl From<ServiceLogsRefusal> for LogsExecutionError {
@@ -325,15 +325,11 @@ impl From<ServiceLogsRefusal> for LogsExecutionError {
                     },
                 }
             }
-            ServiceLogsRefusal::RemoteOwner {
-                machine_id,
-                machine_name,
-            } => Self::RemoteOwner {
-                machine: machine_name
-                    .map_or_else(|| machine_id.to_string(), |name| name.as_str().to_owned()),
+            ServiceLogsRefusal::RemoteOwner { machine_name } => Self::RemoteOwner {
+                machine: machine_name.to_string(),
             },
-            ServiceLogsRefusal::RuntimeUnavailable { machine_id } => Self::RuntimeUnavailable {
-                machine_id: machine_id.to_string(),
+            ServiceLogsRefusal::RuntimeUnavailable { machine_name } => Self::RuntimeUnavailable {
+                machine: machine_name.to_string(),
             },
         }
     }
@@ -406,20 +402,12 @@ mod tests {
         let copy = stacked.to_string();
         assert!(copy.contains("stack on machine edge-a"), "{copy:?}");
 
-        let machine_id = ployz_core::ids::MachineName::try_new("machine-a").expect("machine");
         let remote = LogsExecutionError::from(ServiceLogsRefusal::RemoteOwner {
-            machine_id: machine_id.clone(),
-            machine_name: Some(name("edge-b")),
+            machine_name: name("edge-b"),
         });
         let copy = remote.to_string();
         assert!(copy.contains("machine edge-b"), "{copy:?}");
         assert!(copy.contains("--target"), "{copy:?}");
-
-        let unnamed = LogsExecutionError::from(ServiceLogsRefusal::RemoteOwner {
-            machine_id: machine_id.clone(),
-            machine_name: None,
-        });
-        assert!(unnamed.to_string().contains(&machine_id.to_string()));
     }
 
     #[test]

@@ -114,17 +114,11 @@ fn machine_remove_selection_uses_the_name_as_the_row_key() {
         machine_name: machine_name(),
     };
     assert_eq!(
-        select_machine_removal(
-            &request,
-            [
-                (machine_id("edge-b"), machine_id("edge-b")),
-                (machine_name(), machine_name()),
-            ],
-        ),
+        select_machine_removal(&request, [machine_id("edge-b"), machine_name()],),
         Ok(machine_name())
     );
     assert_eq!(
-        select_machine_removal(&request, [(machine_id("edge-b"), machine_name())]),
+        select_machine_removal(&request, [machine_id("edge-b")]),
         Err(MachineRemoveRefusal::NotFound {
             machine_name: machine_name(),
         })

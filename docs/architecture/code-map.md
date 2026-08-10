@@ -38,7 +38,7 @@ Classify state before choosing a module or store:
 | Operator decision | the operator command stream owns one Corrosion config row | typed row readers in `ployz-core`; the API fold validates and writes through the bounded Corrosion client |
 | Machine testimony | exactly one machine owns its status row | typed row readers; freshness stays visible and is never promoted into authority |
 | Wake signal | nobody owns truth in a subscription notification | re-query the scoped rows; a notification is invalidation, never an authoritative delta |
-| Controller appointment | every ordinary API process polls one advisory Corrosion row; the named machine refreshes its heartbeat | followers forward to its machine; after a stale heartbeat, a visible follower conditionally replaces the exact observed revision and starts from current rows and host reality |
+| Controller appointment | every ordinary API process polls one advisory Corrosion row; the named machine refreshes its heartbeat | followers forward to the machine named by their local view; after a stale heartbeat, a follower conditionally replaces the exact observed row and starts from current rows and host reality |
 | Operation summary | the preferred controller writes coarse Corrosion snapshots | typed operation queries and lens invalidation/re-query from any machine |
 | Controller execution | the appointed API process owns one in-memory mutation lock | overlapping mutations may be refused as busy; controller loss leaves nothing to migrate |
 | Node workflow history | each execution node owns one private Duroxide SQLite database | resume host-local prepare/retire work on that same node; never cluster truth or controller state |

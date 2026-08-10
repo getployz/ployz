@@ -512,23 +512,21 @@ impl ApiService {
                 return refusal_response_with_allow(error.refusal, error.allow);
             }
         };
-        let (principal, appointment_id, request) = if route.is_controller_mutation() {
+        let (principal, request) = if route.is_controller_mutation() {
             match self
                 .controller_forwarder
                 .route(&route, &roster, principal, request)
                 .await
             {
-                super::controller_forwarding::MutationRouting::Local(admitted) => (
-                    admitted.principal,
-                    Some(admitted.appointment_id),
-                    admitted.request,
-                ),
+                super::controller_forwarding::MutationRouting::Local(admitted) => {
+                    (admitted.principal, admitted.request)
+                }
                 super::controller_forwarding::MutationRouting::Forwarded(response) => {
                     return response;
                 }
             }
         } else {
-            (principal, None, request)
+            (principal, request)
         };
         if !route.accepts_principal(&principal) {
             return refusal_response(ApiRefusal::UnsupportedRoute);
@@ -546,12 +544,7 @@ impl ApiService {
         match route {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
-            V2Route::Join => {
-                let Some(appointment_id) = appointment_id else {
-                    return corrosion_unavailable_response();
-                };
-                super::join::handle_forwarded_join(self, peer, appointment_id, request).await
-            }
+            V2Route::Join => super::join::handle_forwarded_join(self, peer, request).await,
             V2Route::Status => super::diagnostics::status_response(self).await,
             V2Route::Doctor => super::diagnostics::doctor_response(self).await,
             V2Route::TokenCreate
@@ -568,12 +561,7 @@ impl ApiService {
             }
             V2Route::RouteAttach => super::routes::handle_attach(self, principal, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
-            V2Route::Deploy => {
-                let Some(appointment_id) = appointment_id else {
-                    unreachable!("controller mutations carry an appointment")
-                };
-                super::deploy_controller::handle(self, principal, appointment_id, request).await
-            }
+            V2Route::Deploy => super::deploy_controller::handle(self, principal, request).await,
             V2Route::DeployInspect => {
                 super::deploy_effect_http::inspect(self, &principal, request).await
             }
@@ -583,6 +571,7 @@ impl ApiService {
             V2Route::DeployRetire => {
                 super::deploy_effect_http::retire(self, &principal, request).await
             }
+            V2Route::ServiceLogsProbe => super::service_logs::handle_probe(self, request).await,
             V2Route::ServiceLogsTail(namespace_name, service_name) => {
                 super::service_logs::handle_tail(
                     self,

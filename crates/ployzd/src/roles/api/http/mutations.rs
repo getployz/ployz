@@ -118,6 +118,7 @@ pub(super) async fn handle_mutation(
         | V2Route::DeployInspect
         | V2Route::DeployPrepare
         | V2Route::DeployRetire
+        | V2Route::ServiceLogsProbe
         | V2Route::ServiceLogsTail(_, _)
         | V2Route::ServiceLogsFollow(_, _)
         | V2Route::Status
@@ -347,10 +348,11 @@ async fn machine_endpoint_set(
         );
     };
     let observed = machine.stored_document;
-    let reply = match set_machine_endpoint(machine.id, &request, machine.document) {
-        Ok(reply) => reply,
-        Err(refusal) => return endpoint_refusal_response(refusal),
-    };
+    let reply =
+        match set_machine_endpoint(machine.document.name.clone(), &request, machine.document) {
+            Ok(reply) => reply,
+            Err(refusal) => return endpoint_refusal_response(refusal),
+        };
     let written_at = match now_timestamp() {
         Ok(now) => now,
         Err(()) => return corrosion_unavailable_response(),
@@ -394,12 +396,12 @@ async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> 
         Ok(roster) => roster,
         Err(error) => return store_failure("read roster for machine removal", error),
     };
-    let candidates = roster.machine_removal_candidates;
+    let candidates = roster.machines;
     let reply = match machine_removal_reply(
         &request,
         candidates
             .iter()
-            .map(|machine| (machine.id.clone(), machine.name.clone())),
+            .map(|machine| machine.document.name.clone()),
     ) {
         Ok(reply) => reply,
         Err(refusal) => return machine_remove_refusal_response(refusal),
@@ -407,7 +409,7 @@ async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> 
     let MachineRemoveReply::Removed { machine_name } = &reply;
     let observed = candidates
         .into_iter()
-        .find(|machine| &machine.id == machine_name)
+        .find(|machine| &machine.document.name == machine_name)
         .expect("selected machine removal retains its observed row");
     match remove_machine_and_sweep(&service.corrosion, machine_name, &observed.stored_document)
         .await
@@ -424,7 +426,7 @@ async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> 
 
 fn machine_removal_reply(
     request: &MachineRemoveRequest,
-    accepted: impl IntoIterator<Item = (MachineName, MachineName)>,
+    accepted: impl IntoIterator<Item = MachineName>,
 ) -> Result<MachineRemoveReply, MachineRemoveRefusal> {
     match select_machine_removal(request, accepted) {
         Ok(machine_name) => Ok(MachineRemoveReply::Removed { machine_name }),
@@ -600,7 +602,7 @@ mod tests {
             machine_name: machine_name.clone(),
         };
         assert_eq!(
-            machine_removal_reply(&request, [(machine_name.clone(), machine_name.clone())]),
+            machine_removal_reply(&request, [machine_name.clone()]),
             Ok(MachineRemoveReply::Removed { machine_name })
         );
     }

@@ -22,9 +22,8 @@ const MAX_MUTATION_ROWS: usize = 10_000;
 pub(super) struct AcceptedRoster {
     pub(super) cluster: ClusterDocument,
     pub(super) machines: Vec<AcceptedMachine>,
-    pub(super) machine_removal_candidates: Vec<MachineRemovalCandidate>,
     pub(super) machine_skipped: Vec<SkippedRow>,
-    pub(super) peers: Vec<AcceptedPeer>,
+    pub(super) peers: Vec<PeerDocument>,
     pub(super) peer_skipped: Vec<SkippedRow>,
 }
 
@@ -34,12 +33,12 @@ impl AcceptedRoster {
             .iter()
             .map(|machine| {
                 AcceptedRosterPrincipal::machine(
-                    machine.id.clone(),
+                    machine.document.name.clone(),
                     machine.document.transport.clone(),
                 )
             })
             .chain(self.peers.iter().map(|peer| {
-                AcceptedRosterPrincipal::peer(peer.id.clone(), peer.document.transport.clone())
+                AcceptedRosterPrincipal::peer(peer.name.clone(), peer.transport.clone())
             }))
             .collect()
     }
@@ -62,24 +61,8 @@ impl AcceptedRoster {
 
 #[derive(Debug, Clone)]
 pub(super) struct AcceptedMachine {
-    pub(super) id: MachineName,
     pub(super) stored_document: String,
     pub(super) document: MachineDocument,
-}
-
-/// A valid machine row eligible for explicit removal, including a named row
-/// hidden by canonical-name validation.
-#[derive(Debug, Clone)]
-pub(super) struct MachineRemovalCandidate {
-    pub(super) id: MachineName,
-    pub(super) name: ployz_core::machine::MachineName,
-    pub(super) stored_document: String,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct AcceptedPeer {
-    pub(super) id: PeerName,
-    pub(super) document: PeerDocument,
 }
 
 #[derive(Debug, Clone)]
@@ -98,9 +81,8 @@ pub(super) async fn read_accepted_roster(
     let (cluster_rows, machine_rows, peer_rows) = tokio::try_join!(cluster, machines, peers)?;
 
     let cluster = one_cluster(cluster_id, cluster_rows)?;
-    let AcceptedMachineRows {
+    let AcceptedNamedRows {
         accepted: machines,
-        removal_candidates: machine_removal_candidates,
         skipped: machine_skipped,
     } = accepted_machine_rows(read_named_roster_rows::<MachineDocument>(
         &cluster,
@@ -113,7 +95,6 @@ pub(super) async fn read_accepted_roster(
     let roster = AcceptedRoster {
         cluster,
         machines,
-        machine_removal_candidates,
         machine_skipped,
         peers,
         peer_skipped,
@@ -156,66 +137,31 @@ struct AcceptedNamedRows<Row> {
     skipped: Vec<SkippedRow>,
 }
 
-#[derive(Debug)]
-struct AcceptedMachineRows {
-    accepted: Vec<AcceptedMachine>,
-    removal_candidates: Vec<MachineRemovalCandidate>,
-    skipped: Vec<SkippedRow>,
-}
-
 fn accepted_machine_rows(
     report: ReadReport<MachineDocument>,
-) -> Result<AcceptedMachineRows, MutationStoreError> {
+) -> Result<AcceptedNamedRows<AcceptedMachine>, MutationStoreError> {
     let ReadReport { accepted, skipped } = report;
     let accepted = accepted
         .into_iter()
         .map(|row| {
             let stored_document = row.source.document;
-            Ok(AcceptedMachine {
-                id: MachineName::try_new(row.source.key).map_err(|error| {
-                    MutationStoreError::InvalidAcceptedId {
-                        table: CorrosionTable::Machines,
-                        detail: error.to_string(),
-                    }
-                })?,
+            AcceptedMachine {
                 stored_document,
                 document: row.value,
-            })
-        })
-        .collect::<Result<Vec<_>, MutationStoreError>>()?;
-    let removal_candidates = accepted
-        .iter()
-        .map(|machine| MachineRemovalCandidate {
-            id: machine.id.clone(),
-            name: machine.document.name.clone(),
-            stored_document: machine.stored_document.clone(),
+            }
         })
         .collect::<Vec<_>>();
-    Ok(AcceptedMachineRows {
-        accepted,
-        removal_candidates,
-        skipped,
-    })
+    Ok(AcceptedNamedRows { accepted, skipped })
 }
 
 fn accepted_peer_rows(
     report: ReadReport<PeerDocument>,
-) -> Result<AcceptedNamedRows<AcceptedPeer>, MutationStoreError> {
+) -> Result<AcceptedNamedRows<PeerDocument>, MutationStoreError> {
     let ReadReport { accepted, skipped } = report;
     let accepted = accepted
         .into_iter()
-        .map(|row| {
-            Ok(AcceptedPeer {
-                id: PeerName::try_new(row.source.key).map_err(|error| {
-                    MutationStoreError::InvalidAcceptedId {
-                        table: CorrosionTable::Peers,
-                        detail: error.to_string(),
-                    }
-                })?,
-                document: row.value,
-            })
-        })
-        .collect::<Result<Vec<_>, MutationStoreError>>()?;
+        .map(|row| row.value)
+        .collect::<Vec<_>>();
     Ok(AcceptedNamedRows { accepted, skipped })
 }
 
@@ -1527,15 +1473,8 @@ mod tests {
         let [accepted] = rows.accepted.as_slice() else {
             panic!("expected one accepted machine, got {}", rows.accepted.len());
         };
-        assert_eq!(accepted.id.as_str(), "edge-a");
+        assert_eq!(accepted.document.name.as_str(), "edge-a");
         assert_eq!(accepted.stored_document, machine);
-        assert_eq!(
-            rows.removal_candidates
-                .iter()
-                .map(|candidate| candidate.id.as_str())
-                .collect::<Vec<_>>(),
-            ["edge-a"]
-        );
         let [_skipped] = rows.skipped.as_slice() else {
             panic!("expected one skipped machine, got {}", rows.skipped.len());
         };
