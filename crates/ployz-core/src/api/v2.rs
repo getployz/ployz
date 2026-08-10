@@ -662,6 +662,8 @@ pub struct DeployDesiredReplica {
 pub struct DeployObservedContainer {
     pub container_id: ContainerId,
     pub identity: V2ManagedContainerIdentity,
+    /// Whether the container was running in the controller's inspection.
+    pub running: bool,
     #[serde(default, skip_serializing_if = "HostPortBindings::is_empty")]
     pub host_ports: HostPortBindings,
 }
@@ -682,7 +684,6 @@ pub struct DeployPrepareRequest {
     pub replicas: Vec<DeployDesiredReplica>,
     /// Exact observed containers whose published ports overlap this service's
     /// desired bindings. The target creates replacements before stopping them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stop_before_start: Vec<DeployObservedContainer>,
 }
 
@@ -702,6 +703,9 @@ pub enum DeployPrepareOutcome {
         /// The canonical digest-pinned image used for every returned replica.
         image: ImageReference,
         replicas: Vec<DeployPreparedReplica>,
+        /// Exact incumbents stopped by this preparation that must be restarted
+        /// if the controller abandons the deploy before its state commit.
+        displaced_incumbents: Vec<DeployObservedContainer>,
     },
     Refused {},
     Failed {},
@@ -715,6 +719,8 @@ pub struct DeployRetireRequest {
     pub operation_id: DeployName,
     pub namespace_name: CorrosionNamespaceName,
     pub containers: Vec<DeployObservedContainer>,
+    /// Exact displaced incumbents to restart after removing `containers`.
+    pub restart_after_retire: Vec<DeployObservedContainer>,
 }
 
 /// The terminal answer from one target-host retirement attempt.

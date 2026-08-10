@@ -71,7 +71,11 @@ impl DeployHostEffects {
             .prepare_inner(request, &target, has_named_volumes)
             .await
         {
-            Ok(replicas) => Ok(DeployPrepareOutcome::Prepared { image, replicas }),
+            Ok((replicas, displaced_incumbents)) => Ok(DeployPrepareOutcome::Prepared {
+                image,
+                replicas,
+                displaced_incumbents,
+            }),
             Err(EffectError::Refused) => Ok(DeployPrepareOutcome::Refused {}),
             Err(EffectError::Failed) => Err("prepare failed".to_owned()),
         }
@@ -118,6 +122,10 @@ impl DeployHostEffects {
             .map(|container| DeployObservedContainer {
                 container_id: container.container_id,
                 identity: container.identity,
+                running: matches!(
+                    container.state,
+                    ExistingManagedContainerState::Running { .. }
+                ),
                 host_ports: container.host_ports,
             })
             .collect();
@@ -132,7 +140,7 @@ impl DeployHostEffects {
         request: DeployPrepareRequest,
         target: &V2ManagedContainerIdentity,
         has_named_volumes: bool,
-    ) -> Result<Vec<DeployPreparedReplica>, EffectError> {
+    ) -> Result<(Vec<DeployPreparedReplica>, Vec<DeployObservedContainer>), EffectError> {
         let observed = self.managed_containers().await?;
         if has_named_volumes
             && observed.iter().any(|container| {
@@ -161,7 +169,7 @@ impl DeployHostEffects {
         if result.is_err() {
             self.restart_incumbents(&stopped_incumbents).await;
         }
-        result
+        result.map(|replicas| (replicas, stopped_incumbents))
     }
 
     async fn start_and_gate_replicas(
@@ -233,11 +241,18 @@ impl DeployHostEffects {
                 .stop_v2_managed_container(&target.container_id, &target.identity)
                 .await;
             match outcome {
-                Ok(MachineContainerStopOutcome::StoppedRunning) => stopped.push(target.clone()),
                 Ok(
-                    MachineContainerStopOutcome::AlreadyStopped
-                    | MachineContainerStopOutcome::Missing,
-                ) => {}
+                    outcome @ (MachineContainerStopOutcome::StoppedRunning
+                    | MachineContainerStopOutcome::AlreadyStopped),
+                ) => {
+                    if restart_required(target.running, outcome) {
+                        stopped.push(target.clone());
+                    }
+                }
+                Ok(MachineContainerStopOutcome::Missing) => {
+                    self.restart_incumbents(&stopped).await;
+                    return Err(EffectError::Refused);
+                }
                 Err(_) => {
                     self.restart_incumbents(&stopped).await;
                     return Err(EffectError::Failed);
@@ -257,29 +272,93 @@ impl DeployHostEffects {
     }
 
     async fn retire_inner(&self, request: DeployRetireRequest) -> Result<(), EffectError> {
+        let is_rollback = !request.restart_after_retire.is_empty();
+        if request.containers.iter().any(|container| {
+            container.identity.namespace_id != request.namespace_name
+                || is_rollback && container.identity.operation_id != request.operation_id
+        }) || request.restart_after_retire.iter().any(|incumbent| {
+            incumbent.identity.namespace_id != request.namespace_name
+                || incumbent.identity.operation_id == request.operation_id
+                || !incumbent.running
+        }) {
+            return Err(EffectError::Refused);
+        }
         let observed = self.managed_containers().await?;
-        for target in &request.containers {
+        if request.containers.iter().any(|container| {
+            request
+                .restart_after_retire
+                .iter()
+                .any(|incumbent| incumbent.container_id == container.container_id)
+        }) {
+            return Err(EffectError::Refused);
+        }
+        for target in request
+            .containers
+            .iter()
+            .chain(&request.restart_after_retire)
+        {
             let Some(actual) = observed
                 .iter()
                 .find(|container| container.container_id == target.container_id)
             else {
+                if request
+                    .restart_after_retire
+                    .iter()
+                    .any(|restart| restart.container_id == target.container_id)
+                {
+                    return Err(EffectError::Refused);
+                }
                 continue;
             };
             if actual.identity != target.identity {
                 return Err(EffectError::Refused);
             }
         }
+        let mut failed = false;
         for target in request.containers {
-            self.runtime
+            if self
+                .runtime
                 .stop_v2_managed_container(&target.container_id, &target.identity)
                 .await
-                .map_err(|_| EffectError::Failed)?;
-            self.runtime
+                .is_err()
+            {
+                failed = true;
+                continue;
+            }
+            if self
+                .runtime
                 .remove_v2_managed_container(&target.container_id, &target.identity)
                 .await
-                .map_err(|_| EffectError::Failed)?;
+                .is_err()
+            {
+                failed = true;
+            }
         }
-        Ok(())
+        for incumbent in request.restart_after_retire {
+            let state = observed
+                .iter()
+                .find(|container| container.container_id == incumbent.container_id)
+                .map(|container| &container.state);
+            match state {
+                Some(ExistingManagedContainerState::Running { .. }) => {}
+                Some(ExistingManagedContainerState::StartableStopped) => {
+                    if self
+                        .runtime
+                        .start_v2_managed_container(&incumbent.container_id)
+                        .await
+                        .is_err()
+                    {
+                        failed = true;
+                    }
+                }
+                Some(ExistingManagedContainerState::NotStartable { .. }) | None => failed = true,
+            }
+        }
+        if failed {
+            Err(EffectError::Failed)
+        } else {
+            Ok(())
+        }
     }
 
     async fn managed_containers(&self) -> Result<Vec<ExistingV2ManagedContainer>, EffectError> {
@@ -311,6 +390,12 @@ impl DeployHostEffects {
             tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
         }
     }
+}
+
+fn restart_required(was_running_at_inspection: bool, outcome: MachineContainerStopOutcome) -> bool {
+    matches!(outcome, MachineContainerStopOutcome::StoppedRunning)
+        || was_running_at_inspection
+            && matches!(outcome, MachineContainerStopOutcome::AlreadyStopped)
 }
 
 fn health_gate_ready(
@@ -476,5 +561,17 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn replay_restarts_an_incumbent_that_the_first_attempt_already_stopped() {
+        assert!(restart_required(
+            true,
+            MachineContainerStopOutcome::AlreadyStopped
+        ));
+        assert!(!restart_required(
+            false,
+            MachineContainerStopOutcome::AlreadyStopped
+        ));
     }
 }
