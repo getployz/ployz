@@ -15,8 +15,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 pub const CLUSTER_ID: &str = "main";
-pub const MACHINE_A_ID: &str = "edge-a";
-pub const MACHINE_B_ID: &str = "edge-b";
+pub const MACHINE_A_NAME: &str = "edge-a";
+pub const MACHINE_B_NAME: &str = "edge-b";
 pub const PROBE_NAMESPACE_ID: &str = "gossip-proof";
 pub const CORROSION_TOKEN: &str = "ployz-dind-corrosion";
 pub const CORROSION_API_PORT: u16 = 8_080;
@@ -720,7 +720,7 @@ mod tests {
     fn api_unit_binds_the_derived_machine_ula() {
         let address = "fd12:3456:789a::42".parse().expect("ULA");
 
-        let unit = render_api_unit(MACHINE_A_ID, address);
+        let unit = render_api_unit(MACHINE_A_NAME, address);
 
         assert!(unit.contains("Environment=PLOYZ_API_LISTEN_ADDR=[fd12:3456:789a::42]:2020"));
         assert!(!unit.contains("PLOYZ_API_LISTEN_ADDR=[::]:"));
@@ -730,7 +730,7 @@ mod tests {
     fn api_fixture_declares_every_complete_join_door_input() {
         let address = "fd12:3456:789a::42".parse().expect("ULA");
 
-        let unit = render_api_unit(MACHINE_A_ID, address);
+        let unit = render_api_unit(MACHINE_A_NAME, address);
 
         for expected in [
             "Environment=PLOYZ_API_DOOR_PRIVATE_KEY_PATH=/var/lib/ployz/door.key",

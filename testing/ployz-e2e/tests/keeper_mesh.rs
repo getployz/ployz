@@ -70,8 +70,8 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     activate_default_deny_firewall(docker, machine_a).await?;
     activate_default_deny_firewall(docker, machine_b).await?;
 
-    install_keeper_unit(docker, machine_a, MACHINE_A_ID, TEST_BRIDGE_INTERFACE).await?;
-    install_keeper_unit(docker, machine_b, MACHINE_B_ID, TEST_BRIDGE_INTERFACE).await?;
+    install_keeper_unit(docker, machine_a, MACHINE_A_NAME, TEST_BRIDGE_INTERFACE).await?;
+    install_keeper_unit(docker, machine_b, MACHINE_B_NAME, TEST_BRIDGE_INTERFACE).await?;
     start_unit(docker, machine_a, "ployz-keeper.service").await?;
     start_unit(docker, machine_b, "ployz-keeper.service").await?;
     assert_keeper_isolation_root(docker, machine_a, "ployz-keeper.service").await?;
@@ -123,8 +123,8 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     assert_product_configured_mesh_firewall(docker, machine_a, [&subnet_a, &subnet_b]).await?;
     assert_product_configured_mesh_firewall(docker, machine_b, [&subnet_a, &subnet_b]).await?;
 
-    install_api_unit(docker, machine_a, MACHINE_A_ID, address_a).await?;
-    install_api_unit(docker, machine_b, MACHINE_B_ID, address_b).await?;
+    install_api_unit(docker, machine_a, MACHINE_A_NAME, address_a).await?;
+    install_api_unit(docker, machine_b, MACHINE_B_NAME, address_b).await?;
     start_unit(docker, machine_a, "ployz-api.service").await?;
     start_unit(docker, machine_b, "ployz-api.service").await?;
     wait_for_ula_version(docker, machine_a, address_b).await?;
@@ -133,14 +133,14 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     wait_for_mesh_status(
         docker,
         machine_a,
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
         MeshStatusExpectation::BridgeMissing,
     )
     .await?;
     wait_for_mesh_status(
         docker,
         machine_b,
-        MACHINE_B_ID,
+        MACHINE_B_NAME,
         MeshStatusExpectation::BridgeMissing,
     )
     .await?;
@@ -153,14 +153,14 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     wait_for_mesh_status(
         docker,
         machine_a,
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
         MeshStatusExpectation::Ready,
     )
     .await?;
     wait_for_mesh_status(
         docker,
         machine_b,
-        MACHINE_B_ID,
+        MACHINE_B_NAME,
         MeshStatusExpectation::Ready,
     )
     .await?;
@@ -168,13 +168,14 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     assert_exact_route_map(docker, machine_b, [10, 210, 10, 0], 24).await?;
     assert_status_ownership(docker, machine_a).await?;
     assert_status_ownership(docker, machine_b).await?;
-    diagnostics::wait_for_absolute_handshake(docker, machine_b, MACHINE_B_ID, MACHINE_A_ID).await?;
-    diagnostics::wait_for_public_status_handshake(docker, machine_a, address_b, MACHINE_A_ID)
+    diagnostics::wait_for_absolute_handshake(docker, machine_b, MACHINE_B_NAME, MACHINE_A_NAME)
+        .await?;
+    diagnostics::wait_for_public_status_handshake(docker, machine_a, address_b, MACHINE_A_NAME)
         .await?;
 
-    let delete_b = json!([["DELETE FROM machines WHERE id = ?", [MACHINE_B_ID]]]);
+    let delete_b = json!([["DELETE FROM machines WHERE id = ?", [MACHINE_B_NAME]]]);
     corrosion_transaction(docker, machine_a, &delete_b).await?;
-    wait_for_corrosion_row_absent(docker, machine_b, "machines", MACHINE_B_ID).await?;
+    wait_for_corrosion_row_absent(docker, machine_b, "machines", MACHINE_B_NAME).await?;
     wait_for_peer_absent(docker, machine_a, &public_key_b).await?;
     wait_for_route_absent(docker, machine_a, "10.210.20.0/24").await?;
     wait_for_route_absent(docker, machine_a, &subnet_b).await?;
@@ -195,7 +196,7 @@ async fn exercise_keeper_mesh(docker: &Docker, cluster: &DindCluster) -> Result<
     wait_for_mesh_status(
         docker,
         machine_a,
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
         MeshStatusExpectation::KeyMismatch,
     )
     .await?;
@@ -209,7 +210,7 @@ fn mismatched_machine_a_transaction(
 ) -> Result<Value, String> {
     let document = machine_document(
         "edge-a",
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
         public_key_a,
         mismatched_address,
         endpoint(machine_a)?,
@@ -220,7 +221,7 @@ fn mismatched_machine_a_transaction(
         "UPDATE machines SET document = ? WHERE id = ?",
         [
             serde_json::to_string(&document).map_err(|error| error.to_string())?,
-            MACHINE_A_ID
+            MACHINE_A_NAME
         ]
     ]]))
 }
@@ -272,12 +273,12 @@ fn roster_transaction(
         "provider": "builtin_wireguard",
         "acme_directory_url": "https://acme.invalid/directory",
         "acme_contact": null,
-        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
+        "written_by": {"kind": "machine", "machine_id": MACHINE_A_NAME},
         "written_at": "2026-08-04T10:00:00.000000000Z"
     });
     let machine_a_document = machine_document(
         "edge-a",
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
         public_key_a,
         address_a,
         endpoint_a,
@@ -286,7 +287,7 @@ fn roster_transaction(
     );
     let machine_b_document = machine_document(
         "edge-b",
-        MACHINE_B_ID,
+        MACHINE_B_NAME,
         public_key_b,
         address_b,
         endpoint_b,
@@ -304,14 +305,14 @@ fn roster_transaction(
         [
             "INSERT INTO machines (id, document) VALUES (?, ?)",
             [
-                MACHINE_A_ID,
+                MACHINE_A_NAME,
                 serde_json::to_string(&machine_a_document).map_err(|error| error.to_string())?
             ]
         ],
         [
             "INSERT INTO machines (id, document) VALUES (?, ?)",
             [
-                MACHINE_B_ID,
+                MACHINE_B_NAME,
                 serde_json::to_string(&machine_b_document).map_err(|error| error.to_string())?
             ]
         ]
@@ -498,7 +499,7 @@ fn probe_namespace_transaction() -> Result<Value, String> {
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "gossip-proof",
-        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
+        "written_by": {"kind": "machine", "machine_id": MACHINE_A_NAME},
         "written_at": "2026-08-04T10:01:00.000000000Z"
     });
     Ok(json!([[
@@ -841,7 +842,7 @@ fn mesh_status_matching_is_structural() {
             "attempted_at": "2026-08-04T10:00:30Z",
             "mismatches": [{
                 "kind": "stored_ipv6_address",
-                "member_id": {"kind": "machine", "machine_id": MACHINE_A_ID},
+                "member_id": {"kind": "machine", "machine_id": MACHINE_A_NAME},
                 "stored": "fd00::1",
                 "derived": "fd00::2"
             }]
