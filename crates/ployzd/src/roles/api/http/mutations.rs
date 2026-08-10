@@ -35,7 +35,8 @@ use super::server::{
 };
 use super::store::{
     MutationStoreError, delete_token, insert_token, read_accepted_roster, read_machine, read_token,
-    read_tokens, remove_machine_and_sweep, update_wireguard_endpoint_if_matches,
+    read_tokens, remove_machine_and_sweep, token_name_is_occupied,
+    update_wireguard_endpoint_if_matches,
 };
 
 const MAX_MUTATION_REQUEST_BYTES: usize = 64 * 1024;
@@ -233,6 +234,16 @@ async fn token_create(
         Err(()) => return corrosion_unavailable_response(),
     };
     let token_id = request.name;
+    match token_name_is_occupied(&service.corrosion, &token_id).await {
+        Ok(true) => {
+            return typed_response(
+                StatusCode::CONFLICT,
+                &ployz_core::join::TokenCreateRefusal::NameConflict { name: token_id },
+            );
+        }
+        Ok(false) => {}
+        Err(error) => return store_failure("check token name", error),
+    }
     let mut secret_bytes = [0_u8; 32];
     if let Err(error) = getrandom::fill(&mut secret_bytes) {
         tracing::error!(error = %error, "operating-system randomness failed for join token");

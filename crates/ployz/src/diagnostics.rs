@@ -220,6 +220,7 @@ fn render_handshake(handshake: &StatusHandshakeEvidence) -> String {
 pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
     let actionable_foreign_authors = actionable_foreign_authors(document);
     let has_findings = !document.skipped_roster_rows.is_empty()
+        || !document.noncanonical_rows.is_empty()
         || !document.skipped_newer_versions.is_empty()
         || !document.versions.behind.is_empty()
         || !document.versions.invalid.is_empty()
@@ -240,6 +241,17 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             },
             skipped.key,
             render_roster_skip_reason(&skipped.reason)
+        )
+        .expect("writing to a String cannot fail");
+    }
+
+    for row in &document.noncanonical_rows {
+        writeln!(
+            output,
+            "\n⚠ noncanonical row: {} {} (expected {})",
+            row.table.as_str(),
+            row.key,
+            row.expected,
         )
         .expect("writing to a String cannot fail");
     }
@@ -376,9 +388,6 @@ fn render_roster_skip_reason(reason: &DoctorRosterRowSkipReason) -> String {
                 "invalid document payload".to_owned()
             }
         },
-        DoctorRosterRowSkipReason::InvalidRowKey { expected } => {
-            format!("noncanonical row key; expected {expected}")
-        }
     }
 }
 
@@ -432,6 +441,8 @@ fn render_unreachable(error: &OperatorRemoteError) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::DoctorNoncanonicalRow;
+    use ployz_core::corrosion::CorrosionTable;
     use serde_json::json;
 
     use super::*;
@@ -684,22 +695,18 @@ mod tests {
     }
 
     #[test]
-    fn noncanonical_roster_row_names_its_exact_expected_key() {
+    fn noncanonical_row_names_its_table_and_exact_expected_key() {
         let mut document = doctor_fixture();
-        document.skipped_roster_rows = vec![ployz_core::DoctorSkippedRosterRow {
-            table: DoctorRosterTable::Machines,
+        document.noncanonical_rows = vec![DoctorNoncanonicalRow {
+            table: CorrosionTable::Services,
             key: "wrong-key".to_owned(),
-            reason: DoctorRosterRowSkipReason::InvalidRowKey {
-                expected: "edge-a".to_owned(),
-            },
+            expected: "production/web".to_owned(),
         }];
 
         let (output, has_findings) = render_doctor(&document);
 
         assert!(has_findings);
-        assert!(output.contains(
-            "skipped roster row: machine wrong-key (noncanonical row key; expected edge-a)"
-        ));
+        assert!(output.contains("noncanonical row: services wrong-key (expected production/web)"));
     }
 
     #[test]

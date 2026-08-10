@@ -408,6 +408,7 @@ pub enum AdvertisedJoinDoorEndpointsError {
 pub enum TokenCreateRefusal {
     NoAdvertisedDoorEndpoint { repair_command: String },
     TooManyAdvertisedDoorEndpoints { found: usize, maximum: usize },
+    NameConflict { name: TokenName },
 }
 
 /// Derives public HTTPS addresses from accepted WireGuard endpoint IPs.

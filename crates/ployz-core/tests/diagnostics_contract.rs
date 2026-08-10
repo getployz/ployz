@@ -12,11 +12,11 @@ use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::{
     DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorMalformedRosterDocumentClass,
-    DoctorProjectionInput, DoctorRawRows, DoctorRosterRowSkipReason, DoctorRosterTable,
-    HandshakeFreshness, KnownApiFeature, MachineLensRow, STATUS_ROUTE, StatusAnsweringMachine,
-    StatusBarrier, StatusCorrosionHealth, StatusDegradationReason, StatusDocument,
-    StatusHandshakeEvidence, StatusHint, StatusProjectionInput, StatusSync, V2Method, V2Route,
-    project_doctor, project_status,
+    DoctorNoncanonicalRow, DoctorProjectionInput, DoctorRawRows, DoctorRosterRowSkipReason,
+    DoctorRosterTable, HandshakeFreshness, KnownApiFeature, MachineLensRow, STATUS_ROUTE,
+    StatusAnsweringMachine, StatusBarrier, StatusCorrosionHealth, StatusDegradationReason,
+    StatusDocument, StatusHandshakeEvidence, StatusHint, StatusProjectionInput, StatusSync,
+    V2Method, V2Route, project_doctor, project_status,
 };
 use serde_json::json;
 
@@ -538,6 +538,22 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
         .expect("peer fixture has transport") = json!({"kind": "unknown"});
     let machine_wrong_key = named_document("machines", "machine-canonical");
     let peer_wrong_key = named_document("peers", "peer-canonical");
+    let service_wrong_key = json!({
+        "v": 1,
+        "cluster_id": CLUSTER,
+        "written_by": {"kind": "peer", "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAX"},
+        "written_at": "2026-08-04T10:00:00.000000000Z",
+        "namespace_id": "production",
+        "name": "web",
+        "image": "registry.example/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "env_fingerprints": {},
+        "mode": "replicated",
+        "replicas": 1,
+        "pinned_machines": [],
+        "active_deploy": "release-1",
+        "previous_image": null,
+        "deployed_at": "2026-08-04T10:00:00.000000000Z"
+    });
 
     let mut rows = DoctorRawRows::empty();
     rows.machines = vec![
@@ -566,6 +582,7 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
             json!({"v": 1, "cluster_id": foreign_cluster}),
         ),
     ];
+    rows.services = vec![row("production/api", service_wrong_key)];
 
     let doctor = project_doctor(DoctorProjectionInput {
         cluster: cluster(),
@@ -591,13 +608,6 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
                 },
             },
             ployz_core::DoctorSkippedRosterRow {
-                table: DoctorRosterTable::Machines,
-                key: "machine-wrong-key".to_owned(),
-                reason: DoctorRosterRowSkipReason::InvalidRowKey {
-                    expected: "machine-canonical".to_owned(),
-                },
-            },
-            ployz_core::DoctorSkippedRosterRow {
                 table: DoctorRosterTable::Peers,
                 key: "peer-malformed".to_owned(),
                 reason: DoctorRosterRowSkipReason::MalformedDocument {
@@ -612,12 +622,25 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
                     found: MeshProvider::Tailscale,
                 },
             },
-            ployz_core::DoctorSkippedRosterRow {
-                table: DoctorRosterTable::Peers,
+        ]
+    );
+    assert_eq!(
+        doctor.noncanonical_rows,
+        vec![
+            DoctorNoncanonicalRow {
+                table: CorrosionTable::Machines,
+                key: "machine-wrong-key".to_owned(),
+                expected: "machine-canonical".to_owned(),
+            },
+            DoctorNoncanonicalRow {
+                table: CorrosionTable::Peers,
                 key: "peer-wrong-key".to_owned(),
-                reason: DoctorRosterRowSkipReason::InvalidRowKey {
-                    expected: "peer-canonical".to_owned(),
-                },
+                expected: "peer-canonical".to_owned(),
+            },
+            DoctorNoncanonicalRow {
+                table: CorrosionTable::Services,
+                key: "production/api".to_owned(),
+                expected: "production/web".to_owned(),
             },
         ]
     );
@@ -649,16 +672,16 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
             "class": {"kind": "invalid_payload"}
         })
     );
-    let wrong_key_reason = doctor
-        .skipped_roster_rows
+    let wrong_key = doctor
+        .noncanonical_rows
         .iter()
         .find(|row| row.key == "machine-wrong-key")
-        .map(|row| &row.reason)
         .expect("expected noncanonical machine evidence");
     assert_eq!(
-        serde_json::to_value(wrong_key_reason).expect("roster skip reason serializes"),
+        serde_json::to_value(wrong_key).expect("noncanonical row serializes"),
         json!({
-            "kind": "invalid_row_key",
+            "table": "machines",
+            "key": "machine-wrong-key",
             "expected": "machine-canonical"
         })
     );

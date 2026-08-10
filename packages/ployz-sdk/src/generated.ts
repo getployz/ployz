@@ -153,7 +153,7 @@ machines?: RequestedPins | null, };
 
 export type DeployServices = Record<CorrosionServiceName, DeployServiceRequest>;
 
-export type DoctorDocument = { skipped_roster_rows: Array<DoctorSkippedRosterRow>, skipped_newer_versions: Array<DoctorSkippedNewerVersion>, versions: DoctorVersionReport, foreign_clusters: Array<DoctorForeignClusterRows>, };
+export type DoctorDocument = { skipped_roster_rows: Array<DoctorSkippedRosterRow>, noncanonical_rows: Array<DoctorNoncanonicalRow>, skipped_newer_versions: Array<DoctorSkippedNewerVersion>, versions: DoctorVersionReport, foreign_clusters: Array<DoctorForeignClusterRows>, };
 
 export type DoctorForeignAuthorship = { "kind": "current_machine", machine: DoctorMachineIdentity, } | { "kind": "non_current_machine", machine_id: MachineName, } | { "kind": "peer", peer_id: PeerName, } | { "kind": "api_token", token_id: TokenName, } | { "kind": "unparseable" };
 
@@ -169,7 +169,9 @@ export type DoctorMalformedRosterDocumentClass = { "kind": "missing_version" } |
 
 export type DoctorNewestVersion = { version: string, machines: Array<DoctorMachineIdentity>, };
 
-export type DoctorRosterRowSkipReason = { "kind": "mesh_provider_mismatch", expected: MeshProvider, found: MeshProvider, } | { "kind": "malformed_document", class: DoctorMalformedRosterDocumentClass, } | { "kind": "invalid_row_key", expected: string, };
+export type DoctorNoncanonicalRow = { table: CorrosionTable, key: string, expected: string, };
+
+export type DoctorRosterRowSkipReason = { "kind": "mesh_provider_mismatch", expected: MeshProvider, found: MeshProvider, } | { "kind": "malformed_document", class: DoctorMalformedRosterDocumentClass, };
 
 export type DoctorRosterTable = "machines" | "peers";
 
@@ -524,7 +526,7 @@ export type StatusSync = { "state": "caught_up", p99_lag: number, } | { "state":
 
 export type StorageMode = "plain" | "zfs";
 
-export type TokenCreateRefusal = { "kind": "no_advertised_door_endpoint", repair_command: string, } | { "kind": "too_many_advertised_door_endpoints", found: number, maximum: number, };
+export type TokenCreateRefusal = { "kind": "no_advertised_door_endpoint", repair_command: string, } | { "kind": "too_many_advertised_door_endpoints", found: number, maximum: number, } | { "kind": "name_conflict", name: TokenName, };
 
 export type TokenCreateReply = { token_id: TokenName, blob: JoinBlob, created_at: CorrosionTimestamp, expires_at: CorrosionTimestamp, };
 

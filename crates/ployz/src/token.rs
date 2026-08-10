@@ -45,6 +45,9 @@ async fn create(command: TokenCreateCommand) -> Result<String, TokenExecutionErr
         }) => {
             return Err(TokenExecutionError::TooManyAdvertisedDoorEndpoints { found, maximum });
         }
+        JsonReply::Refused(TokenCreateRefusal::NameConflict { name }) => {
+            return Err(TokenExecutionError::TokenNameConflict { name });
+        }
     };
     Ok(render_token_create(
         &reply.token_id,
@@ -113,6 +116,8 @@ pub enum TokenExecutionError {
         "cannot create a join token because the cluster advertises {found} door endpoints; this version supports at most {maximum}"
     )]
     TooManyAdvertisedDoorEndpoints { found: usize, maximum: usize },
+    #[error("join token {name} already exists; revoke it or choose another name")]
+    TokenNameConflict { name: TokenName },
     #[error("join token {token_id} does not exist or was already revoked")]
     TokenNotFound { token_id: TokenName },
 }

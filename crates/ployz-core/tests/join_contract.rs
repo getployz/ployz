@@ -200,6 +200,16 @@ fn token_creation_without_an_advertised_door_names_the_exact_repair() {
 }
 
 #[test]
+fn token_name_conflict_is_a_typed_client_refusal() {
+    let name = TokenName::try_new("bootstrap").expect("token name");
+    assert_eq!(
+        serde_json::to_value(TokenCreateRefusal::NameConflict { name })
+            .expect("refusal serializes"),
+        serde_json::json!({"kind": "name_conflict", "name": "bootstrap"})
+    );
+}
+
+#[test]
 fn token_ttl_is_bounded() {
     assert_eq!(JoinTokenTtlSeconds::default_v1().get(), 24 * 60 * 60);
     assert!(JoinTokenTtlSeconds::try_new(JoinTokenTtlSeconds::MIN - 1).is_err());

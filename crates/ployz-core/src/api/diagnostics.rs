@@ -388,6 +388,8 @@ pub struct DoctorProjectionInput {
 pub struct DoctorDocument {
     #[serde(default)]
     pub skipped_roster_rows: Vec<DoctorSkippedRosterRow>,
+    #[serde(default)]
+    pub noncanonical_rows: Vec<DoctorNoncanonicalRow>,
     pub skipped_newer_versions: Vec<DoctorSkippedNewerVersion>,
     pub versions: DoctorVersionReport,
     pub foreign_clusters: Vec<DoctorForeignClusterRows>,
@@ -400,6 +402,15 @@ pub struct DoctorSkippedRosterRow {
     pub table: DoctorRosterTable,
     pub key: String,
     pub reason: DoctorRosterRowSkipReason,
+}
+
+/// One same-cluster row whose key does not match its typed identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DoctorNoncanonicalRow {
+    pub table: CorrosionTable,
+    pub key: String,
+    pub expected: String,
 }
 
 /// The two tables that can carry cluster roster rows.
@@ -422,9 +433,6 @@ pub enum DoctorRosterRowSkipReason {
     },
     MalformedDocument {
         class: DoctorMalformedRosterDocumentClass,
-    },
-    InvalidRowKey {
-        expected: String,
     },
 }
 
@@ -533,6 +541,12 @@ pub fn project_doctor(input: DoctorProjectionInput) -> DoctorDocument {
         .collect::<BTreeMap<_, _>>();
 
     let peer_report = read_named_roster_rows::<PeerDocument>(&cluster, rows.peers.clone());
+    let noncanonical_rows = noncanonical_row_evidence(
+        &cluster.cluster_id,
+        &rows,
+        &machine_report.skipped,
+        &peer_report.skipped,
+    );
     let mut skipped_roster_rows =
         map_roster_skips(DoctorRosterTable::Machines, machine_report.skipped);
     skipped_roster_rows.extend(map_roster_skips(
@@ -547,6 +561,7 @@ pub fn project_doctor(input: DoctorProjectionInput) -> DoctorDocument {
 
     DoctorDocument {
         skipped_roster_rows,
+        noncanonical_rows,
         skipped_newer_versions: newer_version_evidence(&cluster.cluster_id, &rows),
         versions: project_versions(&cluster.cluster_id, &rows.machine_status, &current_machines),
         foreign_clusters: project_foreign_clusters(&cluster.cluster_id, &rows, &current_machines),
@@ -569,9 +584,7 @@ fn map_roster_skips(
                         class: map_malformed_roster_document(malformed)?,
                     }
                 }
-                RowSkipReason::InvalidRowKey { expected } => {
-                    DoctorRosterRowSkipReason::InvalidRowKey { expected }
-                }
+                RowSkipReason::InvalidRowKey { .. } => return None,
                 RowSkipReason::Empty
                 | RowSkipReason::ForeignCluster { .. }
                 | RowSkipReason::NewerVersion { .. } => return None,
@@ -583,6 +596,67 @@ fn map_roster_skips(
             })
         })
         .collect()
+}
+
+fn noncanonical_row_evidence(
+    cluster_id: &ClusterName,
+    rows: &DoctorRawRows,
+    machine_skips: &[SkippedRow],
+    peer_skips: &[SkippedRow],
+) -> Vec<DoctorNoncanonicalRow> {
+    let mut evidence = Vec::new();
+    extend_noncanonical(&mut evidence, CorrosionTable::Machines, machine_skips);
+    extend_noncanonical(&mut evidence, CorrosionTable::Peers, peer_skips);
+
+    macro_rules! read_table {
+        ($table:ident, $document:ty, $rows:ident) => {
+            extend_noncanonical(
+                &mut evidence,
+                CorrosionTable::$table,
+                &read_rows::<$document>(cluster_id, rows.$rows.clone()).skipped,
+            );
+        };
+    }
+    read_table!(Cluster, ClusterDocument, cluster);
+    read_table!(Tokens, TokenDocument, tokens);
+    read_table!(Namespaces, NamespaceDocument, namespaces);
+    read_table!(Services, ServiceDocument, services);
+    read_table!(RouteBindings, RouteBindingDocument, route_bindings);
+    read_table!(Controller, ControllerDocument, controller);
+    read_table!(Containers, ContainerDocument, containers);
+    read_table!(MachineStatus, MachineStatusDocument, machine_status);
+    read_table!(
+        GatewayObservations,
+        GatewayObservationDocument,
+        gateway_observations
+    );
+    read_table!(Operations, OperationDocument, operations);
+    read_table!(CertHoldings, CertHoldingDocument, cert_holdings);
+    read_table!(AcmeHttp01, AcmeHttp01Document, acme_http01);
+
+    evidence.sort_by(|left, right| {
+        left.table
+            .cmp(&right.table)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    evidence
+}
+
+fn extend_noncanonical(
+    evidence: &mut Vec<DoctorNoncanonicalRow>,
+    table: CorrosionTable,
+    skipped: &[SkippedRow],
+) {
+    evidence.extend(skipped.iter().filter_map(|skipped| {
+        let RowSkipReason::InvalidRowKey { expected } = &skipped.reason else {
+            return None;
+        };
+        Some(DoctorNoncanonicalRow {
+            table,
+            key: skipped.source.key.clone(),
+            expected: expected.clone(),
+        })
+    }));
 }
 
 fn map_malformed_roster_document(

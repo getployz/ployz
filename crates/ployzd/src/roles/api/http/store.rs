@@ -255,6 +255,24 @@ pub(super) async fn read_token(
     Ok(token)
 }
 
+/// Reports whether the exact token primary key is occupied without interpreting
+/// its document. A skipped row still blocks a same-name insert.
+pub(super) async fn token_name_is_occupied(
+    corrosion: &CorrosionClient,
+    token_id: &TokenName,
+) -> Result<bool, MutationStoreError> {
+    let rows = query_rows(
+        corrosion,
+        select_by_id(CorrosionTable::Tokens, token_id.as_str()),
+    )
+    .await?;
+    Ok(raw_token_name_is_occupied(&rows))
+}
+
+fn raw_token_name_is_occupied(rows: &[StoredRow]) -> bool {
+    !rows.is_empty()
+}
+
 pub(super) async fn read_machine(
     corrosion: &CorrosionClient,
     cluster: &ClusterDocument,
@@ -915,6 +933,19 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn token_name_occupancy_does_not_depend_on_document_acceptance() {
+        assert!(!raw_token_name_is_occupied(&[]));
+        assert!(raw_token_name_is_occupied(&[StoredRow::new(
+            "bootstrap",
+            "not JSON",
+        )]));
+        assert!(raw_token_name_is_occupied(&[StoredRow::new(
+            "bootstrap",
+            r#"{"v":2,"cluster_id":"foreign"}"#,
+        )]));
+    }
 
     #[test]
     fn every_mutation_statement_is_parameterized() {
