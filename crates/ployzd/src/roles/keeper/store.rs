@@ -28,6 +28,7 @@ pub(super) struct KeeperRosterSnapshot {
 #[derive(Debug)]
 pub(super) struct KeeperIsolationSnapshot {
     pub(super) cluster: ClusterDocument,
+    pub(super) machines: ReadReport<MachineDocument>,
     pub(super) machine_endpoints: ReadReport<MachineEndpointDocument>,
     pub(super) local_status: Option<MachineStatusDocument>,
 }
@@ -150,12 +151,14 @@ impl KeeperCorrosion {
 
     pub(super) async fn read_isolation(&self) -> Result<KeeperIsolationSnapshot, KeeperStoreError> {
         let cluster = query_rows(&self.client, cluster_statement(&self.cluster_id));
+        let machines = query_rows(&self.client, table_statement("machines"));
         let machine_endpoints = query_machine_endpoint_rows(&self.client);
         let status = query_rows(&self.client, local_status_statement(&self.local_machine_id));
-        let (cluster_rows, machine_endpoint_rows, status_rows) =
-            tokio::try_join!(cluster, machine_endpoints, status)?;
+        let (cluster_rows, machine_rows, machine_endpoint_rows, status_rows) =
+            tokio::try_join!(cluster, machines, machine_endpoints, status)?;
         let cluster = accepted_cluster(&self.cluster_id, cluster_rows)?;
         Ok(KeeperIsolationSnapshot {
+            machines: read_named_roster_rows::<MachineDocument>(&cluster, machine_rows),
             machine_endpoints: read_rows::<MachineEndpointDocument>(
                 &self.cluster_id,
                 machine_endpoint_rows,

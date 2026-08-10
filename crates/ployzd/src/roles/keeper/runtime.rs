@@ -397,8 +397,15 @@ async fn reconcile_once(
         .as_ref()
         .and_then(|status| status.container_isolation.clone())
         .or_else(|| isolation.testimony.clone());
-    let isolation_projection = machine_endpoints
-        .map(|rows| project_container_isolation(snapshot.cluster.prefix.clone(), rows));
+    let accepted_machines = snapshot
+        .machines
+        .accepted
+        .iter()
+        .map(|row| row.value.name.clone())
+        .collect();
+    let isolation_projection = machine_endpoints.map(|rows| {
+        project_container_isolation(snapshot.cluster.prefix.clone(), &accepted_machines, rows)
+    });
     isolation.eligible = false;
     let outcome = project_builtin_wireguard_mesh(
         &snapshot.cluster,
@@ -649,8 +656,17 @@ async fn reconcile_isolation_only(
     }
     let snapshot = store.read_isolation().await.map_err(retry_store)?;
     isolation.seed(snapshot.local_status.as_ref());
-    let projection =
-        project_container_isolation(snapshot.cluster.prefix, snapshot.machine_endpoints);
+    let accepted_machines = snapshot
+        .machines
+        .accepted
+        .into_iter()
+        .map(|row| row.value.name)
+        .collect();
+    let projection = project_container_isolation(
+        snapshot.cluster.prefix,
+        &accepted_machines,
+        snapshot.machine_endpoints,
+    );
     if isolation_capacity_error(projection.evidence.observed_endpoints).is_none()
         && isolation.is_successfully_applied(&projection.desired)
     {

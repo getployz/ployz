@@ -1,12 +1,12 @@
 //! Complete container-IP namespace projection for Keeper's isolation wall.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
 use super::{MachineEndpointDocument, ReadReport, SkippedRow, service_endpoint_key};
-use crate::ids::CorrosionNamespaceName;
+use crate::ids::{CorrosionNamespaceName, MachineName};
 use crate::network::MachineEndpointSupernet;
 
 /// One accepted `container_ip -> namespace` mapping.
@@ -69,12 +69,17 @@ pub struct ContainerIsolationProjection {
 #[must_use]
 pub fn project_container_isolation(
     prefix: MachineEndpointSupernet,
+    accepted_machines: &BTreeSet<MachineName>,
     report: ReadReport<MachineEndpointDocument>,
 ) -> ContainerIsolationProjection {
     let ReadReport {
         accepted,
         mut skipped,
     } = report;
+    let accepted = accepted
+        .into_iter()
+        .filter(|row| accepted_machines.contains(&row.value.machine_id))
+        .collect::<Vec<_>>();
     let observed_endpoints = accepted
         .iter()
         .map(|row| row.value.endpoints.len())
@@ -196,6 +201,7 @@ mod tests {
 
         let projection = project_container_isolation(
             MachineEndpointSupernet::try_new("10.77.0.0/16").expect("prefix"),
+            &BTreeSet::from([MachineName::try_new(MACHINE).expect("machine")]),
             report,
         );
 
@@ -227,6 +233,7 @@ mod tests {
     fn projection_rejects_outside_prefix_and_reserved_host_octets() {
         let projection = project_container_isolation(
             MachineEndpointSupernet::try_new("10.77.0.0/16").expect("prefix"),
+            &BTreeSet::from([MachineName::try_new(MACHINE).expect("machine")]),
             ReadReport {
                 accepted: vec![
                     row("network", "10.77.9.0", NAMESPACE_A),
@@ -260,5 +267,20 @@ mod tests {
             broadcast.reason,
             ContainerIsolationAddressRejection::ReservedHostOctet
         );
+    }
+
+    #[test]
+    fn projection_ignores_endpoint_testimony_outside_the_local_roster() {
+        let projection = project_container_isolation(
+            MachineEndpointSupernet::try_new("10.77.0.0/16").expect("prefix"),
+            &BTreeSet::new(),
+            ReadReport {
+                accepted: vec![row("removed", "10.77.2.2", NAMESPACE_A)],
+                skipped: Vec::new(),
+            },
+        );
+
+        assert!(projection.desired.entries.is_empty());
+        assert_eq!(projection.evidence.observed_endpoints, 0);
     }
 }

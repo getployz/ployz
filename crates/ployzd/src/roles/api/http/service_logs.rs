@@ -20,6 +20,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
+use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
 use crate::roles::api::runner::{
     ExistingV2ManagedContainer, RuntimeLogBatch, RuntimeLogFollow, RuntimeLogStream,
     V2MachineContainerRunner, V2MachineLogReadError, V2MachineLogReader,
@@ -207,13 +208,7 @@ async fn resolve_log_target(
     namespace_name: &CorrosionNamespaceName,
     service_name: &CorrosionServiceName,
     machine: Option<&MachineName>,
-) -> Result<
-    (
-        Arc<crate::roles::api::execution::docker::runner::DockerManagedContainerRunner>,
-        LocalServiceLogTarget,
-    ),
-    Response<HttpBody>,
-> {
+) -> Result<(Arc<DockerManagedContainerRunner>, LocalServiceLogTarget), Response<HttpBody>> {
     let generation = match resolve_generation(
         &service.corrosion,
         &service.cluster_id,
@@ -308,18 +303,11 @@ async fn resolve_log_target(
             },
         ));
     };
-    let containers = runner
-        .existing_v2_managed_containers()
-        .await
-        .map_err(|error| {
-            tracing::warn!(
-                ?error,
-                "could not inventory local containers for service logs"
-            );
-            log_refusal_response(ServiceLogsRefusal::RuntimeUnavailable {
-                machine_name: service.local_machine_id.clone(),
-            })
-        })?;
+    let containers = bounded_local_inventory(&runner).await.map_err(|()| {
+        log_refusal_response(ServiceLogsRefusal::RuntimeUnavailable {
+            machine_name: service.local_machine_id.clone(),
+        })
+    })?;
     let target = select_local_log_container(
         namespace_name,
         service_name,
@@ -339,23 +327,24 @@ async fn probe_local(
     let Some(runner) = &service.container_runner else {
         return ServiceLogProbeReply::RuntimeUnavailable;
     };
-    let containers = match tokio::time::timeout(
-        LOG_PROBE_TIMEOUT,
-        runner.existing_v2_managed_containers(),
-    )
-    .await
-    {
-        Ok(Ok(containers)) => containers,
-        Ok(Err(error)) => {
-            tracing::warn!(
-                ?error,
-                "could not inventory local containers for service log probe"
-            );
-            return ServiceLogProbeReply::RuntimeUnavailable;
-        }
-        Err(_) => return ServiceLogProbeReply::RuntimeUnavailable,
+    let containers = match bounded_local_inventory(runner).await {
+        Ok(containers) => containers,
+        Err(()) => return ServiceLogProbeReply::RuntimeUnavailable,
     };
     probe_containers(&containers, request)
+}
+
+async fn bounded_local_inventory(
+    runner: &DockerManagedContainerRunner,
+) -> Result<Vec<ExistingV2ManagedContainer>, ()> {
+    match tokio::time::timeout(LOG_PROBE_TIMEOUT, runner.existing_v2_managed_containers()).await {
+        Ok(Ok(containers)) => Ok(containers),
+        Ok(Err(error)) => {
+            tracing::warn!(?error, "could not inventory local containers for logs");
+            Err(())
+        }
+        Err(_) => Err(()),
+    }
 }
 
 fn probe_containers(
