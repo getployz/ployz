@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use hyper::{Method, Response, StatusCode};
 use ployz_core::corrosion::{
-    MachineDocument, MachineTransport, MeshProvider, OperatorWriteProvenance, PeerDocument,
-    PeerTransport, Principal, TokenDocument, derive_builtin_wireguard_member,
+    ControllerRevision, MachineDocument, MachineTransport, MeshProvider, OperatorWriteProvenance,
+    PeerDocument, PeerTransport, Principal, TokenDocument, derive_builtin_wireguard_member,
 };
 use ployz_core::ids::{MachineName, PeerName, TokenName};
 use ployz_core::join::{
@@ -56,40 +56,39 @@ pub(super) async fn handle_join_door(
             return corrosion_unavailable_response();
         }
     };
-    match service
+    let appointment_id = match service
         .controller_forwarder
         .route_join(&roster, request)
         .await
     {
         super::controller_forwarding::MutationRouting::Local(admitted) => {
             request = admitted.request;
+            admitted.appointment_id
         }
         super::controller_forwarding::MutationRouting::Forwarded(response) => return response,
-    }
+    };
 
-    handle_admitted_join(service, peer, request).await
+    handle_admitted_join(service, peer, appointment_id, request).await
 }
 
 pub(super) async fn handle_forwarded_join(
     service: &ApiService,
     peer: SocketAddr,
+    appointment_id: ControllerRevision,
     request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
     if let Err(error) = validate_join_door_route(request.method(), request.uri().path()) {
         return refusal_response_with_allow(error.refusal, error.allow);
     }
-    handle_admitted_join(service, peer, request).await
+    handle_admitted_join(service, peer, appointment_id, request).await
 }
 
 async fn handle_admitted_join(
     service: &ApiService,
     _peer: SocketAddr,
+    appointment_id: ControllerRevision,
     request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
-    // Join is the one mutation that queues behind an admitted controller
-    // mutation. Bootstrapping callers may only have one reachable door, so a
-    // transient busy reply is not a useful alternative path.
-    let _controller_guard = Arc::clone(&service.controller_lock).lock_owned().await;
     let body = match read_bounded_join_body(request.into_body()).await {
         Ok(body) => body,
         Err(JoinBodyError::TooLarge) => {
@@ -106,6 +105,23 @@ async fn handle_admitted_join(
         Ok(request) => request,
         Err(_) => return join_http_error(StatusCode::BAD_REQUEST, "invalid_request"),
     };
+    // Join is the one mutation that queues behind an admitted controller
+    // mutation. Bootstrapping callers may only have one reachable door, so a
+    // transient busy reply is not a useful alternative path. Unauthenticated
+    // body work is complete before this cluster-wide lock is acquired.
+    let _controller_guard = Arc::clone(&service.controller_lock).lock_owned().await;
+    match service
+        .controller
+        .exact_local_appointment_is_current(&appointment_id)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return corrosion_unavailable_response(),
+        Err(error) => {
+            tracing::warn!(%error, "could not recheck controller appointment after join queue");
+            return corrosion_unavailable_response();
+        }
+    }
     match admit(service, request).await {
         Ok(admission) => typed_join_response(&JoinAdmissionReply::Accepted {
             admission: Box::new(admission),

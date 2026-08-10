@@ -546,7 +546,12 @@ impl ApiService {
         match route {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
-            V2Route::Join => super::join::handle_forwarded_join(self, peer, request).await,
+            V2Route::Join => {
+                let Some(appointment_id) = appointment_id else {
+                    return corrosion_unavailable_response();
+                };
+                super::join::handle_forwarded_join(self, peer, appointment_id, request).await
+            }
             V2Route::Status => super::diagnostics::status_response(self).await,
             V2Route::Doctor => super::diagnostics::doctor_response(self).await,
             V2Route::TokenCreate
