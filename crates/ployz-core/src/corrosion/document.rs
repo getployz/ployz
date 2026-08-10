@@ -860,6 +860,9 @@ impl MachineEndpointDocument {
         &self,
         now: CorrosionTimestamp,
     ) -> Option<std::time::Duration> {
+        if self.observed_at > now {
+            return None;
+        }
         let remaining = MACHINE_ENDPOINT_TESTIMONY_MAX_AGE
             .saturating_sub(now.saturating_since(self.observed_at));
         (!remaining.is_zero()).then_some(remaining)

@@ -198,6 +198,7 @@ impl SimpleDeploy {
         }
         let inspections = self.inspect_roster(&context.reality).await;
         let mut prepared_cutovers = Vec::new();
+        let mut planned_counts = BTreeMap::new();
         let mut prepared_services = Vec::with_capacity(command.request.services.len());
         for (service_name, service) in command.request.services.iter() {
             if !service.runtime.volume_mounts.is_empty()
@@ -227,7 +228,13 @@ impl SimpleDeploy {
                     .await;
             }
 
-            let placement = match derive_placement(service_name, service, &context, &inspections) {
+            let placement = match derive_placement(
+                service_name,
+                service,
+                &context,
+                &inspections,
+                &planned_counts,
+            ) {
                 Ok(placement) => placement,
                 Err(refusal) => {
                     return self
@@ -373,6 +380,9 @@ impl SimpleDeploy {
                     )
                     .await;
             };
+            for machine in &placement.targets {
+                *planned_counts.entry(machine.clone()).or_insert(0) += 1;
+            }
             prepared_services.push(PreparedService {
                 service_name,
                 request: service.clone(),
@@ -682,6 +692,7 @@ fn derive_placement(
     request: &DeployServiceRequest,
     context: &DeployContext,
     inspections: &BTreeMap<MachineName, HostInspection>,
+    planned_counts: &BTreeMap<MachineName, usize>,
 ) -> Result<EffectivePlacement, PlacementRefusal> {
     let placement = effective_placement(request);
     let pinned_machines = resolve_pins(request, context);
@@ -705,7 +716,10 @@ fn derive_placement(
             lifecycle: machine.lifecycle,
             free_disk_bytes: inspection.free_disk_bytes,
             load: inspection.load,
-            total_container_count: inspection.containers.len(),
+            total_container_count: inspection
+                .containers
+                .len()
+                .saturating_add(planned_counts.get(&machine.name).copied().unwrap_or(0)),
             service_containers: observed_service_containers(
                 &inspection.containers,
                 &context.reality.namespace.name,
@@ -1303,6 +1317,42 @@ mod tests {
                 HostCall::Prepare(machine_id),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn complete_snapshot_spreads_services_over_planned_replicas() {
+        let mut fixture = fixture(2);
+        fixture.command.request.services.insert(
+            CorrosionServiceName::try_new("worker").expect("service"),
+            DeployServiceRequest {
+                image: ImageReference::try_new("busybox:1.37").expect("image"),
+                credential: None,
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                health_gate: HealthGatePolicy::Enforce,
+                placement: None,
+                machines: None,
+            },
+        );
+        let started = fixture
+            .executor
+            .start(fixture.command.clone())
+            .await
+            .expect("start deploy");
+
+        fixture.executor.run(started).await.expect("deploy");
+
+        let prepared_on = fixture
+            .hosts
+            .calls
+            .lock()
+            .await
+            .iter()
+            .filter_map(|call| match call {
+                HostCall::Prepare(machine) => Some(machine.clone()),
+                HostCall::Inspect(_) | HostCall::Retire(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(prepared_on, fixture.machines);
     }
 
     #[tokio::test]
