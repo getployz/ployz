@@ -28,7 +28,6 @@ pub(super) async fn handle(
     let operation_id = request.deploy_name.clone();
     let namespace_name = request.namespace_name.clone();
     let command = DeployCommand {
-        operation_id: operation_id.clone(),
         request,
         initiator: principal,
     };

@@ -35,9 +35,6 @@ pub(super) async fn prepare(
         Ok(request) => request,
         Err(response) => return response,
     };
-    if !is_authorized_machine(principal, &request.controller_machine_name) {
-        return error_response(StatusCode::NOT_FOUND, "unsupported_route");
-    }
     if let Err(response) = authorize(service, principal).await {
         return response;
     }
@@ -57,12 +54,7 @@ pub(super) async fn retire(
         Ok(request) => request,
         Err(response) => return response,
     };
-    if !is_authorized_machine(principal, &request.controller_machine_name) {
-        return error_response(StatusCode::NOT_FOUND, "unsupported_route");
-    }
-    if request.rollback_services.is_empty()
-        && let Err(response) = authorize(service, principal).await
-    {
+    if let Err(response) = authorize(service, principal).await {
         return response;
     }
     let outcome = match &service.node_workflows {
@@ -70,10 +62,6 @@ pub(super) async fn retire(
         None => DeployRetireOutcome::Failed,
     };
     super::mutations::typed_response(StatusCode::OK, &outcome)
-}
-
-fn is_authorized_machine(principal: &Principal, controller: &ployz_core::ids::MachineName) -> bool {
-    matches!(principal, Principal::Machine { machine_id } if machine_id == controller)
 }
 
 async fn authorize(service: &ApiService, principal: &Principal) -> Result<(), Response<HttpBody>> {

@@ -76,6 +76,12 @@ controller changes. Its controller may also win a later unconditional cluster
 commit. Both races are accepted; a later attempt observes rows and hosts and
 reconciles from that reality.
 
+Before commit, the controller best-effort rolls back only prepares whose
+successful replies it received. A lost prepare reply may leave a candidate
+container or a stopped incumbent on that machine; the next full deploy finds
+and reconciles that local reality. Nodes do not inspect workflow history on
+behalf of a controller trying to close this uncertainty.
+
 ## Operation rows
 
 Corrosion exposes only two deploy snapshots: created and terminal. Terminal

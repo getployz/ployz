@@ -16,7 +16,7 @@ use ployz_core::{
 
 use super::controller::ControllerStore;
 use super::deploy_effects::DeployHostEffects;
-use super::node_workflows::{NodeWorkflows, ROLLBACK_WAIT};
+use super::node_workflows::NodeWorkflows;
 use super::simple_deploy::{DeployHostError, DeployHosts};
 use super::store::read_accepted_roster;
 use crate::corrosion::CorrosionClient;
@@ -25,7 +25,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(20);
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(250);
 const RETIRE_TIMEOUT: Duration = Duration::from_secs(75);
-const ROLLBACK_TIMEOUT: Duration = ROLLBACK_WAIT.saturating_add(Duration::from_secs(5));
 const MAX_REPLY_BYTES: usize = 1_048_576;
 
 pub(super) struct MeshDeployHosts {
@@ -138,9 +137,6 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployPrepareRequest,
     ) -> Result<DeployPrepareOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            if request.controller_machine_name != self.local_machine_id {
-                return Err(DeployHostError::Failed);
-            }
             self.require_local_controller().await?;
             return Ok(self.local_workflows.prepare(request).await);
         }
@@ -159,20 +155,10 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployRetireRequest,
     ) -> Result<DeployRetireOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            if request.controller_machine_name != self.local_machine_id {
-                return Err(DeployHostError::Failed);
-            }
-            if request.rollback_services.is_empty() {
-                self.require_local_controller().await?;
-            }
+            self.require_local_controller().await?;
             return Ok(self.local_workflows.retire(request).await);
         }
-        let timeout = if request.rollback_services.is_empty() {
-            RETIRE_TIMEOUT
-        } else {
-            ROLLBACK_TIMEOUT
-        };
-        self.post(machine_id, V2Route::DeployRetire, &request, timeout)
+        self.post(machine_id, V2Route::DeployRetire, &request, RETIRE_TIMEOUT)
             .await
     }
 }

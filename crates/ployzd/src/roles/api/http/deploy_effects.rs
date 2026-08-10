@@ -50,7 +50,6 @@ impl DeployHostEffects {
         mut request: DeployPrepareRequest,
         shutdown: watch::Receiver<bool>,
     ) -> Result<DeployPrepareOutcome, String> {
-        let controller_machine_name = request.controller_machine_name.clone();
         let has_named_volumes = !request.runtime.volume_mounts.is_empty();
         let target = validate_prepare_request(&request, has_named_volumes)
             .map_err(|()| "prepare failed".to_owned())?;
@@ -73,7 +72,6 @@ impl DeployHostEffects {
             .await
         {
             Ok((replicas, displaced_incumbents)) => Ok(DeployPrepareOutcome::Prepared {
-                controller_machine_name,
                 image,
                 replicas,
                 displaced_incumbents,
@@ -271,9 +269,6 @@ impl DeployHostEffects {
     }
 
     async fn retire_inner(&self, request: DeployRetireRequest) -> Result<(), EffectError> {
-        if !request.rollback_services.is_empty() {
-            return Err(EffectError::Refused);
-        }
         let is_rollback = !request.restart_after_retire.is_empty();
         if request.containers.iter().any(|container| {
             container.identity.namespace_id != request.namespace_name
@@ -551,7 +546,7 @@ fn require_ipv4(ip: IpAddr) -> Result<Ipv4Addr, EffectError> {
 mod tests {
     use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName, HostPortBindings};
     use ployz_core::deploy::{ContainerRuntimeSpec, ReplicaSlot};
-    use ployz_core::ids::{ContainerId, DeployName, MachineName};
+    use ployz_core::ids::{ContainerId, DeployName};
     use ployz_core::machine::runtime::ManagedContainerHealthStatus;
 
     use super::*;
@@ -652,7 +647,6 @@ mod tests {
 
     fn prepare_request(identity: V2ManagedContainerIdentity) -> DeployPrepareRequest {
         DeployPrepareRequest {
-            controller_machine_name: MachineName::try_new("machine-one").expect("machine"),
             operation_id: DeployName::try_new("release-1").expect("deploy"),
             namespace_name: CorrosionNamespaceName::try_new("production").expect("namespace"),
             service_name: CorrosionServiceName::try_new("api").expect("service"),

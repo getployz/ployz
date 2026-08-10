@@ -72,20 +72,6 @@ impl MachineEndpointReporter {
     }
 
     async fn publish(&self) -> Result<(), MachineEndpointPublishError> {
-        let cluster = super::store::read_cluster(&self.client, &self.cluster_id)
-            .await
-            .map_err(|error| MachineEndpointPublishError::Roster {
-                detail: error.to_string(),
-            })?;
-        let machine =
-            super::store::read_machine(&self.client, &cluster.document, &self.local_machine_id)
-                .await
-                .map_err(|error| MachineEndpointPublishError::Roster {
-                    detail: error.to_string(),
-                })?;
-        if machine.is_none() {
-            return Ok(());
-        }
         let endpoint_network_ready = matches!(
             tokio::time::timeout(
                 DOCKER_OBSERVE_TIMEOUT,
@@ -203,8 +189,6 @@ fn statement(document: &MachineEndpointDocument) -> Result<Statement, MachineEnd
 enum MachineEndpointPublishError {
     #[error(transparent)]
     Corrosion(#[from] CorrosionClientError),
-    #[error("could not read the local accepted roster: {detail}")]
-    Roster { detail: String },
     #[error("could not list local managed containers: {detail}")]
     Docker { detail: String },
     #[error("could not encode endpoint testimony: {detail}")]

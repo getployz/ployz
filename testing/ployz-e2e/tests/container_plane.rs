@@ -105,8 +105,8 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     };
     let mesh = start_two_machine_mesh(docker, machine_a, machine_b).await?;
 
-    install_api_unit(docker, machine_a, MACHINE_A_ID, mesh.address_a).await?;
-    install_api_unit(docker, machine_b, MACHINE_B_ID, mesh.address_b).await?;
+    install_api_unit(docker, machine_a, MACHINE_A_NAME, mesh.address_a).await?;
+    install_api_unit(docker, machine_b, MACHINE_B_NAME, mesh.address_b).await?;
     start_unit(docker, machine_a, "ployz-api.service").await?;
     start_unit(docker, machine_b, "ployz-api.service").await?;
     wait_for_api(docker, machine_a, mesh.address_a).await?;
@@ -116,8 +116,8 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
 
     install_dns_test_tools(docker, machine_a).await?;
     install_dns_test_tools(docker, machine_b).await?;
-    install_dns_unit(docker, machine_a, MACHINE_A_ID).await?;
-    install_dns_unit(docker, machine_b, MACHINE_B_ID).await?;
+    install_dns_unit(docker, machine_a, MACHINE_A_NAME).await?;
+    install_dns_unit(docker, machine_b, MACHINE_B_NAME).await?;
     start_unit(docker, machine_a, "ployzd-dns.service").await?;
     start_unit(docker, machine_b, "ployzd-dns.service").await?;
     assert_dns_hardening(docker, machine_a).await?;
@@ -137,7 +137,7 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     assert_inner_container_has_no_direct_attach(docker, machine_b, FRESH_B).await?;
 
     corrosion_transaction(docker, machine_a, &service_rows_transaction()?).await?;
-    wait_for_machine_endpoint(docker, machine_b, MACHINE_B_ID, ACTIVE_IP_B).await?;
+    wait_for_machine_endpoint(docker, machine_b, MACHINE_B_NAME, ACTIVE_IP_B).await?;
     let expected = [ACTIVE_IP_A, ACTIVE_IP_B];
     wait_for_dns_answers(docker, machine_a, "10.210.10.1", INTERNAL_NAME, &expected).await?;
     wait_for_dns_answers(docker, machine_b, "10.210.20.1", INTERNAL_NAME, &expected).await?;
@@ -176,7 +176,7 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
 
     exercise_namespace_isolation(docker, machine_a, machine_b).await?;
     remove_isolation_workload(docker, machine_b, FRESH_B).await?;
-    wait_for_machine_endpoint_absent(docker, machine_a, MACHINE_B_ID, FRESH_REMOTE_IP).await?;
+    wait_for_machine_endpoint_absent(docker, machine_a, MACHINE_B_NAME, FRESH_REMOTE_IP).await?;
     remove_isolation_containers(docker, machine_a, &[PROD_A, PROD_A_PEER, OTHER_A]).await?;
     remove_isolation_containers(docker, machine_b, &[PROD_B, PROD_B_PEER, OTHER_B]).await?;
     assert_stable_attachments(docker, machine_a, &attachments_before_a, &tc_before_a).await?;
@@ -187,8 +187,8 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_corrosion_row_absent_now(docker, machine_b, "namespaces", STALE_PROBE_NAMESPACE_ID)
         .await?;
-    wait_for_corrosion_row(docker, machine_a, "machines", MACHINE_B_ID).await?;
-    wait_for_machine_endpoint(docker, machine_a, MACHINE_B_ID, ACTIVE_IP_B).await?;
+    wait_for_corrosion_row(docker, machine_a, "machines", MACHINE_B_NAME).await?;
+    wait_for_machine_endpoint(docker, machine_a, MACHINE_B_NAME, ACTIVE_IP_B).await?;
     assert_dns_answers(
         docker,
         machine_a,
@@ -232,8 +232,8 @@ async fn start_two_machine_mesh(
 ) -> Result<MeshFixture, String> {
     enable_and_assert_ipv6(docker, machine_a).await?;
     enable_and_assert_ipv6(docker, machine_b).await?;
-    install_keeper_unit(docker, machine_a, MACHINE_A_ID, "br-ployz").await?;
-    install_keeper_unit(docker, machine_b, MACHINE_B_ID, "br-ployz").await?;
+    install_keeper_unit(docker, machine_a, MACHINE_A_NAME, "br-ployz").await?;
+    install_keeper_unit(docker, machine_b, MACHINE_B_NAME, "br-ployz").await?;
     start_unit(docker, machine_a, "ployz-keeper.service").await?;
     start_unit(docker, machine_b, "ployz-keeper.service").await?;
     assert_keeper_isolation_root(docker, machine_a, "ployz-keeper.service").await?;
@@ -291,12 +291,12 @@ fn roster_transaction(
         "provider": "builtin_wireguard",
         "acme_directory_url": "https://acme.invalid/directory",
         "acme_contact": null,
-        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
+        "written_by": {"kind": "machine", "machine_id": MACHINE_A_NAME},
         "written_at": "2026-08-05T10:00:00.000000000Z"
     });
     let machine_a_document = machine_document(
         "edge-a",
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
         public_key_a,
         address_a,
         endpoint(machine_a)?,
@@ -305,7 +305,7 @@ fn roster_transaction(
     );
     let machine_b_document = machine_document(
         "edge-b",
-        MACHINE_B_ID,
+        MACHINE_B_NAME,
         public_key_b,
         address_b,
         endpoint(machine_b)?,
@@ -319,11 +319,11 @@ fn roster_transaction(
         ],
         [
             "INSERT INTO machines (id, document) VALUES (?, ?)",
-            [MACHINE_A_ID, encode_document(&machine_a_document)?]
+            [MACHINE_A_NAME, encode_document(&machine_a_document)?]
         ],
         [
             "INSERT INTO machines (id, document) VALUES (?, ?)",
-            [MACHINE_B_ID, encode_document(&machine_b_document)?]
+            [MACHINE_B_NAME, encode_document(&machine_b_document)?]
         ]
     ]))
 }
@@ -360,7 +360,7 @@ fn service_rows_transaction() -> Result<Value, String> {
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "production",
-        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
+        "written_by": {"kind": "machine", "machine_id": MACHINE_A_NAME},
         "written_at": "2026-08-05T10:01:00.000000000Z",
         "services": {
             "web": {
@@ -379,12 +379,12 @@ fn service_rows_transaction() -> Result<Value, String> {
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "staging",
-        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
+        "written_by": {"kind": "machine", "machine_id": MACHINE_A_NAME},
         "written_at": "2026-08-05T10:01:00.000000000Z",
         "services": {}
     });
     let endpoints_a = machine_endpoint_document(
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
         [
             endpoint_document(NAMESPACE_ID, ACTIVE_IP_A, ACTIVE_DEPLOY_ID, 1),
             endpoint_document(NAMESPACE_ID, SAME_NAMESPACE_IP_A, INACTIVE_DEPLOY_ID, 1),
@@ -397,7 +397,7 @@ fn service_rows_transaction() -> Result<Value, String> {
         ],
     );
     let endpoints_b = machine_endpoint_document(
-        MACHINE_B_ID,
+        MACHINE_B_NAME,
         [
             endpoint_document(NAMESPACE_ID, ACTIVE_IP_B, ACTIVE_DEPLOY_ID, 2),
             endpoint_document(NAMESPACE_ID, SAME_NAMESPACE_IP_B, INACTIVE_DEPLOY_ID, 2),
@@ -420,11 +420,11 @@ fn service_rows_transaction() -> Result<Value, String> {
         ],
         [
             "INSERT INTO machine_endpoints (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document = excluded.document",
-            [MACHINE_A_ID, encode_document(&endpoints_a)?]
+            [MACHINE_A_NAME, encode_document(&endpoints_a)?]
         ],
         [
             "INSERT INTO machine_endpoints (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document = excluded.document",
-            [MACHINE_B_ID, encode_document(&endpoints_b)?]
+            [MACHINE_B_NAME, encode_document(&endpoints_b)?]
         ]
     ]))
 }
@@ -457,7 +457,7 @@ fn stale_probe_transaction() -> Result<Value, String> {
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "darkness-probe",
-        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
+        "written_by": {"kind": "machine", "machine_id": MACHINE_A_NAME},
         "written_at": "2026-08-05T10:02:00.000000000Z",
         "services": {}
     });
@@ -474,7 +474,7 @@ fn replace_machine_subnet_transaction(
 ) -> Result<Value, String> {
     let document = machine_document(
         "edge-a",
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
         public_key,
         address,
         endpoint(machine)?,
@@ -483,7 +483,7 @@ fn replace_machine_subnet_transaction(
     );
     Ok(json!([[
         "UPDATE machines SET document = ? WHERE id = ?",
-        [encode_document(&document)?, MACHINE_A_ID]
+        [encode_document(&document)?, MACHINE_A_NAME]
     ]]))
 }
 
@@ -941,18 +941,18 @@ async fn exercise_namespace_isolation(
     machine_b: &DindMachine,
 ) -> Result<(), String> {
     for (machine_id, ip) in [
-        (MACHINE_A_ID, ACTIVE_IP_A),
-        (MACHINE_B_ID, ACTIVE_IP_B),
-        (MACHINE_A_ID, SAME_NAMESPACE_IP_A),
-        (MACHINE_B_ID, SAME_NAMESPACE_IP_B),
-        (MACHINE_A_ID, OTHER_NAMESPACE_IP_A),
-        (MACHINE_B_ID, OTHER_NAMESPACE_IP_B),
+        (MACHINE_A_NAME, ACTIVE_IP_A),
+        (MACHINE_B_NAME, ACTIVE_IP_B),
+        (MACHINE_A_NAME, SAME_NAMESPACE_IP_A),
+        (MACHINE_B_NAME, SAME_NAMESPACE_IP_B),
+        (MACHINE_A_NAME, OTHER_NAMESPACE_IP_A),
+        (MACHINE_B_NAME, OTHER_NAMESPACE_IP_B),
     ] {
         wait_for_machine_endpoint(docker, machine_a, machine_id, ip).await?;
         wait_for_machine_endpoint(docker, machine_b, machine_id, ip).await?;
     }
-    assert_machine_endpoint_absent_now(docker, machine_a, MACHINE_B_ID, FRESH_REMOTE_IP).await?;
-    assert_machine_endpoint_absent_now(docker, machine_b, MACHINE_B_ID, FRESH_REMOTE_IP).await?;
+    assert_machine_endpoint_absent_now(docker, machine_a, MACHINE_B_NAME, FRESH_REMOTE_IP).await?;
+    assert_machine_endpoint_absent_now(docker, machine_b, MACHINE_B_NAME, FRESH_REMOTE_IP).await?;
 
     for (machine, source, destination) in [
         (machine_a, PROD_A, SAME_NAMESPACE_IP_A),
@@ -1059,7 +1059,7 @@ async fn exercise_namespace_isolation(
     )
     .await?;
     let endpoints_b = machine_endpoint_document(
-        MACHINE_B_ID,
+        MACHINE_B_NAME,
         [
             endpoint_document(NAMESPACE_ID, ACTIVE_IP_B, ACTIVE_DEPLOY_ID, 2),
             endpoint_document(NAMESPACE_ID, SAME_NAMESPACE_IP_B, INACTIVE_DEPLOY_ID, 2),
@@ -1074,12 +1074,12 @@ async fn exercise_namespace_isolation(
     );
     let transaction = json!([[
         "INSERT INTO machine_endpoints (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document = excluded.document",
-        [MACHINE_B_ID, encode_document(&endpoints_b)?]
+        [MACHINE_B_NAME, encode_document(&endpoints_b)?]
     ]]);
     let started = Instant::now();
     corrosion_transaction(docker, machine_b, &transaction).await?;
     let deadline = started + POLICY_CONVERGENCE_BUDGET;
-    wait_for_machine_endpoint_before(docker, machine_a, MACHINE_B_ID, FRESH_REMOTE_IP, deadline)
+    wait_for_machine_endpoint_before(docker, machine_a, MACHINE_B_NAME, FRESH_REMOTE_IP, deadline)
         .await?;
     wait_for_container_http_before(docker, machine_a, PROD_A, FRESH_REMOTE_IP, deadline).await?;
     wait_for_container_http_before(docker, machine_b, FRESH_B, ACTIVE_IP_A, deadline).await?;

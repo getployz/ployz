@@ -21,7 +21,7 @@ use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
 use super::simple_deploy::{
     DeployCommand, DeployCommit, DeployProjection, DeployRosterMachine, DeployStartError,
-    DesiredRouteRow, SimpleDeployStore,
+    SimpleDeployStore,
 };
 
 const MAX_SINGLETON_ROWS: usize = 2;
@@ -93,13 +93,12 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             tokio::try_join!(cluster, machines, routes).map_err(|error| error.to_string())?;
 
         let cluster = decode_cluster(&self.cluster_id, cluster)?;
-        let missing_automatic_routes = desired_routes(&cluster, command, &namespace.id, routes)?;
+        let missing_automatic_routes =
+            desired_routes(&cluster, command, &command.request.namespace_name, routes)?;
         let roster = decode_roster(&cluster, machines)?;
 
         Ok(DeployProjection {
-            namespace_id: namespace.id,
-            namespace_source: namespace.source,
-            namespace: namespace.document,
+            namespace,
             missing_automatic_routes,
             roster,
         })
@@ -143,17 +142,11 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
     }
 }
 
-struct ResolvedNamespace {
-    id: CorrosionNamespaceName,
-    source: StoredRow,
-    document: NamespaceDocument,
-}
-
 fn decode_namespace(
     cluster_id: &ClusterName,
     namespace_name: &CorrosionNamespaceName,
     rows: Vec<StoredRow>,
-) -> Result<ResolvedNamespace, DeployStartError> {
+) -> Result<NamespaceDocument, DeployStartError> {
     let report = read_named_rows::<NamespaceDocument>(cluster_id, rows);
     if !report.skipped.is_empty() {
         return Err(DeployStartError::Unavailable(
@@ -170,14 +163,12 @@ fn decode_namespace(
             "namespace lookup returned more than one row for a primary key".to_owned(),
         ));
     }
-    let row = report.accepted.into_iter().next().expect("length checked");
-    let id = CorrosionNamespaceName::try_new(row.source.key.clone())
-        .map_err(|error| DeployStartError::Unavailable(error.to_string()))?;
-    Ok(ResolvedNamespace {
-        id,
-        source: row.source,
-        document: row.value,
-    })
+    Ok(report
+        .accepted
+        .into_iter()
+        .next()
+        .expect("length checked")
+        .value)
 }
 
 fn decode_cluster(
@@ -213,7 +204,7 @@ fn desired_routes(
     command: &DeployCommand,
     namespace_id: &CorrosionNamespaceName,
     rows: Vec<StoredRow>,
-) -> Result<Vec<DesiredRouteRow>, DeployStartError> {
+) -> Result<Vec<RouteBindingDocument>, DeployStartError> {
     let report = read_named_rows::<RouteBindingDocument>(&cluster.cluster_id, rows);
     let mut planned = Vec::new();
     if let AutomaticHostnameMode::Custom { suffix } = &cluster.hostname_mode {
@@ -247,7 +238,6 @@ fn desired_routes(
                     ));
                 }
                 None => {
-                    let id = hostname.clone();
                     let document = RouteBindingDocument {
                         v: CorrosionDocumentVersion::V1,
                         cluster_id: cluster.cluster_id.clone(),
@@ -262,7 +252,7 @@ fn desired_routes(
                         origin: RouteBindingOrigin::Automatic,
                         ingress_mode: IngressMode::Direct,
                     };
-                    planned.push(DesiredRouteRow { id, document });
+                    planned.push(document);
                 }
             }
         }
@@ -316,54 +306,20 @@ fn decode_roster(
 }
 
 fn commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>, String> {
-    let mut statements = Vec::with_capacity(2 + commit.missing_automatic_routes.len());
-    statements.push(delete_exact_document(
+    let mut statements = Vec::with_capacity(1 + commit.missing_automatic_routes.len());
+    statements.push(upsert_document(
         CorrosionTable::Namespaces,
-        &commit.replaced_namespace,
-    ));
-    statements.push(insert_document(
-        CorrosionTable::Namespaces,
-        commit.namespace_id.as_str(),
+        commit.namespace.name.as_str(),
         &commit.namespace,
     )?);
     for route in &commit.missing_automatic_routes {
-        statements.push(insert_document(
+        statements.push(insert_if_absent_document(
             CorrosionTable::RouteBindings,
-            route.id.as_str(),
-            &route.document,
+            route.hostname.as_str(),
+            route,
         )?);
     }
     Ok(statements)
-}
-
-fn delete_exact_document(table: CorrosionTable, row: &StoredRow) -> Statement {
-    Statement::with_params(
-        format!(
-            "DELETE FROM {} WHERE id = ? AND document = ?",
-            table.as_str()
-        ),
-        vec![
-            SqliteParameter::Text(row.key.clone()),
-            SqliteParameter::Text(row.document.clone()),
-        ],
-    )
-}
-
-fn insert_document<Document>(
-    table: CorrosionTable,
-    id: &str,
-    document: &Document,
-) -> Result<Statement, String>
-where
-    Document: serde::Serialize,
-{
-    Ok(Statement::with_params(
-        format!(
-            "INSERT INTO {} (id, document) VALUES (?, ?)",
-            table.as_str()
-        ),
-        document_params(id, document)?,
-    ))
 }
 
 fn insert_if_absent_document<Document>(
@@ -505,7 +461,7 @@ mod tests {
             vec![namespace_row(NAMESPACE_A, "production")],
         )
         .expect("one exact namespace");
-        assert_eq!(resolved.id.as_str(), NAMESPACE_A);
+        assert_eq!(resolved.name.as_str(), NAMESPACE_A);
     }
 
     #[test]
@@ -548,10 +504,7 @@ mod tests {
 
     #[test]
     fn namespace_commit_does_not_delete_route_bindings() {
-        let namespace_id = CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace");
         let statements = commit_statements(&DeployCommit {
-            namespace_id: namespace_id.clone(),
-            replaced_namespace: namespace_row(NAMESPACE_A, NAMESPACE_A),
             namespace: namespace_document(NAMESPACE_A),
             missing_automatic_routes: Vec::new(),
         })
@@ -565,12 +518,9 @@ mod tests {
     }
 
     #[test]
-    fn namespace_commit_replaces_only_the_exact_observed_namespace_projection() {
-        let replaced_namespace = namespace_row(NAMESPACE_A, NAMESPACE_A);
+    fn namespace_commit_is_an_unconditional_local_upsert() {
         let namespace = namespace_document(NAMESPACE_A);
         let statements = commit_statements(&DeployCommit {
-            namespace_id: CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace"),
-            replaced_namespace: replaced_namespace.clone(),
             namespace: namespace.clone(),
             missing_automatic_routes: Vec::new(),
         })
@@ -579,9 +529,8 @@ mod tests {
         assert_eq!(
             statements,
             vec![
-                delete_exact_document(CorrosionTable::Namespaces, &replaced_namespace),
-                insert_document(CorrosionTable::Namespaces, NAMESPACE_A, &namespace)
-                    .expect("namespace insert"),
+                upsert_document(CorrosionTable::Namespaces, NAMESPACE_A, &namespace)
+                    .expect("namespace upsert")
             ]
         );
         assert!(statements.iter().all(|statement| match statement {
@@ -602,11 +551,11 @@ mod tests {
         let [route] = missing.as_slice() else {
             panic!("one missing automatic route expected")
         };
-        assert_eq!(route.id.as_str(), "api.production.apps.example.test");
+        assert_eq!(route.hostname.as_str(), "api.production.apps.example.test");
 
         let existing = StoredRow::new(
-            route.id.as_str(),
-            serde_json::to_string(&route.document).expect("route serializes"),
+            route.hostname.as_str(),
+            serde_json::to_string(route).expect("route serializes"),
         );
         assert!(
             desired_routes(&cluster, &command, &namespace_id, vec![existing])
@@ -684,7 +633,6 @@ mod tests {
 
     fn deploy_command() -> DeployCommand {
         DeployCommand {
-            operation_id: DeployName::try_new("release-1").expect("deploy"),
             request: DeployRequest {
                 namespace_name: CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace"),
                 deploy_name: DeployName::try_new("release-1").expect("deploy"),
