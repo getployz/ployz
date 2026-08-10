@@ -153,12 +153,7 @@ impl DeployHostEffects {
         has_named_volumes: bool,
     ) -> Result<(Vec<DeployPreparedReplica>, Vec<DeployObservedContainer>), EffectError> {
         let observed = self.managed_containers().await?;
-        if has_named_volumes
-            && observed.iter().any(|container| {
-                container.identity.namespace_id == target.namespace_id
-                    && container.identity.operation_id != request.operation_id
-            })
-        {
+        if has_named_volumes && has_volume_debris(&observed, target, &request.operation_id) {
             return Err(EffectError::Refused);
         }
         for replica in &request.replicas {
@@ -442,12 +437,11 @@ fn validate_prepare_request(
         return Err(());
     };
     let identity = &first.identity;
-    if identity.operation_id != request.operation_id
-        || request.replicas.iter().any(|replica| {
-            replica.identity.namespace_id != identity.namespace_id
-                || replica.identity.operation_id != identity.operation_id
-        })
-    {
+    if request.replicas.iter().any(|replica| {
+        replica.identity.namespace_id != request.namespace_name
+            || replica.identity.service_name != request.service_name
+            || replica.identity.operation_id != request.operation_id
+    }) {
         return Err(());
     }
     if has_named_volumes && request.replicas.len() != 1 {
@@ -483,6 +477,18 @@ fn validate_prepare_request(
         return Err(());
     }
     Ok(identity.clone())
+}
+
+fn has_volume_debris(
+    observed: &[ExistingV2ManagedContainer],
+    target: &V2ManagedContainerIdentity,
+    operation_id: &ployz_core::ids::DeployName,
+) -> bool {
+    observed.iter().any(|container| {
+        container.identity.namespace_id == target.namespace_id
+            && container.identity.service_name == target.service_name
+            && container.identity.operation_id != *operation_id
+    })
 }
 
 fn create_command(
@@ -552,9 +558,11 @@ fn require_ipv4(ip: IpAddr) -> Result<Ipv4Addr, EffectError> {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName};
-    use ployz_core::deploy::ReplicaSlot;
-    use ployz_core::ids::{ContainerId, DeployName};
+    use ployz_core::corrosion::{
+        ControllerRevision, CorrosionNamespaceName, CorrosionServiceName, HostPortBindings,
+    };
+    use ployz_core::deploy::{ContainerRuntimeSpec, ReplicaSlot};
+    use ployz_core::ids::{ContainerId, DeployName, MachineName};
     use ployz_core::machine::runtime::ManagedContainerHealthStatus;
 
     use super::*;
@@ -599,12 +607,7 @@ mod tests {
 
     #[test]
     fn natural_replica_identity_refuses_duplicate_docker_matches() {
-        let identity = V2ManagedContainerIdentity {
-            namespace_id: CorrosionNamespaceName::try_new("production").expect("namespace"),
-            service_name: CorrosionServiceName::try_new("api").expect("service"),
-            operation_id: DeployName::try_new("release-1").expect("deploy"),
-            replica_slot: ReplicaSlot::Global,
-        };
+        let identity = identity("production", "api", "release-1");
         let observed = [
             stopped_container("docker-a", identity.clone()),
             stopped_container("docker-b", identity.clone()),
@@ -614,6 +617,76 @@ mod tests {
             unique_container(&observed, &identity),
             Err(EffectError::Refused)
         ));
+    }
+
+    #[test]
+    fn volume_debris_is_scoped_to_the_target_service() {
+        let target = identity("production", "db", "release-2");
+        let unrelated = stopped_container("docker-web", identity("production", "web", "release-1"));
+        assert!(!has_volume_debris(
+            &[unrelated],
+            &target,
+            &DeployName::try_new("release-2").expect("deploy"),
+        ));
+
+        let old_db = stopped_container("docker-db", identity("production", "db", "release-1"));
+        assert!(has_volume_debris(
+            &[old_db],
+            &target,
+            &DeployName::try_new("release-2").expect("deploy"),
+        ));
+    }
+
+    #[test]
+    fn prepare_replicas_must_match_the_requested_namespace_and_service() {
+        let request = prepare_request(identity("production", "api", "release-1"));
+        assert!(validate_prepare_request(&request, false).is_ok());
+
+        let mut wrong_namespace = request.clone();
+        wrong_namespace
+            .replicas
+            .first_mut()
+            .expect("one replica")
+            .identity
+            .namespace_id = CorrosionNamespaceName::try_new("staging").expect("namespace");
+        assert!(validate_prepare_request(&wrong_namespace, false).is_err());
+
+        let mut wrong_service = request;
+        wrong_service
+            .replicas
+            .first_mut()
+            .expect("one replica")
+            .identity
+            .service_name = CorrosionServiceName::try_new("worker").expect("service");
+        assert!(validate_prepare_request(&wrong_service, false).is_err());
+    }
+
+    fn prepare_request(identity: V2ManagedContainerIdentity) -> DeployPrepareRequest {
+        DeployPrepareRequest {
+            controller_machine_id: MachineName::try_new("machine-one").expect("machine"),
+            appointment_id: ControllerRevision::try_new(1).expect("appointment"),
+            operation_id: DeployName::try_new("release-1").expect("deploy"),
+            namespace_name: CorrosionNamespaceName::try_new("production").expect("namespace"),
+            service_name: CorrosionServiceName::try_new("api").expect("service"),
+            image: ImageReference::try_new("nginx:latest").expect("image"),
+            credential: None,
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            health_gate: HealthGatePolicy::Enforce,
+            replicas: vec![DeployDesiredReplica {
+                identity,
+                host_ports: HostPortBindings::default(),
+            }],
+            stop_before_start: Vec::new(),
+        }
+    }
+
+    fn identity(namespace: &str, service: &str, deploy: &str) -> V2ManagedContainerIdentity {
+        V2ManagedContainerIdentity {
+            namespace_id: CorrosionNamespaceName::try_new(namespace).expect("namespace"),
+            service_name: CorrosionServiceName::try_new(service).expect("service"),
+            operation_id: DeployName::try_new(deploy).expect("deploy"),
+            replica_slot: ReplicaSlot::Global,
+        }
     }
 
     fn stopped_container(
