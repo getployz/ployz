@@ -230,7 +230,7 @@ fn desired_routes(
     let report = read_named_rows::<RouteBindingDocument>(&cluster.cluster_id, rows);
     let mut planned = Vec::new();
     if let AutomaticHostnameMode::Custom { suffix } = &cluster.hostname_mode {
-        for (service_name, _service) in command.request.services.iter() {
+        for service_name in command.request.services.keys() {
             let hostname = automatic_hostname(namespace_id, service_name, suffix)?;
             if report
                 .skipped
