@@ -22,6 +22,7 @@ pub const PLACEMENT_FREE_DISK_FLOOR_BYTES: u64 = 1024 * 1024 * 1024;
 pub struct PlacementBid {
     pub machine_name: MachineName,
     pub lifecycle: MachineLifecycle,
+    pub endpoint_network_ready: bool,
     pub free_disk_bytes: u64,
     pub load: crate::corrosion::MachineLoadBand,
     pub total_container_count: usize,
@@ -67,6 +68,7 @@ pub struct PlacementElimination {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PlacementEliminationReason {
     Draining,
+    EndpointNetworkUnavailable,
     FreeDiskBelowFloor { free_disk_bytes: u64 },
     OutsidePinSet,
 }
@@ -86,13 +88,13 @@ pub enum PlacementRefusal {
 
 /// Derives a deploy's target machine set from live bids.
 ///
-/// Tier order: tier-0 drops (draining, free disk below
-/// [`PLACEMENT_FREE_DISK_FLOOR_BYTES`], outside the pin set), then sticky
-/// (runs the incumbent's active deploy), then spread
+/// Existing replicas keep their machines before eligibility is considered for
+/// any shortfall. New replicas then use tier-0 drops (draining, free disk below
+/// [`PLACEMENT_FREE_DISK_FLOOR_BYTES`], outside the pin set), followed by spread
 /// (fewest total managed containers), then load band (idle before normal
 /// before hot), then lexicographically lowest machine name. Replicas fill round-robin over the
 /// tier-sorted survivors; stacking is allowed.
-/// A global service targets every tier-0 survivor exactly once.
+/// A global service keeps incumbent machines and targets every tier-0 survivor exactly once.
 pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineName>, PlacementRefusal> {
     let PlacementPickInputs {
         placement,
@@ -122,23 +124,50 @@ pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineName>, 
             None => survivors.push(bid),
         }
     }
-    if survivors.is_empty() {
-        return Err(PlacementRefusal::NoEligibleMachines { eliminations });
-    }
-
     match placement {
         ServicePlacement::Global { host_ports: _ } => {
-            survivors.sort_by(|left, right| left.machine_name.cmp(&right.machine_name));
-            Ok(survivors
-                .into_iter()
+            let mut targets = bids
+                .iter()
+                .filter(|bid| has_active_incumbent(bid, active_deploy.as_ref()))
                 .map(|bid| bid.machine_name.clone())
-                .collect())
+                .collect::<BTreeSet<_>>();
+            targets.extend(survivors.into_iter().map(|bid| bid.machine_name.clone()));
+            if targets.is_empty() {
+                Err(PlacementRefusal::NoEligibleMachines { eliminations })
+            } else {
+                Ok(targets.into_iter().collect())
+            }
         }
         ServicePlacement::Replicated { replicas } => {
-            survivors.sort_by_key(|bid| preference_key(bid, active_deploy.as_ref()));
-            Ok(round_robin_fill(&survivors, *replicas))
+            let desired = usize::from(replicas.get());
+            let mut targets = bids
+                .iter()
+                .flat_map(|bid| {
+                    bid.service_containers
+                        .iter()
+                        .filter(|container| active_deploy.as_ref() == Some(&container.deploy))
+                        .map(|_| bid.machine_name.clone())
+                })
+                .collect::<Vec<_>>();
+            targets.sort();
+            targets.truncate(desired);
+            if targets.len() == desired {
+                return Ok(targets);
+            }
+            if survivors.is_empty() {
+                return Err(PlacementRefusal::NoEligibleMachines { eliminations });
+            }
+            survivors.sort_by_key(|bid| preference_key(bid));
+            targets.extend(round_robin_fill(&survivors, desired - targets.len()));
+            Ok(targets)
         }
     }
+}
+
+fn has_active_incumbent(bid: &PlacementBid, active_deploy: Option<&DeployName>) -> bool {
+    bid.service_containers
+        .iter()
+        .any(|container| active_deploy == Some(&container.deploy))
 }
 
 fn tier_zero_drop(
@@ -148,6 +177,9 @@ fn tier_zero_drop(
     match bid.lifecycle {
         MachineLifecycle::Draining => return Some(PlacementEliminationReason::Draining),
         MachineLifecycle::Active => {}
+    }
+    if !bid.endpoint_network_ready {
+        return Some(PlacementEliminationReason::EndpointNetworkUnavailable);
     }
     if bid.free_disk_bytes < PLACEMENT_FREE_DISK_FLOOR_BYTES {
         return Some(PlacementEliminationReason::FreeDiskBelowFloor {
@@ -160,33 +192,21 @@ fn tier_zero_drop(
     None
 }
 
-/// The replicated preference key: sticky bids first, then fewest total
-/// containers, then the lowest load band, then the lowest machine name.
-fn preference_key(
-    bid: &PlacementBid,
-    active_deploy: Option<&DeployName>,
-) -> (bool, usize, crate::corrosion::MachineLoadBand, MachineName) {
-    let sticky = active_deploy.is_some_and(|active| {
-        bid.service_containers
-            .iter()
-            .any(|container| &container.deploy == active)
-    });
+/// New replicas prefer the fewest total containers, then the lowest load band,
+/// then the lowest machine name.
+fn preference_key(bid: &PlacementBid) -> (usize, crate::corrosion::MachineLoadBand, MachineName) {
     (
-        !sticky,
         bid.total_container_count,
         bid.load,
         bid.machine_name.clone(),
     )
 }
 
-fn round_robin_fill(
-    survivors: &[&PlacementBid],
-    replicas: ServiceReplicaCount,
-) -> Vec<MachineName> {
+fn round_robin_fill(survivors: &[&PlacementBid], replicas: usize) -> Vec<MachineName> {
     survivors
         .iter()
         .cycle()
-        .take(usize::from(replicas.get()))
+        .take(replicas)
         .map(|bid| bid.machine_name.clone())
         .collect()
 }

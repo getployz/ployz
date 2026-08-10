@@ -83,7 +83,6 @@ fn future_endpoint_testimony_is_not_fresh() {
     let testimony = MachineEndpointDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: ClusterName::try_new("main").expect("cluster"),
-        machine_id: MachineName::try_new("edge-a").expect("machine"),
         observed_at: CorrosionTimestamp::try_new("2026-08-09T00:00:01Z").expect("timestamp"),
         endpoints: Vec::new(),
     };

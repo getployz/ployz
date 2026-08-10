@@ -274,7 +274,7 @@ export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "
 
 export type LensCollection = "machines" | "services" | "endpoints" | "machine_status" | "operations";
 
-export type LensSnapshot = { "collection": "machines", cluster: ClusterDocument, rows: Array<MachineDocument>, } | { "collection": "services", rows: Array<ServiceLensRow>, } | { "collection": "endpoints", rows: Array<MachineEndpointDocument>, } | { "collection": "machine_status", rows: Array<MachineStatusDocument>, } | { "collection": "operations", rows: Array<OperationDocument>, };
+export type LensSnapshot = { "collection": "machines", cluster: ClusterDocument, rows: Array<MachineDocument>, } | { "collection": "services", rows: Array<ServiceLensRow>, } | { "collection": "endpoints", rows: { [key in MachineName]: MachineEndpointDocument }, } | { "collection": "machine_status", rows: Array<MachineStatusDocument>, } | { "collection": "operations", rows: Array<OperationDocument>, };
 
 export type LensWatchEvent = { "kind": "snapshot", snapshot: LensSnapshot, } | { "kind": "state", snapshot: LensSnapshot, } | { "kind": "terminal", refusal: ApiRefusal, };
 
@@ -282,7 +282,7 @@ export type LinuxCapability = Brand<string, "LinuxCapability">;
 
 export type MachineDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, name: MachineName, lifecycle: MachineLifecycle, transport: MachineTransport, storage: MachineStorageSelection, written_by: Principal, written_at: CorrosionTimestamp, };
 
-export type MachineEndpointDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, machine_id: MachineName, observed_at: CorrosionTimestamp,
+export type MachineEndpointDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, observed_at: CorrosionTimestamp,
 /**
  * Complete routable endpoint testimony from this machine's Docker reality.
  */
@@ -398,7 +398,7 @@ export type PinnedMachineNames = Array<MachineName>;
 
 export type PlacementElimination = { machine_name: MachineName, reason: PlacementEliminationReason, };
 
-export type PlacementEliminationReason = { "kind": "draining" } | { "kind": "free_disk_below_floor", free_disk_bytes: number, } | { "kind": "outside_pin_set" };
+export type PlacementEliminationReason = { "kind": "draining" } | { "kind": "endpoint_network_unavailable" } | { "kind": "free_disk_below_floor", free_disk_bytes: number, } | { "kind": "outside_pin_set" };
 
 export type PlacementRefusal = { "kind": "no_eligible_machines", eliminations: Array<PlacementElimination>, } | { "kind": "volume_replica_limit", requested: ServiceReplicaCount, };
 

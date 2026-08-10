@@ -31,6 +31,7 @@ fn bid(machine_name: &str) -> PlacementBid {
     PlacementBid {
         machine_name: machine(machine_name),
         lifecycle: MachineLifecycle::Active,
+        endpoint_network_ready: true,
         free_disk_bytes: 100 * PLACEMENT_FREE_DISK_FLOOR_BYTES,
         load: MachineLoadBand::Normal,
         total_container_count: 0,
@@ -61,6 +62,14 @@ fn a_draining_machine_is_dropped_at_tier_zero() {
     let mut draining = bid(MACHINE_A);
     draining.lifecycle = MachineLifecycle::Draining;
     let targets = pick_placement(&inputs(vec![draining, bid(MACHINE_B)])).expect("pick succeeds");
+    assert_eq!(targets, vec![machine(MACHINE_B)]);
+}
+
+#[test]
+fn a_nonready_endpoint_network_is_dropped_only_for_new_placement() {
+    let mut nonready = bid(MACHINE_A);
+    nonready.endpoint_network_ready = false;
+    let targets = pick_placement(&inputs(vec![nonready, bid(MACHINE_B)])).expect("pick succeeds");
     assert_eq!(targets, vec![machine(MACHINE_B)]);
 }
 
@@ -130,6 +139,25 @@ fn sticky_beats_spread_so_the_incumbent_machine_keeps_its_service() {
         vec![machine(MACHINE_C)],
         "a busier machine already running the active deploy wins over an empty one"
     );
+}
+
+#[test]
+fn every_incumbent_replica_keeps_its_machine_even_when_ineligible() {
+    let mut incumbent_host = bid(MACHINE_C);
+    incumbent_host.lifecycle = MachineLifecycle::Draining;
+    incumbent_host.service_containers = vec![
+        service_container(ACTIVE_DEPLOY),
+        service_container(ACTIVE_DEPLOY),
+    ];
+    let mut sticky = inputs(vec![bid(MACHINE_A), incumbent_host]);
+    sticky.active_deploy = Some(operation(ACTIVE_DEPLOY));
+    sticky.placement = ServicePlacement::Replicated {
+        replicas: replicas(2),
+    };
+
+    let targets =
+        pick_placement(&sticky).expect("incumbents do not need new-placement eligibility");
+    assert_eq!(targets, vec![machine(MACHINE_C), machine(MACHINE_C)]);
 }
 
 #[test]

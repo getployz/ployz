@@ -21,7 +21,6 @@ fn deploy_host_replies_use_only_natural_replica_identity() {
     };
     let observed = DeployObservedContainer {
         identity: identity.clone(),
-        running: true,
         host_ports: Default::default(),
     };
     let prepared = DeployPreparedReplica {
@@ -37,8 +36,7 @@ fn deploy_host_replies_use_only_natural_replica_identity() {
                 "service_name": "api",
                 "operation_id": "release-1",
                 "replica_slot": { "kind": "global" }
-            },
-            "running": true
+            }
         })
     );
     assert_eq!(

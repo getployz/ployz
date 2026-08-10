@@ -136,18 +136,19 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
         .accepted
         .iter()
         .filter_map(|row| {
-            if !accepted_machine_ids.contains(&row.value.machine_id) {
+            let machine_name = MachineName::try_new(row.source.key.clone()).ok()?;
+            if !accepted_machine_ids.contains(&machine_name) {
                 return None;
             }
             row.value
                 .serving_freshness_remaining(now)
-                .map(|remaining| (row, remaining))
+                .map(|remaining| (machine_name, &row.value, remaining))
         })
         .collect::<Vec<_>>();
     let next_endpoint_expiry = serving_endpoint_rows
         .iter()
-        .filter(|(row, _)| !row.value.endpoints.is_empty())
-        .map(|(_, remaining)| *remaining)
+        .filter(|(_, testimony, _)| !testimony.endpoints.is_empty())
+        .map(|(_, _, remaining)| *remaining)
         .min();
 
     let route_report = read_rows::<RouteBindingDocument>(&cluster_id, route_bindings.clone());
@@ -196,9 +197,8 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
             Some(service) => {
                 let mut upstreams = serving_endpoint_rows
                     .iter()
-                    .flat_map(|(testimony, _)| {
+                    .flat_map(|(machine_name, testimony, _)| {
                         testimony
-                            .value
                             .endpoints
                             .iter()
                             .filter(|endpoint| {
@@ -207,11 +207,8 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
                                     && endpoint.deploy == service.active_deploy
                             })
                             .map(|endpoint| GatewayUpstream {
-                                endpoint_key: service_endpoint_key(
-                                    endpoint,
-                                    &testimony.value.machine_id,
-                                ),
-                                machine_id: testimony.value.machine_id.clone(),
+                                endpoint_key: service_endpoint_key(endpoint, machine_name),
+                                machine_id: machine_name.clone(),
                                 address: SocketAddr::from((endpoint.ip, route.endpoint_port.get())),
                             })
                     })

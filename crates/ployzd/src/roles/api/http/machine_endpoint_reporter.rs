@@ -72,6 +72,21 @@ impl MachineEndpointReporter {
     }
 
     async fn publish(&self) -> Result<(), MachineEndpointPublishError> {
+        let cluster = super::store::read_cluster(&self.client, &self.cluster_id)
+            .await
+            .map_err(|error| MachineEndpointPublishError::Roster {
+                detail: error.to_string(),
+            })?;
+        let machine =
+            super::store::read_machine(&self.client, &cluster.document, &self.local_machine_id)
+                .await
+                .map_err(|error| MachineEndpointPublishError::Roster {
+                    detail: error.to_string(),
+                })?;
+        if machine.is_none() {
+            return Ok(());
+        }
+
         let endpoint_network_ready = matches!(
             tokio::time::timeout(
                 DOCKER_OBSERVE_TIMEOUT,
@@ -97,12 +112,14 @@ impl MachineEndpointReporter {
         };
         let document = document(
             self.cluster_id.clone(),
-            self.local_machine_id.clone(),
             CorrosionTimestamp::now_utc(),
             endpoint_network_ready,
             containers,
         );
-        let response = self.client.execute(&[statement(&document)?]).await?;
+        let response = self
+            .client
+            .execute(&[statement(&self.local_machine_id, &document)?])
+            .await?;
         let [TransactionResult::Success(result)] = response.results.as_slice() else {
             return Err(MachineEndpointPublishError::UnexpectedWriteResult);
         };
@@ -117,7 +134,6 @@ impl MachineEndpointReporter {
 
 fn document(
     cluster_id: ClusterName,
-    machine_id: MachineName,
     observed_at: CorrosionTimestamp,
     endpoint_network_ready: bool,
     containers: Vec<ExistingV2ManagedContainer>,
@@ -164,13 +180,15 @@ fn document(
     MachineEndpointDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id,
-        machine_id,
         observed_at,
         endpoints,
     }
 }
 
-fn statement(document: &MachineEndpointDocument) -> Result<Statement, MachineEndpointPublishError> {
+fn statement(
+    machine_name: &MachineName,
+    document: &MachineEndpointDocument,
+) -> Result<Statement, MachineEndpointPublishError> {
     let encoded =
         serde_json::to_string(document).map_err(|error| MachineEndpointPublishError::Encode {
             detail: error.to_string(),
@@ -179,7 +197,7 @@ fn statement(document: &MachineEndpointDocument) -> Result<Statement, MachineEnd
         "INSERT INTO machine_endpoints (id, document) VALUES (?, ?) \
          ON CONFLICT(id) DO UPDATE SET document = excluded.document",
         vec![
-            SqliteParameter::Text(document.machine_id.as_str().to_owned()),
+            SqliteParameter::Text(machine_name.as_str().to_owned()),
             SqliteParameter::Text(encoded),
         ],
     ))
@@ -189,6 +207,8 @@ fn statement(document: &MachineEndpointDocument) -> Result<Statement, MachineEnd
 enum MachineEndpointPublishError {
     #[error(transparent)]
     Corrosion(#[from] CorrosionClientError),
+    #[error("could not read the local accepted roster: {detail}")]
+    Roster { detail: String },
     #[error("could not list local managed containers: {detail}")]
     Docker { detail: String },
     #[error("could not encode endpoint testimony: {detail}")]
@@ -214,7 +234,6 @@ mod tests {
     fn complete_document_contains_only_running_ipv4_endpoints_without_runtime_ids() {
         let document = document(
             cluster(),
-            machine(),
             timestamp(),
             true,
             vec![
@@ -267,7 +286,6 @@ mod tests {
     fn non_ready_endpoint_network_suppresses_all_serving_testimony() {
         let document = document(
             cluster(),
-            machine(),
             timestamp(),
             false,
             vec![container(
@@ -285,9 +303,11 @@ mod tests {
     }
 
     #[test]
-    fn upsert_uses_the_canonical_machine_name_for_key_and_document() {
-        let document = document(cluster(), machine(), timestamp(), true, Vec::new());
-        let Statement::WithParams(sql, params) = statement(&document).expect("statement") else {
+    fn upsert_uses_the_canonical_machine_name_as_the_only_identity() {
+        let machine = machine();
+        let document = document(cluster(), timestamp(), true, Vec::new());
+        let Statement::WithParams(sql, params) = statement(&machine, &document).expect("statement")
+        else {
             panic!("endpoint publication is parameterized");
         };
         assert_eq!(
@@ -301,7 +321,7 @@ mod tests {
         let decoded: MachineEndpointDocument =
             serde_json::from_str(encoded).expect("endpoint document");
         assert_eq!(key, "machine-one");
-        assert_eq!(decoded.machine_id.as_str(), key);
+        assert!(!encoded.contains("machine_id"));
         assert!(decoded.endpoints.is_empty());
     }
 

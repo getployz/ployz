@@ -107,10 +107,10 @@ pub(super) async fn wait_for_placed_rows(
                 if let Some(service) = service {
                     let placed = endpoint_rows
                         .iter()
-                        .flat_map(|row| {
+                        .flat_map(|(machine_name, row)| {
                             row.endpoints
                                 .iter()
-                                .map(move |endpoint| (&row.machine_id, endpoint))
+                                .map(move |endpoint| (machine_name, endpoint))
                         })
                         .filter(|(_, endpoint)| {
                             endpoint.namespace_id == namespace_name

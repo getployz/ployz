@@ -120,10 +120,6 @@ impl DeployHostEffects {
         for container in observed {
             containers.push(DeployObservedContainer {
                 identity: container.identity,
-                running: matches!(
-                    container.state,
-                    ExistingManagedContainerState::Running { .. }
-                ),
                 host_ports: container.host_ports,
             });
         }
@@ -232,14 +228,8 @@ impl DeployHostEffects {
                 .stop_v2_managed_container(&actual.container_id, &actual.identity)
                 .await;
             match outcome {
-                Ok(
-                    outcome @ (MachineContainerStopOutcome::StoppedRunning
-                    | MachineContainerStopOutcome::AlreadyStopped),
-                ) => {
-                    if restart_required(target.running, outcome) {
-                        stopped.push(target.clone());
-                    }
-                }
+                Ok(MachineContainerStopOutcome::StoppedRunning) => stopped.push(target.clone()),
+                Ok(MachineContainerStopOutcome::AlreadyStopped) => {}
                 Ok(MachineContainerStopOutcome::Missing) => {
                     self.restart_incumbents(&stopped).await;
                     return Err(EffectError::Refused);
@@ -276,7 +266,6 @@ impl DeployHostEffects {
         }) || request.restart_after_retire.iter().any(|incumbent| {
             incumbent.identity.namespace_id != request.namespace_name
                 || incumbent.identity.operation_id == request.operation_id
-                || !incumbent.running
         }) {
             return Err(EffectError::Refused);
         }
@@ -391,12 +380,6 @@ impl DeployHostEffects {
             tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
         }
     }
-}
-
-fn restart_required(was_running_at_inspection: bool, outcome: MachineContainerStopOutcome) -> bool {
-    matches!(outcome, MachineContainerStopOutcome::StoppedRunning)
-        || was_running_at_inspection
-            && matches!(outcome, MachineContainerStopOutcome::AlreadyStopped)
 }
 
 fn health_gate_ready(
@@ -575,18 +558,6 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn replay_restarts_an_incumbent_that_the_first_attempt_already_stopped() {
-        assert!(restart_required(
-            true,
-            MachineContainerStopOutcome::AlreadyStopped
-        ));
-        assert!(!restart_required(
-            false,
-            MachineContainerStopOutcome::AlreadyStopped
-        ));
     }
 
     #[test]

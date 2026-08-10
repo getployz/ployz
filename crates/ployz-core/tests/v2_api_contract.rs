@@ -490,6 +490,13 @@ fn deploy_route_and_feature_use_the_generalized_wire_names() {
 }
 
 #[test]
+fn only_scary_cluster_writes_require_the_controller() {
+    assert!(!V2Route::NamespaceCreate.is_controller_mutation());
+    assert!(V2Route::NamespaceRemove.is_controller_mutation());
+    assert!(V2Route::Deploy.is_controller_mutation());
+}
+
+#[test]
 fn deploy_effect_routes_parse_build_and_authorize_only_machines() {
     let peer = Principal::Peer {
         peer_id: peer_id(PEER_A),
@@ -651,6 +658,17 @@ fn deploy_requests_may_omit_placement_and_pins_for_fixed_defaults() {
         .expect("one serialized service");
     assert_eq!(service.get("placement"), None);
     assert_eq!(service.get("machines"), None);
+}
+
+#[test]
+fn deploy_requests_reject_duplicate_service_names() {
+    let runtime =
+        serde_json::to_string(&ContainerRuntimeSpec::image_defaults()).expect("runtime serializes");
+    let request = format!(
+        r#"{{"namespace_name":"payments","deploy_name":"release-1","services":{{"api":{{"image":"registry.example/api:v1","runtime":{runtime}}},"api":{{"image":"registry.example/api:v2","runtime":{runtime}}}}}}}"#
+    );
+
+    assert!(serde_json::from_str::<DeployRequest>(&request).is_err());
 }
 
 #[test]

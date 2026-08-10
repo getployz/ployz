@@ -18,7 +18,6 @@ use super::server::{
 use super::store::AcceptedRoster;
 
 const FORWARDED_PEER_HEADER: &str = "x-ployz-forwarded-peer";
-const FORWARDED_JOIN_HEADER: &str = "x-ployz-forwarded-join";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(30);
 const BODY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -91,12 +90,7 @@ impl ControllerForwarder {
         if !accepts_machine(roster, &self.local_machine_id) {
             return unavailable();
         }
-        let forwarded_join = matches!(route, V2Route::Join)
-            && request
-                .headers()
-                .get(FORWARDED_JOIN_HEADER)
-                .is_some_and(|value| value == "1");
-        let peer_id = if forwarded_join {
+        let peer_id = if matches!(route, V2Route::Join) {
             None
         } else {
             let Some(peer) = forwarded_peer(&request) else {
@@ -264,7 +258,7 @@ impl ControllerForwarder {
             .body(body);
         let request = match peer_id {
             Some(peer_id) => request.header(FORWARDED_PEER_HEADER, peer_id.as_str()),
-            None => request.header(FORWARDED_JOIN_HEADER, "1"),
+            None => request,
         };
         let response = request.send().await.map_err(|error| {
             if error.is_connect() && !error.is_timeout() {

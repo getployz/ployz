@@ -5,7 +5,7 @@ use ployz_core::corrosion::{
     NamespaceDocument, OperationDocument, StoredRow, read_named_roster_rows, read_named_rows,
     read_rows, service_key,
 };
-use ployz_core::ids::{ClusterName, CorrosionNamespaceName};
+use ployz_core::ids::{ClusterName, CorrosionNamespaceName, MachineName};
 use ployz_core::{ApiRefusal, LensSnapshot, ServiceLensRow};
 
 pub(super) fn machines_snapshot(
@@ -69,13 +69,15 @@ pub(super) fn endpoints_snapshot(
     stored_rows: Vec<StoredRow>,
 ) -> LensSnapshot {
     let report = read_rows::<MachineEndpointDocument>(expected_cluster, stored_rows);
-    let mut rows = report
+    let rows = report
         .accepted
         .into_iter()
-        .filter(|accepted| accepted.source.key == accepted.value.machine_id.as_str())
-        .map(|accepted| accepted.value)
-        .collect::<Vec<_>>();
-    rows.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+        .filter_map(|accepted| {
+            MachineName::try_new(accepted.source.key)
+                .ok()
+                .map(|machine_name| (machine_name, accepted.value))
+        })
+        .collect();
     LensSnapshot::Endpoints { rows }
 }
 

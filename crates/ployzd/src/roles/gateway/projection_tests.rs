@@ -423,7 +423,6 @@ fn stored_endpoint(machine: &str, endpoint: &ServiceEndpoint) -> StoredRow {
     let document = MachineEndpointDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: cluster_id(),
-        machine_id: machine_id_for(machine),
         observed_at: timestamp(),
         endpoints: vec![endpoint.clone()],
     };

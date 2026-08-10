@@ -53,7 +53,7 @@ pub(super) async fn wait_for_public_deploy_rows(
                     row.key == service_key && &row.document.active_deploy == operation_id
                 });
                 if let Some(service) = service {
-                    let endpoint = endpoint_rows.iter().find_map(|row| {
+                    let endpoint = endpoint_rows.values().find_map(|row| {
                         row.endpoints.iter().find(|endpoint| {
                             endpoint.namespace_id == namespace_name
                                 && endpoint.service_name == service_name
@@ -65,7 +65,7 @@ pub(super) async fn wait_for_public_deploy_rows(
                     });
                     if let (Some(endpoint), Some(_operation)) = (endpoint, operation) {
                         let service_endpoint_deploys = endpoint_rows
-                            .iter()
+                            .values()
                             .flat_map(|row| &row.endpoints)
                             .filter(|endpoint| {
                                 endpoint.namespace_id == namespace_name

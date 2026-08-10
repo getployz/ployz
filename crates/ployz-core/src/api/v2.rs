@@ -1,9 +1,11 @@
 //! Public HTTP/JSON/SSE contract for the coreless v2 API.
 
-use serde::{Deserialize, Serialize};
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::net::Ipv4Addr;
 use std::ops::{Deref, DerefMut};
 
@@ -396,7 +398,7 @@ pub struct DeployServiceRequest {
 ///
 /// The object representation makes service identity structural. An empty
 /// object requests removal of every service.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(
     feature = "ts",
@@ -404,6 +406,40 @@ pub struct DeployServiceRequest {
 )]
 #[serde(transparent)]
 pub struct DeployServices(BTreeMap<CorrosionServiceName, DeployServiceRequest>);
+
+impl<'de> Deserialize<'de> for DeployServices {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DeployServicesVisitor;
+
+        impl<'de> Visitor<'de> for DeployServicesVisitor {
+            type Value = DeployServices;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object keyed by unique service names")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut services = BTreeMap::new();
+                while let Some((name, service)) = map.next_entry()? {
+                    if services.insert(name, service).is_some() {
+                        return Err(serde::de::Error::custom(
+                            "service is declared more than once",
+                        ));
+                    }
+                }
+                Ok(DeployServices(services))
+            }
+        }
+
+        deserializer.deserialize_map(DeployServicesVisitor)
+    }
+}
 
 impl FromIterator<(CorrosionServiceName, DeployServiceRequest)> for DeployServices {
     fn from_iter<T: IntoIterator<Item = (CorrosionServiceName, DeployServiceRequest)>>(
@@ -573,8 +609,6 @@ pub struct DeployDesiredReplica {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployObservedContainer {
     pub identity: V2ManagedContainerIdentity,
-    /// Whether the container was running in the controller's inspection.
-    pub running: bool,
     #[serde(default, skip_serializing_if = "HostPortBindings::is_empty")]
     pub host_ports: HostPortBindings,
 }
@@ -853,9 +887,9 @@ pub enum V2Method {
 }
 
 impl V2Route {
-    /// Whether this request changes cluster truth and therefore belongs on the
-    /// preferred controller. Target-local host effects are deliberately not
-    /// included.
+    /// Whether this request is a scary cluster write that belongs on the
+    /// preferred controller. Ordinary insert-only namespace creation and
+    /// target-local host effects are deliberately not included.
     #[must_use]
     pub const fn is_controller_mutation(&self) -> bool {
         matches!(
@@ -865,7 +899,6 @@ impl V2Route {
                 | Self::TokenRevoke(_)
                 | Self::MachineEndpointSet
                 | Self::MachineRemove
-                | Self::NamespaceCreate
                 | Self::NamespaceRemove
                 | Self::Deploy
                 | Self::PeerRemove
@@ -1242,7 +1275,7 @@ pub enum LensSnapshot {
         rows: Vec<ServiceLensRow>,
     },
     Endpoints {
-        rows: Vec<MachineEndpointDocument>,
+        rows: BTreeMap<MachineName, MachineEndpointDocument>,
     },
     MachineStatus {
         rows: Vec<MachineStatusDocument>,

@@ -841,7 +841,6 @@ pub struct ControllerDocument {
 pub struct MachineEndpointDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterName,
-    pub machine_id: MachineName,
     pub observed_at: CorrosionTimestamp,
     /// Complete routable endpoint testimony from this machine's Docker reality.
     pub endpoints: Vec<ServiceEndpoint>,

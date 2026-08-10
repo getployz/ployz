@@ -267,9 +267,13 @@ where
         }
         CorrosionTable::Namespaces => validate_document_key(&source, fields, "name")?,
         CorrosionTable::RouteBindings => validate_document_key(&source, fields, "hostname")?,
-        CorrosionTable::MachineEndpoints
-        | CorrosionTable::MachineStatus
-        | CorrosionTable::GatewayObservations => {
+        CorrosionTable::MachineEndpoints => {
+            let expected = MachineName::try_new(source.key.clone())
+                .ok()
+                .map(|name| name.as_str().to_owned());
+            validate_optional_key(&source, expected, "machine name")?;
+        }
+        CorrosionTable::MachineStatus | CorrosionTable::GatewayObservations => {
             validate_document_key(&source, fields, "machine_id")?;
         }
         CorrosionTable::Operations => {

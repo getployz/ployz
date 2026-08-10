@@ -315,7 +315,6 @@ fn noncanonical_corrosion_reference_is_skipped_and_surfaced() {
     let document = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "machine_id": LOWER_ROW_ID,
         "observed_at": "2026-08-04T10:06:00Z",
         "endpoints": [{
             "namespace_id": "production",
@@ -374,7 +373,6 @@ fn ordinary_reader_accepts_a_machine_endpoint_row_key() {
     let document = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "machine_id": "edge-a",
         "observed_at": "2026-08-04T10:06:00Z",
         "endpoints": [{
             "namespace_id": "production",
@@ -397,17 +395,16 @@ fn ordinary_reader_accepts_a_machine_endpoint_row_key() {
 }
 
 #[test]
-fn machine_endpoint_reader_rejects_a_key_that_disagrees_with_the_machine() {
+fn machine_endpoint_reader_rejects_an_invalid_machine_name_key() {
     let document = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "machine_id": "edge-a",
         "observed_at": "2026-08-04T10:06:00Z",
         "endpoints": []
     });
     let report = read_rows::<MachineEndpointDocument>(
         &cluster_id(),
-        [StoredRow::new("edge-b", document.to_string())],
+        [StoredRow::new("not/a/machine", document.to_string())],
     );
 
     assert!(report.accepted.is_empty());
@@ -416,8 +413,7 @@ fn machine_endpoint_reader_rejects_a_key_that_disagrees_with_the_machine() {
         [skipped]
             if matches!(
                 &skipped.reason,
-                RowSkipReason::InvalidRowKey { expected }
-                    if expected == "edge-a"
+                RowSkipReason::Malformed(MalformedDocument::InvalidPayload { .. })
             )
     ));
 }

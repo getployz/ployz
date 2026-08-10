@@ -264,7 +264,6 @@ async fn seed_machine_evidence(
     let endpoints = MachineEndpointDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: machine.document.cluster_id.clone(),
-        machine_id: machine.id.clone(),
         observed_at: timestamp,
         endpoints: vec![ServiceEndpoint {
             namespace_id: namespace_id.clone(),

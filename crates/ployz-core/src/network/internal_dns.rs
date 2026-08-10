@@ -253,8 +253,11 @@ pub fn project_internal_dns_rows(
     }
     let mut next_endpoint_expiry = None;
     for row in read_rows::<MachineEndpointDocument>(&cluster_id, machine_endpoint_rows).accepted {
+        let Ok(machine_name) = MachineName::try_new(row.source.key) else {
+            continue;
+        };
         let testimony = row.value;
-        if !accepted_machine_ids.contains(&testimony.machine_id) {
+        if !accepted_machine_ids.contains(&machine_name) {
             continue;
         }
         let Some(remaining) = testimony.serving_freshness_remaining(now) else {

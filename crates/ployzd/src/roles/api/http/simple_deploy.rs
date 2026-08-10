@@ -330,7 +330,6 @@ impl SimpleDeploy {
                         .iter()
                         .map(|replica| DeployObservedContainer {
                             identity: replica.identity.clone(),
-                            running: true,
                             host_ports: expected
                                 .iter()
                                 .find(|desired| desired.identity == replica.identity)
@@ -707,12 +706,10 @@ fn derive_placement(
         let Some(inspection) = inspections.get(&machine.name) else {
             continue;
         };
-        if !inspection.bridge_ready {
-            continue;
-        }
         bids.push(PlacementBid {
             machine_name: machine.name.clone(),
             lifecycle: machine.lifecycle,
+            endpoint_network_ready: inspection.bridge_ready,
             free_disk_bytes: inspection.free_disk_bytes,
             load: inspection.load,
             total_container_count: inspection
@@ -1555,7 +1552,6 @@ mod tests {
                 operation_id: DeployName::try_new("release-0").expect("deploy"),
                 replica_slot: ReplicaSlot::Global,
             },
-            running: true,
             host_ports,
         };
         fixture
@@ -1616,7 +1612,6 @@ mod tests {
                 operation_id: DeployName::try_new("release-0").expect("deploy"),
                 replica_slot: ReplicaSlot::Global,
             },
-            running: true,
             host_ports,
         };
         fixture.hosts = Arc::new(FakeHosts {
@@ -1741,7 +1736,6 @@ mod tests {
                     operation_id: release.clone(),
                     replica_slot: ReplicaSlot::Global,
                 },
-                running: true,
                 host_ports: HostPortBindings::default(),
             }
         };

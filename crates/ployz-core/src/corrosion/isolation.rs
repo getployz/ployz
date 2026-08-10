@@ -78,18 +78,23 @@ pub fn project_container_isolation(
     } = report;
     let accepted = accepted
         .into_iter()
-        .filter(|row| accepted_machines.contains(&row.value.machine_id))
+        .filter_map(|row| {
+            let machine_name = MachineName::try_new(row.source.key.clone()).ok()?;
+            accepted_machines
+                .contains(&machine_name)
+                .then_some((machine_name, row.value))
+        })
         .collect::<Vec<_>>();
     let observed_endpoints = accepted
         .iter()
-        .map(|row| row.value.endpoints.len())
+        .map(|(_, testimony)| testimony.endpoints.len())
         .sum::<usize>()
         .saturating_add(skipped.len());
     let mut candidates = BTreeMap::<Ipv4Addr, Vec<CorrosionNamespaceName>>::new();
     let mut rejected_addresses = Vec::new();
 
-    for row in accepted {
-        for endpoint in row.value.endpoints {
+    for (machine_name, testimony) in accepted {
+        for endpoint in testimony.endpoints {
             let [_, _, _, host_octet] = endpoint.ip.octets();
             let reason = if !prefix.contains_ipv4(endpoint.ip) {
                 Some(ContainerIsolationAddressRejection::OutsideClusterPrefix)
@@ -100,7 +105,7 @@ pub fn project_container_isolation(
             };
             if let Some(reason) = reason {
                 rejected_addresses.push(RejectedContainerIsolationAddress {
-                    endpoint_key: service_endpoint_key(&endpoint, &row.value.machine_id),
+                    endpoint_key: service_endpoint_key(&endpoint, &machine_name),
                     ip: endpoint.ip,
                     reason,
                 });
@@ -165,13 +170,12 @@ mod tests {
     const NAMESPACE_A: &str = "production";
     const NAMESPACE_B: &str = "staging";
 
-    fn row(key: &str, ip: &str, namespace: &str) -> AcceptedRow<MachineEndpointDocument> {
+    fn row(ip: &str, namespace: &str) -> AcceptedRow<MachineEndpointDocument> {
         AcceptedRow {
-            source: StoredRow::new(key, "accepted"),
+            source: StoredRow::new(MACHINE, "accepted"),
             value: MachineEndpointDocument {
                 v: CorrosionDocumentVersion::V1,
                 cluster_id: ClusterName::try_new(CLUSTER).expect("cluster"),
-                machine_id: MachineName::try_new(MACHINE).expect("machine"),
                 observed_at: CorrosionTimestamp::try_new("2026-08-10T00:00:00Z")
                     .expect("timestamp"),
                 endpoints: vec![ServiceEndpoint {
@@ -189,12 +193,12 @@ mod tests {
     fn projection_sorts_coalesces_and_omits_conflicts() {
         let report = ReadReport {
             accepted: vec![
-                row("four", "10.77.2.4", NAMESPACE_A),
-                row("three-a", "10.77.2.3", NAMESPACE_A),
-                row("three-b", "10.77.2.3", NAMESPACE_B),
-                row("four-duplicate", "10.77.2.4", NAMESPACE_A),
-                row("two", "10.77.2.2", NAMESPACE_B),
-                row("last-host", "10.77.2.254", NAMESPACE_A),
+                row("10.77.2.4", NAMESPACE_A),
+                row("10.77.2.3", NAMESPACE_A),
+                row("10.77.2.3", NAMESPACE_B),
+                row("10.77.2.4", NAMESPACE_A),
+                row("10.77.2.2", NAMESPACE_B),
+                row("10.77.2.254", NAMESPACE_A),
             ],
             skipped: Vec::new(),
         };
@@ -236,10 +240,10 @@ mod tests {
             &BTreeSet::from([MachineName::try_new(MACHINE).expect("machine")]),
             ReadReport {
                 accepted: vec![
-                    row("network", "10.77.9.0", NAMESPACE_A),
-                    row("gateway", "10.77.9.1", NAMESPACE_A),
-                    row("broadcast", "10.77.9.255", NAMESPACE_A),
-                    row("foreign", "10.78.9.2", NAMESPACE_A),
+                    row("10.77.9.0", NAMESPACE_A),
+                    row("10.77.9.1", NAMESPACE_A),
+                    row("10.77.9.255", NAMESPACE_A),
+                    row("10.78.9.2", NAMESPACE_A),
                 ],
                 skipped: Vec::new(),
             },
@@ -275,7 +279,7 @@ mod tests {
             MachineEndpointSupernet::try_new("10.77.0.0/16").expect("prefix"),
             &BTreeSet::new(),
             ReadReport {
-                accepted: vec![row("removed", "10.77.2.2", NAMESPACE_A)],
+                accepted: vec![row("10.77.2.2", NAMESPACE_A)],
                 skipped: Vec::new(),
             },
         );
