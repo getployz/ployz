@@ -27,6 +27,7 @@ const RETIRE_ACTIVITY: &str = "ployz_retire";
 const DATABASE_FILE: &str = "workflows.sqlite3";
 const PREPARE_WAIT: Duration = Duration::from_secs(245);
 const RETIRE_WAIT: Duration = Duration::from_secs(70);
+pub(super) const ROLLBACK_WAIT: Duration = Duration::from_secs(315);
 const PREPARE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(240);
 const RETIRE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 const SHUTDOWN_TIMEOUT_MILLIS: u64 = 1_000;
@@ -173,7 +174,7 @@ impl NodeWorkflows {
             OrchestrationStatus::NotFound | OrchestrationStatus::Failed { .. } => Ok(None),
             OrchestrationStatus::Completed { .. } | OrchestrationStatus::Running { .. } => self
                 .client
-                .wait_for_orchestration_typed(&instance, RETIRE_WAIT)
+                .wait_for_orchestration_typed(&instance, PREPARE_WAIT)
                 .await
                 .map_err(|_| ())?
                 .map(Some)
@@ -413,6 +414,12 @@ mod tests {
             retire_instance(&staging, &deploy),
             "namespace-scoped deploy names must not collide during retire"
         );
+    }
+
+    #[test]
+    fn rollback_wait_covers_a_lost_prepare_reply_and_retirement() {
+        assert!(PREPARE_WAIT > RETIRE_WAIT);
+        assert_eq!(ROLLBACK_WAIT, PREPARE_WAIT + RETIRE_WAIT);
     }
 
     #[test]
