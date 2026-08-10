@@ -411,8 +411,13 @@ async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> 
         .into_iter()
         .find(|machine| &machine.document.name == machine_name)
         .expect("selected machine removal retains its observed row");
-    match remove_machine_and_sweep(&service.corrosion, machine_name, &observed.stored_document)
-        .await
+    match remove_machine_and_sweep(
+        &service.corrosion,
+        &service.cluster_id,
+        machine_name,
+        &observed.stored_document,
+    )
+    .await
     {
         Ok(ConditionalNamedDelete::Deleted) => typed_response(StatusCode::OK, &reply),
         Ok(ConditionalNamedDelete::ConcurrentMutation) => {

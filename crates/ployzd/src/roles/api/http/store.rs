@@ -463,14 +463,16 @@ pub(super) async fn delete_token_if_matches(
     conditional_delete_outcome(CorrosionTable::Tokens, token_id.as_str(), &response, 1, 0)
 }
 
-/// Sweeps testimony only while the exact resolved roster row exists, then
-/// deletes that row last. The fixed batch never touches operation evidence.
+/// Sweeps testimony and an appointment naming this machine only while the
+/// exact resolved roster row exists, then deletes that row last. The fixed
+/// batch never touches operation evidence.
 pub(super) async fn remove_machine_and_sweep(
     corrosion: &CorrosionClient,
+    cluster_id: &ClusterName,
     machine_id: &MachineName,
     expected: &str,
 ) -> Result<ConditionalNamedDelete, MutationStoreError> {
-    let statements = machine_removal_statements(machine_id, expected);
+    let statements = machine_removal_statements(cluster_id, machine_id, expected);
     let response = corrosion.execute(&statements).await?;
     conditional_delete_outcome(
         CorrosionTable::Machines,
@@ -834,7 +836,11 @@ fn delete_token_if_matches_statement(token_id: &TokenName, expected: String) -> 
     conditional_delete_statement(CorrosionTable::Tokens, token_id.as_str(), expected)
 }
 
-fn machine_removal_statements(machine_id: &MachineName, expected: &str) -> [Statement; 6] {
+fn machine_removal_statements(
+    cluster_id: &ClusterName,
+    machine_id: &MachineName,
+    expected: &str,
+) -> [Statement; 7] {
     [
         delete_testimony_for_machine_statement(CorrosionTable::MachineStatus, machine_id, expected),
         delete_testimony_for_machine_statement(
@@ -849,6 +855,15 @@ fn machine_removal_statements(machine_id: &MachineName, expected: &str) -> [Stat
         ),
         delete_testimony_for_machine_statement(CorrosionTable::CertHoldings, machine_id, expected),
         delete_testimony_for_machine_statement(CorrosionTable::AcmeHttp01, machine_id, expected),
+        Statement::with_params(
+            "DELETE FROM controller WHERE id = ? AND json_extract(document, '$.preferred_machine_name') = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+            vec![
+                SqliteParameter::Text(cluster_id.as_str().to_owned()),
+                SqliteParameter::Text(machine_id.as_str().to_owned()),
+                SqliteParameter::Text(machine_id.as_str().to_owned()),
+                SqliteParameter::Text(expected.to_owned()),
+            ],
+        ),
         conditional_delete_statement(
             CorrosionTable::Machines,
             machine_id.as_str(),
@@ -1138,10 +1153,11 @@ mod tests {
     }
 
     #[test]
-    fn machine_removal_sweeps_only_while_the_exact_observed_roster_row_exists() {
+    fn machine_removal_sweeps_testimony_and_its_appointment_under_the_exact_roster_row() {
+        let cluster_id = ClusterName::try_new("production").expect("cluster id");
         let machine_id = MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
         let observed = r#"{"name":"edge-a"}"#;
-        let statements = machine_removal_statements(&machine_id, observed);
+        let statements = machine_removal_statements(&cluster_id, &machine_id, observed);
         let parameter = SqliteParameter::Text(machine_id.as_str().to_owned());
         let expected = SqliteParameter::Text(observed.to_owned());
         assert_eq!(
@@ -1168,6 +1184,15 @@ mod tests {
                     vec![parameter.clone(), parameter.clone(), expected.clone()],
                 ),
                 Statement::with_params(
+                    "DELETE FROM controller WHERE id = ? AND json_extract(document, '$.preferred_machine_name') = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+                    vec![
+                        SqliteParameter::Text(cluster_id.as_str().to_owned()),
+                        parameter.clone(),
+                        parameter.clone(),
+                        expected.clone(),
+                    ],
+                ),
+                Statement::with_params(
                     "DELETE FROM machines WHERE id = ? AND document = ?",
                     vec![parameter, expected],
                 ),
@@ -1186,7 +1211,7 @@ mod tests {
             (0, ConditionalNamedDelete::ConcurrentMutation),
             (1, ConditionalNamedDelete::Deleted),
         ] {
-            let mut results = (0..5)
+            let mut results = (0..6)
                 .map(|_| {
                     TransactionResult::Success(TransactionSuccess {
                         rows_affected: 0,
@@ -1209,8 +1234,8 @@ mod tests {
                     CorrosionTable::Machines,
                     machine_id.as_str(),
                     &response,
+                    7,
                     6,
-                    5,
                 )
                 .expect("the final exact delete decides the batch outcome"),
                 expected_outcome,
