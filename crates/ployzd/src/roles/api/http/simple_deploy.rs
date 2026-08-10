@@ -77,6 +77,9 @@ pub(super) trait SimpleDeployStore: Send + Sync {
 
     /// Atomically replaces the service's serving projection.
     async fn commit(&self, commit: DeployCommit) -> Result<(), String>;
+
+    /// Resolves an ambiguous commit reply from current Corrosion reality.
+    async fn commit_is_visible(&self, commit: &DeployCommit) -> Result<bool, String>;
 }
 
 /// A controller's complete view needed to decide one deploy.
@@ -144,7 +147,7 @@ pub(super) struct StartedDeploy {
     created: OperationDocument,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeployCommit {
     pub(super) namespace_id: CorrosionNamespaceName,
     pub(super) services: Vec<DesiredServiceRow>,
@@ -152,13 +155,13 @@ pub(super) struct DeployCommit {
     pub(super) missing_automatic_routes: Vec<DesiredRouteRow>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DesiredServiceRow {
     pub(super) key: String,
     pub(super) document: ServiceDocument,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DesiredContainerRow {
     pub(super) id: String,
     pub(super) document: ContainerDocument,
@@ -243,7 +246,7 @@ impl SimpleDeploy {
         else {
             return self.interrupt(command, &created).await;
         };
-        let mut prepared_cutovers = Vec::new();
+        let mut attempted_prepares = Vec::new();
         let mut prepared_services = Vec::with_capacity(command.request.services.len());
         for (service_name, service) in command.request.services.iter() {
             if !service.runtime.volume_mounts.is_empty()
@@ -266,7 +269,7 @@ impl SimpleDeploy {
                         command,
                         &created,
                         &context,
-                        &prepared_cutovers,
+                        &attempted_prepares,
                         CorrosionDeployFailure::PrepareRefused { machine_id },
                     )
                     .await;
@@ -280,7 +283,7 @@ impl SimpleDeploy {
                             command,
                             &created,
                             &context,
-                            &prepared_cutovers,
+                            &attempted_prepares,
                             CorrosionDeployFailure::Placement { refusal },
                         )
                         .await;
@@ -294,7 +297,7 @@ impl SimpleDeploy {
             ) {
                 Ok(desired) => desired,
                 Err(error) => {
-                    self.rollback_prepared(command, &context, &prepared_cutovers)
+                    self.rollback_prepared(command, &context, &attempted_prepares)
                         .await;
                     return Err(error);
                 }
@@ -305,11 +308,11 @@ impl SimpleDeploy {
                 Ok(true) => {}
                 Ok(false) => {
                     return self
-                        .interrupt_before_commit(command, &created, &context, &prepared_cutovers)
+                        .interrupt_before_commit(command, &created, &context, &attempted_prepares)
                         .await;
                 }
                 Err(error) => {
-                    self.rollback_prepared(command, &context, &prepared_cutovers)
+                    self.rollback_prepared(command, &context, &attempted_prepares)
                         .await;
                     return Err(error);
                 }
@@ -322,49 +325,62 @@ impl SimpleDeploy {
             let credential = service.credential.clone();
             let runtime = service.runtime.clone();
             let health_gate = service.health_gate;
-            let prepare_calls =
-                group_by_machine(&desired)
-                    .into_iter()
-                    .map(|(machine_id, replicas)| {
-                        let operation_id = operation_id.clone();
-                        let namespace_name = namespace_name.clone();
-                        let service_name = service_name.clone();
-                        let image = image.clone();
-                        let credential = credential.clone();
-                        let runtime = runtime.clone();
-                        let stop_before_start = inspections
-                            .get(&machine_id)
-                            .map(|inspection| {
-                                conflicting_incumbents(&replicas, &inspection.containers)
-                            })
-                            .unwrap_or_default();
-                        async move {
-                            let request = DeployPrepareRequest {
-                                appointment_id,
-                                operation_id,
-                                namespace_name,
-                                service_name,
-                                image,
-                                credential,
-                                runtime,
-                                health_gate,
-                                stop_before_start,
-                                replicas,
-                            };
-                            let outcome = self.hosts.prepare(&machine_id, request).await;
-                            (machine_id, outcome)
-                        }
-                    });
+            let grouped = group_by_machine(&desired);
+            attempted_prepares.extend(grouped.keys().cloned().map(|machine_id| AttemptedPrepare {
+                machine_id,
+                service_name: service_name.clone(),
+            }));
+            let prepare_calls = grouped.into_iter().map(|(machine_id, replicas)| {
+                let operation_id = operation_id.clone();
+                let namespace_name = namespace_name.clone();
+                let service_name = service_name.clone();
+                let image = image.clone();
+                let credential = credential.clone();
+                let runtime = runtime.clone();
+                let stop_before_start = inspections
+                    .get(&machine_id)
+                    .map(|inspection| conflicting_incumbents(&replicas, &inspection.containers))
+                    .unwrap_or_default();
+                async move {
+                    let request = DeployPrepareRequest {
+                        controller_machine_id: self.machine_id.clone(),
+                        appointment_id,
+                        operation_id,
+                        namespace_name,
+                        service_name,
+                        image,
+                        credential,
+                        runtime,
+                        health_gate,
+                        stop_before_start,
+                        replicas,
+                    };
+                    let outcome = self.hosts.prepare(&machine_id, request).await;
+                    (machine_id, outcome)
+                }
+            });
             let prepare_outcomes = join_all(prepare_calls).await;
             let mut stale_controller = false;
             let mut prepare_failure = None;
             for (machine_id, outcome) in prepare_outcomes {
-                let (image, replicas, displaced_incumbents) = match outcome {
+                let (image, replicas) = match outcome {
                     Ok(DeployPrepareOutcome::Prepared {
+                        controller_machine_id,
+                        appointment_id: prepared_appointment_id,
                         image,
                         replicas,
-                        displaced_incumbents,
-                    }) => (image, replicas, displaced_incumbents),
+                        displaced_incumbents: _,
+                    }) => {
+                        if controller_machine_id != self.machine_id
+                            || prepared_appointment_id != command.appointment_id
+                        {
+                            prepare_failure.get_or_insert(
+                                CorrosionDeployFailure::PreparedReplicaMismatch { machine_id },
+                            );
+                            continue;
+                        }
+                        (image, replicas)
+                    }
                     Ok(DeployPrepareOutcome::Refused { .. }) => {
                         prepare_failure
                             .get_or_insert(CorrosionDeployFailure::PrepareRefused { machine_id });
@@ -380,23 +396,6 @@ impl SimpleDeploy {
                         continue;
                     }
                 };
-                prepared_cutovers.push(PreparedCutover {
-                    machine_id: machine_id.clone(),
-                    candidates: replicas
-                        .iter()
-                        .map(|replica| DeployObservedContainer {
-                            container_id: replica.container_id.clone(),
-                            identity: replica.identity.clone(),
-                            running: true,
-                            host_ports: replicas_for(&desired, &machine_id)
-                                .into_iter()
-                                .find(|desired| desired.identity == replica.identity)
-                                .map(|desired| desired.host_ports)
-                                .unwrap_or_default(),
-                        })
-                        .collect(),
-                    displaced_incumbents,
-                });
                 if !prepared_matches(&replicas, &replicas_for(&desired, &machine_id)) {
                     prepare_failure.get_or_insert(
                         CorrosionDeployFailure::PreparedReplicaMismatch { machine_id },
@@ -418,12 +417,12 @@ impl SimpleDeploy {
             }
             if stale_controller {
                 return self
-                    .interrupt_before_commit(command, &created, &context, &prepared_cutovers)
+                    .interrupt_before_commit(command, &created, &context, &attempted_prepares)
                     .await;
             }
             if let Some(failure) = prepare_failure {
                 return self
-                    .fail_before_commit(command, &created, &context, &prepared_cutovers, failure)
+                    .fail_before_commit(command, &created, &context, &attempted_prepares, failure)
                     .await;
             }
             let Some(resolved_image) = resolved_image else {
@@ -432,7 +431,7 @@ impl SimpleDeploy {
                         command,
                         &created,
                         &context,
-                        &prepared_cutovers,
+                        &attempted_prepares,
                         CorrosionDeployFailure::RuntimeRealityUnavailable,
                     )
                     .await;
@@ -449,11 +448,11 @@ impl SimpleDeploy {
             Ok(true) => {}
             Ok(false) => {
                 return self
-                    .interrupt_before_commit(command, &created, &context, &prepared_cutovers)
+                    .interrupt_before_commit(command, &created, &context, &attempted_prepares)
                     .await;
             }
             Err(error) => {
-                self.rollback_prepared(command, &context, &prepared_cutovers)
+                self.rollback_prepared(command, &context, &attempted_prepares)
                     .await;
                 return Err(error);
             }
@@ -462,7 +461,7 @@ impl SimpleDeploy {
         let written_at = match now() {
             Ok(written_at) => written_at,
             Err(error) => {
-                self.rollback_prepared(command, &context, &prepared_cutovers)
+                self.rollback_prepared(command, &context, &attempted_prepares)
                     .await;
                 return Err(error);
             }
@@ -470,16 +469,25 @@ impl SimpleDeploy {
         let commit = match build_commit(command, &context, &prepared_services, written_at) {
             Ok(commit) => commit,
             Err(error) => {
-                self.rollback_prepared(command, &context, &prepared_cutovers)
+                self.rollback_prepared(command, &context, &attempted_prepares)
                     .await;
                 return Err(error);
             }
         };
-        if self.store.commit(commit).await.is_err() {
-            // A lost write reply cannot distinguish rejection from a committed
-            // local transaction. End honestly and let a new command re-plan
-            // from the service/container rows that actually exist.
-            return self.interrupt(command, &created).await;
+        if self.store.commit(commit.clone()).await.is_err() {
+            match self.store.commit_is_visible(&commit).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return self
+                        .interrupt_before_commit(command, &created, &context, &attempted_prepares)
+                        .await;
+                }
+                Err(_) => {
+                    // Reality is unavailable too, so neither rollback nor
+                    // cleanup is safe. A later deploy replans from reality.
+                    return self.interrupt(command, &created).await;
+                }
+            }
         }
 
         let keep = prepared_services
@@ -543,36 +551,35 @@ impl SimpleDeploy {
         &self,
         command: &DeployCommand,
         context: &DeployContext,
-        prepared: &[PreparedCutover],
+        attempted: &[AttemptedPrepare],
     ) {
-        let mut by_machine = BTreeMap::<
-            MachineName,
-            (Vec<DeployObservedContainer>, Vec<DeployObservedContainer>),
-        >::new();
-        for cutover in prepared {
-            let (candidates, incumbents) =
-                by_machine.entry(cutover.machine_id.clone()).or_default();
-            extend_unique_containers(candidates, &cutover.candidates);
-            extend_unique_containers(incumbents, &cutover.displaced_incumbents);
+        let mut by_machine = BTreeMap::<MachineName, BTreeSet<_>>::new();
+        for prepare in attempted {
+            by_machine
+                .entry(prepare.machine_id.clone())
+                .or_default()
+                .insert(prepare.service_name.clone());
         }
-        let calls = by_machine.into_iter().map(
-            |(machine_id, (containers, restart_after_retire))| async move {
+        let calls = by_machine
+            .into_iter()
+            .map(|(machine_id, rollback_services)| async move {
                 let outcome = self
                     .hosts
                     .retire(
                         &machine_id,
                         DeployRetireRequest {
+                            controller_machine_id: self.machine_id.clone(),
                             appointment_id: command.appointment_id,
                             operation_id: command.operation_id.clone(),
                             namespace_name: context.reality.namespace.name.clone(),
-                            containers,
-                            restart_after_retire,
+                            containers: Vec::new(),
+                            restart_after_retire: Vec::new(),
+                            rollback_services: rollback_services.into_iter().collect(),
                         },
                     )
                     .await;
                 (machine_id, outcome)
-            },
-        );
+            });
         for (machine_id, outcome) in join_all(calls).await {
             if !matches!(outcome, Ok(DeployRetireOutcome::Retired)) {
                 tracing::warn!(%machine_id, "pre-commit deploy rollback did not complete");
@@ -585,10 +592,10 @@ impl SimpleDeploy {
         command: &DeployCommand,
         created: &OperationDocument,
         context: &DeployContext,
-        prepared: &[PreparedCutover],
+        attempted: &[AttemptedPrepare],
         failure: CorrosionDeployFailure,
     ) -> Result<CorrosionDeployOutcome, String> {
-        self.rollback_prepared(command, context, prepared).await;
+        self.rollback_prepared(command, context, attempted).await;
         self.fail(command, created, failure).await
     }
 
@@ -597,9 +604,9 @@ impl SimpleDeploy {
         command: &DeployCommand,
         created: &OperationDocument,
         context: &DeployContext,
-        prepared: &[PreparedCutover],
+        attempted: &[AttemptedPrepare],
     ) -> Result<CorrosionDeployOutcome, String> {
-        self.rollback_prepared(command, context, prepared).await;
+        self.rollback_prepared(command, context, attempted).await;
         self.interrupt(command, created).await
     }
 
@@ -627,11 +634,13 @@ impl SimpleDeploy {
                     .retire(
                         machine_id,
                         DeployRetireRequest {
+                            controller_machine_id: self.machine_id.clone(),
                             appointment_id: command.appointment_id,
                             operation_id: command.operation_id.clone(),
                             namespace_name: context.reality.namespace.name.clone(),
                             containers,
                             restart_after_retire: Vec::new(),
+                            rollback_services: Vec::new(),
                         },
                     )
                     .await;
@@ -1065,24 +1074,9 @@ struct PreparedService {
     replicas: Vec<PlacedReplica>,
 }
 
-struct PreparedCutover {
+struct AttemptedPrepare {
     machine_id: MachineName,
-    candidates: Vec<DeployObservedContainer>,
-    displaced_incumbents: Vec<DeployObservedContainer>,
-}
-
-fn extend_unique_containers(
-    target: &mut Vec<DeployObservedContainer>,
-    additions: &[DeployObservedContainer],
-) {
-    for container in additions {
-        if !target
-            .iter()
-            .any(|existing| existing.container_id == container.container_id)
-        {
-            target.push(container.clone());
-        }
-    }
+    service_name: ployz_core::corrosion::CorrosionServiceName,
 }
 
 fn build_commit(
@@ -1180,6 +1174,8 @@ mod tests {
         operation: Mutex<Option<OperationDocument>>,
         reality: Mutex<DeployReality>,
         commits: Mutex<Vec<DeployCommit>>,
+        reject_commit: AtomicBool,
+        lose_commit_reply: AtomicBool,
     }
 
     #[async_trait]
@@ -1209,8 +1205,19 @@ mod tests {
         }
 
         async fn commit(&self, commit: DeployCommit) -> Result<(), String> {
+            if self.reject_commit.load(Ordering::SeqCst) {
+                return Err("commit rejected".to_owned());
+            }
             self.commits.lock().await.push(commit);
-            Ok(())
+            if self.lose_commit_reply.load(Ordering::SeqCst) {
+                Err("commit reply lost".to_owned())
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn commit_is_visible(&self, commit: &DeployCommit) -> Result<bool, String> {
+            Ok(self.commits.lock().await.last() == Some(commit))
         }
     }
 
@@ -1281,6 +1288,8 @@ mod tests {
                 .image
                 .with_digest(&digest)
                 .map_err(|_| DeployHostError::Failed)?;
+            let controller_machine_id = request.controller_machine_id.clone();
+            let appointment_id = request.appointment_id;
             let displaced_incumbents = request.stop_before_start.clone();
             let replicas = request
                 .replicas
@@ -1296,6 +1305,8 @@ mod tests {
                 })
                 .collect::<Result<Vec<_>, DeployHostError>>()?;
             Ok(DeployPrepareOutcome::Prepared {
+                controller_machine_id,
+                appointment_id,
                 image,
                 replicas,
                 displaced_incumbents,
@@ -1380,6 +1391,8 @@ mod tests {
             operation: Mutex::new(None),
             reality: Mutex::new(reality),
             commits: Mutex::new(Vec::new()),
+            reject_commit: AtomicBool::new(false),
+            lose_commit_reply: AtomicBool::new(false),
         });
         let hosts = Arc::new(FakeHosts {
             calls: Mutex::new(Vec::new()),
@@ -1652,7 +1665,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn later_service_failure_removes_candidates_and_restarts_displaced_incumbents() {
+    async fn later_service_failure_requests_durable_rollback_for_every_attempted_prepare() {
         let mut fixture = fixture(1);
         let host_ports = HostPortBindings::try_new([ployz_core::corrosion::HostPortBinding {
             host_port: NonZeroU16::new(8080).expect("host port"),
@@ -1728,11 +1741,56 @@ mod tests {
         let [rollback] = requests.as_slice() else {
             panic!("one rollback expected")
         };
-        assert_eq!(rollback.restart_after_retire, vec![incumbent]);
-        let [candidate] = rollback.containers.as_slice() else {
-            panic!("one candidate rollback expected")
+        assert!(rollback.containers.is_empty());
+        assert!(rollback.restart_after_retire.is_empty());
+        assert_eq!(
+            rollback
+                .rollback_services
+                .iter()
+                .map(CorrosionServiceName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["api", "worker"]
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_commit_rolls_back_but_a_lost_success_reply_keeps_the_new_generation() {
+        let rejected = fixture(1);
+        rejected.store.reject_commit.store(true, Ordering::SeqCst);
+        let started = rejected
+            .executor
+            .start(rejected.command.clone())
+            .await
+            .expect("start rejected commit");
+        let outcome = rejected.executor.run(started).await.expect("deploy");
+        assert!(matches!(outcome, CorrosionDeployOutcome::Interrupted));
+        let rollback = rejected.hosts.retire_requests.lock().await;
+        let [request] = rollback.as_slice() else {
+            panic!("one rollback expected")
         };
-        assert_eq!(candidate.identity.service_name.as_str(), "api");
+        assert_eq!(
+            request
+                .rollback_services
+                .iter()
+                .map(CorrosionServiceName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["api"]
+        );
+        drop(rollback);
+
+        let committed = fixture(1);
+        committed
+            .store
+            .lose_commit_reply
+            .store(true, Ordering::SeqCst);
+        let started = committed
+            .executor
+            .start(committed.command.clone())
+            .await
+            .expect("start committed deploy");
+        let outcome = committed.executor.run(started).await.expect("deploy");
+        assert!(outcome.is_success());
+        assert!(committed.hosts.retire_requests.lock().await.is_empty());
     }
 
     #[tokio::test]

@@ -67,11 +67,15 @@ impl DeployHostEffects {
             .map_err(|_| "prepare failed".to_owned())?;
         request.credential = None;
         let image = request.image.clone();
+        let controller_machine_id = request.controller_machine_id.clone();
+        let appointment_id = request.appointment_id;
         match self
             .prepare_inner(request, &target, has_named_volumes)
             .await
         {
             Ok((replicas, displaced_incumbents)) => Ok(DeployPrepareOutcome::Prepared {
+                controller_machine_id,
+                appointment_id,
                 image,
                 replicas,
                 displaced_incumbents,
@@ -272,6 +276,9 @@ impl DeployHostEffects {
     }
 
     async fn retire_inner(&self, request: DeployRetireRequest) -> Result<(), EffectError> {
+        if !request.rollback_services.is_empty() {
+            return Err(EffectError::Refused);
+        }
         let is_rollback = !request.restart_after_retire.is_empty();
         if request.containers.iter().any(|container| {
             container.identity.namespace_id != request.namespace_name

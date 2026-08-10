@@ -671,6 +671,7 @@ pub struct DeployObservedContainer {
 /// One target host's complete service preparation request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPrepareRequest {
+    pub controller_machine_id: MachineName,
     pub appointment_id: crate::corrosion::ControllerRevision,
     /// Namespace-scoped deploy identity; every replica must carry it.
     pub operation_id: DeployName,
@@ -700,6 +701,9 @@ pub struct DeployPreparedReplica {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeployPrepareOutcome {
     Prepared {
+        /// The exact controller appointment admitted for this durable prepare.
+        controller_machine_id: MachineName,
+        appointment_id: crate::corrosion::ControllerRevision,
         /// The canonical digest-pinned image used for every returned replica.
         image: ImageReference,
         replicas: Vec<DeployPreparedReplica>,
@@ -714,6 +718,7 @@ pub enum DeployPrepareOutcome {
 /// Machine-authenticated request to retire exact observed containers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRetireRequest {
+    pub controller_machine_id: MachineName,
     pub appointment_id: crate::corrosion::ControllerRevision,
     /// Namespace-scoped deploy identity for this cleanup request.
     pub operation_id: DeployName,
@@ -721,6 +726,10 @@ pub struct DeployRetireRequest {
     pub containers: Vec<DeployObservedContainer>,
     /// Exact displaced incumbents to restart after removing `containers`.
     pub restart_after_retire: Vec<DeployObservedContainer>,
+    /// Service prepares to roll back from target-local durable outcomes. When
+    /// non-empty, both caller-supplied container lists must be empty; the
+    /// target derives the exact cleanup and restart identities itself.
+    pub rollback_services: Vec<CorrosionServiceName>,
 }
 
 /// The terminal answer from one target-host retirement attempt.

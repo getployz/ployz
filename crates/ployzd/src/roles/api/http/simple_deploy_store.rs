@@ -8,11 +8,11 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use ployz_core::DeployRefusal;
 use ployz_core::corrosion::{
-    AutomaticHostnameMode, ClusterDocument, ControllerDocument, CorrosionDocumentVersion,
-    CorrosionNamespaceName, CorrosionServiceName, CorrosionTable, IngressMode, MachineDocument,
-    MachineStatusDocument, NamespaceDocument, OperationDocument, OperatorWriteProvenance,
-    RouteBindingDocument, ServiceDocument, SqliteParameter, Statement, StoredRow,
-    TransactionResult, read_named_roster_rows, read_named_rows, read_rows,
+    AutomaticHostnameMode, ClusterDocument, ContainerDocument, ControllerDocument,
+    CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionServiceName, CorrosionTable,
+    IngressMode, MachineDocument, MachineStatusDocument, NamespaceDocument, OperationDocument,
+    OperatorWriteProvenance, RouteBindingDocument, ServiceDocument, SqliteParameter, Statement,
+    StoredRow, TransactionResult, read_named_roster_rows, read_named_rows, read_rows,
 };
 use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::ingress::RouteBindingOrigin;
@@ -167,6 +167,46 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             .await
             .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    async fn commit_is_visible(&self, commit: &DeployCommit) -> Result<bool, String> {
+        let services = self.query(
+            namespace_rows(CorrosionTable::Services, &commit.namespace_id),
+            MAX_DEPLOY_ROWS,
+        );
+        let containers = self.query(
+            namespace_rows(CorrosionTable::Containers, &commit.namespace_id),
+            MAX_DEPLOY_ROWS,
+        );
+        let (services, containers) = tokio::try_join!(services, containers)?;
+        let services = read_rows::<ServiceDocument>(&self.cluster_id, services);
+        let containers = read_rows::<ContainerDocument>(&self.cluster_id, containers);
+        if !services.skipped.is_empty() || !containers.skipped.is_empty() {
+            return Err("commit visibility lookup contained a rejected row".to_owned());
+        }
+        let actual_services = services
+            .accepted
+            .into_iter()
+            .map(|row| (row.source.key, row.value))
+            .collect::<BTreeMap<_, _>>();
+        let expected_services = commit
+            .services
+            .iter()
+            .cloned()
+            .map(|row| (row.key, row.document))
+            .collect::<BTreeMap<_, _>>();
+        let actual_containers = containers
+            .accepted
+            .into_iter()
+            .map(|row| (row.source.key, row.value))
+            .collect::<BTreeMap<_, _>>();
+        let expected_containers = commit
+            .containers
+            .iter()
+            .cloned()
+            .map(|row| (row.id, row.document))
+            .collect::<BTreeMap<_, _>>();
+        Ok(actual_services == expected_services && actual_containers == expected_containers)
     }
 }
 

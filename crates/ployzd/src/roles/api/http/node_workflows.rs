@@ -13,7 +13,8 @@ use duroxide::{
 use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName};
 use ployz_core::ids::DeployName;
 use ployz_core::{
-    DeployPrepareOutcome, DeployPrepareRequest, DeployRetireOutcome, DeployRetireRequest,
+    DeployObservedContainer, DeployPrepareOutcome, DeployPrepareRequest, DeployRetireOutcome,
+    DeployRetireRequest,
 };
 use tokio::sync::watch;
 
@@ -102,10 +103,82 @@ impl NodeWorkflows {
     /// Starts or resumes the operation's stable retire instance and waits for
     /// its typed terminal result. Completed instances do no new host work.
     pub(super) async fn retire(&self, request: DeployRetireRequest) -> DeployRetireOutcome {
+        if !request.rollback_services.is_empty() {
+            return self.rollback(request).await;
+        }
+        self.run_retire(request).await
+    }
+
+    async fn run_retire(&self, request: DeployRetireRequest) -> DeployRetireOutcome {
         let instance = retire_instance(&request.namespace_name, &request.operation_id);
         self.run(&instance, RETIRE_WORKFLOW, &request, RETIRE_WAIT)
             .await
             .unwrap_or(DeployRetireOutcome::Failed {})
+    }
+
+    async fn rollback(&self, mut request: DeployRetireRequest) -> DeployRetireOutcome {
+        if !request.containers.is_empty() || !request.restart_after_retire.is_empty() {
+            return DeployRetireOutcome::Refused {};
+        }
+        let unique_services = request
+            .rollback_services
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if unique_services.len() != request.rollback_services.len() {
+            return DeployRetireOutcome::Refused {};
+        }
+
+        let mut candidates = Vec::new();
+        let mut incumbents = Vec::new();
+        for service_name in &request.rollback_services {
+            let outcome = match self
+                .completed_prepare(&request.namespace_name, service_name, &request.operation_id)
+                .await
+            {
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => continue,
+                Err(()) => return DeployRetireOutcome::Failed {},
+            };
+            if merge_completed_prepare(
+                &request,
+                service_name,
+                outcome,
+                &mut candidates,
+                &mut incumbents,
+            )
+            .is_err()
+            {
+                return DeployRetireOutcome::Refused {};
+            }
+        }
+        request.containers = candidates;
+        request.restart_after_retire = incumbents;
+        request.rollback_services.clear();
+        self.run_retire(request).await
+    }
+
+    async fn completed_prepare(
+        &self,
+        namespace: &CorrosionNamespaceName,
+        service: &CorrosionServiceName,
+        deploy: &DeployName,
+    ) -> Result<Option<DeployPrepareOutcome>, ()> {
+        let instance = prepare_instance(namespace, service, deploy);
+        match self
+            .client
+            .get_orchestration_status(&instance)
+            .await
+            .map_err(|_| ())?
+        {
+            OrchestrationStatus::NotFound | OrchestrationStatus::Failed { .. } => Ok(None),
+            OrchestrationStatus::Completed { .. } | OrchestrationStatus::Running { .. } => self
+                .client
+                .wait_for_orchestration_typed(&instance, RETIRE_WAIT)
+                .await
+                .map_err(|_| ())?
+                .map(Some)
+                .map_err(|_| ()),
+        }
     }
 
     async fn run<Input, Output>(
@@ -143,6 +216,60 @@ impl NodeWorkflows {
             .shutdown(Some(SHUTDOWN_TIMEOUT_MILLIS))
             .await;
     }
+}
+
+fn extend_unique(
+    target: &mut Vec<DeployObservedContainer>,
+    additions: impl IntoIterator<Item = DeployObservedContainer>,
+) {
+    for container in additions {
+        if !target
+            .iter()
+            .any(|existing| existing.container_id == container.container_id)
+        {
+            target.push(container);
+        }
+    }
+}
+
+fn merge_completed_prepare(
+    request: &DeployRetireRequest,
+    service_name: &CorrosionServiceName,
+    outcome: DeployPrepareOutcome,
+    candidates: &mut Vec<DeployObservedContainer>,
+    incumbents: &mut Vec<DeployObservedContainer>,
+) -> Result<(), ()> {
+    let DeployPrepareOutcome::Prepared {
+        controller_machine_id,
+        appointment_id,
+        replicas,
+        displaced_incumbents,
+        ..
+    } = outcome
+    else {
+        return Ok(());
+    };
+    if controller_machine_id != request.controller_machine_id
+        || appointment_id != request.appointment_id
+        || replicas.iter().any(|replica| {
+            replica.identity.namespace_id != request.namespace_name
+                || replica.identity.service_name != *service_name
+                || replica.identity.operation_id != request.operation_id
+        })
+    {
+        return Err(());
+    }
+    extend_unique(
+        candidates,
+        replicas.into_iter().map(|replica| DeployObservedContainer {
+            container_id: replica.container_id,
+            identity: replica.identity,
+            running: true,
+            host_ports: Default::default(),
+        }),
+    );
+    extend_unique(incumbents, displaced_incumbents);
+    Ok(())
 }
 
 fn prepare_instance(
@@ -252,6 +379,10 @@ async fn private_directory(path: &Path) -> Result<(), std::io::Error> {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
+    use ployz_core::DeployPreparedReplica;
+    use ployz_core::corrosion::{ControllerRevision, V2ManagedContainerIdentity};
+    use ployz_core::deploy::{ImageReference, ReplicaSlot};
+    use ployz_core::ids::{ContainerId, MachineName};
     use ployz_core::network::MachineEndpointSubnet;
     use tempfile::TempDir;
 
@@ -282,6 +413,61 @@ mod tests {
             retire_instance(&staging, &deploy),
             "namespace-scoped deploy names must not collide during retire"
         );
+    }
+
+    #[test]
+    fn stale_controller_rollback_is_derived_from_its_completed_prepare() {
+        let namespace = CorrosionNamespaceName::try_new("production").expect("namespace");
+        let service = CorrosionServiceName::try_new("api").expect("service");
+        let deploy = DeployName::try_new("release-1").expect("deploy");
+        let controller = MachineName::try_new("node-1").expect("controller");
+        let appointment = ControllerRevision::INITIAL;
+        let identity = V2ManagedContainerIdentity {
+            namespace_id: namespace.clone(),
+            service_name: service.clone(),
+            operation_id: deploy.clone(),
+            replica_slot: ReplicaSlot::Global,
+        };
+        let request = DeployRetireRequest {
+            controller_machine_id: controller.clone(),
+            appointment_id: appointment,
+            operation_id: deploy,
+            namespace_name: namespace,
+            containers: Vec::new(),
+            restart_after_retire: Vec::new(),
+            rollback_services: vec![service.clone()],
+        };
+        let prepared = DeployPrepareOutcome::Prepared {
+            controller_machine_id: controller,
+            appointment_id: appointment,
+            image: ImageReference::try_new(
+                "nginx@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            )
+            .expect("image"),
+            replicas: vec![DeployPreparedReplica {
+                container_id: ContainerId::try_new("candidate").expect("container"),
+                identity: identity.clone(),
+                ip: "10.210.20.2".parse().expect("ip"),
+            }],
+            displaced_incumbents: Vec::new(),
+        };
+        let mut candidates = Vec::new();
+        let mut incumbents = Vec::new();
+
+        merge_completed_prepare(
+            &request,
+            &service,
+            prepared,
+            &mut candidates,
+            &mut incumbents,
+        )
+        .expect("matching completed prepare");
+
+        let [candidate] = candidates.as_slice() else {
+            panic!("one candidate expected")
+        };
+        assert_eq!(candidate.identity, identity);
+        assert!(incumbents.is_empty());
     }
 
     #[tokio::test]

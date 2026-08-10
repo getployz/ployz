@@ -152,6 +152,9 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployPrepareRequest,
     ) -> Result<DeployPrepareOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
+            if request.controller_machine_id != self.local_machine_id {
+                return Err(DeployHostError::Failed);
+            }
             self.require_local_appointment(&request.appointment_id)
                 .await?;
             return Ok(self.local_workflows.prepare(request).await);
@@ -171,8 +174,13 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployRetireRequest,
     ) -> Result<DeployRetireOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            self.require_local_appointment(&request.appointment_id)
-                .await?;
+            if request.controller_machine_id != self.local_machine_id {
+                return Err(DeployHostError::Failed);
+            }
+            if request.rollback_services.is_empty() {
+                self.require_local_appointment(&request.appointment_id)
+                    .await?;
+            }
             return Ok(self.local_workflows.retire(request).await);
         }
         self.post(machine_id, V2Route::DeployRetire, &request, RETIRE_TIMEOUT)
