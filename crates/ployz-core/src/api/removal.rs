@@ -115,6 +115,11 @@ pub enum ServiceRemoveRefusal {
         namespace_name: CorrosionNamespaceName,
         service_name: CorrosionServiceName,
     },
+    RuntimeCleanupIncomplete {
+        namespace_name: CorrosionNamespaceName,
+        service_name: CorrosionServiceName,
+        machines: Vec<crate::machine::MachineName>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

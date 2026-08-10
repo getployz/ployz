@@ -115,6 +115,20 @@ fn service_refusal(refusal: ServiceRemoveRefusal) -> RemovalExecutionError {
             "service {}/{} changed before removal; inspect it and retry",
             namespace_name, service_name
         ),
+        ServiceRemoveRefusal::RuntimeCleanupIncomplete {
+            namespace_name,
+            service_name,
+            machines,
+        } => format!(
+            "service {}/{} was unpublished but runtime cleanup did not finish on {}; retry removal",
+            namespace_name,
+            service_name,
+            machines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     };
     RemovalExecutionError::Refused { message }
 }

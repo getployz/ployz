@@ -1,7 +1,10 @@
 //! Bounded, synchronous removal of one selected named row.
 
 use hyper::{Response, StatusCode};
-use ployz_core::corrosion::{CorrosionTable, OperatorWriteProvenance, Principal};
+use ployz_core::corrosion::{
+    CorrosionServiceName, CorrosionTable, OperatorWriteProvenance, Principal,
+};
+use ployz_core::ids::{CorrosionNamespaceName, MachineName};
 use ployz_core::{
     NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
     PeerRemoveSelection, RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest,
@@ -16,7 +19,8 @@ use super::roster::corrosion_unavailable_refusal;
 use super::server::{ApiService, HttpBody, refusal_response};
 use super::store::{
     ConditionalNamedDelete, MutationStoreError, delete_named_if_matches,
-    delete_peer_if_cluster_and_row_match, read_cluster, read_named_removal_rows,
+    delete_peer_if_cluster_and_row_match, read_accepted_roster, read_cluster,
+    read_named_removal_rows,
 };
 
 pub(super) async fn handle_removal(
@@ -133,7 +137,7 @@ async fn remove_service(
         Ok(written_at) => written_at,
         Err(()) => return refusal_response(corrosion_unavailable_refusal()),
     };
-    match select_service_removal(
+    let selection = match select_service_removal(
         &service.cluster_id,
         row,
         &request,
@@ -142,33 +146,49 @@ async fn remove_service(
             written_at,
         },
     ) {
-        Ok(ServiceRemoveSelection::AlreadyAbsent {
+        Ok(selection) => selection,
+        Err(refusal) => return typed_response(service_refusal_status(&refusal), &refusal),
+    };
+    let machines = match read_accepted_roster(&service.corrosion, &service.cluster_id).await {
+        Ok(roster) => roster
+            .machines
+            .into_iter()
+            .map(|machine| machine.document.name)
+            .collect::<Vec<_>>(),
+        Err(error) => return store_failure("read roster for service removal", error),
+    };
+    match selection {
+        ServiceRemoveSelection::AlreadyAbsent {
             namespace_name,
             service_name,
-        }) => typed_response(
-            StatusCode::OK,
-            &ServiceRemoveReply {
+        } => {
+            service_removal_runtime_reply(
+                service,
+                &machines,
                 namespace_name,
                 service_name,
-                outcome: NamedRemovalOutcome::AlreadyAbsent,
-            },
-        ),
-        Ok(ServiceRemoveSelection::Replace {
+                NamedRemovalOutcome::AlreadyAbsent,
+            )
+            .await
+        }
+        ServiceRemoveSelection::Replace {
             namespace_name,
             stored_document,
             replacement_document,
-        }) => match store
+        } => match store
             .replace_if_matches(&namespace_name, &stored_document, &replacement_document)
             .await
         {
-            Ok(NamespaceReplaceOutcome::Replaced) => typed_response(
-                StatusCode::OK,
-                &ServiceRemoveReply {
+            Ok(NamespaceReplaceOutcome::Replaced) => {
+                service_removal_runtime_reply(
+                    service,
+                    &machines,
                     namespace_name,
-                    service_name: request.service_name,
-                    outcome: NamedRemovalOutcome::Removed,
-                },
-            ),
+                    request.service_name,
+                    NamedRemovalOutcome::Removed,
+                )
+                .await
+            }
             Ok(NamespaceReplaceOutcome::Changed) => typed_response(
                 StatusCode::CONFLICT,
                 &ServiceRemoveRefusal::ConcurrentMutation {
@@ -178,7 +198,42 @@ async fn remove_service(
             ),
             Err(error) => namespace_store_failure("replace namespace for service removal", error),
         },
-        Err(refusal) => typed_response(service_refusal_status(&refusal), &refusal),
+    }
+}
+
+async fn service_removal_runtime_reply(
+    service: &ApiService,
+    machines: &[MachineName],
+    namespace_name: CorrosionNamespaceName,
+    service_name: CorrosionServiceName,
+    outcome: NamedRemovalOutcome,
+) -> Response<HttpBody> {
+    let cleanup_failed = match &service.simple_deploy {
+        Some(deploy) => {
+            deploy
+                .retire_service_containers(&namespace_name, &service_name, machines)
+                .await
+        }
+        None => machines.to_vec(),
+    };
+    if cleanup_failed.is_empty() {
+        typed_response(
+            StatusCode::OK,
+            &ServiceRemoveReply {
+                namespace_name,
+                service_name,
+                outcome,
+            },
+        )
+    } else {
+        typed_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &ServiceRemoveRefusal::RuntimeCleanupIncomplete {
+                namespace_name,
+                service_name,
+                machines: cleanup_failed,
+            },
+        )
     }
 }
 
@@ -237,6 +292,7 @@ fn service_refusal_status(refusal: &ServiceRemoveRefusal) -> StatusCode {
         ServiceRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
         ServiceRemoveRefusal::NamespaceStoredRowUnselectable { .. }
         | ServiceRemoveRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
+        ServiceRemoveRefusal::RuntimeCleanupIncomplete { .. } => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 

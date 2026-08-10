@@ -471,7 +471,7 @@ machine?: MachineName | null, };
 
 export type ServiceLogsTailReply = { lines: Array<ServiceLogLine>, truncated: boolean, };
 
-export type ServiceRemoveRefusal = { "kind": "not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "namespace_stored_row_unselectable", namespace_name: CorrosionNamespaceName, } | { "kind": "concurrent_mutation", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, };
+export type ServiceRemoveRefusal = { "kind": "not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "namespace_stored_row_unselectable", namespace_name: CorrosionNamespaceName, } | { "kind": "concurrent_mutation", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "runtime_cleanup_incomplete", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, machines: Array<MachineName>, };
 
 export type ServiceRemoveReply = { namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, outcome: NamedRemovalOutcome, };
 

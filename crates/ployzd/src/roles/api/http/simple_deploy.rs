@@ -11,10 +11,11 @@ use async_trait::async_trait;
 use futures_util::future::join_all;
 use ployz_core::corrosion::{
     ControllerDocument, CorrosionDeployFailure, CorrosionDeployOutcome, CorrosionDeployWarning,
-    CorrosionDocumentVersion, CorrosionTimestamp, HostPortBindings, MachineLoadBand,
-    NamespaceDocument, OperationDocument, OperationInitiator, OperatorWriteProvenance,
-    PublishedService, RouteBindingDocument, ServicePlacement, ServiceReplicaCount,
-    V2ManagedContainerIdentity, fingerprint_env_value, is_preferred_controller,
+    CorrosionDocumentVersion, CorrosionServiceName, CorrosionTimestamp, HostPortBindings,
+    MachineLoadBand, NamespaceDocument, OperationDocument, OperationInitiator,
+    OperatorWriteProvenance, PublishedService, RouteBindingDocument, ServicePlacement,
+    ServiceReplicaCount, V2ManagedContainerIdentity, fingerprint_env_value,
+    is_preferred_controller,
 };
 use ployz_core::deploy::{ReplicaSlot, ReplicatedReplicaSlot};
 use ployz_core::ids::{CorrosionNamespaceName, DeployName};
@@ -176,6 +177,59 @@ impl SimpleDeploy {
             context,
             created,
         })
+    }
+
+    /// Removes exact locally-observed containers for one service from every
+    /// machine in the caller's local roster view.
+    pub(super) async fn retire_service_containers(
+        &self,
+        namespace_name: &CorrosionNamespaceName,
+        service_name: &CorrosionServiceName,
+        machines: &[MachineName],
+    ) -> Vec<MachineName> {
+        let inspections =
+            join_all(machines.iter().map(|machine| async move {
+                (machine.clone(), self.hosts.inspect(machine).await)
+            }))
+            .await;
+        let mut failed = BTreeSet::new();
+        let mut retire = Vec::new();
+        for (machine, inspection) in inspections {
+            let Ok(DeployInspectOutcome::Inspected { containers, .. }) = inspection else {
+                failed.insert(machine);
+                continue;
+            };
+            let mut by_deploy = BTreeMap::<DeployName, Vec<DeployObservedContainer>>::new();
+            for container in containers.into_iter().filter(|container| {
+                container.identity.namespace_id == *namespace_name
+                    && container.identity.service_name == *service_name
+            }) {
+                by_deploy
+                    .entry(container.identity.operation_id.clone())
+                    .or_default()
+                    .push(container);
+            }
+            retire.extend(by_deploy.into_iter().map(|(deploy, containers)| {
+                let request = DeployRetireRequest {
+                    operation_id: service_removal_operation_id(service_name, &deploy),
+                    namespace_name: namespace_name.clone(),
+                    containers,
+                    restart_after_retire: Vec::new(),
+                };
+                (machine.clone(), request)
+            }));
+        }
+        let outcomes = join_all(retire.into_iter().map(|(machine, request)| async move {
+            let outcome = self.hosts.retire(&machine, request).await;
+            (machine, outcome)
+        }))
+        .await;
+        for (machine, outcome) in outcomes {
+            if !matches!(outcome, Ok(DeployRetireOutcome::Retired)) {
+                failed.insert(machine);
+            }
+        }
+        failed.into_iter().collect()
     }
 
     pub(super) async fn run(
@@ -612,6 +666,19 @@ impl SimpleDeploy {
         self.store.write_operation(&operation).await?;
         Ok(outcome)
     }
+}
+
+fn service_removal_operation_id(
+    service_name: &CorrosionServiceName,
+    deploy: &DeployName,
+) -> DeployName {
+    DeployName::try_new(format!(
+        "remove-{}-{}-{}",
+        service_name.as_str().len(),
+        service_name.as_str(),
+        deploy.as_str()
+    ))
+    .expect("validated names produce a valid deterministic removal name")
 }
 
 struct DeployContext {
@@ -1749,6 +1816,41 @@ mod tests {
             observed_service_containers(&containers, &production, &api),
             vec![ServiceContainerObservation { deploy: release }]
         );
+    }
+
+    #[tokio::test]
+    async fn service_removal_retires_only_exact_runtime_matches() {
+        let fixture = fixture(1);
+        let namespace = CorrosionNamespaceName::try_new("production").expect("namespace");
+        let service = CorrosionServiceName::try_new("api").expect("service");
+        let deploy = DeployName::try_new("release-0").expect("deploy");
+        let observed = |service_name: CorrosionServiceName| DeployObservedContainer {
+            identity: V2ManagedContainerIdentity {
+                namespace_id: namespace.clone(),
+                service_name,
+                operation_id: deploy.clone(),
+                replica_slot: ReplicaSlot::Global,
+            },
+            host_ports: HostPortBindings::default(),
+        };
+        let target = observed(service.clone());
+        let unrelated = observed(CorrosionServiceName::try_new("worker").expect("service"));
+        *fixture.hosts.inspections.lock().await = vec![target.clone(), unrelated];
+
+        assert!(
+            fixture
+                .executor
+                .retire_service_containers(&namespace, &service, &fixture.machines)
+                .await
+                .is_empty()
+        );
+        let requests = fixture.hosts.retire_requests.lock().await;
+        let [request] = requests.as_slice() else {
+            panic!("one exact service retirement expected")
+        };
+        assert_eq!(request.operation_id.as_str(), "remove-3-api-release-0");
+        assert_eq!(request.containers, vec![target]);
+        assert!(request.restart_after_retire.is_empty());
     }
 
     #[tokio::test]
