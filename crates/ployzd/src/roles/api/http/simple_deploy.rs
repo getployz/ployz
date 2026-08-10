@@ -315,10 +315,7 @@ impl SimpleDeploy {
             for (machine_id, outcome) in prepare_outcomes {
                 let (image, replicas) = match outcome {
                     Ok(DeployPrepareOutcome::Prepared {
-                        image,
-                        replicas,
-                        displaced_incumbents: _,
-                        ..
+                        image, replicas, ..
                     }) => (image, replicas),
                     Ok(DeployPrepareOutcome::Refused) => {
                         prepare_failure
