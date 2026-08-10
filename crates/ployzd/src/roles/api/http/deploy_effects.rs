@@ -23,7 +23,6 @@ use crate::roles::api::runner::{
 };
 
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RUNNING_CONFIRMATION_WINDOW: Duration = Duration::from_secs(5);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// The local implementation behind the three machine-only deploy endpoints.
@@ -234,7 +233,6 @@ impl DeployHostEffects {
         identity: &V2ManagedContainerIdentity,
         policy: HealthGatePolicy,
     ) -> Result<Ipv4Addr, EffectError> {
-        let confirmation_started = tokio::time::Instant::now();
         loop {
             let container = observe_running(&self.runtime, container_id, identity).await?;
             let ExistingManagedContainerState::Running { ip, .. } = container.state else {
@@ -245,22 +243,27 @@ impl DeployHostEffects {
                 continue;
             };
             let ip = require_ipv4(ip)?;
-            if matches!(policy, HealthGatePolicy::Skip) {
+            if health_gate_ready(policy, container.health_status)? {
                 return Ok(ip);
-            }
-            use ployz_core::machine::runtime::ManagedContainerHealthStatus;
-            match container.health_status {
-                Some(ManagedContainerHealthStatus::Healthy) => return Ok(ip),
-                Some(ManagedContainerHealthStatus::Unhealthy) => {
-                    return Err(EffectError::Failed);
-                }
-                None if confirmation_started.elapsed() >= RUNNING_CONFIRMATION_WINDOW => {
-                    return Ok(ip);
-                }
-                Some(ManagedContainerHealthStatus::Starting) | None => {}
             }
             tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
         }
+    }
+}
+
+fn health_gate_ready(
+    policy: HealthGatePolicy,
+    status: Option<ployz_core::machine::runtime::ManagedContainerHealthStatus>,
+) -> Result<bool, EffectError> {
+    use ployz_core::machine::runtime::ManagedContainerHealthStatus;
+
+    if matches!(policy, HealthGatePolicy::Skip) {
+        return Ok(true);
+    }
+    match status {
+        None | Some(ManagedContainerHealthStatus::Healthy) => Ok(true),
+        Some(ManagedContainerHealthStatus::Starting) => Ok(false),
+        Some(ManagedContainerHealthStatus::Unhealthy) => Err(EffectError::Failed),
     }
 }
 
@@ -326,6 +329,7 @@ fn matching_container<'a>(
     Ok(first)
 }
 
+#[derive(Debug)]
 enum EffectError {
     Refused,
     Failed,
@@ -356,5 +360,38 @@ fn require_ipv4(ip: IpAddr) -> Result<Ipv4Addr, EffectError> {
     match ip {
         IpAddr::V4(ip) => Ok(ip),
         IpAddr::V6(_) => Err(EffectError::Failed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::machine::runtime::ManagedContainerHealthStatus;
+
+    use super::*;
+
+    #[test]
+    fn enforced_gate_waits_only_when_docker_reports_a_healthcheck() {
+        assert!(health_gate_ready(HealthGatePolicy::Enforce, None).expect("no healthcheck"));
+        assert!(
+            !health_gate_ready(
+                HealthGatePolicy::Enforce,
+                Some(ManagedContainerHealthStatus::Starting),
+            )
+            .expect("starting healthcheck")
+        );
+        assert!(
+            health_gate_ready(
+                HealthGatePolicy::Enforce,
+                Some(ManagedContainerHealthStatus::Healthy),
+            )
+            .expect("healthy healthcheck")
+        );
+        assert!(
+            health_gate_ready(
+                HealthGatePolicy::Enforce,
+                Some(ManagedContainerHealthStatus::Unhealthy),
+            )
+            .is_err()
+        );
     }
 }

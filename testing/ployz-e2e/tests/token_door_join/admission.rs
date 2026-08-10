@@ -307,19 +307,7 @@ pub(super) async fn assert_revoked_and_expired_refusals(
     live_token_id: TokenName,
 ) -> Result<(), String> {
     expire_token_row(store, &live_token_id).await?;
-    let expired = JoinDoorClient::default()
-        .admit_peer(&live_blob, peer_request("expired-proof")?)
-        .await
-        .expect_err("expired token must be refused");
-    require(
-        matches!(
-            expired,
-            ployz::JoinDoorClientError::Refused {
-                refusal: JoinDoorRefusal::TokenExpired { .. }
-            }
-        ),
-        format!("expired token returned the wrong refusal: {expired:?}"),
-    )?;
+    wait_for_expired_token_refusal(&live_blob, peer_request("expired-proof")?).await?;
     let list = run_cli(cli, home, ["token", "list"].map(str::to_owned))?;
     require_success(&list, "live token list after expiry")?;
     require(
@@ -353,6 +341,35 @@ pub(super) async fn assert_revoked_and_expired_refusals(
     )?;
     require_success(&revoked, "token revoke")?;
     wait_for_revoked_token_refusals(&revoked_blob, peer_request("revoked-proof")?).await
+}
+
+async fn wait_for_expired_token_refusal(
+    blob: &JoinBlob,
+    request: PeerJoinRequest,
+) -> Result<(), String> {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    let client = JoinDoorClient::default();
+    loop {
+        match client.admit_peer(blob, request.clone()).await {
+            Err(ployz::JoinDoorClientError::Refused {
+                refusal: JoinDoorRefusal::TokenExpired { .. },
+            }) => return Ok(()),
+            Ok(accepted) => {
+                return Err(format!(
+                    "expired token was accepted before its refusal converged: {accepted:?}"
+                ));
+            }
+            Err(error) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(format!(
+                        "expired token did not return TokenExpired within {WAIT_BUDGET:?}: {error:?}"
+                    ));
+                }
+                tokio::time::sleep(WAIT_DELAY.min(remaining)).await;
+            }
+        }
+    }
 }
 
 struct RevokedDoorProbe {

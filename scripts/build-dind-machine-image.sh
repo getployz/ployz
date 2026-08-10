@@ -25,8 +25,6 @@ BUILDER_IMAGE="${PLOYZ_DIND_BUILDER_IMAGE:-ployz-dind-builder:rust-1.91-bookworm
 DOCKER_HUB_MIRROR="${PLOYZ_DIND_DOCKER_HUB_MIRROR:-mirror.gcr.io}"
 WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
 REGISTRY_IMAGE="${PLOYZ_DIND_REGISTRY_IMAGE:-registry:2.8.3}"
-UMAMI_IMAGE="${PLOYZ_DIND_UMAMI_IMAGE:-ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec}"
-POSTGRES_IMAGE="${PLOYZ_DIND_POSTGRES_IMAGE:-postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f}"
 TARGET_DIR="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
 EBPF_TARGET_DIR="${PLOYZ_DIND_EBPF_TARGET_DIR:-/tmp/ployz-dind-ebpf-target}"
 CARGO_REGISTRY_DIR="${PLOYZ_DIND_CARGO_REGISTRY_DIR:-/tmp/ployz-dind-cargo-registry}"
@@ -115,11 +113,9 @@ BUILD_IMAGE_SOURCE="$(docker_hub_source "${BUILD_IMAGE}")"
 MACHINE_BASE_IMAGE_SOURCE="$(docker_hub_source "${MACHINE_BASE_IMAGE}")"
 WORKLOAD_IMAGE_SOURCE="$(docker_hub_source "${WORKLOAD_IMAGE}")"
 REGISTRY_IMAGE_SOURCE="$(docker_hub_source "${REGISTRY_IMAGE}")"
-UMAMI_IMAGE_SOURCE="$(docker_hub_source "${UMAMI_IMAGE}")"
-POSTGRES_IMAGE_SOURCE="$(docker_hub_source "${POSTGRES_IMAGE}")"
-WORKLOAD_NAMES=(nginx registry umami postgres)
-WORKLOAD_IMAGES=("${WORKLOAD_IMAGE}" "${REGISTRY_IMAGE}" "${UMAMI_IMAGE}" "${POSTGRES_IMAGE}")
-WORKLOAD_SOURCES=("${WORKLOAD_IMAGE_SOURCE}" "${REGISTRY_IMAGE_SOURCE}" "${UMAMI_IMAGE_SOURCE}" "${POSTGRES_IMAGE_SOURCE}")
+WORKLOAD_NAMES=(nginx registry)
+WORKLOAD_IMAGES=("${WORKLOAD_IMAGE}" "${REGISTRY_IMAGE}")
+WORKLOAD_SOURCES=("${WORKLOAD_IMAGE_SOURCE}" "${REGISTRY_IMAGE_SOURCE}")
 
 image_digest() {
   docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1"
@@ -160,7 +156,7 @@ machine_fingerprint() (
       name="${WORKLOAD_NAMES[index]}"
       printf '%s\0' "image.${name}=${WORKLOAD_IMAGES[index]}|${WORKLOAD_SOURCES[index]}@$(<"${digest_dir}/${name}")"
     done
-    for file in Dockerfile daemon.json ployz-dind-images.service; do
+    for file in .dockerignore Dockerfile daemon.json ployz-dind-images.service; do
       printf '%s\0' "${file}"
       cat "${CONTEXT_DIR}/${file}"
       printf '\0'
@@ -176,16 +172,26 @@ if [ "${mode}" = "fingerprint" ]; then
 fi
 
 ensure_builder_image() {
-  local want_platform existing_arch
+  local want_platform existing_arch cache_scope
+  local -a cache_args=()
   want_platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
   existing_arch="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${BUILDER_IMAGE}" 2>/dev/null || true)"
   if [ "${existing_arch}" = "${want_platform}" ]; then
     return 0
   fi
 
-  docker build \
+  if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+    cache_scope="ployz-dind-builder-${want_platform//\//-}"
+    cache_args+=(
+      --cache-from "type=gha,scope=${cache_scope}"
+      --cache-to "type=gha,mode=max,scope=${cache_scope}"
+    )
+  fi
+
+  docker buildx build --load \
     --platform "${want_platform}" \
     --tag "${BUILDER_IMAGE}" \
+    "${cache_args[@]}" \
     - <<DOCKERFILE
 FROM ${BUILD_IMAGE_SOURCE}
 ENV DEBIAN_FRONTEND=noninteractive
@@ -370,15 +376,25 @@ bake_workload_tarball() {
 }
 
 build_machine_image() {
-  local fingerprint
+  local fingerprint platform cache_scope
+  local -a cache_args=()
   fingerprint="$(machine_fingerprint)"
-  docker build \
-    --platform "$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")" \
+  platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
+  if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+    cache_scope="ployz-dind-machine-${platform//\//-}"
+    cache_args+=(
+      --cache-from "type=gha,scope=${cache_scope}"
+      --cache-to "type=gha,mode=max,scope=${cache_scope}"
+    )
+  fi
+  docker buildx build --load \
+    --platform "${platform}" \
     --label dev.ployz.dind.managed=true \
     --label "dev.ployz.dind.fingerprint=${fingerprint}" \
     --build-arg "BASE_IMAGE=${MACHINE_BASE_IMAGE_SOURCE}" \
     --build-arg "DOCKER_HUB_MIRROR=${DOCKER_HUB_MIRROR}" \
     --tag "${MACHINE_IMAGE}" \
+    "${cache_args[@]}" \
     "${CONTEXT_DIR}"
 }
 

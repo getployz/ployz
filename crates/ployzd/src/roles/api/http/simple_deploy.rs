@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures_util::future::join_all;
 use ployz_core::corrosion::{
     ContainerDocument, ControllerDocument, ControllerRevision, CorrosionDeployFailure,
     CorrosionDeployOutcome, CorrosionDeployWarning, CorrosionDocumentVersion, CorrosionTimestamp,
@@ -168,8 +169,8 @@ pub(super) struct DesiredContainerRow {
 
 /// One concrete preferred-controller deploy. There are no knobs for alternate
 /// orchestration strategies: the one implementation is the product policy.
-/// `ponytail:` target calls stay serial until measured small-cluster latency
-/// justifies parallel fan-out.
+/// Independent target-machine calls fan out together. Each machine still
+/// serializes its own mutations through its one node workflow worker.
 pub(super) struct SimpleDeploy {
     machine_id: MachineName,
     store: Arc<dyn SimpleDeployStore>,
@@ -291,22 +292,51 @@ impl SimpleDeploy {
             )?;
             let mut prepared = Vec::new();
             let mut resolved_image = None;
-            for (machine_id, replicas) in group_by_machine(&desired) {
-                if !self.appointment_is_current(command).await? {
-                    return self.interrupt(command, &created).await;
-                }
-                let request = DeployPrepareRequest {
-                    appointment_id: command.appointment_id,
-                    operation_id: command.operation_id.clone(),
-                    namespace_name: context.reality.namespace.name.clone(),
-                    service_name: service.service_name.clone(),
-                    image: service.image.clone(),
-                    credential: service.credential.clone(),
-                    runtime: service.runtime.clone(),
-                    health_gate: service.health_gate,
-                    replicas: replicas.clone(),
-                };
-                let outcome = self.hosts.prepare(&machine_id, request).await;
+            if !self.appointment_is_current(command).await? {
+                return self.interrupt(command, &created).await;
+            }
+            let appointment_id = command.appointment_id;
+            let operation_id = command.operation_id.clone();
+            let namespace_name = context.reality.namespace.name.clone();
+            let service_name = service.service_name.clone();
+            let image = service.image.clone();
+            let credential = service.credential.clone();
+            let runtime = service.runtime.clone();
+            let health_gate = service.health_gate;
+            let prepare_calls =
+                group_by_machine(&desired)
+                    .into_iter()
+                    .map(|(machine_id, replicas)| {
+                        let operation_id = operation_id.clone();
+                        let namespace_name = namespace_name.clone();
+                        let service_name = service_name.clone();
+                        let image = image.clone();
+                        let credential = credential.clone();
+                        let runtime = runtime.clone();
+                        async move {
+                            let request = DeployPrepareRequest {
+                                appointment_id,
+                                operation_id,
+                                namespace_name,
+                                service_name,
+                                image,
+                                credential,
+                                runtime,
+                                health_gate,
+                                replicas,
+                            };
+                            let outcome = self.hosts.prepare(&machine_id, request).await;
+                            (machine_id, outcome)
+                        }
+                    });
+            let prepare_outcomes = join_all(prepare_calls).await;
+            if prepare_outcomes
+                .iter()
+                .any(|(_, outcome)| matches!(outcome, Err(DeployHostError::StaleController)))
+            {
+                return self.interrupt(command, &created).await;
+            }
+            for (machine_id, outcome) in prepare_outcomes {
                 let (image, replicas) = match outcome {
                     Ok(DeployPrepareOutcome::Prepared { image, replicas }) => (image, replicas),
                     Ok(DeployPrepareOutcome::Refused { .. }) => {
@@ -319,7 +349,7 @@ impl SimpleDeploy {
                             .await;
                     }
                     Err(DeployHostError::StaleController) => {
-                        return self.interrupt(command, &created).await;
+                        unreachable!("stale controller outcomes are handled before prepare results")
                     }
                     Ok(DeployPrepareOutcome::Failed { .. }) | Err(DeployHostError::Failed) => {
                         return self
@@ -415,12 +445,15 @@ impl SimpleDeploy {
         reality: &DeployReality,
         appointment_id: &ControllerRevision,
     ) -> Option<BTreeMap<MachineName, HostInspection>> {
-        let mut inspections = BTreeMap::new();
-        for machine in &reality.roster {
+        let calls = reality.roster.iter().map(|machine| async move {
             let request = DeployInspectRequest {
                 appointment_id: *appointment_id,
             };
             let outcome = self.hosts.inspect(&machine.id, request).await;
+            (machine, outcome)
+        });
+        let mut inspections = BTreeMap::new();
+        for (machine, outcome) in join_all(calls).await {
             match outcome {
                 Err(DeployHostError::StaleController) => return None,
                 Ok(DeployInspectOutcome::Inspected {
@@ -449,8 +482,7 @@ impl SimpleDeploy {
         inspections: &BTreeMap<MachineName, HostInspection>,
         keep: &BTreeSet<(MachineName, ContainerId)>,
     ) -> Result<CorrosionDeployOutcome, String> {
-        let mut cleanup_failed = Vec::new();
-        for (machine_id, inspection) in inspections {
+        let retire_calls = inspections.iter().filter_map(|(machine_id, inspection)| {
             let containers = inspection
                 .containers
                 .iter()
@@ -460,21 +492,24 @@ impl SimpleDeploy {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            if containers.is_empty() {
-                continue;
-            }
-            let outcome = self
-                .hosts
-                .retire(
-                    machine_id,
-                    DeployRetireRequest {
-                        appointment_id: command.appointment_id,
-                        operation_id: command.operation_id.clone(),
-                        namespace_name: context.reality.namespace.name.clone(),
-                        containers,
-                    },
-                )
-                .await;
+            (!containers.is_empty()).then_some(async move {
+                let outcome = self
+                    .hosts
+                    .retire(
+                        machine_id,
+                        DeployRetireRequest {
+                            appointment_id: command.appointment_id,
+                            operation_id: command.operation_id.clone(),
+                            namespace_name: context.reality.namespace.name.clone(),
+                            containers,
+                        },
+                    )
+                    .await;
+                (machine_id, outcome)
+            })
+        });
+        let mut cleanup_failed = Vec::new();
+        for (machine_id, outcome) in join_all(retire_calls).await {
             if !matches!(outcome, Ok(DeployRetireOutcome::Retired)) {
                 cleanup_failed.push(machine_id.clone());
             }
@@ -928,7 +963,7 @@ mod tests {
     use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
     use ployz_core::ids::{ClusterName, PeerName};
     use ployz_core::image::OciDigest;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Barrier, Mutex};
 
     use super::*;
 
@@ -983,6 +1018,7 @@ mod tests {
         calls: Mutex<Vec<HostCall>>,
         stale_prepare: AtomicBool,
         next_container: AtomicUsize,
+        fanout_barrier: Option<Arc<Barrier>>,
     }
 
     #[async_trait]
@@ -996,6 +1032,9 @@ mod tests {
                 .lock()
                 .await
                 .push(HostCall::Inspect(machine_id.clone()));
+            if let Some(barrier) = &self.fanout_barrier {
+                barrier.wait().await;
+            }
             Ok(DeployInspectOutcome::Inspected {
                 bridge_ready: true,
                 containers: Vec::new(),
@@ -1011,6 +1050,9 @@ mod tests {
                 .lock()
                 .await
                 .push(HostCall::Prepare(machine_id.clone()));
+            if let Some(barrier) = &self.fanout_barrier {
+                barrier.wait().await;
+            }
             if self.stale_prepare.load(Ordering::SeqCst) {
                 return Err(DeployHostError::StaleController);
             }
@@ -1119,6 +1161,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             stale_prepare: AtomicBool::new(false),
             next_container: AtomicUsize::new(1),
+            fanout_barrier: None,
         });
         let request = DeployRequest {
             namespace_name: CorrosionNamespaceName::try_new("production").expect("namespace"),
@@ -1269,6 +1312,50 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from(["api", "worker"]),
         );
+    }
+
+    #[tokio::test]
+    async fn target_host_inspection_and_prepare_fan_out_concurrently() {
+        let mut fixture = fixture(2);
+        fixture.hosts = Arc::new(FakeHosts {
+            calls: Mutex::new(Vec::new()),
+            stale_prepare: AtomicBool::new(false),
+            next_container: AtomicUsize::new(1),
+            fanout_barrier: Some(Arc::new(Barrier::new(2))),
+        });
+        fixture.executor = SimpleDeploy::new(
+            fixture
+                .machines
+                .first()
+                .cloned()
+                .expect("two-machine fixture has a first machine"),
+            fixture.store.clone(),
+            fixture.hosts.clone(),
+        );
+        fixture
+            .command
+            .request
+            .services
+            .first_mut()
+            .expect("fixture has one service")
+            .placement = Some(RequestedPlacement::Replicas {
+            replicas: ServiceReplicaCount::try_new(2).expect("two replicas"),
+        });
+        let started = fixture
+            .executor
+            .start(fixture.command.clone())
+            .await
+            .expect("start deploy");
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            fixture.executor.run(started),
+        )
+        .await
+        .expect("target calls should overlap instead of waiting serially")
+        .expect("deploy");
+
+        assert!(outcome.is_success());
     }
 
     #[test]
