@@ -9,6 +9,7 @@ use ployz_core::corrosion::{
     SqliteParameter, Statement, TransactionResult,
 };
 use ployz_core::ids::{ClusterName, MachineName};
+use ployz_core::network::EndpointBridgeStatus;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::watch;
@@ -48,8 +49,9 @@ impl MachineEndpointReporter {
         }
     }
 
-    /// Reports immediately, then periodically until API shutdown. Docker or
-    /// Corrosion outages leave the prior testimony visible with its old
+    /// Reports immediately, then periodically until API shutdown. A non-ready
+    /// endpoint network publishes an empty serving view. Container observation
+    /// or Corrosion outages leave the prior testimony visible with its old
     /// `observed_at`; the next successful cycle replaces it in one write.
     pub(super) async fn run(self, mut shutdown: watch::Receiver<bool>) {
         let mut interval = tokio::time::interval(REPORT_INTERVAL);
@@ -72,21 +74,34 @@ impl MachineEndpointReporter {
     }
 
     async fn publish(&self) -> Result<(), MachineEndpointPublishError> {
-        let containers = tokio::time::timeout(
-            DOCKER_OBSERVE_TIMEOUT,
-            self.runtime.existing_v2_managed_containers(),
-        )
-        .await
-        .map_err(|_| MachineEndpointPublishError::Docker {
-            detail: "observation timed out".to_owned(),
-        })?
-        .map_err(|error| MachineEndpointPublishError::Docker {
-            detail: format!("{error:?}"),
-        })?;
+        let endpoint_network_ready = matches!(
+            tokio::time::timeout(
+                DOCKER_OBSERVE_TIMEOUT,
+                self.runtime.read_endpoint_network_status(),
+            )
+            .await,
+            Ok(EndpointBridgeStatus::Ready { .. })
+        );
+        let containers = if endpoint_network_ready {
+            tokio::time::timeout(
+                DOCKER_OBSERVE_TIMEOUT,
+                self.runtime.existing_v2_managed_containers(),
+            )
+            .await
+            .map_err(|_| MachineEndpointPublishError::Docker {
+                detail: "observation timed out".to_owned(),
+            })?
+            .map_err(|error| MachineEndpointPublishError::Docker {
+                detail: format!("{error:?}"),
+            })?
+        } else {
+            Vec::new()
+        };
         let document = document(
             self.cluster_id.clone(),
             self.local_machine_id.clone(),
             now()?,
+            endpoint_network_ready,
             containers,
         );
         let response = self.client.execute(&[statement(&document)?]).await?;
@@ -106,27 +121,32 @@ fn document(
     cluster_id: ClusterName,
     machine_id: MachineName,
     observed_at: CorrosionTimestamp,
+    endpoint_network_ready: bool,
     containers: Vec<ExistingV2ManagedContainer>,
 ) -> MachineEndpointDocument {
-    let mut endpoints = containers
-        .into_iter()
-        .filter_map(|container| {
-            let ExistingManagedContainerState::Running {
-                ip: Some(IpAddr::V4(ip)),
-                ..
-            } = container.state
-            else {
-                return None;
-            };
-            Some(ServiceEndpoint {
-                namespace_id: container.identity.namespace_id,
-                service_name: container.identity.service_name,
-                deploy: container.identity.operation_id,
-                replica_slot: container.identity.replica_slot,
-                ip,
+    let mut endpoints = if endpoint_network_ready {
+        containers
+            .into_iter()
+            .filter_map(|container| {
+                let ExistingManagedContainerState::Running {
+                    ip: Some(IpAddr::V4(ip)),
+                    ..
+                } = container.state
+                else {
+                    return None;
+                };
+                Some(ServiceEndpoint {
+                    namespace_id: container.identity.namespace_id,
+                    service_name: container.identity.service_name,
+                    deploy: container.identity.operation_id,
+                    replica_slot: container.identity.replica_slot,
+                    ip,
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     endpoints.sort_by(|left, right| {
         (
             &left.namespace_id,
@@ -211,6 +231,7 @@ mod tests {
             cluster(),
             machine(),
             timestamp(),
+            true,
             vec![
                 container(
                     "docker-running-v4",
@@ -258,8 +279,29 @@ mod tests {
     }
 
     #[test]
+    fn non_ready_endpoint_network_suppresses_all_serving_testimony() {
+        let document = document(
+            cluster(),
+            machine(),
+            timestamp(),
+            false,
+            vec![container(
+                "docker-running-v4",
+                "web",
+                ExistingManagedContainerState::Running {
+                    ip: Some(IpAddr::V4(Ipv4Addr::new(10, 211, 4, 8))),
+                    health: ContainerHealth::Healthy,
+                    started_at_unix_ms: Some(7),
+                },
+            )],
+        );
+
+        assert!(document.endpoints.is_empty());
+    }
+
+    #[test]
     fn upsert_uses_the_canonical_machine_name_for_key_and_document() {
-        let document = document(cluster(), machine(), timestamp(), Vec::new());
+        let document = document(cluster(), machine(), timestamp(), true, Vec::new());
         let Statement::WithParams(sql, params) = statement(&document).expect("statement") else {
             panic!("endpoint publication is parameterized");
         };

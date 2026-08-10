@@ -88,11 +88,8 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             select_by_id(CorrosionTable::Cluster, self.cluster_id.as_str()),
             MAX_SINGLETON_ROWS,
         );
-        let machines = self.query(cluster_rows(CorrosionTable::Machines), MAX_DEPLOY_ROWS);
-        let routes = self.query(
-            all_cluster_rows(CorrosionTable::RouteBindings, &self.cluster_id),
-            MAX_DEPLOY_ROWS,
-        );
+        let machines = self.query(all_rows(CorrosionTable::Machines), MAX_DEPLOY_ROWS);
+        let routes = self.query(all_rows(CorrosionTable::RouteBindings), MAX_DEPLOY_ROWS);
         let (cluster, machines, routes) =
             tokio::try_join!(cluster, machines, routes).map_err(|error| error.to_string())?;
 
@@ -245,13 +242,20 @@ fn desired_routes(
     rows: Vec<StoredRow>,
 ) -> Result<Vec<DesiredRouteRow>, String> {
     let report = read_named_rows::<RouteBindingDocument>(&cluster.cluster_id, rows);
-    if !report.skipped.is_empty() {
-        return Err("route lookup contained a rejected row".to_owned());
-    }
     let mut planned = Vec::new();
     if let AutomaticHostnameMode::Custom { suffix } = &cluster.hostname_mode {
         for (service_name, _service) in command.request.services.iter() {
             let hostname = automatic_hostname(namespace_id, service_name, suffix)?;
+            if report
+                .skipped
+                .iter()
+                .any(|row| row.source.key == hostname.as_str())
+            {
+                return Err(format!(
+                    "automatic hostname {} is occupied by a rejected route row",
+                    hostname.as_str(),
+                ));
+            }
             match report
                 .accepted
                 .iter()
@@ -457,18 +461,8 @@ fn select_by_id(table: CorrosionTable, id: &str) -> Statement {
     )
 }
 
-fn cluster_rows(table: CorrosionTable) -> Statement {
+fn all_rows(table: CorrosionTable) -> Statement {
     Statement::simple(format!("SELECT id, document FROM {}", table.as_str()))
-}
-
-fn all_cluster_rows(table: CorrosionTable, cluster_id: &ClusterName) -> Statement {
-    Statement::with_params(
-        format!(
-            "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
-            table.as_str()
-        ),
-        vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
-    )
 }
 
 #[cfg(test)]
@@ -659,6 +653,68 @@ mod tests {
                 .expect("existing route is accepted")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn deploy_ignores_unrelated_rejected_routes_but_refuses_exact_hostname_occupancy() {
+        let namespace_id = CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace");
+        let command = deploy_command();
+        let cluster = cluster_document();
+        let rejected_document = serde_json::json!({
+            "v": 2,
+            "cluster_id": CLUSTER,
+        })
+        .to_string();
+
+        let planned = desired_routes(
+            &cluster,
+            &command,
+            &namespace_id,
+            vec![StoredRow::new(
+                "unrelated.apps.example.test",
+                rejected_document.clone(),
+            )],
+        )
+        .expect("unrelated rejected route is diagnostic evidence only");
+        assert_eq!(planned.len(), 1);
+
+        for exact_occupant in [
+            rejected_document,
+            serde_json::json!({"v": 1, "cluster_id": "another-cluster"}).to_string(),
+            "not json".to_owned(),
+        ] {
+            let error = desired_routes(
+                &cluster,
+                &command,
+                &namespace_id,
+                vec![StoredRow::new(
+                    "api.production.apps.example.test",
+                    exact_occupant,
+                )],
+            )
+            .expect_err("exact rejected hostname occupant conflicts");
+            assert!(error.contains("api.production.apps.example.test"));
+        }
+    }
+
+    #[test]
+    fn disabled_automatic_hostnames_ignore_all_rejected_route_evidence() {
+        let namespace_id = CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace");
+        let command = deploy_command();
+        let mut cluster = cluster_document();
+        cluster.hostname_mode = AutomaticHostnameMode::Disabled;
+
+        let planned = desired_routes(
+            &cluster,
+            &command,
+            &namespace_id,
+            vec![StoredRow::new(
+                "api.production.apps.example.test",
+                serde_json::json!({"v": 2, "cluster_id": CLUSTER}).to_string(),
+            )],
+        )
+        .expect("disabled automatic hostnames do not inspect route occupancy");
+        assert!(planned.is_empty());
     }
 
     fn deploy_command() -> DeployCommand {
