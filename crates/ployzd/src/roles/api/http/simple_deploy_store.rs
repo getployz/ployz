@@ -1,18 +1,17 @@
 //! Corrosion rows used by one preferred-controller deploy attempt.
 //!
-//! This adapter reads current rows and publishes each serving projection in one
-//! Corrosion transaction. A failed or ambiguous reply is retried from reality.
-
-use std::collections::BTreeMap;
+//! This adapter reads converged intent and publishes one complete namespace
+//! serving projection in a Corrosion transaction. Docker remains execution
+//! reality and is inspected through target-node RPC before planning.
 
 use async_trait::async_trait;
 use ployz_core::DeployRefusal;
 use ployz_core::corrosion::{
-    AutomaticHostnameMode, ClusterDocument, ContainerDocument, ControllerDocument,
-    CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionServiceName, CorrosionTable,
-    IngressMode, MachineDocument, MachineStatusDocument, NamespaceDocument, OperationDocument,
-    OperatorWriteProvenance, RouteBindingDocument, ServiceDocument, SqliteParameter, Statement,
-    StoredRow, TransactionResult, read_named_roster_rows, read_named_rows, read_rows,
+    AutomaticHostnameMode, ClusterDocument, ControllerDocument, CorrosionDocumentVersion,
+    CorrosionNamespaceName, CorrosionServiceName, CorrosionTable, IngressMode, MachineDocument,
+    NamespaceDocument, OperationDocument, OperatorWriteProvenance, RouteBindingDocument,
+    SqliteParameter, Statement, StoredRow, TransactionResult, read_named_roster_rows,
+    read_named_rows, read_rows,
 };
 use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::ingress::RouteBindingOrigin;
@@ -22,8 +21,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use crate::corrosion::{CorrosionClient, StoredRowLimit, collect_stored_rows};
 
 use super::simple_deploy::{
-    DeployCommand, DeployCommit, DeployMachineStatus, DeployReality, DeployRosterMachine,
-    DeployStartError, DesiredRouteRow, ObservedServiceRow, SimpleDeployStore,
+    DeployCommand, DeployCommit, DeployProjection, DeployRosterMachine, DeployStartError,
+    DesiredRouteRow, SimpleDeployStore,
 };
 
 const MAX_SINGLETON_ROWS: usize = 2;
@@ -69,7 +68,7 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             .ok_or_else(|| "preferred controller row is missing".to_owned())
     }
 
-    async fn observe(&self, command: &DeployCommand) -> Result<DeployReality, DeployStartError> {
+    async fn observe(&self, command: &DeployCommand) -> Result<DeployProjection, DeployStartError> {
         let matching_namespaces = self
             .query(
                 select_by_id(
@@ -90,35 +89,21 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             MAX_SINGLETON_ROWS,
         );
         let machines = self.query(cluster_rows(CorrosionTable::Machines), MAX_DEPLOY_ROWS);
-        let statuses = self.query(machine_status_rows(&self.cluster_id), MAX_DEPLOY_ROWS);
         let routes = self.query(
             all_cluster_rows(CorrosionTable::RouteBindings, &self.cluster_id),
             MAX_DEPLOY_ROWS,
         );
-        let services = self.query(
-            namespace_rows(CorrosionTable::Services, &namespace.id),
-            MAX_DEPLOY_ROWS,
-        );
-        let containers = self.query(
-            namespace_rows(CorrosionTable::Containers, &namespace.id),
-            MAX_DEPLOY_ROWS,
-        );
-        let (cluster, machines, statuses, routes, services, containers) =
-            tokio::try_join!(cluster, machines, statuses, routes, services, containers)
-                .map_err(|error| error.to_string())?;
+        let (cluster, machines, routes) =
+            tokio::try_join!(cluster, machines, routes).map_err(|error| error.to_string())?;
 
         let cluster = decode_cluster(&self.cluster_id, cluster)?;
-        let services = decode_services(&self.cluster_id, &namespace.id, services)?;
-        let containers = decode_containers(&self.cluster_id, &namespace.id, containers);
         if command
             .request
             .services
             .iter()
             .any(|(service_name, requested)| {
                 !requested.runtime.volume_mounts.is_empty()
-                    && services
-                        .iter()
-                        .any(|service| service.document.name == *service_name)
+                    && namespace.document.services.contains_key(service_name)
             })
         {
             return Err(DeployStartError::Refused(
@@ -126,13 +111,12 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             ));
         }
         let missing_automatic_routes = desired_routes(&cluster, command, &namespace.id, routes)?;
-        let roster = decode_roster(&cluster, machines, statuses)?;
+        let roster = decode_roster(&cluster, machines)?;
 
-        Ok(DeployReality {
+        Ok(DeployProjection {
             namespace_id: namespace.id,
+            namespace_source: namespace.source,
             namespace: namespace.document,
-            services,
-            containers,
             missing_automatic_routes,
             roster,
         })
@@ -176,80 +160,22 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
     }
 
     async fn commit_is_visible(&self, commit: &DeployCommit) -> Result<bool, String> {
-        let services = self.query(
-            namespace_rows(CorrosionTable::Services, &commit.namespace_id),
-            MAX_DEPLOY_ROWS,
-        );
-        let containers = self.query(
-            namespace_rows(CorrosionTable::Containers, &commit.namespace_id),
-            MAX_DEPLOY_ROWS,
-        );
-        let (services, containers) = tokio::try_join!(services, containers)?;
-        let services = read_rows::<ServiceDocument>(&self.cluster_id, services);
-        let containers = read_rows::<ContainerDocument>(&self.cluster_id, containers);
-        let actual_services = services
-            .accepted
-            .into_iter()
-            .map(|row| (row.source.key, row.value))
-            .collect::<BTreeMap<_, _>>();
-        let expected_services = commit
-            .services
-            .iter()
-            .cloned()
-            .map(|row| (row.key, row.document))
-            .collect::<BTreeMap<_, _>>();
-        let actual_containers = containers
-            .accepted
-            .into_iter()
-            .map(|row| (row.source.key, row.value))
-            .collect::<BTreeMap<_, _>>();
-        let expected_containers = commit
-            .containers
-            .iter()
-            .cloned()
-            .map(|row| (row.id, row.document))
-            .collect::<BTreeMap<_, _>>();
-        Ok(actual_services == expected_services && actual_containers == expected_containers)
+        let rows = self
+            .query(
+                select_by_id(CorrosionTable::Namespaces, commit.namespace_id.as_str()),
+                MAX_SINGLETON_ROWS,
+            )
+            .await?;
+        Ok(
+            decode_one::<NamespaceDocument>(&self.cluster_id, CorrosionTable::Namespaces, rows)?
+                .is_some_and(|document| document == commit.namespace),
+        )
     }
-}
-
-fn decode_services(
-    cluster_id: &ClusterName,
-    namespace_id: &CorrosionNamespaceName,
-    rows: Vec<StoredRow>,
-) -> Result<Vec<ObservedServiceRow>, DeployStartError> {
-    let report = read_rows::<ServiceDocument>(cluster_id, rows);
-    if !report.skipped.is_empty() {
-        return Err(DeployStartError::Unavailable(
-            "service lookup contained a rejected row".to_owned(),
-        ));
-    }
-    Ok(report
-        .accepted
-        .into_iter()
-        .filter(|row| &row.value.namespace_id == namespace_id)
-        .map(|row| ObservedServiceRow {
-            source: row.source,
-            document: row.value,
-        })
-        .collect())
-}
-
-fn decode_containers(
-    cluster_id: &ClusterName,
-    namespace_id: &CorrosionNamespaceName,
-    rows: Vec<StoredRow>,
-) -> Vec<StoredRow> {
-    read_rows::<ContainerDocument>(cluster_id, rows)
-        .accepted
-        .into_iter()
-        .filter(|row| &row.value.namespace_id == namespace_id)
-        .map(|row| row.source)
-        .collect()
 }
 
 struct ResolvedNamespace {
     id: CorrosionNamespaceName,
+    source: StoredRow,
     document: NamespaceDocument,
 }
 
@@ -275,10 +201,11 @@ fn decode_namespace(
         ));
     }
     let row = report.accepted.into_iter().next().expect("length checked");
-    let id = CorrosionNamespaceName::try_new(row.source.key)
+    let id = CorrosionNamespaceName::try_new(row.source.key.clone())
         .map_err(|error| DeployStartError::Unavailable(error.to_string()))?;
     Ok(ResolvedNamespace {
         id,
+        source: row.source,
         document: row.value,
     })
 }
@@ -405,32 +332,17 @@ fn automatic_route_matches(
 fn decode_roster(
     cluster: &ClusterDocument,
     machine_rows: Vec<StoredRow>,
-    status_rows: Vec<StoredRow>,
 ) -> Result<Vec<DeployRosterMachine>, String> {
     let machines = read_named_roster_rows::<MachineDocument>(cluster, machine_rows);
-    let statuses = read_rows::<MachineStatusDocument>(&cluster.cluster_id, status_rows);
-    let mut status_by_machine = BTreeMap::new();
-    for row in statuses.accepted {
-        if row.source.key == row.value.machine_id.as_str() {
-            status_by_machine.insert(row.value.machine_id.clone(), row.value);
-        }
-    }
     let mut roster = machines
         .accepted
         .into_iter()
         .map(|row| {
             let id = MachineName::try_new(row.source.key).map_err(|error| error.to_string())?;
-            let status = status_by_machine
-                .remove(&id)
-                .map(|status| DeployMachineStatus {
-                    free_disk_bytes: status.free_disk_bytes,
-                    load: status.load,
-                });
             Ok(DeployRosterMachine {
                 id,
                 name: row.value.name,
                 lifecycle: row.value.lifecycle,
-                status,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -439,33 +351,16 @@ fn decode_roster(
 }
 
 fn commit_statements(commit: &DeployCommit) -> Result<Vec<Statement>, String> {
-    let mut statements = Vec::with_capacity(
-        commit.replaced_services.len()
-            + commit.services.len()
-            + commit.replaced_containers.len()
-            + commit.containers.len()
-            + commit.missing_automatic_routes.len(),
-    );
-    for service in &commit.replaced_services {
-        statements.push(delete_exact_document(CorrosionTable::Services, service));
-    }
-    for service in &commit.services {
-        statements.push(insert_document(
-            CorrosionTable::Services,
-            &service.key,
-            &service.document,
-        )?);
-    }
-    for container in &commit.replaced_containers {
-        statements.push(delete_exact_document(CorrosionTable::Containers, container));
-    }
-    for container in &commit.containers {
-        statements.push(insert_document(
-            CorrosionTable::Containers,
-            &container.id,
-            &container.document,
-        )?);
-    }
+    let mut statements = Vec::with_capacity(2 + commit.missing_automatic_routes.len());
+    statements.push(delete_exact_document(
+        CorrosionTable::Namespaces,
+        &commit.replaced_namespace,
+    ));
+    statements.push(insert_document(
+        CorrosionTable::Namespaces,
+        commit.namespace_id.as_str(),
+        &commit.namespace,
+    )?);
     for route in &commit.missing_automatic_routes {
         statements.push(insert_document(
             CorrosionTable::RouteBindings,
@@ -576,23 +471,6 @@ fn all_cluster_rows(table: CorrosionTable, cluster_id: &ClusterName) -> Statemen
     )
 }
 
-fn namespace_rows(table: CorrosionTable, namespace_id: &CorrosionNamespaceName) -> Statement {
-    Statement::with_params(
-        format!(
-            "SELECT id, document FROM {} WHERE namespace_id = ?",
-            table.as_str()
-        ),
-        vec![SqliteParameter::Text(namespace_id.as_str().to_owned())],
-    )
-}
-
-fn machine_status_rows(cluster_id: &ClusterName) -> Statement {
-    Statement::with_params(
-        "SELECT machine_id AS id, document FROM machine_status WHERE json_extract(document, '$.cluster_id') = ?",
-        vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::corrosion::{
@@ -600,8 +478,8 @@ mod tests {
         CorrosionNamespaceName, CorrosionTimestamp, OperatorWriteProvenance, Principal,
         StorageMode,
     };
-    use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, ReplicaSlot};
-    use ployz_core::ids::{ContainerId, DeployName, PeerName};
+    use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
+    use ployz_core::ids::{DeployName, PeerName};
     use ployz_core::network::MachineEndpointSupernet;
     use ployz_core::{DeployRequest, DeployServiceRequest, DeployServices, HealthGatePolicy};
 
@@ -719,10 +597,8 @@ mod tests {
         let namespace_id = CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace");
         let statements = commit_statements(&DeployCommit {
             namespace_id: namespace_id.clone(),
-            replaced_services: Vec::new(),
-            services: Vec::new(),
-            replaced_containers: Vec::new(),
-            containers: Vec::new(),
+            replaced_namespace: namespace_row(NAMESPACE_A, NAMESPACE_A),
+            namespace: namespace_document(NAMESPACE_A),
             missing_automatic_routes: Vec::new(),
         })
         .expect("commit statements");
@@ -735,21 +611,13 @@ mod tests {
     }
 
     #[test]
-    fn namespace_commit_replaces_only_exact_accepted_projection_rows() {
-        let replaced_service = StoredRow {
-            key: "production/api".to_owned(),
-            document: "old service".to_owned(),
-        };
-        let replaced_container = StoredRow {
-            key: "production/api/old/edge-a/global".to_owned(),
-            document: "old container".to_owned(),
-        };
+    fn namespace_commit_replaces_only_the_exact_observed_namespace_projection() {
+        let replaced_namespace = namespace_row(NAMESPACE_A, NAMESPACE_A);
+        let namespace = namespace_document(NAMESPACE_A);
         let statements = commit_statements(&DeployCommit {
             namespace_id: CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace"),
-            replaced_services: vec![replaced_service.clone()],
-            services: Vec::new(),
-            replaced_containers: vec![replaced_container.clone()],
-            containers: Vec::new(),
+            replaced_namespace: replaced_namespace.clone(),
+            namespace: namespace.clone(),
             missing_automatic_routes: Vec::new(),
         })
         .expect("commit statements");
@@ -757,8 +625,9 @@ mod tests {
         assert_eq!(
             statements,
             vec![
-                delete_exact_document(CorrosionTable::Services, &replaced_service),
-                delete_exact_document(CorrosionTable::Containers, &replaced_container),
+                delete_exact_document(CorrosionTable::Namespaces, &replaced_namespace),
+                insert_document(CorrosionTable::Namespaces, NAMESPACE_A, &namespace)
+                    .expect("namespace insert"),
             ]
         );
         assert!(statements.iter().all(|statement| match statement {
@@ -766,57 +635,6 @@ mod tests {
                 !sql.contains("WHERE namespace_id")
             }
         }));
-    }
-
-    #[test]
-    fn deploy_replaces_only_accepted_canonical_container_rows() {
-        let accepted = container_document(CLUSTER, "release-1");
-        let accepted_key = container_key(&accepted);
-        let foreign = container_document("foreign", "foreign");
-        let newer_document = container_document(CLUSTER, "newer");
-        let mut newer = serde_json::to_value(&newer_document).expect("container value");
-        newer
-            .as_object_mut()
-            .expect("container is an object")
-            .insert("v".to_owned(), serde_json::json!(2));
-        let invalid_document = container_document(CLUSTER, "invalid");
-        let mut invalid = serde_json::to_value(&invalid_document).expect("container value");
-        invalid
-            .as_object_mut()
-            .expect("container is an object")
-            .insert("ip".to_owned(), serde_json::json!("not-an-ip"));
-        let rows = vec![
-            StoredRow::new(
-                accepted_key.clone(),
-                serde_json::to_string(&accepted).expect("container json"),
-            ),
-            StoredRow::new(
-                container_key(&foreign),
-                serde_json::to_string(&foreign).expect("foreign json"),
-            ),
-            StoredRow::new(
-                container_key(&newer_document),
-                serde_json::to_string(&newer).expect("newer json"),
-            ),
-            StoredRow::new(
-                container_key(&invalid_document),
-                serde_json::to_string(&invalid).expect("invalid json"),
-            ),
-            StoredRow::new(
-                "production/api/wrong-key/edge-a/global",
-                serde_json::to_string(&accepted).expect("noncanonical json"),
-            ),
-        ];
-
-        let replace = decode_containers(
-            &cluster_id(),
-            &CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace"),
-            rows,
-        );
-        let [replace] = replace.as_slice() else {
-            panic!("only the accepted canonical row may be replaced");
-        };
-        assert_eq!(replace.key, accepted_key);
     }
 
     #[test]
@@ -887,32 +705,6 @@ mod tests {
         }
     }
 
-    fn container_document(cluster: &str, deploy: &str) -> ContainerDocument {
-        ContainerDocument {
-            v: CorrosionDocumentVersion::V1,
-            cluster_id: ClusterName::try_new(cluster).expect("cluster"),
-            runtime_id: ContainerId::try_new(format!("docker-{cluster}")).expect("container"),
-            machine_id: MachineName::try_new("edge-a").expect("machine"),
-            namespace_id: CorrosionNamespaceName::try_new(NAMESPACE_A).expect("namespace"),
-            service_name: CorrosionServiceName::try_new("api").expect("service"),
-            replica_slot: ReplicaSlot::Global,
-            ip: "10.77.2.4".parse().expect("ip"),
-            deploy: DeployName::try_new(deploy).expect("deploy"),
-        }
-    }
-
-    fn container_key(document: &ContainerDocument) -> String {
-        ployz_core::corrosion::managed_container_key(
-            &ployz_core::corrosion::V2ManagedContainerIdentity {
-                namespace_id: document.namespace_id.clone(),
-                service_name: document.service_name.clone(),
-                operation_id: document.deploy.clone(),
-                replica_slot: document.replica_slot,
-            },
-            &document.machine_id,
-        )
-    }
-
     fn cluster_id() -> ClusterName {
         ClusterName::try_new(CLUSTER).expect("cluster id")
     }
@@ -928,7 +720,12 @@ mod tests {
     }
 
     fn namespace_row(id: &str, name: &str) -> StoredRow {
-        let document = NamespaceDocument {
+        let document = namespace_document(name);
+        StoredRow::new(id, serde_json::to_string(&document).expect("json"))
+    }
+
+    fn namespace_document(name: &str) -> NamespaceDocument {
+        NamespaceDocument {
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster_id(),
             provenance: OperatorWriteProvenance {
@@ -936,7 +733,7 @@ mod tests {
                 written_at: timestamp(),
             },
             name: CorrosionNamespaceName::try_new(name).expect("namespace name"),
-        };
-        StoredRow::new(id, serde_json::to_string(&document).expect("json"))
+            services: Default::default(),
+        }
     }
 }

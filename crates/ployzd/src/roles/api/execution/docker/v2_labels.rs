@@ -1,4 +1,4 @@
-//! Docker label codec for Corrosion-owned v2 container identities.
+//! Docker label codec for Ployz-managed v2 container identities.
 
 use std::collections::BTreeMap;
 

@@ -167,6 +167,15 @@ impl ApiServer {
                 }
             }))
         });
+        let endpoint_reporter_task = service.container_runner.clone().map(|runner| {
+            let reporter = super::machine_endpoint_reporter::MachineEndpointReporter::new(
+                service.corrosion.clone(),
+                service.cluster_id.clone(),
+                service.local_machine_id.clone(),
+                runner,
+            );
+            tokio::spawn(reporter.run(shutdown_tx.subscribe()))
+        });
         let mut connections = JoinSet::new();
         let join_connection_slots = Arc::new(Semaphore::new(MAX_JOIN_DOOR_CONNECTIONS));
         let stop = await_server_stop_with_endpoint(
@@ -260,6 +269,9 @@ impl ApiServer {
         if let Some(endpoint_task) = endpoint_task {
             endpoint_task.abort();
             let _ = endpoint_task.await;
+        }
+        if let Some(endpoint_reporter_task) = endpoint_reporter_task {
+            let _ = endpoint_reporter_task.await;
         }
         if let Some(controller_kernel_task) = controller_kernel_task {
             let _ = controller_kernel_task.await;

@@ -101,6 +101,9 @@ async fn revoke(command: TokenRevokeCommand) -> Result<String, TokenExecutionErr
         JsonReply::Refused(TokenRevokeRefusal::NotFound { token_id }) => {
             Err(TokenExecutionError::TokenNotFound { token_id })
         }
+        JsonReply::Refused(TokenRevokeRefusal::ConcurrentMutation { token_id }) => {
+            Err(TokenExecutionError::TokenChanged { token_id })
+        }
     }
 }
 
@@ -120,6 +123,10 @@ pub enum TokenExecutionError {
     TokenNameConflict { name: TokenName },
     #[error("join token {token_id} does not exist or was already revoked")]
     TokenNotFound { token_id: TokenName },
+    #[error(
+        "join token {token_id} changed while its revocation was being committed; retry from current reality"
+    )]
+    TokenChanged { token_id: TokenName },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

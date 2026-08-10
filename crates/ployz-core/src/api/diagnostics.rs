@@ -9,11 +9,11 @@ use serde_json::Value;
 use super::MachineLensRow;
 use crate::corrosion::{
     AcmeHttp01Document, CORROSION_NO_P99_LAG_SAMPLE, CertHoldingDocument, ClusterDocument,
-    ContainerDocument, ControllerDocument, CorrosionDocument, CorrosionHealthResponse,
-    CorrosionTable, GatewayObservationDocument, MachineDocument, MachineStatusDocument,
+    ControllerDocument, CorrosionDocument, CorrosionHealthResponse, CorrosionTable,
+    GatewayObservationDocument, MachineDocument, MachineEndpointDocument, MachineStatusDocument,
     MachineTransport, MalformedDocument, MeshProvider, NamespaceDocument, OperationDocument,
-    PeerDocument, Principal, RouteBindingDocument, RowSkipReason, ServiceDocument, SkippedRow,
-    StoredRow, TokenDocument, WireGuardHandshakeEvidence, read_named_roster_rows, read_rows,
+    PeerDocument, Principal, RouteBindingDocument, RowSkipReason, SkippedRow, StoredRow,
+    TokenDocument, WireGuardHandshakeEvidence, read_named_roster_rows, read_rows,
 };
 use crate::ids::{ClusterName, MachineName, PeerName, TokenName};
 use crate::network::MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS;
@@ -322,10 +322,9 @@ pub struct DoctorRawRows {
     pub peers: Vec<StoredRow>,
     pub tokens: Vec<StoredRow>,
     pub namespaces: Vec<StoredRow>,
-    pub services: Vec<StoredRow>,
     pub route_bindings: Vec<StoredRow>,
     pub controller: Vec<StoredRow>,
-    pub containers: Vec<StoredRow>,
+    pub machine_endpoints: Vec<StoredRow>,
     pub machine_status: Vec<StoredRow>,
     pub gateway_observations: Vec<StoredRow>,
     pub operations: Vec<StoredRow>,
@@ -343,10 +342,9 @@ impl DoctorRawRows {
             peers: Vec::new(),
             tokens: Vec::new(),
             namespaces: Vec::new(),
-            services: Vec::new(),
             route_bindings: Vec::new(),
             controller: Vec::new(),
-            containers: Vec::new(),
+            machine_endpoints: Vec::new(),
             machine_status: Vec::new(),
             gateway_observations: Vec::new(),
             operations: Vec::new(),
@@ -362,10 +360,9 @@ impl DoctorRawRows {
             CorrosionTable::Peers => &self.peers,
             CorrosionTable::Tokens => &self.tokens,
             CorrosionTable::Namespaces => &self.namespaces,
-            CorrosionTable::Services => &self.services,
             CorrosionTable::RouteBindings => &self.route_bindings,
             CorrosionTable::Controller => &self.controller,
-            CorrosionTable::Containers => &self.containers,
+            CorrosionTable::MachineEndpoints => &self.machine_endpoints,
             CorrosionTable::MachineStatus => &self.machine_status,
             CorrosionTable::GatewayObservations => &self.gateway_observations,
             CorrosionTable::Operations => &self.operations,
@@ -620,10 +617,9 @@ fn noncanonical_row_evidence(
     read_table!(Cluster, ClusterDocument, cluster);
     read_table!(Tokens, TokenDocument, tokens);
     read_table!(Namespaces, NamespaceDocument, namespaces);
-    read_table!(Services, ServiceDocument, services);
     read_table!(RouteBindings, RouteBindingDocument, route_bindings);
     read_table!(Controller, ControllerDocument, controller);
-    read_table!(Containers, ContainerDocument, containers);
+    read_table!(MachineEndpoints, MachineEndpointDocument, machine_endpoints);
     read_table!(MachineStatus, MachineStatusDocument, machine_status);
     read_table!(
         GatewayObservations,
@@ -719,10 +715,9 @@ fn supported_version(table: CorrosionTable) -> u32 {
         CorrosionTable::Peers => PeerDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::Tokens => TokenDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::Namespaces => NamespaceDocument::SUPPORTED_VERSION.get(),
-        CorrosionTable::Services => ServiceDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::RouteBindings => RouteBindingDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::Controller => ControllerDocument::SUPPORTED_VERSION.get(),
-        CorrosionTable::Containers => ContainerDocument::SUPPORTED_VERSION.get(),
+        CorrosionTable::MachineEndpoints => MachineEndpointDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::MachineStatus => MachineStatusDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::GatewayObservations => GatewayObservationDocument::SUPPORTED_VERSION.get(),
         CorrosionTable::Operations => OperationDocument::SUPPORTED_VERSION.get(),
@@ -846,7 +841,6 @@ fn extract_authorship(
         | CorrosionTable::Peers
         | CorrosionTable::Tokens
         | CorrosionTable::Namespaces
-        | CorrosionTable::Services
         | CorrosionTable::RouteBindings => fields
             .get("written_by")
             .cloned()
@@ -870,7 +864,7 @@ fn extract_authorship(
             .map_or(DoctorForeignAuthorship::Unparseable, |machine_id| {
                 machine_authorship(machine_id, current_machines)
             }),
-        CorrosionTable::Containers
+        CorrosionTable::MachineEndpoints
         | CorrosionTable::MachineStatus
         | CorrosionTable::GatewayObservations
         | CorrosionTable::Operations

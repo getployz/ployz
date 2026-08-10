@@ -17,6 +17,7 @@ mod door;
 mod endpoint_network;
 mod founding;
 mod join;
+mod machine_endpoint_reporter;
 mod mutations;
 mod namespace_store;
 mod node_workflows;

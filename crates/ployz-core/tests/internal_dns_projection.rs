@@ -46,24 +46,31 @@ fn corrosion_rows_cannot_project_the_reserved_readiness_record() {
     let mut input = projection_input();
     const READINESS_NAMESPACE: &str = "ployz";
     const READINESS_SERVICE: &str = "readiness";
-    input
-        .namespace_rows
-        .push(namespace_row(READINESS_NAMESPACE, "ployz"));
-    input.service_rows.push(service_row(
-        "ployz/readiness",
+    input.namespace_rows.push(namespace_row(
         READINESS_NAMESPACE,
-        "readiness",
-        ACTIVE_DEPLOY,
+        "ployz",
+        &[(READINESS_SERVICE, ACTIVE_DEPLOY)],
     ));
-    input.container_rows.push(container_row(
-        "container-readiness",
-        LOCAL_MACHINE,
-        READINESS_SERVICE,
-        READINESS_NAMESPACE,
-        "10.210.20.53",
-        ACTIVE_DEPLOY,
-        "global",
-    ));
+    let local = input
+        .machine_endpoint_rows
+        .iter_mut()
+        .find(|row| row.key == LOCAL_MACHINE)
+        .expect("local endpoint testimony");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&local.document).expect("endpoint document");
+    document
+        .get_mut("endpoints")
+        .expect("endpoints field")
+        .as_array_mut()
+        .expect("endpoint list")
+        .push(endpoint(
+            READINESS_SERVICE,
+            READINESS_NAMESPACE,
+            "10.210.20.53",
+            ACTIVE_DEPLOY,
+            "global",
+        ));
+    local.document = serde_json::to_string(&document).expect("endpoint document");
 
     let projection = project_internal_dns_rows(input).expect("row projection");
 
@@ -109,10 +116,33 @@ fn corrosion_row_projection_reports_missing_cluster_and_local_machine() {
 #[test]
 fn corrosion_row_projection_retains_a_dark_draining_machine_without_liveness_testimony() {
     let mut input = projection_input();
-    input.container_rows.retain(|row| {
-        row.key == "prod/api/blue/edge-dark/global" || row.key == "prod/api/green/edge-local/global"
-    });
-    input.service_rows.retain(|row| row.key == "prod/api");
+    input.namespace_rows = vec![namespace_row(
+        NAMESPACE,
+        NAMESPACE,
+        &[(SERVICE, ACTIVE_DEPLOY)],
+    )];
+    input.machine_endpoint_rows = vec![
+        machine_endpoint_row(
+            REMOTE_MACHINE,
+            vec![endpoint(
+                SERVICE,
+                NAMESPACE,
+                "10.210.30.9",
+                ACTIVE_DEPLOY,
+                "global",
+            )],
+        ),
+        machine_endpoint_row(
+            LOCAL_MACHINE,
+            vec![endpoint(
+                SERVICE,
+                NAMESPACE,
+                "10.210.20.10",
+                OLD_DEPLOY,
+                "global",
+            )],
+        ),
+    ];
 
     let projection = project_internal_dns_rows(input).expect("row projection");
     let name = InternalServiceName::try_from_labels("api", "prod").expect("record name");
@@ -205,58 +235,41 @@ fn projection_input() -> InternalDnsRowProjectionInput {
             ),
         ],
         namespace_rows: vec![
-            namespace_row(NAMESPACE, NAMESPACE),
+            namespace_row(
+                NAMESPACE,
+                NAMESPACE,
+                &[(SERVICE, ACTIVE_DEPLOY), (EMPTY_SERVICE, ACTIVE_DEPLOY)],
+            ),
             StoredRow::new("malformed", "{"),
         ],
-        service_rows: vec![
-            service_row("prod/api", NAMESPACE, SERVICE, ACTIVE_DEPLOY),
-            service_row("prod/worker", NAMESPACE, EMPTY_SERVICE, ACTIVE_DEPLOY),
-        ],
-        container_rows: vec![
-            container_row(
-                "container-local",
+        machine_endpoint_rows: vec![
+            machine_endpoint_row(
                 LOCAL_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.20.8",
-                ACTIVE_DEPLOY,
-                "global",
+                vec![
+                    endpoint(SERVICE, NAMESPACE, "10.210.20.8", ACTIVE_DEPLOY, "global"),
+                    endpoint(SERVICE, NAMESPACE, "10.210.20.8", ACTIVE_DEPLOY, "1"),
+                    endpoint(SERVICE, NAMESPACE, "10.210.20.10", OLD_DEPLOY, "global"),
+                ],
             ),
-            container_row(
-                "container-remote-dark",
+            machine_endpoint_row(
                 REMOTE_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.30.9",
-                ACTIVE_DEPLOY,
-                "global",
+                vec![endpoint(
+                    SERVICE,
+                    NAMESPACE,
+                    "10.210.30.9",
+                    ACTIVE_DEPLOY,
+                    "global",
+                )],
             ),
-            container_row(
-                "container-duplicate-ip",
-                LOCAL_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.20.8",
-                ACTIVE_DEPLOY,
-                "1",
-            ),
-            container_row(
-                "container-old-deploy",
-                LOCAL_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.20.10",
-                OLD_DEPLOY,
-                "global",
-            ),
-            container_row(
-                "container-wrong-provider-machine",
+            machine_endpoint_row(
                 WRONG_PROVIDER_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.40.9",
-                ACTIVE_DEPLOY,
-                "global",
+                vec![endpoint(
+                    SERVICE,
+                    NAMESPACE,
+                    "10.210.40.9",
+                    ACTIVE_DEPLOY,
+                    "global",
+                )],
             ),
         ],
     }
@@ -296,7 +309,11 @@ fn machine_row(id: &str, name: &str, lifecycle: &str, provider: &str, subnet: &s
     )
 }
 
-fn namespace_row(id: &str, name: &str) -> StoredRow {
+fn namespace_row(id: &str, name: &str, services: &[(&str, &str)]) -> StoredRow {
+    let services = services
+        .iter()
+        .map(|(service, deploy)| ((*service).to_owned(), published_service(deploy)))
+        .collect::<serde_json::Map<_, _>>();
     stored_row(
         id,
         serde_json::json!({
@@ -304,43 +321,45 @@ fn namespace_row(id: &str, name: &str) -> StoredRow {
             "cluster_id": CLUSTER,
             "written_by": { "kind": "peer", "peer_id": PEER },
             "written_at": "2026-08-05T10:00:00Z",
-            "name": name
-        }),
-    )
-}
-
-fn service_row(id: &str, namespace_id: &str, name: &str, deploy: &str) -> StoredRow {
-    stored_row(
-        id,
-        serde_json::json!({
-            "v": 1,
-            "cluster_id": CLUSTER,
-            "written_by": { "kind": "peer", "peer_id": PEER },
-            "written_at": "2026-08-05T10:00:00Z",
-            "namespace_id": namespace_id,
             "name": name,
-            "image": "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "env_fingerprints": {},
-            "mode": "replicated",
-            "replicas": 1,
-            "pinned_machines": [],
-            "active_deploy": deploy,
-            "previous_image": null,
-            "deployed_at": "2026-08-05T10:00:00Z",
+            "services": services,
         }),
     )
 }
 
-fn container_row(
-    id: &str,
-    machine_id: &str,
+fn published_service(deploy: &str) -> serde_json::Value {
+    serde_json::json!({
+        "image": "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "env_fingerprints": {},
+        "mode": "replicated",
+        "replicas": 1,
+        "pinned_machines": [],
+        "active_deploy": deploy,
+        "previous_image": null,
+        "deployed_at": "2026-08-05T10:00:00Z",
+    })
+}
+
+fn machine_endpoint_row(machine_id: &str, endpoints: Vec<serde_json::Value>) -> StoredRow {
+    stored_row(
+        machine_id,
+        serde_json::json!({
+            "v": 1,
+            "cluster_id": CLUSTER,
+            "machine_id": machine_id,
+            "observed_at": "2026-08-05T10:00:00Z",
+            "endpoints": endpoints,
+        }),
+    )
+}
+
+fn endpoint(
     service_name: &str,
     namespace_id: &str,
     ip: &str,
     deploy: &str,
     replica_slot: &str,
-) -> StoredRow {
-    let replica_slot_key = replica_slot.to_owned();
+) -> serde_json::Value {
     let replica_slot = if replica_slot == "global" {
         serde_json::json!({ "kind": "global" })
     } else {
@@ -349,21 +368,13 @@ fn container_row(
             "number": replica_slot.parse::<u16>().expect("replica slot")
         })
     };
-    let key = format!("{namespace_id}/{service_name}/{deploy}/{machine_id}/{replica_slot_key}");
-    stored_row(
-        &key,
-        serde_json::json!({
-            "v": 1,
-            "cluster_id": CLUSTER,
-            "runtime_id": id,
-            "machine_id": machine_id,
-            "namespace_id": namespace_id,
-            "service_name": service_name,
-            "replica_slot": replica_slot,
-            "ip": ip,
-            "deploy": deploy
-        }),
-    )
+    serde_json::json!({
+        "namespace_id": namespace_id,
+        "service_name": service_name,
+        "replica_slot": replica_slot,
+        "ip": ip,
+        "deploy": deploy
+    })
 }
 
 fn stored_row(id: &str, document: serde_json::Value) -> StoredRow {

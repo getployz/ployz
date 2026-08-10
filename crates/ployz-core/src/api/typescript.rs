@@ -5,29 +5,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use ts_rs::{Config, Dependency, TS, TypeVisitor};
 
 use super::v2::{
-    API_MAJOR, ApiRefusal, ApiVersion, ContainerLensRow, CorrosionLogsTailLines,
-    CorrosionNamespaceCreateRefusal, CorrosionNamespaceCreateReply,
-    CorrosionNamespaceCreateRequest, CorrosionNamespaceRemoveRefusal,
-    CorrosionNamespaceRemoveReply, CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds,
-    DeployAccepted, DeployRefusal, DeployRequest, DeployServiceRequest, DeployServices,
-    KNOWN_API_FEATURES, KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineLensRow, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
-    MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
-    MachineUpgradeSupervisor, MachineUpgradeUrl, OperationLensRow, PinnedMachineNames,
-    RequestedPins, RequestedPlacement, ServiceLensRow, ServiceLogLine, ServiceLogStream,
-    ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, ServiceLogsTailReply,
+    API_MAJOR, ApiRefusal, ApiVersion, CorrosionLogsTailLines, CorrosionNamespaceCreateRefusal,
+    CorrosionNamespaceCreateReply, CorrosionNamespaceCreateRequest,
+    CorrosionNamespaceRemoveRefusal, CorrosionNamespaceRemoveReply,
+    CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds, DeployAccepted, DeployRefusal,
+    DeployRequest, DeployServiceRequest, DeployServices, EndpointLensRow, KNOWN_API_FEATURES,
+    KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow,
+    MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow,
+    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor,
+    MachineUpgradeUrl, OperationLensRow, PinnedMachineNames, RequestedPlacement, ServiceLensRow,
+    ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
+    ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
     DoctorDocument, NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
     RouteAttachOutcome, RouteAttachRefusal, RouteAttachReply, RouteAttachRequest,
-    RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest, ServiceRemoveRowRefusal,
-    ServiceRemoveRowReply, ServiceRemoveRowRequest, StatusDocument,
+    RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest, ServiceRemoveRefusal,
+    ServiceRemoveReply, ServiceRemoveRequest, StatusDocument,
 };
 use crate::corrosion::{
-    AcmeHttp01Document, CertHoldingDocument, ClusterDocument, ContainerDocument, CorrosionTable,
+    AcmeHttp01Document, CertHoldingDocument, ClusterDocument, CorrosionTable,
     GatewayObservationDocument, HostPortBinding, HostPortBindings, HostPortProtocol,
-    MachineDocument, MachineStatusDocument, NamespaceDocument, OperationDocument, PeerDocument,
-    Principal, RouteBindingDocument, ServiceDocument, TokenDocument,
+    MachineDocument, MachineEndpointDocument, MachineStatusDocument, NamespaceDocument,
+    OperationDocument, PeerDocument, Principal, PublishedService, RouteBindingDocument,
+    ServiceEndpoint, TokenDocument,
 };
 use crate::deploy::{EnvName, EnvValue};
 use crate::founding::{
@@ -90,9 +91,10 @@ fn collect_corrosion_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<PeerDocument>();
     declarations.visit::<TokenDocument>();
     declarations.visit::<NamespaceDocument>();
-    declarations.visit::<ServiceDocument>();
+    declarations.visit::<PublishedService>();
     declarations.visit::<RouteBindingDocument>();
-    declarations.visit::<ContainerDocument>();
+    declarations.visit::<MachineEndpointDocument>();
+    declarations.visit::<ServiceEndpoint>();
     declarations.visit::<MachineStatusDocument>();
     declarations.visit::<GatewayObservationDocument>();
     declarations.visit::<OperationDocument>();
@@ -106,7 +108,7 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<LensCollection>();
     declarations.visit::<MachineLensRow>();
     declarations.visit::<ServiceLensRow>();
-    declarations.visit::<ContainerLensRow>();
+    declarations.visit::<EndpointLensRow>();
     declarations.visit::<MachineStatusLensRow>();
     declarations.visit::<OperationLensRow>();
     declarations.visit::<LensSnapshot>();
@@ -119,9 +121,9 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<PeerRemoveRequest>();
     declarations.visit::<PeerRemoveReply>();
     declarations.visit::<PeerRemoveRefusal>();
-    declarations.visit::<ServiceRemoveRowRequest>();
-    declarations.visit::<ServiceRemoveRowReply>();
-    declarations.visit::<ServiceRemoveRowRefusal>();
+    declarations.visit::<ServiceRemoveRequest>();
+    declarations.visit::<ServiceRemoveReply>();
+    declarations.visit::<ServiceRemoveRefusal>();
     declarations.visit::<RouteRemoveRequest>();
     declarations.visit::<RouteRemoveReply>();
     declarations.visit::<RouteRemoveRefusal>();
@@ -168,7 +170,6 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<DeployServiceRequest>();
     declarations.visit::<DeployServices>();
     declarations.visit::<RequestedPlacement>();
-    declarations.visit::<RequestedPins>();
     declarations.visit::<PinnedMachineNames>();
     declarations.visit::<HostPortProtocol>();
     declarations.visit::<HostPortBinding>();
@@ -268,9 +269,10 @@ mod tests {
             "PeerDocument",
             "TokenDocument",
             "NamespaceDocument",
-            "ServiceDocument",
+            "PublishedService",
             "RouteBindingDocument",
-            "ContainerDocument",
+            "MachineEndpointDocument",
+            "ServiceEndpoint",
             "MachineStatusDocument",
             "OperationDocument",
             "CertHoldingDocument",
@@ -286,6 +288,12 @@ mod tests {
             assert!(
                 generated.contains(&format!("export type {name} =")),
                 "missing declaration for {name}"
+            );
+        }
+        for removed in ["ServiceDocument", "ContainerDocument"] {
+            assert!(
+                !generated.contains(&format!("export type {removed} =")),
+                "removed declaration leaked: {removed}"
             );
         }
     }
@@ -311,7 +319,7 @@ mod tests {
         assert!(!generated.contains("export type SourcePrincipalResolutionError ="));
         assert!(!generated.contains("export type MalformedRequestReason ="));
         assert!(!generated.contains("LensWatermark"));
-        assert!(generated.contains("id: ContainerId, document: ContainerDocument"));
+        assert!(generated.contains("machine_id: MachineName, document: MachineEndpointDocument"));
 
         for name in [
             "Principal",
@@ -321,7 +329,7 @@ mod tests {
             "LensCollection",
             "MachineLensRow",
             "ServiceLensRow",
-            "ContainerLensRow",
+            "EndpointLensRow",
             "MachineStatusLensRow",
             "OperationLensRow",
             "LensSnapshot",
@@ -334,9 +342,9 @@ mod tests {
             "PeerRemoveRequest",
             "PeerRemoveReply",
             "PeerRemoveRefusal",
-            "ServiceRemoveRowRequest",
-            "ServiceRemoveRowReply",
-            "ServiceRemoveRowRefusal",
+            "ServiceRemoveRequest",
+            "ServiceRemoveReply",
+            "ServiceRemoveRefusal",
             "RouteRemoveRequest",
             "RouteRemoveReply",
             "RouteRemoveRefusal",

@@ -204,10 +204,9 @@ fn corrosion_table_catalog_covers_every_diagnostic_table_in_schema_order() {
             "peers",
             "tokens",
             "namespaces",
-            "services",
             "route_bindings",
             "controller",
-            "containers",
+            "machine_endpoints",
             "machine_status",
             "gateway_observations",
             "operations",
@@ -538,21 +537,13 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
         .expect("peer fixture has transport") = json!({"kind": "unknown"});
     let machine_wrong_key = named_document("machines", "machine-canonical");
     let peer_wrong_key = named_document("peers", "peer-canonical");
-    let service_wrong_key = json!({
+    let namespace_wrong_key = json!({
         "v": 1,
         "cluster_id": CLUSTER,
         "written_by": {"kind": "peer", "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAX"},
         "written_at": "2026-08-04T10:00:00.000000000Z",
-        "namespace_id": "production",
-        "name": "web",
-        "image": "registry.example/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "env_fingerprints": {},
-        "mode": "replicated",
-        "replicas": 1,
-        "pinned_machines": [],
-        "active_deploy": "release-1",
-        "previous_image": null,
-        "deployed_at": "2026-08-04T10:00:00.000000000Z"
+        "name": "production-canonical",
+        "services": {}
     });
 
     let mut rows = DoctorRawRows::empty();
@@ -582,7 +573,7 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
             json!({"v": 1, "cluster_id": foreign_cluster}),
         ),
     ];
-    rows.services = vec![row("production/api", service_wrong_key)];
+    rows.namespaces = vec![row("production-wrong", namespace_wrong_key)];
 
     let doctor = project_doctor(DoctorProjectionInput {
         cluster: cluster(),
@@ -638,9 +629,9 @@ fn doctor_projects_same_cluster_roster_skips_without_duplicating_other_evidence(
                 expected: "peer-canonical".to_owned(),
             },
             DoctorNoncanonicalRow {
-                table: CorrosionTable::Services,
-                key: "production/api".to_owned(),
-                expected: "production/web".to_owned(),
+                table: CorrosionTable::Namespaces,
+                key: "production-wrong".to_owned(),
+                expected: "production-canonical".to_owned(),
             },
         ]
     );
@@ -703,7 +694,7 @@ fn doctor_compares_valid_versions_semantically_and_retains_newer_row_evidence() 
         machine_status_row(zeta, "1.10.0"),
         machine_status_row(invalid, "release-next"),
     ];
-    rows.services = vec![row(
+    rows.namespaces = vec![row(
         "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
         json!({"v": 2, "cluster_id": CLUSTER}),
     )];
@@ -731,7 +722,7 @@ fn doctor_compares_valid_versions_semantically_and_retains_newer_row_evidence() 
     assert_eq!(behind.machine.name.as_str(), "alpha");
     assert_eq!(invalid.version, "release-next");
     assert_eq!(invalid.machine.name.as_str(), "invalid");
-    assert_eq!(newer.table.as_str(), "services");
+    assert_eq!(newer.table.as_str(), "namespaces");
     assert_eq!(newer.found, 2);
     assert_eq!(newer.supported, 1);
 }
@@ -761,13 +752,22 @@ fn doctor_groups_foreign_rows_and_only_current_machine_authors_are_actionable() 
     let foreign_orphan = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
     let mut rows = DoctorRawRows::empty();
     rows.machines = vec![row(current, named_document("machines", current))];
-    rows.namespaces = vec![row(
-        "01ARZ3NDEKTSV4RRFFQ69G5FAT",
-        json!({
-            "v": 1, "cluster_id": foreign_active,
-            "written_by": {"kind": "machine", "machine_id": current}
-        }),
-    )];
+    rows.namespaces = vec![
+        row(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAT",
+            json!({
+                "v": 1, "cluster_id": foreign_active,
+                "written_by": {"kind": "machine", "machine_id": current}
+            }),
+        ),
+        row(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAR",
+            json!({
+                "v": 1, "cluster_id": foreign_orphan,
+                "written_by": {"kind": "machine", "machine_id": non_current}
+            }),
+        ),
+    ];
     rows.tokens = vec![row(
         "01ARZ3NDEKTSV4RRFFQ69G5FAS",
         json!({
@@ -775,15 +775,8 @@ fn doctor_groups_foreign_rows_and_only_current_machine_authors_are_actionable() 
             "written_by": {"kind": "peer", "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}
         }),
     )];
-    rows.services = vec![row(
-        "01ARZ3NDEKTSV4RRFFQ69G5FAR",
-        json!({
-            "v": 1, "cluster_id": foreign_orphan,
-            "written_by": {"kind": "machine", "machine_id": non_current}
-        }),
-    )];
-    rows.containers = vec![row(
-        "container-raw-key",
+    rows.machine_endpoints = vec![row(
+        "machine-endpoints-raw-key",
         json!({"v": 1, "cluster_id": foreign_orphan, "machine_id": "not/a/name"}),
     )];
 

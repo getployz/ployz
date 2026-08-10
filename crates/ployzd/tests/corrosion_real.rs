@@ -13,9 +13,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ployz_core::corrosion::{
-    AcmeHttp01Document, CertHoldingDocument, ChangeKind, ClusterDocument, ContainerDocument,
-    CorrosionDocument, CorrosionTable, MachineDocument, MachineStatusDocument, NamespaceDocument,
-    OperationDocument, PeerDocument, RouteBindingDocument, ServiceDocument, SqliteParameter,
+    AcmeHttp01Document, CertHoldingDocument, ChangeKind, ClusterDocument, CorrosionDocument,
+    CorrosionTable, MachineDocument, MachineEndpointDocument, MachineStatusDocument,
+    NamespaceDocument, OperationDocument, PeerDocument, RouteBindingDocument, SqliteParameter,
     SqliteValue, Statement, TokenDocument, read_named_rows,
 };
 use ployz_core::ids::{ClusterName, MachineName};
@@ -174,6 +174,7 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "staging",
+        "services": {},
         "written_by": {"kind": "peer", "peer_id": ROW_ID},
         "written_at": "2026-08-04T10:00:00Z"
     }))?;
@@ -217,6 +218,7 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "resumed",
+        "services": {},
         "written_by": {"kind": "peer", "peer_id": ROW_ID},
         "written_at": "2026-08-04T10:00:00Z"
     }))?;
@@ -550,19 +552,8 @@ where
 fn fixtures() -> Result<Vec<Fixture>, String> {
     let machine_id = ROW_ID;
     let namespace_id = "production";
-    let service_key = "production/api";
     let deploy_name = "release-1";
     let operation_id = OPERATION_ROW_ID;
-    let base = |name: &str| {
-        json!({
-            "v": 1,
-            "cluster_id": CLUSTER_ID,
-            "name": name,
-            "written_by": {"kind": "peer", "peer_id": ROW_ID},
-            "written_at": "2026-08-04T10:00:00Z"
-        })
-    };
-
     Ok(vec![
         fixture::<ClusterDocument>(
             CorrosionTable::Cluster,
@@ -638,30 +629,26 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
             CorrosionTable::Namespaces,
             "id",
             namespace_id,
-            base("production"),
-            vec![],
-        )?,
-        fixture::<ServiceDocument>(
-            CorrosionTable::Services,
-            "id",
-            service_key,
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
-                "namespace_id": namespace_id,
-                "name": "api",
-                "image": "ghcr.io/acme/api:2026-08-04",
-                "env_fingerprints": {"DATABASE_URL": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-                "mode": "replicated",
-                "replicas": 1,
-                "pinned_machines": [machine_id],
-                "active_deploy": deploy_name,
-                "previous_image": null,
-                "deployed_at": "2026-08-04T10:05:00Z",
+                "name": "production",
+                "services": {
+                    "api": {
+                        "image": "ghcr.io/acme/api:2026-08-04",
+                        "env_fingerprints": {"DATABASE_URL": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                        "mode": "replicated",
+                        "replicas": 1,
+                        "pinned_machines": [machine_id],
+                        "active_deploy": deploy_name,
+                        "previous_image": null,
+                        "deployed_at": "2026-08-04T10:05:00Z"
+                    }
+                },
                 "written_by": {"kind": "peer", "peer_id": ROW_ID},
                 "written_at": "2026-08-04T10:00:00Z"
             }),
-            vec![column("namespace_id", namespace_id), column("name", "api")],
+            vec![],
         )?,
         fixture::<RouteBindingDocument>(
             CorrosionTable::RouteBindings,
@@ -684,26 +671,24 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 column("namespace_id", namespace_id),
             ],
         )?,
-        fixture::<ContainerDocument>(
-            CorrosionTable::Containers,
+        fixture::<MachineEndpointDocument>(
+            CorrosionTable::MachineEndpoints,
             "id",
-            "production/api/release-1/edge-a/global",
+            machine_id,
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
-                "runtime_id": "container-runtime-id",
                 "machine_id": machine_id,
-                "namespace_id": namespace_id,
-                "service_name": "api",
-                "replica_slot": {"kind": "global"},
-                "ip": "10.210.20.2",
-                "deploy": deploy_name
+                "observed_at": "2026-08-04T10:06:00Z",
+                "endpoints": [{
+                    "namespace_id": namespace_id,
+                    "service_name": "api",
+                    "replica_slot": {"kind": "global"},
+                    "ip": "10.210.20.2",
+                    "deploy": deploy_name
+                }]
             }),
-            vec![
-                column("machine_id", machine_id),
-                column("service_name", "api"),
-                column("namespace_id", namespace_id),
-            ],
+            vec![column("observed_at", "2026-08-04T10:06:00.000000000Z")],
         )?,
         fixture::<MachineStatusDocument>(
             CorrosionTable::MachineStatus,

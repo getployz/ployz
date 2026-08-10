@@ -106,6 +106,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         docker,
         founder,
         &joined.api_address,
+        NAMESPACE,
         SERVICE,
         &operation_id,
     )
@@ -128,7 +129,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         founder,
         joined.dns_address,
         &hostname,
-        rows.container_ip,
+        rows.endpoint_ip,
         FIRST_BODY,
     )
     .await?;
@@ -151,6 +152,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         docker,
         founder,
         &joined.api_address,
+        NAMESPACE,
         SERVICE,
         &second_operation_id,
     )
@@ -170,7 +172,7 @@ async fn exercise_operation_deploy(docker: &Docker, cluster: &DindCluster) -> Re
         founder,
         joined.dns_address,
         &hostname,
-        second_rows.container_ip,
+        second_rows.endpoint_ip,
         SECOND_BODY,
     )
     .await?;

@@ -32,7 +32,7 @@ use super::upgrade::{KeeperUpgradeSocket, migrate_api_privileges, restart_system
 use super::{KeeperRoleConfig, KeeperRoleConfigError};
 
 const UPGRADE_FIRST_CONVERGE_TIMEOUT: Duration = Duration::from_secs(60);
-const CONTAINER_INVALIDATION_COALESCE: Duration = Duration::from_millis(250);
+const ENDPOINT_INVALIDATION_COALESCE: Duration = Duration::from_millis(250);
 
 /// Runs Keeper from the supervisor-owned environment until process shutdown.
 pub async fn run_from_environment() -> Result<(), KeeperRoleRuntimeError> {
@@ -273,32 +273,32 @@ where
         enum Wake {
             Shutdown,
             Full(Result<(), KeeperStoreError>),
-            Containers(Result<(), KeeperStoreError>),
+            MachineEndpoints(Result<(), KeeperStoreError>),
         }
         let wake = tokio::select! {
             () = &mut shutdown => Wake::Shutdown,
             _ = periodic.tick() => Wake::Full(Ok(())),
             result = streams.roster.next() => Wake::Full(result),
-            result = streams.containers.next() => Wake::Containers(result),
+            result = streams.machine_endpoints.next() => Wake::MachineEndpoints(result),
         };
         match wake {
             Wake::Shutdown => return Ok(()),
             Wake::Full(Ok(())) => fold = FoldKind::Full,
-            Wake::Full(Err(error)) | Wake::Containers(Err(error)) => {
+            Wake::Full(Err(error)) | Wake::MachineEndpoints(Err(error)) => {
                 tracing::warn!(error = %error, "Keeper subscription disconnected; forcing full re-query");
                 invalidations = None;
                 fold = FoldKind::Full;
             }
-            Wake::Containers(Ok(())) => {
+            Wake::MachineEndpoints(Ok(())) => {
                 fold = FoldKind::IsolationOnly;
-                let deadline = tokio::time::sleep(CONTAINER_INVALIDATION_COALESCE);
+                let deadline = tokio::time::sleep(ENDPOINT_INVALIDATION_COALESCE);
                 tokio::pin!(deadline);
                 loop {
                     let wake = tokio::select! {
                         () = &mut shutdown => Wake::Shutdown,
                         _ = periodic.tick() => Wake::Full(Ok(())),
                         result = streams.roster.next() => Wake::Full(result),
-                        result = streams.containers.next() => Wake::Containers(result),
+                        result = streams.machine_endpoints.next() => Wake::MachineEndpoints(result),
                         () = &mut deadline => break,
                     };
                     match wake {
@@ -307,13 +307,13 @@ where
                             fold = preempt_fold(fold, FoldKind::Full);
                             break;
                         }
-                        Wake::Full(Err(error)) | Wake::Containers(Err(error)) => {
-                            tracing::warn!(error = %error, "Keeper subscription disconnected during container coalescing");
+                        Wake::Full(Err(error)) | Wake::MachineEndpoints(Err(error)) => {
+                            tracing::warn!(error = %error, "Keeper subscription disconnected during machine endpoint coalescing");
                             invalidations = None;
                             fold = FoldKind::Full;
                             break;
                         }
-                        Wake::Containers(Ok(())) => {
+                        Wake::MachineEndpoints(Ok(())) => {
                             fold = preempt_fold(fold, FoldKind::IsolationOnly);
                         }
                     }
@@ -384,7 +384,7 @@ async fn reconcile_once(
     isolation: &mut IsolationCache,
 ) -> Result<ReconcileProgress, ReconcileError> {
     let snapshot = store.read_roster().await.map_err(retry_store)?;
-    let container_rows = store.read_containers().await;
+    let machine_endpoints = store.read_machine_endpoints().await;
     if last_successful_converge.is_none() {
         *last_successful_converge = snapshot
             .local_status
@@ -397,7 +397,7 @@ async fn reconcile_once(
         .as_ref()
         .and_then(|status| status.container_isolation.clone())
         .or_else(|| isolation.testimony.clone());
-    let isolation_projection = container_rows
+    let isolation_projection = machine_endpoints
         .map(|rows| project_container_isolation(snapshot.cluster.prefix.clone(), rows));
     isolation.eligible = false;
     let outcome = project_builtin_wireguard_mesh(
@@ -467,7 +467,7 @@ async fn reconcile_once(
                     let (testimony, error) = converge_isolation(
                         provider,
                         &projection.desired,
-                        projection.evidence.observed_rows,
+                        projection.evidence.observed_endpoints,
                         attempted_at,
                         isolation,
                     )
@@ -649,8 +649,9 @@ async fn reconcile_isolation_only(
     }
     let snapshot = store.read_isolation().await.map_err(retry_store)?;
     isolation.seed(snapshot.local_status.as_ref());
-    let projection = project_container_isolation(snapshot.cluster.prefix, snapshot.containers);
-    if isolation_capacity_error(projection.evidence.observed_rows).is_none()
+    let projection =
+        project_container_isolation(snapshot.cluster.prefix, snapshot.machine_endpoints);
+    if isolation_capacity_error(projection.evidence.observed_endpoints).is_none()
         && isolation.is_successfully_applied(&projection.desired)
     {
         tracing::debug!(evidence = ?projection.evidence, "container invalidation was semantically unchanged");
@@ -661,7 +662,7 @@ async fn reconcile_isolation_only(
     let (testimony, error) = converge_isolation(
         provider,
         &projection.desired,
-        projection.evidence.observed_rows,
+        projection.evidence.observed_endpoints,
         attempted_at,
         isolation,
     )
@@ -680,11 +681,11 @@ async fn reconcile_isolation_only(
 async fn converge_isolation(
     provider: &KeeperMeshProvider,
     desired: &DesiredContainerIsolation,
-    observed_rows: usize,
+    observed_endpoints: usize,
     attempted_at: ployz_core::corrosion::CorrosionTimestamp,
     isolation: &mut IsolationCache,
 ) -> (ContainerIsolationTestimony, Option<KeeperProviderError>) {
-    let result = if let Some(error) = isolation_capacity_error(observed_rows) {
+    let result = if let Some(error) = isolation_capacity_error(observed_endpoints) {
         Err(error)
     } else {
         provider.converge_isolation(desired).await
@@ -709,13 +710,13 @@ async fn converge_isolation(
     (testimony, result.err())
 }
 
-fn isolation_capacity_error(observed_rows: usize) -> Option<KeeperProviderError> {
+fn isolation_capacity_error(observed_endpoints: usize) -> Option<KeeperProviderError> {
     let capacity = usize::try_from(ployz_ebpf_common::MAX_ISOLATION_ENTRIES)
         .expect("isolation map capacity fits usize");
-    if observed_rows > capacity {
+    if observed_endpoints > capacity {
         Some(KeeperProviderError::Isolation(
             ContainerIsolationHostError::DesiredSetTooLarge {
-                desired: observed_rows,
+                desired: observed_endpoints,
                 capacity,
             },
         ))

@@ -19,8 +19,8 @@ use crate::corrosion::{
 pub(super) enum LensInput {
     Cluster,
     Machines,
-    Services,
-    Containers,
+    Namespaces,
+    Endpoints,
     MachineStatus,
     Operations,
 }
@@ -29,8 +29,8 @@ impl LensInput {
     pub(super) const fn inputs_for(collection: LensCollection) -> &'static [Self] {
         match collection {
             LensCollection::Machines => &[Self::Cluster, Self::Machines],
-            LensCollection::Services => &[Self::Services],
-            LensCollection::Containers => &[Self::Containers],
+            LensCollection::Services => &[Self::Namespaces],
+            LensCollection::Endpoints => &[Self::Endpoints],
             LensCollection::MachineStatus => &[Self::MachineStatus],
             LensCollection::Operations => &[Self::Operations],
         }
@@ -40,8 +40,8 @@ impl LensInput {
         match self {
             Self::Cluster => CorrosionTable::Cluster,
             Self::Machines => CorrosionTable::Machines,
-            Self::Services => CorrosionTable::Services,
-            Self::Containers => CorrosionTable::Containers,
+            Self::Namespaces => CorrosionTable::Namespaces,
+            Self::Endpoints => CorrosionTable::MachineEndpoints,
             Self::MachineStatus => CorrosionTable::MachineStatus,
             Self::Operations => CorrosionTable::Operations,
         }
@@ -57,15 +57,17 @@ impl LensInput {
                 "SELECT machine_id AS id, document FROM machine_status WHERE json_extract(document, '$.cluster_id') = ?",
                 vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
             ),
-            Self::Machines | Self::Services | Self::Containers | Self::Operations => {
-                Statement::with_params(
-                    format!(
-                        "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
-                        self.table().as_str()
-                    ),
-                    vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
-                )
-            }
+            Self::Endpoints => Statement::with_params(
+                "SELECT id, document FROM machine_endpoints WHERE json_extract(document, '$.cluster_id') = ?",
+                vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
+            ),
+            Self::Machines | Self::Namespaces | Self::Operations => Statement::with_params(
+                format!(
+                    "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
+                    self.table().as_str()
+                ),
+                vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
+            ),
         }
     }
 }

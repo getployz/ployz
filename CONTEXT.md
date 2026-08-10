@@ -7,11 +7,11 @@ Ployz is a small-cluster orchestrator for deploying and operating services throu
 Current v2 is deliberately narrower than some retained product vocabulary: a namespace deploy accepts one complete name-keyed service object using prebuilt registry images; only deploy creates public Operation rows; and there is no namespace-revision, phase, dependency, or hook planner. Entries describing those removed models are historical or target vocabulary, not claims about current implementation.
 
 **Namespace**:
-A canonically named deploy boundary whose name is its durable identity. Its services are separate rows keyed by namespace and service names; deleting and recreating the same namespace name continues that logical namespace.
+A canonically named deploy boundary whose name is its durable identity. Its one Corrosion document contains the complete name-keyed serving intent for all of its services; deleting and recreating the same namespace name continues that logical namespace.
 _Avoid_: Environment
 
 **Namespace Revision**:
-A historical target-model term for a normalized service graph. Current v2 has no Namespace Revision planner or persisted revision document; the service row's `active_deploy` selects the serving container generation.
+A historical target-model term for a normalized service graph. Current v2 has no Namespace Revision planner or persisted revision document; each service entry in the Namespace intent document selects its serving deploy.
 _Avoid_: User-supplied revision, service revision, active state
 
 **Namespace Revision Entry**:
@@ -31,7 +31,7 @@ The caller-supplied runtime settings used by a target node when it creates a ser
 _Avoid_: Route binding, machine observation, controller-resolved image
 
 **Serving Target**:
-The `active_deploy` name in a Service row. Gateways combine it with Route Bindings and container rows and serve only containers whose namespace, service, and deploy names match it.
+The `active_deploy` name in one service entry of a Namespace intent document. Gateways combine it with Route Bindings and machine endpoint testimony and serve only endpoints whose namespace, service, and deploy names match it.
 _Avoid_: Namespace revision entry, completed phase pointer
 
 **Phase**:
@@ -83,7 +83,7 @@ The shared bounded path that derives a generated hostname, rejects collisions, o
 _Avoid_: Hostname provisioning workflow, DNS provider operation, route reconciliation
 
 **Route Projection**:
-A gateway's local application of one route binding against the current serving target and runtime observations. Route projections can succeed or fail independently, and failures are reported as gateway observations. If a route binding points at a service that is not currently serveable, the route remains attached and the gateway returns an unavailable response for that route.
+A gateway's local application of one route binding against the current Namespace serving target and machine endpoint testimony. Route projections can succeed or fail independently, and failures are reported as gateway observations. If a route binding points at a service that is not currently serveable, the route remains attached and the gateway returns an unavailable response for that route.
 _Avoid_: Route binding, gateway config, active route
 
 **Ingress Endpoint Projection**:
@@ -210,7 +210,7 @@ The private Duroxide and SQLite runtime on each machine. It records only that ma
 _Avoid_: Distributed workflow engine, controller queue, cluster truth
 
 **Deploy**:
-A bounded attempt to make an entire namespace match one complete desired service object keyed by canonical service name. The Preferred Controller observes Corrosion and target-host Docker, computes placement for every service, asks nodes to prepare exact replicas, commits the namespace's complete service and container projection after an immediate appointment recheck, then asks nodes to retire obsolete identities. The commit is not appointment-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
+A bounded attempt to make an entire namespace match one complete desired service object keyed by canonical service name. The Preferred Controller reads durable intent from Corrosion and live runtime state from target-host RPC, computes placement for every service, asks nodes to prepare exact replicas, commits the namespace's complete serving intent after an immediate appointment recheck, then asks nodes to retire obsolete identities. The commit is not appointment-conditional, so stale or partitioned commits remain possible and are repaired by retrying from reality.
 _Avoid_: Distributed workflow, namespace revision reconciliation
 
 **Deploy Outcome**:
@@ -284,7 +284,7 @@ Durable state outside cluster intent, owned by a machine or role process, that c
 _Avoid_: Cache
 
 **Runtime State**:
-The fresh Corrosion rows and target-host inspection used by one command, including service/container rows, accepted machines, machine status, live Docker containers, health, and bridge readiness. It is an input to planning, not desired state or operation history.
+The complete deploy request, accepted roster policy, and fresh target-host RPC inspection used by one command, including live Docker replicas, capacity, health, and bridge readiness. Corrosion endpoint testimony is never part of this planning input.
 _Avoid_: Live state, stored truth
 
 **Operation Runtime Snapshot**:
@@ -312,7 +312,7 @@ A desired capacity slot for one named service: either a numbered replicated slot
 _Avoid_: Container
 
 **Usable Service Container**:
-A running service container with the exact Managed Container Identity expected by the current attempt. It passes its one-time creation gate when prepared, unless the caller explicitly skips that gate. Gateways additionally require its deploy id to equal the service's `active_deploy`.
+A running service container with the exact Managed Container Identity expected by the current attempt. It passes its one-time creation gate when prepared, unless the caller explicitly skips that gate. Gateways additionally require its deploy name to equal the service entry selected by Namespace intent.
 _Avoid_: Running container
 
 **Container Replacement**:
@@ -328,7 +328,7 @@ A fixed 10-second Docker container stop timeout set when current-v2 service cont
 _Avoid_: Drain period, gateway consensus, cutover wait
 
 **Promotion**:
-The Preferred Controller's service-row commit that sets `active_deploy` after all selected target nodes prepare successfully. It is not a separate phase or workflow step.
+The Preferred Controller's one-row Namespace intent replacement after all selected target nodes prepare successfully. It atomically selects the complete name-keyed service map and is not a separate phase or workflow step.
 _Avoid_: Phase promotion, route cutover stage
 
 **Gateway Convergence**:
@@ -369,7 +369,7 @@ The best-effort post-commit retirement of exact obsolete container identities on
 _Avoid_: Garbage collection
 
 **Service**:
-A named workload stored as `<namespace>/<service>` with one active deploy name. A namespace may contain many services; its runtime presence is the matching container rows and live Docker containers.
+A named workload identified as `<namespace>/<service>` with one active deploy name inside its Namespace intent document. A namespace may contain many services; live runtime presence comes only from node RPC to Docker, while machine endpoint testimony is a serving projection.
 _Avoid_: Cluster-global service
 
 **Service Mode**:
@@ -377,7 +377,7 @@ The declared placement shape for a service. `replicated` means Ployz should run 
 _Avoid_: Scheduling type, replica mode
 
 **Volume**:
-Durable or host-backed storage that can be mounted into a service container. Current v2 creates named volumes only on a service's first deploy: replicated mode allows one replica, while global mode creates one independent local volume per machine. A later volume-bearing deploy is refused until the operator explicitly removes both the service row and its local runtime; Ployz performs no holder discovery, affinity, or handoff. A later request with no mounts is treated as stateless and may leave the old local volume behind because the service row does not retain runtime declarations.
+Durable or host-backed storage that can be mounted into a service container. Current v2 refuses a volume-bearing replacement while a different deploy generation for that namespace/service exists on any inspected node: replicated mode allows one replica, while global mode creates one independent local volume per machine. Ployz performs no holder discovery, affinity, or handoff.
 _Avoid_: Disk, mount as storage identity
 
 **Provisioned Volume**:

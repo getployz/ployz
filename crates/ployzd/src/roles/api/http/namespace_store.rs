@@ -3,7 +3,6 @@
 use ployz_core::corrosion::{
     CorrosionNamespaceName, CorrosionServiceName, CorrosionTable, NamespaceDocument,
     SqliteParameter, Statement, StoredRow, TransactionResponse, TransactionResult, read_named_rows,
-    read_rows,
 };
 use ployz_core::ids::ClusterName;
 
@@ -29,6 +28,7 @@ pub(super) enum NamespaceCreateOutcome {
 pub(super) struct ObservedNamespace {
     pub(super) id: CorrosionNamespaceName,
     pub(super) exact_document: String,
+    document: NamespaceDocument,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +40,12 @@ pub(super) enum NamespaceDeleteOutcome {
         service_names: Vec<CorrosionServiceName>,
         route_binding_count: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NamespaceReplaceOutcome {
+    Replaced,
+    Changed,
 }
 
 #[derive(Clone)]
@@ -62,7 +68,10 @@ impl NamespaceStore {
         if document.cluster_id != self.cluster_id {
             return Err(NamespaceStoreError::ForeignNamespace);
         }
-        if self.by_id(namespace_id).await?.is_some() {
+        let rows = self
+            .query(select_by_id(namespace_id), MAX_KEYED_ROWS)
+            .await?;
+        if namespace_key_is_occupied(&rows) {
             return Ok(NamespaceCreateOutcome::AlreadyExists);
         }
         insert_document(
@@ -81,17 +90,63 @@ impl NamespaceStore {
         &self,
         namespace_id: &CorrosionNamespaceName,
     ) -> Result<Option<ObservedNamespace>, NamespaceStoreError> {
-        let rows = self
-            .query(select_by_id(namespace_id), MAX_KEYED_ROWS)
-            .await?;
+        let rows = self.raw_by_id(namespace_id).await?.into_iter().collect();
         let mut namespaces = accepted_namespaces(&self.cluster_id, rows)?;
         Ok(namespaces.pop())
+    }
+
+    pub(super) async fn raw_by_id(
+        &self,
+        namespace_id: &CorrosionNamespaceName,
+    ) -> Result<Option<StoredRow>, NamespaceStoreError> {
+        let mut rows = self
+            .query(select_by_id(namespace_id), MAX_KEYED_ROWS)
+            .await?;
+        Ok(rows.pop())
+    }
+
+    pub(super) async fn replace_if_matches(
+        &self,
+        namespace_id: &CorrosionNamespaceName,
+        exact_document: &str,
+        replacement: &NamespaceDocument,
+    ) -> Result<NamespaceReplaceOutcome, NamespaceStoreError> {
+        if replacement.cluster_id != self.cluster_id || replacement.name != *namespace_id {
+            return Err(NamespaceStoreError::ForeignNamespace);
+        }
+        let replacement_document =
+            serde_json::to_string(replacement).map_err(NamespaceStoreError::EncodeNamespace)?;
+        let response = self
+            .client
+            .execute(&[replace_statement(
+                namespace_id,
+                exact_document,
+                replacement_document,
+            )])
+            .await?;
+        match affected_rows(namespace_id, &response)? {
+            1 => Ok(NamespaceReplaceOutcome::Replaced),
+            0 => Ok(NamespaceReplaceOutcome::Changed),
+            rows_affected => Err(NamespaceStoreError::UnexpectedWriteCount {
+                id: namespace_id.clone(),
+                rows_affected,
+            }),
+        }
     }
 
     pub(super) async fn delete_if_empty(
         &self,
         observed: &ObservedNamespace,
     ) -> Result<NamespaceDeleteOutcome, NamespaceStoreError> {
+        if !observed.document.services.is_empty() {
+            let routes = self
+                .query(
+                    dependents_statement(CorrosionTable::RouteBindings, &observed.id),
+                    MAX_DEPENDENT_ROWS,
+                )
+                .await?;
+            return Ok(not_empty_outcome(observed, routes.len()));
+        }
         let response = self
             .client
             .execute(&[delete_empty_statement(
@@ -118,11 +173,7 @@ impl NamespaceStore {
             dependents_statement(CorrosionTable::RouteBindings, &observed.id),
             MAX_DEPENDENT_ROWS,
         );
-        let services = self.query(
-            dependents_statement(CorrosionTable::Services, &observed.id),
-            MAX_DEPENDENT_ROWS,
-        );
-        let (namespace, services, routes) = tokio::try_join!(namespace, services, routes)?;
+        let (namespace, routes) = tokio::try_join!(namespace, routes)?;
         if namespace.is_empty() {
             return Ok(NamespaceDeleteOutcome::AlreadyAbsent);
         }
@@ -133,16 +184,7 @@ impl NamespaceStore {
             return Ok(NamespaceDeleteOutcome::Changed);
         }
 
-        let service_names =
-            read_rows::<ployz_core::corrosion::ServiceDocument>(&self.cluster_id, services)
-                .accepted
-                .into_iter()
-                .map(|row| row.value.name)
-                .collect();
-        Ok(NamespaceDeleteOutcome::NotEmpty {
-            service_names,
-            route_binding_count: routes.len(),
-        })
+        Ok(not_empty_outcome(observed, routes.len()))
     }
 
     async fn query(
@@ -155,6 +197,10 @@ impl NamespaceStore {
             .await
             .map_err(NamespaceStoreError::Rows)
     }
+}
+
+fn namespace_key_is_occupied(rows: &[StoredRow]) -> bool {
+    !rows.is_empty()
 }
 
 fn accepted_namespaces(
@@ -175,6 +221,7 @@ fn accepted_namespaces(
             Ok(ObservedNamespace {
                 id,
                 exact_document: row.source.document,
+                document: row.value,
             })
         })
         .collect()
@@ -192,14 +239,38 @@ fn delete_empty_statement(
     exact_document: &str,
 ) -> Statement {
     Statement::with_params(
-        "DELETE FROM namespaces WHERE id = ? AND document = ? AND NOT EXISTS (SELECT 1 FROM services WHERE namespace_id = ?) AND NOT EXISTS (SELECT 1 FROM route_bindings WHERE namespace_id = ?)",
+        "DELETE FROM namespaces WHERE id = ? AND document = ? AND NOT EXISTS (SELECT 1 FROM route_bindings WHERE namespace_id = ?)",
         vec![
             SqliteParameter::Text(namespace_id.as_str().to_owned()),
             SqliteParameter::Text(exact_document.to_owned()),
             SqliteParameter::Text(namespace_id.as_str().to_owned()),
-            SqliteParameter::Text(namespace_id.as_str().to_owned()),
         ],
     )
+}
+
+fn replace_statement(
+    namespace_id: &CorrosionNamespaceName,
+    exact_document: &str,
+    replacement_document: String,
+) -> Statement {
+    Statement::with_params(
+        "UPDATE namespaces SET document = ? WHERE id = ? AND document = ?",
+        vec![
+            SqliteParameter::Text(replacement_document),
+            SqliteParameter::Text(namespace_id.as_str().to_owned()),
+            SqliteParameter::Text(exact_document.to_owned()),
+        ],
+    )
+}
+
+fn not_empty_outcome(
+    observed: &ObservedNamespace,
+    route_binding_count: usize,
+) -> NamespaceDeleteOutcome {
+    NamespaceDeleteOutcome::NotEmpty {
+        service_names: observed.document.services.keys().cloned().collect(),
+        route_binding_count,
+    }
 }
 
 fn dependents_statement(table: CorrosionTable, namespace_id: &CorrosionNamespaceName) -> Statement {
@@ -236,6 +307,8 @@ pub(super) enum NamespaceStoreError {
     Store(#[from] MutationStoreError),
     #[error("namespace belongs to another cluster")]
     ForeignNamespace,
+    #[error("could not encode namespace replacement: {0}")]
+    EncodeNamespace(serde_json::Error),
     #[error("Corrosion returned invalid {table:?} row id {id}")]
     InvalidRowId { table: CorrosionTable, id: String },
     #[error("Corrosion returned an unexpected namespace write result for {id}")]
@@ -252,6 +325,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn any_raw_namespace_key_is_occupied() {
+        assert!(!namespace_key_is_occupied(&[]));
+        assert!(namespace_key_is_occupied(&[StoredRow::new(
+            "production",
+            "not accepted",
+        )]));
+    }
+
+    #[test]
     fn delete_is_one_exact_conditional_statement() {
         let id = CorrosionNamespaceName::try_new("production").expect("namespace");
         let Statement::WithParams(sql, parameters) =
@@ -260,8 +342,23 @@ mod tests {
             panic!("parameterized statement");
         };
         assert!(sql.contains("id = ? AND document = ?"));
-        assert!(sql.contains("NOT EXISTS (SELECT 1 FROM services"));
+        assert!(!sql.contains("services"));
         assert!(sql.contains("NOT EXISTS (SELECT 1 FROM route_bindings"));
-        assert_eq!(parameters.len(), 4);
+        assert_eq!(parameters.len(), 3);
+    }
+
+    #[test]
+    fn replace_is_one_exact_conditional_statement() {
+        let id = CorrosionNamespaceName::try_new("production").expect("namespace");
+        let Statement::WithParams(sql, parameters) =
+            replace_statement(&id, "before", "after".to_owned())
+        else {
+            panic!("parameterized statement");
+        };
+        assert_eq!(
+            sql,
+            "UPDATE namespaces SET document = ? WHERE id = ? AND document = ?"
+        );
+        assert_eq!(parameters.len(), 3);
     }
 }

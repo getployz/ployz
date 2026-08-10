@@ -10,11 +10,11 @@ use ployz::commands::SshTarget;
 use ployz::init::ssh::SshPeerKey;
 use ployz::mesh::context::OperatorContextStore;
 use ployz_core::corrosion::{
-    AcmeHttp01Document, CertHoldingDocument, ContainerDocument, CorrosionDocumentVersion,
-    CorrosionTimestamp, MachineLoadBand, MachineStatusDocument, MachineTransport,
-    OperationDocument, Principal,
+    AcmeHttp01Document, CertHoldingDocument, CorrosionDocumentVersion, CorrosionTimestamp,
+    MachineEndpointDocument, MachineLoadBand, MachineStatusDocument, MachineTransport,
+    OperationDocument, Principal, ServiceEndpoint,
 };
-use ployz_core::ids::{ContainerId, CorrosionNamespaceName, DeployName};
+use ployz_core::ids::{CorrosionNamespaceName, DeployName};
 use ployz_core::join::JoinBlob;
 use ployz_core::operation::RouteHostname;
 use ployz_e2e::dind::{
@@ -261,17 +261,18 @@ async fn seed_machine_evidence(
         container_isolation: None,
         wireguard_handshakes: None,
     };
-    let container = ContainerDocument {
+    let endpoints = MachineEndpointDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: machine.document.cluster_id.clone(),
-        runtime_id: ContainerId::try_new("repair-proof-container")
-            .map_err(|error| error.to_string())?,
         machine_id: machine.id.clone(),
-        namespace_id: namespace_id.clone(),
-        service_name,
-        ip: Ipv4Addr::new(10, 210, 250, 2),
-        deploy: operation_id.clone(),
-        replica_slot: ployz_core::deploy::ReplicaSlot::Global,
+        observed_at: timestamp,
+        endpoints: vec![ServiceEndpoint {
+            namespace_id: namespace_id.clone(),
+            service_name,
+            ip: Ipv4Addr::new(10, 210, 250, 2),
+            deploy: operation_id.clone(),
+            replica_slot: ployz_core::deploy::ReplicaSlot::Global,
+        }],
     };
     let hostname =
         RouteHostname::try_new("repair-proof.example.test").map_err(|error| error.to_string())?;
@@ -306,7 +307,7 @@ async fn seed_machine_evidence(
         timestamp,
     );
     let status = serde_json::to_string(&status).map_err(|error| error.to_string())?;
-    let container = serde_json::to_string(&container).map_err(|error| error.to_string())?;
+    let endpoints = serde_json::to_string(&endpoints).map_err(|error| error.to_string())?;
     let cert = serde_json::to_string(&cert).map_err(|error| error.to_string())?;
     let acme = serde_json::to_string(&acme).map_err(|error| error.to_string())?;
     let operation = serde_json::to_string(&operation).map_err(|error| error.to_string())?;
@@ -319,8 +320,8 @@ async fn seed_machine_evidence(
                 [machine.id.as_str(), status]
             ],
             [
-                "INSERT INTO containers (id, document) VALUES (?, ?)",
-                ["repair-proof-container", container]
+                "INSERT INTO machine_endpoints (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document = excluded.document",
+                [machine.id.as_str(), endpoints]
             ],
             [
                 "INSERT INTO cert_holdings (id, document) VALUES (?, ?)",
@@ -508,13 +509,13 @@ async fn evidence_counts(
     machine: &RosterMachine,
     operation_id: &DeployName,
 ) -> Result<[i64; 6], String> {
-    let [machine, status, containers, cert_holdings, acme_http01] =
+    let [machine, status, endpoints, cert_holdings, acme_http01] =
         removal_evidence_counts(store, machine).await?;
     let operation = operation_count(store, operation_id).await?;
     Ok([
         machine,
         status,
-        containers,
+        endpoints,
         cert_holdings,
         acme_http01,
         operation,
@@ -530,7 +531,7 @@ async fn removal_evidence_counts(
         "SELECT \
          (SELECT COUNT(*) FROM machines WHERE id = '{machine_id}'), \
          (SELECT COUNT(*) FROM machine_status WHERE machine_id = '{machine_id}'), \
-         (SELECT COUNT(*) FROM containers WHERE machine_id = '{machine_id}'), \
+         (SELECT COUNT(*) FROM machine_endpoints WHERE id = '{machine_id}'), \
          (SELECT COUNT(*) FROM cert_holdings WHERE machine_id = '{machine_id}'), \
          (SELECT COUNT(*) FROM acme_http01 WHERE machine_id = '{machine_id}')"
     );
@@ -548,14 +549,14 @@ async fn removal_evidence_counts(
     let [
         ployz_core::corrosion::SqliteValue::Integer(machine),
         ployz_core::corrosion::SqliteValue::Integer(status),
-        ployz_core::corrosion::SqliteValue::Integer(containers),
+        ployz_core::corrosion::SqliteValue::Integer(endpoints),
         ployz_core::corrosion::SqliteValue::Integer(cert_holdings),
         ployz_core::corrosion::SqliteValue::Integer(acme_http01),
     ] = row.as_slice()
     else {
         return Err(format!("count query returned invalid row: {row:?}"));
     };
-    Ok([*machine, *status, *containers, *cert_holdings, *acme_http01])
+    Ok([*machine, *status, *endpoints, *cert_holdings, *acme_http01])
 }
 
 async fn operation_count(

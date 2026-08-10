@@ -17,7 +17,6 @@ use mesh_support::*;
 
 const NAMESPACE_ID: &str = "production";
 const OTHER_NAMESPACE_ID: &str = "staging";
-const SERVICE_ID: &str = "production/web";
 const ACTIVE_DEPLOY_ID: &str = "release-current";
 const INACTIVE_DEPLOY_ID: &str = "release-old";
 const STALE_PROBE_NAMESPACE_ID: &str = "darkness-probe";
@@ -48,13 +47,6 @@ const PROD_B: &str = "isolation-prod-b";
 const PROD_B_PEER: &str = "isolation-prod-b-peer";
 const OTHER_B: &str = "isolation-other-b";
 const FRESH_B: &str = "isolation-fresh-b";
-const ACTIVE_ROW_A: &str = "production/web/release-current/edge-a/1";
-const ACTIVE_ROW_B: &str = "production/web/release-current/edge-b/2";
-const PROD_PEER_ROW_A: &str = "production/web/release-old/edge-a/1";
-const PROD_PEER_ROW_B: &str = "production/web/release-old/edge-b/2";
-const OTHER_ROW_A: &str = "staging/web/release-old/edge-a/1";
-const OTHER_ROW_B: &str = "staging/web/release-old/edge-b/2";
-const FRESH_ROW_B: &str = "production/web/release-old/edge-b/3";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_machine_container_plane_converges_network_and_service_dns() {
@@ -145,7 +137,7 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     assert_inner_container_has_no_direct_attach(docker, machine_b, FRESH_B).await?;
 
     corrosion_transaction(docker, machine_a, &service_rows_transaction()?).await?;
-    wait_for_corrosion_row(docker, machine_b, "containers", ACTIVE_ROW_B).await?;
+    wait_for_machine_endpoint(docker, machine_b, MACHINE_B_ID, ACTIVE_IP_B).await?;
     let expected = [ACTIVE_IP_A, ACTIVE_IP_B];
     wait_for_dns_answers(docker, machine_a, "10.210.10.1", INTERNAL_NAME, &expected).await?;
     wait_for_dns_answers(docker, machine_b, "10.210.20.1", INTERNAL_NAME, &expected).await?;
@@ -183,8 +175,8 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     .await?;
 
     exercise_namespace_isolation(docker, machine_a, machine_b).await?;
-    remove_isolation_workload(docker, machine_b, FRESH_B, FRESH_ROW_B).await?;
-    wait_for_corrosion_row_absent(docker, machine_a, "containers", FRESH_ROW_B).await?;
+    remove_isolation_workload(docker, machine_b, FRESH_B).await?;
+    wait_for_machine_endpoint_absent(docker, machine_a, MACHINE_B_ID, FRESH_REMOTE_IP).await?;
     remove_isolation_containers(docker, machine_a, &[PROD_A, PROD_A_PEER, OTHER_A]).await?;
     remove_isolation_containers(docker, machine_b, &[PROD_B, PROD_B_PEER, OTHER_B]).await?;
     assert_stable_attachments(docker, machine_a, &attachments_before_a, &tc_before_a).await?;
@@ -196,8 +188,15 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     assert_corrosion_row_absent_now(docker, machine_b, "namespaces", STALE_PROBE_NAMESPACE_ID)
         .await?;
     wait_for_corrosion_row(docker, machine_a, "machines", MACHINE_B_ID).await?;
-    wait_for_corrosion_row(docker, machine_a, "containers", ACTIVE_ROW_B).await?;
-    assert_dns_answers(docker, machine_a, "10.210.10.1", INTERNAL_NAME, &expected).await?;
+    wait_for_machine_endpoint(docker, machine_a, MACHINE_B_ID, ACTIVE_IP_B).await?;
+    assert_dns_answers(
+        docker,
+        machine_a,
+        "10.210.10.1",
+        INTERNAL_NAME,
+        &[ACTIVE_IP_B],
+    )
+    .await?;
 
     let started_before = start_managed_nginx(docker, machine_a).await?;
     corrosion_transaction(
@@ -208,7 +207,14 @@ async fn exercise_container_plane(docker: &Docker, cluster: &DindCluster) -> Res
     .await?;
     wait_for_exact_endpoint_network(docker, machine_a, REPLACEMENT_SUBNET_A).await?;
     wait_for_container_restart(docker, machine_a, &started_before).await?;
-    wait_for_dns_answers(docker, machine_a, "10.210.30.1", INTERNAL_NAME, &expected).await?;
+    wait_for_dns_answers(
+        docker,
+        machine_a,
+        "10.210.30.1",
+        INTERNAL_NAME,
+        &[ACTIVE_IP_B],
+    )
+    .await?;
     assert_stable_attachments(docker, machine_a, &attachments_before_a, &tc_before_a).await?;
     Ok(())
 }
@@ -355,78 +361,53 @@ fn service_rows_transaction() -> Result<Value, String> {
         "cluster_id": CLUSTER_ID,
         "name": "production",
         "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
-        "written_at": "2026-08-05T10:01:00.000000000Z"
-    });
-    let service = json!({
-        "v": 1,
-        "cluster_id": CLUSTER_ID,
-        "namespace_id": NAMESPACE_ID,
-        "name": "web",
-        "image": "nginx:1.27-alpine",
-        "env_fingerprints": {},
-        "mode": "replicated",
-        "replicas": 2,
-        "pinned_machines": [],
-        "active_deploy": ACTIVE_DEPLOY_ID,
-        "previous_image": null,
-        "deployed_at": "2026-08-05T10:01:00.000000000Z",
-        "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
-        "written_at": "2026-08-05T10:01:00.000000000Z"
+        "written_at": "2026-08-05T10:01:00.000000000Z",
+        "services": {
+            "web": {
+                "image": "nginx:1.27-alpine",
+                "env_fingerprints": {},
+                "mode": "replicated",
+                "replicas": 2,
+                "pinned_machines": [],
+                "active_deploy": ACTIVE_DEPLOY_ID,
+                "previous_image": null,
+                "deployed_at": "2026-08-05T10:01:00.000000000Z"
+            }
+        }
     });
     let other_namespace = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "staging",
         "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
-        "written_at": "2026-08-05T10:01:00.000000000Z"
+        "written_at": "2026-08-05T10:01:00.000000000Z",
+        "services": {}
     });
-    let active_a = container_document(
-        PROD_A,
+    let endpoints_a = machine_endpoint_document(
         MACHINE_A_ID,
-        NAMESPACE_ID,
-        ACTIVE_IP_A,
-        ACTIVE_DEPLOY_ID,
-        1,
+        [
+            endpoint_document(NAMESPACE_ID, ACTIVE_IP_A, ACTIVE_DEPLOY_ID, 1),
+            endpoint_document(NAMESPACE_ID, SAME_NAMESPACE_IP_A, INACTIVE_DEPLOY_ID, 1),
+            endpoint_document(
+                OTHER_NAMESPACE_ID,
+                OTHER_NAMESPACE_IP_A,
+                INACTIVE_DEPLOY_ID,
+                1,
+            ),
+        ],
     );
-    let active_b = container_document(
-        PROD_B,
+    let endpoints_b = machine_endpoint_document(
         MACHINE_B_ID,
-        NAMESPACE_ID,
-        ACTIVE_IP_B,
-        ACTIVE_DEPLOY_ID,
-        2,
-    );
-    let prod_a_peer = container_document(
-        PROD_A_PEER,
-        MACHINE_A_ID,
-        NAMESPACE_ID,
-        SAME_NAMESPACE_IP_A,
-        INACTIVE_DEPLOY_ID,
-        1,
-    );
-    let prod_b_peer = container_document(
-        PROD_B_PEER,
-        MACHINE_B_ID,
-        NAMESPACE_ID,
-        SAME_NAMESPACE_IP_B,
-        INACTIVE_DEPLOY_ID,
-        2,
-    );
-    let other_a = container_document(
-        OTHER_A,
-        MACHINE_A_ID,
-        OTHER_NAMESPACE_ID,
-        OTHER_NAMESPACE_IP_A,
-        INACTIVE_DEPLOY_ID,
-        1,
-    );
-    let other_b = container_document(
-        OTHER_B,
-        MACHINE_B_ID,
-        OTHER_NAMESPACE_ID,
-        OTHER_NAMESPACE_IP_B,
-        INACTIVE_DEPLOY_ID,
-        2,
+        [
+            endpoint_document(NAMESPACE_ID, ACTIVE_IP_B, ACTIVE_DEPLOY_ID, 2),
+            endpoint_document(NAMESPACE_ID, SAME_NAMESPACE_IP_B, INACTIVE_DEPLOY_ID, 2),
+            endpoint_document(
+                OTHER_NAMESPACE_ID,
+                OTHER_NAMESPACE_IP_B,
+                INACTIVE_DEPLOY_ID,
+                2,
+            ),
+        ],
     );
     Ok(json!([
         [
@@ -438,49 +419,31 @@ fn service_rows_transaction() -> Result<Value, String> {
             [OTHER_NAMESPACE_ID, encode_document(&other_namespace)?]
         ],
         [
-            "INSERT INTO services (id, document) VALUES (?, ?)",
-            [SERVICE_ID, encode_document(&service)?]
+            "INSERT INTO machine_endpoints (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document = excluded.document",
+            [MACHINE_A_ID, encode_document(&endpoints_a)?]
         ],
         [
-            "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [ACTIVE_ROW_A, encode_document(&active_a)?]
-        ],
-        [
-            "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [ACTIVE_ROW_B, encode_document(&active_b)?]
-        ],
-        [
-            "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [PROD_PEER_ROW_A, encode_document(&prod_a_peer)?]
-        ],
-        [
-            "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [PROD_PEER_ROW_B, encode_document(&prod_b_peer)?]
-        ],
-        [
-            "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [OTHER_ROW_A, encode_document(&other_a)?]
-        ],
-        [
-            "INSERT INTO containers (id, document) VALUES (?, ?)",
-            [OTHER_ROW_B, encode_document(&other_b)?]
+            "INSERT INTO machine_endpoints (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document = excluded.document",
+            [MACHINE_B_ID, encode_document(&endpoints_b)?]
         ]
     ]))
 }
 
-fn container_document(
-    runtime_id: &str,
+fn machine_endpoint_document(
     machine_id: &str,
-    namespace_id: &str,
-    ip: &str,
-    deploy: &str,
-    replica: u16,
+    endpoints: impl IntoIterator<Item = Value>,
 ) -> Value {
     json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "runtime_id": runtime_id,
         "machine_id": machine_id,
+        "observed_at": "2026-08-05T10:01:00.000000000Z",
+        "endpoints": endpoints.into_iter().collect::<Vec<_>>()
+    })
+}
+
+fn endpoint_document(namespace_id: &str, ip: &str, deploy: &str, replica: u16) -> Value {
+    json!({
         "namespace_id": namespace_id,
         "service_name": "web",
         "replica_slot": {"kind": "replicated", "number": replica},
@@ -495,7 +458,8 @@ fn stale_probe_transaction() -> Result<Value, String> {
         "cluster_id": CLUSTER_ID,
         "name": "darkness-probe",
         "written_by": {"kind": "machine", "machine_id": MACHINE_A_ID},
-        "written_at": "2026-08-05T10:02:00.000000000Z"
+        "written_at": "2026-08-05T10:02:00.000000000Z",
+        "services": {}
     });
     Ok(json!([[
         "INSERT INTO namespaces (id, document) VALUES (?, ?)",
@@ -776,10 +740,18 @@ async fn start_isolation_workloads(
         ),
     ] {
         for (name, ip, dns) in workloads {
-            start_nginx(docker, machine, name, ip, dns).await?;
+            start_nginx(docker, machine, name, ip, dns, true).await?;
         }
     }
-    start_nginx(docker, machine_b, FRESH_B, FRESH_REMOTE_IP, "10.210.20.1").await
+    start_nginx(
+        docker,
+        machine_b,
+        FRESH_B,
+        FRESH_REMOTE_IP,
+        "10.210.20.1",
+        false,
+    )
+    .await
 }
 
 async fn start_nginx(
@@ -788,28 +760,40 @@ async fn start_nginx(
     name: &str,
     ip: &str,
     dns: &str,
+    managed: bool,
 ) -> Result<(), String> {
-    exec_ok(
-        docker,
-        machine,
-        &[
-            "docker",
-            "run",
-            "--detach",
-            "--name",
-            name,
-            "--network",
-            "ployz",
-            "--ip",
-            ip,
-            "--dns",
-            dns,
-            "--dns-search",
-            "production.internal",
-            "nginx:1.27-alpine",
-        ],
-    )
-    .await?;
+    let mut arguments = vec![
+        "docker".to_owned(),
+        "run".to_owned(),
+        "--detach".to_owned(),
+        "--name".to_owned(),
+        name.to_owned(),
+        "--network".to_owned(),
+        "ployz".to_owned(),
+        "--ip".to_owned(),
+        ip.to_owned(),
+        "--dns".to_owned(),
+        dns.to_owned(),
+        "--dns-search".to_owned(),
+        "production.internal".to_owned(),
+    ];
+    if managed {
+        let (namespace, deploy, replica) = managed_workload_identity(name)?;
+        for label in [
+            "plz.managed=true".to_owned(),
+            "plz.identity_schema=corrosion_v2".to_owned(),
+            format!("plz.namespace={namespace}"),
+            "plz.service=web".to_owned(),
+            format!("plz.deploy={deploy}"),
+            format!("plz.replica_slot={replica}"),
+        ] {
+            arguments.push("--label".to_owned());
+            arguments.push(label);
+        }
+    }
+    arguments.push("nginx:1.27-alpine".to_owned());
+    let refs = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    exec_ok(docker, machine, &refs).await?;
     wait_for_command(
         docker,
         machine,
@@ -826,6 +810,19 @@ async fn start_nginx(
         |outcome| outcome.success(),
     )
     .await
+}
+
+fn managed_workload_identity(name: &str) -> Result<(&'static str, &'static str, u16), String> {
+    match name {
+        PROD_A => Ok((NAMESPACE_ID, ACTIVE_DEPLOY_ID, 1)),
+        PROD_B => Ok((NAMESPACE_ID, ACTIVE_DEPLOY_ID, 2)),
+        PROD_A_PEER => Ok((NAMESPACE_ID, INACTIVE_DEPLOY_ID, 1)),
+        PROD_B_PEER => Ok((NAMESPACE_ID, INACTIVE_DEPLOY_ID, 2)),
+        OTHER_A => Ok((OTHER_NAMESPACE_ID, INACTIVE_DEPLOY_ID, 1)),
+        OTHER_B => Ok((OTHER_NAMESPACE_ID, INACTIVE_DEPLOY_ID, 2)),
+        FRESH_B => Ok((NAMESPACE_ID, INACTIVE_DEPLOY_ID, 3)),
+        _ => Err(format!("no managed endpoint identity for workload {name}")),
+    }
 }
 
 async fn assert_inner_container_has_no_direct_attach(
@@ -943,19 +940,19 @@ async fn exercise_namespace_isolation(
     machine_a: &DindMachine,
     machine_b: &DindMachine,
 ) -> Result<(), String> {
-    for id in [
-        ACTIVE_ROW_A,
-        ACTIVE_ROW_B,
-        PROD_PEER_ROW_A,
-        PROD_PEER_ROW_B,
-        OTHER_ROW_A,
-        OTHER_ROW_B,
+    for (machine_id, ip) in [
+        (MACHINE_A_ID, ACTIVE_IP_A),
+        (MACHINE_B_ID, ACTIVE_IP_B),
+        (MACHINE_A_ID, SAME_NAMESPACE_IP_A),
+        (MACHINE_B_ID, SAME_NAMESPACE_IP_B),
+        (MACHINE_A_ID, OTHER_NAMESPACE_IP_A),
+        (MACHINE_B_ID, OTHER_NAMESPACE_IP_B),
     ] {
-        wait_for_corrosion_row(docker, machine_a, "containers", id).await?;
-        wait_for_corrosion_row(docker, machine_b, "containers", id).await?;
+        wait_for_machine_endpoint(docker, machine_a, machine_id, ip).await?;
+        wait_for_machine_endpoint(docker, machine_b, machine_id, ip).await?;
     }
-    assert_corrosion_row_absent_now(docker, machine_a, "containers", FRESH_ROW_B).await?;
-    assert_corrosion_row_absent_now(docker, machine_b, "containers", FRESH_ROW_B).await?;
+    assert_machine_endpoint_absent_now(docker, machine_a, MACHINE_B_ID, FRESH_REMOTE_IP).await?;
+    assert_machine_endpoint_absent_now(docker, machine_b, MACHINE_B_ID, FRESH_REMOTE_IP).await?;
 
     for (machine, source, destination) in [
         (machine_a, PROD_A, SAME_NAMESPACE_IP_A),
@@ -1051,22 +1048,39 @@ async fn exercise_namespace_isolation(
         ));
     }
 
-    let fresh = container_document(
+    exec_ok(docker, machine_b, &["docker", "rm", "--force", FRESH_B]).await?;
+    start_nginx(
+        docker,
+        machine_b,
         FRESH_B,
-        MACHINE_B_ID,
-        NAMESPACE_ID,
         FRESH_REMOTE_IP,
-        INACTIVE_DEPLOY_ID,
-        3,
+        "10.210.20.1",
+        true,
+    )
+    .await?;
+    let endpoints_b = machine_endpoint_document(
+        MACHINE_B_ID,
+        [
+            endpoint_document(NAMESPACE_ID, ACTIVE_IP_B, ACTIVE_DEPLOY_ID, 2),
+            endpoint_document(NAMESPACE_ID, SAME_NAMESPACE_IP_B, INACTIVE_DEPLOY_ID, 2),
+            endpoint_document(
+                OTHER_NAMESPACE_ID,
+                OTHER_NAMESPACE_IP_B,
+                INACTIVE_DEPLOY_ID,
+                2,
+            ),
+            endpoint_document(NAMESPACE_ID, FRESH_REMOTE_IP, INACTIVE_DEPLOY_ID, 3),
+        ],
     );
     let transaction = json!([[
-        "INSERT INTO containers (id, document) VALUES (?, ?)",
-        [FRESH_ROW_B, encode_document(&fresh)?]
+        "INSERT INTO machine_endpoints (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document = excluded.document",
+        [MACHINE_B_ID, encode_document(&endpoints_b)?]
     ]]);
     let started = Instant::now();
     corrosion_transaction(docker, machine_b, &transaction).await?;
     let deadline = started + POLICY_CONVERGENCE_BUDGET;
-    wait_for_corrosion_row_before(docker, machine_a, "containers", FRESH_ROW_B, deadline).await?;
+    wait_for_machine_endpoint_before(docker, machine_a, MACHINE_B_ID, FRESH_REMOTE_IP, deadline)
+        .await?;
     wait_for_container_http_before(docker, machine_a, PROD_A, FRESH_REMOTE_IP, deadline).await?;
     wait_for_container_http_before(docker, machine_b, FRESH_B, ACTIVE_IP_A, deadline).await?;
     if started.elapsed() > POLICY_CONVERGENCE_BUDGET {
@@ -1240,39 +1254,111 @@ async fn assert_container_dns(
     }
 }
 
-async fn wait_for_corrosion_row_before(
+async fn wait_for_machine_endpoint(
     docker: &Docker,
     machine: &DindMachine,
-    table: &str,
-    id: &str,
+    machine_id: &str,
+    ip: &str,
+) -> Result<(), String> {
+    wait_for_machine_endpoint_before(
+        docker,
+        machine,
+        machine_id,
+        ip,
+        Instant::now() + Duration::from_secs(45),
+    )
+    .await
+}
+
+async fn wait_for_machine_endpoint_before(
+    docker: &Docker,
+    machine: &DindMachine,
+    machine_id: &str,
+    ip: &str,
     deadline: Instant,
 ) -> Result<(), String> {
-    let statement = json!([format!("SELECT id FROM {table} WHERE id = ?"), [id]]);
+    let statement = machine_endpoint_query(machine_id, ip);
     let command = corrosion_curl_command("v1/queries", &statement);
     let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
     let mut last = String::from("query was not attempted");
     while Instant::now() < deadline {
         match exec_in_container(docker, &machine.container_id, &refs).await {
-            Ok(outcome) if outcome.success() && outcome.stdout.contains(id) => return Ok(()),
+            Ok(outcome) if outcome.success() && outcome.stdout.contains(machine_id) => {
+                return Ok(());
+            }
             Ok(outcome) => last = render_failure(&outcome),
             Err(error) => last = error.to_string(),
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     Err(format!(
-        "{} did not gossip {table}/{id} before the policy deadline: {last}",
+        "{} did not gossip endpoint {machine_id}/{ip} before the policy deadline: {last}",
         machine.name
     ))
+}
+
+async fn wait_for_machine_endpoint_absent(
+    docker: &Docker,
+    machine: &DindMachine,
+    machine_id: &str,
+    ip: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut last = String::from("query was not attempted");
+    while Instant::now() < deadline {
+        match machine_endpoint_is_absent(docker, machine, machine_id, ip).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => last = "endpoint remains present".to_owned(),
+            Err(error) => last = error,
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!(
+        "{} did not remove endpoint {machine_id}/{ip}: {last}",
+        machine.name
+    ))
+}
+
+async fn assert_machine_endpoint_absent_now(
+    docker: &Docker,
+    machine: &DindMachine,
+    machine_id: &str,
+    ip: &str,
+) -> Result<(), String> {
+    if machine_endpoint_is_absent(docker, machine, machine_id, ip).await? {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} unexpectedly observed endpoint {machine_id}/{ip}",
+            machine.name
+        ))
+    }
+}
+
+async fn machine_endpoint_is_absent(
+    docker: &Docker,
+    machine: &DindMachine,
+    machine_id: &str,
+    ip: &str,
+) -> Result<bool, String> {
+    let command = corrosion_curl_command("v1/queries", &machine_endpoint_query(machine_id, ip));
+    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
+    let outcome = exec_ok(docker, machine, &refs).await?;
+    Ok(!outcome.stdout.contains(machine_id))
+}
+
+fn machine_endpoint_query(machine_id: &str, ip: &str) -> Value {
+    json!([
+        "SELECT id FROM machine_endpoints WHERE id = ? AND EXISTS (SELECT 1 FROM json_each(document, '$.endpoints') WHERE json_extract(value, '$.ip') = ?)",
+        [machine_id, ip]
+    ])
 }
 
 async fn remove_isolation_workload(
     docker: &Docker,
     machine: &DindMachine,
     container: &str,
-    row_key: &str,
 ) -> Result<(), String> {
-    let transaction = json!([["DELETE FROM containers WHERE id = ?", [row_key]]]);
-    corrosion_transaction(docker, machine, &transaction).await?;
     exec_ok(docker, machine, &["docker", "rm", "--force", container])
         .await
         .map(|_| ())

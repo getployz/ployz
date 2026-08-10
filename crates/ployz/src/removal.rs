@@ -4,8 +4,7 @@ use hyper::Method;
 use ployz_core::{
     NamedRemovalOutcome, PEER_REMOVE_ROUTE, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
     ROUTE_REMOVE_ROUTE, RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest,
-    SERVICE_REMOVE_ROW_ROUTE, ServiceRemoveRowRefusal, ServiceRemoveRowReply,
-    ServiceRemoveRowRequest,
+    SERVICE_REMOVE_ROUTE, ServiceRemoveRefusal, ServiceRemoveReply, ServiceRemoveRequest,
 };
 
 use crate::commands::{PeerCommand, RouteRemoveCommand, ServiceCommand};
@@ -39,10 +38,10 @@ pub async fn execute_service(command: ServiceCommand) -> Result<String, RemovalE
     let ServiceCommand::Remove(command) = command;
     let remote = OperatorRemote::load(command.target.as_ref())?;
     let reply = remote
-        .request_json_with_refusal::<_, ServiceRemoveRowReply, ServiceRemoveRowRefusal>(
+        .request_json_with_refusal::<_, ServiceRemoveReply, ServiceRemoveRefusal>(
             Method::POST,
-            SERVICE_REMOVE_ROW_ROUTE,
-            Some(&ServiceRemoveRowRequest {
+            SERVICE_REMOVE_ROUTE,
+            Some(&ServiceRemoveRequest {
                 namespace_name: command.namespace_name.clone(),
                 service_name: command.service_name.clone(),
             }),
@@ -99,16 +98,17 @@ fn peer_refusal(refusal: PeerRemoveRefusal) -> RemovalExecutionError {
     RemovalExecutionError::Refused { message }
 }
 
-fn service_refusal(refusal: ServiceRemoveRowRefusal) -> RemovalExecutionError {
+fn service_refusal(refusal: ServiceRemoveRefusal) -> RemovalExecutionError {
     let message = match refusal {
-        ServiceRemoveRowRefusal::NotFound {
+        ServiceRemoveRefusal::NotFound {
             namespace_name,
             service_name,
         } => format!("service {}/{} does not exist", namespace_name, service_name),
-        ServiceRemoveRowRefusal::StoredRowUnselectable { key } => format!(
-            "service row {key} exists but this binary cannot safely select it; no row was removed"
+        ServiceRemoveRefusal::NamespaceStoredRowUnselectable { namespace_name } => format!(
+            "namespace {} exists but its document is invalid; service removal was not attempted",
+            namespace_name.as_str()
         ),
-        ServiceRemoveRowRefusal::ConcurrentMutation {
+        ServiceRemoveRefusal::ConcurrentMutation {
             namespace_name,
             service_name,
         } => format!(

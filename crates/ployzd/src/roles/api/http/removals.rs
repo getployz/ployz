@@ -1,16 +1,17 @@
 //! Bounded, synchronous removal of one selected named row.
 
 use hyper::{Response, StatusCode};
-use ployz_core::corrosion::CorrosionTable;
+use ployz_core::corrosion::{CorrosionTable, OperatorWriteProvenance, Principal};
 use ployz_core::{
     NamedRemovalOutcome, PeerRemoveRefusal, PeerRemoveReply, PeerRemoveRequest,
     PeerRemoveSelection, RouteRemoveRefusal, RouteRemoveReply, RouteRemoveRequest,
-    RouteRemoveSelection, ServiceRemoveRowRefusal, ServiceRemoveRowReply, ServiceRemoveRowRequest,
-    ServiceRemoveRowSelection, V2Route, select_peer_removal, select_route_removal,
+    RouteRemoveSelection, ServiceRemoveRefusal, ServiceRemoveReply, ServiceRemoveRequest,
+    ServiceRemoveSelection, V2Route, select_peer_removal, select_route_removal,
     select_service_removal,
 };
 
-use super::mutations::{decode_request, typed_response};
+use super::mutations::{decode_request, now_timestamp, typed_response};
+use super::namespace_store::{NamespaceReplaceOutcome, NamespaceStore, NamespaceStoreError};
 use super::roster::corrosion_unavailable_refusal;
 use super::server::{ApiService, HttpBody, refusal_response};
 use super::store::{
@@ -21,6 +22,7 @@ use super::store::{
 pub(super) async fn handle_removal(
     service: &ApiService,
     route: V2Route,
+    principal: Principal,
     request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
     match route {
@@ -32,12 +34,11 @@ pub(super) async fn handle_removal(
             remove_peer(service, request).await
         }
         V2Route::ServiceRemove => {
-            let request = match decode_request::<ServiceRemoveRowRequest>(request.into_body()).await
-            {
+            let request = match decode_request::<ServiceRemoveRequest>(request.into_body()).await {
                 Ok(request) => request,
                 Err(response) => return response,
             };
-            remove_service(service, request).await
+            remove_service(service, principal, request).await
         }
         V2Route::RouteRemove => {
             let request = match decode_request::<RouteRemoveRequest>(request.into_body()).await {
@@ -119,48 +120,62 @@ async fn remove_peer(service: &ApiService, request: PeerRemoveRequest) -> Respon
 
 async fn remove_service(
     service: &ApiService,
-    request: ServiceRemoveRowRequest,
+    principal: Principal,
+    request: ServiceRemoveRequest,
 ) -> Response<HttpBody> {
-    let rows = match read_named_removal_rows(&service.corrosion, CorrosionTable::Services).await {
-        Ok(rows) => rows,
-        Err(error) => return store_failure("read services for removal", error),
+    let store = NamespaceStore::new(service.corrosion.clone(), service.cluster_id.clone());
+    let row = match store.raw_by_id(&request.namespace_name).await {
+        Ok(row) => row,
+        Err(error) => return namespace_store_failure("read namespace for service removal", error),
     };
-    match select_service_removal(&service.cluster_id, rows, &request) {
-        Ok(ServiceRemoveRowSelection::AlreadyAbsent { .. }) => typed_response(
+    let written_at = match now_timestamp() {
+        Ok(written_at) => written_at,
+        Err(()) => return refusal_response(corrosion_unavailable_refusal()),
+    };
+    match select_service_removal(
+        &service.cluster_id,
+        row,
+        &request,
+        OperatorWriteProvenance {
+            written_by: principal,
+            written_at,
+        },
+    ) {
+        Ok(ServiceRemoveSelection::AlreadyAbsent {
+            namespace_name,
+            service_name,
+        }) => typed_response(
             StatusCode::OK,
-            &ServiceRemoveRowReply {
-                namespace_name: request.namespace_name,
-                service_name: request.service_name,
+            &ServiceRemoveReply {
+                namespace_name,
+                service_name,
                 outcome: NamedRemovalOutcome::AlreadyAbsent,
             },
         ),
-        Ok(ServiceRemoveRowSelection::Delete {
-            key,
+        Ok(ServiceRemoveSelection::Replace {
+            namespace_name,
             stored_document,
-        }) => match delete_named_if_matches(
-            &service.corrosion,
-            CorrosionTable::Services,
-            &key,
-            stored_document,
-        )
-        .await
+            replacement_document,
+        }) => match store
+            .replace_if_matches(&namespace_name, &stored_document, &replacement_document)
+            .await
         {
-            Ok(ConditionalNamedDelete::Deleted) => typed_response(
+            Ok(NamespaceReplaceOutcome::Replaced) => typed_response(
                 StatusCode::OK,
-                &ServiceRemoveRowReply {
-                    namespace_name: request.namespace_name,
+                &ServiceRemoveReply {
+                    namespace_name,
                     service_name: request.service_name,
                     outcome: NamedRemovalOutcome::Removed,
                 },
             ),
-            Ok(ConditionalNamedDelete::ConcurrentMutation) => typed_response(
+            Ok(NamespaceReplaceOutcome::Changed) => typed_response(
                 StatusCode::CONFLICT,
-                &ServiceRemoveRowRefusal::ConcurrentMutation {
-                    namespace_name: request.namespace_name,
+                &ServiceRemoveRefusal::ConcurrentMutation {
+                    namespace_name,
                     service_name: request.service_name,
                 },
             ),
-            Err(error) => store_failure("delete service", error),
+            Err(error) => namespace_store_failure("replace namespace for service removal", error),
         },
         Err(refusal) => typed_response(service_refusal_status(&refusal), &refusal),
     }
@@ -216,11 +231,11 @@ fn peer_refusal_status(refusal: &PeerRemoveRefusal) -> StatusCode {
     }
 }
 
-fn service_refusal_status(refusal: &ServiceRemoveRowRefusal) -> StatusCode {
+fn service_refusal_status(refusal: &ServiceRemoveRefusal) -> StatusCode {
     match refusal {
-        ServiceRemoveRowRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
-        ServiceRemoveRowRefusal::StoredRowUnselectable { .. }
-        | ServiceRemoveRowRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
+        ServiceRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
+        ServiceRemoveRefusal::NamespaceStoredRowUnselectable { .. }
+        | ServiceRemoveRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
     }
 }
 
@@ -233,6 +248,11 @@ fn route_refusal_status(refusal: &RouteRemoveRefusal) -> StatusCode {
 }
 
 fn store_failure(action: &'static str, error: MutationStoreError) -> Response<HttpBody> {
+    tracing::warn!(%action, error = %error, "named removal could not reach durable Corrosion state");
+    refusal_response(corrosion_unavailable_refusal())
+}
+
+fn namespace_store_failure(action: &'static str, error: NamespaceStoreError) -> Response<HttpBody> {
     tracing::warn!(%action, error = %error, "named removal could not reach durable Corrosion state");
     refusal_response(corrosion_unavailable_refusal())
 }

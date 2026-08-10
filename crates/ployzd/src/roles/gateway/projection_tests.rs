@@ -3,14 +3,14 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 
 use ployz_core::corrosion::{
-    AutomaticHostnameMode, ClusterDocument, ContainerDocument, CorrosionDocumentVersion,
-    CorrosionServiceName, CorrosionTimestamp, GatewayProjectionInputKind, GatewayRouteAvailability,
+    AutomaticHostnameMode, ClusterDocument, CorrosionDocumentVersion, CorrosionServiceName,
+    CorrosionTimestamp, GatewayProjectionInputKind, GatewayRouteAvailability,
     GatewayRouteProjectionFailure, GatewayRouteProjectionOutcome, GatewayRouteUnavailableReason,
-    IngressMode, MachineDocument, MachineStorageIneligibleReason, MachineStorageSelection,
-    MachineStorageSelectionReason, MachineTransport, MeshProvider, OperationInitiator,
-    OperatorWriteProvenance, RouteBindingDocument, ServiceDocument, ServicePlacement,
-    ServiceReplicaCount, Sha256Hex, StorageMode, StoredRow, V2ManagedContainerIdentity,
-    managed_container_key,
+    IngressMode, MachineDocument, MachineEndpointDocument, MachineStorageIneligibleReason,
+    MachineStorageSelection, MachineStorageSelectionReason, MachineTransport, MeshProvider,
+    NamespaceDocument, OperationInitiator, OperatorWriteProvenance, PublishedService,
+    RouteBindingDocument, ServiceEndpoint, ServicePlacement, ServiceReplicaCount, Sha256Hex,
+    StorageMode, StoredRow,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ClusterName, CorrosionNamespaceName, DeployName, MachineName, PeerName};
@@ -31,14 +31,14 @@ const ROUTE_LOW: &str = "api.example.com";
 const ROUTE_HIGH: &str = "admin.example.com";
 
 #[test]
-fn direct_route_joins_only_exact_active_deploy_containers() {
+fn direct_route_joins_only_exact_active_deploy_endpoints() {
     let projection = project_gateway_rows(input(
-        vec![stored(SERVICE, &service(DEPLOY_GREEN))],
+        vec![stored(NAMESPACE, &namespace(DEPLOY_GREEN))],
         vec![stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE))],
         vec![
-            stored_container(&container(SERVICE, NAMESPACE, DEPLOY_BLUE, [10, 20, 0, 2])),
-            stored_container(&container(SERVICE, NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3])),
-            stored_container(&container(SERVICE, "staging", DEPLOY_GREEN, [10, 20, 0, 4])),
+            stored_endpoint(MACHINE, &endpoint(NAMESPACE, DEPLOY_BLUE, [10, 20, 0, 2])),
+            stored_endpoint(MACHINE, &endpoint(NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3])),
+            stored_endpoint(MACHINE, &endpoint("staging", DEPLOY_GREEN, [10, 20, 0, 4])),
         ],
     ));
 
@@ -48,7 +48,7 @@ fn direct_route_joins_only_exact_active_deploy_containers() {
     assert_eq!(
         route.upstreams,
         [GatewayUpstream {
-            container_key: "production/api/release-green/edge-a/global".to_owned(),
+            endpoint_key: "production/api/release-green/edge-a/global".to_owned(),
             machine_id: machine_id(),
             address: SocketAddr::from(([10, 20, 0, 3], 8080)),
         }]
@@ -58,20 +58,20 @@ fn direct_route_joins_only_exact_active_deploy_containers() {
 #[test]
 fn active_deploy_flip_replaces_the_whole_route_upstream_set() {
     let routes = vec![stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE))];
-    let containers = vec![
-        stored_container(&container(SERVICE, NAMESPACE, DEPLOY_BLUE, [10, 20, 0, 2])),
-        stored_container(&container(SERVICE, NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3])),
+    let endpoints = vec![
+        stored_endpoint(MACHINE, &endpoint(NAMESPACE, DEPLOY_BLUE, [10, 20, 0, 2])),
+        stored_endpoint(MACHINE, &endpoint(NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3])),
     ];
 
     let blue = project_gateway_rows(input(
-        vec![stored(SERVICE, &service(DEPLOY_BLUE))],
+        vec![stored(NAMESPACE, &namespace(DEPLOY_BLUE))],
         routes.clone(),
-        containers.clone(),
+        endpoints.clone(),
     ));
     let green = project_gateway_rows(input(
-        vec![stored(SERVICE, &service(DEPLOY_GREEN))],
+        vec![stored(NAMESPACE, &namespace(DEPLOY_GREEN))],
         routes,
-        containers,
+        endpoints,
     ));
 
     let [blue_route] = blue.projection.routes.as_slice() else {
@@ -87,11 +87,11 @@ fn active_deploy_flip_replaces_the_whole_route_upstream_set() {
         panic!("green route must contain exactly one upstream");
     };
     assert_eq!(
-        blue_upstream.container_key,
+        blue_upstream.endpoint_key,
         "production/api/release-blue/edge-a/global"
     );
     assert_eq!(
-        green_upstream.container_key,
+        green_upstream.endpoint_key,
         "production/api/release-green/edge-a/global"
     );
 }
@@ -101,7 +101,7 @@ fn every_valid_binding_has_an_outcome_and_unsupported_routes_are_not_served() {
     let mut higher = route_for_host(IngressMode::Direct, SERVICE, ROUTE_HIGH);
     higher.endpoint_port = RoutePort::try_new(9090).expect("port");
     let projection = project_gateway_rows(input(
-        vec![stored(SERVICE, &service(DEPLOY_GREEN))],
+        vec![stored(NAMESPACE, &namespace(DEPLOY_GREEN))],
         vec![
             stored(ROUTE_HIGH, &higher),
             stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE)),
@@ -110,12 +110,10 @@ fn every_valid_binding_has_an_outcome_and_unsupported_routes_are_not_served() {
                 &route_for_host(IngressMode::CloudflareTunnel, SERVICE, "tunnel.example.com"),
             ),
         ],
-        vec![stored_container(&container(
-            SERVICE,
-            NAMESPACE,
-            DEPLOY_GREEN,
-            [10, 20, 0, 3],
-        ))],
+        vec![stored_endpoint(
+            MACHINE,
+            &endpoint(NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3]),
+        )],
     ));
 
     assert_eq!(projection.projection.routes.len(), 2);
@@ -160,7 +158,7 @@ fn every_valid_binding_has_an_outcome_and_unsupported_routes_are_not_served() {
 #[test]
 fn accepted_route_without_an_exact_service_remains_known_but_empty() {
     let projection = project_gateway_rows(input(
-        vec![stored(SERVICE, &service(DEPLOY_GREEN))],
+        vec![stored(NAMESPACE, &namespace(DEPLOY_GREEN))],
         vec![stored(
             ROUTE_LOW,
             &route(IngressMode::Direct, "production/missing"),
@@ -190,23 +188,23 @@ fn malformed_foreign_and_newer_rows_are_ignored_tolerantly() {
     let mut foreign = route(IngressMode::Direct, SERVICE);
     foreign.cluster_id = ClusterName::try_new("other").expect("cluster");
     let projection = project_gateway_rows(input(
-        vec![StoredRow::new(SERVICE, "not json")],
+        vec![StoredRow::new(NAMESPACE, "not json")],
         vec![
             StoredRow::new(ROUTE_LOW, "{}"),
             stored(ROUTE_HIGH, &foreign),
         ],
-        vec![StoredRow::new("container", r#"{"v":2}"#)],
+        vec![StoredRow::new("machine", r#"{"v":2}"#)],
     ));
 
     assert!(projection.projection.routes.is_empty());
     assert!(projection.aggregate_failures.iter().any(|failure| {
-        failure.input == GatewayProjectionInputKind::Services && failure.rejected_rows == 1
+        failure.input == GatewayProjectionInputKind::Namespaces && failure.rejected_rows == 1
     }));
     assert!(projection.aggregate_failures.iter().any(|failure| {
         failure.input == GatewayProjectionInputKind::RouteBindings && failure.rejected_rows == 2
     }));
     assert!(projection.aggregate_failures.iter().any(|failure| {
-        failure.input == GatewayProjectionInputKind::Containers && failure.rejected_rows == 1
+        failure.input == GatewayProjectionInputKind::MachineEndpoints && failure.rejected_rows == 1
     }));
 }
 
@@ -215,14 +213,15 @@ fn upstreams_require_current_roster_identity_but_draining_is_serveable() {
     let foreign_machine = "other-node";
     let mut draining = machine();
     draining.lifecycle = MachineLifecycle::Draining;
-    let mut foreign_container = container(SERVICE, NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 4]);
-    foreign_container.machine_id = machine_id_for(foreign_machine);
     let mut input = input(
-        vec![stored(SERVICE, &service(DEPLOY_GREEN))],
+        vec![stored(NAMESPACE, &namespace(DEPLOY_GREEN))],
         vec![stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE))],
         vec![
-            stored_container(&container(SERVICE, NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3])),
-            stored_container(&foreign_container),
+            stored_endpoint(MACHINE, &endpoint(NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 3])),
+            stored_endpoint(
+                foreign_machine,
+                &endpoint(NAMESPACE, DEPLOY_GREEN, [10, 20, 0, 4]),
+            ),
         ],
     );
     input.machines = vec![stored(MACHINE, &draining)];
@@ -235,7 +234,7 @@ fn upstreams_require_current_roster_identity_but_draining_is_serveable() {
         panic!("only the draining current-roster machine must remain");
     };
     assert_eq!(
-        upstream.container_key,
+        upstream.endpoint_key,
         "production/api/release-green/edge-a/global"
     );
 }
@@ -243,7 +242,7 @@ fn upstreams_require_current_roster_identity_but_draining_is_serveable() {
 #[test]
 fn accepted_service_without_current_upstream_is_visibly_unavailable() {
     let projection = project_gateway_rows(input(
-        vec![stored(SERVICE, &service(DEPLOY_GREEN))],
+        vec![stored(NAMESPACE, &namespace(DEPLOY_GREEN))],
         vec![stored(ROUTE_LOW, &route(IngressMode::Direct, SERVICE))],
         Vec::new(),
     ));
@@ -262,17 +261,17 @@ fn accepted_service_without_current_upstream_is_visibly_unavailable() {
 }
 
 fn input(
-    services: Vec<StoredRow>,
+    namespaces: Vec<StoredRow>,
     route_bindings: Vec<StoredRow>,
-    containers: Vec<StoredRow>,
+    machine_endpoints: Vec<StoredRow>,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         cluster_id: cluster_id(),
         cluster: vec![stored(CLUSTER, &cluster())],
         machines: vec![stored(MACHINE, &machine())],
-        services,
+        namespaces,
         route_bindings,
-        containers,
+        machine_endpoints,
     }
 }
 
@@ -323,13 +322,21 @@ fn stored<T: serde::Serialize>(key: &str, value: &T) -> StoredRow {
     )
 }
 
-fn service(active_deploy: &str) -> ServiceDocument {
-    ServiceDocument {
+fn namespace(active_deploy: &str) -> NamespaceDocument {
+    NamespaceDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: cluster_id(),
         provenance: provenance(),
-        namespace_id: namespace_id(NAMESPACE),
-        name: CorrosionServiceName::try_new("api").expect("service name"),
+        name: namespace_id(NAMESPACE),
+        services: BTreeMap::from([(
+            CorrosionServiceName::try_new("api").expect("service name"),
+            published_service(active_deploy),
+        )]),
+    }
+}
+
+fn published_service(active_deploy: &str) -> PublishedService {
+    PublishedService {
         image: ImageReference::try_new("ghcr.io/example/api:latest").expect("image"),
         env_fingerprints: BTreeMap::<String, Sha256Hex>::new(),
         placement: ServicePlacement::Replicated {
@@ -361,18 +368,8 @@ fn route_for_host(mode: IngressMode, service_key: &str, hostname: &str) -> Route
     }
 }
 
-fn container(
-    _service_key: &str,
-    namespace_id_value: &str,
-    deploy: &str,
-    ip: [u8; 4],
-) -> ContainerDocument {
-    ContainerDocument {
-        v: CorrosionDocumentVersion::V1,
-        cluster_id: cluster_id(),
-        runtime_id: ployz_core::ids::ContainerId::try_new(format!("docker-{}", ip[3]))
-            .expect("container id"),
-        machine_id: machine_id(),
+fn endpoint(namespace_id_value: &str, deploy: &str, ip: [u8; 4]) -> ServiceEndpoint {
+    ServiceEndpoint {
         namespace_id: namespace_id(namespace_id_value),
         service_name: CorrosionServiceName::try_new("api").expect("service"),
         replica_slot: ployz_core::deploy::ReplicaSlot::Global,
@@ -381,17 +378,15 @@ fn container(
     }
 }
 
-fn stored_container(document: &ContainerDocument) -> StoredRow {
-    let identity = V2ManagedContainerIdentity {
-        namespace_id: document.namespace_id.clone(),
-        service_name: document.service_name.clone(),
-        operation_id: document.deploy.clone(),
-        replica_slot: document.replica_slot,
+fn stored_endpoint(machine: &str, endpoint: &ServiceEndpoint) -> StoredRow {
+    let document = MachineEndpointDocument {
+        v: CorrosionDocumentVersion::V1,
+        cluster_id: cluster_id(),
+        machine_id: machine_id_for(machine),
+        observed_at: timestamp(),
+        endpoints: vec![endpoint.clone()],
     };
-    stored(
-        &managed_container_key(&identity, &document.machine_id),
-        document,
-    )
+    stored(machine, &document)
 }
 
 fn cluster_id() -> ClusterName {

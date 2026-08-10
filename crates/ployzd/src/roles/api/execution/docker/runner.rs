@@ -977,7 +977,7 @@ fn docker_container_state(
     }
 }
 
-/// Storage identity of a row-scoped v2 named volume on the local Docker host.
+/// Storage identity of a namespace-scoped v2 named volume on the local Docker host.
 fn v2_volume_storage_name(
     namespace_id: &CorrosionNamespaceName,
     volume_name: &VolumeName,

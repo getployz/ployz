@@ -34,9 +34,9 @@ use super::server::{
     read_bounded_body, refusal_response,
 };
 use super::store::{
-    MutationStoreError, delete_token, insert_token, read_accepted_roster, read_machine, read_token,
-    read_tokens, remove_machine_and_sweep, token_name_is_occupied,
-    update_wireguard_endpoint_if_matches,
+    ConditionalNamedDelete, MutationStoreError, delete_token_if_matches, insert_token,
+    read_accepted_roster, read_machine, read_token, read_tokens, remove_machine_and_sweep,
+    token_name_is_occupied, update_wireguard_endpoint_if_matches,
 };
 
 const MAX_MUTATION_REQUEST_BYTES: usize = 64 * 1024;
@@ -149,6 +149,7 @@ async fn namespace_create(
             written_at,
         },
         name: request.namespace_name,
+        services: std::collections::BTreeMap::new(),
     };
     let store = NamespaceStore::new(service.corrosion.clone(), service.cluster_id.clone());
     match store.create(&namespace_id, &document).await {
@@ -297,27 +298,31 @@ async fn token_list(service: &ApiService, request: TokenListRequest) -> Response
 }
 
 async fn token_revoke(service: &ApiService, request: TokenRevokeRequest) -> Response<HttpBody> {
-    match read_token(&service.corrosion, &service.cluster_id, &request.token_id).await {
-        Ok(Some(_)) => {}
+    let token = match read_token(&service.corrosion, &service.cluster_id, &request.token_id).await {
+        Ok(Some(token)) => token,
         Ok(None) => {
-            return typed_response(
-                StatusCode::NOT_FOUND,
-                &TokenRevokeRefusal::NotFound {
-                    token_id: request.token_id,
-                },
-            );
+            return token_revoke_refusal_response(TokenRevokeRefusal::NotFound {
+                token_id: request.token_id,
+            });
         }
         Err(error) => return store_failure("read token for revocation", error),
+    };
+    match delete_token_if_matches(&service.corrosion, &request.token_id, token.stored_document)
+        .await
+    {
+        Ok(ConditionalNamedDelete::Deleted) => typed_response(
+            StatusCode::OK,
+            &TokenRevokeReply {
+                token_id: request.token_id,
+            },
+        ),
+        Ok(ConditionalNamedDelete::ConcurrentMutation) => {
+            token_revoke_refusal_response(TokenRevokeRefusal::ConcurrentMutation {
+                token_id: request.token_id,
+            })
+        }
+        Err(error) => store_failure("revoke token", error),
     }
-    if let Err(error) = delete_token(&service.corrosion, &request.token_id).await {
-        return store_failure("revoke token", error);
-    }
-    typed_response(
-        StatusCode::OK,
-        &TokenRevokeReply {
-            token_id: request.token_id,
-        },
-    )
 }
 
 async fn machine_endpoint_set(
@@ -389,22 +394,32 @@ async fn machine_remove(service: &ApiService, request: MachineRemoveRequest) -> 
         Ok(roster) => roster,
         Err(error) => return store_failure("read roster for machine removal", error),
     };
+    let candidates = roster.machine_removal_candidates;
     let reply = match machine_removal_reply(
         &request,
-        roster
-            .machine_removal_candidates
-            .into_iter()
-            .map(|machine| (machine.id, machine.name)),
+        candidates
+            .iter()
+            .map(|machine| (machine.id.clone(), machine.name.clone())),
     ) {
         Ok(reply) => reply,
         Err(refusal) => return machine_remove_refusal_response(refusal),
     };
-    if let MachineRemoveReply::Removed { machine_name } = &reply
-        && let Err(error) = remove_machine_and_sweep(&service.corrosion, machine_name).await
+    let MachineRemoveReply::Removed { machine_name } = &reply;
+    let observed = candidates
+        .into_iter()
+        .find(|machine| &machine.id == machine_name)
+        .expect("selected machine removal retains its observed row");
+    match remove_machine_and_sweep(&service.corrosion, machine_name, &observed.stored_document)
+        .await
     {
-        return store_failure("fence machine and sweep testimony", error);
+        Ok(ConditionalNamedDelete::Deleted) => typed_response(StatusCode::OK, &reply),
+        Ok(ConditionalNamedDelete::ConcurrentMutation) => {
+            machine_remove_refusal_response(MachineRemoveRefusal::ConcurrentMutation {
+                machine_name: machine_name.clone(),
+            })
+        }
+        Err(error) => store_failure("fence machine and sweep testimony", error),
     }
-    typed_response(StatusCode::OK, &reply)
 }
 
 fn machine_removal_reply(
@@ -427,7 +442,18 @@ fn endpoint_refusal_response(refusal: MachineEndpointSetRefusal) -> Response<Htt
 }
 
 fn machine_remove_refusal_response(refusal: MachineRemoveRefusal) -> Response<HttpBody> {
-    let status = StatusCode::NOT_FOUND;
+    let status = match &refusal {
+        MachineRemoveRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
+        MachineRemoveRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
+    };
+    typed_response(status, &refusal)
+}
+
+fn token_revoke_refusal_response(refusal: TokenRevokeRefusal) -> Response<HttpBody> {
+    let status = match &refusal {
+        TokenRevokeRefusal::NotFound { .. } => StatusCode::NOT_FOUND,
+        TokenRevokeRefusal::ConcurrentMutation { .. } => StatusCode::CONFLICT,
+    };
     typed_response(status, &refusal)
 }
 
@@ -513,6 +539,8 @@ fn operation_store_failure(action: &'static str, error: NamespaceStoreError) -> 
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::ids::TokenName;
+
     use super::*;
 
     #[test]
@@ -538,6 +566,30 @@ mod tests {
             })
             .status(),
             StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            machine_remove_refusal_response(MachineRemoveRefusal::ConcurrentMutation {
+                machine_name,
+            })
+            .status(),
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[test]
+    fn token_revoke_refusals_have_stable_http_statuses() {
+        let token_id = TokenName::try_new("bootstrap").expect("token id");
+        assert_eq!(
+            token_revoke_refusal_response(TokenRevokeRefusal::NotFound {
+                token_id: token_id.clone(),
+            })
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            token_revoke_refusal_response(TokenRevokeRefusal::ConcurrentMutation { token_id })
+                .status(),
+            StatusCode::CONFLICT
         );
     }
 

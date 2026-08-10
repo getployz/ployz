@@ -21,7 +21,7 @@ use ployz_core::{
     DeployServiceRequest, DeployServices, FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES,
     KnownApiFeature, LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection,
     LensSnapshot, LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError,
-    NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, RequestedPins, RequestedPlacement,
+    NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, PinnedMachineNames, RequestedPlacement,
     ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
     ServiceLogsRequest, V2Method, V2Route, VERSION_ROUTE, lens_route, lens_watch_route,
     service_logs_follow_route, service_logs_tail_route,
@@ -601,26 +601,12 @@ fn requested_placement_makes_host_ports_unrepresentable_off_global() {
     assert_eq!(
         replicated,
         RequestedPlacement::Replicated {
-            replicas: Some(ServiceReplicaCount::try_new(2).expect("fixture replica count")),
+            replicas: ServiceReplicaCount::try_new(2).expect("fixture replica count"),
         }
     );
-    let mode_only: RequestedPlacement = serde_json::from_value(json!({ "mode": "replicated" }))
-        .expect("count-free replicated placement deserializes");
-    assert_eq!(
-        mode_only,
-        RequestedPlacement::Replicated { replicas: None },
-        "a bare mode change keeps the incumbent's replica count"
-    );
-    let count_only: RequestedPlacement = serde_json::from_value(json!({
-        "mode": "replicas",
-        "replicas": 4
-    }))
-    .expect("mode-preserving replica intent deserializes");
-    assert_eq!(
-        count_only,
-        RequestedPlacement::Replicas {
-            replicas: ServiceReplicaCount::try_new(4).expect("fixture replica count"),
-        }
+    assert!(
+        serde_json::from_value::<RequestedPlacement>(json!({ "mode": "replicated" })).is_err(),
+        "an explicit replicated placement names its count; omit placement for the default"
     );
     assert!(
         serde_json::from_value::<RequestedPlacement>(json!({
@@ -680,30 +666,18 @@ fn host_port_sets_refuse_duplicates_per_protocol_and_allow_tcp_udp_reuse() {
 }
 
 #[test]
-fn requested_pins_require_at_least_one_machine_name_or_the_any_clearer() {
-    let pins: RequestedPins = serde_json::from_value(json!({
-        "kind": "machines",
-        "names": ["edge-a", "edge-b"]
-    }))
-    .expect("named pins deserialize");
-    let RequestedPins::Machines { names } = &pins else {
-        panic!("named pins expected");
-    };
-    assert_eq!(names.iter().count(), 2);
+fn requested_pins_require_at_least_one_machine_name() {
+    let pins: PinnedMachineNames =
+        serde_json::from_value(json!(["edge-a", "edge-b"])).expect("named pins deserialize");
+    assert_eq!(pins.iter().count(), 2);
     assert!(
-        serde_json::from_value::<RequestedPins>(json!({ "kind": "machines", "names": [] }))
-            .is_err(),
-        "an empty pin set is expressed as `any`, never an empty list"
-    );
-    assert_eq!(
-        serde_json::from_value::<RequestedPins>(json!({ "kind": "any" }))
-            .expect("any deserializes"),
-        RequestedPins::Any
+        serde_json::from_value::<PinnedMachineNames>(json!([])).is_err(),
+        "an empty pin set is expressed by omitting machines, never an empty list"
     );
 }
 
 #[test]
-fn deploy_requests_without_placement_or_pins_inherit_by_omission() {
+fn deploy_requests_may_omit_placement_and_pins_for_fixed_defaults() {
     let request: DeployRequest = serde_json::from_value(json!({
         "namespace_name": "payments",
         "deploy_name": "release-1",

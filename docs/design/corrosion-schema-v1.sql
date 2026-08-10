@@ -5,7 +5,8 @@
 -- `cluster_id`; authority documents also carry `written_by` and `written_at`.
 -- There are no generated Ployz ids, name-claim indexes, shadow rows, or
 -- backwards-compatibility document shapes. Runtime-owned random handles such
--- as Docker container ids live in documents as evidence, never as row keys.
+-- as Docker container ids stay private to the owning machine and never enter
+-- a shared row or RPC contract.
 
 -- Operator authority -------------------------------------------------------
 
@@ -36,21 +37,12 @@ CREATE TABLE tokens (
     document TEXT NOT NULL DEFAULT '{}'
 );
 
--- PK = canonical namespace name.
+-- PK = canonical namespace name. Its document carries the complete name-keyed
+-- service intent published atomically by one namespace deploy.
 CREATE TABLE namespaces (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}'
 );
-
--- PK = "<namespace>/<service>". A namespace deploy replaces the complete set
--- of service rows for that namespace in one transaction.
-CREATE TABLE services (
-    id TEXT NOT NULL PRIMARY KEY,
-    document TEXT NOT NULL DEFAULT '{}',
-    namespace_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.namespace_id')) VIRTUAL,
-    name TEXT GENERATED ALWAYS AS (json_extract(document, '$.name')) VIRTUAL
-);
-CREATE INDEX services_namespace_id ON services (namespace_id);
 
 -- PK = canonical external hostname. A binding points directly at one named
 -- service inside one namespace.
@@ -71,24 +63,16 @@ CREATE TABLE controller (
     document TEXT NOT NULL DEFAULT '{}'
 );
 
--- Controller-authored serving state ---------------------------------------
+-- Machine authority --------------------------------------------------------
 
--- PK = "<namespace>/<service>/<deploy>/<machine>/<slot>". `runtime_id` in the
--- document is Docker-owned evidence used for inspection, logs, and retirement.
-CREATE TABLE containers (
+-- PK = canonical machine name. Each machine replaces its complete routable
+-- endpoint testimony from local Docker reality. Runtime handles never enter
+-- the shared projection.
+CREATE TABLE machine_endpoints (
     id TEXT NOT NULL PRIMARY KEY,
     document TEXT NOT NULL DEFAULT '{}',
-    machine_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.machine_id')) VIRTUAL,
-    namespace_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.namespace_id')) VIRTUAL,
-    service_name TEXT GENERATED ALWAYS AS (json_extract(document, '$.service_name')) VIRTUAL,
-    deploy TEXT GENERATED ALWAYS AS (json_extract(document, '$.deploy')) VIRTUAL
+    observed_at TEXT GENERATED ALWAYS AS (json_extract(document, '$.observed_at')) VIRTUAL
 );
-CREATE INDEX containers_machine_id ON containers (machine_id);
-CREATE INDEX containers_namespace_id ON containers (namespace_id);
-CREATE INDEX containers_service ON containers (namespace_id, service_name);
-CREATE INDEX containers_deploy ON containers (deploy);
-
--- Machine authority --------------------------------------------------------
 
 -- PK = canonical machine name. This is testimony, never stored liveness.
 CREATE TABLE machine_status (

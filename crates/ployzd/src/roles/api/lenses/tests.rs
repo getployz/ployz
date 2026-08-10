@@ -296,8 +296,8 @@ impl FakeSubscription {
         let id = match input {
             LensInput::Cluster => "a2f5d373-8de3-4900-89bd-b2db4af843ef",
             LensInput::Machines => "b2f5d373-8de3-4900-89bd-b2db4af843ef",
-            LensInput::Services => "c2f5d373-8de3-4900-89bd-b2db4af843ef",
-            LensInput::Containers => "d2f5d373-8de3-4900-89bd-b2db4af843ef",
+            LensInput::Namespaces => "c2f5d373-8de3-4900-89bd-b2db4af843ef",
+            LensInput::Endpoints => "d2f5d373-8de3-4900-89bd-b2db4af843ef",
             LensInput::MachineStatus => "e2f5d373-8de3-4900-89bd-b2db4af843ef",
             LensInput::Operations => "f2f5d373-8de3-4900-89bd-b2db4af843ef",
         };
@@ -437,23 +437,25 @@ fn machine_row(id: &str, provider: &str) -> StoredRow {
 
 fn service_row(name: &str) -> StoredRow {
     stored(
-        &format!("{NAMESPACE}/{name}"),
+        NAMESPACE,
         json!({
             "v": 1,
             "cluster_id": CLUSTER,
             "written_by": { "kind": "peer", "peer_id": PEER },
             "written_at": "2026-08-04T10:00:00Z",
-            "namespace_id": NAMESPACE,
-            "name": name,
-            "image": "ghcr.io/acme/api:2026-08-04",
-            "env_fingerprints": {},
-            "mode": "replicated",
-            "replicas": 1,
-            "pinned_machines": [],
-            "active_deploy": OPERATION,
-            "previous_image": null,
-            "deployed_at": "2026-08-04T10:01:00Z",
-            "operation_id": OPERATION
+            "name": NAMESPACE,
+            "services": {
+                (name): {
+                    "image": "ghcr.io/acme/api:2026-08-04",
+                    "env_fingerprints": {},
+                    "mode": "replicated",
+                    "replicas": 1,
+                    "pinned_machines": [],
+                    "active_deploy": OPERATION,
+                    "previous_image": null,
+                    "deployed_at": "2026-08-04T10:01:00Z"
+                }
+            }
         }),
     )
 }
@@ -482,9 +484,12 @@ fn service_name(snapshot: &LensSnapshot) -> &str {
         panic!("expected services snapshot")
     };
     let [row] = rows.as_slice() else {
-        panic!("expected one service row")
+        panic!("expected one named service")
     };
-    &row.document.name
+    row.key
+        .rsplit('/')
+        .next()
+        .expect("service lens row has a natural composite key")
 }
 
 async fn assert_no_cell_change(
@@ -504,11 +509,11 @@ async fn first_state_is_ok_and_unchanged_invalidations_are_silent() {
     let store = Arc::new(FakeStore::new());
     let feed = FakeFeed::snapshot(ChangeId::new(0));
     store
-        .queue_subscription(LensInput::Services, Arc::clone(&feed))
+        .queue_subscription(LensInput::Namespaces, Arc::clone(&feed))
         .await;
     for name in ["before", "after", "after"] {
         store
-            .queue_query_rows(LensInput::Services, vec![service_row(name)])
+            .queue_query_rows(LensInput::Namespaces, vec![service_row(name)])
             .await;
     }
 
@@ -533,7 +538,7 @@ async fn first_state_is_ok_and_unchanged_invalidations_are_silent() {
 
     feed.push(FakeStreamEvent::Invalidation(ChangeId::new(2)))
         .await;
-    store.wait_for_queries(LensInput::Services, 3).await;
+    store.wait_for_queries(LensInput::Namespaces, 3).await;
     assert_no_cell_change(&mut receiver).await;
     watch.shutdown().await;
 }
@@ -545,17 +550,17 @@ async fn unchanged_resume_is_silent_and_validated_recovery_resets_its_budget() {
     let resumed_feed = FakeFeed::empty();
     let reset_feed = FakeFeed::snapshot(ChangeId::new(9));
     store
-        .queue_subscription(LensInput::Services, Arc::clone(&initial_feed))
+        .queue_subscription(LensInput::Namespaces, Arc::clone(&initial_feed))
         .await;
     store
-        .queue_subscription(LensInput::Services, Arc::clone(&reset_feed))
+        .queue_subscription(LensInput::Namespaces, Arc::clone(&reset_feed))
         .await;
     store
-        .queue_resume(LensInput::Services, Arc::clone(&resumed_feed))
+        .queue_resume(LensInput::Namespaces, Arc::clone(&resumed_feed))
         .await;
     for name in ["initial", "initial", "reset"] {
         store
-            .queue_query_rows(LensInput::Services, vec![service_row(name)])
+            .queue_query_rows(LensInput::Namespaces, vec![service_row(name)])
             .await;
     }
 
@@ -571,13 +576,13 @@ async fn unchanged_resume_is_silent_and_validated_recovery_resets_its_budget() {
     initial_feed
         .fail(CorrosionClientError::SubscriptionEnded)
         .await;
-    store.wait_for_queries(LensInput::Services, 2).await;
+    store.wait_for_queries(LensInput::Namespaces, 2).await;
     assert_no_cell_change(&mut receiver).await;
     assert!(matches!(
         store.calls().await.as_slice(),
         calls if calls.iter().any(|call| matches!(
             call,
-            FakeCall::Resume { input: LensInput::Services, cursor }
+            FakeCall::Resume { input: LensInput::Namespaces, cursor }
                 if *cursor == ChangeId::new(4)
         ))
     ));
@@ -596,7 +601,7 @@ async fn unchanged_resume_is_silent_and_validated_recovery_resets_its_budget() {
     assert_eq!(
         calls
             .iter()
-            .filter(|call| matches!(call, FakeCall::Subscribe(LensInput::Services)))
+            .filter(|call| matches!(call, FakeCall::Subscribe(LensInput::Namespaces)))
             .count(),
         2
     );
@@ -608,19 +613,19 @@ async fn exhausted_recovery_publishes_a_terminal_state_then_reports_lifecycle_fa
     let store = Arc::new(FakeStore::new());
     let feed = FakeFeed::snapshot(ChangeId::new(0));
     store
-        .queue_subscription(LensInput::Services, Arc::clone(&feed))
+        .queue_subscription(LensInput::Namespaces, Arc::clone(&feed))
         .await;
     store
-        .queue_resume(LensInput::Services, FakeFeed::empty())
+        .queue_resume(LensInput::Namespaces, FakeFeed::empty())
         .await;
     store
-        .queue_resume(LensInput::Services, FakeFeed::empty())
+        .queue_resume(LensInput::Namespaces, FakeFeed::empty())
         .await;
     store
-        .queue_query_rows(LensInput::Services, vec![service_row("initial")])
+        .queue_query_rows(LensInput::Namespaces, vec![service_row("initial")])
         .await;
     for _ in 0..3 {
-        store.queue_query_pending(LensInput::Services).await;
+        store.queue_query_pending(LensInput::Namespaces).await;
     }
 
     let (lifecycle_sender, mut lifecycle_failures) = mpsc::unbounded_channel();
@@ -652,14 +657,14 @@ async fn exhausted_recovery_publishes_a_terminal_state_then_reports_lifecycle_fa
             .filter(|call| matches!(
                 call,
                 FakeCall::Resume {
-                    input: LensInput::Services,
+                    input: LensInput::Namespaces,
                     ..
                 }
             ))
             .count(),
         2
     );
-    assert_eq!(store.query_count(LensInput::Services).await, 4);
+    assert_eq!(store.query_count(LensInput::Namespaces).await, 4);
     watch.shutdown().await;
 }
 
@@ -743,7 +748,7 @@ async fn machine_inputs_open_together_and_accept_either_snapshot_order() {
 async fn initial_snapshot_exhaustion_publishes_terminal_then_reports_lifecycle_failure() {
     let store = Arc::new(FakeStore::new());
     store
-        .queue_subscription(LensInput::Services, FakeFeed::empty())
+        .queue_subscription(LensInput::Namespaces, FakeFeed::empty())
         .await;
 
     let (lifecycle_sender, mut lifecycle_failures) = mpsc::unbounded_channel();
@@ -772,10 +777,10 @@ async fn controlled_shutdown_during_recovery_backoff_does_not_report_lifecycle_f
     let store = Arc::new(FakeStore::new());
     let feed = FakeFeed::snapshot(ChangeId::new(0));
     store
-        .queue_subscription(LensInput::Services, Arc::clone(&feed))
+        .queue_subscription(LensInput::Namespaces, Arc::clone(&feed))
         .await;
     store
-        .queue_query_rows(LensInput::Services, vec![service_row("initial")])
+        .queue_query_rows(LensInput::Namespaces, vec![service_row("initial")])
         .await;
     let recovery = LensRecoveryPolicy::try_new(
         NonZeroU32::new(1).expect("one recovery attempt"),
@@ -794,7 +799,7 @@ async fn controlled_shutdown_during_recovery_backoff_does_not_report_lifecycle_f
     let _ = next_cell(&mut receiver).await.expect("initial state");
 
     feed.fail(CorrosionClientError::SubscriptionEnded).await;
-    store.wait_for_resumes(LensInput::Services, 1).await;
+    store.wait_for_resumes(LensInput::Namespaces, 1).await;
     tokio::time::timeout(Duration::from_millis(100), watch.shutdown())
         .await
         .expect("controlled shutdown interrupts recovery backoff");
@@ -810,10 +815,10 @@ async fn controlled_shutdown_during_recovery_backoff_does_not_report_lifecycle_f
 async fn row_cap_is_passed_through_the_lens_query_seam() {
     let store = Arc::new(FakeStore::new());
     store
-        .queue_subscription(LensInput::Services, FakeFeed::snapshot(ChangeId::new(0)))
+        .queue_subscription(LensInput::Namespaces, FakeFeed::snapshot(ChangeId::new(0)))
         .await;
     store
-        .queue_query_rows(LensInput::Services, vec![service_row("initial")])
+        .queue_query_rows(LensInput::Namespaces, vec![service_row("initial")])
         .await;
 
     let watch = start_lens_with_store(
@@ -827,7 +832,7 @@ async fn row_cap_is_passed_through_the_lens_query_seam() {
     assert!(store.calls().await.iter().any(|call| matches!(
         call,
         FakeCall::Query {
-            input: LensInput::Services,
+            input: LensInput::Namespaces,
             max_rows: 1
         }
     )));
@@ -839,11 +844,11 @@ async fn latest_complete_state_coalesces_for_a_slow_downstream_receiver() {
     let store = Arc::new(FakeStore::new());
     let feed = FakeFeed::snapshot(ChangeId::new(0));
     store
-        .queue_subscription(LensInput::Services, Arc::clone(&feed))
+        .queue_subscription(LensInput::Namespaces, Arc::clone(&feed))
         .await;
     for name in ["initial", "first", "latest"] {
         store
-            .queue_query_rows(LensInput::Services, vec![service_row(name)])
+            .queue_query_rows(LensInput::Namespaces, vec![service_row(name)])
             .await;
     }
 
@@ -859,7 +864,7 @@ async fn latest_complete_state_coalesces_for_a_slow_downstream_receiver() {
         .await;
     feed.push(FakeStreamEvent::Invalidation(ChangeId::new(2)))
         .await;
-    store.wait_for_queries(LensInput::Services, 3).await;
+    store.wait_for_queries(LensInput::Namespaces, 3).await;
 
     let Some(Ok(snapshot)) = receiver.borrow_and_update().clone() else {
         panic!("latest successful lens state is present")
@@ -872,10 +877,10 @@ async fn latest_complete_state_coalesces_for_a_slow_downstream_receiver() {
 async fn shutdown_cancels_an_idle_subscription_wait() {
     let store = Arc::new(FakeStore::new());
     store
-        .queue_subscription(LensInput::Services, FakeFeed::snapshot(ChangeId::new(0)))
+        .queue_subscription(LensInput::Namespaces, FakeFeed::snapshot(ChangeId::new(0)))
         .await;
     store
-        .queue_query_rows(LensInput::Services, vec![service_row("initial")])
+        .queue_query_rows(LensInput::Namespaces, vec![service_row("initial")])
         .await;
 
     let watch = start_lens_with_store(

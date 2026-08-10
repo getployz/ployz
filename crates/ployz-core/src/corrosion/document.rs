@@ -12,7 +12,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::deploy::{EnvValue, ImageReference, ReplicaSlot};
-use crate::ids::{ClusterName, ContainerId, DeployName, PeerName};
+use crate::ids::{ClusterName, DeployName, PeerName};
 use crate::ingress::RouteBindingOrigin;
 use crate::machine::{GatewayProcessHealth, GatewayServingStatus, MachineLifecycle, MachineName};
 use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
@@ -33,10 +33,9 @@ pub enum CorrosionTable {
     Peers,
     Tokens,
     Namespaces,
-    Services,
     RouteBindings,
     Controller,
-    Containers,
+    MachineEndpoints,
     MachineStatus,
     GatewayObservations,
     Operations,
@@ -46,16 +45,15 @@ pub enum CorrosionTable {
 
 impl CorrosionTable {
     /// Every table in schema order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 13] = [
         Self::Cluster,
         Self::Machines,
         Self::Peers,
         Self::Tokens,
         Self::Namespaces,
-        Self::Services,
         Self::RouteBindings,
         Self::Controller,
-        Self::Containers,
+        Self::MachineEndpoints,
         Self::MachineStatus,
         Self::GatewayObservations,
         Self::Operations,
@@ -72,10 +70,9 @@ impl CorrosionTable {
             Self::Peers => "peers",
             Self::Tokens => "tokens",
             Self::Namespaces => "namespaces",
-            Self::Services => "services",
             Self::RouteBindings => "route_bindings",
             Self::Controller => "controller",
-            Self::Containers => "containers",
+            Self::MachineEndpoints => "machine_endpoints",
             Self::MachineStatus => "machine_status",
             Self::GatewayObservations => "gateway_observations",
             Self::Operations => "operations",
@@ -789,19 +786,14 @@ pub struct NamespaceDocument {
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub provenance: OperatorWriteProvenance,
     pub name: CorrosionNamespaceName,
+    /// The complete service intent published by one namespace deploy.
+    pub services: BTreeMap<CorrosionServiceName, PublishedService>,
 }
 
-/// One independently deployable service in a namespace.
+/// One named service inside a namespace's complete intent projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ServiceDocument {
-    pub v: CorrosionDocumentVersion,
-    pub cluster_id: ClusterName,
-    #[serde(flatten)]
-    #[cfg_attr(feature = "ts", ts(flatten))]
-    pub provenance: OperatorWriteProvenance,
-    pub namespace_id: CorrosionNamespaceName,
-    pub name: CorrosionServiceName,
+pub struct PublishedService {
     pub image: ImageReference,
     pub env_fingerprints: BTreeMap<String, Sha256Hex>,
     #[serde(flatten)]
@@ -842,15 +834,21 @@ pub struct ControllerDocument {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ContainerDocument {
+pub struct MachineEndpointDocument {
     pub v: CorrosionDocumentVersion,
     pub cluster_id: ClusterName,
-    /// Docker-owned runtime handle; it is evidence, not the Corrosion key.
-    pub runtime_id: ContainerId,
     pub machine_id: MachineName,
+    pub observed_at: CorrosionTimestamp,
+    /// Complete routable endpoint testimony from this machine's Docker reality.
+    pub endpoints: Vec<ServiceEndpoint>,
+}
+
+/// One naturally identified routable endpoint in machine testimony.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ServiceEndpoint {
     pub namespace_id: CorrosionNamespaceName,
     pub service_name: CorrosionServiceName,
-    /// Stable replica identity used to authorize logs and exact retirement.
     pub replica_slot: ReplicaSlot,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub ip: Ipv4Addr,
@@ -953,9 +951,9 @@ pub enum GatewayRouteProjectionFailure {
 pub enum GatewayProjectionInputKind {
     Cluster,
     Machines,
-    Services,
+    Namespaces,
     RouteBindings,
-    Containers,
+    MachineEndpoints,
 }
 
 /// Aggregate evidence for rejected input rows that have no usable typed identity.
@@ -1160,10 +1158,9 @@ corrosion_document!(MachineDocument, CorrosionTable::Machines);
 corrosion_document!(PeerDocument, CorrosionTable::Peers);
 corrosion_document!(TokenDocument, CorrosionTable::Tokens);
 corrosion_document!(NamespaceDocument, CorrosionTable::Namespaces);
-corrosion_document!(ServiceDocument, CorrosionTable::Services);
 corrosion_document!(RouteBindingDocument, CorrosionTable::RouteBindings);
 corrosion_document!(ControllerDocument, CorrosionTable::Controller);
-corrosion_document!(ContainerDocument, CorrosionTable::Containers);
+corrosion_document!(MachineEndpointDocument, CorrosionTable::MachineEndpoints);
 corrosion_document!(MachineStatusDocument, CorrosionTable::MachineStatus);
 corrosion_document!(
     GatewayObservationDocument,
@@ -1177,10 +1174,9 @@ ordinary_corrosion_document!(
     ClusterDocument,
     TokenDocument,
     NamespaceDocument,
-    ServiceDocument,
     RouteBindingDocument,
     ControllerDocument,
-    ContainerDocument,
+    MachineEndpointDocument,
     MachineStatusDocument,
     GatewayObservationDocument,
     OperationDocument,

@@ -263,7 +263,7 @@ pub(super) fn source_from_peer<Body>(peer: SocketAddr, _request: &hyper::Request
 pub(super) struct ApiLenses {
     machines: LensWatch,
     services: LensWatch,
-    containers: LensWatch,
+    endpoints: LensWatch,
     machine_status: LensWatch,
     operations: LensWatch,
 }
@@ -288,9 +288,9 @@ impl ApiLenses {
                 config.clone(),
                 lifecycle_sender.clone(),
             ),
-            containers: start_lens_with_lifecycle(
+            endpoints: start_lens_with_lifecycle(
                 corrosion.clone(),
-                LensCollection::Containers,
+                LensCollection::Endpoints,
                 config.clone(),
                 lifecycle_sender.clone(),
             ),
@@ -313,7 +313,7 @@ impl ApiLenses {
         match collection {
             LensCollection::Machines => &self.machines,
             LensCollection::Services => &self.services,
-            LensCollection::Containers => &self.containers,
+            LensCollection::Endpoints => &self.endpoints,
             LensCollection::MachineStatus => &self.machine_status,
             LensCollection::Operations => &self.operations,
         }
@@ -323,14 +323,14 @@ impl ApiLenses {
         let Self {
             machines,
             services,
-            containers,
+            endpoints,
             machine_status,
             operations,
         } = self;
         tokio::join!(
             machines.shutdown(),
             services.shutdown(),
-            containers.shutdown(),
+            endpoints.shutdown(),
             machine_status.shutdown(),
             operations.shutdown(),
         );
@@ -564,7 +564,7 @@ impl ApiService {
                 super::mutations::handle_mutation(self, route, principal, request).await
             }
             V2Route::PeerRemove | V2Route::ServiceRemove | V2Route::RouteRemove => {
-                super::removals::handle_removal(self, route, request).await
+                super::removals::handle_removal(self, route, principal, request).await
             }
             V2Route::RouteAttach => super::routes::handle_attach(self, principal, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,

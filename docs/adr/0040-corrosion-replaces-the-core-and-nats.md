@@ -97,9 +97,9 @@ drafted land with the consolidated spec.
 - **0031 (recovery seams: hand-rolled epoch and mirrored intent snapshot)**
   — the epoch, the drumbeat mirror, and the candidate list are dead.
 - **0033 (deploy phases promote atomically)** — phase-atomic intent
-  transactions are replaced by one revision-gated `active_deploy` flip per
-  service: pre-flip failure never serves the new revision, and the old
-  revision runs through drain.
+  transactions are replaced by one complete Namespace intent-row replacement:
+  pre-flip failure never serves the new service map, and old generations run
+  through drain.
 - **0035 (fresh dataplane testimony gates new placement)** — the
   NATS-gathered testimony contract is gone; candidates answer live bids at
   the point of use, and the 275-second bound survives only as the staleness

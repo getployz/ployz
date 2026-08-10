@@ -181,7 +181,7 @@ async fn admit(
     let now = now_timestamp()?;
     let principal = validate_join_token(
         &request.token,
-        token.as_ref().map(|document| (&token_id, document)),
+        token.as_ref().map(|token| (&token_id, &token.document)),
         now,
     )?;
     let Some(token) = token else {
@@ -191,7 +191,7 @@ async fn admit(
     };
     let authority = ValidatedTokenAuthority {
         token_id: token_id.clone(),
-        document: token,
+        document: token.document,
     };
 
     let Some(admission) = service.join_door.admission() else {

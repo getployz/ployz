@@ -670,17 +670,17 @@ where
         }
         LensCollection::Services => {
             let rows = store
-                .query_rows(LensInput::Services, config.cluster_id(), max_rows)
+                .query_rows(LensInput::Namespaces, config.cluster_id(), max_rows)
                 .await
                 .map_err(LensRefreshError::Store)?;
             Ok(snapshots::services_snapshot(config.cluster_id(), rows))
         }
-        LensCollection::Containers => {
+        LensCollection::Endpoints => {
             let rows = store
-                .query_rows(LensInput::Containers, config.cluster_id(), max_rows)
+                .query_rows(LensInput::Endpoints, config.cluster_id(), max_rows)
                 .await
                 .map_err(LensRefreshError::Store)?;
-            Ok(snapshots::containers_snapshot(config.cluster_id(), rows))
+            Ok(snapshots::endpoints_snapshot(config.cluster_id(), rows))
         }
         LensCollection::MachineStatus => {
             let rows = store

@@ -260,8 +260,11 @@ pub enum LogsExecutionError {
         namespace_name: String,
         service_name: String,
     },
-    #[error("container {container_id} is not a managed v2 container")]
-    UnmanagedContainer { container_id: String },
+    #[error("service {namespace_name}/{service_name} has ambiguous local containers")]
+    ContainerAmbiguous {
+        namespace_name: String,
+        service_name: String,
+    },
     #[error(
         "this service runs containers on machines {machines}; pick one with `ployz logs <namespace> <service> --machine <machine>`"
     )]
@@ -270,10 +273,6 @@ pub enum LogsExecutionError {
         "replicas of this service stack on machine {machine}; per-container log selection is not yet supported"
     )]
     StackedReplicas { machine: String },
-    #[error(
-        "the hosting machines' roster rows could not be resolved to names (machine ids {machine_ids}); run `ployz status` to inspect the roster"
-    )]
-    HostingMachinesUnresolved { machine_ids: String },
     #[error("service logs are owned by machine {machine}; point --target at that machine")]
     RemoteOwner { machine: String },
     #[error("service log runtime is unavailable on machine {machine_id}")]
@@ -297,8 +296,12 @@ impl From<ServiceLogsRefusal> for LogsExecutionError {
                 namespace_name: namespace_name.to_string(),
                 service_name: service_name.to_string(),
             },
-            ServiceLogsRefusal::UnmanagedContainer { container_id } => Self::UnmanagedContainer {
-                container_id: container_id.as_str().to_owned(),
+            ServiceLogsRefusal::ContainerAmbiguous {
+                namespace_name,
+                service_name,
+            } => Self::ContainerAmbiguous {
+                namespace_name: namespace_name.to_string(),
+                service_name: service_name.to_string(),
             },
             ServiceLogsRefusal::MachineSelectorRequired { machines } => {
                 let distinct = machines
@@ -320,15 +323,6 @@ impl From<ServiceLogsRefusal> for LogsExecutionError {
                             .collect::<Vec<_>>()
                             .join(", "),
                     },
-                }
-            }
-            ServiceLogsRefusal::HostingMachinesUnresolved { machine_ids } => {
-                Self::HostingMachinesUnresolved {
-                    machine_ids: machine_ids
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
                 }
             }
             ServiceLogsRefusal::RemoteOwner {

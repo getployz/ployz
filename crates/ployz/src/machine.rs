@@ -259,7 +259,7 @@ fn snapshot_rows(snapshot: &LensSnapshot) -> &[MachineStatusLensRow] {
         LensSnapshot::MachineStatus { rows } => rows,
         LensSnapshot::Machines { .. }
         | LensSnapshot::Services { .. }
-        | LensSnapshot::Containers { .. }
+        | LensSnapshot::Endpoints { .. }
         | LensSnapshot::Operations { .. } => &[],
     }
 }
@@ -734,6 +734,9 @@ async fn remove(command: MachineRemoveCommand) -> Result<String, MachineExecutio
         JsonReply::Refused(MachineRemoveRefusal::NotFound { machine_name }) => {
             return Err(MachineExecutionError::MachineRemovalNotFound { machine_name });
         }
+        JsonReply::Refused(MachineRemoveRefusal::ConcurrentMutation { machine_name }) => {
+            return Err(MachineExecutionError::MachineRemovalChanged { machine_name });
+        }
     };
     if !matches!(&reply, MachineRemoveReply::Removed { machine_name } if machine_name == &command.machine)
     {
@@ -805,6 +808,10 @@ pub enum MachineExecutionError {
         machine_name.as_str()
     )]
     MachineRemovalNotFound { machine_name: MachineName },
+    #[error(
+        "machine {machine_name} changed while its removal was being committed; retry from current reality"
+    )]
+    MachineRemovalChanged { machine_name: MachineName },
     #[error("cluster API machine-removal reply did not match the requested identity")]
     MachineRemovalReplyMismatch,
     #[error(transparent)]
@@ -880,7 +887,7 @@ const fn snapshot_collection(snapshot: &LensSnapshot) -> LensCollection {
     match snapshot {
         LensSnapshot::Machines { .. } => LensCollection::Machines,
         LensSnapshot::Services { .. } => LensCollection::Services,
-        LensSnapshot::Containers { .. } => LensCollection::Containers,
+        LensSnapshot::Endpoints { .. } => LensCollection::Endpoints,
         LensSnapshot::MachineStatus { .. } => LensCollection::MachineStatus,
         LensSnapshot::Operations { .. } => LensCollection::Operations,
     }

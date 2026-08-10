@@ -54,10 +54,6 @@ pub enum RouteAttachRefusal {
         namespace_name: CorrosionNamespaceName,
         service_name: CorrosionServiceName,
     },
-    ServiceStoredRowUnselectable {
-        namespace_name: CorrosionNamespaceName,
-        service_name: CorrosionServiceName,
-    },
     HostnameAlreadyAttached {
         hostname: RouteHostname,
         remove: RouteRemoveRequest,

@@ -3,11 +3,9 @@
 use serde_json::Value;
 
 use super::{
-    ClusterDocument, CorrosionDocument, CorrosionServiceName, CorrosionTable, MeshProvider,
-    OrdinaryCorrosionDocument, RosterCorrosionDocument, V2ManagedContainerIdentity,
-    managed_container_key,
+    ClusterDocument, CorrosionDocument, CorrosionTable, MeshProvider, OrdinaryCorrosionDocument,
+    RosterCorrosionDocument,
 };
-use crate::deploy::ReplicaSlot;
 use crate::ids::{
     ClusterName, CorrosionNamespaceName, DeployName, MachineName, PeerName, TokenName,
 };
@@ -268,22 +266,10 @@ where
             validate_optional_key(&source, expected, "token name")?;
         }
         CorrosionTable::Namespaces => validate_document_key(&source, fields, "name")?,
-        CorrosionTable::Services => {
-            let expected = fields
-                .get("namespace_id")
-                .and_then(Value::as_str)
-                .and_then(|value| CorrosionNamespaceName::try_new(value.to_owned()).ok())
-                .zip(
-                    fields
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .and_then(|value| super::CorrosionServiceName::try_new(value).ok()),
-                )
-                .map(|(namespace, service)| super::operation::service_key(&namespace, &service));
-            validate_optional_key(&source, expected, "namespace/service")?;
-        }
         CorrosionTable::RouteBindings => validate_document_key(&source, fields, "hostname")?,
-        CorrosionTable::MachineStatus | CorrosionTable::GatewayObservations => {
+        CorrosionTable::MachineEndpoints
+        | CorrosionTable::MachineStatus
+        | CorrosionTable::GatewayObservations => {
             validate_document_key(&source, fields, "machine_id")?;
         }
         CorrosionTable::Operations => {
@@ -329,50 +315,6 @@ where
             if source.key != expected {
                 return Err(skipped(source, RowSkipReason::InvalidRowKey { expected }));
             }
-        }
-        CorrosionTable::Containers => {
-            let expected = fields
-                .get("namespace_id")
-                .and_then(Value::as_str)
-                .and_then(|value| CorrosionNamespaceName::try_new(value.to_owned()).ok())
-                .zip(
-                    fields
-                        .get("service_name")
-                        .and_then(Value::as_str)
-                        .and_then(|value| CorrosionServiceName::try_new(value).ok()),
-                )
-                .zip(
-                    fields
-                        .get("deploy")
-                        .and_then(Value::as_str)
-                        .and_then(|value| DeployName::try_new(value.to_owned()).ok()),
-                )
-                .zip(
-                    fields
-                        .get("machine_id")
-                        .and_then(Value::as_str)
-                        .and_then(|value| MachineName::try_new(value.to_owned()).ok()),
-                )
-                .zip(
-                    fields
-                        .get("replica_slot")
-                        .cloned()
-                        .and_then(|value| serde_json::from_value::<ReplicaSlot>(value).ok()),
-                )
-                .map(
-                    |((((namespace_id, service_name), operation_id), machine_id), replica_slot)| {
-                        managed_container_key(
-                            &V2ManagedContainerIdentity {
-                                namespace_id,
-                                service_name,
-                                operation_id,
-                                replica_slot,
-                            },
-                            &machine_id,
-                        )
-                    },
-                );
-            validate_optional_key(&source, expected, "namespace/service/deploy/machine/slot")?;
         }
         CorrosionTable::AcmeHttp01 => {}
     }

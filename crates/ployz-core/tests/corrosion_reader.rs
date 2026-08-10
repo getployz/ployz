@@ -1,7 +1,8 @@
 use ployz_core::corrosion::{
-    CertHoldingDocument, ClusterDocument, ContainerDocument, GatewayObservationDocument,
-    MachineDocument, MachineStatusDocument, MalformedDocument, MeshProvider, NamespaceDocument,
-    RowSkipReason, StoredRow, read_named_roster_rows, read_named_rows, read_roster_rows, read_rows,
+    CertHoldingDocument, ClusterDocument, GatewayObservationDocument, MachineDocument,
+    MachineEndpointDocument, MachineStatusDocument, MalformedDocument, MeshProvider,
+    NamespaceDocument, RowSkipReason, StoredRow, read_named_roster_rows, read_named_rows,
+    read_roster_rows, read_rows,
 };
 use ployz_core::ids::ClusterName;
 use serde_json::json;
@@ -16,7 +17,7 @@ fn cluster_id() -> ClusterName {
 
 fn namespace_document(name: &str) -> String {
     format!(
-        r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"{name}","written_by":{{"kind":"machine","machine_id":"{LOWER_ROW_ID}"}},"written_at":"2026-08-04T10:00:00Z"}}"#
+        r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"{name}","services":{{}},"written_by":{{"kind":"machine","machine_id":"{LOWER_ROW_ID}"}},"written_at":"2026-08-04T10:00:00Z"}}"#
     )
 }
 
@@ -273,7 +274,7 @@ fn additive_unknown_fields_do_not_hide_a_current_document() {
         [StoredRow::new(
             "alpha",
             format!(
-                r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"alpha","written_by":{{"kind":"machine","machine_id":"{LOWER_ROW_ID}"}},"written_at":"2026-08-04T10:00:00Z","future":{{"enabled":true}}}}"#
+                r#"{{"v":1,"cluster_id":"{CLUSTER_ID}","name":"alpha","services":{{}},"written_by":{{"kind":"machine","machine_id":"{LOWER_ROW_ID}"}},"written_at":"2026-08-04T10:00:00Z","future":{{"enabled":true}}}}"#
             ),
         )],
     );
@@ -314,13 +315,17 @@ fn noncanonical_corrosion_reference_is_skipped_and_surfaced() {
     let document = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "machine_id": "machine_edge_a",
-        "service_id": HIGHER_ROW_ID,
-        "namespace_id": HIGHER_ROW_ID,
-        "ip": "10.210.20.2",
-        "deploy": HIGHER_ROW_ID
+        "machine_id": LOWER_ROW_ID,
+        "observed_at": "2026-08-04T10:06:00Z",
+        "endpoints": [{
+            "namespace_id": "production",
+            "service_name": "API",
+            "deploy": "release-1",
+            "replica_slot": { "kind": "global" },
+            "ip": "10.210.20.2"
+        }]
     });
-    let report = read_rows::<ContainerDocument>(
+    let report = read_rows::<MachineEndpointDocument>(
         &cluster_id(),
         [StoredRow::new(LOWER_ROW_ID, document.to_string())],
     );
@@ -365,52 +370,44 @@ fn ordinary_reader_rejects_a_row_key_that_disagrees_with_the_document_identity()
 }
 
 #[test]
-fn ordinary_reader_accepts_a_natural_container_row_key() {
+fn ordinary_reader_accepts_a_machine_endpoint_row_key() {
     let document = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "runtime_id": "docker-container-a",
         "machine_id": "edge-a",
-        "namespace_id": "production",
-        "service_name": "api",
-        "replica_slot": { "kind": "global" },
-        "ip": "10.210.20.2",
-        "deploy": "release-1"
+        "observed_at": "2026-08-04T10:06:00Z",
+        "endpoints": [{
+            "namespace_id": "production",
+            "service_name": "api",
+            "deploy": "release-1",
+            "replica_slot": { "kind": "global" },
+            "ip": "10.210.20.2"
+        }]
     });
-    let report = read_rows::<ContainerDocument>(
+    let report = read_rows::<MachineEndpointDocument>(
         &cluster_id(),
-        [StoredRow::new(
-            "production/api/release-1/edge-a/global",
-            document.to_string(),
-        )],
+        [StoredRow::new("edge-a", document.to_string())],
     );
 
     assert!(report.skipped.is_empty());
     assert!(matches!(
         report.accepted.as_slice(),
-        [accepted] if accepted.source.key == "production/api/release-1/edge-a/global"
+        [accepted] if accepted.source.key == "edge-a"
     ));
 }
 
 #[test]
-fn container_reader_rejects_a_composite_key_that_disagrees_with_the_document() {
+fn machine_endpoint_reader_rejects_a_key_that_disagrees_with_the_machine() {
     let document = json!({
         "v": 1,
         "cluster_id": CLUSTER_ID,
-        "runtime_id": "docker-container-a",
         "machine_id": "edge-a",
-        "namespace_id": "production",
-        "service_name": "api",
-        "replica_slot": { "kind": "global" },
-        "ip": "10.210.20.2",
-        "deploy": "release-1"
+        "observed_at": "2026-08-04T10:06:00Z",
+        "endpoints": []
     });
-    let report = read_rows::<ContainerDocument>(
+    let report = read_rows::<MachineEndpointDocument>(
         &cluster_id(),
-        [StoredRow::new(
-            "production/worker/release-1/edge-a/global",
-            document.to_string(),
-        )],
+        [StoredRow::new("edge-b", document.to_string())],
     );
 
     assert!(report.accepted.is_empty());
@@ -420,7 +417,7 @@ fn container_reader_rejects_a_composite_key_that_disagrees_with_the_document() {
             if matches!(
                 &skipped.reason,
                 RowSkipReason::InvalidRowKey { expected }
-                    if expected == "production/api/release-1/edge-a/global"
+                    if expected == "edge-a"
             )
     ));
 }

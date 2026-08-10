@@ -19,11 +19,14 @@ fn namespace_and_service_names_are_lowercase_dns_labels() {
 }
 
 #[test]
-fn table_catalog_contains_separate_namespace_and_service_rows() {
-    assert_eq!(CorrosionTable::ALL.len(), 14);
+fn table_catalog_contains_namespace_intent_and_machine_endpoint_testimony() {
+    assert_eq!(CorrosionTable::ALL.len(), 13);
     assert!(CorrosionTable::ALL.contains(&CorrosionTable::Namespaces));
-    assert!(CorrosionTable::ALL.contains(&CorrosionTable::Services));
-    assert_eq!(CorrosionTable::Services.as_str(), "services");
+    assert!(CorrosionTable::ALL.contains(&CorrosionTable::MachineEndpoints));
+    assert_eq!(
+        CorrosionTable::MachineEndpoints.as_str(),
+        "machine_endpoints"
+    );
 }
 
 #[test]

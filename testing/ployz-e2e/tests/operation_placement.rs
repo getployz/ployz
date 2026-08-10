@@ -22,7 +22,7 @@ use ployz_core::deploy::{
 use ployz_core::ids::{DeployName, MachineName};
 use ployz_core::{
     DeployRefusal, DeployRequest, DeployServiceRequest, DeployServices, PinnedMachineNames,
-    RequestedPins, RequestedPlacement,
+    RequestedPlacement,
 };
 use ployz_e2e::dind as deploy_support;
 use ployz_e2e::dind::{
@@ -114,7 +114,7 @@ fn member_for<'a>(members: &'a [Member<'a>], id: &MachineName) -> Result<&'a Mem
 }
 
 fn distinct_machines(rows: &support::PlacedRows) -> BTreeSet<MachineName> {
-    rows.containers
+    rows.endpoints
         .iter()
         .map(|(machine, _)| machine.clone())
         .collect()
@@ -156,7 +156,7 @@ async fn exercise_operation_placement(
     // Two replicas spread across two distinct machines.
     let mut spread_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
-    spread_service.1.placement = Some(RequestedPlacement::Replicas {
+    spread_service.1.placement = Some(RequestedPlacement::Replicated {
         replicas: ServiceReplicaCount::try_new(2).map_err(|error| error.to_string())?,
     });
     let spread_op = deploy_support::deploy_namespace(
@@ -167,8 +167,16 @@ async fn exercise_operation_placement(
         "spread deploy",
         SECRET_VALUE,
     )?;
-    let spread_rows =
-        support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &spread_op, 2).await?;
+    let spread_rows = support::wait_for_placed_rows(
+        docker,
+        m1,
+        &j1.api_address,
+        NAMESPACE,
+        SERVICE,
+        &spread_op,
+        2,
+    )
+    .await?;
     let spread_set = distinct_machines(&spread_rows);
     require(
         spread_set.len() == 2,
@@ -186,10 +194,13 @@ async fn exercise_operation_placement(
     .await?;
     deploy_support::assert_cluster_wide_operation_terminal(&operator, NAMESPACE, &spread_op)?;
 
-    // A flag-less redeploy of a new revision sticks to the incumbent machines.
+    // A redeploy with the same explicit capacity sticks to the incumbent machines.
     deploy_support::push_second_revision(docker, m1, &image, SECOND_BODY).await?;
-    let sticky_service =
+    let mut sticky_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
+    sticky_service.1.placement = Some(RequestedPlacement::Replicated {
+        replicas: ServiceReplicaCount::try_new(2).map_err(|error| error.to_string())?,
+    });
     let sticky_op = deploy_support::deploy_namespace(
         &operator,
         NAMESPACE,
@@ -198,8 +209,16 @@ async fn exercise_operation_placement(
         "sticky deploy",
         SECRET_VALUE,
     )?;
-    let sticky_rows =
-        support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &sticky_op, 2).await?;
+    let sticky_rows = support::wait_for_placed_rows(
+        docker,
+        m1,
+        &j1.api_address,
+        NAMESPACE,
+        SERVICE,
+        &sticky_op,
+        2,
+    )
+    .await?;
     require(
         distinct_machines(&sticky_rows) == spread_set,
         format!(
@@ -224,13 +243,13 @@ async fn exercise_operation_placement(
     let [pin_a, pin_b, _] = &members;
     let mut pinned_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
-    pinned_service.1.placement = Some(RequestedPlacement::Replicas {
+    pinned_service.1.placement = Some(RequestedPlacement::Replicated {
         replicas: ServiceReplicaCount::try_new(3).map_err(|error| error.to_string())?,
     });
-    pinned_service.1.machines = Some(RequestedPins::Machines {
-        names: PinnedMachineNames::try_new([pin_a.id.clone(), pin_b.id.clone()])
+    pinned_service.1.machines = Some(
+        PinnedMachineNames::try_new([pin_a.id.clone(), pin_b.id.clone()])
             .map_err(|error| error.to_string())?,
-    });
+    );
     let pinned_op = deploy_support::deploy_namespace(
         &operator,
         NAMESPACE,
@@ -239,20 +258,28 @@ async fn exercise_operation_placement(
         "pinned deploy",
         SECRET_VALUE,
     )?;
-    let pinned_rows =
-        support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &pinned_op, 3).await?;
+    let pinned_rows = support::wait_for_placed_rows(
+        docker,
+        m1,
+        &j1.api_address,
+        NAMESPACE,
+        SERVICE,
+        &pinned_op,
+        3,
+    )
+    .await?;
     let pin_ids = [pin_a.id.clone(), pin_b.id.clone()]
         .into_iter()
         .collect::<BTreeSet<_>>();
     require(
         pinned_rows.service.pinned_machines == pin_ids,
         format!(
-            "service row did not record the pin set: {:?}",
+            "namespace intent did not record the pin set: {:?}",
             pinned_rows.service.pinned_machines
         ),
     )?;
     let mut stacking = BTreeMap::new();
-    for (machine, _) in &pinned_rows.containers {
+    for (machine, _) in &pinned_rows.endpoints {
         *stacking.entry(machine.clone()).or_insert(0_usize) += 1;
     }
     let mut sizes = stacking.values().copied().collect::<Vec<_>>();
@@ -262,13 +289,13 @@ async fn exercise_operation_placement(
         format!("pinned replicas did not stack 2+1 across the pin set: {stacking:?}"),
     )?;
 
-    // Explicit Any clears the pins and three replicas spread one per machine.
+    // Omitted pins mean any machine, so three replicas spread one per machine.
     let mut any_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
-    any_service.1.placement = Some(RequestedPlacement::Replicas {
+    any_service.1.placement = Some(RequestedPlacement::Replicated {
         replicas: ServiceReplicaCount::try_new(3).map_err(|error| error.to_string())?,
     });
-    any_service.1.machines = Some(RequestedPins::Any);
+    any_service.1.machines = None;
     let any_op = deploy_support::deploy_namespace(
         &operator,
         NAMESPACE,
@@ -278,7 +305,8 @@ async fn exercise_operation_placement(
         SECRET_VALUE,
     )?;
     let any_rows =
-        support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &any_op, 3).await?;
+        support::wait_for_placed_rows(docker, m1, &j1.api_address, NAMESPACE, SERVICE, &any_op, 3)
+            .await?;
     require(
         distinct_machines(&any_rows).len() == 3 && any_rows.service.pinned_machines.is_empty(),
         format!(
@@ -311,24 +339,32 @@ async fn exercise_operation_placement(
         "global deploy",
         SECRET_VALUE,
     )?;
-    let global_rows =
-        support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &global_op, 3).await?;
+    let global_rows = support::wait_for_placed_rows(
+        docker,
+        m1,
+        &j1.api_address,
+        NAMESPACE,
+        SERVICE,
+        &global_op,
+        3,
+    )
+    .await?;
     require(
         distinct_machines(&global_rows).len() == 3,
         format!(
             "global mode did not land one container per machine: {:?}",
-            global_rows.containers
+            global_rows.endpoints
         ),
     )?;
     let ServicePlacement::Global { host_ports } = &global_rows.service.placement else {
         return Err(format!(
-            "service row did not record global placement: {:?}",
+            "namespace intent did not record global placement: {:?}",
             global_rows.service.placement
         ));
     };
     require(
         host_ports == &expected_ports,
-        format!("service row recorded the wrong host ports: {host_ports:?}"),
+        format!("namespace intent recorded the wrong host ports: {host_ports:?}"),
     )?;
     for member in &members {
         support::wait_for_http_body(
@@ -340,28 +376,38 @@ async fn exercise_operation_placement(
         .await?;
     }
 
-    // A later complete snapshot inherits the global placement. Each target
-    // must transfer the already-bound host port before starting its new
-    // natural deploy identity.
-    let inherited_global_service =
+    // A later complete snapshot repeats the global placement. Each target must
+    // transfer the already-bound host port before starting its new natural
+    // deploy identity.
+    let mut replacement_global_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
+    replacement_global_service.1.placement = Some(RequestedPlacement::Global {
+        host_ports: expected_ports.clone(),
+    });
     let global_replacement = deploy_support::deploy_namespace(
         &operator,
         NAMESPACE,
         "global-replacement",
-        &[inherited_global_service],
+        &[replacement_global_service],
         "global host-port replacement",
         SECRET_VALUE,
     )?;
-    let replacement_rows =
-        support::wait_for_placed_rows(docker, m1, &j1.api_address, SERVICE, &global_replacement, 3)
-            .await?;
+    let replacement_rows = support::wait_for_placed_rows(
+        docker,
+        m1,
+        &j1.api_address,
+        NAMESPACE,
+        SERVICE,
+        &global_replacement,
+        3,
+    )
+    .await?;
     require(
         matches!(
             replacement_rows.service.placement,
             ServicePlacement::Global { ref host_ports } if host_ports == &expected_ports
         ),
-        "global replacement did not inherit its host ports",
+        "global replacement did not preserve its explicit host ports",
     )?;
     deploy_support::assert_first_revision_container_is_gone(docker, &[m1, m2, m3], &global_op)
         .await?;
@@ -400,15 +446,16 @@ async fn exercise_operation_placement(
         docker,
         m1,
         &j1.api_address,
+        VOLUME_NAMESPACE,
         VOLUME_SERVICE,
         &first_volume.deploy_name,
         1,
     )
     .await?;
-    let [(holder_id, _)] = volume_rows.containers.as_slice() else {
+    let [(holder_id, _)] = volume_rows.endpoints.as_slice() else {
         return Err(format!(
             "volume service did not converge to one container: {:?}",
-            volume_rows.containers
+            volume_rows.endpoints
         ));
     };
     let holder = member_for(&members, holder_id)?;
@@ -464,7 +511,7 @@ async fn assert_replicas_serve(
     rows: &support::PlacedRows,
     expected_body: &str,
 ) -> Result<(), String> {
-    for (machine_id, ip) in &rows.containers {
+    for (machine_id, ip) in &rows.endpoints {
         let member = member_for(members, machine_id)?;
         deploy_support::assert_dns_and_http(
             docker,

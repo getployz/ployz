@@ -519,7 +519,7 @@ mod tests {
             "skipped_roster_rows": [],
             "skipped_newer_versions": [
                 {
-                    "table": "services",
+                    "table": "namespaces",
                     "key": ROW_LOSER,
                     "found": 2,
                     "supported": 1
@@ -545,7 +545,7 @@ mod tests {
                     "cluster_id": "01ARZ3NDEKTSV4RRFFQ69G5FB3",
                     "rows": [
                         {
-                            "table": "services",
+                            "table": "namespaces",
                             "key": ROW_LOSER,
                             "authorship": {
                                 "kind": "current_machine",
@@ -566,8 +566,8 @@ mod tests {
                             }
                         },
                         {
-                            "table": "containers",
-                            "key": "container/broken",
+                            "table": "machine_endpoints",
+                            "key": "machine/broken",
                             "authorship": { "kind": "unparseable" }
                         }
                     ]
@@ -698,15 +698,15 @@ mod tests {
     fn noncanonical_row_names_its_table_and_exact_expected_key() {
         let mut document = doctor_fixture();
         document.noncanonical_rows = vec![DoctorNoncanonicalRow {
-            table: CorrosionTable::Services,
+            table: CorrosionTable::Namespaces,
             key: "wrong-key".to_owned(),
-            expected: "production/web".to_owned(),
+            expected: "production".to_owned(),
         }];
 
         let (output, has_findings) = render_doctor(&document);
 
         assert!(has_findings);
-        assert!(output.contains("noncanonical row: services wrong-key (expected production/web)"));
+        assert!(output.contains("noncanonical row: namespaces wrong-key (expected production)"));
     }
 
     #[test]
@@ -714,7 +714,7 @@ mod tests {
         let document: DoctorDocument = serde_json::from_value(json!({
             "skipped_newer_versions": [
                 {
-                    "table": "services",
+                    "table": "namespaces",
                     "key": ROW_LOSER,
                     "found": 2,
                     "supported": 1
@@ -746,7 +746,7 @@ mod tests {
         let (output, has_findings) = render_doctor(&document);
         assert!(has_findings);
         assert!(output.contains(&format!(
-            "newer row version: services {ROW_LOSER} has v=2 (this binary supports v=1)"
+            "newer row version: namespaces {ROW_LOSER} has v=2 (this binary supports v=1)"
         )));
         assert!(output.contains("ployz machine upgrade -- '--all' '--help'"));
 

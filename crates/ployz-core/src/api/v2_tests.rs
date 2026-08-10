@@ -12,6 +12,50 @@ fn machine_name() -> MachineName {
 }
 
 #[test]
+fn deploy_host_replies_use_only_natural_replica_identity() {
+    let identity = V2ManagedContainerIdentity {
+        namespace_id: CorrosionNamespaceName::try_new("production").expect("namespace"),
+        service_name: CorrosionServiceName::try_new("api").expect("service"),
+        operation_id: DeployName::try_new("release-1").expect("deploy"),
+        replica_slot: crate::deploy::ReplicaSlot::Global,
+    };
+    let observed = DeployObservedContainer {
+        identity: identity.clone(),
+        running: true,
+        host_ports: Default::default(),
+    };
+    let prepared = DeployPreparedReplica {
+        identity,
+        ip: "10.210.20.2".parse().expect("ip"),
+    };
+
+    assert_eq!(
+        serde_json::to_value(observed).expect("observed replica serializes"),
+        json!({
+            "identity": {
+                "namespace_id": "production",
+                "service_name": "api",
+                "operation_id": "release-1",
+                "replica_slot": { "kind": "global" }
+            },
+            "running": true
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(prepared).expect("prepared replica serializes"),
+        json!({
+            "identity": {
+                "namespace_id": "production",
+                "service_name": "api",
+                "operation_id": "release-1",
+                "replica_slot": { "kind": "global" }
+            },
+            "ip": "10.210.20.2"
+        })
+    );
+}
+
+#[test]
 fn machine_remove_has_one_exact_route_feature_method_and_principal_policy() {
     let route = V2Route::MachineRemove;
     assert_eq!(route.path(), MACHINE_REMOVE_ROUTE);
@@ -54,6 +98,13 @@ fn machine_remove_contract_uses_only_the_canonical_name() {
         )
         .expect("refusal deserializes"),
         refusal
+    );
+    assert_eq!(
+        serde_json::to_value(MachineRemoveRefusal::ConcurrentMutation {
+            machine_name: machine_name(),
+        })
+        .expect("concurrent refusal serializes"),
+        json!({ "kind": "concurrent_mutation", "machine_name": "edge-a" })
     );
 }
 

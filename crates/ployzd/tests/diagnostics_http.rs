@@ -162,8 +162,8 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
     let queries = corrosion.queries();
     assert_eq!(
         queries.len(),
-        17,
-        "three auth reads plus fourteen doctor reads"
+        16,
+        "three auth reads plus thirteen doctor reads"
     );
     assert!(queries.iter().all(|query| query.starts_with("SELECT ")));
     let [_, _, _, doctor_queries @ ..] = queries.as_slice() else {
@@ -179,9 +179,8 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
             | CorrosionTable::Peers
             | CorrosionTable::Tokens
             | CorrosionTable::Namespaces
-            | CorrosionTable::Services
             | CorrosionTable::RouteBindings
-            | CorrosionTable::Containers
+            | CorrosionTable::MachineEndpoints
             | CorrosionTable::Operations
             | CorrosionTable::CertHoldings
             | CorrosionTable::AcmeHttp01

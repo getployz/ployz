@@ -683,6 +683,7 @@ pub struct TokenRevokeReply {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TokenRevokeRefusal {
     NotFound { token_id: TokenName },
+    ConcurrentMutation { token_id: TokenName },
 }
 
 /// Mesh-authenticated request to change only a WireGuard endpoint.
@@ -796,4 +797,22 @@ pub struct JoinDoorMaterial {
     pub certificate_pem: JoinDoorCertificatePem,
     pub private_key_pem: JoinDoorPrivateKeyPem,
     pub fingerprint: JoinDoorCertFingerprint,
+}
+
+#[cfg(test)]
+mod revoke_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn concurrent_token_revocation_has_a_typed_wire_refusal() {
+        let refusal = TokenRevokeRefusal::ConcurrentMutation {
+            token_id: TokenName::try_new("bootstrap").expect("token id"),
+        };
+        assert_eq!(
+            serde_json::to_value(refusal).expect("refusal serializes"),
+            json!({ "kind": "concurrent_mutation", "token_id": "bootstrap" })
+        );
+    }
 }

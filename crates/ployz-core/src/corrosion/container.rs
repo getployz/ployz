@@ -1,8 +1,8 @@
-//! Recovery identity for Corrosion-owned v2 containers.
+//! Natural runtime identity and endpoint-projection keys for managed containers.
 
 use serde::{Deserialize, Serialize};
 
-use crate::corrosion::CorrosionServiceName;
+use crate::corrosion::{CorrosionServiceName, ServiceEndpoint};
 use crate::deploy::ReplicaSlot;
 use crate::ids::{CorrosionNamespaceName, DeployName};
 use crate::machine::MachineName;
@@ -19,22 +19,18 @@ pub struct V2ManagedContainerIdentity {
     pub replica_slot: ReplicaSlot,
 }
 
-/// Stable Corrosion key for one managed replica. Docker's random id remains
-/// runtime evidence in the document, never the distributed row identity.
+/// Natural identity for one endpoint inside a machine-owned testimony row.
 #[must_use]
-pub fn managed_container_key(
-    identity: &V2ManagedContainerIdentity,
-    machine: &MachineName,
-) -> String {
-    let slot = match identity.replica_slot {
+pub fn service_endpoint_key(endpoint: &ServiceEndpoint, machine: &MachineName) -> String {
+    let slot = match endpoint.replica_slot {
         ReplicaSlot::Global => "global".to_owned(),
         ReplicaSlot::Replicated { number } => number.get().to_string(),
     };
     format!(
         "{}/{}/{}/{}/{slot}",
-        identity.namespace_id.as_str(),
-        identity.service_name.as_str(),
-        identity.operation_id.as_str(),
+        endpoint.namespace_id.as_str(),
+        endpoint.service_name.as_str(),
+        endpoint.deploy.as_str(),
         machine.as_str(),
     )
 }

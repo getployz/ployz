@@ -1,6 +1,6 @@
 # Namespace Revision Entry Identity Is A Versioned Per-Service Digest
 
-> Superseded for current v2 by [ADR 0041](0041-preferred-controller-serializes-cluster-mutations.md), whose serving projection uses the service's active deploy id; the revision-entry digest model below is historical.
+> Superseded for current v2 by [ADR 0043](0043-runtime-reality-comes-from-node-rpc.md), whose one Namespace intent document selects each service's active deploy and whose node RPCs use natural managed-replica identities; the revision-entry digest model below is historical.
 
 Container replacement is decided by an opaque, versioned SHA-256 identity,
 not by ad hoc field-by-field comparisons. The identity is scoped by namespace
@@ -38,8 +38,8 @@ makes a compatibility-breaking replacement decision visible in code review and
 prevents an apparently innocuous upgrade from silently changing the identity of
 every running container.
 
-[ADR 0040](0040-corrosion-replaces-the-core-and-nats.md) keeps this identity law
-but replaces two v1 mechanisms. The v2 Corrosion service row carries environment
+[ADR 0040](0040-corrosion-replaces-the-core-and-nats.md) kept this identity law
+but replaced two v1 mechanisms. The later v2 Namespace service entry carries environment
 names mapped to lowercase SHA-256 fingerprints; changing a name or fingerprint
 changes the replacement-relevant content. This intentionally prices dictionary
 exposure for low-entropy values into the single-operator membership trust
@@ -47,7 +47,7 @@ ceiling. It does not revive the Controller-seed-derived HMAC, its process-local
 key, or its restart and promotion behavior. Empty environment maps contribute no
 environment fingerprints.
 
-Likewise, v2 service rows carry the digest-pinned image reference itself. The
+Likewise, v2 Namespace service entries carry the digest-pinned image reference itself. The
 old pushed-image receipt index, including its per-platform manifest and image-id
 frames, belonged to the removed Control build-receipt path and is not a v2
 identity component. Mutable image tags must be resolved before replacement

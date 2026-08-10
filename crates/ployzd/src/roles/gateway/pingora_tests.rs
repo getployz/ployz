@@ -118,7 +118,7 @@ fn projection(hostname: &str, port: u16) -> GatewayProjection {
 
 fn upstream(port: u16, key: &str) -> GatewayUpstream {
     GatewayUpstream {
-        container_key: key.to_owned(),
+        endpoint_key: key.to_owned(),
         machine_id: MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
         address: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
     }

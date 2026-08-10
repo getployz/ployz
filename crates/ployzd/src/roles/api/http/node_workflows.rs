@@ -226,7 +226,7 @@ fn extend_unique(
     for container in additions {
         if !target
             .iter()
-            .any(|existing| existing.container_id == container.container_id)
+            .any(|existing| existing.identity == container.identity)
         {
             target.push(container);
         }
@@ -263,7 +263,6 @@ fn merge_completed_prepare(
     extend_unique(
         candidates,
         replicas.into_iter().map(|replica| DeployObservedContainer {
-            container_id: replica.container_id,
             identity: replica.identity,
             running: true,
             host_ports: Default::default(),
@@ -383,7 +382,7 @@ mod tests {
     use ployz_core::DeployPreparedReplica;
     use ployz_core::corrosion::{ControllerRevision, V2ManagedContainerIdentity};
     use ployz_core::deploy::{ImageReference, ReplicaSlot};
-    use ployz_core::ids::{ContainerId, MachineName};
+    use ployz_core::ids::MachineName;
     use ployz_core::network::MachineEndpointSubnet;
     use tempfile::TempDir;
 
@@ -452,7 +451,6 @@ mod tests {
             )
             .expect("image"),
             replicas: vec![DeployPreparedReplica {
-                container_id: ContainerId::try_new("candidate").expect("container"),
                 identity: identity.clone(),
                 ip: "10.210.20.2".parse().expect("ip"),
             }],

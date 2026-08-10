@@ -82,15 +82,6 @@ fn refusal_message(
             service_name.as_str(),
             attach_command(request, target)
         ),
-        RouteAttachRefusal::ServiceStoredRowUnselectable {
-            namespace_name,
-            service_name,
-        } => format!(
-            "service {}/{} exists but its row is invalid; inspect the services lens before retrying `{}`",
-            namespace_name.as_str(),
-            service_name.as_str(),
-            attach_command(request, target)
-        ),
         RouteAttachRefusal::HostnameAlreadyAttached {
             hostname, remove, ..
         } => format!(
@@ -203,10 +194,6 @@ mod tests {
             RouteAttachRefusal::ServiceNotFound {
                 namespace_name: namespace.clone(),
                 service_name: service.clone(),
-            },
-            RouteAttachRefusal::ServiceStoredRowUnselectable {
-                namespace_name: namespace,
-                service_name: service,
             },
             RouteAttachRefusal::HostnameAlreadyAttached {
                 hostname: hostname.clone(),

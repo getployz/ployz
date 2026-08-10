@@ -1,12 +1,13 @@
 //! Conversion from validated Corrosion rows into Core lens snapshots.
 
 use ployz_core::corrosion::{
-    ClusterDocument, ContainerDocument, MachineDocument, MachineStatusDocument, OperationDocument,
-    ServiceDocument, StoredRow, read_named_roster_rows, read_rows,
+    ClusterDocument, MachineDocument, MachineEndpointDocument, MachineStatusDocument,
+    NamespaceDocument, OperationDocument, StoredRow, read_named_roster_rows, read_named_rows,
+    read_rows, service_key,
 };
-use ployz_core::ids::{ClusterName, MachineName};
+use ployz_core::ids::{ClusterName, CorrosionNamespaceName, MachineName};
 use ployz_core::{
-    ApiRefusal, ContainerLensRow, LensSnapshot, MachineLensRow, MachineStatusLensRow,
+    ApiRefusal, EndpointLensRow, LensSnapshot, MachineLensRow, MachineStatusLensRow,
     OperationLensRow, ServiceLensRow,
 };
 
@@ -50,32 +51,44 @@ pub(super) fn services_snapshot(
     expected_cluster: &ClusterName,
     stored_rows: Vec<StoredRow>,
 ) -> LensSnapshot {
-    let report = read_rows::<ServiceDocument>(expected_cluster, stored_rows);
-    let mut rows = Vec::with_capacity(report.accepted.len());
+    let report = read_named_rows::<NamespaceDocument>(expected_cluster, stored_rows);
+    let mut rows = Vec::new();
     for accepted in report.accepted {
-        rows.push(ServiceLensRow {
-            key: accepted.source.key,
-            document: accepted.value,
-        });
+        let Ok(namespace_name) = CorrosionNamespaceName::try_new(accepted.source.key) else {
+            continue;
+        };
+        rows.extend(
+            accepted
+                .value
+                .services
+                .into_iter()
+                .map(|(service_name, document)| ServiceLensRow {
+                    key: service_key(&namespace_name, &service_name),
+                    document,
+                }),
+        );
     }
     rows.sort_by(|left, right| left.key.cmp(&right.key));
     LensSnapshot::Services { rows }
 }
 
-pub(super) fn containers_snapshot(
+pub(super) fn endpoints_snapshot(
     expected_cluster: &ClusterName,
     stored_rows: Vec<StoredRow>,
 ) -> LensSnapshot {
-    let report = read_rows::<ContainerDocument>(expected_cluster, stored_rows);
+    let report = read_rows::<MachineEndpointDocument>(expected_cluster, stored_rows);
     let mut rows = Vec::with_capacity(report.accepted.len());
     for accepted in report.accepted {
-        rows.push(ContainerLensRow {
-            id: accepted.source.key,
+        let Ok(machine_id) = MachineName::try_new(accepted.source.key) else {
+            continue;
+        };
+        rows.push(EndpointLensRow {
+            machine_id,
             document: accepted.value,
         });
     }
-    rows.sort_by(|left, right| left.id.cmp(&right.id));
-    LensSnapshot::Containers { rows }
+    rows.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+    LensSnapshot::Endpoints { rows }
 }
 
 pub(super) fn machine_status_snapshot(
@@ -136,24 +149,37 @@ mod tests {
         ClusterName::try_new(CLUSTER).expect("valid cluster fixture")
     }
 
-    fn service_row(id: &str, name: &str, image: &str) -> StoredRow {
+    fn namespace_row() -> StoredRow {
         StoredRow::new(
-            id,
+            NAMESPACE,
             serde_json::to_string(&json!({
                 "v": 1,
                 "cluster_id": CLUSTER,
                 "written_by": { "kind": "peer", "peer_id": PEER },
                 "written_at": "2026-08-04T10:00:00Z",
-                "namespace_id": NAMESPACE,
-                "name": name,
-                "image": image,
-                "env_fingerprints": {},
-                "mode": "replicated",
-                "replicas": 1,
-                "pinned_machines": [],
-                "active_deploy": OPERATION,
-                "previous_image": null,
-                "deployed_at": "2026-08-04T10:01:00Z"
+                "name": NAMESPACE,
+                "services": {
+                    "worker": {
+                        "image": "ghcr.io/acme/worker:latest",
+                        "env_fingerprints": {},
+                        "mode": "replicated",
+                        "replicas": 1,
+                        "pinned_machines": [],
+                        "active_deploy": OPERATION,
+                        "previous_image": null,
+                        "deployed_at": "2026-08-04T10:01:00Z"
+                    },
+                    "api": {
+                        "image": "ghcr.io/acme/api:latest",
+                        "env_fingerprints": {},
+                        "mode": "replicated",
+                        "replicas": 1,
+                        "pinned_machines": [],
+                        "active_deploy": OPERATION,
+                        "previous_image": null,
+                        "deployed_at": "2026-08-04T10:01:00Z"
+                    }
+                }
             }))
             .expect("fixture document JSON"),
         )
@@ -161,18 +187,12 @@ mod tests {
 
     #[test]
     fn services_snapshot_keeps_multiple_named_services_in_one_namespace() {
-        let snapshot = services_snapshot(
-            &cluster_id(),
-            vec![
-                service_row(WORKER_SERVICE, "worker", "ghcr.io/acme/worker:latest"),
-                service_row(API_SERVICE, "api", "ghcr.io/acme/api:latest"),
-            ],
-        );
+        let snapshot = services_snapshot(&cluster_id(), vec![namespace_row()]);
         let LensSnapshot::Services { rows } = snapshot else {
             panic!("expected services snapshot")
         };
         let [api, worker] = rows.as_slice() else {
-            panic!("expected two named service rows")
+            panic!("expected two named services")
         };
 
         assert_eq!(api.key, API_SERVICE);

@@ -229,9 +229,9 @@ fn project_rows(cluster_id: ployz_core::ids::ClusterName, rows: GatewayRows) -> 
         cluster_id,
         cluster: rows.cluster,
         machines: rows.machines,
-        services: rows.services,
+        namespaces: rows.namespaces,
         route_bindings: rows.route_bindings,
-        containers: rows.containers,
+        machine_endpoints: rows.machine_endpoints,
     })
 }
 

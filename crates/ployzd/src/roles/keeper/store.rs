@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use ployz_core::corrosion::{
-    ClusterDocument, ContainerDocument, MachineDocument, MachineStatusDocument, PeerDocument,
+    ClusterDocument, MachineDocument, MachineEndpointDocument, MachineStatusDocument, PeerDocument,
     ReadReport, SqliteParameter, SqliteValue, Statement, StoredRow, read_named_roster_rows,
     read_rows,
 };
@@ -28,13 +28,13 @@ pub(super) struct KeeperRosterSnapshot {
 #[derive(Debug)]
 pub(super) struct KeeperIsolationSnapshot {
     pub(super) cluster: ClusterDocument,
-    pub(super) containers: ReadReport<ContainerDocument>,
+    pub(super) machine_endpoints: ReadReport<MachineEndpointDocument>,
     pub(super) local_status: Option<MachineStatusDocument>,
 }
 
 pub(super) struct KeeperInvalidationStreams {
     pub(super) roster: KeeperRosterInvalidations,
-    pub(super) containers: KeeperContainerInvalidations,
+    pub(super) machine_endpoints: KeeperEndpointInvalidations,
 }
 
 pub(super) struct KeeperRosterInvalidations {
@@ -56,13 +56,13 @@ impl KeeperRosterInvalidations {
     }
 }
 
-pub(super) struct KeeperContainerInvalidations {
-    containers: SubscriptionStream,
+pub(super) struct KeeperEndpointInvalidations {
+    machine_endpoints: SubscriptionStream,
 }
 
-impl KeeperContainerInvalidations {
+impl KeeperEndpointInvalidations {
     pub(super) async fn next(&mut self) -> Result<(), KeeperStoreError> {
-        next_invalidation(&mut self.containers).await
+        next_invalidation(&mut self.machine_endpoints).await
     }
 }
 
@@ -141,22 +141,25 @@ impl KeeperCorrosion {
         })
     }
 
-    pub(super) async fn read_containers(
+    pub(super) async fn read_machine_endpoints(
         &self,
-    ) -> Result<ReadReport<ContainerDocument>, KeeperStoreError> {
-        let rows = query_container_rows(&self.client).await?;
-        Ok(read_rows::<ContainerDocument>(&self.cluster_id, rows))
+    ) -> Result<ReadReport<MachineEndpointDocument>, KeeperStoreError> {
+        let rows = query_machine_endpoint_rows(&self.client).await?;
+        Ok(read_rows::<MachineEndpointDocument>(&self.cluster_id, rows))
     }
 
     pub(super) async fn read_isolation(&self) -> Result<KeeperIsolationSnapshot, KeeperStoreError> {
         let cluster = query_rows(&self.client, cluster_statement(&self.cluster_id));
-        let containers = query_container_rows(&self.client);
+        let machine_endpoints = query_machine_endpoint_rows(&self.client);
         let status = query_rows(&self.client, local_status_statement(&self.local_machine_id));
-        let (cluster_rows, container_rows, status_rows) =
-            tokio::try_join!(cluster, containers, status)?;
+        let (cluster_rows, machine_endpoint_rows, status_rows) =
+            tokio::try_join!(cluster, machine_endpoints, status)?;
         let cluster = accepted_cluster(&self.cluster_id, cluster_rows)?;
         Ok(KeeperIsolationSnapshot {
-            containers: read_rows::<ContainerDocument>(&self.cluster_id, container_rows),
+            machine_endpoints: read_rows::<MachineEndpointDocument>(
+                &self.cluster_id,
+                machine_endpoint_rows,
+            ),
             cluster,
             local_status: accepted_local_status(
                 &self.cluster_id,
@@ -173,14 +176,14 @@ impl KeeperCorrosion {
         let machine_statement = invalidation_statement("machines");
         let peer_statement = invalidation_statement("peers");
         let status_statement = local_status_statement(&self.local_machine_id);
-        let container_statement = invalidation_statement("containers");
+        let endpoint_statement = machine_endpoint_invalidation_statement();
         let cluster = self.client.subscribe(&cluster_statement);
         let machines = self.client.subscribe(&machine_statement);
         let peers = self.client.subscribe(&peer_statement);
         let status = self.client.subscribe(&status_statement);
-        let containers = self.client.subscribe(&container_statement);
-        let (cluster, machines, peers, status, containers) =
-            tokio::try_join!(cluster, machines, peers, status, containers)?;
+        let machine_endpoints = self.client.subscribe(&endpoint_statement);
+        let (cluster, machines, peers, status, machine_endpoints) =
+            tokio::try_join!(cluster, machines, peers, status, machine_endpoints)?;
         self.self_status_echoes
             .lock()
             .map_err(|_| KeeperStoreError::SelfStatusEchoPoisoned)?
@@ -193,7 +196,7 @@ impl KeeperCorrosion {
                 status,
                 self_status_echoes: Arc::clone(&self.self_status_echoes),
             },
-            containers: KeeperContainerInvalidations { containers },
+            machine_endpoints: KeeperEndpointInvalidations { machine_endpoints },
         })
     }
 
@@ -218,21 +221,24 @@ impl KeeperCorrosion {
     }
 }
 
-async fn query_container_rows(
+async fn query_machine_endpoint_rows(
     client: &CorrosionClient,
 ) -> Result<Vec<StoredRow>, KeeperStoreError> {
-    let capacity = usize::try_from(ployz_ebpf_common::MAX_ISOLATION_ENTRIES)
-        .expect("isolation map capacity fits usize");
-    let observation_limit = capacity.saturating_add(1);
-    let statement = container_observation_statement(observation_limit);
+    let statement = machine_endpoint_statement(MAX_KEEPER_ROWS);
     let mut stream = client.query(&statement).await?;
-    collect_stored_rows(&mut stream, StoredRowLimit::new(observation_limit))
+    collect_stored_rows(&mut stream, StoredRowLimit::new(MAX_KEEPER_ROWS))
         .await
         .map_err(KeeperStoreError::from)
 }
 
-fn container_observation_statement(limit: usize) -> Statement {
-    Statement::simple(format!("SELECT id, document FROM containers LIMIT {limit}"))
+fn machine_endpoint_statement(limit: usize) -> Statement {
+    Statement::simple(format!(
+        "SELECT id, document FROM machine_endpoints LIMIT {limit}"
+    ))
+}
+
+fn machine_endpoint_invalidation_statement() -> Statement {
+    Statement::simple("SELECT id, document FROM machine_endpoints".to_owned())
 }
 
 fn status_document_parameter(statement: &Statement) -> Option<String> {
@@ -376,12 +382,16 @@ mod tests {
 
     #[test]
     fn subscriptions_are_separate_and_status_is_local() {
-        for table in ["cluster", "machines", "peers", "containers"] {
+        for table in ["cluster", "machines", "peers"] {
             assert_eq!(
                 invalidation_statement(table),
                 Statement::simple(format!("SELECT id, document FROM {table}"))
             );
         }
+        assert_eq!(
+            machine_endpoint_invalidation_statement(),
+            Statement::simple("SELECT id, document FROM machine_endpoints".to_owned())
+        );
         let machine = MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine");
         assert!(matches!(
             local_status_statement(&machine),
@@ -390,12 +400,12 @@ mod tests {
     }
 
     #[test]
-    fn container_query_observes_one_row_beyond_shared_map_capacity() {
+    fn machine_endpoint_query_observes_one_row_beyond_shared_map_capacity() {
         let capacity = usize::try_from(ployz_ebpf_common::MAX_ISOLATION_ENTRIES).expect("capacity");
         assert_eq!(
-            container_observation_statement(capacity + 1),
+            machine_endpoint_statement(capacity + 1),
             Statement::simple(format!(
-                "SELECT id, document FROM containers LIMIT {}",
+                "SELECT id, document FROM machine_endpoints LIMIT {}",
                 capacity + 1
             ))
         );

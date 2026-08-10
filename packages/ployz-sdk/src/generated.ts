@@ -55,33 +55,15 @@ export type ClusterName = Brand<string, "ClusterName">;
 
 export type ContainerCommand = Array<string>;
 
-export type ContainerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName,
-/**
- * Docker-owned runtime handle; it is evidence, not the Corrosion key.
- */
-runtime_id: ContainerId, machine_id: MachineName, namespace_id: CorrosionNamespaceName, service_name: CorrosionServiceName,
-/**
- * Stable replica identity used to authorize logs and exact retirement.
- */
-replica_slot: ReplicaSlot, ip: string, deploy: DeployName, };
-
 export type ContainerEntrypoint = "clear" | { "argv": ContainerCommand };
 
 export type ContainerHealthcheck = { test: ContainerHealthcheckTest, interval?: HealthcheckDurationNanos | null, timeout?: HealthcheckDurationNanos | null, retries?: HealthcheckRetries | null, start_period?: HealthcheckDurationNanos | null, };
 
 export type ContainerHealthcheckTest = "inherit" | "disable" | { "exec": ContainerCommand } | { "shell": HealthcheckShellCommand };
 
-export type ContainerId = Brand<string, "ContainerId">;
-
 export type ContainerIsolationDegradationReason = { "kind": "missing_control_program", path: string, } | { "kind": "missing_bytecode", path: string, } | { "kind": "missing_bpffs", path: string, } | { "kind": "missing_cgroup_v2", path: string, } | { "kind": "desired_set_too_large", desired: number, capacity: number, } | { "kind": "host_effect", message: string, };
 
 export type ContainerIsolationTestimony = { "state": "converged", attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp, entries: number, } | { "state": "degraded", attempted_at: CorrosionTimestamp, last_successful_converge: CorrosionTimestamp | null, reason: ContainerIsolationDegradationReason, };
-
-export type ContainerLensRow = {
-/**
- * Namespace/deploy/machine/slot composite Corrosion key.
- */
-id: string, document: ContainerDocument, };
 
 export type ContainerMountPath = Brand<string, "ContainerMountPath">;
 
@@ -119,7 +101,7 @@ export type CorrosionRetryAfterSeconds = SafeInteger<"CorrosionRetryAfterSeconds
 
 export type CorrosionServiceName = Brand<string, "CorrosionServiceName">;
 
-export type CorrosionTable = "cluster" | "machines" | "peers" | "tokens" | "namespaces" | "services" | "route_bindings" | "controller" | "containers" | "machine_status" | "gateway_observations" | "operations" | "cert_holdings" | "acme_http01";
+export type CorrosionTable = "cluster" | "machines" | "peers" | "tokens" | "namespaces" | "route_bindings" | "controller" | "machine_endpoints" | "machine_status" | "gateway_observations" | "operations" | "cert_holdings" | "acme_http01";
 
 export type CorrosionTimestamp = Brand<string, "CorrosionTimestamp">;
 
@@ -142,14 +124,15 @@ export type DeployServiceRequest = { image: ImageReference,
  */
 credential?: RegistryCredential | null, runtime: ContainerRuntimeSpec, health_gate: HealthGatePolicy,
 /**
- * `None` inherits the incumbent row's placement, or one replica on a
- * first deploy.
+ * Omission selects the fixed replicated/one default. A deploy is a
+ * complete snapshot and never inherits an incumbent service's mode.
  */
 placement?: RequestedPlacement | null,
 /**
- * `None` inherits the incumbent row's pin set unchanged.
+ * Omission selects the fixed unpinned default. A deploy is a complete
+ * snapshot and never inherits incumbent machine pins.
  */
-machines?: RequestedPins | null, };
+machines?: PinnedMachineNames | null, };
 
 export type DeployServices = Record<CorrosionServiceName, DeployServiceRequest>;
 
@@ -185,6 +168,8 @@ export type EbpfMeshDegradationReason = { "kind": "missing_bridge", ifname: stri
 
 export type EbpfMeshDegraded = { reason: EbpfMeshDegradationReason, };
 
+export type EndpointLensRow = { machine_id: MachineName, document: MachineEndpointDocument, };
+
 export type EnvName = Brand<string, "EnvName">;
 
 export type EnvValue = Brand<string, "EnvValue">;
@@ -215,7 +200,7 @@ export type GatewayProcessHealth = { last_attempt: GatewayProcessAttempt | null,
 
 export type GatewayProjectionAggregateFailure = { input: GatewayProjectionInputKind, rejected_rows: number, };
 
-export type GatewayProjectionInputKind = "cluster" | "machines" | "services" | "route_bindings" | "containers";
+export type GatewayProjectionInputKind = "cluster" | "machines" | "namespaces" | "route_bindings" | "machine_endpoints";
 
 export type GatewayRouteAvailability = { "state": "serving", upstream_count: number, } | { "state": "unavailable", reason: GatewayRouteUnavailableReason, };
 
@@ -295,15 +280,21 @@ export type JoinTokenTtlSeconds = SafeInteger<"JoinTokenTtlSeconds">;
 
 export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "v2.machine_endpoint" | "v2.machine_upgrade" | "v2.machine_remove" | "v2.join_door" | "v2.namespace_primitives" | "v2.deploy" | "v2.operation_status" | "v2.logs" | "v2.diagnostics" | "v2.peer_remove" | "v2.service_remove" | "v2.route_remove" | "v2.route_attach";
 
-export type LensCollection = "machines" | "services" | "containers" | "machine_status" | "operations";
+export type LensCollection = "machines" | "services" | "endpoints" | "machine_status" | "operations";
 
-export type LensSnapshot = { "collection": "machines", cluster: ClusterDocument, rows: Array<MachineLensRow>, } | { "collection": "services", rows: Array<ServiceLensRow>, } | { "collection": "containers", rows: Array<ContainerLensRow>, } | { "collection": "machine_status", rows: Array<MachineStatusLensRow>, } | { "collection": "operations", rows: Array<OperationLensRow>, };
+export type LensSnapshot = { "collection": "machines", cluster: ClusterDocument, rows: Array<MachineLensRow>, } | { "collection": "services", rows: Array<ServiceLensRow>, } | { "collection": "endpoints", rows: Array<EndpointLensRow>, } | { "collection": "machine_status", rows: Array<MachineStatusLensRow>, } | { "collection": "operations", rows: Array<OperationLensRow>, };
 
 export type LensWatchEvent = { "kind": "snapshot", snapshot: LensSnapshot, } | { "kind": "state", snapshot: LensSnapshot, } | { "kind": "terminal", refusal: ApiRefusal, };
 
 export type LinuxCapability = Brand<string, "LinuxCapability">;
 
 export type MachineDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, name: MachineName, lifecycle: MachineLifecycle, transport: MachineTransport, storage: MachineStorageSelection, written_by: Principal, written_at: CorrosionTimestamp, };
+
+export type MachineEndpointDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, machine_id: MachineName, observed_at: CorrosionTimestamp,
+/**
+ * Complete routable endpoint testimony from this machine's Docker reality.
+ */
+endpoints: Array<ServiceEndpoint>, };
 
 export type MachineEndpointSetRefusal = { "kind": "not_found", machine_name: MachineName, } | { "kind": "endpoint_port_zero", machine_name: MachineName, } | { "kind": "provider_does_not_use_wireguard", machine_id: MachineName, };
 
@@ -327,7 +318,7 @@ export type MachineLoadBand = "idle" | "normal" | "hot";
 
 export type MachineName = Brand<string, "MachineName">;
 
-export type MachineRemoveRefusal = { "kind": "not_found", machine_name: MachineName, };
+export type MachineRemoveRefusal = { "kind": "not_found", machine_name: MachineName, } | { "kind": "concurrent_mutation", machine_name: MachineName, };
 
 export type MachineRemoveReply = { "kind": "removed", machine_name: MachineName, };
 
@@ -387,7 +378,11 @@ export type MeshProvider = "builtin_wireguard" | "tailscale";
 
 export type NamedRemovalOutcome = "removed" | "already_absent";
 
-export type NamespaceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, name: CorrosionNamespaceName, written_by: Principal, written_at: CorrosionTimestamp, };
+export type NamespaceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, name: CorrosionNamespaceName,
+/**
+ * The complete service intent published by one namespace deploy.
+ */
+services: { [key in CorrosionServiceName]: PublishedService }, written_by: Principal, written_at: CorrosionTimestamp, };
 
 export type NanoCpus = SafeInteger<"NanoCpus">;
 
@@ -423,6 +418,12 @@ export type PlacementRefusal = { "kind": "no_eligible_machines", eliminations: A
 
 export type Principal = { "kind": "machine", machine_id: MachineName, } | { "kind": "peer", peer_id: PeerName, } | { "kind": "api_token", token_id: TokenName, };
 
+export type PublishedService = { image: ImageReference, env_fingerprints: { [key in string]: Sha256Hex }, pinned_machines: Array<MachineName>, active_deploy: DeployName, previous_image: ImageReference | null, deployed_at: CorrosionTimestamp, } & ({ "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global",
+/**
+ * Host-published ports; an absent field reads as none published.
+ */
+host_ports?: HostPortBindings, });
+
 export type ReachableSeedMachine = { machine_id: MachineName, transport: MachineTransport, };
 
 export type RegistryCredential = { "kind": "basic", username: RegistryCredentialUsername, password: RegistryCredentialSecret, } | { "kind": "identity_token", token: RegistryCredentialSecret, };
@@ -435,15 +436,13 @@ export type ReplicaSlot = { "kind": "replicated", number: ReplicatedReplicaSlot,
 
 export type ReplicatedReplicaSlot = SafeInteger<"ReplicatedReplicaSlot">;
 
-export type RequestedPins = { "kind": "machines", names: PinnedMachineNames, } | { "kind": "any" };
-
-export type RequestedPlacement = { "mode": "replicas", replicas: ServiceReplicaCount, } | { "mode": "replicated", replicas?: ServiceReplicaCount | null, } | { "mode": "global", host_ports?: HostPortBindings, };
+export type RequestedPlacement = { "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global", host_ports?: HostPortBindings, };
 
 export type RosterMemberId = { "kind": "machine", machine_id: MachineName, } | { "kind": "peer", peer_id: PeerName, };
 
 export type RouteAttachOutcome = "attached" | "already_attached";
 
-export type RouteAttachRefusal = { "kind": "unsupported_ingress_mode", requested: IngressMode, } | { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, } | { "kind": "namespace_stored_row_unselectable", namespace_name: CorrosionNamespaceName, } | { "kind": "service_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "service_stored_row_unselectable", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "hostname_already_attached", hostname: RouteHostname, remove: RouteRemoveRequest, };
+export type RouteAttachRefusal = { "kind": "unsupported_ingress_mode", requested: IngressMode, } | { "kind": "namespace_not_found", namespace_name: CorrosionNamespaceName, } | { "kind": "namespace_stored_row_unselectable", namespace_name: CorrosionNamespaceName, } | { "kind": "service_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "hostname_already_attached", hostname: RouteHostname, remove: RouteRemoveRequest, };
 
 export type RouteAttachReply = { outcome: RouteAttachOutcome, };
 
@@ -463,15 +462,11 @@ export type RouteRemoveReply = { hostname: RouteHostname, outcome: NamedRemovalO
 
 export type RouteRemoveRequest = { hostname: RouteHostname, };
 
-export type ServiceDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, namespace_id: CorrosionNamespaceName, name: CorrosionServiceName, image: ImageReference, env_fingerprints: { [key in string]: Sha256Hex }, pinned_machines: Array<MachineName>, active_deploy: DeployName, previous_image: ImageReference | null, deployed_at: CorrosionTimestamp, written_by: Principal, written_at: CorrosionTimestamp, } & ({ "mode": "replicated", replicas: ServiceReplicaCount, } | { "mode": "global",
-/**
- * Host-published ports; an absent field reads as none published.
- */
-host_ports?: HostPortBindings, });
+export type ServiceEndpoint = { namespace_id: CorrosionNamespaceName, service_name: CorrosionServiceName, replica_slot: ReplicaSlot, ip: string, deploy: DeployName, };
 
 export type ServiceEnvironment = Record<EnvName, EnvValue>;
 
-export type ServiceLensRow = { key: string, document: ServiceDocument, };
+export type ServiceLensRow = { key: string, document: PublishedService, };
 
 export type ServiceLogLine = { stream: ServiceLogStream, line: string, };
 
@@ -479,7 +474,7 @@ export type ServiceLogStream = "stdout" | "stderr";
 
 export type ServiceLogsFollowEvent = { "kind": "line", log: ServiceLogLine, } | { "kind": "gap" } | { "kind": "terminal", refusal: ServiceLogsRefusal, };
 
-export type ServiceLogsRefusal = { "kind": "service_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "unmanaged_container", container_id: ContainerId, } | { "kind": "machine_selector_required", machines: Array<MachineName>, } | { "kind": "hosting_machines_unresolved", machine_ids: Array<MachineName>, } | { "kind": "remote_owner", machine_id: MachineName,
+export type ServiceLogsRefusal = { "kind": "service_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_ambiguous", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "machine_selector_required", machines: Array<MachineName>, } | { "kind": "remote_owner", machine_id: MachineName,
 /**
  * `None` when the owning machine's roster row is no longer readable.
  */
@@ -494,11 +489,11 @@ machine?: MachineName | null, };
 
 export type ServiceLogsTailReply = { lines: Array<ServiceLogLine>, truncated: boolean, };
 
-export type ServiceRemoveRowRefusal = { "kind": "not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "stored_row_unselectable", key: string, } | { "kind": "concurrent_mutation", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, };
+export type ServiceRemoveRefusal = { "kind": "not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "namespace_stored_row_unselectable", namespace_name: CorrosionNamespaceName, } | { "kind": "concurrent_mutation", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, };
 
-export type ServiceRemoveRowReply = { namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, outcome: NamedRemovalOutcome, };
+export type ServiceRemoveReply = { namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, outcome: NamedRemovalOutcome, };
 
-export type ServiceRemoveRowRequest = { namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, };
+export type ServiceRemoveRequest = { namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, };
 
 export type ServiceReplicaCount = SafeInteger<"ServiceReplicaCount">;
 
@@ -544,7 +539,7 @@ export type TokenListScope = "live" | "all";
 
 export type TokenName = Brand<string, "TokenName">;
 
-export type TokenRevokeRefusal = { "kind": "not_found", token_id: TokenName, };
+export type TokenRevokeRefusal = { "kind": "not_found", token_id: TokenName, } | { "kind": "concurrent_mutation", token_id: TokenName, };
 
 export type TokenRevokeReply = { token_id: TokenName, };
 

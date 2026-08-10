@@ -73,12 +73,19 @@ pub(super) struct AcceptedMachine {
 pub(super) struct MachineRemovalCandidate {
     pub(super) id: MachineName,
     pub(super) name: ployz_core::machine::MachineName,
+    pub(super) stored_document: String,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct AcceptedPeer {
     pub(super) id: PeerName,
     pub(super) document: PeerDocument,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AcceptedToken {
+    pub(super) stored_document: String,
+    pub(super) document: TokenDocument,
 }
 
 pub(super) async fn read_accepted_roster(
@@ -181,6 +188,7 @@ fn accepted_machine_rows(
         .map(|machine| MachineRemovalCandidate {
             id: machine.id.clone(),
             name: machine.document.name.clone(),
+            stored_document: machine.stored_document.clone(),
         })
         .collect::<Vec<_>>();
     Ok(AcceptedMachineRows {
@@ -237,7 +245,7 @@ pub(super) async fn read_token(
     corrosion: &CorrosionClient,
     cluster_id: &ClusterName,
     token_id: &TokenName,
-) -> Result<Option<TokenDocument>, MutationStoreError> {
+) -> Result<Option<AcceptedToken>, MutationStoreError> {
     let rows = query_rows(
         corrosion,
         select_by_id(CorrosionTable::Tokens, token_id.as_str()),
@@ -245,7 +253,10 @@ pub(super) async fn read_token(
     .await?;
     let report = read_rows::<TokenDocument>(cluster_id, rows);
     let mut accepted = report.accepted.into_iter();
-    let token = accepted.next().map(|row| row.value);
+    let token = accepted.next().map(|row| AcceptedToken {
+        stored_document: row.source.document,
+        document: row.value,
+    });
     if accepted.next().is_some() {
         return Err(MutationStoreError::DuplicatePrimaryKey {
             table: CorrosionTable::Tokens,
@@ -495,25 +506,33 @@ pub(super) async fn update_wireguard_endpoint_if_matches(
     }
 }
 
-pub(super) async fn delete_token(
+pub(super) async fn delete_token_if_matches(
     corrosion: &CorrosionClient,
     token_id: &TokenName,
-) -> Result<(), MutationStoreError> {
-    corrosion
-        .execute(&[delete_token_statement(token_id)])
+    expected: String,
+) -> Result<ConditionalNamedDelete, MutationStoreError> {
+    let response = corrosion
+        .execute(&[delete_token_if_matches_statement(token_id, expected)])
         .await?;
-    Ok(())
+    conditional_delete_outcome(CorrosionTable::Tokens, token_id.as_str(), &response, 1, 0)
 }
 
-/// Deletes the resolved roster row before every testimony row that identity
-/// authored. The fixed batch deliberately never touches operation evidence.
+/// Sweeps testimony only while the exact resolved roster row exists, then
+/// deletes that row last. The fixed batch never touches operation evidence.
 pub(super) async fn remove_machine_and_sweep(
     corrosion: &CorrosionClient,
     machine_id: &MachineName,
-) -> Result<(), MutationStoreError> {
-    let statements = machine_removal_statements(machine_id);
-    corrosion.execute(&statements).await?;
-    Ok(())
+    expected: &str,
+) -> Result<ConditionalNamedDelete, MutationStoreError> {
+    let statements = machine_removal_statements(machine_id, expected);
+    let response = corrosion.execute(&statements).await?;
+    conditional_delete_outcome(
+        CorrosionTable::Machines,
+        machine_id.as_str(),
+        &response,
+        statements.len(),
+        statements.len() - 1,
+    )
 }
 
 pub(super) async fn delete_machine_if_matches(
@@ -582,11 +601,28 @@ fn conditional_named_delete_outcome(
     id: &str,
     response: &TransactionResponse,
 ) -> Result<ConditionalNamedDelete, MutationStoreError> {
-    let [result] = response.results.as_slice() else {
+    conditional_delete_outcome(table, id, response, 1, 0)
+}
+
+fn conditional_delete_outcome(
+    table: CorrosionTable,
+    id: &str,
+    response: &TransactionResponse,
+    expected_results: usize,
+    guarded_result: usize,
+) -> Result<ConditionalNamedDelete, MutationStoreError> {
+    if response.results.len() != expected_results {
         return Err(MutationStoreError::UnexpectedWriteResult {
             table,
             id: id.to_owned(),
             detail: format!("transaction returned {} results", response.results.len()),
+        });
+    }
+    let Some(result) = response.results.get(guarded_result) else {
+        return Err(MutationStoreError::UnexpectedWriteResult {
+            table,
+            id: id.to_owned(),
+            detail: "conditional statement result was missing".to_owned(),
         });
     };
     let TransactionResult::Success(result) = result else {
@@ -609,14 +645,13 @@ fn conditional_named_delete_outcome(
 
 fn ensure_named_removal_table(table: CorrosionTable, id: &str) -> Result<(), MutationStoreError> {
     match table {
-        CorrosionTable::Peers
-        | CorrosionTable::Namespaces
-        | CorrosionTable::Services
-        | CorrosionTable::RouteBindings => Ok(()),
+        CorrosionTable::Peers | CorrosionTable::Namespaces | CorrosionTable::RouteBindings => {
+            Ok(())
+        }
         CorrosionTable::Cluster
         | CorrosionTable::Machines
         | CorrosionTable::Tokens
-        | CorrosionTable::Containers
+        | CorrosionTable::MachineEndpoints
         | CorrosionTable::MachineStatus
         | CorrosionTable::GatewayObservations
         | CorrosionTable::Operations
@@ -635,14 +670,12 @@ fn ensure_exact_row_removal_table(
     id: &str,
 ) -> Result<(), MutationStoreError> {
     match table {
-        CorrosionTable::Namespaces | CorrosionTable::Services | CorrosionTable::RouteBindings => {
-            Ok(())
-        }
+        CorrosionTable::Namespaces | CorrosionTable::RouteBindings => Ok(()),
         CorrosionTable::Cluster
         | CorrosionTable::Machines
         | CorrosionTable::Peers
         | CorrosionTable::Tokens
-        | CorrosionTable::Containers
+        | CorrosionTable::MachineEndpoints
         | CorrosionTable::MachineStatus
         | CorrosionTable::GatewayObservations
         | CorrosionTable::Operations
@@ -851,47 +884,66 @@ fn conditional_machine_replace_outcome(
     }
 }
 
-fn delete_statement(table: CorrosionTable, id: &str) -> Statement {
-    Statement::with_params(
-        format!("DELETE FROM {} WHERE id = ?", table.as_str()),
-        vec![SqliteParameter::Text(id.to_owned())],
-    )
+fn delete_token_if_matches_statement(token_id: &TokenName, expected: String) -> Statement {
+    conditional_delete_statement(CorrosionTable::Tokens, token_id.as_str(), expected)
 }
 
-fn delete_token_statement(token_id: &TokenName) -> Statement {
-    delete_statement(CorrosionTable::Tokens, token_id.as_str())
-}
-
-fn machine_removal_statements(machine_id: &MachineName) -> [Statement; 6] {
+fn machine_removal_statements(machine_id: &MachineName, expected: &str) -> [Statement; 6] {
     [
-        delete_statement(CorrosionTable::Machines, machine_id.as_str()),
-        delete_testimony_for_machine_statement(CorrosionTable::MachineStatus, machine_id),
-        delete_testimony_for_machine_statement(CorrosionTable::GatewayObservations, machine_id),
-        delete_testimony_for_machine_statement(CorrosionTable::Containers, machine_id),
-        delete_testimony_for_machine_statement(CorrosionTable::CertHoldings, machine_id),
-        delete_testimony_for_machine_statement(CorrosionTable::AcmeHttp01, machine_id),
+        delete_testimony_for_machine_statement(CorrosionTable::MachineStatus, machine_id, expected),
+        delete_testimony_for_machine_statement(
+            CorrosionTable::GatewayObservations,
+            machine_id,
+            expected,
+        ),
+        delete_testimony_for_machine_statement(
+            CorrosionTable::MachineEndpoints,
+            machine_id,
+            expected,
+        ),
+        delete_testimony_for_machine_statement(CorrosionTable::CertHoldings, machine_id, expected),
+        delete_testimony_for_machine_statement(CorrosionTable::AcmeHttp01, machine_id, expected),
+        conditional_delete_statement(
+            CorrosionTable::Machines,
+            machine_id.as_str(),
+            expected.to_owned(),
+        ),
     ]
 }
 
 fn delete_testimony_for_machine_statement(
     table: CorrosionTable,
     machine_id: &MachineName,
+    expected: &str,
 ) -> Statement {
     match table {
         CorrosionTable::MachineStatus
         | CorrosionTable::GatewayObservations
-        | CorrosionTable::Containers
         | CorrosionTable::CertHoldings
         | CorrosionTable::AcmeHttp01 => Statement::with_params(
-            format!("DELETE FROM {} WHERE machine_id = ?", table.as_str()),
-            vec![SqliteParameter::Text(machine_id.as_str().to_owned())],
+            format!(
+                "DELETE FROM {} WHERE machine_id = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+                table.as_str()
+            ),
+            vec![
+                SqliteParameter::Text(machine_id.as_str().to_owned()),
+                SqliteParameter::Text(machine_id.as_str().to_owned()),
+                SqliteParameter::Text(expected.to_owned()),
+            ],
+        ),
+        CorrosionTable::MachineEndpoints => Statement::with_params(
+            "DELETE FROM machine_endpoints WHERE id = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+            vec![
+                SqliteParameter::Text(machine_id.as_str().to_owned()),
+                SqliteParameter::Text(machine_id.as_str().to_owned()),
+                SqliteParameter::Text(expected.to_owned()),
+            ],
         ),
         CorrosionTable::Cluster
         | CorrosionTable::Machines
         | CorrosionTable::Peers
         | CorrosionTable::Tokens
         | CorrosionTable::Namespaces
-        | CorrosionTable::Services
         | CorrosionTable::RouteBindings
         | CorrosionTable::Operations
         | CorrosionTable::Controller => {
@@ -1036,13 +1088,6 @@ mod tests {
                 ],
             )
         );
-        assert_eq!(
-            delete_statement(CorrosionTable::Tokens, id),
-            Statement::with_params(
-                "DELETE FROM tokens WHERE id = ?",
-                vec![SqliteParameter::Text(id.to_owned())],
-            )
-        );
     }
 
     #[test]
@@ -1052,16 +1097,11 @@ mod tests {
         for table in [
             CorrosionTable::Peers,
             CorrosionTable::Namespaces,
-            CorrosionTable::Services,
             CorrosionTable::RouteBindings,
         ] {
             ensure_named_removal_table(table, id).expect("named table is removable");
         }
-        for table in [
-            CorrosionTable::Namespaces,
-            CorrosionTable::Services,
-            CorrosionTable::RouteBindings,
-        ] {
+        for table in [CorrosionTable::Namespaces, CorrosionTable::RouteBindings] {
             ensure_exact_row_removal_table(table, id).expect("ordinary named table is removable");
             assert_eq!(
                 conditional_delete_statement(table, id, document.to_owned()),
@@ -1124,7 +1164,7 @@ mod tests {
             CorrosionTable::Cluster,
             CorrosionTable::Machines,
             CorrosionTable::Tokens,
-            CorrosionTable::Containers,
+            CorrosionTable::MachineEndpoints,
             CorrosionTable::MachineStatus,
             CorrosionTable::Operations,
             CorrosionTable::CertHoldings,
@@ -1152,36 +1192,38 @@ mod tests {
     }
 
     #[test]
-    fn machine_removal_is_one_parameterized_roster_first_testimony_batch() {
+    fn machine_removal_sweeps_only_while_the_exact_observed_roster_row_exists() {
         let machine_id = MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("machine id");
-        let statements = machine_removal_statements(&machine_id);
+        let observed = r#"{"name":"edge-a"}"#;
+        let statements = machine_removal_statements(&machine_id, observed);
         let parameter = SqliteParameter::Text(machine_id.as_str().to_owned());
+        let expected = SqliteParameter::Text(observed.to_owned());
         assert_eq!(
             statements,
             [
                 Statement::with_params(
-                    "DELETE FROM machines WHERE id = ?",
-                    vec![parameter.clone()],
+                    "DELETE FROM machine_status WHERE machine_id = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+                    vec![parameter.clone(), parameter.clone(), expected.clone()],
                 ),
                 Statement::with_params(
-                    "DELETE FROM machine_status WHERE machine_id = ?",
-                    vec![parameter.clone()],
+                    "DELETE FROM gateway_observations WHERE machine_id = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+                    vec![parameter.clone(), parameter.clone(), expected.clone()],
                 ),
                 Statement::with_params(
-                    "DELETE FROM gateway_observations WHERE machine_id = ?",
-                    vec![parameter.clone()],
+                    "DELETE FROM machine_endpoints WHERE id = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+                    vec![parameter.clone(), parameter.clone(), expected.clone()],
                 ),
                 Statement::with_params(
-                    "DELETE FROM containers WHERE machine_id = ?",
-                    vec![parameter.clone()],
+                    "DELETE FROM cert_holdings WHERE machine_id = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+                    vec![parameter.clone(), parameter.clone(), expected.clone()],
                 ),
                 Statement::with_params(
-                    "DELETE FROM cert_holdings WHERE machine_id = ?",
-                    vec![parameter.clone()],
+                    "DELETE FROM acme_http01 WHERE machine_id = ? AND EXISTS (SELECT 1 FROM machines WHERE id = ? AND document = ?)",
+                    vec![parameter.clone(), parameter.clone(), expected.clone()],
                 ),
                 Statement::with_params(
-                    "DELETE FROM acme_http01 WHERE machine_id = ?",
-                    vec![parameter],
+                    "DELETE FROM machines WHERE id = ? AND document = ?",
+                    vec![parameter, expected],
                 ),
             ]
         );
@@ -1193,6 +1235,82 @@ mod tests {
             !statements.contains(&operations_sentinel),
             "machine removal must preserve operation evidence"
         );
+
+        for (rows_affected, expected_outcome) in [
+            (0, ConditionalNamedDelete::ConcurrentMutation),
+            (1, ConditionalNamedDelete::Deleted),
+        ] {
+            let mut results = (0..5)
+                .map(|_| {
+                    TransactionResult::Success(TransactionSuccess {
+                        rows_affected: 0,
+                        time: 0.01,
+                    })
+                })
+                .collect::<Vec<_>>();
+            results.push(TransactionResult::Success(TransactionSuccess {
+                rows_affected,
+                time: 0.01,
+            }));
+            let response = TransactionResponse {
+                results,
+                time: 0.01,
+                version: None,
+                actor_id: None,
+            };
+            assert_eq!(
+                conditional_delete_outcome(
+                    CorrosionTable::Machines,
+                    machine_id.as_str(),
+                    &response,
+                    6,
+                    5,
+                )
+                .expect("the final exact delete decides the batch outcome"),
+                expected_outcome,
+            );
+        }
+    }
+
+    #[test]
+    fn token_revocation_is_fenced_by_the_exact_observed_document() {
+        let token_id = TokenName::try_new("bootstrap").expect("token id");
+        assert_eq!(
+            delete_token_if_matches_statement(&token_id, "observed".to_owned()),
+            Statement::with_params(
+                "DELETE FROM tokens WHERE id = ? AND document = ?",
+                vec![
+                    SqliteParameter::Text("bootstrap".to_owned()),
+                    SqliteParameter::Text("observed".to_owned()),
+                ],
+            )
+        );
+
+        for (rows_affected, expected) in [
+            (0, ConditionalNamedDelete::ConcurrentMutation),
+            (1, ConditionalNamedDelete::Deleted),
+        ] {
+            let response = TransactionResponse {
+                results: vec![TransactionResult::Success(TransactionSuccess {
+                    rows_affected,
+                    time: 0.01,
+                })],
+                time: 0.01,
+                version: None,
+                actor_id: None,
+            };
+            assert_eq!(
+                conditional_delete_outcome(
+                    CorrosionTable::Tokens,
+                    token_id.as_str(),
+                    &response,
+                    1,
+                    0,
+                )
+                .expect("zero and one row are typed outcomes"),
+                expected,
+            );
+        }
     }
 
     #[test]
@@ -1447,8 +1565,12 @@ mod tests {
             )
         );
         assert_eq!(
-            delete_token_statement(&token_id),
-            delete_statement(CorrosionTable::Tokens, token_id.as_str())
+            delete_token_if_matches_statement(&token_id, "{}".to_owned()),
+            conditional_delete_statement(
+                CorrosionTable::Tokens,
+                token_id.as_str(),
+                "{}".to_owned()
+            )
         );
         assert_eq!(
             delete_peer_if_matches_statement(&peer_id, "{}".to_owned()),

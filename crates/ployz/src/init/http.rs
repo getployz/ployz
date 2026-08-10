@@ -145,7 +145,7 @@ impl HttpFoundingControlPlane {
         self.retry_until_ready(|snapshot| match snapshot {
             LensSnapshot::Machines { rows, .. } => rows.iter().any(|row| row.id == *machine_id),
             LensSnapshot::Services { .. }
-            | LensSnapshot::Containers { .. }
+            | LensSnapshot::Endpoints { .. }
             | LensSnapshot::MachineStatus { .. }
             | LensSnapshot::Operations { .. } => false,
         })

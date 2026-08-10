@@ -74,7 +74,7 @@ pub enum DeployExecutionError {
         deploy_name: String,
     },
     #[error(
-        "named-volume redeploy is unsupported; remove the service row and local runtime explicitly before deploying again"
+        "named-volume redeploy is unsupported; remove the service and local runtime explicitly before deploying again"
     )]
     NamedVolumeRedeployUnsupported,
     #[error(
@@ -182,10 +182,10 @@ mod tests {
 
     #[test]
     fn deploy_request_forwards_placement_and_pins_only_when_commanded() {
-        let inherit = serde_json::to_value(deploy_request(&command(HealthGatePolicy::Enforce)))
+        let omitted = serde_json::to_value(deploy_request(&command(HealthGatePolicy::Enforce)))
             .expect("deploy request serializes");
-        assert_eq!(first_service(&inherit).get("placement"), None);
-        assert_eq!(first_service(&inherit).get("machines"), None);
+        assert_eq!(first_service(&omitted).get("placement"), None);
+        assert_eq!(first_service(&omitted).get("machines"), None);
 
         let mut placed = command(HealthGatePolicy::Enforce);
         let service = placed
@@ -193,11 +193,16 @@ mod tests {
             .get_mut(&CorrosionServiceName::try_new("web").expect("service"))
             .expect("one service");
         service.placement = Some(ployz_core::RequestedPlacement::Replicated {
-            replicas: Some(
-                ployz_core::corrosion::ServiceReplicaCount::try_new(3).expect("replica count"),
-            ),
+            replicas: ployz_core::corrosion::ServiceReplicaCount::try_new(3)
+                .expect("replica count"),
         });
-        service.machines = Some(ployz_core::RequestedPins::Any);
+        service.machines = Some(
+            ployz_core::PinnedMachineNames::try_new([ployz_core::ids::MachineName::try_new(
+                "edge-a",
+            )
+            .expect("machine")])
+            .expect("pins"),
+        );
         let body =
             serde_json::to_value(deploy_request(&placed)).expect("deploy request serializes");
         assert_eq!(
@@ -206,7 +211,7 @@ mod tests {
         );
         assert_eq!(
             first_service(&body).get("machines"),
-            Some(&serde_json::json!({ "kind": "any" }))
+            Some(&serde_json::json!(["edge-a"]))
         );
     }
 
@@ -216,7 +221,7 @@ mod tests {
 
         assert_eq!(
             DeployExecutionError::from(refusal).to_string(),
-            "named-volume redeploy is unsupported; remove the service row and local runtime explicitly before deploying again"
+            "named-volume redeploy is unsupported; remove the service and local runtime explicitly before deploying again"
         );
     }
 }

@@ -1,9 +1,9 @@
 # A Preferred Controller Serializes Cluster Mutations
 
-Ployz keeps Corrosion as the replicated cluster store and adds one small,
-disposable coordination point. A singleton Corrosion row names the preferred
-controller. Every machine still serves the API; a follower forwards cluster
-mutations to the named machine over bounded HTTP.
+Ployz keeps Corrosion as the replicated intent-and-publication surface and adds
+one small, disposable coordination point. A singleton Corrosion row names the
+preferred controller. Every machine still serves the API; a follower forwards
+cluster mutations to the named machine over bounded HTTP.
 
 The preferred controller is ordinary async Rust guarded by one in-memory
 mutation lock. It observes current rows and target hosts, computes a plan, and
@@ -11,8 +11,10 @@ dispatches bounded effects. It has no durable queue or workflow history.
 Overlapping mutations may be refused as `controller_busy` instead of waiting in
 a persisted scheduler.
 
-This is not a return to the Core. Corrosion remains the only replicated cluster
-store. There is no consensus leader, quorum, sequencer, claim service, or NATS.
+This is not a return to the Core. Corrosion remains the only replicated
+publication mechanism, while nodes answer live runtime questions from Docker
+over bounded RPC. There is no consensus leader, quorum, sequencer, claim
+service, or NATS.
 
 ## Controller appointment
 
@@ -41,19 +43,18 @@ host reality.
 
 ## Controller execution
 
-One deploy attempt is a plain function:
+One deploy attempt is a plain function, as amended by ADR 0043:
 
-1. read Corrosion and inspect target hosts;
-2. compute one placement from that fresh reality;
+1. read roster/config intent and inspect target hosts over bounded HTTP;
+2. compute one placement from the complete request and fresh host reality;
 3. ask each target node to prepare its local runtime;
-4. recheck the exact controller appointment, then publish the service,
-   container, and optional automatic-route rows in one ordinary Corrosion
-   transaction;
+4. recheck the exact controller appointment, then replace the namespace's one
+   complete serving-intent row and insert missing automatic routes;
 5. ask target nodes to retire exact obsolete runtime identities;
 6. publish the coarse terminal Operation result.
 
 The controller does not persist a plan, step machine, or recovery journal.
-Stable operation, service, replica, and container identities plus fresh
+Stable operation, service, and replica identities plus fresh
 inspection make retrying from reality safe enough for the small-cluster product.
 
 ## Node-local durable execution
@@ -113,16 +114,14 @@ reality.
 
 Named-volume support is intentionally one-shot. A namespace may receive its
 first volume-bearing service deploy, but a later volume-bearing deploy is
-refused synchronously while that service row exists. Replicated volume services
+refused synchronously while a different generation is present on an inspected node. Replicated volume services
 are limited to one replica; global mode still means one independent local
 volume per machine. A target also refuses a different deploy generation already
 present in that namespace, and the controller refuses debris reported by any
 responding machine, so a failed first attempt is not silently mounted beside a
 retry. There is no holder discovery, affinity, handoff, migration, or
-distributed volume fencing; an operator must remove the service row and its
-local runtime explicitly before starting over. Because the service row does not
-retain a runtime declaration, a later request that omits all mounts is treated
-as a stateless replacement and may leave the old local volume behind.
+distributed volume fencing; an operator must remove its local runtime
+explicitly before starting over.
 
 ## Failure and recovery
 

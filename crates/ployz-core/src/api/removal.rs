@@ -1,10 +1,10 @@
-//! Typed, synchronous removal contracts for named Corrosion rows.
+//! Typed, synchronous removal contracts for named resources.
 
 use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{
-    ClusterDocument, CorrosionServiceName, PeerDocument, RouteBindingDocument, ServiceDocument,
-    StoredRow, read_roster_rows, read_rows, service_key,
+    ClusterDocument, CorrosionServiceName, NamespaceDocument, OperatorWriteProvenance,
+    PeerDocument, RouteBindingDocument, StoredRow, read_named_rows, read_roster_rows, read_rows,
 };
 use crate::ids::{CorrosionNamespaceName, PeerName};
 use crate::operation::RouteHostname;
@@ -87,14 +87,14 @@ pub enum RouteRemoveSelection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ServiceRemoveRowRequest {
+pub struct ServiceRemoveRequest {
     pub namespace_name: CorrosionNamespaceName,
     pub service_name: CorrosionServiceName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ServiceRemoveRowReply {
+pub struct ServiceRemoveReply {
     pub namespace_name: CorrosionNamespaceName,
     pub service_name: CorrosionServiceName,
     pub outcome: NamedRemovalOutcome,
@@ -103,13 +103,13 @@ pub struct ServiceRemoveRowReply {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ServiceRemoveRowRefusal {
+pub enum ServiceRemoveRefusal {
     NotFound {
         namespace_name: CorrosionNamespaceName,
         service_name: CorrosionServiceName,
     },
-    StoredRowUnselectable {
-        key: String,
+    NamespaceStoredRowUnselectable {
+        namespace_name: CorrosionNamespaceName,
     },
     ConcurrentMutation {
         namespace_name: CorrosionNamespaceName,
@@ -118,13 +118,15 @@ pub enum ServiceRemoveRowRefusal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServiceRemoveRowSelection {
-    Delete {
-        key: String,
+pub enum ServiceRemoveSelection {
+    Replace {
+        namespace_name: CorrosionNamespaceName,
         stored_document: String,
+        replacement_document: NamespaceDocument,
     },
     AlreadyAbsent {
-        key: String,
+        namespace_name: CorrosionNamespaceName,
+        service_name: CorrosionServiceName,
     },
 }
 
@@ -157,27 +159,33 @@ pub fn select_peer_removal(
 
 pub fn select_service_removal(
     cluster_id: &crate::ids::ClusterName,
-    rows: Vec<StoredRow>,
-    request: &ServiceRemoveRowRequest,
-) -> Result<ServiceRemoveRowSelection, ServiceRemoveRowRefusal> {
-    let key = service_key(&request.namespace_name, &request.service_name);
-    let report = read_rows::<ServiceDocument>(cluster_id, rows.clone());
-    let Some(row) = report
-        .accepted
-        .into_iter()
-        .find(|row| row.source.key == key)
-    else {
-        if rows.iter().any(|row| row.key == key) {
-            return Err(ServiceRemoveRowRefusal::StoredRowUnselectable { key });
-        }
-        return Err(ServiceRemoveRowRefusal::NotFound {
+    row: Option<StoredRow>,
+    request: &ServiceRemoveRequest,
+    provenance: OperatorWriteProvenance,
+) -> Result<ServiceRemoveSelection, ServiceRemoveRefusal> {
+    let Some(row) = row else {
+        return Err(ServiceRemoveRefusal::NotFound {
             namespace_name: request.namespace_name.clone(),
             service_name: request.service_name.clone(),
         });
     };
-    Ok(ServiceRemoveRowSelection::Delete {
-        key,
+    let report = read_named_rows::<NamespaceDocument>(cluster_id, [row]);
+    let Some(mut row) = report.accepted.into_iter().next() else {
+        return Err(ServiceRemoveRefusal::NamespaceStoredRowUnselectable {
+            namespace_name: request.namespace_name.clone(),
+        });
+    };
+    if row.value.services.remove(&request.service_name).is_none() {
+        return Ok(ServiceRemoveSelection::AlreadyAbsent {
+            namespace_name: request.namespace_name.clone(),
+            service_name: request.service_name.clone(),
+        });
+    }
+    row.value.provenance = provenance;
+    Ok(ServiceRemoveSelection::Replace {
+        namespace_name: request.namespace_name.clone(),
         stored_document: row.source.document,
+        replacement_document: row.value,
     })
 }
 

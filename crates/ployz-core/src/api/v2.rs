@@ -9,13 +9,13 @@ use std::fmt;
 use std::net::Ipv4Addr;
 
 use crate::corrosion::{
-    ClusterDocument, ContainerDocument, CorrosionNamespaceName, CorrosionServiceName,
-    HostPortBindings, MachineDocument, MachineStatusDocument, NamespaceDocument, OperationDocument,
-    Principal, ServiceDocument, ServiceReplicaCount, SourcePrincipalResolutionError,
-    V2ManagedContainerIdentity,
+    ClusterDocument, CorrosionNamespaceName, CorrosionServiceName, HostPortBindings,
+    MachineDocument, MachineEndpointDocument, MachineStatusDocument, NamespaceDocument,
+    OperationDocument, Principal, PublishedService, ServiceReplicaCount,
+    SourcePrincipalResolutionError, V2ManagedContainerIdentity,
 };
 use crate::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
-use crate::ids::{ContainerId, DeployName, TokenName};
+use crate::ids::{DeployName, TokenName};
 use crate::install::{InstallArtifactVersion, InstallSha256Digest};
 use crate::machine::MachineName;
 
@@ -65,11 +65,11 @@ pub const STATUS_ROUTE: &str = "/status";
 pub const DOCTOR_ROUTE: &str = "/doctor";
 /// Stable endpoint for removing one valid peer row.
 pub const PEER_REMOVE_ROUTE: &str = "/peers/remove";
-/// Stable endpoint for removing one valid service row.
-pub const SERVICE_REMOVE_ROW_ROUTE: &str = "/services/remove";
+/// Stable endpoint for removing one service from its namespace document.
+pub const SERVICE_REMOVE_ROUTE: &str = "/services/remove";
 /// Stable endpoint for removing one valid route-binding row.
 pub const ROUTE_REMOVE_ROUTE: &str = "/routes/remove";
-/// Stable endpoint for attaching one hostname to one service row.
+/// Stable endpoint for attaching one hostname to one named service.
 pub const ROUTE_ATTACH_ROUTE: &str = "/routes/attach";
 
 /// A capability understood by this version of the public API.
@@ -206,7 +206,7 @@ impl ApiVersion {
 pub enum LensCollection {
     Machines,
     Services,
-    Containers,
+    Endpoints,
     MachineStatus,
     Operations,
 }
@@ -216,7 +216,7 @@ impl LensCollection {
     pub const ALL: &'static [Self] = &[
         Self::Machines,
         Self::Services,
-        Self::Containers,
+        Self::Endpoints,
         Self::MachineStatus,
         Self::Operations,
     ];
@@ -227,7 +227,7 @@ impl LensCollection {
         match self {
             Self::Machines => "machines",
             Self::Services => "services",
-            Self::Containers => "containers",
+            Self::Endpoints => "endpoints",
             Self::MachineStatus => "machine_status",
             Self::Operations => "operations",
         }
@@ -239,7 +239,7 @@ impl LensCollection {
         match value {
             "machines" => Some(Self::Machines),
             "services" => Some(Self::Services),
-            "containers" => Some(Self::Containers),
+            "endpoints" => Some(Self::Endpoints),
             "machine_status" => Some(Self::MachineStatus),
             "operations" => Some(Self::Operations),
             _ => None,
@@ -265,7 +265,7 @@ pub fn token_revoke_route(token_id: &TokenName) -> String {
     format!("{TOKEN_REVOKE_ROUTE_PREFIX}/{token_id}")
 }
 
-/// Builds the bounded log-tail route for one service row.
+/// Builds the bounded log-tail route for one named service.
 #[must_use]
 pub fn service_logs_tail_route(
     namespace_name: &CorrosionNamespaceName,
@@ -274,7 +274,7 @@ pub fn service_logs_tail_route(
     format!("{SERVICE_LOGS_ROUTE_PREFIX}/{namespace_name}/{service_name}/logs")
 }
 
-/// Builds the lossy follow route for one service row's current container.
+/// Builds the lossy follow route for one named service's current containers.
 #[must_use]
 pub fn service_logs_follow_route(
     namespace_name: &CorrosionNamespaceName,
@@ -381,13 +381,14 @@ pub struct DeployServiceRequest {
     pub runtime: ContainerRuntimeSpec,
     #[serde(default)]
     pub health_gate: HealthGatePolicy,
-    /// `None` inherits the incumbent row's placement, or one replica on a
-    /// first deploy.
+    /// Omission selects the fixed replicated/one default. A deploy is a
+    /// complete snapshot and never inherits an incumbent service's mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<RequestedPlacement>,
-    /// `None` inherits the incumbent row's pin set unchanged.
+    /// Omission selects the fixed unpinned default. A deploy is a complete
+    /// snapshot and never inherits incumbent machine pins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub machines: Option<RequestedPins>,
+    pub machines: Option<PinnedMachineNames>,
 }
 
 /// The complete name-keyed service set in one deploy request.
@@ -518,16 +519,8 @@ pub struct DeployRequest {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RequestedPlacement {
-    /// A mode-preserving replica-count change. Against a global incumbent it
-    /// refuses instead of silently unpublishing host ports; converting the
-    /// mode is an explicit [`Self::Replicated`] deploy.
-    Replicas { replicas: ServiceReplicaCount },
-    /// Explicit replicated mode. `None` keeps a replicated incumbent's
-    /// count; a first deploy or a global-to-replicated conversion defaults
-    /// to one replica.
     Replicated {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        replicas: Option<ServiceReplicaCount>,
+        replicas: ServiceReplicaCount,
     },
     Global {
         #[serde(default, skip_serializing_if = "HostPortBindings::is_empty")]
@@ -535,17 +528,8 @@ pub enum RequestedPlacement {
     },
 }
 
-/// Requested pin intent: pin to named machines, or clear the row's pin set.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RequestedPins {
-    Machines { names: PinnedMachineNames },
-    Any,
-}
-
-/// A non-empty set of machine names to pin a service to; the empty set is
-/// expressed as [`RequestedPins::Any`] instead of an empty pin list.
+/// A non-empty set of machine names to pin a service to. Omission means
+/// unpinned placement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(type = "Array<MachineName>"))]
@@ -644,6 +628,8 @@ pub struct DeployInspectRequest {
 pub enum DeployInspectOutcome {
     Inspected {
         bridge_ready: bool,
+        free_disk_bytes: u64,
+        load: crate::corrosion::MachineLoadBand,
         containers: Vec<DeployObservedContainer>,
     },
     Failed {},
@@ -660,7 +646,6 @@ pub struct DeployDesiredReplica {
 /// One exact observed container that a deploy may stop or remove.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployObservedContainer {
-    pub container_id: ContainerId,
     pub identity: V2ManagedContainerIdentity,
     /// Whether the container was running in the controller's inspection.
     pub running: bool,
@@ -691,7 +676,6 @@ pub struct DeployPrepareRequest {
 /// One exact replica prepared and creation-gated on its target host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPreparedReplica {
-    pub container_id: ContainerId,
     pub identity: V2ManagedContainerIdentity,
     pub ip: Ipv4Addr,
 }
@@ -832,20 +816,15 @@ pub enum ServiceLogsRefusal {
         namespace_name: CorrosionNamespaceName,
         service_name: CorrosionServiceName,
     },
-    UnmanagedContainer {
-        container_id: ContainerId,
+    ContainerAmbiguous {
+        namespace_name: CorrosionNamespaceName,
+        service_name: CorrosionServiceName,
     },
     /// The service runs containers on more than one machine (or the request's
     /// machine selector matched none of them); the listed machine names carry
     /// one entry per container, so stacked replicas repeat their host.
     MachineSelectorRequired {
         machines: Vec<MachineName>,
-    },
-    /// The hosting machines' roster rows could not be resolved to names, so
-    /// no machine selector can be offered; the machines lens is the
-    /// inspection primitive.
-    HostingMachinesUnresolved {
-        machine_ids: Vec<MachineName>,
     },
     RemoteOwner {
         machine_id: MachineName,
@@ -910,6 +889,7 @@ pub enum MachineRemoveReply {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MachineRemoveRefusal {
     NotFound { machine_name: MachineName },
+    ConcurrentMutation { machine_name: MachineName },
 }
 
 /// Resolves a removal selector only from roster rows already accepted by the
@@ -1013,7 +993,7 @@ impl V2Route {
         if path == PEER_REMOVE_ROUTE {
             return Some(Self::PeerRemove);
         }
-        if path == SERVICE_REMOVE_ROW_ROUTE {
+        if path == SERVICE_REMOVE_ROUTE {
             return Some(Self::ServiceRemove);
         }
         if path == ROUTE_REMOVE_ROUTE {
@@ -1119,7 +1099,7 @@ impl V2Route {
             Self::Status => STATUS_ROUTE.to_owned(),
             Self::Doctor => DOCTOR_ROUTE.to_owned(),
             Self::PeerRemove => PEER_REMOVE_ROUTE.to_owned(),
-            Self::ServiceRemove => SERVICE_REMOVE_ROW_ROUTE.to_owned(),
+            Self::ServiceRemove => SERVICE_REMOVE_ROUTE.to_owned(),
             Self::RouteRemove => ROUTE_REMOVE_ROUTE.to_owned(),
             Self::RouteAttach => ROUTE_ATTACH_ROUTE.to_owned(),
             Self::Lens(collection) => lens_route(*collection),
@@ -1327,21 +1307,20 @@ pub struct MachineLensRow {
     pub document: MachineDocument,
 }
 
-/// One accepted service row exposed by the services lens.
+/// One named service entry flattened from a Namespace intent document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ServiceLensRow {
     pub key: String,
-    pub document: ServiceDocument,
+    pub document: PublishedService,
 }
 
-/// One container testimony row exposed by the containers lens.
+/// One complete machine-owned endpoint testimony document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ContainerLensRow {
-    /// Namespace/deploy/machine/slot composite Corrosion key.
-    pub id: String,
-    pub document: ContainerDocument,
+pub struct EndpointLensRow {
+    pub machine_id: MachineName,
+    pub document: MachineEndpointDocument,
 }
 
 /// One machine testimony row exposed by the machine-status lens.
@@ -1400,8 +1379,8 @@ pub enum LensSnapshot {
     Services {
         rows: Vec<ServiceLensRow>,
     },
-    Containers {
-        rows: Vec<ContainerLensRow>,
+    Endpoints {
+        rows: Vec<EndpointLensRow>,
     },
     MachineStatus {
         rows: Vec<MachineStatusLensRow>,

@@ -151,8 +151,7 @@ fn project_rows(
         cluster_rows: rows.cluster,
         machine_rows: rows.machines,
         namespace_rows: rows.namespaces,
-        service_rows: rows.services,
-        container_rows: rows.containers,
+        machine_endpoint_rows: rows.machine_endpoints,
     })
 }
 

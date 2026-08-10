@@ -23,20 +23,19 @@ for a resource that already has a durable name.
 | `machines` | machine name | one admitted host |
 | `peers` | peer name | one operator principal; separate from machines |
 | `tokens` | token name | one show-once join credential |
-| `namespaces` | namespace name | reconciliation and lifecycle boundary |
-| `services` | `<namespace>/<service>` | one independently addressable workload |
+| `namespaces` | namespace name | complete name-keyed service intent and lifecycle boundary |
 | `route_bindings` | hostname | one ingress binding |
 | `controller` | cluster name | advisory preferred-controller appointment |
-| `containers` | `<namespace>/<service>/<deploy>/<machine>/<slot>` | one managed replica |
+| `machine_endpoints` | machine name | one machine's complete routable endpoint testimony |
 | `machine_status` | machine name | machine-owned testimony |
 | `operations` | `<namespace>/<deploy>` | one namespace-wide deploy result |
 | `cert_holdings` | `<machine>:<hostname>` | one gateway's certificate testimony |
 | `acme_http01` | ACME challenge token | one public challenge |
 
-Docker container IDs are runtime evidence in container documents, not row
-identity. Controller revisions are monotonic integers. Randomness remains only
-where it is the substance of the value: secrets, cryptographic keys, Corrosion
-internals, and external runtime handles.
+Docker container IDs remain private runtime handles on their owning machine.
+Controller revisions are monotonic integers. Randomness remains only where it
+is the substance of the value: secrets, cryptographic keys, Corrosion internals,
+and external runtime handles.
 
 Machines and peers remain separate tables and principals. They have different
 admission, authorization, transport, and lifecycle laws even though both are
@@ -80,14 +79,14 @@ diagnostics; it is never repaired by inventing another identity.
 
 ## Ownership and cleanup
 
-Operator commands own cluster, machine, peer, token, namespace, service, and
-route intent. Machines own their bounded testimony. The controller writes
-namespace deploy results and committed container evidence after host prepare.
+Operator commands own cluster, machine, peer, token, namespace, and route
+intent. A service is nested intent inside its namespace document. Machines own
+their bounded testimony. The controller writes namespace deploy results after
+host preparation.
 
-Removal is explicit. Removing a machine also sweeps its machine-owned testimony
-and committed container rows. A namespace deploy replaces the complete desired
-service/container set for that namespace. There is no background intent reaper
-or public workflow-history log.
+Removal is explicit. Removing a machine also sweeps its machine-owned endpoint
+testimony. A namespace deploy replaces the complete desired service set for that
+namespace. There is no background intent reaper or public workflow-history log.
 
 ## Wire conventions
 
@@ -107,7 +106,7 @@ or public workflow-history log.
 Join tokens are named. The issued blob contains that name plus a random secret;
 the token row stores only `sha256(secret)`, creation/expiry times, and public
 provenance. Revocation deletes the named row. Environment values remain outside
-Corrosion; service rows carry fingerprints only.
+Corrosion; the namespace intent document carries service fingerprints only.
 
 TLS and ACME account private keys stay machine-local. `cert_holdings` is
 per-machine testimony, while `acme_http01` contains only public challenge

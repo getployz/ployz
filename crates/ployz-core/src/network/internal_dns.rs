@@ -6,8 +6,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{
-    ClusterDocument, ContainerDocument, MachineDocument, MachineTransport, NamespaceDocument,
-    ServiceDocument, StoredRow, read_named_roster_rows, read_named_rows, read_rows,
+    ClusterDocument, MachineDocument, MachineEndpointDocument, MachineTransport, NamespaceDocument,
+    StoredRow, read_named_roster_rows, read_named_rows, read_rows,
 };
 use crate::ids::{ClusterName, CorrosionNamespaceName, MachineName};
 
@@ -150,8 +150,7 @@ pub struct InternalDnsRowProjectionInput {
     pub cluster_rows: Vec<StoredRow>,
     pub machine_rows: Vec<StoredRow>,
     pub namespace_rows: Vec<StoredRow>,
-    pub service_rows: Vec<StoredRow>,
-    pub container_rows: Vec<StoredRow>,
+    pub machine_endpoint_rows: Vec<StoredRow>,
 }
 
 /// One complete internal DNS view derived from current accepted Corrosion
@@ -173,7 +172,7 @@ pub enum InternalDnsRowProjectionError {
 }
 
 /// Applies the shared tolerant-reader and provider-roster laws before joining
-/// current service intent to retained container rows.
+/// namespace intent to machine-owned endpoint testimony.
 #[must_use = "the internal DNS projection or startup error must be applied"]
 pub fn project_internal_dns_rows(
     input: InternalDnsRowProjectionInput,
@@ -184,8 +183,7 @@ pub fn project_internal_dns_rows(
         cluster_rows,
         machine_rows,
         namespace_rows,
-        service_rows,
-        container_rows,
+        machine_endpoint_rows,
     } = input;
 
     let cluster_report = read_rows::<ClusterDocument>(&cluster_id, cluster_rows);
@@ -230,58 +228,48 @@ pub fn project_internal_dns_rows(
         .filter_map(|row| {
             CorrosionNamespaceName::try_new(row.source.key)
                 .ok()
-                .map(|id| (id, row.value.name))
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    let services = read_rows::<ServiceDocument>(&cluster_id, service_rows)
-        .accepted
-        .into_iter()
-        .map(|row| {
-            (
-                (row.value.namespace_id.clone(), row.value.name.clone()),
-                row.value,
-            )
+                .map(|id| (id, row.value))
         })
         .collect::<BTreeMap<_, _>>();
 
     let mut records = BTreeMap::<InternalServiceName, Vec<Ipv4Addr>>::new();
-    for service in services.values() {
-        let Some(namespace_name) = namespaces.get(&service.namespace_id) else {
-            continue;
-        };
-        let Ok(name) = InternalServiceName::try_from_labels(&service.name, namespace_name) else {
-            continue;
-        };
-        if is_reserved_readiness_record(&name) {
-            continue;
+    for namespace in namespaces.values() {
+        for service_name in namespace.services.keys() {
+            let Ok(name) = InternalServiceName::try_from_labels(service_name, &namespace.name)
+            else {
+                continue;
+            };
+            if is_reserved_readiness_record(&name) {
+                continue;
+            }
+            records.entry(name).or_default();
         }
-        records.entry(name).or_default();
     }
-    for row in read_rows::<ContainerDocument>(&cluster_id, container_rows).accepted {
-        let container = row.value;
-        if !accepted_machine_ids.contains(&container.machine_id) {
+    for row in read_rows::<MachineEndpointDocument>(&cluster_id, machine_endpoint_rows).accepted {
+        let testimony = row.value;
+        if !accepted_machine_ids.contains(&testimony.machine_id) {
             continue;
         }
-        let Some(service) = services.get(&(
-            container.namespace_id.clone(),
-            container.service_name.clone(),
-        )) else {
-            continue;
-        };
-        if container.deploy != service.active_deploy {
-            continue;
+        for endpoint in testimony.endpoints {
+            let Some(namespace) = namespaces.get(&endpoint.namespace_id) else {
+                continue;
+            };
+            let Some(service) = namespace.services.get(&endpoint.service_name) else {
+                continue;
+            };
+            if endpoint.deploy != service.active_deploy {
+                continue;
+            }
+            let Ok(name) =
+                InternalServiceName::try_from_labels(&endpoint.service_name, &namespace.name)
+            else {
+                continue;
+            };
+            if is_reserved_readiness_record(&name) {
+                continue;
+            }
+            records.entry(name).or_default().push(endpoint.ip);
         }
-        let Some(namespace_name) = namespaces.get(&service.namespace_id) else {
-            continue;
-        };
-        let Ok(name) = InternalServiceName::try_from_labels(&service.name, namespace_name) else {
-            continue;
-        };
-        if is_reserved_readiness_record(&name) {
-            continue;
-        }
-        records.entry(name).or_default().push(container.ip);
     }
     for addresses in records.values_mut() {
         addresses.sort_unstable();

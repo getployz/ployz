@@ -16,7 +16,7 @@ is thin seams, never building ahead.
 Operating small infrastructure should not require operating a distributed
 system first. Ployz has no replicated core, quorum, or consensus protocol:
 
-- Cluster config is rows in a shared store, converged to every machine.
+- Cluster config is compact intent rows in a shared store, converged to every machine.
 - Each machine's Keeper converges that machine toward the rows it does not
   own, and reports into status rows nobody else may write.
 - Every machine accepts commands; followers forward cluster mutations to one
@@ -98,7 +98,8 @@ Rows normally have one writer class:
 - Status rows are machine testimony. Each machine writes only its own.
 - The Controller Appointment is the named exception: any API machine passing
   the visibility brake may replace that advisory row, and LWW resolves races.
-- Docker is execution reality. Status rows report it, never replace it.
+- Docker is execution reality. Controllers query it through bounded node HTTP;
+  machine endpoint rows publish a serving projection but never replace it.
 
 Freshness is visible — mesh last-handshake age and row timestamps — and
 never inferred. A command against an unreachable machine fails instantly

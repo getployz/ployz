@@ -111,10 +111,6 @@ fn route_attach_selection_refusals_name_the_canonical_resource() {
             namespace_name: namespace_name.clone(),
         },
         RouteAttachRefusal::ServiceNotFound {
-            namespace_name: namespace_name.clone(),
-            service_name: service_name.clone(),
-        },
-        RouteAttachRefusal::ServiceStoredRowUnselectable {
             namespace_name,
             service_name,
         },
