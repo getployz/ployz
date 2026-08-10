@@ -10,23 +10,13 @@ use ployz_core::placement::{
     PlacementRefusal, ServiceContainerObservation, pick_placement,
 };
 
-const MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAA";
-const MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAB";
-const MACHINE_C: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAC";
-const ACTIVE_DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAD";
+const MACHINE_A: &str = "machine-a";
+const MACHINE_B: &str = "machine-b";
+const MACHINE_C: &str = "machine-c";
+const ACTIVE_DEPLOY: &str = "release-current";
 
 fn machine(value: &str) -> MachineName {
-    MachineName::try_new(value).expect("fixture machine id")
-}
-
-fn machine_name(machine_id: &str) -> MachineName {
-    let name = match machine_id {
-        MACHINE_A => "machine-a",
-        MACHINE_B => "machine-b",
-        MACHINE_C => "machine-c",
-        other => panic!("no fixture name for machine {other}"),
-    };
-    MachineName::try_new(name).expect("fixture machine name")
+    MachineName::try_new(value).expect("fixture machine name")
 }
 
 fn operation(value: &str) -> DeployName {
@@ -37,10 +27,9 @@ fn replicas(value: u16) -> ServiceReplicaCount {
     ServiceReplicaCount::try_new(value).expect("fixture replica count")
 }
 
-fn bid(machine_id: &str) -> PlacementBid {
+fn bid(machine_name: &str) -> PlacementBid {
     PlacementBid {
-        machine_id: machine(machine_id),
-        machine_name: machine_name(machine_id),
+        machine_name: machine(machine_name),
         lifecycle: MachineLifecycle::Active,
         free_disk_bytes: 100 * PLACEMENT_FREE_DISK_FLOOR_BYTES,
         load: MachineLoadBand::Normal,
@@ -104,11 +93,9 @@ fn zero_eligible_bidders_is_the_only_capacity_refusal_and_names_every_drop() {
     let [draining, full] = eliminations.as_slice() else {
         panic!("both tier-zero drops must be retained in the refusal")
     };
-    assert_eq!(draining.machine_id, machine(MACHINE_A));
-    assert_eq!(draining.machine_name, machine_name(MACHINE_A));
+    assert_eq!(draining.machine_name, machine(MACHINE_A));
     assert_eq!(draining.reason, PlacementEliminationReason::Draining);
-    assert_eq!(full.machine_id, machine(MACHINE_B));
-    assert_eq!(full.machine_name, machine_name(MACHINE_B));
+    assert_eq!(full.machine_name, machine(MACHINE_B));
     assert_eq!(
         full.reason,
         PlacementEliminationReason::FreeDiskBelowFloor { free_disk_bytes: 0 }

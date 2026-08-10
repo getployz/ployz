@@ -20,7 +20,6 @@ pub const PLACEMENT_FREE_DISK_FLOOR_BYTES: u64 = 1024 * 1024 * 1024;
 /// One machine's live input to a placement pick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementBid {
-    pub machine_id: MachineName,
     pub machine_name: MachineName,
     pub lifecycle: MachineLifecycle,
     pub free_disk_bytes: u64,
@@ -58,7 +57,6 @@ pub struct PlacementPickInputs {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct PlacementElimination {
-    pub machine_id: MachineName,
     pub machine_name: MachineName,
     pub reason: PlacementEliminationReason,
 }
@@ -118,7 +116,6 @@ pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineName>, 
     for bid in bids {
         match tier_zero_drop(bid, pinned_machines) {
             Some(reason) => eliminations.push(PlacementElimination {
-                machine_id: bid.machine_id.clone(),
                 machine_name: bid.machine_name.clone(),
                 reason,
             }),
@@ -131,10 +128,10 @@ pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineName>, 
 
     match placement {
         ServicePlacement::Global { host_ports: _ } => {
-            survivors.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+            survivors.sort_by(|left, right| left.machine_name.cmp(&right.machine_name));
             Ok(survivors
                 .into_iter()
-                .map(|bid| bid.machine_id.clone())
+                .map(|bid| bid.machine_name.clone())
                 .collect())
         }
         ServicePlacement::Replicated { replicas } => {
@@ -157,7 +154,7 @@ fn tier_zero_drop(
             free_disk_bytes: bid.free_disk_bytes,
         });
     }
-    if !pinned_machines.is_empty() && !pinned_machines.contains(&bid.machine_id) {
+    if !pinned_machines.is_empty() && !pinned_machines.contains(&bid.machine_name) {
         return Some(PlacementEliminationReason::OutsidePinSet);
     }
     None
@@ -178,7 +175,7 @@ fn preference_key(
         !sticky,
         bid.total_container_count,
         bid.load,
-        bid.machine_id.clone(),
+        bid.machine_name.clone(),
     )
 }
 
@@ -190,6 +187,6 @@ fn round_robin_fill(
         .iter()
         .cycle()
         .take(usize::from(replicas.get()))
-        .map(|bid| bid.machine_id.clone())
+        .map(|bid| bid.machine_name.clone())
         .collect()
 }

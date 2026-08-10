@@ -711,7 +711,6 @@ fn derive_placement(
             continue;
         }
         bids.push(PlacementBid {
-            machine_id: machine.name.clone(),
             machine_name: machine.name.clone(),
             lifecycle: machine.lifecycle,
             free_disk_bytes: inspection.free_disk_bytes,

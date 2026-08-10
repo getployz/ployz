@@ -396,7 +396,7 @@ export type PidsLimit = SafeInteger<"PidsLimit">;
 
 export type PinnedMachineNames = Array<MachineName>;
 
-export type PlacementElimination = { machine_id: MachineName, machine_name: MachineName, reason: PlacementEliminationReason, };
+export type PlacementElimination = { machine_name: MachineName, reason: PlacementEliminationReason, };
 
 export type PlacementEliminationReason = { "kind": "draining" } | { "kind": "free_disk_below_floor", free_disk_bytes: number, } | { "kind": "outside_pin_set" };
 
