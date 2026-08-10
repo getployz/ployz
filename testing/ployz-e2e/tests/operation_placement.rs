@@ -1,5 +1,5 @@
 //! Three-machine public-seam proof of placement bids: spread, sticky,
-//! explicit pins, clearing pins, global mode with host-published ports, and
+//! explicit pins, clearing pins without rebalancing, global mode with host-published ports, and
 //! the deliberately narrow named-volume support.
 
 #[path = "operation_placement/support.rs"]
@@ -286,7 +286,8 @@ async fn exercise_operation_placement(
         format!("pinned replicas did not stack 2+1 across the pin set: {stacking:?}"),
     )?;
 
-    // Omitted pins mean any machine, so three replicas spread one per machine.
+    // Omitted pins mean any machine for new replicas. Existing replicas stay
+    // where they are; clearing a constraint does not trigger rebalancing.
     let mut any_service =
         deploy_support::image_service_request(SERVICE, &image, SECRET_NAME, SECRET_VALUE)?;
     any_service.1.placement = Some(RequestedPlacement::Replicated {
@@ -305,9 +306,10 @@ async fn exercise_operation_placement(
         support::wait_for_placed_rows(docker, m1, &j1.api_address, NAMESPACE, SERVICE, &any_op, 3)
             .await?;
     require(
-        distinct_machines(&any_rows).len() == 3 && any_rows.service.pinned_machines.is_empty(),
+        distinct_machines(&any_rows) == stacking.keys().cloned().collect()
+            && any_rows.service.pinned_machines.is_empty(),
         format!(
-            "`--machine any` did not clear the pins and spread: machines={:?} pins={:?}",
+            "`--machine any` did not clear the pins while preserving incumbents: machines={:?} pins={:?}",
             distinct_machines(&any_rows),
             any_rows.service.pinned_machines
         ),
