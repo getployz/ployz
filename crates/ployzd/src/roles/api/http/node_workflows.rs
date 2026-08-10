@@ -100,8 +100,8 @@ impl NodeWorkflows {
     }
 
     /// Starts or resumes the operation's stable retire instance and waits for
-    /// its typed terminal result. Failed cleanup is discardable so retry can
-    /// inspect Docker reality and try the same named operation again.
+    /// its typed terminal result. Service-removal state and failed deploy
+    /// cleanup are discardable so a later request can retry from Docker reality.
     pub(super) async fn retire(&self, request: DeployRetireRequest) -> DeployRetireOutcome {
         let instance = retire_instance(
             &request.namespace_name,
@@ -112,10 +112,10 @@ impl NodeWorkflows {
             .run(&instance, RETIRE_WORKFLOW, &request, RETIRE_WAIT)
             .await
             .unwrap_or(DeployRetireOutcome::Failed);
-        if outcome == DeployRetireOutcome::Failed
+        if (request.removed_service.is_some() || outcome == DeployRetireOutcome::Failed)
             && let Err(error) = self.client.delete_instance(&instance, false).await
         {
-            tracing::warn!(%instance, %error, "could not discard failed retire workflow");
+            tracing::warn!(%instance, %error, "could not discard terminal retire workflow");
         }
         outcome
     }
@@ -176,12 +176,7 @@ fn retire_instance(
     deploy: &DeployName,
 ) -> String {
     match removed_service {
-        Some(service) => format!(
-            "service-remove/{}/{}/{}",
-            namespace.as_str(),
-            service.as_str(),
-            deploy.as_str()
-        ),
+        Some(service) => format!("service-remove/{}/{}", namespace.as_str(), service.as_str()),
         None => format!("deploy-retire/{}/{}", namespace.as_str(), deploy.as_str()),
     }
 }

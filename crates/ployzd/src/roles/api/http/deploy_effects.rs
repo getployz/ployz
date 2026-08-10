@@ -262,10 +262,10 @@ impl DeployHostEffects {
         let is_rollback = !request.restart_after_retire.is_empty();
         let invalid_scope = if let Some(service) = &request.removed_service {
             is_rollback
-                || request.containers.iter().any(|container| {
-                    container.identity.service_name != *service
-                        || container.identity.operation_id != request.operation_id
-                })
+                || request
+                    .containers
+                    .iter()
+                    .any(|container| container.identity.service_name != *service)
         } else {
             request.containers.iter().any(|container| {
                 is_rollback && container.identity.operation_id != request.operation_id

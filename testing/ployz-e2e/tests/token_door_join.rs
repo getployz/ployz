@@ -210,15 +210,31 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     .await
     .map_err(|error| format!("machine repair flow failed: {error}"))?;
 
-    admit_roaming_peer_and_assert_no_subnet(store, &blob)
+    let post_removal = run_cli(
+        &cli,
+        temporary_home.path(),
+        ["token", "create", "post-removal", "--ttl", "1h"].map(str::to_owned),
+    )?;
+    require_success(&post_removal, "post-removal token create")?;
+    let post_removal_stdout = String::from_utf8_lossy(&post_removal.stdout);
+    let post_removal_blob = extract_join_blob(&post_removal_stdout)?;
+    let post_removal_token_id = extract_token_id(&post_removal_stdout)?;
+
+    admit_roaming_peer_and_assert_no_subnet(store, &post_removal_blob)
         .await
         .map_err(|error| format!("roaming-peer admission failed: {error}"))?;
-    admit_concurrent_machines_with_distinct_subnets(&blob)
+    admit_concurrent_machines_with_distinct_subnets(&post_removal_blob)
         .await
         .map_err(|error| format!("concurrent-machine admission failed: {error}"))?;
-    assert_revoked_and_expired_refusals(store, &cli, temporary_home.path(), blob, token_id)
-        .await
-        .map_err(|error| format!("revoked/expired token checks failed: {error}"))?;
+    assert_revoked_and_expired_refusals(
+        store,
+        &cli,
+        temporary_home.path(),
+        post_removal_blob,
+        post_removal_token_id,
+    )
+    .await
+    .map_err(|error| format!("revoked/expired token checks failed: {error}"))?;
 
     refound_cluster(
         RefoundContext {

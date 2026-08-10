@@ -88,10 +88,11 @@ pub enum PlacementRefusal {
 
 /// Derives a deploy's target machine set from live bids.
 ///
-/// Existing replicas keep their machines before eligibility is considered for
-/// any shortfall. New replicas then use tier-0 drops (draining, free disk below
-/// [`PLACEMENT_FREE_DISK_FLOOR_BYTES`], outside the pin set), followed by spread
-/// (fewest total managed containers), then load band (idle before normal
+/// Existing replicas keep their machines before policy eligibility is considered
+/// for any shortfall, but an unavailable endpoint network always excludes a host.
+/// New replicas then use tier-0 drops (draining, unavailable endpoint network,
+/// free disk below [`PLACEMENT_FREE_DISK_FLOOR_BYTES`], outside the pin set),
+/// followed by spread (fewest total managed containers), then load band (idle before normal
 /// before hot), then lexicographically lowest machine name. Replicas fill round-robin over the
 /// tier-sorted survivors; stacking is allowed.
 /// A global service keeps incumbent machines and targets every tier-0 survivor exactly once.
@@ -128,7 +129,9 @@ pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineName>, 
         ServicePlacement::Global { host_ports: _ } => {
             let mut targets = bids
                 .iter()
-                .filter(|bid| has_active_incumbent(bid, active_deploy.as_ref()))
+                .filter(|bid| {
+                    bid.endpoint_network_ready && has_active_incumbent(bid, active_deploy.as_ref())
+                })
                 .map(|bid| bid.machine_name.clone())
                 .collect::<BTreeSet<_>>();
             targets.extend(survivors.into_iter().map(|bid| bid.machine_name.clone()));
@@ -142,6 +145,7 @@ pub fn pick_placement(inputs: &PlacementPickInputs) -> Result<Vec<MachineName>, 
             let desired = usize::from(replicas.get());
             let mut targets = bids
                 .iter()
+                .filter(|bid| bid.endpoint_network_ready)
                 .flat_map(|bid| {
                     bid.service_containers
                         .iter()

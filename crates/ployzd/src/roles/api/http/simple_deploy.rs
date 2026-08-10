@@ -199,26 +199,28 @@ impl SimpleDeploy {
                 failed.insert(machine);
                 continue;
             };
-            let mut by_deploy = BTreeMap::<DeployName, Vec<DeployObservedContainer>>::new();
-            for container in containers.into_iter().filter(|container| {
-                container.identity.namespace_id == *namespace_name
-                    && container.identity.service_name == *service_name
-            }) {
-                by_deploy
-                    .entry(container.identity.operation_id.clone())
-                    .or_default()
-                    .push(container);
-            }
-            retire.extend(by_deploy.into_iter().map(|(deploy, containers)| {
+            let containers = containers
+                .into_iter()
+                .filter(|container| {
+                    container.identity.namespace_id == *namespace_name
+                        && container.identity.service_name == *service_name
+                })
+                .collect::<Vec<_>>();
+            if let Some(operation_id) = containers
+                .iter()
+                .map(|container| &container.identity.operation_id)
+                .min()
+                .cloned()
+            {
                 let request = DeployRetireRequest {
-                    operation_id: deploy,
+                    operation_id,
                     namespace_name: namespace_name.clone(),
                     removed_service: Some(service_name.clone()),
                     containers,
                     restart_after_retire: Vec::new(),
                 };
-                (machine.clone(), request)
-            }));
+                retire.push((machine, request));
+            }
         }
         let outcomes = join_all(retire.into_iter().map(|(machine, request)| async move {
             let outcome = self.hosts.retire(&machine, request).await;
@@ -579,6 +581,9 @@ impl SimpleDeploy {
         keep: &HashSet<(MachineName, V2ManagedContainerIdentity)>,
     ) -> Result<CorrosionDeployOutcome, String> {
         let retire_calls = inspections.iter().filter_map(|(machine_id, inspection)| {
+            if !inspection.bridge_ready {
+                return None;
+            }
             let containers = inspection
                 .containers
                 .iter()
@@ -1814,18 +1819,26 @@ mod tests {
         let namespace = CorrosionNamespaceName::try_new("production").expect("namespace");
         let service = CorrosionServiceName::try_new("api").expect("service");
         let deploy = DeployName::try_new("release-0").expect("deploy");
-        let observed = |service_name: CorrosionServiceName| DeployObservedContainer {
-            identity: V2ManagedContainerIdentity {
-                namespace_id: namespace.clone(),
-                service_name,
-                operation_id: deploy.clone(),
-                replica_slot: ReplicaSlot::Global,
-            },
-            host_ports: HostPortBindings::default(),
-        };
-        let target = observed(service.clone());
-        let unrelated = observed(CorrosionServiceName::try_new("worker").expect("service"));
-        *fixture.hosts.inspections.lock().await = vec![target.clone(), unrelated];
+        let observed =
+            |service_name: CorrosionServiceName, deploy: DeployName| DeployObservedContainer {
+                identity: V2ManagedContainerIdentity {
+                    namespace_id: namespace.clone(),
+                    service_name,
+                    operation_id: deploy,
+                    replica_slot: ReplicaSlot::Global,
+                },
+                host_ports: HostPortBindings::default(),
+            };
+        let target = observed(service.clone(), deploy.clone());
+        let older = observed(
+            service.clone(),
+            DeployName::try_new("older").expect("deploy"),
+        );
+        let unrelated = observed(
+            CorrosionServiceName::try_new("worker").expect("service"),
+            deploy.clone(),
+        );
+        *fixture.hosts.inspections.lock().await = vec![target.clone(), older.clone(), unrelated];
 
         assert!(
             fixture
@@ -1838,9 +1851,9 @@ mod tests {
         let [request] = requests.as_slice() else {
             panic!("one exact service retirement expected")
         };
-        assert_eq!(request.operation_id, deploy);
+        assert_eq!(request.operation_id.as_str(), "older");
         assert_eq!(request.removed_service, Some(service));
-        assert_eq!(request.containers, vec![target]);
+        assert_eq!(request.containers, vec![target, older]);
         assert!(request.restart_after_retire.is_empty());
     }
 

@@ -66,7 +66,7 @@ fn a_draining_machine_is_dropped_at_tier_zero() {
 }
 
 #[test]
-fn a_nonready_endpoint_network_is_dropped_only_for_new_placement() {
+fn a_nonready_endpoint_network_is_dropped_for_placement() {
     let mut nonready = bid(MACHINE_A);
     nonready.endpoint_network_ready = false;
     let targets = pick_placement(&inputs(vec![nonready, bid(MACHINE_B)])).expect("pick succeeds");
@@ -142,7 +142,7 @@ fn sticky_beats_spread_so_the_incumbent_machine_keeps_its_service() {
 }
 
 #[test]
-fn every_incumbent_replica_keeps_its_machine_even_when_ineligible() {
+fn every_incumbent_replica_keeps_its_machine_despite_policy_exclusion() {
     let mut incumbent_host = bid(MACHINE_C);
     incumbent_host.lifecycle = MachineLifecycle::Draining;
     incumbent_host.service_containers = vec![
@@ -158,6 +158,18 @@ fn every_incumbent_replica_keeps_its_machine_even_when_ineligible() {
     let targets =
         pick_placement(&sticky).expect("incumbents do not need new-placement eligibility");
     assert_eq!(targets, vec![machine(MACHINE_C), machine(MACHINE_C)]);
+}
+
+#[test]
+fn endpoint_network_mismatch_overrides_incumbent_stickiness() {
+    let mut mismatched = bid(MACHINE_C);
+    mismatched.endpoint_network_ready = false;
+    mismatched.service_containers = vec![service_container(ACTIVE_DEPLOY)];
+    let mut sticky = inputs(vec![bid(MACHINE_A), mismatched]);
+    sticky.active_deploy = Some(operation(ACTIVE_DEPLOY));
+
+    let targets = pick_placement(&sticky).expect("healthy replacement is available");
+    assert_eq!(targets, vec![machine(MACHINE_A)]);
 }
 
 #[test]
