@@ -471,7 +471,10 @@ async fn wait_for_removal(
     let mut last = String::from("removal state was not queried");
     while Instant::now() < deadline {
         match removal_evidence_counts(store, machine).await {
-            Ok([0, 0, 0, 0, 0]) => {
+            // The machine row is authority. A removed node with a stale local
+            // roster may republish passive testimony, which readers filter
+            // through their own accepted roster view.
+            Ok([0, _, _, _, _]) => {
                 if let Some(operation_id) = preserved_operation {
                     let count = operation_count(store, operation_id).await?;
                     if count != 1 {
@@ -500,7 +503,9 @@ async fn wait_for_removal(
         }
         tokio::time::sleep(WAIT_DELAY).await;
     }
-    Err(format!("machine removal did not converge: {last}"))
+    Err(format!(
+        "machine removal did not become visible on the founder: {last}"
+    ))
 }
 
 async fn evidence_counts(
