@@ -32,9 +32,10 @@ use super::server::{
     read_bounded_body, refusal_response_with_allow,
 };
 use super::store::{
-    AcceptedMachine, AcceptedPeer, AcceptedRoster, MutationStoreError, TokenAuthorizedInsert,
-    delete_machine_if_matches, delete_peer_if_matches, insert_machine_if_token_matches,
-    insert_peer_if_token_matches, read_accepted_roster, read_machine, read_peer, read_token,
+    AcceptedMachine, AcceptedPeer, AcceptedRoster, MutationStoreError, NamedRow,
+    TokenAuthorizedInsert, delete_machine_if_matches, delete_peer_if_matches,
+    insert_machine_if_token_matches, insert_peer_if_token_matches, read_accepted_roster,
+    read_machine_row, read_peer_row, read_token,
 };
 
 const MAX_JOIN_REQUEST_BYTES: usize = 64 * 1024;
@@ -122,7 +123,33 @@ async fn handle_admitted_join(
             return corrosion_unavailable_response();
         }
     }
-    match admit(service, request).await {
+    let roster = match read_accepted_roster(&service.corrosion, &service.cluster_id).await {
+        Ok(roster) => roster,
+        Err(error) => {
+            tracing::warn!(%error, "could not refresh the accepted roster after join queue");
+            return corrosion_unavailable_response();
+        }
+    };
+    if !roster
+        .machines
+        .iter()
+        .any(|machine| machine.id == service.local_machine_id)
+    {
+        return corrosion_unavailable_response();
+    }
+    match service
+        .controller
+        .has_work_visibility(roster.machines.len())
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return corrosion_unavailable_response(),
+        Err(error) => {
+            tracing::warn!(%error, "could not reapply controller visibility after join queue");
+            return corrosion_unavailable_response();
+        }
+    }
+    match admit(service, roster, request).await {
         Ok(admission) => typed_join_response(&JoinAdmissionReply::Accepted {
             admission: Box::new(admission),
         }),
@@ -146,6 +173,7 @@ async fn handle_admitted_join(
 
 async fn admit(
     service: &ApiService,
+    roster: AcceptedRoster,
     request: JoinAdmissionRequest,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     let token_id = request.token.token_id.clone();
@@ -173,7 +201,6 @@ async fn admit(
     };
     let door = admission.material.as_ref().clone();
     let substrate = admission.substrate.as_ref().clone();
-    let roster = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
     if roster.cluster.provider != MeshProvider::BuiltinWireguard {
         return Err(JoinDoorRefusal::InvalidAdmission {
             reason: JoinAdmissionValidationError::UnsupportedProvider {
@@ -210,12 +237,17 @@ async fn admit_machine(
     authority: &ValidatedTokenAuthority,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     reachable_seed(service, &roster, Some(&request.name))?;
-    if let Some(existing) = read_machine(&service.corrosion, &roster.cluster, &request.name).await?
-    {
-        return reuse_machine(
-            service, roster, &request, existing, door, substrate, principal,
-        )
-        .await;
+    match read_machine_row(&service.corrosion, &roster.cluster, &request.name).await? {
+        NamedRow::Accepted(existing) => {
+            return reuse_machine(
+                service, roster, &request, existing, door, substrate, principal,
+            )
+            .await;
+        }
+        NamedRow::OccupiedRejected => {
+            return Err(machine_name_conflict(request.name.as_str()).into());
+        }
+        NamedRow::Vacant => {}
     }
     if roster
         .machines
@@ -255,13 +287,17 @@ async fn admit_machine(
         }
         Err(write_error) => {
             let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
-            if let Some(existing) =
-                read_machine(&service.corrosion, &refreshed.cluster, &request.name).await?
-            {
-                return reuse_machine(
-                    service, refreshed, &request, existing, door, substrate, principal,
-                )
-                .await;
+            match read_machine_row(&service.corrosion, &refreshed.cluster, &request.name).await? {
+                NamedRow::Accepted(existing) => {
+                    return reuse_machine(
+                        service, refreshed, &request, existing, door, substrate, principal,
+                    )
+                    .await;
+                }
+                NamedRow::OccupiedRejected => {
+                    return Err(machine_name_conflict(request.name.as_str()).into());
+                }
+                NamedRow::Vacant => {}
             }
             return Err(write_error.into());
         }
@@ -395,8 +431,14 @@ async fn admit_peer(
     authority: &ValidatedTokenAuthority,
 ) -> Result<JoinAdmissionAccepted, AdmissionError> {
     reachable_seed(service, &roster, None)?;
-    if let Some(existing) = read_peer(&service.corrosion, &roster.cluster, &request.name).await? {
-        return reuse_peer(service, &roster, &request, existing);
+    match read_peer_row(&service.corrosion, &roster.cluster, &request.name).await? {
+        NamedRow::Accepted(existing) => {
+            return reuse_peer(service, &roster, &request, existing);
+        }
+        NamedRow::OccupiedRejected => {
+            return Err(peer_name_conflict(request.name.as_str()).into());
+        }
+        NamedRow::Vacant => {}
     }
     if roster
         .peers
@@ -434,10 +476,14 @@ async fn admit_peer(
         }
         Err(write_error) => {
             let refreshed = read_accepted_roster(&service.corrosion, &service.cluster_id).await?;
-            if let Some(existing) =
-                read_peer(&service.corrosion, &refreshed.cluster, &request.name).await?
-            {
-                return reuse_peer(service, &refreshed, &request, existing);
+            match read_peer_row(&service.corrosion, &refreshed.cluster, &request.name).await? {
+                NamedRow::Accepted(existing) => {
+                    return reuse_peer(service, &refreshed, &request, existing);
+                }
+                NamedRow::OccupiedRejected => {
+                    return Err(peer_name_conflict(request.name.as_str()).into());
+                }
+                NamedRow::Vacant => {}
             }
             return Err(write_error.into());
         }

@@ -278,43 +278,73 @@ pub(super) async fn read_machine(
     cluster: &ClusterDocument,
     machine_id: &MachineName,
 ) -> Result<Option<MachineDocument>, MutationStoreError> {
+    Ok(
+        match read_machine_row(corrosion, cluster, machine_id).await? {
+            NamedRow::Accepted(document) => Some(document),
+            NamedRow::Vacant | NamedRow::OccupiedRejected => None,
+        },
+    )
+}
+
+#[derive(Debug)]
+pub(super) enum NamedRow<Document> {
+    Vacant,
+    Accepted(Document),
+    OccupiedRejected,
+}
+
+pub(super) async fn read_machine_row(
+    corrosion: &CorrosionClient,
+    cluster: &ClusterDocument,
+    machine_id: &MachineName,
+) -> Result<NamedRow<MachineDocument>, MutationStoreError> {
     let rows = query_rows(
         corrosion,
         select_by_id(CorrosionTable::Machines, machine_id.as_str()),
     )
     .await?;
-    let report = read_named_roster_rows::<MachineDocument>(cluster, rows);
-    let mut accepted = report.accepted.into_iter();
-    let machine = accepted.next().map(|row| row.value);
-    if accepted.next().is_some() {
-        return Err(MutationStoreError::DuplicatePrimaryKey {
-            table: CorrosionTable::Machines,
-            id: machine_id.as_str().to_owned(),
-        });
-    }
-    Ok(machine)
+    named_row(
+        CorrosionTable::Machines,
+        machine_id.as_str(),
+        read_named_roster_rows::<MachineDocument>(cluster, rows),
+    )
 }
 
-pub(super) async fn read_peer(
+pub(super) async fn read_peer_row(
     corrosion: &CorrosionClient,
     cluster: &ClusterDocument,
     peer_id: &PeerName,
-) -> Result<Option<PeerDocument>, MutationStoreError> {
+) -> Result<NamedRow<PeerDocument>, MutationStoreError> {
     let rows = query_rows(
         corrosion,
         select_by_id(CorrosionTable::Peers, peer_id.as_str()),
     )
     .await?;
-    let report = read_named_roster_rows::<PeerDocument>(cluster, rows);
-    let mut accepted = report.accepted.into_iter();
-    let peer = accepted.next().map(|row| row.value);
-    if accepted.next().is_some() {
+    named_row(
+        CorrosionTable::Peers,
+        peer_id.as_str(),
+        read_named_roster_rows::<PeerDocument>(cluster, rows),
+    )
+}
+
+fn named_row<Document>(
+    table: CorrosionTable,
+    id: &str,
+    report: ReadReport<Document>,
+) -> Result<NamedRow<Document>, MutationStoreError> {
+    if report.accepted.len() + report.skipped.len() > 1 {
         return Err(MutationStoreError::DuplicatePrimaryKey {
-            table: CorrosionTable::Peers,
-            id: peer_id.as_str().to_owned(),
+            table,
+            id: id.to_owned(),
         });
     }
-    Ok(peer)
+    if let Some(row) = report.accepted.into_iter().next() {
+        Ok(NamedRow::Accepted(row.value))
+    } else if report.skipped.is_empty() {
+        Ok(NamedRow::Vacant)
+    } else {
+        Ok(NamedRow::OccupiedRejected)
+    }
 }
 
 pub(super) async fn insert_token(
@@ -929,7 +959,9 @@ fn update_wireguard_endpoint_statement(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::corrosion::{TransactionResponse, TransactionResult, TransactionSuccess};
+    use ployz_core::corrosion::{
+        RowSkipReason, TransactionResponse, TransactionResult, TransactionSuccess,
+    };
     use serde_json::json;
 
     use super::*;
@@ -945,6 +977,34 @@ mod tests {
             "bootstrap",
             r#"{"v":2,"cluster_id":"foreign"}"#,
         )]));
+    }
+
+    #[test]
+    fn rejected_named_roster_row_is_occupied_not_vacant() {
+        let rejected = named_row::<MachineDocument>(
+            CorrosionTable::Machines,
+            "edge-a",
+            ReadReport {
+                accepted: Vec::new(),
+                skipped: vec![SkippedRow {
+                    source: StoredRow::new("edge-a", "not accepted"),
+                    reason: RowSkipReason::Empty,
+                }],
+            },
+        )
+        .expect("one primary-key row");
+        assert!(matches!(rejected, NamedRow::OccupiedRejected));
+
+        let vacant = named_row::<MachineDocument>(
+            CorrosionTable::Machines,
+            "edge-a",
+            ReadReport {
+                accepted: Vec::new(),
+                skipped: Vec::new(),
+            },
+        )
+        .expect("empty primary-key lookup");
+        assert!(matches!(vacant, NamedRow::Vacant));
     }
 
     #[test]

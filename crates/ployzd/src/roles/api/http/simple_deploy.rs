@@ -14,8 +14,8 @@ use ployz_core::corrosion::{
     CorrosionDeployOutcome, CorrosionDeployWarning, CorrosionDocumentVersion, CorrosionTimestamp,
     HostPortBindings, MachineLoadBand, NamespaceDocument, OperationDocument, OperationInitiator,
     OperatorWriteProvenance, RouteBindingDocument, ServiceDocument, ServicePlacement,
-    ServiceReplicaCount, V2ManagedContainerIdentity, fingerprint_env_value, managed_container_key,
-    owns_current_controller_appointment,
+    ServiceReplicaCount, StoredRow, V2ManagedContainerIdentity, fingerprint_env_value,
+    managed_container_key, owns_current_controller_appointment,
 };
 use ployz_core::deploy::{ReplicaSlot, ReplicatedReplicaSlot};
 use ployz_core::ids::{ContainerId, CorrosionNamespaceName, DeployName, RouteHostname};
@@ -88,6 +88,8 @@ pub(super) struct DeployReality {
     pub(super) namespace_id: CorrosionNamespaceName,
     pub(super) namespace: NamespaceDocument,
     pub(super) services: Vec<ObservedServiceRow>,
+    /// Accepted container rows whose exact stored values this deploy may replace.
+    pub(super) containers: Vec<StoredRow>,
     /// Deterministic automatic routes that do not exist yet.
     pub(super) missing_automatic_routes: Vec<DesiredRouteRow>,
     pub(super) roster: Vec<DeployRosterMachine>,
@@ -95,6 +97,7 @@ pub(super) struct DeployReality {
 
 #[derive(Debug, Clone)]
 pub(super) struct ObservedServiceRow {
+    pub(super) source: StoredRow,
     pub(super) document: ServiceDocument,
 }
 
@@ -150,7 +153,9 @@ pub(super) struct StartedDeploy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeployCommit {
     pub(super) namespace_id: CorrosionNamespaceName,
+    pub(super) replaced_services: Vec<StoredRow>,
     pub(super) services: Vec<DesiredServiceRow>,
+    pub(super) replaced_containers: Vec<StoredRow>,
     pub(super) containers: Vec<DesiredContainerRow>,
     pub(super) missing_automatic_routes: Vec<DesiredRouteRow>,
 }
@@ -1145,7 +1150,14 @@ fn build_commit(
     }
     Ok(DeployCommit {
         namespace_id: context.reality.namespace_id.clone(),
+        replaced_services: context
+            .reality
+            .services
+            .iter()
+            .map(|service| service.source.clone())
+            .collect(),
         services,
+        replaced_containers: context.reality.containers.clone(),
         containers,
         missing_automatic_routes: context.reality.missing_automatic_routes.clone(),
     })
@@ -1376,6 +1388,7 @@ mod tests {
             namespace_id: namespace_id.clone(),
             namespace,
             services: Vec::new(),
+            containers: Vec::new(),
             missing_automatic_routes: Vec::new(),
             roster,
         };
