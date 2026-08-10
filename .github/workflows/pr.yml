@@ -56,6 +56,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       PLOYZ_DIND_PLATFORM: linux/amd64
+      PLOYZ_DIND_JOBS: 4
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,15 +64,17 @@ jobs:
         with:
           shared-key: workspace
           save-if: false
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache@v4
         with:
           path: |
             /tmp/ployz-dind-machine-target
             /tmp/ployz-dind-ebpf-target
             /tmp/ployz-dind-cargo-registry
             /tmp/ployz-dind-cargo-git
-          key: ployz-release-linux-amd64-
-          restore-keys: ployz-release-linux-amd64-
+          key: ployz-dind-linux-amd64-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
+          restore-keys: |
+            ployz-dind-linux-amd64-
+            ployz-release-linux-amd64-
       - uses: docker/setup-buildx-action@v3
       - run: scripts/dind-e2e.sh
       - uses: actions/upload-artifact@v4

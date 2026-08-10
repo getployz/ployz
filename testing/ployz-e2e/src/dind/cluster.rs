@@ -10,6 +10,7 @@ use bollard::query_parameters::{
     ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
     RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
 };
+use futures_util::future::try_join_all;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
@@ -133,14 +134,11 @@ async fn provision_network_and_machines(
     machine_specs: &[MachineSpec],
 ) -> Result<Vec<DindMachine>, DindError> {
     create_network(docker, run_id, network_name).await?;
-    let mut machines = Vec::with_capacity(machine_specs.len());
-    for (index, spec) in machine_specs.iter().enumerate() {
+    try_join_all(machine_specs.iter().enumerate().map(|(index, spec)| {
         let name = format!("ployz-dind-{run_id}-machine-{}", index + 1);
-        let machine =
-            provision_machine(docker, run_id, network_name, artifact_dir, spec, name).await?;
-        machines.push(machine);
-    }
-    Ok(machines)
+        provision_machine(docker, run_id, network_name, artifact_dir, spec, name)
+    }))
+    .await
 }
 
 async fn create_network(

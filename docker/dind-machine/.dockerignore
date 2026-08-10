@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!daemon.json
+!ployz-dind-images.service
+!nginx.tar
+!registry.tar

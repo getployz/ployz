@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bollard::Docker;
+use futures_util::future::try_join_all;
 use ployz::commands::SshTarget;
 use ployz::init::ssh::{SshPeerKey, default_config_home};
 use ployz::mesh::context::{OperatorContextStore, SSH_CONTEXT_HANDOFF_PREFIX, SshContextHandoff};
@@ -132,11 +133,18 @@ pub async fn found_and_join_with_service_urls(
         .persist(&founder_target, handoff.clone(), &operator)
         .map_err(|error| error.to_string())?;
     let cli = artifact_dir().join("ployz");
+    let mut pending_joins = Vec::with_capacity(joiners.len());
     for (index, joiner) in joiners.iter().enumerate() {
         let token_name = format!("join-machine-{}", index + 2);
         let token = create_join_token(&cli, &home, &founder_target, &token_name)?;
-        join_machine(docker, joiner, &token).await?;
+        pending_joins.push((*joiner, token));
     }
+    try_join_all(
+        pending_joins
+            .iter()
+            .map(|(joiner, token)| join_machine(docker, joiner, token)),
+    )
+    .await?;
 
     let (corrosion_address, corrosion_token) = corrosion_access(docker, founder).await?;
     let roster = wait_for_roster(
