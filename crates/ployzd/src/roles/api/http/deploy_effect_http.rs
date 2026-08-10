@@ -5,8 +5,8 @@ use std::time::Duration;
 use hyper::{Response, StatusCode};
 use ployz_core::corrosion::{Principal, is_preferred_controller};
 use ployz_core::{
-    DeployInspectOutcome, DeployInspectRequest, DeployPrepareOutcome, DeployPrepareRequest,
-    DeployRetireOutcome, DeployRetireRequest,
+    DeployInspectOutcome, DeployPrepareOutcome, DeployPrepareRequest, DeployRetireOutcome,
+    DeployRetireRequest,
 };
 use serde::de::DeserializeOwned;
 
@@ -18,18 +18,14 @@ const EFFECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) async fn inspect(
     service: &ApiService,
     principal: &Principal,
-    request: hyper::Request<hyper::body::Incoming>,
+    _request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
-    let request: DeployInspectRequest = match decode(request).await {
-        Ok(request) => request,
-        Err(response) => return response,
-    };
     if let Err(response) = authorize(service, principal).await {
         return response;
     }
     let outcome = match &service.deploy_effects {
-        Some(effects) => effects.inspect(request).await,
-        None => DeployInspectOutcome::Failed {},
+        Some(effects) => effects.inspect().await,
+        None => DeployInspectOutcome::Failed,
     };
     super::mutations::typed_response(StatusCode::OK, &outcome)
 }
@@ -43,15 +39,12 @@ pub(super) async fn prepare(
         Ok(request) => request,
         Err(response) => return response,
     };
-    if !is_authorized_machine(principal, &request.controller_machine_id) {
-        return error_response(StatusCode::NOT_FOUND, "unsupported_route");
-    }
     if let Err(response) = authorize(service, principal).await {
         return response;
     }
     let outcome = match &service.node_workflows {
         Some(workflows) => workflows.prepare(request).await,
-        None => DeployPrepareOutcome::Failed {},
+        None => DeployPrepareOutcome::Failed,
     };
     super::mutations::typed_response(StatusCode::OK, &outcome)
 }
@@ -65,7 +58,7 @@ pub(super) async fn retire(
         Ok(request) => request,
         Err(response) => return response,
     };
-    if !is_authorized_machine(principal, &request.controller_machine_id) {
+    if !matches!(principal, Principal::Machine { .. }) {
         return error_response(StatusCode::NOT_FOUND, "unsupported_route");
     }
     if request.rollback_services.is_empty()
@@ -75,19 +68,9 @@ pub(super) async fn retire(
     }
     let outcome = match &service.node_workflows {
         Some(workflows) => workflows.retire(request).await,
-        None => DeployRetireOutcome::Failed {},
+        None => DeployRetireOutcome::Failed,
     };
     super::mutations::typed_response(StatusCode::OK, &outcome)
-}
-
-fn is_authorized_machine(
-    principal: &Principal,
-    controller_machine_id: &ployz_core::ids::MachineName,
-) -> bool {
-    match principal {
-        Principal::Machine { machine_id } => machine_id == controller_machine_id,
-        Principal::Peer { .. } | Principal::ApiToken { .. } => false,
-    }
 }
 
 async fn authorize(service: &ApiService, principal: &Principal) -> Result<(), Response<HttpBody>> {

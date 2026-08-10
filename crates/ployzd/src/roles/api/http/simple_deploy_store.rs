@@ -141,19 +141,6 @@ impl SimpleDeployStore for CorrosionSimpleDeployStore {
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
-
-    async fn commit_is_visible(&self, commit: &DeployCommit) -> Result<bool, String> {
-        let rows = self
-            .query(
-                select_by_id(CorrosionTable::Namespaces, commit.namespace_id.as_str()),
-                MAX_SINGLETON_ROWS,
-            )
-            .await?;
-        Ok(
-            decode_one::<NamespaceDocument>(&self.cluster_id, CorrosionTable::Namespaces, rows)?
-                .is_some_and(|document| document == commit.namespace),
-        )
-    }
 }
 
 struct ResolvedNamespace {

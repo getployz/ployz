@@ -260,11 +260,6 @@ pub enum LogsExecutionError {
         namespace_name: String,
         service_name: String,
     },
-    #[error("service {namespace_name}/{service_name} has ambiguous local containers")]
-    ContainerAmbiguous {
-        namespace_name: String,
-        service_name: String,
-    },
     #[error(
         "this service runs containers on machines {machines}; pick one with `ployz logs <namespace> <service> --machine <machine>`"
     )]
@@ -293,13 +288,6 @@ impl From<ServiceLogsRefusal> for LogsExecutionError {
                 namespace_name,
                 service_name,
             } => Self::ContainerNotFound {
-                namespace_name: namespace_name.to_string(),
-                service_name: service_name.to_string(),
-            },
-            ServiceLogsRefusal::ContainerAmbiguous {
-                namespace_name,
-                service_name,
-            } => Self::ContainerAmbiguous {
                 namespace_name: namespace_name.to_string(),
                 service_name: service_name.to_string(),
             },

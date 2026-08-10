@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use hyper::Method;
+use ployz_core::machine::MachineName;
 use ployz_core::{
     DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorMalformedRosterDocumentClass,
     DoctorRosterRowSkipReason, DoctorRosterTable, HandshakeFreshness, STATUS_ROUTE,
@@ -124,8 +125,9 @@ pub fn render_status(document: &StatusDocument) -> String {
     }
 
     let answering_machine = match &document.answering_machine {
-        StatusAnsweringMachine::Known { name, .. } => name.as_str(),
-        StatusAnsweringMachine::Unknown { id } => id.as_str(),
+        StatusAnsweringMachine::Known { name } | StatusAnsweringMachine::Unknown { name } => {
+            name.as_str()
+        }
     };
     match &document.sync {
         StatusSync::CaughtUp { p99_lag } => writeln!(
@@ -274,7 +276,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             let names = newest
                 .machines
                 .iter()
-                .map(|machine| machine.name.as_str())
+                .map(MachineName::as_str)
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(output, "    newest:  {} ({names})", newest.version)
@@ -285,7 +287,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
                 output,
                 "    behind:  {} ({})",
                 behind.version,
-                behind.machine.name.as_str()
+                behind.machine.as_str()
             )
             .expect("writing to a String cannot fail");
         }
@@ -294,7 +296,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
                 output,
                 "    invalid:  {:?} ({})",
                 invalid.version,
-                invalid.machine.name.as_str()
+                invalid.machine.as_str()
             )
             .expect("writing to a String cannot fail");
         }
@@ -302,13 +304,13 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             .versions
             .behind
             .iter()
-            .map(|behind| behind.machine.name.as_str())
+            .map(|behind| behind.machine.as_str())
             .chain(
                 document
                     .versions
                     .invalid
                     .iter()
-                    .map(|invalid| invalid.machine.name.as_str()),
+                    .map(|invalid| invalid.machine.as_str()),
             )
             .collect::<Vec<_>>();
         names.sort_unstable();
@@ -348,19 +350,19 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
         writeln!(
             output,
             "\n⚠ {} is writing another cluster's id; repair it in this order:",
-            machine.name.as_str()
+            machine.as_str()
         )
         .expect("writing to a String cannot fail");
         writeln!(
             output,
             "    ployz machine rm -- {}",
-            shell_quote(machine.name.as_str())
+            shell_quote(machine.as_str())
         )
         .expect("writing to a String cannot fail");
         writeln!(
             output,
             "    on {}:  sudo ployz machine reset",
-            machine.name.as_str()
+            machine.as_str()
         )
         .expect("writing to a String cannot fail");
         output.push_str("    ployz token create <name>  →  paste the join line on that machine\n");
@@ -391,16 +393,14 @@ fn render_roster_skip_reason(reason: &DoctorRosterRowSkipReason) -> String {
     }
 }
 
-fn actionable_foreign_authors(
-    document: &DoctorDocument,
-) -> BTreeMap<String, ployz_core::DoctorMachineIdentity> {
+fn actionable_foreign_authors(document: &DoctorDocument) -> BTreeMap<String, MachineName> {
     let mut machines = BTreeMap::new();
     for foreign in &document.foreign_clusters {
         for row in &foreign.rows {
-            if let DoctorForeignAuthorship::CurrentMachine { machine } = &row.authorship {
+            if let DoctorForeignAuthorship::CurrentMachine { machine_name } = &row.authorship {
                 machines
-                    .entry(machine.id.as_str().to_owned())
-                    .or_insert_with(|| machine.clone());
+                    .entry(machine_name.as_str().to_owned())
+                    .or_insert_with(|| machine_name.clone());
             }
         }
     }
@@ -409,23 +409,23 @@ fn actionable_foreign_authors(
 
 fn render_foreign_authorship(authorship: &DoctorForeignAuthorship) -> String {
     match authorship {
-        DoctorForeignAuthorship::CurrentMachine { machine } => {
+        DoctorForeignAuthorship::CurrentMachine { machine_name } => {
             format!(
                 "authored by current machine {} (action required)",
-                machine.name.as_str()
+                machine_name.as_str()
             )
         }
-        DoctorForeignAuthorship::NonCurrentMachine { machine_id } => format!(
+        DoctorForeignAuthorship::NonCurrentMachine { machine_name } => format!(
             "authored by non-current machine {}; inert, no repair action",
-            machine_id.as_str()
+            machine_name.as_str()
         ),
-        DoctorForeignAuthorship::Peer { peer_id } => format!(
+        DoctorForeignAuthorship::Peer { peer_name } => format!(
             "authored by peer {}; inert, no repair action",
-            peer_id.as_str()
+            peer_name.as_str()
         ),
-        DoctorForeignAuthorship::ApiToken { token_id } => format!(
+        DoctorForeignAuthorship::ApiToken { token_name } => format!(
             "authored by API token {}; inert, no repair action",
-            token_id.as_str()
+            token_name.as_str()
         ),
         DoctorForeignAuthorship::Unparseable => {
             "authorship unparseable; inert, no repair action".to_owned()
@@ -451,9 +451,7 @@ mod tests {
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    const MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
     const MACHINE_C: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-    const MACHINE_D: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
     const ROW_WINNER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
     const ROW_LOSER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
     const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
@@ -467,7 +465,6 @@ mod tests {
             },
             "answering_machine": {
                 "state": "known",
-                "id": MACHINE_A,
                 "name": "core-1"
             },
             "sync": {
@@ -479,13 +476,11 @@ mod tests {
             "barrier": "ready",
             "machines": [
                 {
-                    "id": MACHINE_A,
                     "name": "core-1",
                     "address": "fd00::1",
                     "handshake": { "state": "self_machine" }
                 },
                 {
-                    "id": MACHINE_B,
                     "name": "edge-a",
                     "address": "fd00::2",
                     "handshake": {
@@ -493,7 +488,6 @@ mod tests {
                     }
                 },
                 {
-                    "id": MACHINE_C,
                     "name": "edge-b",
                     "address": "fd00::3",
                     "handshake": {
@@ -503,7 +497,6 @@ mod tests {
                     }
                 },
                 {
-                    "id": MACHINE_D,
                     "name": "edge-c",
                     "address": "fd00::4",
                     "handshake": { "state": "never" }
@@ -528,13 +521,11 @@ mod tests {
             "versions": {
                 "newest": {
                     "version": "0.2.0",
-                    "machines": [
-                        { "id": MACHINE_A, "name": "core-1" }
-                    ]
+                    "machines": ["core-1"]
                 },
                 "behind": [
                     {
-                        "machine": { "id": MACHINE_B, "name": "edge-a" },
+                        "machine": "edge-a",
                         "version": "0.1.0"
                     }
                 ],
@@ -549,20 +540,20 @@ mod tests {
                             "key": ROW_LOSER,
                             "authorship": {
                                 "kind": "current_machine",
-                                "machine": { "id": MACHINE_B, "name": "edge-a" }
+                                "machine_name": "edge-a"
                             }
                         },
                         {
                             "table": "tokens",
                             "key": ROW_WINNER,
-                            "authorship": { "kind": "peer", "peer_id": PEER }
+                            "authorship": { "kind": "peer", "peer_name": PEER }
                         },
                         {
                             "table": "operations",
                             "key": "operation/orphan",
                             "authorship": {
                                 "kind": "non_current_machine",
-                                "machine_id": MACHINE_C
+                                "machine_name": MACHINE_C
                             }
                         },
                         {
@@ -631,7 +622,7 @@ mod tests {
     fn no_roster_names_the_only_join_door() {
         let document: StatusDocument = serde_json::from_value(json!({
             "cluster": null,
-            "answering_machine": { "state": "unknown", "id": MACHINE_A },
+            "answering_machine": { "state": "unknown", "name": MACHINE_A },
             "sync": { "state": "no_lag_sample" },
             "barrier": "no_roster",
             "machines": [],
@@ -651,8 +642,10 @@ mod tests {
         let mut document = doctor_fixture();
         for foreign in &mut document.foreign_clusters {
             for row in &mut foreign.rows {
-                if let DoctorForeignAuthorship::CurrentMachine { machine } = &mut row.authorship {
-                    machine.name = ployz_core::machine::MachineName::try_new("--help")
+                if let DoctorForeignAuthorship::CurrentMachine { machine_name } =
+                    &mut row.authorship
+                {
+                    *machine_name = ployz_core::machine::MachineName::try_new("--help")
                         .expect("option-looking machine name");
                 }
             }
@@ -723,17 +716,15 @@ mod tests {
             "versions": {
                 "newest": {
                     "version": "0.2.0",
-                    "machines": [
-                        { "id": MACHINE_A, "name": "core-1" }
-                    ]
+                    "machines": ["core-1"]
                 },
                 "behind": [
                     {
-                        "machine": { "id": MACHINE_B, "name": "--all" },
+                        "machine": "--all",
                         "version": "0.1.0"
                     },
                     {
-                        "machine": { "id": MACHINE_C, "name": "--help" },
+                        "machine": "--help",
                         "version": "0.1.0"
                     }
                 ],

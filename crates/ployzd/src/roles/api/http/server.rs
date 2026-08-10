@@ -692,7 +692,7 @@ async fn machines_lens_contains(lenses: &ApiLenses, machine_id: &MachineName) ->
     matches!(
         state,
         Ok(Ok(Ok(LensSnapshot::Machines { rows, .. })))
-            if rows.iter().any(|row| &row.id == machine_id)
+            if rows.iter().any(|row| &row.name == machine_id)
     )
 }
 

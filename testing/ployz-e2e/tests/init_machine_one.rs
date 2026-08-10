@@ -459,7 +459,7 @@ async fn assert_machines_lens(
     };
     require(
         cluster.name == CLUSTER_NAME
-            && matches!(rows.as_slice(), [row] if row.document.name.as_str() == MACHINE_NAME),
+            && matches!(rows.as_slice(), [row] if row.name.as_str() == MACHINE_NAME),
         format!("machines lens did not expose machine one: cluster={cluster:?} rows={rows:?}"),
     )
 }

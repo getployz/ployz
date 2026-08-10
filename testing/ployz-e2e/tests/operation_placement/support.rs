@@ -108,8 +108,7 @@ pub(super) async fn wait_for_placed_rows(
                     let placed = endpoint_rows
                         .iter()
                         .flat_map(|row| {
-                            row.document
-                                .endpoints
+                            row.endpoints
                                 .iter()
                                 .map(move |endpoint| (&row.machine_id, endpoint))
                         })

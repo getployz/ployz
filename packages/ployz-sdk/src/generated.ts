@@ -134,19 +134,17 @@ export type DeployServices = Record<CorrosionServiceName, DeployServiceRequest>;
 
 export type DoctorDocument = { skipped_roster_rows: Array<DoctorSkippedRosterRow>, noncanonical_rows: Array<DoctorNoncanonicalRow>, skipped_newer_versions: Array<DoctorSkippedNewerVersion>, versions: DoctorVersionReport, foreign_clusters: Array<DoctorForeignClusterRows>, };
 
-export type DoctorForeignAuthorship = { "kind": "current_machine", machine: DoctorMachineIdentity, } | { "kind": "non_current_machine", machine_id: MachineName, } | { "kind": "peer", peer_id: PeerName, } | { "kind": "api_token", token_id: TokenName, } | { "kind": "unparseable" };
+export type DoctorForeignAuthorship = { "kind": "current_machine", machine_name: MachineName, } | { "kind": "non_current_machine", machine_name: MachineName, } | { "kind": "peer", peer_name: PeerName, } | { "kind": "api_token", token_name: TokenName, } | { "kind": "unparseable" };
 
 export type DoctorForeignClusterRows = { cluster_id: string, rows: Array<DoctorForeignRowEvidence>, };
 
 export type DoctorForeignRowEvidence = { table: CorrosionTable, key: string, authorship: DoctorForeignAuthorship, };
 
-export type DoctorMachineIdentity = { id: MachineName, name: MachineName, };
-
-export type DoctorMachineVersion = { machine: DoctorMachineIdentity, version: string, };
+export type DoctorMachineVersion = { machine: MachineName, version: string, };
 
 export type DoctorMalformedRosterDocumentClass = { "kind": "missing_version" } | { "kind": "invalid_version" } | { "kind": "unsupported_version", found: number, } | { "kind": "invalid_payload" };
 
-export type DoctorNewestVersion = { version: string, machines: Array<DoctorMachineIdentity>, };
+export type DoctorNewestVersion = { version: string, machines: Array<MachineName>, };
 
 export type DoctorNoncanonicalRow = { table: CorrosionTable, key: string, expected: string, };
 
@@ -163,8 +161,6 @@ export type DoctorVersionReport = { newest?: DoctorNewestVersion, behind: Array<
 export type EbpfMeshDegradationReason = { "kind": "missing_bridge", ifname: string, } | { "kind": "host_effect", message: string, };
 
 export type EbpfMeshDegraded = { reason: EbpfMeshDegradationReason, };
-
-export type EndpointLensRow = { machine_id: MachineName, document: MachineEndpointDocument, };
 
 export type EnvName = Brand<string, "EnvName">;
 
@@ -278,7 +274,7 @@ export type KnownApiFeature = "v2.founding" | "v2.lenses" | "v2.join_tokens" | "
 
 export type LensCollection = "machines" | "services" | "endpoints" | "machine_status" | "operations";
 
-export type LensSnapshot = { "collection": "machines", cluster: ClusterDocument, rows: Array<MachineLensRow>, } | { "collection": "services", rows: Array<ServiceLensRow>, } | { "collection": "endpoints", rows: Array<EndpointLensRow>, } | { "collection": "machine_status", rows: Array<MachineStatusLensRow>, } | { "collection": "operations", rows: Array<OperationLensRow>, };
+export type LensSnapshot = { "collection": "machines", cluster: ClusterDocument, rows: Array<MachineDocument>, } | { "collection": "services", rows: Array<ServiceLensRow>, } | { "collection": "endpoints", rows: Array<MachineEndpointDocument>, } | { "collection": "machine_status", rows: Array<MachineStatusDocument>, } | { "collection": "operations", rows: Array<OperationDocument>, };
 
 export type LensWatchEvent = { "kind": "snapshot", snapshot: LensSnapshot, } | { "kind": "state", snapshot: LensSnapshot, } | { "kind": "terminal", refusal: ApiRefusal, };
 
@@ -305,8 +301,6 @@ export type MachineEndpointSupernet = string;
 export type MachineJoinAccepted = { cluster: ClusterDocument, machine: MachineDocument, seed: ReachableSeedMachine, door: JoinDoorMaterial, corrosion: CorrosionBootstrapFacts, substrate: JoinMachineSubstrate, };
 
 export type MachineJoinRequest = { name: MachineName, public_key: WireGuardPublicKey, endpoint: string | null, storage_choice: JoinStorageChoice, storage_facts: JoinStorageFacts, };
-
-export type MachineLensRow = { id: MachineName, document: MachineDocument, };
 
 export type MachineLifecycle = "active" | "draining";
 
@@ -335,8 +329,6 @@ container_isolation?: ContainerIsolationTestimony | null,
  * A current writer publishes `Some`, including an empty map on a one-machine roster.
  */
 wireguard_handshakes?: { [key in MachineName]: WireGuardHandshakeEvidence } | null, };
-
-export type MachineStatusLensRow = { id: MachineName, document: MachineStatusDocument, };
 
 export type MachineStorageIneligibleReason = "low_ram";
 
@@ -383,8 +375,6 @@ services: { [key in CorrosionServiceName]: PublishedService }, written_by: Princ
 export type NanoCpus = SafeInteger<"NanoCpus">;
 
 export type OperationDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, machine_id: MachineName, initiator: Principal, namespace_id: CorrosionNamespaceName, deploy_name: DeployName, created_at: CorrosionTimestamp, } & ({ "state": "created" } | { "state": "terminal", completed_at: CorrosionTimestamp, outcome: CorrosionDeployOutcome, });
-
-export type OperationLensRow = { namespace_name: CorrosionNamespaceName, deploy_name: DeployName, document: OperationDocument, };
 
 export type PeerDocument = { v: CorrosionDocumentVersion, cluster_id: ClusterName, name: PeerName, transport: PeerTransport, written_by: Principal, written_at: CorrosionTimestamp, };
 
@@ -470,7 +460,7 @@ export type ServiceLogStream = "stdout" | "stderr";
 
 export type ServiceLogsFollowEvent = { "kind": "line", log: ServiceLogLine, } | { "kind": "gap" } | { "kind": "terminal", refusal: ServiceLogsRefusal, };
 
-export type ServiceLogsRefusal = { "kind": "service_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_ambiguous", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "machine_selector_required", machines: Array<MachineName>, } | { "kind": "remote_owner", machine_name: MachineName, } | { "kind": "runtime_unavailable", machine_name: MachineName, };
+export type ServiceLogsRefusal = { "kind": "service_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "container_not_found", namespace_name: CorrosionNamespaceName, service_name: CorrosionServiceName, } | { "kind": "machine_selector_required", machines: Array<MachineName>, } | { "kind": "remote_owner", machine_name: MachineName, } | { "kind": "runtime_unavailable", machine_name: MachineName, };
 
 export type ServiceLogsRequest = { tail_lines?: CorrosionLogsTailLines | null,
 /**
@@ -493,7 +483,7 @@ export type ServiceVolumeMount = { volume_name: VolumeName, target: ContainerMou
 
 export type Sha256Hex = Brand<string, "Sha256Hex">;
 
-export type StatusAnsweringMachine = { "state": "known", id: MachineName, name: MachineName, } | { "state": "unknown", id: MachineName, };
+export type StatusAnsweringMachine = { "state": "known", name: MachineName, } | { "state": "unknown", name: MachineName, };
 
 export type StatusBarrier = "ready" | "catching_up" | "no_roster";
 
@@ -507,7 +497,7 @@ export type StatusHandshakeEvidence = { "state": "self_machine" } | { "state": "
 
 export type StatusHint = "all_peer_handshakes_stale";
 
-export type StatusMachineRow = { id: MachineName, name: MachineName, address: string, handshake: StatusHandshakeEvidence, };
+export type StatusMachineRow = { name: MachineName, address: string, handshake: StatusHandshakeEvidence, };
 
 export type StatusSync = { "state": "caught_up", p99_lag: number, } | { "state": "syncing", gaps: number, queue_size: number, p99_lag: number, } | { "state": "no_lag_sample" } | { "state": "degraded", reason: StatusDegradationReason, };
 

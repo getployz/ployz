@@ -9,9 +9,9 @@ use ployz_core::corrosion::V2ManagedContainerIdentity;
 use ployz_core::deploy::{ImageReference, RegistryCredential};
 use ployz_core::network::EndpointBridgeStatus;
 use ployz_core::{
-    DeployDesiredReplica, DeployInspectOutcome, DeployInspectRequest, DeployObservedContainer,
-    DeployPrepareOutcome, DeployPrepareRequest, DeployPreparedReplica, DeployRetireOutcome,
-    DeployRetireRequest, HealthGatePolicy,
+    DeployDesiredReplica, DeployInspectOutcome, DeployObservedContainer, DeployPrepareOutcome,
+    DeployPrepareRequest, DeployPreparedReplica, DeployRetireOutcome, DeployRetireRequest,
+    HealthGatePolicy,
 };
 use tokio::sync::watch;
 
@@ -37,10 +37,10 @@ impl DeployHostEffects {
         Self { runtime }
     }
 
-    pub(super) async fn inspect(&self, request: DeployInspectRequest) -> DeployInspectOutcome {
-        match tokio::time::timeout(INSPECT_TIMEOUT, self.inspect_inner(request)).await {
+    pub(super) async fn inspect(&self) -> DeployInspectOutcome {
+        match tokio::time::timeout(INSPECT_TIMEOUT, self.inspect_inner()).await {
             Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) | Err(_) => DeployInspectOutcome::Failed {},
+            Ok(Err(_)) | Err(_) => DeployInspectOutcome::Failed,
         }
     }
 
@@ -76,7 +76,7 @@ impl DeployHostEffects {
                 replicas,
                 displaced_incumbents,
             }),
-            Err(EffectError::Refused) => Ok(DeployPrepareOutcome::Refused {}),
+            Err(EffectError::Refused) => Ok(DeployPrepareOutcome::Refused),
             Err(EffectError::Failed) => Err("prepare failed".to_owned()),
         }
     }
@@ -87,7 +87,7 @@ impl DeployHostEffects {
     ) -> Result<DeployRetireOutcome, String> {
         match self.retire_inner(request).await {
             Ok(()) => Ok(DeployRetireOutcome::Retired),
-            Err(EffectError::Refused) => Ok(DeployRetireOutcome::Refused {}),
+            Err(EffectError::Refused) => Ok(DeployRetireOutcome::Refused),
             Err(EffectError::Failed) => Err("retire failed".to_owned()),
         }
     }
@@ -105,10 +105,7 @@ impl DeployHostEffects {
         image.with_digest(&digest).map_err(|_| ())
     }
 
-    async fn inspect_inner(
-        &self,
-        _request: DeployInspectRequest,
-    ) -> Result<DeployInspectOutcome, ()> {
+    async fn inspect_inner(&self) -> Result<DeployInspectOutcome, ()> {
         let observation = SystemObservation::read().map_err(|_| ())?;
         let bridge_ready = matches!(
             self.runtime.read_endpoint_network_status().await,
@@ -119,12 +116,8 @@ impl DeployHostEffects {
             .existing_v2_managed_containers()
             .await
             .map_err(|_| ())?;
-        let mut identities = HashSet::with_capacity(observed.len());
         let mut containers = Vec::with_capacity(observed.len());
         for container in observed {
-            if !identities.insert(container.identity.clone()) {
-                return Err(());
-            }
             containers.push(DeployObservedContainer {
                 identity: container.identity,
                 running: matches!(
@@ -556,7 +549,7 @@ fn require_ipv4(ip: IpAddr) -> Result<Ipv4Addr, EffectError> {
 mod tests {
     use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName, HostPortBindings};
     use ployz_core::deploy::{ContainerRuntimeSpec, ReplicaSlot};
-    use ployz_core::ids::{ContainerId, DeployName, MachineName};
+    use ployz_core::ids::{ContainerId, DeployName};
     use ployz_core::machine::runtime::ManagedContainerHealthStatus;
 
     use super::*;
@@ -657,7 +650,6 @@ mod tests {
 
     fn prepare_request(identity: V2ManagedContainerIdentity) -> DeployPrepareRequest {
         DeployPrepareRequest {
-            controller_machine_id: MachineName::try_new("machine-one").expect("machine"),
             operation_id: DeployName::try_new("release-1").expect("deploy"),
             namespace_name: CorrosionNamespaceName::try_new("production").expect("namespace"),
             service_name: CorrosionServiceName::try_new("api").expect("service"),

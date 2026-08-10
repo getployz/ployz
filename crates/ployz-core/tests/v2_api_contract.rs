@@ -4,27 +4,26 @@ use std::num::NonZeroU16;
 use std::str::FromStr;
 
 use ployz_core::corrosion::{
-    AcceptedRosterPrincipal, CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionTimestamp,
-    HostPortBinding, HostPortBindings, HostPortProtocol, MachineLoadBand, MachineStatusDocument,
-    MachineTransport, OperationInitiator, OperatorWriteProvenance, PeerTransport, Principal,
-    ServicePlacement, ServiceReplicaCount, SourcePrincipalResolutionError,
-    resolve_source_principal,
+    AcceptedRosterPrincipal, CorrosionNamespaceName, CorrosionTimestamp, HostPortBinding,
+    HostPortBindings, HostPortProtocol, MachineLoadBand, MachineTransport, OperationInitiator,
+    OperatorWriteProvenance, PeerTransport, Principal, ServicePlacement, ServiceReplicaCount,
+    SourcePrincipalResolutionError, resolve_source_principal,
 };
 use ployz_core::deploy::{
     ContainerRuntimeSpec, EnvName, EnvValue, ImageReference, ServiceEnvironment,
 };
-use ployz_core::ids::{ClusterName, MachineName, PeerName, TokenName};
+use ployz_core::ids::{MachineName, PeerName, TokenName};
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, DEPLOY_INSPECT_ROUTE,
     DEPLOY_PREPARE_ROUTE, DEPLOY_RETIRE_ROUTE, DEPLOY_ROUTE, DeployRefusal, DeployRequest,
     DeployServiceRequest, FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature,
     LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot,
-    LensWatchEvent, MachineStatusLensRow, MachineStatusLensRowIdentityError,
-    NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, PinnedMachineNames, RequestedPlacement,
-    SERVICE_LOGS_PROBE_ROUTE, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent,
-    ServiceLogsRefusal, ServiceLogsRequest, V2Method, V2Route, VERSION_ROUTE, lens_route,
-    lens_watch_route, service_logs_follow_route, service_logs_tail_route,
+    LensWatchEvent, NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, PinnedMachineNames,
+    RequestedPlacement, SERVICE_LOGS_PROBE_ROUTE, ServiceLogLine, ServiceLogStream,
+    ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, V2Method, V2Route,
+    VERSION_ROUTE, lens_route, lens_watch_route, service_logs_follow_route,
+    service_logs_tail_route,
 };
 use serde_json::json;
 
@@ -408,35 +407,6 @@ fn log_requests_carry_an_optional_machine_selector_and_replay_free_reconnects() 
     assert_eq!(
         serde_json::to_value(&remote_owner).expect("owner refusal serializes"),
         json!({ "kind": "remote_owner", "machine_name": "edge-a" })
-    );
-}
-
-#[test]
-fn machine_status_lens_row_requires_its_machine_owned_key() {
-    let document = MachineStatusDocument {
-        v: CorrosionDocumentVersion::V1,
-        cluster_id: ClusterName::try_new(MACHINE_A).expect("fixture cluster id"),
-        machine_id: machine_id(MACHINE_A),
-        ployz_version: "0.1.0-alpha.9".to_owned(),
-        corrosion_version: "0.2.0".to_owned(),
-        architecture: "x86_64".to_owned(),
-        free_disk_bytes: 1,
-        free_memory_bytes: 1,
-        load: MachineLoadBand::Idle,
-        observed_at: CorrosionTimestamp::try_new("2026-08-04T10:00:00Z")
-            .expect("fixture timestamp"),
-        mesh: None,
-        container_isolation: None,
-        wireguard_handshakes: None,
-    };
-
-    assert!(MachineStatusLensRow::try_new(machine_id(MACHINE_A), document.clone()).is_ok());
-    assert_eq!(
-        MachineStatusLensRow::try_new(machine_id(MACHINE_B), document),
-        Err(MachineStatusLensRowIdentityError {
-            id: machine_id(MACHINE_B),
-            document_machine_id: machine_id(MACHINE_A),
-        })
     );
 }
 

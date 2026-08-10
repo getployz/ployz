@@ -10,8 +10,8 @@ use ployz_core::corrosion::{
 };
 use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
-    ApiRefusal, DoctorProjectionInput, DoctorRawRows, MachineLensRow, StatusCorrosionHealth,
-    StatusProjectionInput, project_doctor, project_status,
+    ApiRefusal, DoctorProjectionInput, DoctorRawRows, StatusCorrosionHealth, StatusProjectionInput,
+    project_doctor, project_status,
 };
 
 use super::roster::corrosion_unavailable_refusal;
@@ -87,7 +87,7 @@ fn typed_ok<Value: serde::Serialize>(value: &Value) -> Response<HttpBody> {
 
 struct StatusInputs {
     cluster: Option<ClusterDocument>,
-    machines: Vec<MachineLensRow>,
+    machines: Vec<MachineDocument>,
     wireguard_handshakes:
         Option<BTreeMap<MachineName, ployz_core::corrosion::WireGuardHandshakeEvidence>>,
 }
@@ -114,19 +114,8 @@ async fn read_status_inputs(
     let machines = read_named_roster_rows::<MachineDocument>(accepted_cluster, machine_rows)
         .accepted
         .into_iter()
-        .map(|row| {
-            let id = MachineName::try_new(row.source.key).map_err(|error| {
-                DiagnosticsReadError::InvalidAcceptedRow {
-                    table: CorrosionTable::Machines,
-                    detail: error.to_string(),
-                }
-            })?;
-            Ok(MachineLensRow {
-                id,
-                document: row.value,
-            })
-        })
-        .collect::<Result<Vec<_>, DiagnosticsReadError>>()?;
+        .map(|row| row.value)
+        .collect();
 
     let mut statuses = read_rows::<MachineStatusDocument>(cluster_id, local_status_rows)
         .accepted

@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use ployz_core::corrosion::MachineTransport;
+use ployz_core::corrosion::{MachineDocument, MachineStatusDocument, MachineTransport};
 use ployz_core::founding::InitStorageChoice;
 use ployz_core::ids::ClusterName;
 use ployz_core::install::{ExactPloyzVersion, InstallArtifactVersion};
@@ -15,9 +15,8 @@ use ployz_core::join::{
 use ployz_core::machine::MachineName;
 use ployz_core::operation::FailureMessage;
 use ployz_core::{
-    LensCollection, LensSnapshot, MachineLensRow, MachineRemoveRefusal, MachineRemoveReply,
-    MachineRemoveRequest, MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply,
-    MachineUpgradeRequest,
+    LensCollection, LensSnapshot, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
+    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
 };
 use ployz_core::{MACHINE_ENDPOINT_ROUTE_PREFIX, MACHINE_REMOVE_ROUTE, MACHINE_UPGRADE_ROUTE};
 use ployz_host_runner::lifecycle::machine_join::{
@@ -78,7 +77,7 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
     for (confirmed, machine) in selected.into_iter().enumerate() {
         let request =
             resolve_machine_upgrade_request(&source, machine.status, &mut cached_artifacts).await?;
-        let name = machine.row.document.name.as_str();
+        let name = machine.row.name.as_str();
         let short_sha256 = &request.sha256.as_str()[..12];
         progress.before_mutation(&format!(
             "{name}  target {} ({short_sha256}...)\n",
@@ -118,7 +117,7 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
         match source.confirmation() {
             UpgradeConfirmation::ReleaseVersion => {
                 complete_release_upgrade(&mut progress, name, &request.version, confirmed, || {
-                    confirm_upgrade(&direct, &machine.row.id, &request.version)
+                    confirm_upgrade(&direct, &machine.row.name, &request.version)
                 })
                 .await?;
             }
@@ -242,7 +241,7 @@ async fn confirm_upgrade(
         if let Ok(snapshot) = remote.lens(LensCollection::MachineStatus).await
             && matches!(
                 machine_status_for(snapshot_rows(&snapshot), machine_id),
-                Some(status) if same_release_version(&status.document.ployz_version, expected_version.as_str())
+                Some(status) if same_release_version(&status.ployz_version, expected_version.as_str())
             )
         {
             return true;
@@ -254,7 +253,7 @@ async fn confirm_upgrade(
     }
 }
 
-fn snapshot_rows(snapshot: &LensSnapshot) -> &[MachineStatusLensRow] {
+fn snapshot_rows(snapshot: &LensSnapshot) -> &[MachineStatusDocument] {
     match snapshot {
         LensSnapshot::MachineStatus { rows } => rows,
         LensSnapshot::Machines { .. }
@@ -363,8 +362,8 @@ async fn read_manifest_text(url: String) -> Result<String, MachineExecutionError
 }
 
 struct UpgradeMachine<'a> {
-    row: &'a MachineLensRow,
-    status: &'a MachineStatusLensRow,
+    row: &'a MachineDocument,
+    status: &'a MachineStatusDocument,
 }
 
 fn upgrade_lenses<'machines, 'statuses>(
@@ -372,8 +371,8 @@ fn upgrade_lenses<'machines, 'statuses>(
     statuses: &'statuses LensSnapshot,
 ) -> Result<
     (
-        &'machines [MachineLensRow],
-        &'statuses [MachineStatusLensRow],
+        &'machines [MachineDocument],
+        &'statuses [MachineStatusDocument],
     ),
     MachineExecutionError,
 > {
@@ -396,20 +395,20 @@ fn upgrade_lenses<'machines, 'statuses>(
 
 fn select_upgrade_machines<'a>(
     selector: &MachineUpgradeSelector,
-    machines: &'a [MachineLensRow],
-    statuses: &'a [MachineStatusLensRow],
+    machines: &'a [MachineDocument],
+    statuses: &'a [MachineStatusDocument],
     target_version: Option<&str>,
 ) -> Result<Vec<UpgradeMachine<'a>>, MachineExecutionError> {
     let mut selected = match selector {
         MachineUpgradeSelector::Names(names) => names
             .iter()
             .map(|name| {
-                let Some(row) = machines.iter().find(|row| row.document.name == *name) else {
+                let Some(row) = machines.iter().find(|row| row.name == *name) else {
                     return Err(MachineExecutionError::MachineNotFound {
                         machine: name.as_str().to_owned(),
                     });
                 };
-                let Some(status) = machine_status_for(statuses, &row.id) else {
+                let Some(status) = machine_status_for(statuses, &row.name) else {
                     return Err(MachineExecutionError::MissingMachineStatus {
                         machine: name.as_str().to_owned(),
                     });
@@ -420,9 +419,9 @@ fn select_upgrade_machines<'a>(
         MachineUpgradeSelector::All => machines
             .iter()
             .map(|row| {
-                let Some(status) = machine_status_for(statuses, &row.id) else {
+                let Some(status) = machine_status_for(statuses, &row.name) else {
                     return Err(MachineExecutionError::MissingMachineStatus {
-                        machine: row.document.name.as_str().to_owned(),
+                        machine: row.name.as_str().to_owned(),
                     });
                 };
                 Ok(UpgradeMachine { row, status })
@@ -434,34 +433,29 @@ fn select_upgrade_machines<'a>(
             machines
                 .iter()
                 .filter_map(|row| {
-                    let status = machine_status_for(statuses, &row.id)?;
-                    is_release_behind(&status.document.ployz_version, target_version)
+                    let status = machine_status_for(statuses, &row.name)?;
+                    is_release_behind(&status.ployz_version, target_version)
                         .then_some(UpgradeMachine { row, status })
                 })
                 .collect()
         }
     };
-    selected.sort_by(|left, right| {
-        left.row
-            .document
-            .name
-            .as_str()
-            .cmp(right.row.document.name.as_str())
-            .then_with(|| left.row.id.as_str().cmp(right.row.id.as_str()))
-    });
+    selected.sort_by(|left, right| left.row.name.cmp(&right.row.name));
     Ok(selected)
 }
 
 fn machine_status_for<'a>(
-    statuses: &'a [MachineStatusLensRow],
+    statuses: &'a [MachineStatusDocument],
     machine_id: &MachineName,
-) -> Option<&'a MachineStatusLensRow> {
-    statuses.iter().find(|status| status.id == *machine_id)
+) -> Option<&'a MachineStatusDocument> {
+    statuses
+        .iter()
+        .find(|status| status.machine_id == *machine_id)
 }
 
 async fn resolve_machine_upgrade_request(
     source: &UpgradeSource,
-    status: &MachineStatusLensRow,
+    status: &MachineStatusDocument,
     cache: &mut Vec<(ReleasePlatform, MachineUpgradeRequest)>,
 ) -> Result<MachineUpgradeRequest, MachineExecutionError> {
     let UpgradeSource::Release {
@@ -474,7 +468,7 @@ async fn resolve_machine_upgrade_request(
         };
         return Ok(request.clone());
     };
-    let platform = release_platform_for_architecture(&status.document.architecture)?;
+    let platform = release_platform_for_architecture(&status.architecture)?;
     if let Some((_, request)) = cache.iter().find(|(cached, _)| *cached == platform) {
         return Ok(request.clone());
     }
@@ -838,17 +832,11 @@ pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, Machine
         });
     };
     let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
-        left.document
-            .name
-            .as_str()
-            .cmp(right.document.name.as_str())
-            .then_with(|| left.id.as_str().cmp(right.id.as_str()))
-    });
+    rows.sort_by(|left, right| left.name.cmp(&right.name));
 
     let mut output = String::from("NAME\tCONTROL ADDRESS\n");
     for row in rows {
-        let address = match &row.document.transport {
+        let address = match &row.transport {
             MachineTransport::Wireguard {
                 pubkey: _,
                 addr_v6,
@@ -857,7 +845,7 @@ pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, Machine
             } => addr_v6.to_string(),
             MachineTransport::Tailscale { ip, subnet_v4: _ } => ip.to_string(),
         };
-        output.push_str(row.document.name.as_str());
+        output.push_str(row.name.as_str());
         output.push('\t');
         output.push_str(&address);
         output.push('\n');
@@ -940,7 +928,6 @@ mod tests {
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    const MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
     const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
 
     fn machines_snapshot() -> LensSnapshot {
@@ -961,40 +948,34 @@ mod tests {
             },
             "rows": [
                 {
-                    "id": MACHINE_B,
-                    "document": {
-                        "v": 1,
-                        "cluster_id": CLUSTER,
-                        "written_by": { "kind": "peer", "peer_id": PEER },
-                        "written_at": "2026-08-04T10:00:00Z",
-                        "name": "zeta",
-                        "lifecycle": "active",
-                        "transport": {
-                            "kind": "tailscale",
-                            "ip": "100.64.0.20",
-                            "subnet_v4": "10.210.20.0/24"
-                        },
-                        "storage": { "mode": "plain", "reason": { "kind": "default" } }
-                    }
+                    "v": 1,
+                    "cluster_id": CLUSTER,
+                    "written_by": { "kind": "peer", "peer_id": PEER },
+                    "written_at": "2026-08-04T10:00:00Z",
+                    "name": "zeta",
+                    "lifecycle": "active",
+                    "transport": {
+                        "kind": "tailscale",
+                        "ip": "100.64.0.20",
+                        "subnet_v4": "10.210.20.0/24"
+                    },
+                    "storage": { "mode": "plain", "reason": { "kind": "default" } }
                 },
                 {
-                    "id": MACHINE_A,
-                    "document": {
-                        "v": 1,
-                        "cluster_id": CLUSTER,
-                        "written_by": { "kind": "peer", "peer_id": PEER },
-                        "written_at": "2026-08-04T10:00:00Z",
-                        "name": "alpha",
-                        "lifecycle": "active",
-                        "transport": {
-                            "kind": "wireguard",
-                            "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                            "addr_v6": "fd00::20",
-                            "endpoint": null,
-                            "subnet_v4": "10.210.21.0/24"
-                        },
-                        "storage": { "mode": "plain", "reason": { "kind": "default" } }
-                    }
+                    "v": 1,
+                    "cluster_id": CLUSTER,
+                    "written_by": { "kind": "peer", "peer_id": PEER },
+                    "written_at": "2026-08-04T10:00:00Z",
+                    "name": "alpha",
+                    "lifecycle": "active",
+                    "transport": {
+                        "kind": "wireguard",
+                        "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                        "addr_v6": "fd00::20",
+                        "endpoint": null,
+                        "subnet_v4": "10.210.21.0/24"
+                    },
+                    "storage": { "mode": "plain", "reason": { "kind": "default" } }
                 }
             ]
         }))

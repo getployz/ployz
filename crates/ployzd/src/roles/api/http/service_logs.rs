@@ -11,7 +11,6 @@ use ployz_core::corrosion::{
     CorrosionServiceName, NamespaceDocument, SqliteParameter, Statement,
     V2ManagedContainerIdentity, read_named_rows,
 };
-use ployz_core::deploy::ReplicaSlot;
 use ployz_core::ids::{ClusterName, ContainerId, CorrosionNamespaceName, DeployName};
 use ployz_core::machine::MachineName;
 use ployz_core::{
@@ -39,7 +38,6 @@ const LOG_REATTACH_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const LOG_REATTACH_MAX_BACKOFF: Duration = Duration::from_secs(2);
 const LOG_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_LOG_PROBE_REPLY_BYTES: usize = 64 * 1024;
 const MAX_LOG_PROBES_IN_FLIGHT: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,8 +51,7 @@ struct ServiceLogProbeRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ServiceLogProbeReply {
-    Inspected { replicas: Vec<ReplicaSlot> },
-    Ambiguous,
+    Inspected { containers: usize },
     RuntimeUnavailable,
 }
 
@@ -359,21 +356,15 @@ fn probe_containers(
     containers: &[ExistingV2ManagedContainer],
     request: &ServiceLogProbeRequest,
 ) -> ServiceLogProbeReply {
-    let matching = containers
+    let containers = containers
         .iter()
         .filter(|container| {
             container.identity.namespace_id == request.namespace_name
                 && container.identity.service_name == request.service_name
                 && container.identity.operation_id == request.deploy
         })
-        .map(|container| container.identity.replica_slot)
-        .collect::<Vec<_>>();
-    let unique = matching.iter().collect::<std::collections::HashSet<_>>();
-    if unique.len() != matching.len() {
-        ServiceLogProbeReply::Ambiguous
-    } else {
-        ServiceLogProbeReply::Inspected { replicas: matching }
-    }
+        .count();
+    ServiceLogProbeReply::Inspected { containers }
 }
 
 async fn probe_remote(
@@ -403,7 +394,7 @@ async fn probe_remote(
         let Some(total) = body.len().checked_add(chunk.len()) else {
             return ServiceLogProbeReply::RuntimeUnavailable;
         };
-        if total > MAX_LOG_PROBE_REPLY_BYTES {
+        if total > MAX_LOG_REQUEST_BYTES {
             return ServiceLogProbeReply::RuntimeUnavailable;
         }
         body.extend_from_slice(&chunk);
@@ -416,15 +407,6 @@ fn select_log_owner(
     service_name: &CorrosionServiceName,
     probes: Vec<(MachineName, ServiceLogProbeReply)>,
 ) -> Result<MachineName, ServiceLogsRefusal> {
-    if probes
-        .iter()
-        .any(|(_, reply)| matches!(reply, ServiceLogProbeReply::Ambiguous))
-    {
-        return Err(ServiceLogsRefusal::ContainerAmbiguous {
-            namespace_name: namespace_name.clone(),
-            service_name: service_name.clone(),
-        });
-    }
     let unavailable = probes
         .iter()
         .find(|(_, reply)| matches!(reply, ServiceLogProbeReply::RuntimeUnavailable))
@@ -434,12 +416,8 @@ fn select_log_owner(
     let machines = probes
         .into_iter()
         .flat_map(|(machine_id, reply)| match reply {
-            ServiceLogProbeReply::Inspected { replicas } => {
-                vec![machine_id; replicas.len()]
-            }
-            ServiceLogProbeReply::Ambiguous | ServiceLogProbeReply::RuntimeUnavailable => {
-                Vec::new()
-            }
+            ServiceLogProbeReply::Inspected { containers } => vec![machine_id; containers],
+            ServiceLogProbeReply::RuntimeUnavailable => Vec::new(),
         })
         .collect::<Vec<_>>();
     match machines.as_slice() {
@@ -461,8 +439,7 @@ fn log_refusal_response(refusal: ServiceLogsRefusal) -> Response<HttpBody> {
     let status = match &refusal {
         ServiceLogsRefusal::ServiceNotFound { .. }
         | ServiceLogsRefusal::ContainerNotFound { .. } => StatusCode::NOT_FOUND,
-        ServiceLogsRefusal::ContainerAmbiguous { .. }
-        | ServiceLogsRefusal::MachineSelectorRequired { .. }
+        ServiceLogsRefusal::MachineSelectorRequired { .. }
         | ServiceLogsRefusal::RemoteOwner { .. } => StatusCode::CONFLICT,
         ServiceLogsRefusal::RuntimeUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
     };
@@ -563,16 +540,6 @@ fn select_local_log_container(
                 && container.identity.operation_id == *deploy
         })
         .collect::<Vec<_>>();
-    let unique = matching
-        .iter()
-        .map(|container| &container.identity)
-        .collect::<std::collections::HashSet<_>>();
-    if unique.len() != matching.len() {
-        return Err(ServiceLogsRefusal::ContainerAmbiguous {
-            namespace_name: namespace_name.clone(),
-            service_name: service_name.clone(),
-        });
-    }
     match matching.as_slice() {
         [] => Err(ServiceLogsRefusal::ContainerNotFound {
             namespace_name: namespace_name.clone(),
@@ -1024,27 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_natural_identity_is_ambiguous() {
-        let refusal = select_local_log_container(
-            &namespace("prod"),
-            &service("api"),
-            &DeployName::try_new("blue").expect("deploy"),
-            &[
-                replica("container-one", ployz_core::deploy::ReplicaSlot::Global),
-                replica("container-two", ployz_core::deploy::ReplicaSlot::Global),
-            ],
-            None,
-            &machine(LOCAL),
-        )
-        .expect_err("duplicate identity");
-        assert!(matches!(
-            refusal,
-            ServiceLogsRefusal::ContainerAmbiguous { .. }
-        ));
-    }
-
-    #[test]
-    fn runtime_probe_exposes_slots_without_docker_ids() {
+    fn runtime_probe_counts_containers_without_exposing_docker_ids() {
         let reply = probe_containers(
             &[
                 replica("container-one", slot(1)),
@@ -1058,7 +1005,7 @@ mod tests {
         );
         assert!(matches!(
             reply,
-            ServiceLogProbeReply::Inspected { replicas } if replicas == vec![slot(1), slot(2)]
+            ServiceLogProbeReply::Inspected { containers: 2 }
         ));
     }
 
@@ -1070,15 +1017,11 @@ mod tests {
             vec![
                 (
                     machine(LOCAL),
-                    ServiceLogProbeReply::Inspected {
-                        replicas: Vec::new(),
-                    },
+                    ServiceLogProbeReply::Inspected { containers: 0 },
                 ),
                 (
                     machine(REMOTE),
-                    ServiceLogProbeReply::Inspected {
-                        replicas: vec![slot(1)],
-                    },
+                    ServiceLogProbeReply::Inspected { containers: 1 },
                 ),
             ],
         )
@@ -1094,9 +1037,7 @@ mod tests {
             vec![
                 (
                     machine(LOCAL),
-                    ServiceLogProbeReply::Inspected {
-                        replicas: vec![slot(1)],
-                    },
+                    ServiceLogProbeReply::Inspected { containers: 1 },
                 ),
                 (machine(REMOTE), ServiceLogProbeReply::RuntimeUnavailable),
             ],

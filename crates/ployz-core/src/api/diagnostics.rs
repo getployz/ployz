@@ -6,7 +6,6 @@ use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::MachineLensRow;
 use crate::corrosion::{
     AcmeHttp01Document, CORROSION_NO_P99_LAG_SAMPLE, CertHoldingDocument, ClusterDocument,
     ControllerDocument, CorrosionDocument, CorrosionHealthResponse, CorrosionTable,
@@ -30,7 +29,7 @@ pub enum StatusCorrosionHealth {
 #[derive(Debug)]
 pub struct StatusProjectionInput {
     pub cluster: Option<ClusterDocument>,
-    pub machines: Vec<MachineLensRow>,
+    pub machines: Vec<MachineDocument>,
     pub answering_machine_id: MachineName,
     pub health: StatusCorrosionHealth,
     pub wireguard_handshakes: Option<BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
@@ -65,8 +64,8 @@ pub struct StatusClusterSummary {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum StatusAnsweringMachine {
-    Known { id: MachineName, name: MachineName },
-    Unknown { id: MachineName },
+    Known { name: MachineName },
+    Unknown { name: MachineName },
 }
 
 /// The answering Corrosion replica's sync observation.
@@ -111,7 +110,6 @@ pub enum StatusBarrier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct StatusMachineRow {
-    pub id: MachineName,
     pub name: MachineName,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub address: IpAddr,
@@ -177,40 +175,34 @@ pub fn project_status(input: StatusProjectionInput) -> StatusDocument {
     });
     let answering_machine = machines
         .iter()
-        .find(|machine| machine.id == answering_machine_id)
+        .find(|machine| machine.name == answering_machine_id)
         .map_or_else(
             || StatusAnsweringMachine::Unknown {
-                id: answering_machine_id.clone(),
+                name: answering_machine_id.clone(),
             },
             |machine| StatusAnsweringMachine::Known {
-                id: answering_machine_id.clone(),
-                name: machine.document.name.clone(),
+                name: machine.name.clone(),
             },
         );
 
     let mut projected_machines = machines
         .into_iter()
         .map(|machine| {
-            let address = machine_address(&machine.document.transport);
+            let address = machine_address(&machine.transport);
             let handshake = project_handshake(
-                &machine.id,
+                &machine.name,
                 &answering_machine_id,
                 wireguard_handshakes.as_ref(),
                 now_unix_seconds,
             );
             StatusMachineRow {
-                id: machine.id,
-                name: machine.document.name,
+                name: machine.name,
                 address,
                 handshake,
             }
         })
         .collect::<Vec<_>>();
-    projected_machines.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    projected_machines.sort_by(|left, right| left.name.cmp(&right.name));
 
     let hints = match wireguard_handshakes {
         None => Vec::new(),
@@ -454,14 +446,6 @@ pub struct DoctorSkippedNewerVersion {
     pub supported: u32,
 }
 
-/// A current accepted roster machine used in diagnostic evidence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct DoctorMachineIdentity {
-    pub id: MachineName,
-    pub name: MachineName,
-}
-
 /// Semantic Ployz-version evidence from current machine testimony.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -477,13 +461,13 @@ pub struct DoctorVersionReport {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DoctorNewestVersion {
     pub version: String,
-    pub machines: Vec<DoctorMachineIdentity>,
+    pub machines: Vec<MachineName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DoctorMachineVersion {
-    pub machine: DoctorMachineIdentity,
+    pub machine: MachineName,
     pub version: String,
 }
 
@@ -509,10 +493,10 @@ pub struct DoctorForeignRowEvidence {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DoctorForeignAuthorship {
-    CurrentMachine { machine: DoctorMachineIdentity },
-    NonCurrentMachine { machine_id: MachineName },
-    Peer { peer_id: PeerName },
-    ApiToken { token_id: TokenName },
+    CurrentMachine { machine_name: MachineName },
+    NonCurrentMachine { machine_name: MachineName },
+    Peer { peer_name: PeerName },
+    ApiToken { token_name: TokenName },
     Unparseable,
 }
 
@@ -525,15 +509,9 @@ pub fn project_doctor(input: DoctorProjectionInput) -> DoctorDocument {
         .accepted
         .iter()
         .filter_map(|row| {
-            MachineName::try_new(row.source.key.clone()).ok().map(|id| {
-                (
-                    id.clone(),
-                    DoctorMachineIdentity {
-                        id,
-                        name: row.value.name.clone(),
-                    },
-                )
-            })
+            MachineName::try_new(row.source.key.clone())
+                .ok()
+                .map(|name| (name.clone(), name))
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -729,10 +707,10 @@ fn supported_version(table: CorrosionTable) -> u32 {
 fn project_versions(
     cluster_id: &ClusterName,
     rows: &[StoredRow],
-    current_machines: &BTreeMap<MachineName, DoctorMachineIdentity>,
+    current_machines: &BTreeMap<MachineName, MachineName>,
 ) -> DoctorVersionReport {
     let report = read_rows::<MachineStatusDocument>(cluster_id, rows.iter().cloned());
-    let mut valid = Vec::<(semver::Version, String, DoctorMachineIdentity)>::new();
+    let mut valid = Vec::<(semver::Version, String, MachineName)>::new();
     let mut invalid = Vec::new();
     for row in report.accepted {
         if row.source.key != row.value.machine_id.as_str() {
@@ -749,18 +727,8 @@ fn project_versions(
             }),
         }
     }
-    valid.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| left.2.name.cmp(&right.2.name))
-            .then_with(|| left.2.id.cmp(&right.2.id))
-    });
-    invalid.sort_by(|left, right| {
-        left.machine
-            .name
-            .cmp(&right.machine.name)
-            .then_with(|| left.machine.id.cmp(&right.machine.id))
-    });
+    valid.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.2.cmp(&right.2)));
+    invalid.sort_by(|left, right| left.machine.cmp(&right.machine));
 
     let Some((newest_semantic, newest_text, _)) = valid.last().cloned() else {
         return DoctorVersionReport {
@@ -781,11 +749,7 @@ fn project_versions(
             });
         }
     }
-    newest_machines.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    newest_machines.sort();
 
     DoctorVersionReport {
         newest: Some(DoctorNewestVersion {
@@ -800,7 +764,7 @@ fn project_versions(
 fn project_foreign_clusters(
     cluster_id: &ClusterName,
     rows: &DoctorRawRows,
-    current_machines: &BTreeMap<MachineName, DoctorMachineIdentity>,
+    current_machines: &BTreeMap<MachineName, MachineName>,
 ) -> Vec<DoctorForeignClusterRows> {
     let mut grouped = BTreeMap::<String, Vec<DoctorForeignRowEvidence>>::new();
     for table in CorrosionTable::ALL {
@@ -833,7 +797,7 @@ fn project_foreign_clusters(
 fn extract_authorship(
     table: CorrosionTable,
     fields: &serde_json::Map<String, Value>,
-    current_machines: &BTreeMap<MachineName, DoctorMachineIdentity>,
+    current_machines: &BTreeMap<MachineName, MachineName>,
 ) -> DoctorForeignAuthorship {
     match table {
         CorrosionTable::Cluster
@@ -851,10 +815,12 @@ fn extract_authorship(
                     Principal::Machine { machine_id } => {
                         machine_authorship(machine_id, current_machines)
                     }
-                    Principal::Peer { peer_id } => DoctorForeignAuthorship::Peer { peer_id },
-                    Principal::ApiToken { token_id } => {
-                        DoctorForeignAuthorship::ApiToken { token_id }
+                    Principal::Peer { peer_id } => {
+                        DoctorForeignAuthorship::Peer { peer_name: peer_id }
                     }
+                    Principal::ApiToken { token_id } => DoctorForeignAuthorship::ApiToken {
+                        token_name: token_id,
+                    },
                 },
             ),
         CorrosionTable::Controller => fields
@@ -881,12 +847,14 @@ fn extract_authorship(
 
 fn machine_authorship(
     machine_id: MachineName,
-    current_machines: &BTreeMap<MachineName, DoctorMachineIdentity>,
+    current_machines: &BTreeMap<MachineName, MachineName>,
 ) -> DoctorForeignAuthorship {
     match current_machines.get(&machine_id) {
         Some(machine) => DoctorForeignAuthorship::CurrentMachine {
-            machine: machine.clone(),
+            machine_name: machine.clone(),
         },
-        None => DoctorForeignAuthorship::NonCurrentMachine { machine_id },
+        None => DoctorForeignAuthorship::NonCurrentMachine {
+            machine_name: machine_id,
+        },
     }
 }

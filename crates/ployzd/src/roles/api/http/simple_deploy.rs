@@ -24,10 +24,9 @@ use ployz_core::placement::{
     pick_placement,
 };
 use ployz_core::{
-    DeployDesiredReplica, DeployInspectOutcome, DeployInspectRequest, DeployObservedContainer,
-    DeployPrepareOutcome, DeployPrepareRequest, DeployPreparedReplica, DeployRefusal,
-    DeployRequest, DeployRetireOutcome, DeployRetireRequest, DeployServiceRequest,
-    HealthGatePolicy, RequestedPlacement,
+    DeployDesiredReplica, DeployInspectOutcome, DeployObservedContainer, DeployPrepareOutcome,
+    DeployPrepareRequest, DeployPreparedReplica, DeployRefusal, DeployRequest, DeployRetireOutcome,
+    DeployRetireRequest, DeployServiceRequest, HealthGatePolicy, RequestedPlacement,
 };
 
 /// The only machine-addressed seam used by the controller.
@@ -39,7 +38,6 @@ pub(super) trait DeployHosts: Send + Sync {
     async fn inspect(
         &self,
         machine_id: &MachineName,
-        request: DeployInspectRequest,
     ) -> Result<DeployInspectOutcome, DeployHostError>;
 
     async fn prepare(
@@ -75,9 +73,6 @@ pub(super) trait SimpleDeployStore: Send + Sync {
 
     /// Atomically replaces the namespace's complete serving projection.
     async fn commit(&self, commit: DeployCommit) -> Result<(), String>;
-
-    /// Resolves an ambiguous commit reply from the converged projection.
-    async fn commit_is_visible(&self, commit: &DeployCommit) -> Result<bool, String>;
 }
 
 /// Converged namespace intent and serving projection needed to plan one deploy.
@@ -274,19 +269,6 @@ impl SimpleDeploy {
             };
             let mut prepared = Vec::new();
             let mut resolved_image = None;
-            match self.local_machine_is_preferred().await {
-                Ok(true) => {}
-                Ok(false) => {
-                    return self
-                        .interrupt_before_commit(command, &created, &context, &attempted_prepares)
-                        .await;
-                }
-                Err(error) => {
-                    self.rollback_prepared(command, &context, &attempted_prepares)
-                        .await;
-                    return Err(error);
-                }
-            }
             let operation_id = command.operation_id.clone();
             let namespace_name = context.reality.namespace.name.clone();
             let service_name = service_name.clone();
@@ -312,7 +294,6 @@ impl SimpleDeploy {
                     .unwrap_or_default();
                 async move {
                     let request = DeployPrepareRequest {
-                        controller_machine_id: self.machine_id.clone(),
                         operation_id,
                         namespace_name,
                         service_name,
@@ -337,7 +318,7 @@ impl SimpleDeploy {
                         replicas,
                         displaced_incumbents: _,
                     }) => (image, replicas),
-                    Ok(DeployPrepareOutcome::Refused { .. }) => {
+                    Ok(DeployPrepareOutcome::Refused) => {
                         prepare_failure
                             .get_or_insert(CorrosionDeployFailure::PrepareRefused { machine_id });
                         continue;
@@ -346,7 +327,7 @@ impl SimpleDeploy {
                         stale_controller = true;
                         continue;
                     }
-                    Ok(DeployPrepareOutcome::Failed { .. }) | Err(DeployHostError::Failed) => {
+                    Ok(DeployPrepareOutcome::Failed) | Err(DeployHostError::Failed) => {
                         prepare_failure
                             .get_or_insert(CorrosionDeployFailure::PrepareFailed { machine_id });
                         continue;
@@ -400,20 +381,6 @@ impl SimpleDeploy {
                 replicas: prepared,
             });
         }
-        match self.local_machine_is_preferred().await {
-            Ok(true) => {}
-            Ok(false) => {
-                return self
-                    .interrupt_before_commit(command, &created, &context, &attempted_prepares)
-                    .await;
-            }
-            Err(error) => {
-                self.rollback_prepared(command, &context, &attempted_prepares)
-                    .await;
-                return Err(error);
-            }
-        }
-
         let written_at = CorrosionTimestamp::now_utc();
         let commit = match build_commit(command, &context, &prepared_services, written_at) {
             Ok(commit) => commit,
@@ -423,20 +390,9 @@ impl SimpleDeploy {
                 return Err(error);
             }
         };
-        if self.store.commit(commit.clone()).await.is_err() {
-            match self.store.commit_is_visible(&commit).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    return self
-                        .interrupt_before_commit(command, &created, &context, &attempted_prepares)
-                        .await;
-                }
-                Err(_) => {
-                    // Reality is unavailable too, so neither rollback nor
-                    // cleanup is safe. A later deploy replans from reality.
-                    return self.interrupt(command, &created).await;
-                }
-            }
+        if let Err(error) = self.store.commit(commit).await {
+            tracing::warn!(%error, "deploy commit outcome is unknown; leaving host reality for the next full deploy to reconcile");
+            return self.interrupt(command, &created).await;
         }
 
         let keep = prepared_services
@@ -458,8 +414,7 @@ impl SimpleDeploy {
         reality: &DeployProjection,
     ) -> Option<BTreeMap<MachineName, HostInspection>> {
         let calls = reality.roster.iter().map(|machine| async move {
-            let request = DeployInspectRequest {};
-            let outcome = self.hosts.inspect(&machine.name, request).await;
+            let outcome = self.hosts.inspect(&machine.name).await;
             (machine, outcome)
         });
         let mut inspections = BTreeMap::new();
@@ -482,7 +437,7 @@ impl SimpleDeploy {
                         },
                     );
                 }
-                Ok(DeployInspectOutcome::Failed { .. }) | Err(DeployHostError::Failed) => {}
+                Ok(DeployInspectOutcome::Failed) | Err(DeployHostError::Failed) => {}
             }
         }
         Some(inspections)
@@ -509,7 +464,6 @@ impl SimpleDeploy {
                     .retire(
                         &machine_id,
                         DeployRetireRequest {
-                            controller_machine_id: self.machine_id.clone(),
                             operation_id: command.operation_id.clone(),
                             namespace_name: context.reality.namespace.name.clone(),
                             containers: Vec::new(),
@@ -574,7 +528,6 @@ impl SimpleDeploy {
                     .retire(
                         machine_id,
                         DeployRetireRequest {
-                            controller_machine_id: self.machine_id.clone(),
                             operation_id: command.operation_id.clone(),
                             namespace_name: context.reality.namespace.name.clone(),
                             containers,
@@ -1025,7 +978,6 @@ mod tests {
         reality: Mutex<DeployProjection>,
         commits: Mutex<Vec<DeployCommit>>,
         reject_commit: AtomicBool,
-        lose_commit_reply: AtomicBool,
     }
 
     #[async_trait]
@@ -1059,15 +1011,7 @@ mod tests {
                 return Err("commit rejected".to_owned());
             }
             self.commits.lock().await.push(commit);
-            if self.lose_commit_reply.load(Ordering::SeqCst) {
-                Err("commit reply lost".to_owned())
-            } else {
-                Ok(())
-            }
-        }
-
-        async fn commit_is_visible(&self, commit: &DeployCommit) -> Result<bool, String> {
-            Ok(self.commits.lock().await.last() == Some(commit))
+            Ok(())
         }
     }
 
@@ -1093,7 +1037,6 @@ mod tests {
         async fn inspect(
             &self,
             machine_id: &MachineName,
-            _request: DeployInspectRequest,
         ) -> Result<DeployInspectOutcome, DeployHostError> {
             self.calls
                 .lock()
@@ -1131,7 +1074,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|service| service == &request.service_name)
             {
-                return Ok(DeployPrepareOutcome::Failed {});
+                return Ok(DeployPrepareOutcome::Failed);
             }
             let digest = OciDigest::try_new(format!("sha256:{}", "c".repeat(64)))
                 .map_err(|_| DeployHostError::Failed)?;
@@ -1231,7 +1174,6 @@ mod tests {
             reality: Mutex::new(reality),
             commits: Mutex::new(Vec::new()),
             reject_commit: AtomicBool::new(false),
-            lose_commit_reply: AtomicBool::new(false),
         });
         let hosts = Arc::new(FakeHosts {
             calls: Mutex::new(Vec::new()),
@@ -1637,7 +1579,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejected_commit_rolls_back_but_a_lost_success_reply_keeps_the_new_generation() {
+    async fn unknown_commit_outcome_is_left_for_the_next_deploy_to_reconcile() {
         let rejected = fixture(1);
         rejected.store.reject_commit.store(true, Ordering::SeqCst);
         let started = rejected
@@ -1647,33 +1589,7 @@ mod tests {
             .expect("start rejected commit");
         let outcome = rejected.executor.run(started).await.expect("deploy");
         assert!(matches!(outcome, CorrosionDeployOutcome::Interrupted));
-        let rollback = rejected.hosts.retire_requests.lock().await;
-        let [request] = rollback.as_slice() else {
-            panic!("one rollback expected")
-        };
-        assert_eq!(
-            request
-                .rollback_services
-                .iter()
-                .map(CorrosionServiceName::as_str)
-                .collect::<Vec<_>>(),
-            vec!["api"]
-        );
-        drop(rollback);
-
-        let committed = fixture(1);
-        committed
-            .store
-            .lose_commit_reply
-            .store(true, Ordering::SeqCst);
-        let started = committed
-            .executor
-            .start(committed.command.clone())
-            .await
-            .expect("start committed deploy");
-        let outcome = committed.executor.run(started).await.expect("deploy");
-        assert!(outcome.is_success());
-        assert!(committed.hosts.retire_requests.lock().await.is_empty());
+        assert!(rejected.hosts.retire_requests.lock().await.is_empty());
     }
 
     #[tokio::test]

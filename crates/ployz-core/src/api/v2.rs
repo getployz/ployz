@@ -545,10 +545,6 @@ impl DeployRefusal {
     }
 }
 
-/// Machine-authenticated request for fresh target-host deploy facts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeployInspectRequest {}
-
 /// Fresh target-host deploy facts or one bounded local failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -559,7 +555,7 @@ pub enum DeployInspectOutcome {
         load: crate::corrosion::MachineLoadBand,
         containers: Vec<DeployObservedContainer>,
     },
-    Failed {},
+    Failed,
 }
 
 /// One exact desired replica on the answering target host.
@@ -583,7 +579,6 @@ pub struct DeployObservedContainer {
 /// One target host's complete service preparation request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployPrepareRequest {
-    pub controller_machine_id: MachineName,
     /// Namespace-scoped deploy identity; every replica must carry it.
     pub operation_id: DeployName,
     pub namespace_name: CorrosionNamespaceName,
@@ -618,14 +613,13 @@ pub enum DeployPrepareOutcome {
         /// if the controller abandons the deploy before its state commit.
         displaced_incumbents: Vec<DeployObservedContainer>,
     },
-    Refused {},
-    Failed {},
+    Refused,
+    Failed,
 }
 
 /// Machine-authenticated request to retire exact observed containers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployRetireRequest {
-    pub controller_machine_id: MachineName,
     /// Namespace-scoped deploy identity for this cleanup request.
     pub operation_id: DeployName,
     pub namespace_name: CorrosionNamespaceName,
@@ -643,8 +637,8 @@ pub struct DeployRetireRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeployRetireOutcome {
     Retired,
-    Refused {},
-    Failed {},
+    Refused,
+    Failed,
 }
 
 /// A positive, bounded line count for one v2 log tail.
@@ -735,10 +729,6 @@ pub enum ServiceLogsRefusal {
         service_name: CorrosionServiceName,
     },
     ContainerNotFound {
-        namespace_name: CorrosionNamespaceName,
-        service_name: CorrosionServiceName,
-    },
-    ContainerAmbiguous {
         namespace_name: CorrosionNamespaceName,
         service_name: CorrosionServiceName,
     },
@@ -1229,69 +1219,12 @@ pub enum MachineUpgradeRefusal {
     },
 }
 
-/// One accepted machine roster row exposed by the machines lens.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct MachineLensRow {
-    pub id: MachineName,
-    pub document: MachineDocument,
-}
-
 /// One named service entry flattened from a Namespace intent document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ServiceLensRow {
     pub key: String,
     pub document: PublishedService,
-}
-
-/// One complete machine-owned endpoint testimony document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct EndpointLensRow {
-    pub machine_id: MachineName,
-    pub document: MachineEndpointDocument,
-}
-
-/// One machine testimony row exposed by the machine-status lens.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct MachineStatusLensRow {
-    pub id: MachineName,
-    pub document: MachineStatusDocument,
-}
-
-impl MachineStatusLensRow {
-    /// Preserves the machine-status table's key/document identity invariant.
-    pub fn try_new(
-        id: MachineName,
-        document: MachineStatusDocument,
-    ) -> Result<Self, MachineStatusLensRowIdentityError> {
-        if id != document.machine_id {
-            return Err(MachineStatusLensRowIdentityError {
-                id,
-                document_machine_id: document.machine_id,
-            });
-        }
-        Ok(Self { id, document })
-    }
-}
-
-/// A machine-status row key that disagrees with its machine-owned document.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("machine status row key {id} disagrees with document machine id {document_machine_id}")]
-pub struct MachineStatusLensRowIdentityError {
-    pub id: MachineName,
-    pub document_machine_id: MachineName,
-}
-
-/// One operation summary row exposed by the operations lens.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct OperationLensRow {
-    pub namespace_name: CorrosionNamespaceName,
-    pub deploy_name: DeployName,
-    pub document: OperationDocument,
 }
 
 /// The latest state observed for one lens.
@@ -1304,19 +1237,19 @@ pub struct OperationLensRow {
 pub enum LensSnapshot {
     Machines {
         cluster: Box<ClusterDocument>,
-        rows: Vec<MachineLensRow>,
+        rows: Vec<MachineDocument>,
     },
     Services {
         rows: Vec<ServiceLensRow>,
     },
     Endpoints {
-        rows: Vec<EndpointLensRow>,
+        rows: Vec<MachineEndpointDocument>,
     },
     MachineStatus {
-        rows: Vec<MachineStatusLensRow>,
+        rows: Vec<MachineStatusDocument>,
     },
     Operations {
-        rows: Vec<OperationLensRow>,
+        rows: Vec<OperationDocument>,
     },
 }
 

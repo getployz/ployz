@@ -5,11 +5,8 @@ use ployz_core::corrosion::{
     NamespaceDocument, OperationDocument, StoredRow, read_named_roster_rows, read_named_rows,
     read_rows, service_key,
 };
-use ployz_core::ids::{ClusterName, CorrosionNamespaceName, MachineName};
-use ployz_core::{
-    ApiRefusal, EndpointLensRow, LensSnapshot, MachineLensRow, MachineStatusLensRow,
-    OperationLensRow, ServiceLensRow,
-};
+use ployz_core::ids::{ClusterName, CorrosionNamespaceName};
+use ployz_core::{ApiRefusal, LensSnapshot, ServiceLensRow};
 
 pub(super) fn machines_snapshot(
     expected_cluster: &ClusterName,
@@ -29,17 +26,12 @@ pub(super) fn machines_snapshot(
     };
 
     let report = read_named_roster_rows::<MachineDocument>(&cluster, machine_rows);
-    let mut rows = Vec::with_capacity(report.accepted.len());
-    for accepted in report.accepted {
-        let Ok(id) = MachineName::try_new(accepted.source.key) else {
-            continue;
-        };
-        rows.push(MachineLensRow {
-            id,
-            document: accepted.value,
-        });
-    }
-    rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+    let mut rows = report
+        .accepted
+        .into_iter()
+        .map(|accepted| accepted.value)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.name.cmp(&right.name));
 
     Ok(LensSnapshot::Machines {
         cluster: Box::new(cluster),
@@ -77,16 +69,12 @@ pub(super) fn endpoints_snapshot(
     stored_rows: Vec<StoredRow>,
 ) -> LensSnapshot {
     let report = read_rows::<MachineEndpointDocument>(expected_cluster, stored_rows);
-    let mut rows = Vec::with_capacity(report.accepted.len());
-    for accepted in report.accepted {
-        let Ok(machine_id) = MachineName::try_new(accepted.source.key) else {
-            continue;
-        };
-        rows.push(EndpointLensRow {
-            machine_id,
-            document: accepted.value,
-        });
-    }
+    let mut rows = report
+        .accepted
+        .into_iter()
+        .filter(|accepted| accepted.source.key == accepted.value.machine_id.as_str())
+        .map(|accepted| accepted.value)
+        .collect::<Vec<_>>();
     rows.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
     LensSnapshot::Endpoints { rows }
 }
@@ -96,17 +84,13 @@ pub(super) fn machine_status_snapshot(
     stored_rows: Vec<StoredRow>,
 ) -> LensSnapshot {
     let report = read_rows::<MachineStatusDocument>(expected_cluster, stored_rows);
-    let mut rows = Vec::with_capacity(report.accepted.len());
-    for accepted in report.accepted {
-        let Ok(id) = MachineName::try_new(accepted.source.key) else {
-            continue;
-        };
-        let Ok(row) = MachineStatusLensRow::try_new(id, accepted.value) else {
-            continue;
-        };
-        rows.push(row);
-    }
-    rows.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+    let mut rows = report
+        .accepted
+        .into_iter()
+        .filter(|accepted| accepted.source.key == accepted.value.machine_id.as_str())
+        .map(|accepted| accepted.value)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
     LensSnapshot::MachineStatus { rows }
 }
 
@@ -115,16 +99,13 @@ pub(super) fn operations_snapshot(
     stored_rows: Vec<StoredRow>,
 ) -> LensSnapshot {
     let report = read_rows::<OperationDocument>(expected_cluster, stored_rows);
-    let mut rows = Vec::with_capacity(report.accepted.len());
-    for accepted in report.accepted {
-        rows.push(OperationLensRow {
-            namespace_name: accepted.value.namespace_id.clone(),
-            deploy_name: accepted.value.deploy_name.clone(),
-            document: accepted.value,
-        });
-    }
+    let mut rows = report
+        .accepted
+        .into_iter()
+        .map(|accepted| accepted.value)
+        .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
-        (&left.namespace_name, &left.deploy_name).cmp(&(&right.namespace_name, &right.deploy_name))
+        (&left.namespace_id, &left.deploy_name).cmp(&(&right.namespace_id, &right.deploy_name))
     });
     LensSnapshot::Operations { rows }
 }

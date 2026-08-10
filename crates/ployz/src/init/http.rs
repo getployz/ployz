@@ -143,7 +143,7 @@ impl HttpFoundingControlPlane {
         machine_id: &MachineName,
     ) -> Result<(), HttpFoundingError> {
         self.retry_until_ready(|snapshot| match snapshot {
-            LensSnapshot::Machines { rows, .. } => rows.iter().any(|row| row.id == *machine_id),
+            LensSnapshot::Machines { rows, .. } => rows.iter().any(|row| row.name == *machine_id),
             LensSnapshot::Services { .. }
             | LensSnapshot::Endpoints { .. }
             | LensSnapshot::MachineStatus { .. }
@@ -497,12 +497,11 @@ mod tests {
     #[tokio::test]
     async fn public_fold_and_ordinary_route_refusal_prove_readiness() {
         let request = request();
+        let mut machine = request.machine.clone();
+        machine.name = request.machine_id.clone();
         let lens = LensSnapshot::Machines {
             cluster: Box::new(request.cluster.clone()),
-            rows: vec![ployz_core::MachineLensRow {
-                id: request.machine_id.clone(),
-                document: request.machine.clone(),
-            }],
+            rows: vec![machine],
         };
         let version = ApiVersion::new("test", [ApiFeature::Known(KnownApiFeature::Founding)]);
         let unsupported = serde_json::to_vec(&ApiRefusal::UnsupportedRoute).expect("refusal JSON");

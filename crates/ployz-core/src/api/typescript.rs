@@ -9,12 +9,11 @@ use super::v2::{
     CorrosionNamespaceCreateReply, CorrosionNamespaceCreateRequest,
     CorrosionNamespaceRemoveRefusal, CorrosionNamespaceRemoveReply,
     CorrosionNamespaceRemoveRequest, CorrosionRetryAfterSeconds, DeployAccepted, DeployRefusal,
-    DeployRequest, DeployServiceRequest, DeployServices, EndpointLensRow, KNOWN_API_FEATURES,
-    KnownApiFeature, LensCollection, LensSnapshot, LensWatchEvent, MachineLensRow,
-    MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest, MachineStatusLensRow,
-    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest, MachineUpgradeSupervisor,
-    MachineUpgradeUrl, OperationLensRow, PinnedMachineNames, RequestedPlacement, ServiceLensRow,
-    ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
+    DeployRequest, DeployServiceRequest, DeployServices, KNOWN_API_FEATURES, KnownApiFeature,
+    LensCollection, LensSnapshot, LensWatchEvent, MachineRemoveRefusal, MachineRemoveReply,
+    MachineRemoveRequest, MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
+    MachineUpgradeSupervisor, MachineUpgradeUrl, PinnedMachineNames, RequestedPlacement,
+    ServiceLensRow, ServiceLogLine, ServiceLogStream, ServiceLogsFollowEvent, ServiceLogsRefusal,
     ServiceLogsRequest, ServiceLogsTailReply,
 };
 use super::{
@@ -106,11 +105,7 @@ fn collect_v2_contracts(declarations: &mut DeclarationCollector<'_>) {
     declarations.visit::<KnownApiFeature>();
     declarations.visit::<ApiVersion>();
     declarations.visit::<LensCollection>();
-    declarations.visit::<MachineLensRow>();
     declarations.visit::<ServiceLensRow>();
-    declarations.visit::<EndpointLensRow>();
-    declarations.visit::<MachineStatusLensRow>();
-    declarations.visit::<OperationLensRow>();
     declarations.visit::<LensSnapshot>();
     declarations.visit::<CorrosionRetryAfterSeconds>();
     declarations.visit::<ApiRefusal>();
@@ -319,7 +314,10 @@ mod tests {
         assert!(!generated.contains("export type SourcePrincipalResolutionError ="));
         assert!(!generated.contains("export type MalformedRequestReason ="));
         assert!(!generated.contains("LensWatermark"));
-        assert!(generated.contains("machine_id: MachineName, document: MachineEndpointDocument"));
+        assert!(generated.contains("rows: Array<MachineDocument>"));
+        assert!(generated.contains("rows: Array<MachineEndpointDocument>"));
+        assert!(generated.contains("rows: Array<MachineStatusDocument>"));
+        assert!(generated.contains("rows: Array<OperationDocument>"));
 
         for name in [
             "Principal",
@@ -327,11 +325,7 @@ mod tests {
             "ApiFeature",
             "ApiVersion",
             "LensCollection",
-            "MachineLensRow",
             "ServiceLensRow",
-            "EndpointLensRow",
-            "MachineStatusLensRow",
-            "OperationLensRow",
             "LensSnapshot",
             "CorrosionRetryAfterSeconds",
             "ApiRefusal",

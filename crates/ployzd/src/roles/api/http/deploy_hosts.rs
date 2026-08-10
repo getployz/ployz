@@ -10,8 +10,8 @@ use hyper::StatusCode;
 use ployz_core::corrosion::MachineTransport;
 use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
-    DeployInspectOutcome, DeployInspectRequest, DeployPrepareOutcome, DeployPrepareRequest,
-    DeployRetireOutcome, DeployRetireRequest, V2Route,
+    DeployInspectOutcome, DeployPrepareOutcome, DeployPrepareRequest, DeployRetireOutcome,
+    DeployRetireRequest, V2Route,
 };
 
 use super::controller::ControllerStore;
@@ -124,19 +124,13 @@ impl DeployHosts for MeshDeployHosts {
     async fn inspect(
         &self,
         machine_id: &MachineName,
-        request: DeployInspectRequest,
     ) -> Result<DeployInspectOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
             self.require_local_controller().await?;
-            return Ok(self.local_effects.inspect(request).await);
+            return Ok(self.local_effects.inspect().await);
         }
-        self.post(
-            machine_id,
-            V2Route::DeployInspect,
-            &request,
-            INSPECT_TIMEOUT,
-        )
-        .await
+        self.post(machine_id, V2Route::DeployInspect, &(), INSPECT_TIMEOUT)
+            .await
     }
 
     async fn prepare(
@@ -145,9 +139,6 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployPrepareRequest,
     ) -> Result<DeployPrepareOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            if request.controller_machine_id != self.local_machine_id {
-                return Err(DeployHostError::Failed);
-            }
             self.require_local_controller().await?;
             return Ok(self.local_workflows.prepare(request).await);
         }
@@ -166,9 +157,6 @@ impl DeployHosts for MeshDeployHosts {
         request: DeployRetireRequest,
     ) -> Result<DeployRetireOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            if request.controller_machine_id != self.local_machine_id {
-                return Err(DeployHostError::Failed);
-            }
             if request.rollback_services.is_empty() {
                 self.require_local_controller().await?;
             }

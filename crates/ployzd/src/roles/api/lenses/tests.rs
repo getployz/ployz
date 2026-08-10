@@ -728,7 +728,7 @@ async fn machine_inputs_open_together_and_accept_either_snapshot_order() {
     let [row] = rows.as_slice() else {
         panic!("expected only the provider-fenced machine")
     };
-    assert_eq!(row.id.as_str(), MACHINE);
+    assert_eq!(row.name.as_str(), MACHINE);
 
     cluster_feed
         .push(FakeStreamEvent::Invalidation(ChangeId::new(1)))

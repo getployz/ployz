@@ -61,9 +61,6 @@ macro_rules! subject_token_id {
 subject_token_id! { pub struct OperationId; ts_brand: "Brand<string, \"OperationId\">"; }
 subject_token_id! { pub struct ContainerId; ts_brand: "Brand<string, \"ContainerId\">"; }
 
-pub type NamespaceId = CorrosionNamespaceName;
-pub type MachineId = MachineName;
-
 // Canonical operator-visible identities for the Corrosion control plane.
 // These deliberately have no `generate` constructor: callers must choose the
 // durable name that will identify the resource everywhere.

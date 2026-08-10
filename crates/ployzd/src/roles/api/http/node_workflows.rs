@@ -98,7 +98,7 @@ impl NodeWorkflows {
         );
         self.run(&instance, PREPARE_WORKFLOW, &request, PREPARE_WAIT)
             .await
-            .unwrap_or(DeployPrepareOutcome::Failed {})
+            .unwrap_or(DeployPrepareOutcome::Failed)
     }
 
     /// Starts or resumes the operation's stable retire instance and waits for
@@ -114,19 +114,19 @@ impl NodeWorkflows {
         let instance = retire_instance(&request.namespace_name, &request.operation_id);
         self.run(&instance, RETIRE_WORKFLOW, &request, RETIRE_WAIT)
             .await
-            .unwrap_or(DeployRetireOutcome::Failed {})
+            .unwrap_or(DeployRetireOutcome::Failed)
     }
 
     async fn rollback(&self, mut request: DeployRetireRequest) -> DeployRetireOutcome {
         if !request.containers.is_empty() || !request.restart_after_retire.is_empty() {
-            return DeployRetireOutcome::Refused {};
+            return DeployRetireOutcome::Refused;
         }
         let unique_services = request
             .rollback_services
             .iter()
             .collect::<std::collections::BTreeSet<_>>();
         if unique_services.len() != request.rollback_services.len() {
-            return DeployRetireOutcome::Refused {};
+            return DeployRetireOutcome::Refused;
         }
 
         let mut candidates = Vec::new();
@@ -138,7 +138,7 @@ impl NodeWorkflows {
             {
                 Ok(Some(outcome)) => outcome,
                 Ok(None) => continue,
-                Err(()) => return DeployRetireOutcome::Failed {},
+                Err(()) => return DeployRetireOutcome::Failed,
             };
             if merge_completed_prepare(
                 &request,
@@ -149,7 +149,7 @@ impl NodeWorkflows {
             )
             .is_err()
             {
-                return DeployRetireOutcome::Refused {};
+                return DeployRetireOutcome::Refused;
             }
         }
         request.containers = candidates;
@@ -312,7 +312,7 @@ async fn prepare_workflow(
             activity_policy(PREPARE_ATTEMPT_TIMEOUT),
         )
         .await
-        .unwrap_or(DeployPrepareOutcome::Failed {}))
+        .unwrap_or(DeployPrepareOutcome::Failed))
 }
 
 async fn retire_workflow(
@@ -326,7 +326,7 @@ async fn retire_workflow(
             activity_policy(RETIRE_ATTEMPT_TIMEOUT),
         )
         .await
-        .unwrap_or(DeployRetireOutcome::Failed {}))
+        .unwrap_or(DeployRetireOutcome::Failed))
 }
 
 fn activity_policy(timeout: Duration) -> RetryPolicy {
@@ -377,7 +377,6 @@ mod tests {
     use ployz_core::DeployPreparedReplica;
     use ployz_core::corrosion::V2ManagedContainerIdentity;
     use ployz_core::deploy::{ImageReference, ReplicaSlot};
-    use ployz_core::ids::MachineName;
     use ployz_core::network::MachineEndpointSubnet;
     use tempfile::TempDir;
 
@@ -421,7 +420,6 @@ mod tests {
         let namespace = CorrosionNamespaceName::try_new("production").expect("namespace");
         let service = CorrosionServiceName::try_new("api").expect("service");
         let deploy = DeployName::try_new("release-1").expect("deploy");
-        let controller = MachineName::try_new("node-1").expect("controller");
         let identity = V2ManagedContainerIdentity {
             namespace_id: namespace.clone(),
             service_name: service.clone(),
@@ -429,7 +427,6 @@ mod tests {
             replica_slot: ReplicaSlot::Global,
         };
         let request = DeployRetireRequest {
-            controller_machine_id: controller,
             operation_id: deploy,
             namespace_name: namespace,
             containers: Vec::new(),

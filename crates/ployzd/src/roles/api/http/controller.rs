@@ -57,9 +57,6 @@ impl ControllerStore {
         &self,
         now: CorrosionTimestamp,
     ) -> Result<(), ControllerStoreError> {
-        if self.current().await?.is_some() {
-            return Ok(());
-        }
         let appointment = self.new_appointment(now);
         self.corrosion
             .execute(&[initial_appointment_statement(&appointment)?])
@@ -73,9 +70,6 @@ impl ControllerStore {
         current: &ControllerDocument,
         now: CorrosionTimestamp,
     ) -> Result<(), ControllerStoreError> {
-        if current.preferred_machine_id != self.local_machine_id {
-            return Err(ControllerStoreError::NotLocalAppointment);
-        }
         let mut appointment = current.clone();
         appointment.heartbeat_at = now;
         self.corrosion
@@ -186,8 +180,6 @@ pub(super) enum ControllerStoreError {
         "local Corrosion controller query returned invalid rows ({accepted} accepted, {skipped} skipped)"
     )]
     InvalidControllerRows { accepted: usize, skipped: usize },
-    #[error("cannot heartbeat an appointment owned by another machine")]
-    NotLocalAppointment,
     #[error("could not encode the controller appointment: {0}")]
     Encode(#[from] serde_json::Error),
 }

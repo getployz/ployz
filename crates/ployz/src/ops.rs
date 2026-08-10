@@ -3,9 +3,7 @@
 use std::time::Duration;
 
 use ployz_core::corrosion::{CorrosionDeployOutcome, CorrosionDeployState, OperationDocument};
-use ployz_core::{
-    ApiRefusal, LensCollection, LensSnapshot, LensWatchEvent, OperationLensRow, lens_watch_route,
-};
+use ployz_core::{ApiRefusal, LensCollection, LensSnapshot, LensWatchEvent, lens_watch_route};
 
 use crate::commands::{OpsCommand, OpsListCommand, OpsWatchCommand};
 use crate::mesh::http::{DEFAULT_MESH_SSE_IDLE_TIMEOUT, MAX_MESH_SSE_FRAME_BYTES, SseReply};
@@ -31,17 +29,17 @@ async fn list(command: OpsListCommand) -> Result<String, OpsExecutionError> {
         return Err(OpsExecutionError::WrongLens);
     };
     rows.sort_by(|left, right| {
-        (&left.namespace_name, &left.deploy_name).cmp(&(&right.namespace_name, &right.deploy_name))
+        (&left.namespace_id, &left.deploy_name).cmp(&(&right.namespace_id, &right.deploy_name))
     });
     let mut output = String::from("NAMESPACE\tDEPLOY\tKIND\tSTATE\tCONTROLLER\n");
     for row in rows {
-        output.push_str(row.namespace_name.as_str());
+        output.push_str(row.namespace_id.as_str());
         output.push('\t');
         output.push_str(row.deploy_name.as_str());
         output.push_str("\tdeploy\t");
-        output.push_str(operation_state(&row.document));
+        output.push_str(operation_state(&row));
         output.push('\t');
-        output.push_str(row.document.machine_id.as_str());
+        output.push_str(row.machine_id.as_str());
         output.push('\n');
     }
     Ok(output)
@@ -99,7 +97,7 @@ pub async fn watch_to(
             return Err(OpsExecutionError::WrongLens);
         };
         let Some(operation) = rows.into_iter().find(|operation| {
-            operation.namespace_name == command.namespace_name
+            operation.namespace_id == command.namespace_name
                 && operation.deploy_name == command.deploy_name
         }) else {
             continue;
@@ -110,24 +108,24 @@ pub async fn watch_to(
             writeln!(output, "{rendered}").map_err(OpsExecutionError::Output)?;
             last = Some(rendered);
         }
-        if operation.document.is_terminal() {
-            return if operation_terminal_succeeded(&operation.document) {
+        if operation.is_terminal() {
+            return if operation_terminal_succeeded(&operation) {
                 Ok(())
             } else {
                 Err(OpsExecutionError::OperationFailed {
-                    state: operation_state(&operation.document),
+                    state: operation_state(&operation),
                 })
             };
         }
     }
 }
 
-fn render_operation(operation: &OperationLensRow) -> String {
+fn render_operation(operation: &OperationDocument) -> String {
     format!(
         "{}/{} deploy {}",
-        operation.namespace_name,
+        operation.namespace_id,
         operation.deploy_name,
-        operation_state(&operation.document)
+        operation_state(operation)
     )
 }
 

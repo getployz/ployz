@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ployz_core::MachineLensRow;
+use ployz_core::corrosion::MachineDocument;
 use ployz_core::corrosion::{MachineTransport, derive_builtin_wireguard_member};
 use ployz_core::ids::ClusterName;
 use ployz_core::machine::MachineName;
@@ -109,12 +109,9 @@ impl OperatorRemote {
     }
 
     /// Creates a direct mesh client for one rostered machine.
-    pub fn for_machine(&self, machine: &MachineLensRow) -> Result<Self, MachineRemoteTargetError> {
-        let (peer, address) = direct_wireguard_target(
-            &self.cluster_id,
-            &machine.document.name,
-            &machine.document.transport,
-        )?;
+    pub fn for_machine(&self, machine: &MachineDocument) -> Result<Self, MachineRemoteTargetError> {
+        let (peer, address) =
+            direct_wireguard_target(&self.cluster_id, &machine.name, &machine.transport)?;
         Ok(Self::from_wireguard_peer(
             self.identity.clone(),
             self.cluster_id.clone(),

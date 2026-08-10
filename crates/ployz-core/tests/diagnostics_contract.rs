@@ -13,10 +13,10 @@ use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGu
 use ployz_core::{
     DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorMalformedRosterDocumentClass,
     DoctorNoncanonicalRow, DoctorProjectionInput, DoctorRawRows, DoctorRosterRowSkipReason,
-    DoctorRosterTable, HandshakeFreshness, KnownApiFeature, MachineLensRow, STATUS_ROUTE,
-    StatusAnsweringMachine, StatusBarrier, StatusCorrosionHealth, StatusDegradationReason,
-    StatusDocument, StatusHandshakeEvidence, StatusHint, StatusProjectionInput, StatusSync,
-    V2Method, V2Route, project_doctor, project_status,
+    DoctorRosterTable, HandshakeFreshness, KnownApiFeature, STATUS_ROUTE, StatusAnsweringMachine,
+    StatusBarrier, StatusCorrosionHealth, StatusDegradationReason, StatusDocument,
+    StatusHandshakeEvidence, StatusHint, StatusProjectionInput, StatusSync, V2Method, V2Route,
+    project_doctor, project_status,
 };
 use serde_json::json;
 
@@ -51,40 +51,35 @@ fn cluster() -> ClusterDocument {
     }
 }
 
-fn machine(value: &str, name: &str, addr_v6: Ipv6Addr) -> MachineLensRow {
-    MachineLensRow {
-        id: machine_id(value),
-        document: MachineDocument {
-            v: CorrosionDocumentVersion::V1,
-            cluster_id: ClusterName::try_new(CLUSTER).expect("fixture cluster id"),
-            provenance: OperatorWriteProvenance {
-                written_by: Principal::Peer {
-                    peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX")
-                        .expect("fixture peer id"),
-                },
-                written_at: timestamp("2026-08-04T10:00:00Z"),
+fn machine(_value: &str, name: &str, addr_v6: Ipv6Addr) -> MachineDocument {
+    MachineDocument {
+        v: CorrosionDocumentVersion::V1,
+        cluster_id: ClusterName::try_new(CLUSTER).expect("fixture cluster id"),
+        provenance: OperatorWriteProvenance {
+            written_by: Principal::Peer {
+                peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture peer id"),
             },
-            name: MachineName::try_new(name).expect("fixture machine name"),
-            lifecycle: MachineLifecycle::Active,
-            transport: MachineTransport::Wireguard {
-                pubkey: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-                    .expect("fixture public key"),
-                addr_v6,
-                endpoint: None,
-                subnet_v4: MachineEndpointSubnet::try_new("10.210.20.0/24")
-                    .expect("fixture subnet"),
-            },
-            storage: MachineStorageSelection {
-                mode: StorageMode::Plain,
-                reason: MachineStorageSelectionReason::Default,
-            },
+            written_at: timestamp("2026-08-04T10:00:00Z"),
+        },
+        name: MachineName::try_new(name).expect("fixture machine name"),
+        lifecycle: MachineLifecycle::Active,
+        transport: MachineTransport::Wireguard {
+            pubkey: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("fixture public key"),
+            addr_v6,
+            endpoint: None,
+            subnet_v4: MachineEndpointSubnet::try_new("10.210.20.0/24").expect("fixture subnet"),
+        },
+        storage: MachineStorageSelection {
+            mode: StorageMode::Plain,
+            reason: MachineStorageSelectionReason::Default,
         },
     }
 }
 
 fn status_input(
     cluster: Option<ClusterDocument>,
-    machines: Vec<MachineLensRow>,
+    machines: Vec<MachineDocument>,
     answering_machine_id: MachineName,
     health: StatusCorrosionHealth,
     wireguard_handshakes: Option<BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
@@ -265,8 +260,8 @@ fn machine_status_handshake_testimony_is_additive_and_distinguishes_never_from_t
 
 #[test]
 fn healthy_status_is_sorted_and_the_275_second_boundary_is_not_stale() {
-    let answering = machine_id(MACHINE);
-    let remote = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAX");
+    let answering = machine_id("alpha");
+    let remote = machine_id("zeta");
     let document = project_status(status_input(
         Some(cluster()),
         vec![
@@ -293,10 +288,7 @@ fn healthy_status_is_sorted_and_the_275_second_boundary_is_not_stale() {
     assert_eq!(document.sync, StatusSync::CaughtUp { p99_lag: 0.48 });
     assert_eq!(
         document.answering_machine,
-        StatusAnsweringMachine::Known {
-            id: answering,
-            name: MachineName::try_new("alpha").expect("fixture machine name"),
-        }
+        StatusAnsweringMachine::Known { name: answering }
     );
     assert_eq!(
         document
@@ -320,9 +312,9 @@ fn healthy_status_is_sorted_and_the_275_second_boundary_is_not_stale() {
 
 #[test]
 fn cold_boot_status_keeps_the_durable_barrier_ready_and_reports_never() {
-    let answering = machine_id(MACHINE);
-    let remote = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAX");
-    let without_testimony = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAY");
+    let answering = machine_id("alpha");
+    let remote = machine_id("zeta");
+    let without_testimony = machine_id("unknown");
     let document = project_status(status_input(
         Some(cluster()),
         vec![
@@ -422,7 +414,7 @@ fn joining_and_no_roster_are_distinct_durable_barrier_states() {
     assert_eq!(no_roster.barrier, StatusBarrier::NoRoster);
     assert_eq!(
         no_roster.answering_machine,
-        StatusAnsweringMachine::Unknown { id: answering }
+        StatusAnsweringMachine::Unknown { name: answering }
     );
     let no_roster_json = serde_json::to_value(&no_roster).expect("no-roster status serializes");
     assert!(no_roster_json.get("cluster").is_none());
@@ -433,8 +425,8 @@ fn joining_and_no_roster_are_distinct_durable_barrier_states() {
 
 #[test]
 fn absent_handshake_map_is_no_testimony_and_suppresses_all_stale_hint() {
-    let answering = machine_id(MACHINE);
-    let remote = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAX");
+    let answering = machine_id("alpha");
+    let remote = machine_id("zeta");
     let document = project_status(status_input(
         Some(cluster()),
         vec![
@@ -461,9 +453,9 @@ fn absent_handshake_map_is_no_testimony_and_suppresses_all_stale_hint() {
 
 #[test]
 fn future_handshake_timestamps_saturate_to_zero_age_and_276_seconds_warns() {
-    let answering = machine_id(MACHINE);
-    let future = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAX");
-    let stale = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAY");
+    let answering = machine_id("alpha");
+    let future = machine_id("future");
+    let stale = machine_id("stale");
     let document = project_status(status_input(
         Some(cluster()),
         vec![
@@ -717,11 +709,11 @@ fn doctor_compares_valid_versions_semantically_and_retains_newer_row_evidence() 
         panic!("expected one newer-version row");
     };
     assert_eq!(newest.version, "1.10.0");
-    assert_eq!(newest_machine.name.as_str(), "zeta");
+    assert_eq!(newest_machine.as_str(), "zeta");
     assert_eq!(behind.version, "1.2.0");
-    assert_eq!(behind.machine.name.as_str(), "alpha");
+    assert_eq!(behind.machine.as_str(), "alpha");
     assert_eq!(invalid.version, "release-next");
-    assert_eq!(invalid.machine.name.as_str(), "invalid");
+    assert_eq!(invalid.machine.as_str(), "invalid");
     assert_eq!(newer.table.as_str(), "namespaces");
     assert_eq!(newer.found, 2);
     assert_eq!(newer.supported, 1);
@@ -792,8 +784,8 @@ fn doctor_groups_foreign_rows_and_only_current_machine_authors_are_actionable() 
         .expect("active foreign group");
     assert!(active.rows.iter().any(|evidence| matches!(
         &evidence.authorship,
-        DoctorForeignAuthorship::CurrentMachine { machine }
-            if machine.id == machine_id(current) && machine.name.as_str() == "edge-a"
+        DoctorForeignAuthorship::CurrentMachine { machine_name }
+            if machine_name == &machine_id(current)
     )));
     assert!(
         active

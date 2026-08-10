@@ -152,12 +152,12 @@ fn local_endpoint_subnet(
     let LensSnapshot::Machines { rows, .. } = snapshot else {
         return Err(EndpointNetworkFoldError::UnexpectedLensSnapshot);
     };
-    let Some(local) = rows.iter().find(|row| &row.id == local_machine_id) else {
+    let Some(local) = rows.iter().find(|row| &row.name == local_machine_id) else {
         return Err(EndpointNetworkFoldError::LocalMachineMissing {
             machine_id: local_machine_id.clone(),
         });
     };
-    Ok(match &local.document.transport {
+    Ok(match &local.transport {
         MachineTransport::Wireguard { subnet_v4, .. }
         | MachineTransport::Tailscale { subnet_v4, .. } => subnet_v4.clone(),
     })
@@ -220,17 +220,14 @@ mod tests {
                 "acme_contact": null
             },
             "rows": [{
-                "id": MACHINE,
-                "document": {
-                    "v": 1,
-                    "cluster_id": CLUSTER,
-                    "written_by": { "kind": "peer", "peer_id": PEER },
-                    "written_at": "2026-08-05T10:00:00Z",
-                    "name": "machine-one",
-                    "lifecycle": "active",
-                    "transport": { "kind": "tailscale", "ip": "100.64.0.1", "subnet_v4": subnet },
-                    "storage": { "mode": "plain", "reason": { "kind": "default" } }
-                }
+                "v": 1,
+                "cluster_id": CLUSTER,
+                "written_by": { "kind": "peer", "peer_id": PEER },
+                "written_at": "2026-08-05T10:00:00Z",
+                "name": MACHINE,
+                "lifecycle": "active",
+                "transport": { "kind": "tailscale", "ip": "100.64.0.1", "subnet_v4": subnet },
+                "storage": { "mode": "plain", "reason": { "kind": "default" } }
             }]
         }))
         .expect("machines lens fixture")
