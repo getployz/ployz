@@ -6,10 +6,21 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
 ployz-core.workspace = true
+prometheus = "0.14.0"
+sd-notify = "0.5.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = { version = "0.1.19", features = ["net"] }
+tonic = { version = "0.13.1", features = ["transport"] }
 
 [dev-dependencies]
+hyper-util = { version = "0.1.20", features = ["tokio"] }
 ployz-testkit.workspace = true
+tower = { version = "0.5.3", features = ["util"] }
 
 [lints]
 workspace = true

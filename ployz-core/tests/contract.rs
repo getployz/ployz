@@ -5,10 +5,10 @@ use ployz_core::{
     ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
     HealthObservation, MachineFailure, MachineId, MachinePath, MachineRpc, MachineRpcClient,
     MachineRpcServer, MachineSelector, MachineSuccess, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
-    PartialResult, Placement, PreDeployHook, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec,
-    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource,
+    PartialResult, Placement, PreDeployHook, PullPolicy, RESET_MACHINE_CAPABILITY,
+    RequestedServiceSpec, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequest,
+    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -253,6 +253,17 @@ fn typed_errors_preserve_future_error_codes() {
 }
 
 #[test]
+fn reset_command_and_acknowledgement_have_a_stable_capability() {
+    let request = RpcRequest::reset().encode().unwrap();
+    assert_eq!(request.decode_request().unwrap(), RpcRequest::reset());
+
+    let response = RpcResponse::reset_accepted();
+    assert_eq!(response.kind(), ResponseKind::ResetAccepted);
+    assert!(response.decode_reset_accepted().is_ok());
+    assert_eq!(RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1");
+}
+
+#[test]
 fn requested_and_resolved_specs_and_mounts_round_trip() {
     let container = ServiceContainerSpec {
         image: "ghcr.io/example/api:sha".into(),
@@ -380,10 +391,17 @@ impl MachineRpc for FixtureMachineRpc {
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
         unreachable!("compile-time service fixture")
     }
+
+    async fn reset(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
 }
 
 #[test]
-fn tonic_generates_both_sides_of_the_contract_description_rpc() {
+fn tonic_generates_both_sides_of_the_machine_rpc_service() {
     let _server = MachineRpcServer::new(FixtureMachineRpc);
     let _client: Option<MachineRpcClient<tonic::transport::Channel>> = None;
 }
