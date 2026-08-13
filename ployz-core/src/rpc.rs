@@ -9,6 +9,7 @@ use crate::{CapabilityName, MachineId};
 
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const DESCRIBE_CONTRACT_CAPABILITY: &str = "ployz.rpc.describe-contract.v1";
+pub const RESET_MACHINE_CAPABILITY: &str = "ployz.machine.reset.v1";
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
 #[derive(Clone, PartialEq, Message)]
@@ -46,7 +47,7 @@ impl OpaquePayload {
     pub fn decode_request(&self) -> Result<RpcRequest, CodecError> {
         let header: RequestHeader = self.decode_json()?;
         validate_protocol_major(header.protocol_major)?;
-        if header.command != "describe_contract" {
+        if !matches!(header.command.as_str(), "describe_contract" | "reset") {
             return Err(CodecError::UnsupportedCommand(header.command));
         }
         self.decode_json()
@@ -91,11 +92,16 @@ pub enum CodecError {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DescribeContractRequest {}
 
+/// The empty payload of the reset command.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResetRequest {}
+
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
 pub enum RpcRequestBody {
     DescribeContract(DescribeContractRequest),
+    Reset(ResetRequest),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -114,6 +120,14 @@ impl RpcRequest {
         }
     }
 
+    #[must_use]
+    pub fn reset() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::Reset(ResetRequest {}),
+        }
+    }
+
     pub fn encode(&self) -> Result<OpaquePayload, CodecError> {
         OpaquePayload::from_json(self)
     }
@@ -127,13 +141,18 @@ struct RequestHeader {
 
 crate::value::open_string_enum!(ResponseKind, Unknown {
     ContractDescription => "contract_description",
+    ResetAccepted => "reset_accepted",
     Error => "error",
 });
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResetAccepted {}
 
 /// Known responses own typed payloads; future responses retain their raw value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RpcResponseBody {
     ContractDescription(ContractDescription),
+    ResetAccepted(ResetAccepted),
     Error(RpcError),
     Unknown { kind: String, payload: Value },
 }
@@ -143,6 +162,7 @@ impl RpcResponseBody {
     pub fn kind(&self) -> ResponseKind {
         match self {
             Self::ContractDescription(_) => ResponseKind::ContractDescription,
+            Self::ResetAccepted(_) => ResponseKind::ResetAccepted,
             Self::Error(_) => ResponseKind::Error,
             Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
         }
@@ -173,6 +193,14 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn reset_accepted() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::ResetAccepted(ResetAccepted {}),
+        }
+    }
+
+    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
     }
@@ -181,12 +209,25 @@ impl RpcResponse {
         validate_protocol_major(self.protocol_major)?;
         match &self.body {
             RpcResponseBody::ContractDescription(description) => Ok(description),
-            body @ (RpcResponseBody::Error(_) | RpcResponseBody::Unknown { .. }) => {
-                Err(CodecError::UnexpectedResponse {
-                    expected: "contract_description",
-                    actual: body.kind().as_str().to_owned(),
-                })
-            }
+            body @ (RpcResponseBody::ResetAccepted(_)
+            | RpcResponseBody::Error(_)
+            | RpcResponseBody::Unknown { .. }) => Err(CodecError::UnexpectedResponse {
+                expected: "contract_description",
+                actual: body.kind().as_str().to_owned(),
+            }),
+        }
+    }
+
+    pub fn decode_reset_accepted(&self) -> Result<(), CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        match &self.body {
+            RpcResponseBody::ResetAccepted(_) => Ok(()),
+            body @ (RpcResponseBody::ContractDescription(_)
+            | RpcResponseBody::Error(_)
+            | RpcResponseBody::Unknown { .. }) => Err(CodecError::UnexpectedResponse {
+                expected: "reset_accepted",
+                actual: body.kind().as_str().to_owned(),
+            }),
         }
     }
 
@@ -198,7 +239,7 @@ impl RpcResponse {
 #[derive(Serialize, Deserialize)]
 struct WireResponse {
     protocol_major: u32,
-    kind: String,
+    kind: ResponseKind,
     #[serde(default)]
     payload: Value,
 }
@@ -208,20 +249,21 @@ impl Serialize for RpcResponse {
     where
         S: Serializer,
     {
-        let (kind, payload) = match &self.body {
-            RpcResponseBody::ContractDescription(description) => (
-                "contract_description".to_owned(),
-                serde_json::to_value(description).map_err(serde::ser::Error::custom)?,
-            ),
-            RpcResponseBody::Error(error) => (
-                "error".to_owned(),
-                serde_json::to_value(error).map_err(serde::ser::Error::custom)?,
-            ),
-            RpcResponseBody::Unknown { kind, payload } => (kind.clone(), payload.clone()),
+        let payload = match &self.body {
+            RpcResponseBody::ContractDescription(description) => {
+                serde_json::to_value(description).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::ResetAccepted(accepted) => {
+                serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::Error(error) => {
+                serde_json::to_value(error).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::Unknown { payload, .. } => payload.clone(),
         };
         WireResponse {
             protocol_major: self.protocol_major,
-            kind,
+            kind: self.kind(),
             payload,
         }
         .serialize(serializer)
@@ -234,15 +276,18 @@ impl<'de> Deserialize<'de> for RpcResponse {
         D: Deserializer<'de>,
     {
         let wire = WireResponse::deserialize(deserializer)?;
-        let body = match wire.kind.as_str() {
-            "contract_description" => RpcResponseBody::ContractDescription(
+        let body = match wire.kind {
+            ResponseKind::ContractDescription => RpcResponseBody::ContractDescription(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
-            "error" => RpcResponseBody::Error(
+            ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
-            _ => RpcResponseBody::Unknown {
-                kind: wire.kind,
+            ResponseKind::Error => RpcResponseBody::Error(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::Unknown(kind) => RpcResponseBody::Unknown {
+                kind,
                 payload: wire.payload,
             },
         };
