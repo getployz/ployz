@@ -1,6 +1,7 @@
 mod test_dir;
 
 use std::{
+    collections::BTreeMap,
     fs,
     os::unix::fs::PermissionsExt,
     sync::{Arc, Mutex},
@@ -21,6 +22,7 @@ fn machine_record_is_created_once_and_reopened_with_private_permissions() {
     let machine_id = created.record().id.clone();
 
     assert_eq!(created.record().phase, LocalMachinePhase::Uninitialized);
+    assert!(created.record().min_store_version.is_empty());
     assert_eq!(
         fs::metadata(&dir.0).unwrap().permissions().mode() & 0o777,
         0o711
@@ -108,6 +110,7 @@ fn reset_stops_if_the_machine_record_changes() {
         id: ployz_core::MachineId::random(),
         phase: LocalMachinePhase::Resetting,
         machine: None,
+        min_store_version: BTreeMap::new(),
     };
     fs::write(
         dir.0.join("machine.json"),
@@ -141,4 +144,29 @@ fn interrupted_initial_write_is_recovered() {
     let store = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(store.record().phase, LocalMachinePhase::Uninitialized);
     assert!(!dir.0.join(".machine.json.tmp").exists());
+}
+
+#[test]
+fn completing_catch_up_persists_participation_and_clears_the_target() {
+    let dir = TestDir::new("ployzd-state");
+    fs::create_dir_all(&dir.0).unwrap();
+    let record = LocalMachineRecord {
+        id: ployz_core::MachineId::random(),
+        phase: LocalMachinePhase::Joining,
+        machine: None,
+        min_store_version: BTreeMap::from([("actor".to_owned(), 4)]),
+    };
+    fs::write(
+        dir.0.join("machine.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    store.complete_catch_up().unwrap();
+    drop(store);
+
+    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(reopened.record().phase, LocalMachinePhase::Participating);
+    assert!(reopened.record().min_store_version.is_empty());
 }

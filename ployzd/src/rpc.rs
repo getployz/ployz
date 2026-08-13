@@ -99,6 +99,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::InvalidPhase
         | StoreError::MachineIdMismatch
         | StoreError::NotResetting
+        | StoreError::NotJoining
         | StoreError::AlreadyRunning(_)
         | StoreError::UnsafeDataDirectory(_)
         | StoreError::UnownedDataDirectory(_)

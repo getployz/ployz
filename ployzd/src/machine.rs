@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -20,6 +21,8 @@ pub struct LocalMachineRecord {
     pub phase: LocalMachinePhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<Machine>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub min_store_version: BTreeMap<String, i64>,
 }
 
 pub struct LocalMachineStore {
@@ -61,6 +64,7 @@ impl LocalMachineStore {
                     id: MachineId::random(),
                     phase: LocalMachinePhase::Uninitialized,
                     machine: None,
+                    min_store_version: BTreeMap::new(),
                 };
                 save(&data_dir, &record)?;
                 record
@@ -106,6 +110,18 @@ impl LocalMachineStore {
         resetting.phase = LocalMachinePhase::Resetting;
         save(&self.data_dir, &resetting)?;
         self.record = resetting;
+        Ok(())
+    }
+
+    pub fn complete_catch_up(&mut self) -> Result<(), StoreError> {
+        if self.record.phase != LocalMachinePhase::Joining {
+            return Err(StoreError::NotJoining);
+        }
+        let mut participating = self.record.clone();
+        participating.phase = LocalMachinePhase::Participating;
+        participating.min_store_version.clear();
+        save(&self.data_dir, &participating)?;
+        self.record = participating;
         Ok(())
     }
 
@@ -189,6 +205,8 @@ pub enum StoreError {
     AlreadyResetting,
     #[error("machine is not resetting")]
     NotResetting,
+    #[error("machine is not joining")]
+    NotJoining,
     #[error("another daemon already owns data directory {0:?}")]
     AlreadyRunning(PathBuf),
     #[error("refusing to clear broad data directory {0:?}")]

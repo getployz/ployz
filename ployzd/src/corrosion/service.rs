@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     net::SocketAddr,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -22,7 +22,7 @@ use bollard::{
 use futures_util::TryStreamExt;
 use serde::Serialize;
 
-use super::{AdminClient, ApiClient, Error, Statement};
+use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
 pub const IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
 pub const DEFAULT_CONTAINER_NAME: &str = "ployz-corrosion";
@@ -95,7 +95,7 @@ impl CorrosionConfig {
         service.start().await?;
         wait_ready(&api).await?;
         Ok(RunningCorrosion {
-            api,
+            store: ReplicatedStore::new(api),
             admin,
             service,
         })
@@ -108,8 +108,7 @@ impl CorrosionConfig {
         let schema_path = self.data_dir.join("schema.sql");
         // TODO(EO-019): Ployz deliberately has no replicated Store Schema/value evolution contract;
         // mixed-version Machines may omit or fail to read newer data. Do not add migrations or version gates.
-        fs::write(&schema_path, SCHEMA)?;
-        fs::set_permissions(&schema_path, fs::Permissions::from_mode(0o644))?;
+        atomic_write(&schema_path, SCHEMA.as_bytes(), 0o644)?;
 
         let config = FileConfig {
             db: DbConfig {
@@ -131,35 +130,33 @@ impl CorrosionConfig {
                 path: self.run_dir.join("admin.sock"),
             },
         };
-        let path = self.data_dir.join("config.toml");
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)?;
+        let encoded = toml::to_string(&config)?;
         // TODO(UT-101): retain the loose Corrosion-owned config boundary until ownership is decided.
-        file.write_all(toml::to_string(&config)?.as_bytes())?;
-        file.sync_all()?;
+        atomic_write(
+            &self.data_dir.join("config.toml"),
+            encoded.as_bytes(),
+            0o600,
+        )?;
         Ok(token)
     }
 }
 
 pub struct RunningCorrosion {
-    api: ApiClient,
+    store: ReplicatedStore,
     admin: AdminClient,
     service: DockerService,
 }
 
 impl RunningCorrosion {
     #[must_use]
-    pub fn api(&self) -> &ApiClient {
-        &self.api
+    pub fn store(&self) -> &ReplicatedStore {
+        &self.store
     }
 
-    #[must_use]
-    pub fn admin(&self) -> &AdminClient {
-        &self.admin
+    pub async fn membership_states(&self) -> Result<Vec<serde_json::Value>, Error> {
+        self.admin
+            .command(&serde_json::json!({"Cluster": "MembershipStates"}))
+            .await
     }
 
     pub async fn stop(&mut self) -> Result<(), Error> {
@@ -321,6 +318,22 @@ async fn wait_ready(api: &ApiClient) -> Result<(), Error> {
     })
     .await
     .map_err(|_| Error::Api("service did not become ready within 15 seconds".into()))?;
+    Ok(())
+}
+
+fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> Result<(), Error> {
+    let temporary = path.with_extension("tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(mode)
+        .open(&temporary)?;
+    file.set_permissions(fs::Permissions::from_mode(mode))?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    fs::rename(temporary, path)?;
+    File::open(path.parent().expect("installed file has a parent"))?.sync_all()?;
     Ok(())
 }
 

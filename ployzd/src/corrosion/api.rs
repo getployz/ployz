@@ -7,13 +7,13 @@ use serde_json::Value;
 use super::Error;
 
 #[derive(Clone, Debug, Serialize)]
-pub struct Statement {
+pub(crate) struct Statement {
     query: String,
     params: Vec<Value>,
 }
 
 impl Statement {
-    pub fn new(query: impl Into<String>, params: impl IntoIterator<Item = Value>) -> Self {
+    pub(crate) fn new(query: impl Into<String>, params: impl IntoIterator<Item = Value>) -> Self {
         Self {
             query: query.into(),
             params: params.into_iter().collect(),
@@ -22,13 +22,13 @@ impl Statement {
 }
 
 #[derive(Clone)]
-pub struct ApiClient {
+pub(crate) struct ApiClient {
     base_url: Url,
     client: Client,
 }
 
 impl ApiClient {
-    pub fn new(address: SocketAddr, token: &str) -> Result<Self, Error> {
+    pub(crate) fn new(address: SocketAddr, token: &str) -> Result<Self, Error> {
         let base_url = Url::parse(&format!("http://{address}"))
             .map_err(|error| Error::Protocol(error.to_string()))?;
         let mut headers = header::HeaderMap::new();
@@ -55,10 +55,10 @@ impl ApiClient {
         Ok(Self { base_url, client })
     }
 
-    pub async fn execute(
+    pub(crate) async fn execute(
         &self,
         statements: impl IntoIterator<Item = Statement>,
-    ) -> Result<ExecResponse, Error> {
+    ) -> Result<(), Error> {
         let response = self
             .client
             .post(self.base_url.join("v1/transactions").expect("static path"))
@@ -72,7 +72,15 @@ impl ApiClient {
         if !status.is_success() {
             return Err(decoded
                 .ok()
-                .and_then(|response| response.results.into_iter().find_map(|result| result.error))
+                .and_then(|response| {
+                    response
+                        .results
+                        .into_iter()
+                        .find_map(|result| match result {
+                            ExecResult::Error { error } => Some(error),
+                            ExecResult::Executed { .. } => None,
+                        })
+                })
                 .map_or_else(
                     || Error::Api(format!("HTTP {status}: {}", String::from_utf8_lossy(&body))),
                     Error::Api,
@@ -81,17 +89,20 @@ impl ApiClient {
         let decoded = decoded?;
         let errors = decoded
             .results
-            .iter()
-            .filter_map(|result| result.error.as_deref())
-            .collect::<Vec<_>>();
+            .into_iter()
+            .filter_map(|result| match result {
+                ExecResult::Error { error } => Some(error),
+                ExecResult::Executed { .. } => None,
+            });
+        let errors = errors.collect::<Vec<_>>();
         if errors.is_empty() {
-            Ok(decoded)
+            Ok(())
         } else {
             Err(Error::Api(errors.join("; ")))
         }
     }
 
-    pub async fn query(&self, statement: Statement) -> Result<QueryResult, Error> {
+    pub(crate) async fn query(&self, statement: Statement) -> Result<QueryResult, Error> {
         let response = self
             .client
             .post(self.base_url.join("v1/queries").expect("static path"))
@@ -109,69 +120,100 @@ impl ApiClient {
 
         let mut columns = None;
         let mut rows = Vec::new();
-        let mut change_id = None;
+        let mut ended = false;
         for event in serde_json::Deserializer::from_slice(&body).into_iter::<QueryEvent>() {
+            if ended {
+                return Err(Error::Protocol("query event followed end-of-query".into()));
+            }
             let event = event?;
-            if let Some(error) = event.error {
-                return Err(Error::Api(error));
+            match event {
+                QueryEvent::Columns(names) if columns.is_none() && rows.is_empty() => {
+                    columns = Some(names);
+                }
+                QueryEvent::Row(_row_id, values) if columns.is_some() => rows.push(values),
+                QueryEvent::EndOfQuery { .. } if columns.is_some() => ended = true,
+                QueryEvent::Error(error) => return Err(Error::Api(error)),
+                QueryEvent::Columns(_) | QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => {
+                    return Err(Error::Protocol("query events arrived out of order".into()));
+                }
             }
-            if let Some(names) = event.columns {
-                columns = Some(names);
-            }
-            if let Some((_row_id, values)) = event.row {
-                rows.push(values);
-            }
-            if let Some(eoq) = event.eoq {
-                change_id = eoq.change_id;
-            }
+        }
+        if !ended {
+            return Err(Error::Protocol("missing end-of-query event".into()));
         }
         let columns = columns.ok_or_else(|| Error::Protocol("missing columns event".into()))?;
         if rows.iter().any(|row| row.len() != columns.len()) {
             return Err(Error::Protocol("row length does not match columns".into()));
         }
-        Ok(QueryResult {
-            columns,
-            rows,
-            change_id,
-        })
+        Ok(QueryResult { columns, rows })
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ExecResponse {
-    pub results: Vec<ExecResult>,
-    #[serde(default)]
-    pub version: Option<u64>,
+#[serde(deny_unknown_fields)]
+struct ExecResponse {
+    results: Vec<ExecResult>,
+    #[serde(rename = "time")]
+    _time: f64,
+    #[serde(rename = "version")]
+    _version: Option<u64>,
+    #[serde(rename = "actor_id")]
+    _actor_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ExecResult {
-    pub rows_affected: u64,
-    #[serde(default)]
-    error: Option<String>,
+#[serde(deny_unknown_fields, untagged)]
+enum ExecResult {
+    Executed {
+        #[serde(rename = "rows_affected")]
+        _rows_affected: usize,
+        #[serde(rename = "time")]
+        _time: f64,
+    },
+    Error {
+        error: String,
+    },
 }
 
 #[derive(Debug)]
-pub struct QueryResult {
-    pub columns: Vec<String>,
-    pub rows: Vec<Vec<Value>>,
-    pub change_id: Option<u64>,
+pub(crate) struct QueryResult {
+    columns: Vec<String>,
+    rows: Vec<Vec<Value>>,
+}
+
+impl QueryResult {
+    pub(crate) fn rows<const N: usize>(
+        self,
+        expected: [&str; N],
+    ) -> Result<Vec<[Value; N]>, Error> {
+        if self.columns != expected {
+            return Err(Error::Protocol(format!(
+                "unexpected columns: {:?}",
+                self.columns
+            )));
+        }
+        self.rows
+            .into_iter()
+            .map(|row| {
+                row.try_into()
+                    .map_err(|_| Error::Protocol("row has unexpected width".into()))
+            })
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
-struct QueryEvent {
-    #[serde(default)]
-    columns: Option<Vec<String>>,
-    #[serde(default)]
-    row: Option<(u64, Vec<Value>)>,
-    #[serde(default)]
-    eoq: Option<EndOfQuery>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct EndOfQuery {
-    #[serde(default)]
-    change_id: Option<u64>,
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+enum QueryEvent {
+    Columns(Vec<String>),
+    Row(u64, Vec<Value>),
+    #[serde(rename = "eoq")]
+    EndOfQuery {
+        #[serde(rename = "time")]
+        _time: f64,
+        #[serde(default)]
+        #[serde(rename = "change_id")]
+        _change_id: Option<u64>,
+    },
+    Error(String),
 }

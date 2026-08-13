@@ -3,13 +3,18 @@ mod api;
 mod service;
 mod store;
 
-pub use admin::AdminClient;
-pub use api::{ApiClient, ExecResponse, QueryResult, Statement};
+#[cfg(test)]
+mod integration_tests;
+
+use admin::AdminClient;
+use api::{ApiClient, Statement};
 pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
     RunningCorrosion,
 };
-pub use store::{MissingChange, ReplicatedObservations, ReplicatedStore, wait_for_catch_up};
+pub use store::{
+    ReplicatedObservations, ReplicatedStore, run_machine_publisher, wait_for_catch_up,
+};
 
 use thiserror::Error;
 
