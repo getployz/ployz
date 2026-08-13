@@ -1,4 +1,4 @@
-mod common;
+mod test_dir;
 
 use std::{
     fs,
@@ -12,7 +12,7 @@ use ployzd::{
     rpc::MachineService,
 };
 
-use common::TestDir;
+use test_dir::TestDir;
 
 #[test]
 fn machine_record_is_created_once_and_reopened_with_private_permissions() {

@@ -1,4 +1,4 @@
-mod common;
+mod test_dir;
 
 use std::{
     fs,
@@ -16,7 +16,7 @@ use ployz_core::{
 };
 use tonic::transport::{Channel, Endpoint};
 
-use common::TestDir;
+use test_dir::TestDir;
 
 struct ChildGuard(Child);
 

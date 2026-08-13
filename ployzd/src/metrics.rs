@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, time::Duration};
 
 use prometheus::{Encoder, IntGaugeVec, Opts, Registry, TextEncoder};
 use tokio::{
@@ -25,7 +25,14 @@ pub async fn serve(
 ) -> io::Result<()> {
     loop {
         let (mut stream, peer) = tokio::select! {
-            accepted = listener.accept() => accepted?,
+            accepted = listener.accept() => match accepted {
+                Ok(connection) => connection,
+                Err(error) => {
+                    eprintln!("metrics listener failed: {error}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            },
             changed = shutdown.changed() => {
                 let _ = changed;
                 return Ok(());
