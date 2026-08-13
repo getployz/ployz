@@ -3,12 +3,10 @@
 use std::time::Duration;
 
 use hyper::{Response, StatusCode};
-use ployz_core::corrosion::{
-    ControllerAppointmentId, Principal, owns_current_controller_appointment,
-};
+use ployz_core::corrosion::{Principal, is_preferred_controller};
 use ployz_core::{
-    DeployInspectOutcome, DeployInspectRequest, DeployPrepareOutcome, DeployPrepareRequest,
-    DeployRetireOutcome, DeployRetireRequest,
+    DeployInspectOutcome, DeployPrepareOutcome, DeployPrepareRequest, DeployRetireOutcome,
+    DeployRetireRequest,
 };
 use serde::de::DeserializeOwned;
 
@@ -19,19 +17,11 @@ const EFFECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) async fn inspect(
     service: &ApiService,
-    principal: &Principal,
-    request: hyper::Request<hyper::body::Incoming>,
+    _request: hyper::Request<hyper::body::Incoming>,
 ) -> Response<HttpBody> {
-    let request: DeployInspectRequest = match decode(request).await {
-        Ok(request) => request,
-        Err(response) => return response,
-    };
-    if let Err(response) = authorize(service, principal, &request.appointment_id).await {
-        return response;
-    }
     let outcome = match &service.deploy_effects {
-        Some(effects) => effects.inspect(request).await,
-        None => DeployInspectOutcome::Failed {},
+        Some(effects) => effects.inspect().await,
+        None => DeployInspectOutcome::Failed,
     };
     super::mutations::typed_response(StatusCode::OK, &outcome)
 }
@@ -45,12 +35,12 @@ pub(super) async fn prepare(
         Ok(request) => request,
         Err(response) => return response,
     };
-    if let Err(response) = authorize(service, principal, &request.appointment_id).await {
+    if let Err(response) = authorize(service, principal).await {
         return response;
     }
     let outcome = match &service.node_workflows {
         Some(workflows) => workflows.prepare(request).await,
-        None => DeployPrepareOutcome::Failed {},
+        None => DeployPrepareOutcome::Failed,
     };
     super::mutations::typed_response(StatusCode::OK, &outcome)
 }
@@ -64,21 +54,17 @@ pub(super) async fn retire(
         Ok(request) => request,
         Err(response) => return response,
     };
-    if let Err(response) = authorize(service, principal, &request.appointment_id).await {
+    if let Err(response) = authorize(service, principal).await {
         return response;
     }
     let outcome = match &service.node_workflows {
         Some(workflows) => workflows.retire(request).await,
-        None => DeployRetireOutcome::Failed {},
+        None => DeployRetireOutcome::Failed,
     };
     super::mutations::typed_response(StatusCode::OK, &outcome)
 }
 
-async fn authorize(
-    service: &ApiService,
-    principal: &Principal,
-    appointment_id: &ControllerAppointmentId,
-) -> Result<(), Response<HttpBody>> {
+async fn authorize(service: &ApiService, principal: &Principal) -> Result<(), Response<HttpBody>> {
     let Principal::Machine { machine_id } = principal else {
         return Err(error_response(StatusCode::NOT_FOUND, "unsupported_route"));
     };
@@ -86,9 +72,10 @@ async fn authorize(
         service.controller.current().await.map_err(|_| {
             error_response(StatusCode::SERVICE_UNAVAILABLE, "controller_unavailable")
         })?;
-    if current.as_ref().is_some_and(|controller| {
-        owns_current_controller_appointment(controller, machine_id, appointment_id)
-    }) {
+    if current
+        .as_ref()
+        .is_some_and(|controller| is_preferred_controller(controller, machine_id))
+    {
         Ok(())
     } else {
         Err(error_response(StatusCode::CONFLICT, "stale_controller"))

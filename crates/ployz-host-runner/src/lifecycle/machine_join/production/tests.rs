@@ -243,9 +243,7 @@ fn joined_machine_writes_a_private_gateway_scoped_environment() {
             directory.path().join("openrc"),
         ),
     };
-    let MachineTransport::Wireguard { addr_v6, .. } =
-        &accepted.accepted().machine.document.transport
-    else {
+    let MachineTransport::Wireguard { addr_v6, .. } = &accepted.accepted().machine.transport else {
         panic!("fixture uses WireGuard")
     };
 
@@ -259,7 +257,7 @@ fn joined_machine_writes_a_private_gateway_scoped_environment() {
         format!(
             "PLOYZ_CORROSION_API_ADDR=127.0.0.1:8080\nPLOYZ_CORROSION_BEARER_TOKEN=secret\nPLOYZ_CLUSTER_ID={}\nPLOYZ_MACHINE_ID={}\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n",
             accepted.accepted().cluster.cluster_id,
-            accepted.accepted().machine.machine_id,
+            accepted.accepted().machine.name,
         )
     );
     assert_eq!(
@@ -547,11 +545,11 @@ fn corrosion_decoder_is_strict_and_bounded() {
 fn convergence_requires_exact_accepted_name_winner() {
     let (_directory, _state, _prepared, accepted) = validated_fixture();
     let expected = accepted.accepted().machine.clone();
-    let document = serde_json::to_string(&expected.document).expect("document");
+    let document = serde_json::to_string(&expected).expect("document");
     assert_eq!(
         roster_convergence_disposition(
             &accepted,
-            vec![StoredRow::new(expected.machine_id.as_str(), document)]
+            vec![StoredRow::new(expected.name.as_str(), document)]
         ),
         RosterConvergenceDisposition::Converged
     );
@@ -560,36 +558,26 @@ fn convergence_requires_exact_accepted_name_winner() {
         RosterConvergenceDisposition::Missing
     );
 
-    let mut divergent = expected.document.clone();
+    let mut divergent = expected.clone();
     divergent.lifecycle = MachineLifecycle::Draining;
     assert_eq!(
         roster_convergence_disposition(
             &accepted,
             vec![StoredRow::new(
-                expected.machine_id.as_str(),
+                expected.name.as_str(),
                 serde_json::to_string(&divergent).expect("document")
             )]
         ),
         RosterConvergenceDisposition::Divergent
     );
+    let mut foreign = expected.clone();
+    foreign.cluster_id =
+        ployz_core::ids::ClusterName::try_new("foreign-cluster").expect("cluster name");
     assert_eq!(
         roster_convergence_disposition(
             &accepted,
             vec![StoredRow::new(
-                "00000000000000000000000000",
-                serde_json::to_string(&expected.document).expect("document")
-            )]
-        ),
-        RosterConvergenceDisposition::Shadowed
-    );
-
-    let mut foreign = expected.document;
-    foreign.cluster_id = ployz_core::ids::ClusterId::generate();
-    assert_eq!(
-        roster_convergence_disposition(
-            &accepted,
-            vec![StoredRow::new(
-                expected.machine_id.as_str(),
+                expected.name.as_str(),
                 serde_json::to_string(&foreign).expect("document")
             )]
         ),
@@ -611,14 +599,12 @@ fn query_token_environment_and_artifact_contracts_are_exact() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&query.body).expect("body"),
         serde_json::json!([
-            "SELECT id, document FROM machines WHERE id = ?1 OR name = ?2",
-            [prepared.request().machine_id.as_str(), "edge-a"]
+            "SELECT id, document FROM machines WHERE id = ?",
+            [prepared.request().name.as_str()]
         ])
     );
 
-    let MachineTransport::Wireguard { addr_v6, .. } =
-        accepted.accepted().machine.document.transport
-    else {
+    let MachineTransport::Wireguard { addr_v6, .. } = accepted.accepted().machine.transport else {
         panic!("fixture transport")
     };
     let environment = render_environment(&state, &accepted, addr_v6, "super-secret");

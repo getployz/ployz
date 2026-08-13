@@ -63,36 +63,6 @@ impl MachineEndpointSupernet {
         })
     }
 
-    /// Selects from the currently free `/24`s using fresh process randomness.
-    pub fn allocate_random_free(
-        &self,
-        assigned: impl IntoIterator<Item = MachineEndpointSubnet>,
-    ) -> Result<MachineEndpointSubnet, MachineEndpointSubnetAllocationError> {
-        let assigned = assigned.into_iter().collect::<BTreeSet<_>>();
-        let octets = self.0.network().octets();
-        let free = (0..=u8::MAX)
-            .map(|third_octet| {
-                MachineEndpointSubnet::try_new(format!(
-                    "{}.{}.{}.0/24",
-                    octets[0], octets[1], third_octet
-                ))
-                .expect("candidate from /16 supernet is a valid /24")
-            })
-            .filter(|candidate| !assigned.contains(candidate))
-            .collect::<Vec<_>>();
-        if free.is_empty() {
-            return Err(MachineEndpointSubnetAllocationError::Exhausted {
-                supernet: self.as_string(),
-            });
-        }
-        let random = u128::from(ulid::Ulid::new());
-        let index = (random % free.len() as u128) as usize;
-        Ok(free
-            .into_iter()
-            .nth(index)
-            .expect("the random index is reduced modulo the nonempty free set"))
-    }
-
     #[must_use]
     pub fn as_string(&self) -> String {
         self.0.to_string()
@@ -348,7 +318,7 @@ mod allocation_tests {
     }
 
     #[test]
-    fn random_free_allocation_never_returns_an_occupied_subnet() {
+    fn lowest_free_allocation_returns_the_only_unoccupied_subnet() {
         let supernet = MachineEndpointSupernet::try_new("10.199.0.0/16").expect("supernet");
         let assigned = (0..=u8::MAX)
             .filter(|third_octet| *third_octet != 73)
@@ -359,7 +329,7 @@ mod allocation_tests {
 
         assert_eq!(
             supernet
-                .allocate_random_free(assigned)
+                .allocate_next(assigned)
                 .expect("one subnet remains free")
                 .as_string(),
             "10.199.73.0/24"

@@ -7,13 +7,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use hyper::Method;
-use ployz_core::JOIN_ROUTE;
 use ployz_core::join::{
     JoinAcceptanceValidationError, JoinAdmissionAccepted, JoinAdmissionReply, JoinAdmissionRequest,
     JoinBlob, JoinDoorRefusal, JoinMemberRequest, MachineJoinAccepted, MachineJoinRequest,
     PeerJoinRequest, ValidatedMachineJoinAccepted, ValidatedPeerJoinAccepted,
 };
 use ployz_core::operation::FailureMessage;
+use ployz_core::{ApiRefusal, JOIN_ROUTE};
 use ployz_host_runner::lifecycle::machine_join::MachineJoinDoor;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -123,10 +123,29 @@ impl JoinDoorClient {
         }
         tokio::time::timeout(
             self.overall_timeout,
-            self.try_endpoints(endpoints, fingerprint, request),
+            self.try_endpoints_until_settled(endpoints, fingerprint, request),
         )
         .await
         .map_err(|_| JoinDoorClientError::OverallTimedOut)?
+    }
+
+    async fn try_endpoints_until_settled(
+        &self,
+        endpoints: &[SocketAddr],
+        fingerprint: [u8; 32],
+        request: &impl Serialize,
+    ) -> Result<JoinAdmissionReply, JoinDoorClientError> {
+        loop {
+            match self.try_endpoints(endpoints, fingerprint, request).await {
+                Err(error) => {
+                    let Some(delay) = corrosion_retry_delay(&error) else {
+                        return Err(error);
+                    };
+                    tokio::time::sleep(delay).await;
+                }
+                result => return result,
+            }
+        }
     }
 
     async fn try_endpoints(
@@ -160,7 +179,11 @@ impl JoinDoorClient {
                 }),
             }
         }
-        token_not_found.ok_or(JoinDoorClientError::AllEndpointsFailed { attempts })
+        let failures = JoinDoorClientError::AllEndpointsFailed { attempts };
+        if corrosion_retry_delay(&failures).is_some() {
+            return Err(failures);
+        }
+        token_not_found.ok_or(failures)
     }
 
     async fn try_endpoint(
@@ -200,6 +223,28 @@ impl JoinDoorClient {
             .await
             .map_err(JoinDoorAttemptFailure::Http)
     }
+}
+
+fn corrosion_retry_delay(error: &JoinDoorClientError) -> Option<Duration> {
+    let JoinDoorClientError::AllEndpointsFailed { attempts } = error else {
+        return None;
+    };
+    attempts
+        .iter()
+        .filter_map(|attempt| match &attempt.failure {
+            JoinDoorAttemptFailure::Http(MeshApiClientError::Refused {
+                refusal:
+                    ApiRefusal::CorrosionUnavailable {
+                        retry_after_seconds,
+                    },
+            }) => Some(Duration::from_secs(u64::from(retry_after_seconds.get()))),
+            JoinDoorAttemptFailure::Connect(_)
+            | JoinDoorAttemptFailure::Tls(_)
+            | JoinDoorAttemptFailure::FingerprintMismatch
+            | JoinDoorAttemptFailure::Http(_)
+            | JoinDoorAttemptFailure::TimedOut => None,
+        })
+        .min()
 }
 
 impl Default for JoinDoorClient {
@@ -351,12 +396,11 @@ impl ServerCertVerifier for DoorFingerprintVerifier {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::ids::{MachineRowId, PeerId, TokenId};
+    use ployz_core::ids::{MachineName, PeerName, TokenName};
     use ployz_core::join::{
         JoinAdmissionRequest, JoinDoorCertFingerprint, JoinDoorRefusal, JoinStorageChoice,
         JoinStorageFacts, JoinTokenSecret, PeerJoinRequest,
     };
-    use ployz_core::machine::MachineName;
     use ployz_core::network::WireGuardPublicKey;
     use rcgen::generate_simple_self_signed;
     use rustls::ServerConfig;
@@ -434,6 +478,146 @@ mod tests {
         stream.write_all(&body).await.expect("write reply body");
     }
 
+    async fn write_api_refusal<Stream>(stream: &mut Stream, refusal: &ployz_core::ApiRefusal)
+    where
+        Stream: tokio::io::AsyncWrite + Unpin,
+    {
+        let body = serde_json::to_vec(refusal).expect("refusal JSON");
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write refusal head");
+        stream.write_all(&body).await.expect("write refusal body");
+    }
+
+    #[tokio::test]
+    async fn retries_the_same_door_after_temporary_corrosion_unavailability() {
+        let door = door_fixture().await;
+        let endpoint = door.listener.local_addr().expect("door address");
+        let fingerprint = door.fingerprint;
+        let server = tokio::spawn(async move {
+            let (tcp, _) = door.listener.accept().await.expect("accept first TCP");
+            let mut tls = door.acceptor.accept(tcp).await.expect("accept first TLS");
+            let _request = read_http_request(&mut tls).await;
+            write_api_refusal(
+                &mut tls,
+                &ployz_core::ApiRefusal::CorrosionUnavailable {
+                    retry_after_seconds: ployz_core::CorrosionRetryAfterSeconds::DEFAULT,
+                },
+            )
+            .await;
+
+            let (tcp, _) = door.listener.accept().await.expect("accept retry TCP");
+            let mut tls = door.acceptor.accept(tcp).await.expect("accept retry TLS");
+            let _request = read_http_request(&mut tls).await;
+            write_join_reply(
+                &mut tls,
+                &JoinAdmissionReply::Refused {
+                    refusal: JoinDoorRefusal::IdentityConflict,
+                },
+            )
+            .await;
+        });
+
+        let reply = JoinDoorClient::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            MAX_MESH_API_RESPONSE_BYTES,
+        )
+        .request_pinned(
+            &[endpoint],
+            fingerprint,
+            &SecretRequest {
+                token: "pzjoin_example",
+                kind: "machine",
+            },
+        )
+        .await
+        .expect("temporary refusal is retried");
+        assert!(matches!(
+            reply,
+            JoinAdmissionReply::Refused {
+                refusal: JoinDoorRefusal::IdentityConflict
+            }
+        ));
+        server.await.expect("door task");
+    }
+
+    #[tokio::test]
+    async fn temporary_corrosion_failure_outweighs_a_lagging_token_not_found_door() {
+        let first = door_fixture().await;
+        let second_listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind second door");
+        let endpoints = [
+            first.listener.local_addr().expect("first address"),
+            second_listener.local_addr().expect("second address"),
+        ];
+        let fingerprint = first.fingerprint;
+        let second_acceptor = first.acceptor.clone();
+        let token_id = TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id");
+        let first_task = tokio::spawn(serve_join_reply(
+            first.listener,
+            first.acceptor,
+            JoinAdmissionReply::Refused {
+                refusal: JoinDoorRefusal::TokenNotFound { token_id },
+            },
+        ));
+        let second_task = tokio::spawn(async move {
+            let (tcp, _) = second_listener.accept().await.expect("accept first TCP");
+            let mut tls = second_acceptor.accept(tcp).await.expect("accept first TLS");
+            let _request = read_http_request(&mut tls).await;
+            write_api_refusal(
+                &mut tls,
+                &ployz_core::ApiRefusal::CorrosionUnavailable {
+                    retry_after_seconds: ployz_core::CorrosionRetryAfterSeconds::DEFAULT,
+                },
+            )
+            .await;
+
+            let (tcp, _) = second_listener.accept().await.expect("accept retry TCP");
+            let mut tls = second_acceptor.accept(tcp).await.expect("accept retry TLS");
+            let _request = read_http_request(&mut tls).await;
+            write_join_reply(
+                &mut tls,
+                &JoinAdmissionReply::Refused {
+                    refusal: JoinDoorRefusal::IdentityConflict,
+                },
+            )
+            .await;
+        });
+
+        let reply = JoinDoorClient::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            MAX_MESH_API_RESPONSE_BYTES,
+        )
+        .request_pinned(
+            &endpoints,
+            fingerprint,
+            &SecretRequest {
+                token: "pzjoin_example",
+                kind: "machine",
+            },
+        )
+        .await
+        .expect("temporary refusal is retried before lagged token absence wins");
+        assert!(matches!(
+            reply,
+            JoinAdmissionReply::Refused {
+                refusal: JoinDoorRefusal::IdentityConflict
+            }
+        ));
+        first_task.await.expect("first door task");
+        second_task.await.expect("second door task");
+    }
+
     #[tokio::test]
     async fn lagged_token_not_found_door_does_not_mask_a_later_door() {
         let first = door_fixture().await;
@@ -445,7 +629,7 @@ mod tests {
             second_listener.local_addr().expect("second address"),
         ];
         let fingerprint = first.fingerprint;
-        let token_id = TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id");
+        let token_id = TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id");
         let second_acceptor = first.acceptor.clone();
         let first_task = tokio::spawn(serve_join_reply(
             first.listener,
@@ -497,7 +681,7 @@ mod tests {
         )
         .expect("door fingerprint");
         let blob = JoinBlob::try_new(
-            TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
+            TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("token id"),
             JoinTokenSecret::try_from_bytes([0x5a; 32]),
             fingerprint,
             vec![endpoint],
@@ -553,8 +737,6 @@ mod tests {
             .admit_machine(
                 &blob,
                 MachineJoinRequest {
-                    machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW")
-                        .expect("machine id"),
                     name: MachineName::try_new("edge-a").expect("machine name"),
                     public_key: WireGuardPublicKey::try_new(
                         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -581,8 +763,7 @@ mod tests {
             .admit_peer(
                 &blob,
                 PeerJoinRequest {
-                    peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("peer id"),
-                    name: "operator-laptop".to_owned(),
+                    name: PeerName::try_new("operator-laptop").expect("peer name"),
                     public_key: WireGuardPublicKey::try_new(
                         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                     )

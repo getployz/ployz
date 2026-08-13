@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ployz_core::LensSnapshot;
 use ployz_core::corrosion::MachineTransport;
-use ployz_core::ids::MachineRowId;
+use ployz_core::ids::MachineName;
 use ployz_core::network::MachineEndpointSubnet;
 use tokio::sync::watch;
 
@@ -27,7 +27,7 @@ const WIREGUARD_IFNAME: &str = "ployz0";
 
 pub(super) async fn run(
     updates: watch::Receiver<Option<LensState>>,
-    local_machine_id: MachineRowId,
+    local_machine_id: MachineName,
     runner: Arc<DockerManagedContainerRunner>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<(), EndpointNetworkFoldError> {
@@ -49,7 +49,7 @@ pub(super) fn runner_for_subnet(subnet: &MachineEndpointSubnet) -> DockerManaged
 
 async fn run_with<Converge, ConvergeFuture>(
     mut updates: watch::Receiver<Option<LensState>>,
-    local_machine_id: MachineRowId,
+    local_machine_id: MachineName,
     mut shutdown: watch::Receiver<bool>,
     mut converge: Converge,
 ) -> Result<(), EndpointNetworkFoldError>
@@ -141,7 +141,7 @@ where
 
 fn local_endpoint_subnet(
     state: &LensState,
-    local_machine_id: &MachineRowId,
+    local_machine_id: &MachineName,
 ) -> Result<MachineEndpointSubnet, EndpointNetworkFoldError> {
     let snapshot =
         state
@@ -152,12 +152,12 @@ fn local_endpoint_subnet(
     let LensSnapshot::Machines { rows, .. } = snapshot else {
         return Err(EndpointNetworkFoldError::UnexpectedLensSnapshot);
     };
-    let Some(local) = rows.iter().find(|row| &row.id == local_machine_id) else {
+    let Some(local) = rows.iter().find(|row| &row.name == local_machine_id) else {
         return Err(EndpointNetworkFoldError::LocalMachineMissing {
             machine_id: local_machine_id.clone(),
         });
     };
-    Ok(match &local.document.transport {
+    Ok(match &local.transport {
         MachineTransport::Wireguard { subnet_v4, .. }
         | MachineTransport::Tailscale { subnet_v4, .. } => subnet_v4.clone(),
     })
@@ -170,7 +170,7 @@ pub(super) enum EndpointNetworkFoldError {
     #[error("endpoint-network convergence received a non-machines lens snapshot")]
     UnexpectedLensSnapshot,
     #[error("the accepted machines lens no longer contains local machine {machine_id}")]
-    LocalMachineMissing { machine_id: MachineRowId },
+    LocalMachineMissing { machine_id: MachineName },
     #[error("the machines lens ended during endpoint-network convergence")]
     MachinesLensEnded,
     #[error(
@@ -199,8 +199,8 @@ mod tests {
     const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
     const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
 
-    fn machine_id() -> MachineRowId {
-        MachineRowId::try_new(MACHINE).expect("machine id")
+    fn machine_id() -> MachineName {
+        MachineName::try_new(MACHINE).expect("machine id")
     }
 
     fn machines_snapshot(subnet: &str) -> LensSnapshot {
@@ -220,17 +220,14 @@ mod tests {
                 "acme_contact": null
             },
             "rows": [{
-                "id": MACHINE,
-                "document": {
-                    "v": 1,
-                    "cluster_id": CLUSTER,
-                    "written_by": { "kind": "peer", "peer_id": PEER },
-                    "written_at": "2026-08-05T10:00:00Z",
-                    "name": "machine-one",
-                    "lifecycle": "active",
-                    "transport": { "kind": "tailscale", "ip": "100.64.0.1", "subnet_v4": subnet },
-                    "storage": { "mode": "plain", "reason": { "kind": "default" } }
-                }
+                "v": 1,
+                "cluster_id": CLUSTER,
+                "written_by": { "kind": "peer", "peer_id": PEER },
+                "written_at": "2026-08-05T10:00:00Z",
+                "name": MACHINE,
+                "lifecycle": "active",
+                "transport": { "kind": "tailscale", "ip": "100.64.0.1", "subnet_v4": subnet },
+                "storage": { "mode": "plain", "reason": { "kind": "default" } }
             }]
         }))
         .expect("machines lens fixture")

@@ -16,8 +16,6 @@ pub use token::*;
 pub enum JoinAcceptanceValidationError {
     #[error("accepted join response belongs to a different cluster")]
     ClusterMismatch,
-    #[error("accepted join identity disagrees with the request")]
-    AcceptedIdentityMismatch,
     #[error("accepted join name disagrees with the request")]
     AcceptedNameMismatch,
     #[error("accepted join transport disagrees with the request")]

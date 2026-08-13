@@ -1,25 +1,23 @@
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 
-use ployz_core::corrosion::StoredRow;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::corrosion::{CorrosionTimestamp, StoredRow};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::network::internal_dns::{
     INTERNAL_DNS_READINESS_NAME, InternalDnsRowProjectionError, InternalDnsRowProjectionInput,
     InternalDnsSearchDomain, InternalServiceName, project_internal_dns_rows,
 };
 
-const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const LOCAL_MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const REMOTE_MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-const WRONG_PROVIDER_MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-const NAMESPACE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
-const SHADOW_NAMESPACE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
-const SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
-const SHADOW_SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
-const ACTIVE_DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB3";
-const OLD_DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB4";
-const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB5";
-const EMPTY_SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB6";
+const CLUSTER: &str = "main";
+const LOCAL_MACHINE: &str = "edge-local";
+const REMOTE_MACHINE: &str = "edge-dark";
+const WRONG_PROVIDER_MACHINE: &str = "edge-wrong-provider";
+const NAMESPACE: &str = "prod";
+const SERVICE: &str = "api";
+const ACTIVE_DEPLOY: &str = "blue";
+const OLD_DEPLOY: &str = "green";
+const PEER: &str = "operator";
+const EMPTY_SERVICE: &str = "worker";
 
 #[test]
 fn corrosion_rows_project_local_bind_and_cluster_wide_active_service_records() {
@@ -46,25 +44,33 @@ fn corrosion_rows_project_local_bind_and_cluster_wide_active_service_records() {
 #[test]
 fn corrosion_rows_cannot_project_the_reserved_readiness_record() {
     let mut input = projection_input();
-    const READINESS_NAMESPACE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB7";
-    const READINESS_SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB8";
-    input
-        .namespace_rows
-        .push(namespace_row(READINESS_NAMESPACE, "ployz"));
-    input.service_rows.push(service_row(
-        READINESS_SERVICE,
+    const READINESS_NAMESPACE: &str = "ployz";
+    const READINESS_SERVICE: &str = "readiness";
+    input.namespace_rows.push(namespace_row(
         READINESS_NAMESPACE,
-        "readiness",
-        ACTIVE_DEPLOY,
+        "ployz",
+        &[(READINESS_SERVICE, ACTIVE_DEPLOY)],
     ));
-    input.container_rows.push(container_row(
-        "container-readiness",
-        LOCAL_MACHINE,
-        READINESS_SERVICE,
-        READINESS_NAMESPACE,
-        "10.210.20.53",
-        ACTIVE_DEPLOY,
-    ));
+    let local = input
+        .machine_endpoint_rows
+        .iter_mut()
+        .find(|row| row.key == LOCAL_MACHINE)
+        .expect("local endpoint testimony");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&local.document).expect("endpoint document");
+    document
+        .get_mut("endpoints")
+        .expect("endpoints field")
+        .as_array_mut()
+        .expect("endpoint list")
+        .push(endpoint(
+            READINESS_SERVICE,
+            READINESS_NAMESPACE,
+            "10.210.20.53",
+            ACTIVE_DEPLOY,
+            "global",
+        ));
+    local.document = serde_json::to_string(&document).expect("endpoint document");
 
     let projection = project_internal_dns_rows(input).expect("row projection");
 
@@ -98,11 +104,11 @@ fn corrosion_row_projection_reports_missing_cluster_and_local_machine() {
 
     let mut missing_machine = projection_input();
     missing_machine.local_machine_id =
-        MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FB7").expect("machine id");
+        MachineName::try_new("missing-machine").expect("machine name");
     assert_eq!(
         project_internal_dns_rows(missing_machine),
         Err(InternalDnsRowProjectionError::LocalMachineMissing {
-            machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FB7").expect("machine id"),
+            machine_id: MachineName::try_new("missing-machine").expect("machine name"),
         })
     );
 }
@@ -110,12 +116,33 @@ fn corrosion_row_projection_reports_missing_cluster_and_local_machine() {
 #[test]
 fn corrosion_row_projection_retains_a_dark_draining_machine_without_liveness_testimony() {
     let mut input = projection_input();
-    input
-        .container_rows
-        .retain(|row| row.key == "container-remote-dark" || row.key == "container-old-deploy");
-    input
-        .service_rows
-        .retain(|row| row.key == SERVICE || row.key == SHADOW_SERVICE);
+    input.namespace_rows = vec![namespace_row(
+        NAMESPACE,
+        NAMESPACE,
+        &[(SERVICE, ACTIVE_DEPLOY)],
+    )];
+    input.machine_endpoint_rows = vec![
+        machine_endpoint_row(
+            REMOTE_MACHINE,
+            vec![endpoint(
+                SERVICE,
+                NAMESPACE,
+                "10.210.30.9",
+                ACTIVE_DEPLOY,
+                "global",
+            )],
+        ),
+        machine_endpoint_row(
+            LOCAL_MACHINE,
+            vec![endpoint(
+                SERVICE,
+                NAMESPACE,
+                "10.210.20.10",
+                OLD_DEPLOY,
+                "global",
+            )],
+        ),
+    ];
 
     let projection = project_internal_dns_rows(input).expect("row projection");
     let name = InternalServiceName::try_from_labels("api", "prod").expect("record name");
@@ -124,6 +151,29 @@ fn corrosion_row_projection_retains_a_dark_draining_machine_without_liveness_tes
         projection.records,
         BTreeMap::from([(name, vec![Ipv4Addr::new(10, 210, 30, 9)])])
     );
+}
+
+#[test]
+fn endpoint_testimony_expires_at_the_serving_freshness_boundary() {
+    let mut fresh_input = projection_input();
+    fresh_input.now = timestamp("2026-08-05T10:00:29Z");
+    let fresh = project_internal_dns_rows(fresh_input).expect("fresh projection");
+    assert_eq!(
+        fresh.next_endpoint_expiry,
+        Some(std::time::Duration::from_secs(1))
+    );
+    assert!(
+        fresh
+            .records
+            .values()
+            .any(|addresses| !addresses.is_empty())
+    );
+
+    let mut expired_input = projection_input();
+    expired_input.now = timestamp("2026-08-05T10:00:30Z");
+    let expired = project_internal_dns_rows(expired_input).expect("expired projection");
+    assert_eq!(expired.next_endpoint_expiry, None);
+    assert!(expired.records.values().all(Vec::is_empty));
 }
 
 #[test]
@@ -160,14 +210,15 @@ fn internal_service_name_query_parsing_canonicalizes_ascii_case() {
     assert_eq!(name.as_str(), "database.default.internal");
 }
 
-fn cluster_id() -> ClusterId {
-    ClusterId::try_new(CLUSTER).expect("cluster id")
+fn cluster_id() -> ClusterName {
+    ClusterName::try_new(CLUSTER).expect("cluster id")
 }
 
 fn projection_input() -> InternalDnsRowProjectionInput {
     InternalDnsRowProjectionInput {
+        now: timestamp("2026-08-05T10:00:00Z"),
         cluster_id: cluster_id(),
-        local_machine_id: MachineRowId::try_new(LOCAL_MACHINE).expect("machine id"),
+        local_machine_id: MachineName::try_new(LOCAL_MACHINE).expect("machine id"),
         cluster_rows: vec![stored_row(
             CLUSTER,
             serde_json::json!({
@@ -187,95 +238,69 @@ fn projection_input() -> InternalDnsRowProjectionInput {
         machine_rows: vec![
             machine_row(
                 LOCAL_MACHINE,
-                "edge-local",
+                LOCAL_MACHINE,
                 "active",
                 "tailscale",
                 "10.210.20.0/24",
             ),
             machine_row(
                 REMOTE_MACHINE,
-                "edge-dark",
+                REMOTE_MACHINE,
                 "draining",
                 "tailscale",
                 "10.210.30.0/24",
             ),
             machine_row(
                 WRONG_PROVIDER_MACHINE,
-                "edge-wrong-provider",
+                WRONG_PROVIDER_MACHINE,
                 "active",
                 "wireguard",
                 "10.210.40.0/24",
             ),
         ],
         namespace_rows: vec![
-            namespace_row(NAMESPACE, "prod"),
-            namespace_row(SHADOW_NAMESPACE, "prod"),
+            namespace_row(
+                NAMESPACE,
+                NAMESPACE,
+                &[(SERVICE, ACTIVE_DEPLOY), (EMPTY_SERVICE, ACTIVE_DEPLOY)],
+            ),
             StoredRow::new("malformed", "{"),
         ],
-        service_rows: vec![
-            service_row(SERVICE, NAMESPACE, "api", ACTIVE_DEPLOY),
-            service_row(SHADOW_SERVICE, NAMESPACE, "api", ACTIVE_DEPLOY),
-            service_row(EMPTY_SERVICE, NAMESPACE, "worker", ACTIVE_DEPLOY),
-        ],
-        container_rows: vec![
-            container_row(
-                "container-local",
+        machine_endpoint_rows: vec![
+            machine_endpoint_row(
                 LOCAL_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.20.8",
-                ACTIVE_DEPLOY,
+                vec![
+                    endpoint(SERVICE, NAMESPACE, "10.210.20.8", ACTIVE_DEPLOY, "global"),
+                    endpoint(SERVICE, NAMESPACE, "10.210.20.8", ACTIVE_DEPLOY, "1"),
+                    endpoint(SERVICE, NAMESPACE, "10.210.20.10", OLD_DEPLOY, "global"),
+                ],
             ),
-            container_row(
-                "container-remote-dark",
+            machine_endpoint_row(
                 REMOTE_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.30.9",
-                ACTIVE_DEPLOY,
+                vec![endpoint(
+                    SERVICE,
+                    NAMESPACE,
+                    "10.210.30.9",
+                    ACTIVE_DEPLOY,
+                    "global",
+                )],
             ),
-            container_row(
-                "container-duplicate-ip",
-                LOCAL_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.20.8",
-                ACTIVE_DEPLOY,
-            ),
-            container_row(
-                "container-old-deploy",
-                LOCAL_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.20.10",
-                OLD_DEPLOY,
-            ),
-            container_row(
-                "container-shadow-service",
-                LOCAL_MACHINE,
-                SHADOW_SERVICE,
-                NAMESPACE,
-                "10.210.20.11",
-                ACTIVE_DEPLOY,
-            ),
-            container_row(
-                "container-shadow-namespace",
-                LOCAL_MACHINE,
-                SERVICE,
-                SHADOW_NAMESPACE,
-                "10.210.20.12",
-                ACTIVE_DEPLOY,
-            ),
-            container_row(
-                "container-wrong-provider-machine",
+            machine_endpoint_row(
                 WRONG_PROVIDER_MACHINE,
-                SERVICE,
-                NAMESPACE,
-                "10.210.40.9",
-                ACTIVE_DEPLOY,
+                vec![endpoint(
+                    SERVICE,
+                    NAMESPACE,
+                    "10.210.40.9",
+                    ACTIVE_DEPLOY,
+                    "global",
+                )],
             ),
         ],
     }
+}
+
+fn timestamp(value: &str) -> CorrosionTimestamp {
+    CorrosionTimestamp::try_new(value).expect("timestamp")
 }
 
 fn machine_row(id: &str, name: &str, lifecycle: &str, provider: &str, subnet: &str) -> StoredRow {
@@ -312,7 +337,11 @@ fn machine_row(id: &str, name: &str, lifecycle: &str, provider: &str, subnet: &s
     )
 }
 
-fn namespace_row(id: &str, name: &str) -> StoredRow {
+fn namespace_row(id: &str, name: &str, services: &[(&str, &str)]) -> StoredRow {
+    let services = services
+        .iter()
+        .map(|(service, deploy)| ((*service).to_owned(), published_service(deploy)))
+        .collect::<serde_json::Map<_, _>>();
     stored_row(
         id,
         serde_json::json!({
@@ -320,54 +349,60 @@ fn namespace_row(id: &str, name: &str) -> StoredRow {
             "cluster_id": CLUSTER,
             "written_by": { "kind": "peer", "peer_id": PEER },
             "written_at": "2026-08-05T10:00:00Z",
-            "name": name
-        }),
-    )
-}
-
-fn service_row(id: &str, namespace_id: &str, name: &str, deploy: &str) -> StoredRow {
-    stored_row(
-        id,
-        serde_json::json!({
-            "v": 1,
-            "cluster_id": CLUSTER,
-            "written_by": { "kind": "peer", "peer_id": PEER },
-            "written_at": "2026-08-05T10:00:00Z",
-            "namespace_id": namespace_id,
             "name": name,
-            "image": "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "env_fingerprints": {},
-            "mode": "replicated",
-            "replicas": 1,
-            "pinned_machines": [],
-            "active_deploy": deploy,
-            "previous_image": null,
-            "deployed_at": "2026-08-05T10:00:00Z",
-            "operation_id": deploy
+            "services": services,
         }),
     )
 }
 
-fn container_row(
-    id: &str,
-    machine_id: &str,
-    service_id: &str,
-    namespace_id: &str,
-    ip: &str,
-    deploy: &str,
-) -> StoredRow {
+fn published_service(deploy: &str) -> serde_json::Value {
+    serde_json::json!({
+        "image": "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "env_fingerprints": {},
+        "mode": "replicated",
+        "replicas": 1,
+        "pinned_machines": [],
+        "active_deploy": deploy,
+        "previous_image": null,
+        "deployed_at": "2026-08-05T10:00:00Z",
+    })
+}
+
+fn machine_endpoint_row(machine_id: &str, endpoints: Vec<serde_json::Value>) -> StoredRow {
     stored_row(
-        id,
+        machine_id,
         serde_json::json!({
             "v": 1,
             "cluster_id": CLUSTER,
             "machine_id": machine_id,
-            "service_id": service_id,
-            "namespace_id": namespace_id,
-            "ip": ip,
-            "deploy": deploy
+            "observed_at": "2026-08-05T10:00:00Z",
+            "endpoints": endpoints,
         }),
     )
+}
+
+fn endpoint(
+    service_name: &str,
+    namespace_id: &str,
+    ip: &str,
+    deploy: &str,
+    replica_slot: &str,
+) -> serde_json::Value {
+    let replica_slot = if replica_slot == "global" {
+        serde_json::json!({ "kind": "global" })
+    } else {
+        serde_json::json!({
+            "kind": "replicated",
+            "number": replica_slot.parse::<u16>().expect("replica slot")
+        })
+    };
+    serde_json::json!({
+        "namespace_id": namespace_id,
+        "service_name": service_name,
+        "replica_slot": replica_slot,
+        "ip": ip,
+        "deploy": deploy
+    })
 }
 
 fn stored_row(id: &str, document: serde_json::Value) -> StoredRow {

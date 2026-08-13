@@ -5,9 +5,9 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ployz_core::MachineLensRow;
+use ployz_core::corrosion::MachineDocument;
 use ployz_core::corrosion::{MachineTransport, derive_builtin_wireguard_member};
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 use ployz_core::machine::MachineName;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -29,7 +29,7 @@ const API_PORT: u16 = 2_020;
 pub struct OperatorRemote {
     connector: MeshConnector,
     api_target: SocketAddr,
-    cluster_id: ClusterId,
+    cluster_id: ClusterName,
     identity: OperatorMeshIdentity,
 }
 
@@ -90,7 +90,7 @@ impl OperatorRemote {
 
     fn from_wireguard_peer(
         identity: OperatorMeshIdentity,
-        cluster_id: ClusterId,
+        cluster_id: ClusterName,
         peer: BuiltinWireguardPeer,
         machine_address: Ipv6Addr,
     ) -> Self {
@@ -109,12 +109,9 @@ impl OperatorRemote {
     }
 
     /// Creates a direct mesh client for one rostered machine.
-    pub fn for_machine(&self, machine: &MachineLensRow) -> Result<Self, MachineRemoteTargetError> {
-        let (peer, address) = direct_wireguard_target(
-            &self.cluster_id,
-            &machine.document.name,
-            &machine.document.transport,
-        )?;
+    pub fn for_machine(&self, machine: &MachineDocument) -> Result<Self, MachineRemoteTargetError> {
+        let (peer, address) =
+            direct_wireguard_target(&self.cluster_id, &machine.name, &machine.transport)?;
         Ok(Self::from_wireguard_peer(
             self.identity.clone(),
             self.cluster_id.clone(),
@@ -197,7 +194,7 @@ impl OperatorRemote {
     }
 
     #[must_use]
-    pub const fn cluster_id(&self) -> &ClusterId {
+    pub const fn cluster_id(&self) -> &ClusterName {
         &self.cluster_id
     }
 }
@@ -263,7 +260,7 @@ pub enum MachineRemoteTargetError {
 }
 
 fn direct_wireguard_target(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     machine_name: &MachineName,
     transport: &MachineTransport,
 ) -> Result<(BuiltinWireguardPeer, Ipv6Addr), MachineRemoteTargetError> {
@@ -361,7 +358,7 @@ mod tests {
     fn persist_context(store: &OperatorContextStore, home: &std::path::Path, target: &SshTarget) {
         let key = SshPeerKey::generate("laptop".to_owned()).expect("peer key");
         key.persist_new(home, target).expect("persist peer key");
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
         let machine_key =
             WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                 .expect("machine key");
@@ -468,7 +465,7 @@ mod tests {
         let loaded = LoadedOperatorContext::UnsupportedProvider(
             crate::mesh::context::UnsupportedOperatorContext {
                 target: target("root@machine.example"),
-                cluster_id: ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id"),
+                cluster_id: ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id"),
                 provider: UnsupportedMeshProvider::Tailscale,
             },
         );
@@ -484,7 +481,7 @@ mod tests {
 
     #[test]
     fn direct_machine_target_refuses_an_endpointless_wireguard_member() {
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
         let machine = MachineName::try_new("edge-b").expect("machine name");
         let public_key =
             WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")

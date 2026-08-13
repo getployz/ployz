@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures_util::future::FutureExt;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use ployz_core::corrosion::{CorrosionTable, SqliteParameter, Statement, StoredRow};
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 
 use crate::corrosion::{
     CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
@@ -22,17 +22,15 @@ pub(super) enum DnsInput {
     Cluster,
     Machines,
     Namespaces,
-    Services,
-    Containers,
+    MachineEndpoints,
 }
 
 impl DnsInput {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 4] = [
         Self::Cluster,
         Self::Machines,
         Self::Namespaces,
-        Self::Services,
-        Self::Containers,
+        Self::MachineEndpoints,
     ];
 
     const fn table(self) -> CorrosionTable {
@@ -40,26 +38,23 @@ impl DnsInput {
             Self::Cluster => CorrosionTable::Cluster,
             Self::Machines => CorrosionTable::Machines,
             Self::Namespaces => CorrosionTable::Namespaces,
-            Self::Services => CorrosionTable::Services,
-            Self::Containers => CorrosionTable::Containers,
+            Self::MachineEndpoints => CorrosionTable::MachineEndpoints,
         }
     }
 
-    fn statement(self, cluster_id: &ClusterId) -> Statement {
+    fn statement(self, cluster_id: &ClusterName) -> Statement {
         match self {
             Self::Cluster => Statement::with_params(
                 "SELECT id, document FROM cluster WHERE id = ?",
                 vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
             ),
-            Self::Machines | Self::Namespaces | Self::Services | Self::Containers => {
-                Statement::with_params(
-                    format!(
-                        "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
-                        self.table().as_str()
-                    ),
-                    vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
-                )
-            }
+            Self::Machines | Self::Namespaces | Self::MachineEndpoints => Statement::with_params(
+                format!(
+                    "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
+                    self.table().as_str()
+                ),
+                vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
+            ),
         }
     }
 }
@@ -69,18 +64,17 @@ pub(super) struct DnsRows {
     pub cluster: Vec<StoredRow>,
     pub machines: Vec<StoredRow>,
     pub namespaces: Vec<StoredRow>,
-    pub services: Vec<StoredRow>,
-    pub containers: Vec<StoredRow>,
+    pub machine_endpoints: Vec<StoredRow>,
 }
 
 pub(super) struct CorrosionDnsSource {
     client: CorrosionClient,
-    cluster_id: ClusterId,
+    cluster_id: ClusterName,
 }
 
 impl CorrosionDnsSource {
     #[must_use]
-    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterId) -> Self {
+    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterName) -> Self {
         Self { client, cluster_id }
     }
 
@@ -111,8 +105,7 @@ impl CorrosionDnsSource {
                 cluster: self.query(DnsInput::Cluster).await?,
                 machines: self.query(DnsInput::Machines).await?,
                 namespaces: self.query(DnsInput::Namespaces).await?,
-                services: self.query(DnsInput::Services).await?,
-                containers: self.query(DnsInput::Containers).await?,
+                machine_endpoints: self.query(DnsInput::MachineEndpoints).await?,
             })
         })
         .await
@@ -254,7 +247,7 @@ mod tests {
 
     #[test]
     fn every_dns_input_is_cluster_scoped() {
-        let cluster_id = ClusterId::try_new("01HZZZZZZZZZZZZZZZZZZZZZZZ").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01HZZZZZZZZZZZZZZZZZZZZZZZ").expect("cluster id");
         for input in DnsInput::ALL {
             let Statement::WithParams(sql, parameters) = input.statement(&cluster_id) else {
                 panic!("DNS queries are parameterized");

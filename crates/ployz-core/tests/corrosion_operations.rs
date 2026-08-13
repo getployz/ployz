@@ -2,7 +2,7 @@ use ployz_core::corrosion::{
     CorrosionDeployOutcome, CorrosionDeployState, CorrosionDocumentVersion, CorrosionTimestamp,
     OperationDocument, Principal,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, NamespaceRowId, PeerId, ServiceRowId};
+use ployz_core::ids::{ClusterName, CorrosionNamespaceName, DeployName, MachineName, PeerName};
 
 fn timestamp(value: &str) -> CorrosionTimestamp {
     CorrosionTimestamp::try_new(value).expect("timestamp")
@@ -11,13 +11,13 @@ fn timestamp(value: &str) -> CorrosionTimestamp {
 fn deploy() -> OperationDocument {
     OperationDocument::deploy_created(
         CorrosionDocumentVersion::V1,
-        ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAB").expect("cluster"),
-        MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAC").expect("machine"),
+        ClusterName::try_new("main").expect("cluster"),
+        MachineName::try_new("edge-a").expect("machine"),
         Principal::Peer {
-            peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAD").expect("peer"),
+            peer_id: PeerName::try_new("operator").expect("peer"),
         },
-        NamespaceRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAF").expect("namespace"),
-        ServiceRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAE").expect("service"),
+        CorrosionNamespaceName::try_new("production").expect("namespace"),
+        DeployName::try_new("deploy-a").expect("deploy"),
         timestamp("2026-08-08T12:00:00Z"),
     )
 }
@@ -47,7 +47,6 @@ fn deploy_is_one_created_snapshot_followed_by_one_terminal_snapshot() {
         Some("interrupted")
     );
     assert!(encoded.get("kind").is_none());
-    assert!(encoded.get("appointment_id").is_none());
     assert!(!outcome.contains_key("service_id"));
     assert!(!outcome.contains_key("resubmit"));
     assert_eq!(

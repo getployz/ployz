@@ -16,9 +16,10 @@ Prefer the simplest implementation that satisfies the product requirement;
 accept reasonable limitations and recoverable failure instead of adding
 machinery for hypothetical robustness. Default to the preferred controller
 querying reality, computing a plan, and dispatching bounded idempotent effects
-to nodes; after controller loss, retry from reality rather than adding leases,
-heartbeats, takeover, history migration, or recovery protocols unless a
-concrete data-safety requirement demands them.
+to nodes. Its one Corrosion row carries a weak heartbeat used only for advisory
+replacement; after controller loss, retry from reality rather than adding
+leases, fencing, history migration, or recovery protocols unless a concrete
+data-safety requirement demands them.
 
 Prefer existing libraries, binaries, and OS primitives when they reduce total
 maintained code and concepts. Avoid speculative abstractions, provider seams,

@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures_util::future::FutureExt;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use ployz_core::corrosion::{CorrosionTable, SqliteParameter, Statement, StoredRow};
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 
 use crate::corrosion::{
     CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
@@ -20,37 +20,37 @@ const MAX_COALESCED_INVALIDATIONS: usize = 256;
 pub(super) enum GatewayInput {
     Cluster,
     Machines,
-    Services,
+    Namespaces,
     RouteBindings,
-    Containers,
+    MachineEndpoints,
 }
 
 impl GatewayInput {
     const ALL: [Self; 5] = [
         Self::Cluster,
         Self::Machines,
-        Self::Services,
+        Self::Namespaces,
         Self::RouteBindings,
-        Self::Containers,
+        Self::MachineEndpoints,
     ];
 
     const fn table(self) -> CorrosionTable {
         match self {
             Self::Cluster => CorrosionTable::Cluster,
             Self::Machines => CorrosionTable::Machines,
-            Self::Services => CorrosionTable::Services,
+            Self::Namespaces => CorrosionTable::Namespaces,
             Self::RouteBindings => CorrosionTable::RouteBindings,
-            Self::Containers => CorrosionTable::Containers,
+            Self::MachineEndpoints => CorrosionTable::MachineEndpoints,
         }
     }
 
-    fn statement(self, cluster_id: &ClusterId) -> Statement {
+    fn statement(self, cluster_id: &ClusterName) -> Statement {
         match self {
             Self::Cluster => Statement::with_params(
                 "SELECT id, document FROM cluster WHERE id = ?",
                 vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
             ),
-            Self::Machines | Self::Services | Self::RouteBindings | Self::Containers => {
+            Self::Machines | Self::Namespaces | Self::RouteBindings | Self::MachineEndpoints => {
                 Statement::with_params(
                     format!(
                         "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
@@ -67,19 +67,19 @@ impl GatewayInput {
 pub(super) struct GatewayRows {
     pub cluster: Vec<StoredRow>,
     pub machines: Vec<StoredRow>,
-    pub services: Vec<StoredRow>,
+    pub namespaces: Vec<StoredRow>,
     pub route_bindings: Vec<StoredRow>,
-    pub containers: Vec<StoredRow>,
+    pub machine_endpoints: Vec<StoredRow>,
 }
 
 pub(super) struct CorrosionGatewaySource {
     client: CorrosionClient,
-    cluster_id: ClusterId,
+    cluster_id: ClusterName,
 }
 
 impl CorrosionGatewaySource {
     #[must_use]
-    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterId) -> Self {
+    pub(super) const fn new(client: CorrosionClient, cluster_id: ClusterName) -> Self {
         Self { client, cluster_id }
     }
 
@@ -106,19 +106,19 @@ impl CorrosionGatewaySource {
 
     pub(super) async fn query_rows(&self) -> Result<GatewayRows, GatewaySourceError> {
         tokio::time::timeout(REFRESH_DEADLINE, async {
-            let (cluster, machines, services, route_bindings, containers) = tokio::try_join!(
+            let (cluster, machines, namespaces, route_bindings, machine_endpoints) = tokio::try_join!(
                 self.query(GatewayInput::Cluster),
                 self.query(GatewayInput::Machines),
-                self.query(GatewayInput::Services),
+                self.query(GatewayInput::Namespaces),
                 self.query(GatewayInput::RouteBindings),
-                self.query(GatewayInput::Containers),
+                self.query(GatewayInput::MachineEndpoints),
             )?;
             Ok(GatewayRows {
                 cluster,
                 machines,
-                services,
+                namespaces,
                 route_bindings,
-                containers,
+                machine_endpoints,
             })
         })
         .await
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn every_gateway_input_is_cluster_scoped_and_refresh_is_two_seconds() {
-        let cluster_id = ClusterId::try_new("01HZZZZZZZZZZZZZZZZZZZZZZZ").expect("cluster");
+        let cluster_id = ClusterName::try_new("01HZZZZZZZZZZZZZZZZZZZZZZZ").expect("cluster");
         for input in GatewayInput::ALL {
             let Statement::WithParams(sql, parameters) = input.statement(&cluster_id) else {
                 panic!("gateway queries are parameterized");

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 use ployz_core::{ApiRefusal, CorrosionRetryAfterSeconds, LensCollection, LensSnapshot};
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -258,7 +258,7 @@ impl ActiveLens {
 async fn resume_input<Store>(
     store: &Store,
     input: &mut ActiveInput,
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
 ) -> Result<ActiveInput, LensStoreError>
 where
     Store: LensStore,
@@ -670,17 +670,17 @@ where
         }
         LensCollection::Services => {
             let rows = store
-                .query_rows(LensInput::Services, config.cluster_id(), max_rows)
+                .query_rows(LensInput::Namespaces, config.cluster_id(), max_rows)
                 .await
                 .map_err(LensRefreshError::Store)?;
             Ok(snapshots::services_snapshot(config.cluster_id(), rows))
         }
-        LensCollection::Containers => {
+        LensCollection::Endpoints => {
             let rows = store
-                .query_rows(LensInput::Containers, config.cluster_id(), max_rows)
+                .query_rows(LensInput::Endpoints, config.cluster_id(), max_rows)
                 .await
                 .map_err(LensRefreshError::Store)?;
-            Ok(snapshots::containers_snapshot(config.cluster_id(), rows))
+            Ok(snapshots::endpoints_snapshot(config.cluster_id(), rows))
         }
         LensCollection::MachineStatus => {
             let rows = store

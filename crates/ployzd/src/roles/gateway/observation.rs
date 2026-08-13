@@ -2,23 +2,20 @@
 
 use std::net::SocketAddr;
 
+use crate::corrosion::{CorrosionClient, CorrosionClientError};
 use ployz_core::corrosion::{
     CorrosionDocumentVersion, CorrosionTimestamp, GatewayObservationDocument,
     GatewayProjectionAggregateFailure, GatewayRouteObservation, SqliteParameter, Statement,
     TransactionResult,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::machine::{GatewayProcessHealth, GatewayServingStatus};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
-
-use crate::corrosion::{CorrosionClient, CorrosionClientError};
 
 #[derive(Clone)]
 pub(super) struct GatewayObservationPublisher {
     client: CorrosionClient,
-    cluster_id: ClusterId,
-    local_machine_id: MachineRowId,
+    cluster_id: ClusterName,
+    local_machine_id: MachineName,
     listen_addr: SocketAddr,
 }
 
@@ -26,8 +23,8 @@ impl GatewayObservationPublisher {
     #[must_use]
     pub(super) const fn new(
         client: CorrosionClient,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         listen_addr: SocketAddr,
     ) -> Self {
         Self {
@@ -49,7 +46,7 @@ impl GatewayObservationPublisher {
             v: CorrosionDocumentVersion::V1,
             cluster_id: self.cluster_id.clone(),
             machine_id: self.local_machine_id.clone(),
-            observed_at: now()?,
+            observed_at: CorrosionTimestamp::now_utc(),
             listen_addr: self.listen_addr,
             serving,
             routes: routes.to_vec(),
@@ -88,23 +85,10 @@ fn statement(
     ))
 }
 
-fn now() -> Result<CorrosionTimestamp, GatewayObservationPublishError> {
-    let value = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|source| GatewayObservationPublishError::Timestamp {
-            detail: source.to_string(),
-        })?;
-    CorrosionTimestamp::try_new(value).map_err(|source| GatewayObservationPublishError::Timestamp {
-        detail: source.to_string(),
-    })
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(super) enum GatewayObservationPublishError {
     #[error(transparent)]
     Corrosion(#[from] CorrosionClientError),
-    #[error("could not construct Gateway Observation timestamp: {detail}")]
-    Timestamp { detail: String },
     #[error("could not encode Gateway Observation: {detail}")]
     Encode { detail: String },
     #[error("Gateway Observation write returned an unexpected result")]
@@ -121,8 +105,8 @@ mod tests {
     fn observation_upsert_derives_the_row_key_from_document_identity() {
         let document = GatewayObservationDocument {
             v: CorrosionDocumentVersion::V1,
-            cluster_id: ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster"),
-            machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
+            cluster_id: ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster"),
+            machine_id: MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
             observed_at: CorrosionTimestamp::try_new("2026-08-08T00:00:00Z").expect("timestamp"),
             listen_addr: SocketAddr::from(([0, 0, 0, 0], 80)),
             serving: GatewayServingStatus::Current,

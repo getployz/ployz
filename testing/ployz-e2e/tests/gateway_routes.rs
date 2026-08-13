@@ -5,7 +5,7 @@ use ployz_core::corrosion::{
     GatewayObservationDocument, GatewayRouteAvailability, GatewayRouteProjectionOutcome,
     RouteBindingDocument, SqliteValue,
 };
-use ployz_core::ids::{MachineRowId, RouteBindingRowId};
+use ployz_core::ids::{MachineName, RouteHostname};
 use ployz_core::machine::GatewayServingStatus;
 use ployz_e2e::dind::{
     DindCluster, DindClusterSpec, DindMachine, MachineSpec, artifact_dir, connect_docker,
@@ -90,22 +90,13 @@ async fn exercise_disabled(docker: &Docker, machine: &DindMachine) -> Result<(),
 
     let first = attach_route(&operator, DISABLED_HOSTNAME)?;
     assert_gateway_http(docker, machine, DISABLED_HOSTNAME, BODY).await?;
-    wait_for_applied_observation(
-        docker,
-        machine,
-        &operator.founder_machine_id,
-        &first,
-        DISABLED_HOSTNAME,
-    )
-    .await?;
+    wait_for_applied_observation(docker, machine, &operator.founder_machine_id, &first).await?;
     let removed = run_cli(
         &operator,
         &[
             "route",
             "rm",
             DISABLED_HOSTNAME,
-            "--id",
-            first.as_str(),
             "--target",
             operator.founder_target.as_str(),
         ],
@@ -118,13 +109,13 @@ async fn exercise_disabled(docker: &Docker, machine: &DindMachine) -> Result<(),
 
     let second = attach_route(&operator, DISABLED_HOSTNAME)?;
     require(
-        first != second,
-        format!("reattach reused removed route identity {first}"),
+        first == second,
+        format!("reattach changed canonical route identity from {first} to {second}"),
     )?;
     assert_gateway_http(docker, machine, DISABLED_HOSTNAME, BODY).await
 }
 
-fn attach_route(operator: &OperatorFixture, hostname: &str) -> Result<RouteBindingRowId, String> {
+fn attach_route(operator: &OperatorFixture, hostname: &str) -> Result<RouteHostname, String> {
     let output = run_cli(
         operator,
         &[
@@ -145,18 +136,13 @@ fn attach_route(operator: &OperatorFixture, hostname: &str) -> Result<RouteBindi
         output.status.success(),
         format!("route attach failed: {output:?}"),
     )?;
-    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
-    let id = stdout
-        .split_once('(')
-        .and_then(|(_, suffix)| suffix.split_once(')').map(|(id, _)| id))
-        .ok_or_else(|| format!("route attach omitted its row id: {stdout}"))?;
-    RouteBindingRowId::try_new(id.to_owned()).map_err(|error| error.to_string())
+    RouteHostname::try_new(hostname.to_owned()).map_err(|error| error.to_string())
 }
 
 async fn route_rows(
     docker: &Docker,
     machine: &DindMachine,
-) -> Result<Vec<(RouteBindingRowId, RouteBindingDocument)>, String> {
+) -> Result<Vec<(RouteHostname, RouteBindingDocument)>, String> {
     let (address, token) = corrosion_access(docker, machine).await?;
     let rows = corrosion_query(
         docker,
@@ -171,7 +157,7 @@ async fn route_rows(
             let [SqliteValue::Text(id), SqliteValue::Text(document)] = row.as_slice() else {
                 return Err(format!("route query returned an invalid row: {row:?}"));
             };
-            let id = RouteBindingRowId::try_new(id.clone()).map_err(|error| error.to_string())?;
+            let id = RouteHostname::try_new(id.clone()).map_err(|error| error.to_string())?;
             let document = serde_json::from_str(document)
                 .map_err(|error| format!("route row {id} was invalid: {error}"))?;
             Ok((id, document))
@@ -182,9 +168,8 @@ async fn route_rows(
 async fn wait_for_applied_observation(
     docker: &Docker,
     machine: &DindMachine,
-    machine_id: &MachineRowId,
-    route_id: &RouteBindingRowId,
-    hostname: &str,
+    machine_id: &MachineName,
+    hostname: &RouteHostname,
 ) -> Result<(), String> {
     let (address, token) = corrosion_access(docker, machine).await?;
     let query = format!(
@@ -205,8 +190,7 @@ async fn wait_for_applied_observation(
                     let observation: GatewayObservationDocument = serde_json::from_str(document)
                         .map_err(|error| format!("gateway observation was invalid: {error}"))?;
                     let applied = observation.routes.iter().any(|route| {
-                        route.route_binding_id == *route_id
-                            && route.hostname.as_str() == hostname
+                        route.hostname == *hostname
                             && matches!(
                                 route.outcome,
                                 GatewayRouteProjectionOutcome::Applied {

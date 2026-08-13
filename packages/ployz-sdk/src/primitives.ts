@@ -1,5 +1,4 @@
 import {
-  type ContainerId,
   type ContainerMountPath,
   type ImageReference,
   type InstallArtifactVersion,
@@ -11,10 +10,6 @@ import {
 
 export function machineName(value: string): MachineName {
   return subjectToken(value, "machine name") as MachineName;
-}
-
-export function containerId(value: string): ContainerId {
-  return subjectToken(value, "container id") as ContainerId;
 }
 
 export function imageReference(value: string): ImageReference {

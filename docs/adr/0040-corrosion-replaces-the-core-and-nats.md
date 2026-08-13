@@ -6,6 +6,9 @@
 > each node and runs only that node's host prepare/retire effects. Followers
 > replace the advisory appointment only after one hard connect failure, and
 > public deploy operations move only from created to terminal.
+>
+> Identity, conflict, and join-repair details are further superseded by
+> [ADR 0042](0042-canonical-names-are-resource-identities.md).
 
 Ployz v2 removes the Control-Plane Core, the sequencer, and NATS entirely.
 Cluster config is rows in a shared Corrosion store — stock, version-pinned,
@@ -26,7 +29,7 @@ Under the single-operator trust ceiling a hostile member is the deferred
 signing tier's threat model, not v1's. The door allocates each joiner's
 container /24 from the operator's supernet by random-free pick with a
 courtesy re-read; a collision that survives convergence is self-healed by
-the lowest-ULID machine re-picking — the row law's one named exception,
+the lowest canonical machine name re-picking — the row law's one named exception,
 on the transport subnet field. Each machine's Keeper converges that
 machine's mesh substrate toward rows it does not own and reports into status
 rows nobody else may write. Ordinary product rows have exactly one authority —
@@ -94,9 +97,9 @@ drafted land with the consolidated spec.
 - **0031 (recovery seams: hand-rolled epoch and mirrored intent snapshot)**
   — the epoch, the drumbeat mirror, and the candidate list are dead.
 - **0033 (deploy phases promote atomically)** — phase-atomic intent
-  transactions are replaced by one revision-gated `active_deploy` flip per
-  service: pre-flip failure never serves the new revision, and the old
-  revision runs through drain.
+  transactions are replaced by one complete Namespace intent-row replacement:
+  pre-flip failure never serves the new service map, and old generations run
+  through drain.
 - **0035 (fresh dataplane testimony gates new placement)** — the
   NATS-gathered testimony contract is gone; candidates answer live bids at
   the point of use, and the 275-second bound survives only as the staleness
@@ -119,9 +122,9 @@ The product-behavior ADRs carry over with their nouns translated: 0002,
 0006, 0010, 0012, and the
 unamended parts of 0023 and 0024; 0003 (operations are informational records)
 with deploy operations as coarse summary rows only. ADR 0041 supersedes the
-old deploy planner described by 0004, 0008, 0011, and 0022. Its immediate
-pre-commit appointment recheck only narrows races: stale or partitioned
-commits remain accepted, and the next caller retry plans from reality. 0005
+old deploy planner described by 0004, 0008, 0011, and 0022. Its local advisory
+admission checks do not prevent stale or partitioned commits; the next caller
+retry plans from reality. 0005
 (rebuild full views from invalidation) survives with Corrosion
 subscriptions as the wake signal and re-query as the correctness path;
 0027 (liveness surfaces at the point of use) with the mesh

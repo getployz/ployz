@@ -1,7 +1,7 @@
 //! Durable operator-peer identity and ready context for reaching a cluster.
 
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::Write as _;
 use std::net::{Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use defguard_wireguard_rs::key::Key;
 use ployz_core::corrosion::{
     BuiltinWireguardMemberSubnet, MachineTransport, MeshProvider, derive_builtin_wireguard_member,
 };
-use ployz_core::ids::{ClusterId, PeerId};
+use ployz_core::ids::{ClusterName, PeerName};
 use ployz_core::network::WireGuardPublicKey;
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +21,7 @@ pub const SSH_CONTEXT_HANDOFF_PREFIX: &str = "PLOYZ_SSH_CONTEXT_V1 ";
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SshPeerKey {
-    pub peer_id: PeerId,
-    pub peer_name: String,
+    pub peer_id: PeerName,
     private_key: String,
     pub public_key: WireGuardPublicKey,
 }
@@ -32,7 +31,6 @@ impl fmt::Debug for SshPeerKey {
         formatter
             .debug_struct("SshPeerKey")
             .field("peer_id", &self.peer_id)
-            .field("peer_name", &self.peer_name)
             .field("private_key", &"[REDACTED]")
             .field("public_key", &self.public_key)
             .finish()
@@ -44,9 +42,10 @@ impl SshPeerKey {
         let private_key = Key::generate();
         let public_key = WireGuardPublicKey::try_new(private_key.public_key().to_string())
             .map_err(|error| OperatorContextError::InvalidKey(error.to_string()))?;
+        let peer_id = PeerName::try_new(peer_name)
+            .map_err(|error| OperatorContextError::InvalidDocument(error.to_string()))?;
         Ok(Self {
-            peer_id: PeerId::generate(),
-            peer_name,
+            peer_id,
             private_key: private_key.to_string(),
             public_key,
         })
@@ -102,7 +101,7 @@ impl fmt::Debug for OperatorWireguardPrivateKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SshContextHandoff {
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     pub provider: MeshProvider,
     pub machine_transport: MachineTransport,
 }
@@ -129,10 +128,9 @@ impl SshContextHandoff {
 pub struct OperatorContext {
     pub v: OperatorContextVersion,
     pub target: SshTarget,
-    pub peer_id: PeerId,
-    pub peer_name: String,
+    pub peer_id: PeerName,
     pub peer_public_key: WireGuardPublicKey,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     pub provider: MeshProvider,
     pub machine_transport: MachineTransport,
 }
@@ -154,7 +152,6 @@ impl OperatorContext {
             v: OperatorContextVersion::V1,
             target: target.clone(),
             peer_id: peer_key.peer_id.clone(),
-            peer_name: peer_key.peer_name.clone(),
             peer_public_key: peer_key.public_key.clone(),
             cluster_id: handoff.cluster_id,
             provider: handoff.provider,
@@ -173,10 +170,7 @@ impl OperatorContext {
                 found: self.target.clone(),
             });
         }
-        if self.peer_id != peer_key.peer_id
-            || self.peer_name != peer_key.peer_name
-            || self.peer_public_key != peer_key.public_key
-        {
+        if self.peer_id != peer_key.peer_id || self.peer_public_key != peer_key.public_key {
             return Err(OperatorContextError::PeerIdentityMismatch);
         }
         Ok(())
@@ -332,7 +326,7 @@ impl LoadedOperatorContext {
     }
 
     #[must_use]
-    pub const fn cluster_id(&self) -> &ClusterId {
+    pub const fn cluster_id(&self) -> &ClusterName {
         match self {
             Self::BuiltinWireguard(context) => &context.cluster_id,
             Self::UnsupportedProvider(context) => &context.cluster_id,
@@ -343,7 +337,7 @@ impl LoadedOperatorContext {
 #[derive(Clone, PartialEq, Eq)]
 pub struct BuiltinWireguardOperatorContext {
     pub target: SshTarget,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     pub private_key: OperatorWireguardPrivateKey,
     pub source_address: Ipv6Addr,
     pub machine_public_key: [u8; 32],
@@ -371,7 +365,7 @@ impl fmt::Debug for BuiltinWireguardOperatorContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedOperatorContext {
     pub target: SshTarget,
-    pub cluster_id: ClusterId,
+    pub cluster_id: ClusterName,
     pub provider: UnsupportedMeshProvider,
 }
 
@@ -474,13 +468,7 @@ fn is_context_temporary(name: &std::ffi::OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return false;
     };
-    let Some(id) = name
-        .strip_prefix('.')
-        .and_then(|name| name.strip_suffix(".tmp"))
-    else {
-        return false;
-    };
-    PeerId::try_new(id).is_ok()
+    name.starts_with(".ployz-") && name.ends_with(".tmp")
 }
 
 fn read_regular_private_file(path: &Path) -> Result<Vec<u8>, OperatorContextError> {
@@ -540,34 +528,22 @@ fn secure_publish_json(
     }
     let encoded = serde_json::to_vec_pretty(value)
         .map_err(|error| OperatorContextError::InvalidDocument(error.to_string()))?;
-    let temporary = directory.join(format!(".{}.tmp", PeerId::generate()));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&temporary)
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".ployz-")
+        .suffix(".tmp")
+        .tempfile_in(directory)
         .map_err(OperatorContextError::Filesystem)?;
+    protect_private_file(temporary.path())?;
+    let file = temporary.as_file_mut();
     file.write_all(&encoded)
         .and_then(|()| file.sync_all())
-        .map_err(|error| {
-            let _ = fs::remove_file(&temporary);
-            OperatorContextError::Filesystem(error)
-        })?;
-    drop(file);
+        .map_err(OperatorContextError::Filesystem)?;
     let published = match publication {
-        Publication::CreateNew => fs::hard_link(&temporary, path),
-        Publication::Replace => fs::rename(&temporary, path),
+        Publication::CreateNew => fs::hard_link(temporary.path(), path),
+        Publication::Replace => fs::rename(temporary.path(), path),
     };
     if let Err(error) = published {
-        let _ = fs::remove_file(&temporary);
         return Err(OperatorContextError::Filesystem(error));
-    }
-    if publication == Publication::CreateNew {
-        fs::remove_file(&temporary).map_err(OperatorContextError::Filesystem)?;
     }
     sync_directory(directory)
 }
@@ -647,7 +623,7 @@ mod tests {
     const MACHINE_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
     fn handoff() -> SshContextHandoff {
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
         let machine_key = WireGuardPublicKey::try_new(MACHINE_KEY).expect("machine key");
         SshContextHandoff {
             machine_transport: MachineTransport::Wireguard {
@@ -857,7 +833,7 @@ mod tests {
         let key = SshPeerKey::generate("laptop".to_owned()).expect("key");
         key.persist_new(temporary.path(), &target)
             .expect("key file");
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
         let handoff = SshContextHandoff {
             cluster_id: cluster_id.clone(),
             provider: MeshProvider::Tailscale,
@@ -947,7 +923,7 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temp directory");
         let directory = temporary.path().join("mesh/contexts");
         fs::create_dir_all(&directory).expect("context directory");
-        let residue = directory.join(format!(".{}.tmp", PeerId::generate()));
+        let residue = directory.join(".ployz-residue.tmp");
         fs::write(&residue, b"partial").expect("temporary residue");
         assert!(
             OperatorContextStore::new(temporary.path())
@@ -957,7 +933,7 @@ mod tests {
         );
         assert!(!residue.exists());
 
-        fs::write(directory.join(".not-ours.tmp"), b"partial").expect("unknown file");
+        fs::write(directory.join(".not.ours.tmp"), b"partial").expect("unknown file");
         assert!(matches!(
             OperatorContextStore::new(temporary.path()).load_all(),
             Err(OperatorContextError::InvalidDocument(_))

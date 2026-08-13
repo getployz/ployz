@@ -8,10 +8,10 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use hyper::StatusCode;
 use ployz_core::corrosion::MachineTransport;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
-    DeployInspectOutcome, DeployInspectRequest, DeployPrepareOutcome, DeployPrepareRequest,
-    DeployRetireOutcome, DeployRetireRequest, V2Route,
+    DeployInspectOutcome, DeployPrepareOutcome, DeployPrepareRequest, DeployRetireOutcome,
+    DeployRetireRequest, V2Route,
 };
 
 use super::controller::ControllerStore;
@@ -28,8 +28,8 @@ const RETIRE_TIMEOUT: Duration = Duration::from_secs(75);
 const MAX_REPLY_BYTES: usize = 1_048_576;
 
 pub(super) struct MeshDeployHosts {
-    local_machine_id: MachineRowId,
-    cluster_id: ClusterId,
+    local_machine_id: MachineName,
+    cluster_id: ClusterName,
     api_port: u16,
     corrosion: CorrosionClient,
     controller: Arc<ControllerStore>,
@@ -40,8 +40,8 @@ pub(super) struct MeshDeployHosts {
 
 impl MeshDeployHosts {
     pub(super) fn new(
-        local_machine_id: MachineRowId,
-        cluster_id: ClusterId,
+        local_machine_id: MachineName,
+        cluster_id: ClusterName,
         api_port: u16,
         corrosion: CorrosionClient,
         controller: Arc<ControllerStore>,
@@ -65,29 +65,22 @@ impl MeshDeployHosts {
         })
     }
 
-    async fn require_local_appointment(
-        &self,
-        appointment_id: &ployz_core::corrosion::ControllerAppointmentId,
-    ) -> Result<(), DeployHostError> {
-        match self
-            .controller
-            .exact_local_appointment_is_current(appointment_id)
-            .await
-        {
+    async fn require_local_controller(&self) -> Result<(), DeployHostError> {
+        match self.controller.local_machine_is_preferred().await {
             Ok(true) => Ok(()),
             Ok(false) => Err(DeployHostError::StaleController),
             Err(_) => Err(DeployHostError::Failed),
         }
     }
 
-    async fn target(&self, machine_id: &MachineRowId) -> Result<SocketAddr, DeployHostError> {
+    async fn target(&self, machine_id: &MachineName) -> Result<SocketAddr, DeployHostError> {
         let roster = read_accepted_roster(&self.corrosion, &self.cluster_id)
             .await
             .map_err(|_| DeployHostError::Failed)?;
         let machine = roster
             .machines
             .into_iter()
-            .find(|machine| &machine.id == machine_id)
+            .find(|machine| &machine.document.name == machine_id)
             .ok_or(DeployHostError::Failed)?;
         Ok(machine_socket_addr(
             &machine.document.transport,
@@ -97,7 +90,7 @@ impl MeshDeployHosts {
 
     async fn post<Request, Reply>(
         &self,
-        machine_id: &MachineRowId,
+        machine_id: &MachineName,
         route: V2Route,
         request: &Request,
         timeout: Duration,
@@ -129,31 +122,22 @@ impl MeshDeployHosts {
 impl DeployHosts for MeshDeployHosts {
     async fn inspect(
         &self,
-        machine_id: &MachineRowId,
-        request: DeployInspectRequest,
+        machine_id: &MachineName,
     ) -> Result<DeployInspectOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            self.require_local_appointment(&request.appointment_id)
-                .await?;
-            return Ok(self.local_effects.inspect(request).await);
+            return Ok(self.local_effects.inspect().await);
         }
-        self.post(
-            machine_id,
-            V2Route::DeployInspect,
-            &request,
-            INSPECT_TIMEOUT,
-        )
-        .await
+        self.post(machine_id, V2Route::DeployInspect, &(), INSPECT_TIMEOUT)
+            .await
     }
 
     async fn prepare(
         &self,
-        machine_id: &MachineRowId,
+        machine_id: &MachineName,
         request: DeployPrepareRequest,
     ) -> Result<DeployPrepareOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            self.require_local_appointment(&request.appointment_id)
-                .await?;
+            self.require_local_controller().await?;
             return Ok(self.local_workflows.prepare(request).await);
         }
         self.post(
@@ -167,12 +151,11 @@ impl DeployHosts for MeshDeployHosts {
 
     async fn retire(
         &self,
-        machine_id: &MachineRowId,
+        machine_id: &MachineName,
         request: DeployRetireRequest,
     ) -> Result<DeployRetireOutcome, DeployHostError> {
         if machine_id == &self.local_machine_id {
-            self.require_local_appointment(&request.appointment_id)
-                .await?;
+            self.require_local_controller().await?;
             return Ok(self.local_workflows.retire(request).await);
         }
         self.post(machine_id, V2Route::DeployRetire, &request, RETIRE_TIMEOUT)

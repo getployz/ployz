@@ -30,9 +30,8 @@ truth and never moves between machines.
   and the WireGuard substrate.
 
 Ployz v2 does not currently parse Compose files or build source images. It also
-accepts split controllers during partitions: a small visibility brake stops an
-isolated member of a multi-machine roster, but there is no majority quorum or
-fencing protocol.
+accepts split controllers during partitions: each machine acts from its local
+Corrosion view, with no majority quorum or fencing protocol.
 
 ## Runtime shape
 

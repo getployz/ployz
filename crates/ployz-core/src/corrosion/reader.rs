@@ -1,14 +1,14 @@
 //! Tolerant interpretation and deterministic adjudication of Corrosion rows.
 
-use std::collections::BTreeMap;
-
 use serde_json::Value;
 
 use super::{
-    ClusterDocument, CorrosionDocument, CorrosionTable, MeshProvider, NameClaim,
-    NamedCorrosionDocument, OrdinaryCorrosionDocument, RosterCorrosionDocument,
+    ClusterDocument, CorrosionDocument, CorrosionTable, MeshProvider, OrdinaryCorrosionDocument,
+    RosterCorrosionDocument,
 };
-use crate::ids::{ClusterId, CorrosionUlid, CorrosionUlidError, MachineRowId};
+use crate::ids::{
+    ClusterName, CorrosionNamespaceName, DeployName, MachineName, PeerName, TokenName,
+};
 use crate::operation::RouteHostname;
 
 /// A row as returned by a Corrosion query.
@@ -59,9 +59,6 @@ pub enum RowSkipReason {
         found: MeshProvider,
     },
     Malformed(MalformedDocument),
-    InvalidRowId {
-        error: CorrosionUlidError,
-    },
     InvalidRowKey {
         expected: String,
     },
@@ -90,7 +87,7 @@ pub struct ReadReport<Document> {
 /// Reads stored rows using the cross-cutting cluster and version fences.
 #[must_use]
 pub fn read_rows<Document>(
-    expected_cluster: &ClusterId,
+    expected_cluster: &ClusterName,
     rows: impl IntoIterator<Item = StoredRow>,
 ) -> ReadReport<Document>
 where
@@ -100,7 +97,7 @@ where
 }
 
 fn read_document_rows<Document>(
-    expected_cluster: &ClusterId,
+    expected_cluster: &ClusterName,
     rows: impl IntoIterator<Item = StoredRow>,
 ) -> ReadReport<Document>
 where
@@ -157,7 +154,7 @@ where
 }
 
 fn read_one<Document>(
-    expected_cluster: &ClusterId,
+    expected_cluster: &ClusterName,
     source: StoredRow,
 ) -> Result<AcceptedRow<Document>, SkippedRow>
 where
@@ -252,18 +249,46 @@ where
     };
 
     match Document::TABLE {
-        CorrosionTable::Cluster
-        | CorrosionTable::Machines
-        | CorrosionTable::Peers
-        | CorrosionTable::Tokens
-        | CorrosionTable::Namespaces
-        | CorrosionTable::Services
-        | CorrosionTable::RouteBindings
-        | CorrosionTable::MachineStatus
-        | CorrosionTable::Operations => {
-            if let Err(error) = CorrosionUlid::try_new(source.key.clone()) {
-                return Err(skipped(source, RowSkipReason::InvalidRowId { error }));
-            }
+        CorrosionTable::Cluster => validate_key(&source, expected_cluster.as_str())?,
+        CorrosionTable::Machines => validate_document_key(&source, fields, "name")?,
+        CorrosionTable::Peers => {
+            let expected = fields
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|name| PeerName::try_new(name).ok())
+                .map(|name| name.as_str().to_owned());
+            validate_optional_key(&source, expected, "peer name")?;
+        }
+        CorrosionTable::Tokens => {
+            let expected = TokenName::try_new(source.key.clone())
+                .ok()
+                .map(|name| name.as_str().to_owned());
+            validate_optional_key(&source, expected, "token name")?;
+        }
+        CorrosionTable::Namespaces => validate_document_key(&source, fields, "name")?,
+        CorrosionTable::RouteBindings => validate_document_key(&source, fields, "hostname")?,
+        CorrosionTable::MachineEndpoints => {
+            let expected = MachineName::try_new(source.key.clone())
+                .ok()
+                .map(|name| name.as_str().to_owned());
+            validate_optional_key(&source, expected, "machine name")?;
+        }
+        CorrosionTable::MachineStatus | CorrosionTable::GatewayObservations => {
+            validate_document_key(&source, fields, "machine_id")?;
+        }
+        CorrosionTable::Operations => {
+            let expected = fields
+                .get("namespace_id")
+                .and_then(Value::as_str)
+                .and_then(|value| CorrosionNamespaceName::try_new(value.to_owned()).ok())
+                .zip(
+                    fields
+                        .get("deploy_name")
+                        .and_then(Value::as_str)
+                        .and_then(|value| DeployName::try_new(value.to_owned()).ok()),
+                )
+                .map(|(namespace, deploy)| super::operation::deploy_key(&namespace, &deploy));
+            validate_optional_key(&source, expected, "namespace/deploy")?;
         }
         CorrosionTable::Controller => {
             let expected = value.cluster_id().as_str().to_owned();
@@ -275,7 +300,7 @@ where
             let expected = fields
                 .get("machine_id")
                 .and_then(Value::as_str)
-                .and_then(|value| MachineRowId::try_new(value.to_owned()).ok())
+                .and_then(|value| MachineName::try_new(value.to_owned()).ok())
                 .zip(
                     fields
                         .get("hostname")
@@ -295,25 +320,7 @@ where
                 return Err(skipped(source, RowSkipReason::InvalidRowKey { expected }));
             }
         }
-        CorrosionTable::GatewayObservations => {
-            let expected = fields
-                .get("machine_id")
-                .and_then(Value::as_str)
-                .and_then(|value| MachineRowId::try_new(value.to_owned()).ok())
-                .map(|machine_id| machine_id.as_str().to_owned());
-            let Some(expected) = expected else {
-                return Err(skipped(
-                    source,
-                    RowSkipReason::Malformed(MalformedDocument::InvalidPayload {
-                        message: "gateway observation machine identity is invalid".to_owned(),
-                    }),
-                ));
-            };
-            if source.key != expected {
-                return Err(skipped(source, RowSkipReason::InvalidRowKey { expected }));
-            }
-        }
-        CorrosionTable::Containers | CorrosionTable::AcmeHttp01 => {}
+        CorrosionTable::AcmeHttp01 => {}
     }
 
     Ok(AcceptedRow { source, value })
@@ -323,121 +330,65 @@ fn skipped(source: StoredRow, reason: RowSkipReason) -> SkippedRow {
     SkippedRow { source, reason }
 }
 
-/// A named document whose canonical row identifier survived adjudication.
-#[derive(Debug)]
-pub struct NamedAcceptedRow<Document> {
-    pub id: CorrosionUlid,
-    pub source: StoredRow,
-    pub value: Document,
-}
-
-impl<Document> NamedAcceptedRow<Document> {
-    fn evidence(&self) -> NamedRowEvidence {
-        NamedRowEvidence {
-            id: self.id.clone(),
-            source: self.source.clone(),
-        }
+fn validate_key(source: &StoredRow, expected: &str) -> Result<(), SkippedRow> {
+    if source.key == expected {
+        Ok(())
+    } else {
+        Err(skipped(
+            source.clone(),
+            RowSkipReason::InvalidRowKey {
+                expected: expected.to_owned(),
+            },
+        ))
     }
 }
 
-/// Stored evidence for one valid named row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NamedRowEvidence {
-    pub id: CorrosionUlid,
-    pub source: StoredRow,
+fn validate_document_key(
+    source: &StoredRow,
+    fields: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<(), SkippedRow> {
+    let expected = fields.get(field).and_then(Value::as_str).map(str::to_owned);
+    validate_optional_key(source, expected, field)
 }
 
-/// A valid duplicate hidden by the deterministic lowest-ULID reader law.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShadowConflict {
-    pub claim: NameClaim,
-    pub winner: NamedRowEvidence,
-    pub loser: NamedRowEvidence,
+fn validate_optional_key(
+    source: &StoredRow,
+    expected: Option<String>,
+    identity: &str,
+) -> Result<(), SkippedRow> {
+    let Some(expected) = expected else {
+        return Err(skipped(
+            source.clone(),
+            RowSkipReason::Malformed(MalformedDocument::InvalidPayload {
+                message: format!("{identity} is invalid"),
+            }),
+        ));
+    };
+    validate_key(source, &expected)
 }
 
-/// The complete outcome of reading and adjudicating one named table.
-#[derive(Debug)]
-pub struct NamedReadReport<Document> {
-    pub accepted: Vec<NamedAcceptedRow<Document>>,
-    pub skipped: Vec<SkippedRow>,
-    pub shadows: Vec<ShadowConflict>,
-}
-
-/// Reads a sealed named document table and resolves each claim by lowest ULID.
+/// Reads a named table whose canonical name is its unique row key.
 #[must_use]
 pub fn read_named_rows<Document>(
-    expected_cluster: &ClusterId,
+    expected_cluster: &ClusterName,
     rows: impl IntoIterator<Item = StoredRow>,
-) -> NamedReadReport<Document>
+) -> ReadReport<Document>
 where
-    Document: NamedCorrosionDocument + OrdinaryCorrosionDocument,
+    Document: OrdinaryCorrosionDocument,
 {
-    let ReadReport { accepted, skipped } = read_rows::<Document>(expected_cluster, rows);
-    adjudicate_named(accepted, skipped)
+    read_rows::<Document>(expected_cluster, rows)
 }
 
 /// Reads a sealed named roster table and resolves each provider-valid claim by
-/// lowest ULID.
+/// canonical name.
 #[must_use]
 pub fn read_named_roster_rows<Document>(
     cluster: &ClusterDocument,
     rows: impl IntoIterator<Item = StoredRow>,
-) -> NamedReadReport<Document>
+) -> ReadReport<Document>
 where
-    Document: NamedCorrosionDocument + RosterCorrosionDocument,
+    Document: RosterCorrosionDocument,
 {
-    let ReadReport { accepted, skipped } = read_roster_rows::<Document>(cluster, rows);
-    adjudicate_named(accepted, skipped)
-}
-
-fn adjudicate_named<Document>(
-    accepted: Vec<AcceptedRow<Document>>,
-    mut skipped: Vec<SkippedRow>,
-) -> NamedReadReport<Document>
-where
-    Document: NamedCorrosionDocument,
-{
-    let mut by_claim = BTreeMap::<NameClaim, Vec<NamedAcceptedRow<Document>>>::new();
-
-    for AcceptedRow { source, value } in accepted {
-        let id = match CorrosionUlid::try_new(source.key.clone()) {
-            Ok(id) => id,
-            Err(error) => {
-                skipped.push(SkippedRow {
-                    source,
-                    reason: RowSkipReason::InvalidRowId { error },
-                });
-                continue;
-            }
-        };
-        by_claim
-            .entry(value.name_claim())
-            .or_default()
-            .push(NamedAcceptedRow { id, source, value });
-    }
-
-    let mut accepted = Vec::with_capacity(by_claim.len());
-    let mut shadows = Vec::new();
-    for (claim, mut candidates) in by_claim {
-        candidates.sort_by(|left, right| left.id.cmp(&right.id));
-        let mut candidates = candidates.into_iter();
-        let Some(winner) = candidates.next() else {
-            continue;
-        };
-        let winner_evidence = winner.evidence();
-        for loser in candidates {
-            shadows.push(ShadowConflict {
-                claim: claim.clone(),
-                winner: winner_evidence.clone(),
-                loser: loser.evidence(),
-            });
-        }
-        accepted.push(winner);
-    }
-
-    NamedReadReport {
-        accepted,
-        skipped,
-        shadows,
-    }
+    read_roster_rows::<Document>(cluster, rows)
 }

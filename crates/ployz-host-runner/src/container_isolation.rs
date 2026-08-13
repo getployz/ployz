@@ -282,7 +282,7 @@ fn host_effect(error: FailureMessage) -> ContainerIsolationHostError {
 mod tests {
     use super::*;
     use ployz_core::corrosion::ContainerIsolationEntry;
-    use ployz_core::ids::NamespaceRowId;
+    use ployz_core::ids::CorrosionNamespaceName;
     use ployz_core::network::MachineEndpointSupernet;
     use std::sync::{Arc, Mutex};
 
@@ -388,8 +388,7 @@ mod tests {
             prefix: MachineEndpointSupernet::try_new("10.77.0.0/16").expect("prefix"),
             entries: vec![ContainerIsolationEntry {
                 ip: "10.77.1.2".parse().expect("ip"),
-                namespace_id: NamespaceRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAZ")
-                    .expect("namespace"),
+                namespace_id: CorrosionNamespaceName::try_new("prod").expect("namespace"),
             }],
         })
         .expect("converge");
@@ -429,7 +428,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(&rows).expect("complete rows file"),
-            "10.77.1.2 01ARZ3NDEKTSV4RRFFQ69G5FAZ\n"
+            "10.77.1.2 prod\n"
         );
     }
 

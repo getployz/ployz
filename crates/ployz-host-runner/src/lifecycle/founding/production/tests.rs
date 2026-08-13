@@ -372,9 +372,12 @@ fn retry_after_pool_selection_write_retains_the_exact_pool() {
     write_durable_file(state.path(), ZFS_POOL_FILE, FileMode::Secret0600, b"tank\n")
         .expect("pool selection persists before canonical request");
 
+    let mut retry_input = input("2026-08-05T12:00:00Z");
+    retry_input.cluster_name = "changed-cluster".to_owned();
+    retry_input.machine_name = MachineName::try_new("changed-machine").expect("machine name");
     let retry = prepare_linux_founding(
         &state,
-        input("2026-08-05T12:00:00Z"),
+        retry_input,
         fixture_artifacts(),
         "corrosion 0.2.0-beta.0".to_owned(),
         InventoryRunner {
@@ -387,6 +390,8 @@ fn retry_after_pool_selection_write_retains_the_exact_pool() {
         retry.effects.zfs_pool.as_ref().map(ZfsPoolName::as_str),
         Some("tank")
     );
+    assert_eq!(retry.request.request().cluster.name, "ares");
+    assert_eq!(retry.request.request().machine.name.as_str(), "ares");
     assert!(!state.path().join(FOUNDING_REQUEST_FILE).exists());
 }
 
@@ -614,7 +619,7 @@ fn published_partial_door_material_requires_explicit_machine_reset() {
     let directory = tempfile::tempdir().expect("tempdir");
     let state = FoundingStateDirectory::initialize(directory.path().join("state"))
         .expect("state initializes");
-    let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+    let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
     state
         .persist_cluster_id_exclusive(&cluster_id)
         .expect("persist cluster id");

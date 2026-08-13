@@ -5,7 +5,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use defguard_wireguard_rs::key::Key;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::join::{
     JOIN_RESET_COMMAND, JoinArrival, JoinArrivalDisposition, JoinDoorCertFingerprint,
     JoinMachineSubstrate, MachineJoinRequest, classify_join_arrival,
@@ -141,6 +141,7 @@ impl MachineJoinStateDirectory {
     pub fn ensure_identity(
         &self,
         requested: &JoinDoorCertFingerprint,
+        machine_name: &MachineName,
     ) -> Result<MachineJoinIdentity, MachineJoinStateError> {
         match self.inspect(requested)? {
             MachineJoinInspection::ReadyToRedeem { identity } => return Ok(identity),
@@ -152,7 +153,7 @@ impl MachineJoinStateDirectory {
             }
         }
         let persisted = PersistedMachineJoinIdentity {
-            machine_id: MachineRowId::generate(),
+            machine_id: machine_name.clone(),
             private_key: Key::generate().to_string(),
             door_fingerprint: requested.clone(),
         };
@@ -224,12 +225,12 @@ impl MachineJoinStateDirectory {
     /// Persists the accepted cluster identity after the full canonical acceptance.
     pub(crate) fn persist_cluster_anchor(
         &self,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
     ) -> Result<(), MachineJoinStateError> {
         let path = self.0.join("cluster-id");
         match std::fs::read_to_string(&path) {
             Ok(value) => {
-                let persisted = ClusterId::try_new(value.trim_end_matches(['\r', '\n']))
+                let persisted = ClusterName::try_new(value.trim_end_matches(['\r', '\n']))
                     .map_err(|error| state_error("decode joined cluster identity", error))?;
                 if persisted == *cluster_id {
                     return Ok(());
@@ -419,7 +420,7 @@ fn door_material_exists(path: &Path) -> bool {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct MachineJoinIdentity {
-    machine_id: MachineRowId,
+    machine_id: MachineName,
     private_key: String,
     public_key: WireGuardPublicKey,
     door_fingerprint: JoinDoorCertFingerprint,
@@ -427,7 +428,7 @@ pub struct MachineJoinIdentity {
 
 impl MachineJoinIdentity {
     #[must_use]
-    pub const fn machine_id(&self) -> &MachineRowId {
+    pub const fn machine_id(&self) -> &MachineName {
         &self.machine_id
     }
 
@@ -575,7 +576,7 @@ impl MachineJoinMilestone {
 
 #[derive(Serialize, Deserialize)]
 struct PersistedMachineJoinIdentity {
-    machine_id: MachineRowId,
+    machine_id: MachineName,
     private_key: String,
     door_fingerprint: JoinDoorCertFingerprint,
 }
@@ -638,14 +639,19 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
         let expected = fingerprint("ab");
+        let machine_name = MachineName::try_new("edge-a").expect("machine name");
 
         assert_eq!(
             state.inspect(&expected).expect("clean inspection"),
             MachineJoinInspection::Clean
         );
 
-        let first = state.ensure_identity(&expected).expect("identity persists");
-        let second = state.ensure_identity(&expected).expect("identity resumes");
+        let first = state
+            .ensure_identity(&expected, &machine_name)
+            .expect("identity persists");
+        let second = state
+            .ensure_identity(&expected, &machine_name)
+            .expect("identity resumes");
 
         assert_eq!(first.machine_id(), second.machine_id());
         assert_eq!(first.public_key(), second.public_key());
@@ -661,7 +667,12 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = MachineJoinStateDirectory::initialize(directory.path()).expect("state");
         let expected = fingerprint("ab");
-        state.ensure_identity(&expected).expect("identity persists");
+        state
+            .ensure_identity(
+                &expected,
+                &MachineName::try_new("edge-a").expect("machine name"),
+            )
+            .expect("identity persists");
         let before = fs::read(state.identity_path()).expect("identity bytes");
 
         let foreign_inspection = state

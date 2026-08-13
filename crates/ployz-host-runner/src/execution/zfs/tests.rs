@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
-use ployz_core::ids::{NamespaceId, OperationId};
+use ployz_core::ids::{CorrosionNamespaceName, OperationId};
 use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts, VolumeUsageFacts};
 use ployz_core::operation::FailureMessage;
 use ployz_core::storage::{
@@ -186,7 +186,7 @@ fn profile(value: &str) -> HostPlatformProfile {
 fn dataset(pool: &str) -> DatasetName {
     DatasetName::for_volume(
         &ZfsPoolName::try_new(pool).expect("test pool"),
-        &NamespaceId::try_new("default").expect("test namespace"),
+        &CorrosionNamespaceName::try_new("default").expect("test namespace"),
         &VolumeName::try_new("data").expect("test volume"),
     )
     .expect("test dataset")
@@ -1288,13 +1288,13 @@ fn pool_capacity_parses_and_orders_direct_child_quotas() {
     persist(state.path(), PreparedStorageOrigin::Adopted);
     let alpha = DatasetName::for_volume(
         &ZfsPoolName::try_new("tank").expect("pool"),
-        &NamespaceId::try_new("alpha").expect("namespace"),
+        &CorrosionNamespaceName::try_new("alpha").expect("namespace"),
         &VolumeName::try_new("data").expect("volume"),
     )
     .expect("dataset");
     let zeta = DatasetName::for_volume(
         &ZfsPoolName::try_new("tank").expect("pool"),
-        &NamespaceId::try_new("zeta").expect("namespace"),
+        &CorrosionNamespaceName::try_new("zeta").expect("namespace"),
         &VolumeName::try_new("data").expect("volume"),
     )
     .expect("dataset");
@@ -1881,7 +1881,7 @@ fn destroy_validates_but_does_not_deduplicate_unrelated_siblings() {
     let requested = dataset("tank");
     let sibling = DatasetName::for_volume(
         &ZfsPoolName::try_new("tank").unwrap(),
-        &NamespaceId::try_new("default").unwrap(),
+        &CorrosionNamespaceName::try_new("default").unwrap(),
         &VolumeName::try_new("logs").unwrap(),
     )
     .unwrap();

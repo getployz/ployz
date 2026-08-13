@@ -53,7 +53,6 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["a
 ts-rs = { version = "12", features = ["no-serde-warnings"] }
 wait-timeout = "0.2"
 uuid = { version = "1", features = ["serde", "v4"] }
-ulid = "1"
 
 [workspace.lints.clippy]
 indexing_slicing = "warn"

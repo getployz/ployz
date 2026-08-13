@@ -65,6 +65,20 @@ impl From<RouteHostname> for String {
     }
 }
 
+impl std::fmt::Display for RouteHostname {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for RouteHostname {
+    type Err = RouteHostnameError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_new(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RouteHostnameError {
     #[error("route hostname is empty")]

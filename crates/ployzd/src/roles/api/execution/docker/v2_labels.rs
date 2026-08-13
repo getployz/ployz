@@ -1,18 +1,18 @@
-//! Docker label codec for Corrosion-owned v2 container identities.
+//! Docker label codec for Ployz-managed v2 container identities.
 
 use std::collections::BTreeMap;
 
-use ployz_core::corrosion::V2ManagedContainerIdentity;
+use ployz_core::corrosion::{CorrosionServiceName, V2ManagedContainerIdentity};
 use ployz_core::deploy::{ReplicaSlot, ReplicatedReplicaSlot};
-use ployz_core::ids::{CorrosionUlidError, NamespaceRowId, OperationRowId, ServiceRowId};
+use ployz_core::ids::{CorrosionNamespaceName, DeployName};
 
 pub(super) const MANAGED_LABEL: &str = "plz.managed";
 
 pub const IDENTITY_SCHEMA_LABEL: &str = "plz.identity_schema";
 pub const V2_IDENTITY_SCHEMA: &str = "corrosion_v2";
-pub const NAMESPACE_ROW_ID_LABEL: &str = "plz.namespace_row_id";
-pub const SERVICE_ROW_ID_LABEL: &str = "plz.service_row_id";
-pub const OPERATION_ROW_ID_LABEL: &str = "plz.operation_row_id";
+pub const NAMESPACE_NAME_LABEL: &str = "plz.namespace";
+pub const SERVICE_NAME_LABEL: &str = "plz.service";
+pub const DEPLOY_NAME_LABEL: &str = "plz.deploy";
 pub const REPLICA_SLOT_LABEL: &str = "plz.replica_slot";
 
 #[must_use]
@@ -24,15 +24,15 @@ pub fn render(identity: &V2ManagedContainerIdentity) -> BTreeMap<String, String>
             V2_IDENTITY_SCHEMA.to_owned(),
         ),
         (
-            NAMESPACE_ROW_ID_LABEL.to_owned(),
+            NAMESPACE_NAME_LABEL.to_owned(),
             identity.namespace_id.as_str().to_owned(),
         ),
         (
-            SERVICE_ROW_ID_LABEL.to_owned(),
-            identity.service_id.as_str().to_owned(),
+            SERVICE_NAME_LABEL.to_owned(),
+            identity.service_name.as_str().to_owned(),
         ),
         (
-            OPERATION_ROW_ID_LABEL.to_owned(),
+            DEPLOY_NAME_LABEL.to_owned(),
             identity.operation_id.as_str().to_owned(),
         ),
         (
@@ -52,9 +52,13 @@ pub fn parse(
     require_exact(labels, IDENTITY_SCHEMA_LABEL, V2_IDENTITY_SCHEMA)?;
 
     Ok(V2ManagedContainerIdentity {
-        namespace_id: parse_row_id(labels, NAMESPACE_ROW_ID_LABEL, NamespaceRowId::try_new)?,
-        service_id: parse_row_id(labels, SERVICE_ROW_ID_LABEL, ServiceRowId::try_new)?,
-        operation_id: parse_row_id(labels, OPERATION_ROW_ID_LABEL, OperationRowId::try_new)?,
+        namespace_id: parse_name(
+            labels,
+            NAMESPACE_NAME_LABEL,
+            CorrosionNamespaceName::try_new,
+        )?,
+        service_name: parse_name(labels, SERVICE_NAME_LABEL, CorrosionServiceName::try_new)?,
+        operation_id: parse_name(labels, DEPLOY_NAME_LABEL, DeployName::try_new)?,
         replica_slot: parse_replica_slot(labels)?,
     })
 }
@@ -69,9 +73,9 @@ pub enum V2ManagedContainerLabelError {
         expected: &'static str,
         value: String,
     },
-    InvalidRowId {
+    InvalidName {
         label: &'static str,
-        source: CorrosionUlidError,
+        source: String,
     },
     InvalidReplicaSlot {
         value: String,
@@ -104,13 +108,20 @@ fn require_exact(
     })
 }
 
-fn parse_row_id<Id>(
+fn parse_name<Name, Error>(
     labels: &BTreeMap<String, String>,
     label: &'static str,
-    parse: impl FnOnce(String) -> Result<Id, CorrosionUlidError>,
-) -> Result<Id, V2ManagedContainerLabelError> {
-    parse(required_label(labels, label)?.to_owned())
-        .map_err(|source| V2ManagedContainerLabelError::InvalidRowId { label, source })
+    parse: impl FnOnce(String) -> Result<Name, Error>,
+) -> Result<Name, V2ManagedContainerLabelError>
+where
+    Error: std::fmt::Display,
+{
+    parse(required_label(labels, label)?.to_owned()).map_err(|source| {
+        V2ManagedContainerLabelError::InvalidName {
+            label,
+            source: source.to_string(),
+        }
+    })
 }
 
 fn parse_replica_slot(

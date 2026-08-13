@@ -23,7 +23,7 @@ pub fn success_summary(
         StorageMode::Zfs => "Storage: zfs\n".to_owned(),
     };
     format!(
-        "{outcome} cluster {cluster_name} on machine {machine_name}.\n{storage_line}Next: ployz token create\n"
+        "{outcome} cluster {cluster_name} on machine {machine_name}.\n{storage_line}Next: ployz token create <name>\n"
     )
 }
 
@@ -65,7 +65,7 @@ mod tests {
     use super::*;
     use ployz_core::corrosion::{MachineStorageSelectionReason, StorageMode};
     use ployz_core::founding::FoundingRepairCommand;
-    use ployz_core::ids::ClusterId;
+    use ployz_core::ids::ClusterName;
 
     #[test]
     fn all_success_outcomes_name_the_next_primitive() {
@@ -103,7 +103,7 @@ mod tests {
                 },
             ),
             format!(
-                "Found cluster lab on machine ares.\nStorage: plain — {PLAIN_STORAGE_FORFEIT}\nNext: ployz token create\n"
+                "Found cluster lab on machine ares.\nStorage: plain — {PLAIN_STORAGE_FORFEIT}\nNext: ployz token create <name>\n"
             )
         );
     }
@@ -111,8 +111,8 @@ mod tests {
     #[test]
     fn foreign_state_names_reset_without_authorizing_it() {
         let refusal = FoundingRefusal::ForeignState {
-            requested_cluster_id: ClusterId::generate(),
-            found_cluster_id: ClusterId::generate(),
+            requested_cluster_id: ClusterName::try_new("requested").expect("cluster"),
+            found_cluster_id: ClusterName::try_new("found").expect("cluster"),
             repair_command: FoundingRepairCommand::ResetMachine,
         };
         let output = refusal_summary(&refusal);

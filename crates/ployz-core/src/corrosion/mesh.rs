@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    ClusterDocument, MachineDocument, MachineTransport, MeshProvider, NamedAcceptedRow,
-    NamedReadReport, PeerDocument, PeerTransport, ShadowConflict, SkippedRow,
+    AcceptedRow, ClusterDocument, MachineDocument, MachineTransport, MeshProvider, PeerDocument,
+    PeerTransport, ReadReport, SkippedRow,
 };
-use crate::ids::{ClusterId, MachineRowId, PeerId};
+use crate::ids::{ClusterName, MachineName, PeerName};
 use crate::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
 
 /// v1 product ceiling, kept equal to the shipped eBPF route-map capacity.
@@ -101,7 +101,7 @@ impl BuiltinWireguardMemberIdentity {
 /// Derives `fd || sha256(cluster_id)[0..40]` as a `/48`.
 #[must_use]
 pub fn derive_builtin_wireguard_cluster_prefix(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
 ) -> BuiltinWireguardClusterPrefix {
     let digest = Sha256::digest(cluster_id.as_str().as_bytes());
     let [first, second, third, fourth, fifth, ..] = digest.as_slice() else {
@@ -118,7 +118,7 @@ pub fn derive_builtin_wireguard_cluster_prefix(
 /// Derives the member `/112` and its `::1` bind address from canonical key bytes.
 #[must_use]
 pub fn derive_builtin_wireguard_member(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     public_key: &WireGuardPublicKey,
 ) -> BuiltinWireguardMemberIdentity {
     let prefix = derive_builtin_wireguard_cluster_prefix(cluster_id);
@@ -151,13 +151,13 @@ pub fn derive_builtin_wireguard_member(
     }
 }
 
-/// A roster identity whose ordering follows canonical underlying ULID text.
+/// A roster identity ordered by its canonical name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RosterMemberId {
-    Machine { machine_id: MachineRowId },
-    Peer { peer_id: PeerId },
+    Machine { machine_id: MachineName },
+    Peer { peer_id: PeerName },
 }
 
 impl RosterMemberId {
@@ -220,9 +220,7 @@ pub struct MeshIdentityConflict {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltinWireguardRosterEvidence {
     pub machine_skipped: Vec<SkippedRow>,
-    pub machine_shadows: Vec<ShadowConflict>,
     pub peer_skipped: Vec<SkippedRow>,
-    pub peer_shadows: Vec<ShadowConflict>,
     pub address_mismatches: Vec<BuiltinWireguardKeyMismatch>,
     pub identity_conflicts: Vec<MeshIdentityConflict>,
 }
@@ -237,6 +235,10 @@ pub enum BuiltinWireguardFenceReason {
         claim: MeshIdentityClaim,
         winner: RosterMemberId,
     },
+    LocalSubnetConflict {
+        subnet: MachineEndpointSubnet,
+        winner: RosterMemberId,
+    },
 }
 
 /// A stored transport identity that does not agree with deterministic truth.
@@ -245,7 +247,7 @@ pub enum BuiltinWireguardFenceReason {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BuiltinWireguardKeyMismatch {
     LocalPublicKey {
-        machine_id: MachineRowId,
+        machine_id: MachineName,
         stored: WireGuardPublicKey,
         local: WireGuardPublicKey,
     },
@@ -280,7 +282,7 @@ pub enum DesiredMachineContainerRoute {
 /// A remote machine peer. Its container route can be withheld independently.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBuiltinWireguardMachinePeer {
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub public_key: WireGuardPublicKey,
     pub subnet_v6: BuiltinWireguardMemberSubnet,
     pub endpoint: Option<SocketAddr>,
@@ -290,7 +292,7 @@ pub struct DesiredBuiltinWireguardMachinePeer {
 /// A non-machine roaming peer, structurally unable to carry an IPv4 subnet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBuiltinWireguardRoamingPeer {
-    pub peer_id: PeerId,
+    pub peer_id: PeerName,
     pub public_key: WireGuardPublicKey,
     pub subnet_v6: BuiltinWireguardMemberSubnet,
     pub endpoint: Option<SocketAddr>,
@@ -308,50 +310,6 @@ pub struct DesiredBuiltinWireguardMesh {
     pub evidence: BuiltinWireguardRosterEvidence,
 }
 
-/// The accepted local row and occupied address space required to repair a lost `/24` claim.
-///
-/// This value is constructed only when the local machine lost the deterministic lowest-ULID
-/// subnet fold, so consumers cannot mistake an ordinary remote conflict for authority to rewrite
-/// the local row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuiltinWireguardLocalSubnetReallocation {
-    machine_id: MachineRowId,
-    accepted_machine: MachineDocument,
-    occupied_subnets: BTreeSet<MachineEndpointSubnet>,
-}
-
-impl BuiltinWireguardLocalSubnetReallocation {
-    #[must_use]
-    pub fn machine_id(&self) -> &MachineRowId {
-        &self.machine_id
-    }
-
-    #[must_use]
-    pub fn accepted_machine(&self) -> &MachineDocument {
-        &self.accepted_machine
-    }
-
-    #[must_use]
-    pub fn occupied_subnets(&self) -> &BTreeSet<MachineEndpointSubnet> {
-        &self.occupied_subnets
-    }
-
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        MachineRowId,
-        MachineDocument,
-        BTreeSet<MachineEndpointSubnet>,
-    ) {
-        (
-            self.machine_id,
-            self.accepted_machine,
-            self.occupied_subnets,
-        )
-    }
-}
-
 /// A roster fold outcome with destructive convergence guarded explicitly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuiltinWireguardMeshOutcome {
@@ -359,16 +317,12 @@ pub enum BuiltinWireguardMeshOutcome {
         evidence: BuiltinWireguardRosterEvidence,
     },
     Fenced {
-        local_machine_id: MachineRowId,
+        local_machine_id: MachineName,
         reason: BuiltinWireguardFenceReason,
         evidence: BuiltinWireguardRosterEvidence,
     },
     KeyMismatch {
         mismatches: Vec<BuiltinWireguardKeyMismatch>,
-        evidence: BuiltinWireguardRosterEvidence,
-    },
-    ReallocateLocalContainerSubnet {
-        repair: BuiltinWireguardLocalSubnetReallocation,
         evidence: BuiltinWireguardRosterEvidence,
     },
     Desired(DesiredBuiltinWireguardMesh),
@@ -382,7 +336,7 @@ pub enum BuiltinWireguardMeshError {
     UnexpectedTransport { member_id: RosterMemberId },
     #[error("machine {machine_id} subnet {subnet:?} is outside cluster prefix {cluster_prefix:?}")]
     ContainerSubnetOutsideClusterPrefix {
-        machine_id: MachineRowId,
+        machine_id: MachineName,
         subnet: MachineEndpointSubnet,
         cluster_prefix: crate::network::MachineEndpointSupernet,
     },
@@ -398,30 +352,26 @@ pub enum BuiltinWireguardMeshError {
 /// Folds accepted machine and peer reader reports into builtin host desired state.
 pub fn project_builtin_wireguard_mesh(
     cluster: &ClusterDocument,
-    local_machine_id: MachineRowId,
+    local_machine_id: MachineName,
     local_public_key: &WireGuardPublicKey,
-    machines: NamedReadReport<MachineDocument>,
-    peers: NamedReadReport<PeerDocument>,
+    machines: ReadReport<MachineDocument>,
+    peers: ReadReport<PeerDocument>,
 ) -> Result<BuiltinWireguardMeshOutcome, BuiltinWireguardMeshError> {
     if cluster.provider != MeshProvider::BuiltinWireguard {
         return Err(BuiltinWireguardMeshError::WrongProvider);
     }
 
-    let NamedReadReport {
+    let ReadReport {
         accepted: accepted_machines,
         skipped: machine_skipped,
-        shadows: machine_shadows,
     } = machines;
-    let NamedReadReport {
+    let ReadReport {
         accepted: accepted_peers,
         skipped: peer_skipped,
-        shadows: peer_shadows,
     } = peers;
     let mut evidence = BuiltinWireguardRosterEvidence {
         machine_skipped,
-        machine_shadows,
         peer_skipped,
-        peer_shadows,
         address_mismatches: Vec::new(),
         identity_conflicts: Vec::new(),
     };
@@ -429,17 +379,16 @@ pub fn project_builtin_wireguard_mesh(
     if accepted_machines.is_empty() && accepted_peers.is_empty() {
         return Ok(BuiltinWireguardMeshOutcome::NoRoster { evidence });
     }
-    let Some(accepted_local_machine) = accepted_machines
+    if !accepted_machines
         .iter()
-        .find(|row| row.id.as_str() == local_machine_id.as_str())
-        .map(|row| row.value.clone())
-    else {
+        .any(|row| row.source.key == local_machine_id.as_str())
+    {
         return Ok(BuiltinWireguardMeshOutcome::Fenced {
             local_machine_id,
             reason: BuiltinWireguardFenceReason::MissingLocalMachine,
             evidence,
         });
-    };
+    }
     let accepted_members = accepted_machines.len().saturating_add(accepted_peers.len());
     if accepted_members > MAX_BUILTIN_WIREGUARD_MEMBERS {
         return Err(BuiltinWireguardMeshError::AcceptedRosterTooLarge {
@@ -566,16 +515,14 @@ pub fn project_builtin_wireguard_mesh(
         .get(local_subnet)
         .expect("every machine subnet was adjudicated");
     if *local_subnet_winner != local_member_id {
-        return Ok(
-            BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet {
-                repair: BuiltinWireguardLocalSubnetReallocation {
-                    machine_id: local_machine_id,
-                    accepted_machine: accepted_local_machine,
-                    occupied_subnets: subnet_winners.into_keys().collect(),
-                },
-                evidence,
+        return Ok(BuiltinWireguardMeshOutcome::Fenced {
+            local_machine_id,
+            reason: BuiltinWireguardFenceReason::LocalSubnetConflict {
+                subnet: local_subnet.clone(),
+                winner: local_subnet_winner.clone(),
             },
-        );
+            evidence,
+        });
     }
     let local_container_subnet = local_subnet.clone();
     let local_identity = derive_builtin_wireguard_member(&cluster.cluster_id, local_public_key);
@@ -677,17 +624,17 @@ struct Candidate {
 
 #[derive(Debug)]
 enum CandidateKind {
-    Machine { machine_id: MachineRowId },
-    Peer { peer_id: PeerId },
+    Machine { machine_id: MachineName },
+    Peer { peer_id: PeerName },
 }
 
 impl Candidate {
     fn from_machine(
         cluster: &ClusterDocument,
-        row: NamedAcceptedRow<MachineDocument>,
+        row: AcceptedRow<MachineDocument>,
     ) -> Result<Self, BuiltinWireguardMeshError> {
-        let machine_id = MachineRowId::try_new(row.id.as_str().to_owned())
-            .expect("reader-accepted machine ids are canonical ULIDs");
+        let machine_id = MachineName::try_new(row.source.key)
+            .expect("reader-accepted machine keys are canonical names");
         let id = RosterMemberId::Machine {
             machine_id: machine_id.clone(),
         };
@@ -721,10 +668,10 @@ impl Candidate {
 
     fn from_peer(
         _cluster: &ClusterDocument,
-        row: NamedAcceptedRow<PeerDocument>,
+        row: AcceptedRow<PeerDocument>,
     ) -> Result<Self, BuiltinWireguardMeshError> {
-        let peer_id = PeerId::try_new(row.id.as_str().to_owned())
-            .expect("reader-accepted peer ids are canonical ULIDs");
+        let peer_id = PeerName::try_new(row.source.key)
+            .expect("reader-accepted peer keys are canonical names");
         let id = RosterMemberId::Peer {
             peer_id: peer_id.clone(),
         };

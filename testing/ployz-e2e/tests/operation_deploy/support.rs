@@ -2,8 +2,9 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use bollard::Docker;
-use ployz_core::corrosion::{ServiceDocument, Sha256Hex};
-use ployz_core::ids::OperationRowId;
+use ployz_core::corrosion::CorrosionServiceName;
+use ployz_core::corrosion::{PublishedService, Sha256Hex, service_key};
+use ployz_core::ids::{CorrosionNamespaceName, DeployName};
 use ployz_core::{LensCollection, LensSnapshot};
 use ployz_e2e::dind::{DindMachine, public_lens, require};
 
@@ -11,9 +12,9 @@ const WAIT_BUDGET: Duration = Duration::from_secs(60);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
 
 pub(super) struct PublicDeployRows {
-    service: ServiceDocument,
-    pub(super) container_ip: Ipv4Addr,
-    service_container_deploys: Vec<OperationRowId>,
+    service: PublishedService,
+    pub(super) endpoint_ip: Ipv4Addr,
+    service_endpoint_deploys: Vec<DeployName>,
     encoded: String,
 }
 
@@ -21,45 +22,59 @@ pub(super) async fn wait_for_public_deploy_rows(
     docker: &Docker,
     requester: &DindMachine,
     api_address: &str,
+    namespace_name: &str,
     service_name: &str,
-    operation_id: &OperationRowId,
+    operation_id: &DeployName,
 ) -> Result<PublicDeployRows, String> {
     let deadline = Instant::now() + WAIT_BUDGET;
     let mut last = String::from("public lenses were not queried");
     while Instant::now() < deadline {
         let services = public_lens(docker, requester, api_address, LensCollection::Services).await;
-        let containers =
-            public_lens(docker, requester, api_address, LensCollection::Containers).await;
+        let endpoints =
+            public_lens(docker, requester, api_address, LensCollection::Endpoints).await;
         let operations =
             public_lens(docker, requester, api_address, LensCollection::Operations).await;
-        match (services, containers, operations) {
+        match (services, endpoints, operations) {
             (
                 Ok(LensSnapshot::Services { rows: service_rows }),
-                Ok(LensSnapshot::Containers {
-                    rows: container_rows,
+                Ok(LensSnapshot::Endpoints {
+                    rows: endpoint_rows,
                 }),
                 Ok(LensSnapshot::Operations {
                     rows: operation_rows,
                 }),
             ) => {
+                let namespace_name = CorrosionNamespaceName::try_new(namespace_name)
+                    .map_err(|error| error.to_string())?;
+                let service_name = CorrosionServiceName::try_new(service_name)
+                    .map_err(|error| error.to_string())?;
+                let service_key = service_key(&namespace_name, &service_name);
                 let service = service_rows.iter().find(|row| {
-                    row.document.name.as_str() == service_name
-                        && &row.document.operation_id == operation_id
+                    row.key == service_key && &row.document.active_deploy == operation_id
                 });
                 if let Some(service) = service {
-                    let container = container_rows.iter().find(|row| {
-                        row.document.service_id == service.id
-                            && &row.document.deploy == operation_id
+                    let endpoint = endpoint_rows.values().find_map(|row| {
+                        row.endpoints.iter().find(|endpoint| {
+                            endpoint.namespace_id == namespace_name
+                                && endpoint.service_name == service_name
+                                && &endpoint.deploy == operation_id
+                        })
                     });
-                    let operation = operation_rows.iter().find(|row| &row.id == operation_id);
-                    if let (Some(container), Some(_operation)) = (container, operation) {
-                        let service_container_deploys = container_rows
-                            .iter()
-                            .filter(|row| row.document.service_id == service.id)
-                            .map(|row| row.document.deploy.clone())
+                    let operation = operation_rows.iter().find(|row| {
+                        row.namespace_id == namespace_name && &row.deploy_name == operation_id
+                    });
+                    if let (Some(endpoint), Some(_operation)) = (endpoint, operation) {
+                        let service_endpoint_deploys = endpoint_rows
+                            .values()
+                            .flat_map(|row| &row.endpoints)
+                            .filter(|endpoint| {
+                                endpoint.namespace_id == namespace_name
+                                    && endpoint.service_name == service_name
+                            })
+                            .map(|endpoint| endpoint.deploy.clone())
                             .collect::<Vec<_>>();
                         let service = service.document.clone();
-                        let container_ip = container.document.ip;
+                        let endpoint_ip = endpoint.ip;
                         let machines =
                             public_lens(docker, requester, api_address, LensCollection::Machines)
                                 .await?;
@@ -72,7 +87,7 @@ pub(super) async fn wait_for_public_deploy_rows(
                         .await?;
                         let encoded = serde_json::to_string(&(
                             &service_rows,
-                            &container_rows,
+                            &endpoint_rows,
                             &operation_rows,
                             &machines,
                             &machine_status,
@@ -80,17 +95,18 @@ pub(super) async fn wait_for_public_deploy_rows(
                         .map_err(|error| error.to_string())?;
                         return Ok(PublicDeployRows {
                             service,
-                            container_ip,
-                            service_container_deploys,
+                            endpoint_ip,
+                            service_endpoint_deploys,
                             encoded,
                         });
                     }
                 }
-                last = "joined API lenses had not converged the service and container".to_owned();
+                last = "joined API lenses had not converged service intent and endpoint reality"
+                    .to_owned();
             }
-            (Ok(services), Ok(containers), Ok(operations)) => {
+            (Ok(services), Ok(endpoints), Ok(operations)) => {
                 last = format!(
-                    "public API returned the wrong lenses: services={services:?} containers={containers:?} operations={operations:?}"
+                    "public API returned the wrong lenses: services={services:?} endpoints={endpoints:?} operations={operations:?}"
                 )
             }
             (Err(error), _, _) => last = error,
@@ -113,7 +129,7 @@ pub(super) fn assert_public_rows_are_digest_pinned_and_secret_free(
         rows.service.image.as_str() != requested_image
             && rows.service.image.as_str().contains("@sha256:"),
         format!(
-            "service row did not replace mutable image {requested_image} with a digest pin: {}",
+            "namespace intent did not replace mutable image {requested_image} with a digest pin: {}",
             rows.service.image.as_str()
         ),
     )?;
@@ -128,25 +144,25 @@ pub(super) fn assert_public_rows_are_digest_pinned_and_secret_free(
     )
 }
 
-/// The converged post-cutover truth: the service row activates the second
+/// The converged post-cutover truth: namespace intent activates the second
 /// deploy under a fresh digest pin while naming the first pin as previous,
-/// and exactly one container row survives, owned by the second operation.
+/// and exactly one serving endpoint remains for the second deploy.
 pub(super) fn assert_cutover_rows(
     second: &PublicDeployRows,
     first: &PublicDeployRows,
-    second_operation: &OperationRowId,
+    second_operation: &DeployName,
 ) -> Result<(), String> {
     require(
         second.service.active_deploy == *second_operation,
         format!(
-            "service row did not activate the second deploy: {}",
+            "namespace intent did not activate the second deploy: {}",
             second.encoded
         ),
     )?;
     require(
         second.service.previous_image.as_ref() == Some(&first.service.image),
         format!(
-            "service row did not name the first image as previous_image: {}",
+            "namespace intent did not name the first image as previous_image: {}",
             second.encoded
         ),
     )?;
@@ -159,12 +175,12 @@ pub(super) fn assert_cutover_rows(
     )?;
     require(
         matches!(
-            second.service_container_deploys.as_slice(),
+            second.service_endpoint_deploys.as_slice(),
             [deploy] if deploy == second_operation
         ),
         format!(
-            "service did not converge to exactly one container row owned by the second deploy: {:?}",
-            second.service_container_deploys
+            "service did not converge to exactly one endpoint owned by the second deploy: {:?}",
+            second.service_endpoint_deploys
         ),
     )
 }

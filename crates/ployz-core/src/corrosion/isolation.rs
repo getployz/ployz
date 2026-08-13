@@ -1,12 +1,12 @@
 //! Complete container-IP namespace projection for Keeper's isolation wall.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use super::{ContainerDocument, ReadReport, SkippedRow};
-use crate::ids::NamespaceRowId;
+use super::{MachineEndpointDocument, ReadReport, SkippedRow, service_endpoint_key};
+use crate::ids::{CorrosionNamespaceName, MachineName};
 use crate::network::MachineEndpointSupernet;
 
 /// One accepted `container_ip -> namespace` mapping.
@@ -15,7 +15,7 @@ use crate::network::MachineEndpointSupernet;
 pub struct ContainerIsolationEntry {
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub ip: Ipv4Addr,
-    pub namespace_id: NamespaceRowId,
+    pub namespace_id: CorrosionNamespaceName,
 }
 
 /// The complete desired map. Absence from this set is deliberately fail-closed.
@@ -37,7 +37,7 @@ pub enum ContainerIsolationAddressRejection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RejectedContainerIsolationAddress {
-    pub row_key: String,
+    pub endpoint_key: String,
     pub ip: Ipv4Addr,
     pub reason: ContainerIsolationAddressRejection,
 }
@@ -46,12 +46,12 @@ pub struct RejectedContainerIsolationAddress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerIsolationConflict {
     pub ip: Ipv4Addr,
-    pub namespaces: Vec<NamespaceRowId>,
+    pub namespaces: Vec<CorrosionNamespaceName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerIsolationEvidence {
-    pub observed_rows: usize,
+    pub observed_endpoints: usize,
     pub skipped_rows: Vec<SkippedRow>,
     pub rejected_addresses: Vec<RejectedContainerIsolationAddress>,
     pub conflicts: Vec<ContainerIsolationConflict>,
@@ -64,42 +64,58 @@ pub struct ContainerIsolationProjection {
     pub evidence: ContainerIsolationEvidence,
 }
 
-/// Projects only accepted container rows. Service, deploy, and liveness state
-/// cannot change this map's meaning.
+/// Projects only accepted machine endpoint testimony. Service intent, deploy
+/// selection, and liveness state cannot change this fail-closed map's meaning.
 #[must_use]
 pub fn project_container_isolation(
     prefix: MachineEndpointSupernet,
-    report: ReadReport<ContainerDocument>,
+    accepted_machines: &BTreeSet<MachineName>,
+    report: ReadReport<MachineEndpointDocument>,
 ) -> ContainerIsolationProjection {
     let ReadReport {
         accepted,
         mut skipped,
     } = report;
-    let observed_rows = accepted.len().saturating_add(skipped.len());
-    let mut candidates = BTreeMap::<Ipv4Addr, Vec<NamespaceRowId>>::new();
+    let accepted = accepted
+        .into_iter()
+        .filter_map(|row| {
+            let machine_name = MachineName::try_new(row.source.key.clone()).ok()?;
+            accepted_machines
+                .contains(&machine_name)
+                .then_some((machine_name, row.value))
+        })
+        .collect::<Vec<_>>();
+    let observed_endpoints = accepted
+        .iter()
+        .map(|(_, testimony)| testimony.endpoints.len())
+        .sum::<usize>()
+        .saturating_add(skipped.len());
+    let mut candidates = BTreeMap::<Ipv4Addr, Vec<CorrosionNamespaceName>>::new();
     let mut rejected_addresses = Vec::new();
 
-    for row in accepted {
-        let [_, _, _, host_octet] = row.value.ip.octets();
-        let reason = if !prefix.contains_ipv4(row.value.ip) {
-            Some(ContainerIsolationAddressRejection::OutsideClusterPrefix)
-        } else if !(2..=254).contains(&host_octet) {
-            Some(ContainerIsolationAddressRejection::ReservedHostOctet)
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            rejected_addresses.push(RejectedContainerIsolationAddress {
-                row_key: row.source.key,
-                ip: row.value.ip,
-                reason,
-            });
-            continue;
+    for (machine_name, testimony) in accepted {
+        for endpoint in testimony.endpoints {
+            let [_, _, _, host_octet] = endpoint.ip.octets();
+            let reason = if !prefix.contains_ipv4(endpoint.ip) {
+                Some(ContainerIsolationAddressRejection::OutsideClusterPrefix)
+            } else if !(2..=254).contains(&host_octet) {
+                Some(ContainerIsolationAddressRejection::ReservedHostOctet)
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                rejected_addresses.push(RejectedContainerIsolationAddress {
+                    endpoint_key: service_endpoint_key(&endpoint, &machine_name),
+                    ip: endpoint.ip,
+                    reason,
+                });
+                continue;
+            }
+            candidates
+                .entry(endpoint.ip)
+                .or_default()
+                .push(endpoint.namespace_id);
         }
-        candidates
-            .entry(row.value.ip)
-            .or_default()
-            .push(row.value.namespace_id);
     }
 
     let mut entries = Vec::new();
@@ -122,14 +138,14 @@ pub fn project_container_isolation(
     rejected_addresses.sort_by(|left, right| {
         left.ip
             .cmp(&right.ip)
-            .then_with(|| left.row_key.cmp(&right.row_key))
+            .then_with(|| left.endpoint_key.cmp(&right.endpoint_key))
     });
     skipped.sort_by(|left, right| left.source.key.cmp(&right.source.key));
 
     ContainerIsolationProjection {
         desired: DesiredContainerIsolation { prefix, entries },
         evidence: ContainerIsolationEvidence {
-            observed_rows,
+            observed_endpoints,
             skipped_rows: skipped,
             rejected_addresses,
             conflicts,
@@ -141,28 +157,34 @@ pub fn project_container_isolation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corrosion::{AcceptedRow, CorrosionDocumentVersion, StoredRow};
-    use crate::ids::{ClusterId, MachineRowId, OperationRowId, ServiceRowId};
+    use crate::corrosion::{
+        AcceptedRow, CorrosionDocumentVersion, CorrosionServiceName, CorrosionTimestamp,
+        ServiceEndpoint, StoredRow,
+    };
+    use crate::ids::{ClusterName, CorrosionNamespaceName, DeployName, MachineName};
 
-    const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-    const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    const SERVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-    const DEPLOY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-    const NAMESPACE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
-    const NAMESPACE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+    const CLUSTER: &str = "main";
+    const MACHINE: &str = "edge-a";
+    const SERVICE: &str = "web";
+    const DEPLOY: &str = "release-1";
+    const NAMESPACE_A: &str = "production";
+    const NAMESPACE_B: &str = "staging";
 
-    fn row(key: &str, ip: &str, namespace: &str) -> AcceptedRow<ContainerDocument> {
+    fn row(ip: &str, namespace: &str) -> AcceptedRow<MachineEndpointDocument> {
         AcceptedRow {
-            source: StoredRow::new(key, "accepted"),
-            value: ContainerDocument {
+            source: StoredRow::new(MACHINE, "accepted"),
+            value: MachineEndpointDocument {
                 v: CorrosionDocumentVersion::V1,
-                cluster_id: ClusterId::try_new(CLUSTER).expect("cluster"),
-                machine_id: MachineRowId::try_new(MACHINE).expect("machine"),
-                service_id: ServiceRowId::try_new(SERVICE).expect("service"),
-                namespace_id: NamespaceRowId::try_new(namespace).expect("namespace"),
-                replica_slot: crate::deploy::ReplicaSlot::Global,
-                ip: ip.parse().expect("ip"),
-                deploy: OperationRowId::try_new(DEPLOY).expect("deploy"),
+                cluster_id: ClusterName::try_new(CLUSTER).expect("cluster"),
+                observed_at: CorrosionTimestamp::try_new("2026-08-10T00:00:00Z")
+                    .expect("timestamp"),
+                endpoints: vec![ServiceEndpoint {
+                    namespace_id: CorrosionNamespaceName::try_new(namespace).expect("namespace"),
+                    service_name: CorrosionServiceName::try_new(SERVICE).expect("service"),
+                    replica_slot: crate::deploy::ReplicaSlot::Global,
+                    ip: ip.parse().expect("ip"),
+                    deploy: DeployName::try_new(DEPLOY).expect("deploy"),
+                }],
             },
         }
     }
@@ -171,18 +193,19 @@ mod tests {
     fn projection_sorts_coalesces_and_omits_conflicts() {
         let report = ReadReport {
             accepted: vec![
-                row("four", "10.77.2.4", NAMESPACE_A),
-                row("three-a", "10.77.2.3", NAMESPACE_A),
-                row("three-b", "10.77.2.3", NAMESPACE_B),
-                row("four-duplicate", "10.77.2.4", NAMESPACE_A),
-                row("two", "10.77.2.2", NAMESPACE_B),
-                row("last-host", "10.77.2.254", NAMESPACE_A),
+                row("10.77.2.4", NAMESPACE_A),
+                row("10.77.2.3", NAMESPACE_A),
+                row("10.77.2.3", NAMESPACE_B),
+                row("10.77.2.4", NAMESPACE_A),
+                row("10.77.2.2", NAMESPACE_B),
+                row("10.77.2.254", NAMESPACE_A),
             ],
             skipped: Vec::new(),
         };
 
         let projection = project_container_isolation(
             MachineEndpointSupernet::try_new("10.77.0.0/16").expect("prefix"),
+            &BTreeSet::from([MachineName::try_new(MACHINE).expect("machine")]),
             report,
         );
 
@@ -214,12 +237,13 @@ mod tests {
     fn projection_rejects_outside_prefix_and_reserved_host_octets() {
         let projection = project_container_isolation(
             MachineEndpointSupernet::try_new("10.77.0.0/16").expect("prefix"),
+            &BTreeSet::from([MachineName::try_new(MACHINE).expect("machine")]),
             ReadReport {
                 accepted: vec![
-                    row("network", "10.77.9.0", NAMESPACE_A),
-                    row("gateway", "10.77.9.1", NAMESPACE_A),
-                    row("broadcast", "10.77.9.255", NAMESPACE_A),
-                    row("foreign", "10.78.9.2", NAMESPACE_A),
+                    row("10.77.9.0", NAMESPACE_A),
+                    row("10.77.9.1", NAMESPACE_A),
+                    row("10.77.9.255", NAMESPACE_A),
+                    row("10.78.9.2", NAMESPACE_A),
                 ],
                 skipped: Vec::new(),
             },
@@ -247,5 +271,20 @@ mod tests {
             broadcast.reason,
             ContainerIsolationAddressRejection::ReservedHostOctet
         );
+    }
+
+    #[test]
+    fn projection_ignores_endpoint_testimony_outside_the_local_roster() {
+        let projection = project_container_isolation(
+            MachineEndpointSupernet::try_new("10.77.0.0/16").expect("prefix"),
+            &BTreeSet::new(),
+            ReadReport {
+                accepted: vec![row("10.77.2.2", NAMESPACE_A)],
+                skipped: Vec::new(),
+            },
+        );
+
+        assert!(projection.desired.entries.is_empty());
+        assert_eq!(projection.evidence.observed_endpoints, 0);
     }
 }

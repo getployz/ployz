@@ -4,25 +4,26 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 use ployz_core::corrosion::{
-    ClusterDocument, ContainerDocument, GatewayProjectionAggregateFailure,
+    ClusterDocument, CorrosionTimestamp, GatewayProjectionAggregateFailure,
     GatewayProjectionInputKind, GatewayRouteAvailability, GatewayRouteObservation,
     GatewayRouteProjectionFailure, GatewayRouteProjectionOutcome, GatewayRouteUnavailableReason,
-    IngressMode, MachineDocument, RouteBindingDocument, ServiceDocument, StoredRow,
-    read_named_roster_rows, read_named_rows, read_rows,
+    IngressMode, MachineDocument, MachineEndpointDocument, NamespaceDocument, RouteBindingDocument,
+    StoredRow, read_named_roster_rows, read_named_rows, read_rows, service_endpoint_key,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, RouteBindingRowId, ServiceRowId};
+use ployz_core::ids::{ClusterName, MachineName, RouteHostname};
 use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::operation::RouteTarget;
 
 /// The complete row reads that define one gateway snapshot.
 #[derive(Debug)]
 pub struct GatewayProjectionInput {
-    pub cluster_id: ClusterId,
+    pub now: CorrosionTimestamp,
+    pub cluster_id: ClusterName,
     pub cluster: Vec<StoredRow>,
     pub machines: Vec<StoredRow>,
-    pub services: Vec<StoredRow>,
+    pub namespaces: Vec<StoredRow>,
     pub route_bindings: Vec<StoredRow>,
-    pub containers: Vec<StoredRow>,
+    pub machine_endpoints: Vec<StoredRow>,
 }
 
 /// One failure-isolated fold: serving state and diagnostic evidence originate
@@ -32,6 +33,9 @@ pub struct GatewayFold {
     pub projection: GatewayProjection,
     pub route_observations: Vec<GatewayRouteObservation>,
     pub aggregate_failures: Vec<GatewayProjectionAggregateFailure>,
+    /// The next instant at which an installed upstream must be reprojected
+    /// even if Corrosion produces no invalidation.
+    pub next_endpoint_expiry: Option<std::time::Duration>,
 }
 
 /// One immutable routing view installed at the request boundary in one swap.
@@ -42,7 +46,7 @@ pub struct GatewayProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjectedRoute {
-    pub id: RouteBindingRowId,
+    pub id: RouteHostname,
     pub origin: RouteBindingOrigin,
     pub target: RouteTarget,
     pub upstreams: Vec<GatewayUpstream>,
@@ -50,23 +54,24 @@ pub struct GatewayProjectedRoute {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayUpstream {
-    /// Corrosion container keys are deterministic evidence, not authority IDs.
-    pub container_key: String,
-    pub machine_id: MachineRowId,
+    /// Natural endpoint identity used only to keep projection ordering stable.
+    pub endpoint_key: String,
+    pub machine_id: MachineName,
     pub address: SocketAddr,
 }
 
-/// Applies tolerant readers and lowest-ULID named-row adjudication before
+/// Applies tolerant readers and canonical-name row validation before
 /// joining each Route Binding independently to current serving rows.
 #[must_use]
 pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
     let GatewayProjectionInput {
+        now,
         cluster_id,
         cluster,
         machines,
-        services,
+        namespaces,
         route_bindings,
-        containers,
+        machine_endpoints,
     } = input;
     let mut aggregate_failures = Vec::new();
 
@@ -89,12 +94,12 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
         record_rejected(
             &mut aggregate_failures,
             GatewayProjectionInputKind::Machines,
-            report.skipped.len() + report.shadows.len(),
+            report.skipped.len(),
         );
         report
             .accepted
             .into_iter()
-            .filter_map(|row| MachineRowId::try_new(row.id.as_str().to_owned()).ok())
+            .filter_map(|row| MachineName::try_new(row.source.key).ok())
             .collect::<BTreeSet<_>>()
     } else {
         record_rejected(
@@ -105,28 +110,46 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
         BTreeSet::new()
     };
 
-    let service_report = read_named_rows::<ServiceDocument>(&cluster_id, services);
+    let namespace_report = read_named_rows::<NamespaceDocument>(&cluster_id, namespaces);
     record_rejected(
         &mut aggregate_failures,
-        GatewayProjectionInputKind::Services,
-        service_report.skipped.len() + service_report.shadows.len(),
+        GatewayProjectionInputKind::Namespaces,
+        namespace_report.skipped.len(),
     );
-    let services = service_report
+    let namespaces = namespace_report
         .accepted
         .into_iter()
         .filter_map(|row| {
-            ServiceRowId::try_new(row.id.as_str().to_owned())
+            ployz_core::ids::CorrosionNamespaceName::try_new(row.source.key)
                 .ok()
                 .map(|id| (id, row.value))
         })
         .collect::<BTreeMap<_, _>>();
 
-    let container_report = read_rows::<ContainerDocument>(&cluster_id, containers);
+    let endpoint_report = read_rows::<MachineEndpointDocument>(&cluster_id, machine_endpoints);
     record_rejected(
         &mut aggregate_failures,
-        GatewayProjectionInputKind::Containers,
-        container_report.skipped.len(),
+        GatewayProjectionInputKind::MachineEndpoints,
+        endpoint_report.skipped.len(),
     );
+    let serving_endpoint_rows = endpoint_report
+        .accepted
+        .iter()
+        .filter_map(|row| {
+            let machine_name = MachineName::try_new(row.source.key.clone()).ok()?;
+            if !accepted_machine_ids.contains(&machine_name) {
+                return None;
+            }
+            row.value
+                .serving_freshness_remaining(now)
+                .map(|remaining| (machine_name, &row.value, remaining))
+        })
+        .collect::<Vec<_>>();
+    let next_endpoint_expiry = serving_endpoint_rows
+        .iter()
+        .filter(|(_, testimony, _)| !testimony.endpoints.is_empty())
+        .map(|(_, _, remaining)| *remaining)
+        .min();
 
     let route_report = read_rows::<RouteBindingDocument>(&cluster_id, route_bindings.clone());
     record_rejected(
@@ -134,21 +157,11 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
         GatewayProjectionInputKind::RouteBindings,
         route_report.skipped.len(),
     );
-    let named_routes = read_named_rows::<RouteBindingDocument>(&cluster_id, route_bindings);
-    let shadow_winners = named_routes
-        .shadows
-        .into_iter()
-        .filter_map(|shadow| {
-            let loser = RouteBindingRowId::try_new(shadow.loser.id.as_str().to_owned()).ok()?;
-            let winner = RouteBindingRowId::try_new(shadow.winner.id.as_str().to_owned()).ok()?;
-            Some((loser, winner))
-        })
-        .collect::<BTreeMap<_, _>>();
     let mut valid_routes = route_report
         .accepted
         .into_iter()
         .filter_map(|row| {
-            RouteBindingRowId::try_new(row.source.key.clone())
+            RouteHostname::try_new(row.source.key.clone())
                 .ok()
                 .map(|id| (id, row.value))
         })
@@ -158,23 +171,9 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
     let mut projected_routes = Vec::new();
     let mut route_observations = Vec::with_capacity(valid_routes.len());
     for (id, route) in valid_routes {
-        if let Some(winner_route_binding_id) = shadow_winners.get(&id) {
-            route_observations.push(GatewayRouteObservation {
-                route_binding_id: id,
-                hostname: route.hostname,
-                outcome: GatewayRouteProjectionOutcome::Failed {
-                    failure: GatewayRouteProjectionFailure::Shadowed {
-                        winner_route_binding_id: winner_route_binding_id.clone(),
-                    },
-                },
-            });
-            continue;
-        }
-
         let target = RouteTarget::new(route.hostname.clone());
         if route.ingress_mode != IngressMode::Direct {
             route_observations.push(GatewayRouteObservation {
-                route_binding_id: id,
                 hostname: route.hostname,
                 outcome: GatewayRouteProjectionOutcome::Failed {
                     failure: GatewayRouteProjectionFailure::UnsupportedIngressMode {
@@ -185,39 +184,39 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
             continue;
         }
 
-        let (upstreams, availability) = match services.get(&route.service_id) {
+        let service = namespaces
+            .get(&route.namespace_id)
+            .and_then(|namespace| namespace.services.get(&route.service_name));
+        let (upstreams, availability) = match service {
             None => (
                 Vec::new(),
                 GatewayRouteAvailability::Unavailable {
                     reason: GatewayRouteUnavailableReason::ServiceMissing,
                 },
             ),
-            Some(service) if service.namespace_id != route.namespace_id => (
-                Vec::new(),
-                GatewayRouteAvailability::Unavailable {
-                    reason: GatewayRouteUnavailableReason::ServiceNamespaceMismatch,
-                },
-            ),
             Some(service) => {
-                let mut upstreams = container_report
-                    .accepted
+                let mut upstreams = serving_endpoint_rows
                     .iter()
-                    .filter(|container| {
-                        accepted_machine_ids.contains(&container.value.machine_id)
-                            && container.value.namespace_id == route.namespace_id
-                            && container.value.service_id == route.service_id
-                            && container.value.deploy == service.active_deploy
-                    })
-                    .map(|container| GatewayUpstream {
-                        container_key: container.source.key.clone(),
-                        machine_id: container.value.machine_id.clone(),
-                        address: SocketAddr::from((container.value.ip, route.endpoint_port.get())),
+                    .flat_map(|(machine_name, testimony, _)| {
+                        testimony
+                            .endpoints
+                            .iter()
+                            .filter(|endpoint| {
+                                endpoint.namespace_id == route.namespace_id
+                                    && endpoint.service_name == route.service_name
+                                    && endpoint.deploy == service.active_deploy
+                            })
+                            .map(|endpoint| GatewayUpstream {
+                                endpoint_key: service_endpoint_key(endpoint, machine_name),
+                                machine_id: machine_name.clone(),
+                                address: SocketAddr::from((endpoint.ip, route.endpoint_port.get())),
+                            })
                     })
                     .collect::<Vec<_>>();
                 upstreams.sort_by(|left, right| {
                     left.machine_id
                         .cmp(&right.machine_id)
-                        .then_with(|| left.container_key.cmp(&right.container_key))
+                        .then_with(|| left.endpoint_key.cmp(&right.endpoint_key))
                         .then_with(|| left.address.cmp(&right.address))
                 });
                 let availability = if upstreams.is_empty() {
@@ -239,7 +238,6 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
             upstreams,
         });
         route_observations.push(GatewayRouteObservation {
-            route_binding_id: id,
             hostname: route.hostname,
             outcome: GatewayRouteProjectionOutcome::Applied { availability },
         });
@@ -252,6 +250,7 @@ pub fn project_gateway_rows(input: GatewayProjectionInput) -> GatewayFold {
         },
         route_observations,
         aggregate_failures,
+        next_endpoint_expiry,
     }
 }
 

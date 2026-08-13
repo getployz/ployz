@@ -1,7 +1,5 @@
 #[path = "token_door_join/admission.rs"]
 mod admission;
-#[path = "token_door_join/collision.rs"]
-mod collision;
 #[path = "token_door_join/fixture.rs"]
 mod fixture;
 #[path = "token_door_join/repair.rs"]
@@ -14,7 +12,6 @@ use admission::{
     wait_for_joined_reachability,
 };
 use bollard::Docker;
-use collision::force_collision_and_wait_for_higher_ulid_repair;
 use fixture::{
     CorrosionAccess, assert_missing_endpoint_refuses_without_a_token, extract_join_blob,
     extract_token_id, handoff_with_known_endpoint, machine_subnet, require_success, run_cli,
@@ -36,11 +33,19 @@ use std::time::Duration;
 
 const CLUSTER_NAME: &str = "dind-token-door";
 const FOUNDER_NAME: &str = "machine-one";
+const OPERATOR_PEER_NAME: &str = "dind-operator";
 const WAIT_BUDGET: Duration = Duration::from_secs(60);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
 
+#[test]
+fn peer_fixture_names_are_valid() {
+    for name in [OPERATOR_PEER_NAME, admission::ROAMING_PEER_NAME] {
+        SshPeerKey::generate(name.to_owned()).expect("DinD peer fixture name must be valid");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn public_token_door_grows_the_cluster_and_repairs_a_surviving_collision() {
+async fn public_token_door_grows_and_repairs_the_cluster() {
     if !e2e_enabled() {
         eprintln!("skipping token-door DinD proof; set PLOYZ_DIND_E2E=1 to enable it");
         return;
@@ -98,7 +103,7 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     let config_home = default_config_home(temporary_home.path());
     let target: SshTarget = format!("root@{}", founder.bridge_ip).parse()?;
     let operator =
-        SshPeerKey::generate("dind operator".to_owned()).map_err(|error| error.to_string())?;
+        SshPeerKey::generate(OPERATOR_PEER_NAME.to_owned()).map_err(|error| error.to_string())?;
     operator
         .persist_new(&config_home, &target)
         .map_err(|error| error.to_string())?;
@@ -136,7 +141,7 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
     let created = run_cli(
         &cli,
         temporary_home.path(),
-        ["token", "create", "--ttl", "1h"].map(str::to_owned),
+        ["token", "create", "bootstrap", "--ttl", "1h"].map(str::to_owned),
     )?;
     require_success(&created, "token create")?;
     let created_stdout = String::from_utf8_lossy(&created.stdout);
@@ -166,9 +171,15 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
         "live token list omitted the created token",
     )?;
 
-    assert_wrong_door_fingerprint_is_rejected(&blob).await?;
-    assert_foreign_machine_refuses(docker, foreign, &blob).await?;
-    join_fresh_machine(docker, joiner, &blob).await?;
+    assert_wrong_door_fingerprint_is_rejected(&blob)
+        .await
+        .map_err(|error| format!("wrong-fingerprint refusal failed: {error}"))?;
+    assert_foreign_machine_refuses(docker, foreign, &blob)
+        .await
+        .map_err(|error| format!("foreign-machine refusal failed: {error}"))?;
+    join_fresh_machine(docker, joiner, &blob)
+        .await
+        .map_err(|error| format!("initial machine join failed: {error}"))?;
     let roster = wait_for_machine_roster(store, 2).await?;
     let founder_row = roster
         .values()
@@ -196,14 +207,35 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
         &blob,
         joiner_row,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("machine repair flow failed: {error}"))?;
 
-    admit_roaming_peer_and_assert_no_subnet(store, &blob).await?;
-    admit_concurrent_machines_with_distinct_subnets(&blob).await?;
-    assert_revoked_and_expired_refusals(store, &cli, temporary_home.path(), blob, token_id).await?;
+    let post_removal = run_cli(
+        &cli,
+        temporary_home.path(),
+        ["token", "create", "post-removal", "--ttl", "1h"].map(str::to_owned),
+    )?;
+    require_success(&post_removal, "post-removal token create")?;
+    let post_removal_stdout = String::from_utf8_lossy(&post_removal.stdout);
+    let post_removal_blob = extract_join_blob(&post_removal_stdout)?;
+    let post_removal_token_id = extract_token_id(&post_removal_stdout)?;
 
-    force_collision_and_wait_for_higher_ulid_repair(store, joiner, founder_row, &repaired_joiner)
-        .await?;
+    admit_roaming_peer_and_assert_no_subnet(store, &post_removal_blob)
+        .await
+        .map_err(|error| format!("roaming-peer admission failed: {error}"))?;
+    admit_concurrent_machines_with_distinct_subnets(&post_removal_blob)
+        .await
+        .map_err(|error| format!("concurrent-machine admission failed: {error}"))?;
+    assert_revoked_and_expired_refusals(
+        store,
+        &cli,
+        temporary_home.path(),
+        post_removal_blob,
+        post_removal_token_id,
+    )
+    .await
+    .map_err(|error| format!("revoked/expired token checks failed: {error}"))?;
+
     refound_cluster(
         RefoundContext {
             docker,
@@ -218,4 +250,5 @@ async fn exercise_token_door(docker: &Docker, cluster: &DindCluster) -> Result<(
         &repaired_joiner,
     )
     .await
+    .map_err(|error| format!("cluster refounding failed: {error}"))
 }

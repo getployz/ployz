@@ -7,23 +7,22 @@ use std::time::Duration;
 
 use ployz_core::corrosion::V2ManagedContainerIdentity;
 use ployz_core::deploy::{ImageReference, RegistryCredential};
-use ployz_core::ids::ContainerId;
 use ployz_core::network::EndpointBridgeStatus;
 use ployz_core::{
-    DeployDesiredReplica, DeployInspectOutcome, DeployInspectRequest, DeployObservedContainer,
-    DeployPrepareOutcome, DeployPrepareRequest, DeployPreparedReplica, DeployRetireOutcome,
-    DeployRetireRequest, HealthGatePolicy,
+    DeployDesiredReplica, DeployInspectOutcome, DeployObservedContainer, DeployPrepareOutcome,
+    DeployPrepareRequest, DeployPreparedReplica, DeployRetireOutcome, DeployRetireRequest,
+    HealthGatePolicy,
 };
 use tokio::sync::watch;
 
 use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
 use crate::roles::api::runner::{
     CreateV2ManagedContainer, ExistingManagedContainerState, ExistingV2ManagedContainer,
-    V2MachineContainerRunner, V2MachineImageRunner,
+    MachineContainerStopOutcome, V2MachineContainerRunner, V2MachineImageRunner,
 };
+use crate::roles::system_observation::SystemObservation;
 
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RUNNING_CONFIRMATION_WINDOW: Duration = Duration::from_secs(5);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// The local implementation behind the three machine-only deploy endpoints.
@@ -38,10 +37,10 @@ impl DeployHostEffects {
         Self { runtime }
     }
 
-    pub(super) async fn inspect(&self, request: DeployInspectRequest) -> DeployInspectOutcome {
-        match tokio::time::timeout(INSPECT_TIMEOUT, self.inspect_inner(request)).await {
+    pub(super) async fn inspect(&self) -> DeployInspectOutcome {
+        match tokio::time::timeout(INSPECT_TIMEOUT, self.inspect_inner()).await {
             Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) | Err(_) => DeployInspectOutcome::Failed {},
+            Ok(Err(_)) | Err(_) => DeployInspectOutcome::Failed,
         }
     }
 
@@ -72,8 +71,12 @@ impl DeployHostEffects {
             .prepare_inner(request, &target, has_named_volumes)
             .await
         {
-            Ok(replicas) => Ok(DeployPrepareOutcome::Prepared { image, replicas }),
-            Err(EffectError::Refused) => Ok(DeployPrepareOutcome::Refused {}),
+            Ok((replicas, displaced_incumbents)) => Ok(DeployPrepareOutcome::Prepared {
+                image,
+                replicas,
+                displaced_incumbents,
+            }),
+            Err(EffectError::Refused) => Ok(DeployPrepareOutcome::Refused),
             Err(EffectError::Failed) => Err("prepare failed".to_owned()),
         }
     }
@@ -84,7 +87,7 @@ impl DeployHostEffects {
     ) -> Result<DeployRetireOutcome, String> {
         match self.retire_inner(request).await {
             Ok(()) => Ok(DeployRetireOutcome::Retired),
-            Err(EffectError::Refused) => Ok(DeployRetireOutcome::Refused {}),
+            Err(EffectError::Refused) => Ok(DeployRetireOutcome::Refused),
             Err(EffectError::Failed) => Err("retire failed".to_owned()),
         }
     }
@@ -102,27 +105,28 @@ impl DeployHostEffects {
         image.with_digest(&digest).map_err(|_| ())
     }
 
-    async fn inspect_inner(
-        &self,
-        _request: DeployInspectRequest,
-    ) -> Result<DeployInspectOutcome, ()> {
+    async fn inspect_inner(&self) -> Result<DeployInspectOutcome, ()> {
+        let observation = SystemObservation::read().map_err(|_| ())?;
         let bridge_ready = matches!(
             self.runtime.read_endpoint_network_status().await,
             EndpointBridgeStatus::Ready { .. }
         );
-        let containers = self
+        let observed = self
             .runtime
             .existing_v2_managed_containers()
             .await
-            .map_err(|_| ())?
-            .into_iter()
-            .map(|container| DeployObservedContainer {
-                container_id: container.container_id,
+            .map_err(|_| ())?;
+        let mut containers = Vec::with_capacity(observed.len());
+        for container in observed {
+            containers.push(DeployObservedContainer {
                 identity: container.identity,
-            })
-            .collect();
+                host_ports: container.host_ports,
+            });
+        }
         Ok(DeployInspectOutcome::Inspected {
             bridge_ready,
+            free_disk_bytes: observation.free_disk_bytes,
+            load: observation.load,
             containers,
         })
     }
@@ -132,14 +136,9 @@ impl DeployHostEffects {
         request: DeployPrepareRequest,
         target: &V2ManagedContainerIdentity,
         has_named_volumes: bool,
-    ) -> Result<Vec<DeployPreparedReplica>, EffectError> {
+    ) -> Result<(Vec<DeployPreparedReplica>, Vec<DeployObservedContainer>), EffectError> {
         let observed = self.managed_containers().await?;
-        if has_named_volumes
-            && observed.iter().any(|container| {
-                container.identity.namespace_id == target.namespace_id
-                    && container.identity.operation_id != request.operation_id
-            })
-        {
+        if has_named_volumes && has_volume_debris(&observed, target, &request.operation_id) {
             return Err(EffectError::Refused);
         }
         for replica in &request.replicas {
@@ -153,6 +152,21 @@ impl DeployHostEffects {
                 .map_err(|_| EffectError::Failed)?;
         }
 
+        let stopped_incumbents = self
+            .stop_conflicting_incumbents(&request.stop_before_start)
+            .await?;
+
+        let result = self.start_and_gate_replicas(&request).await;
+        if result.is_err() {
+            self.restart_incumbents(&stopped_incumbents).await;
+        }
+        result.map(|replicas| (replicas, stopped_incumbents))
+    }
+
+    async fn start_and_gate_replicas(
+        &self,
+        request: &DeployPrepareRequest,
+    ) -> Result<Vec<DeployPreparedReplica>, EffectError> {
         let mut prepared = Vec::with_capacity(request.replicas.len());
         for replica in &request.replicas {
             let observed = self.managed_containers().await?;
@@ -169,24 +183,23 @@ impl DeployHostEffects {
                 }
             }
             let gated = self
-                .gate_container(
-                    &candidate.container_id,
-                    &candidate.identity,
-                    request.health_gate,
-                )
+                .gate_container(&candidate.identity, request.health_gate)
                 .await;
             let ip = match gated {
                 Ok(ip) => ip,
                 Err(error) => {
-                    let _ = self
-                        .runtime
-                        .stop_v2_managed_container(&candidate.container_id, &candidate.identity)
-                        .await;
+                    if let Ok(observed) = self.managed_containers().await
+                        && let Ok(Some(actual)) = unique_container(&observed, &candidate.identity)
+                    {
+                        let _ = self
+                            .runtime
+                            .stop_v2_managed_container(&actual.container_id, &actual.identity)
+                            .await;
+                    }
                     return Err(error);
                 }
             };
             prepared.push(DeployPreparedReplica {
-                container_id: candidate.container_id.clone(),
                 identity: candidate.identity.clone(),
                 ip,
             });
@@ -195,30 +208,165 @@ impl DeployHostEffects {
         Ok(prepared)
     }
 
-    async fn retire_inner(&self, request: DeployRetireRequest) -> Result<(), EffectError> {
+    async fn stop_conflicting_incumbents(
+        &self,
+        targets: &[DeployObservedContainer],
+    ) -> Result<Vec<DeployObservedContainer>, EffectError> {
         let observed = self.managed_containers().await?;
-        for target in &request.containers {
-            let Some(actual) = observed
-                .iter()
-                .find(|container| container.container_id == target.container_id)
-            else {
-                continue;
-            };
-            if actual.identity != target.identity {
-                return Err(EffectError::Refused);
+        let resolved = targets
+            .iter()
+            .map(|target| {
+                unique_container(&observed, &target.identity)?
+                    .map(|actual| (target, actual))
+                    .ok_or(EffectError::Refused)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut stopped = Vec::new();
+        for (target, actual) in resolved {
+            let outcome = self
+                .runtime
+                .stop_v2_managed_container(&actual.container_id, &actual.identity)
+                .await;
+            match outcome {
+                Ok(MachineContainerStopOutcome::StoppedRunning) => stopped.push(target.clone()),
+                Ok(MachineContainerStopOutcome::AlreadyStopped) => {}
+                Ok(MachineContainerStopOutcome::Missing) => {
+                    self.restart_incumbents(&stopped).await;
+                    return Err(EffectError::Refused);
+                }
+                Err(_) => {
+                    self.restart_incumbents(&stopped).await;
+                    return Err(EffectError::Failed);
+                }
             }
         }
-        for target in request.containers {
-            self.runtime
-                .stop_v2_managed_container(&target.container_id, &target.identity)
-                .await
-                .map_err(|_| EffectError::Failed)?;
-            self.runtime
-                .remove_v2_managed_container(&target.container_id, &target.identity)
-                .await
-                .map_err(|_| EffectError::Failed)?;
+        Ok(stopped)
+    }
+
+    async fn restart_incumbents(&self, stopped: &[DeployObservedContainer]) {
+        for incumbent in stopped {
+            let Ok(observed) = self.managed_containers().await else {
+                continue;
+            };
+            let Ok(Some(actual)) = unique_container(&observed, &incumbent.identity) else {
+                continue;
+            };
+            let _ = self
+                .runtime
+                .start_v2_managed_container(&actual.container_id)
+                .await;
         }
-        Ok(())
+    }
+
+    async fn retire_inner(&self, request: DeployRetireRequest) -> Result<(), EffectError> {
+        let is_rollback = !request.restart_after_retire.is_empty();
+        let invalid_scope = if let Some(service) = &request.removed_service {
+            is_rollback
+                || request
+                    .containers
+                    .iter()
+                    .any(|container| container.identity.service_name != *service)
+        } else {
+            request.containers.iter().any(|container| {
+                is_rollback && container.identity.operation_id != request.operation_id
+            }) || request
+                .restart_after_retire
+                .iter()
+                .any(|incumbent| incumbent.identity.operation_id == request.operation_id)
+        };
+        if invalid_scope
+            || request
+                .containers
+                .iter()
+                .any(|container| container.identity.namespace_id != request.namespace_name)
+            || request
+                .restart_after_retire
+                .iter()
+                .any(|incumbent| incumbent.identity.namespace_id != request.namespace_name)
+        {
+            return Err(EffectError::Refused);
+        }
+        let container_identities = request
+            .containers
+            .iter()
+            .map(|container| container.identity.clone())
+            .collect::<HashSet<_>>();
+        let restart_identities = request
+            .restart_after_retire
+            .iter()
+            .map(|container| container.identity.clone())
+            .collect::<HashSet<_>>();
+        if container_identities.len() != request.containers.len()
+            || restart_identities.len() != request.restart_after_retire.len()
+            || !container_identities.is_disjoint(&restart_identities)
+        {
+            return Err(EffectError::Refused);
+        }
+        let observed = self.managed_containers().await?;
+        for target in request
+            .containers
+            .iter()
+            .chain(&request.restart_after_retire)
+        {
+            let Some(_actual) = unique_container(&observed, &target.identity)? else {
+                if request
+                    .restart_after_retire
+                    .iter()
+                    .any(|restart| restart.identity == target.identity)
+                {
+                    return Err(EffectError::Refused);
+                }
+                continue;
+            };
+        }
+        let mut failed = false;
+        for target in request.containers {
+            let Some(actual) = unique_container(&observed, &target.identity)? else {
+                continue;
+            };
+            if self
+                .runtime
+                .stop_v2_managed_container(&actual.container_id, &actual.identity)
+                .await
+                .is_err()
+            {
+                failed = true;
+                continue;
+            }
+            if self
+                .runtime
+                .remove_v2_managed_container(&actual.container_id, &actual.identity)
+                .await
+                .is_err()
+            {
+                failed = true;
+            }
+        }
+        for incumbent in request.restart_after_retire {
+            let Some(actual) = unique_container(&observed, &incumbent.identity)? else {
+                failed = true;
+                continue;
+            };
+            match &actual.state {
+                ExistingManagedContainerState::Running { .. } => {}
+                ExistingManagedContainerState::StartableStopped => {
+                    if self
+                        .runtime
+                        .start_v2_managed_container(&actual.container_id)
+                        .await
+                        .is_err()
+                    {
+                        failed = true;
+                    }
+                }
+                ExistingManagedContainerState::NotStartable { .. } => failed = true,
+            }
+        }
+        if failed {
+            Err(EffectError::Failed)
+        } else {
+            Ok(())
+        }
     }
 
     async fn managed_containers(&self) -> Result<Vec<ExistingV2ManagedContainer>, EffectError> {
@@ -230,13 +378,11 @@ impl DeployHostEffects {
 
     async fn gate_container(
         &self,
-        container_id: &ContainerId,
         identity: &V2ManagedContainerIdentity,
         policy: HealthGatePolicy,
     ) -> Result<Ipv4Addr, EffectError> {
-        let confirmation_started = tokio::time::Instant::now();
         loop {
-            let container = observe_running(&self.runtime, container_id, identity).await?;
+            let container = observe_running(&self.runtime, identity).await?;
             let ExistingManagedContainerState::Running { ip, .. } = container.state else {
                 return Err(EffectError::Failed);
             };
@@ -245,22 +391,27 @@ impl DeployHostEffects {
                 continue;
             };
             let ip = require_ipv4(ip)?;
-            if matches!(policy, HealthGatePolicy::Skip) {
+            if health_gate_ready(policy, container.health_status)? {
                 return Ok(ip);
-            }
-            use ployz_core::machine::runtime::ManagedContainerHealthStatus;
-            match container.health_status {
-                Some(ManagedContainerHealthStatus::Healthy) => return Ok(ip),
-                Some(ManagedContainerHealthStatus::Unhealthy) => {
-                    return Err(EffectError::Failed);
-                }
-                None if confirmation_started.elapsed() >= RUNNING_CONFIRMATION_WINDOW => {
-                    return Ok(ip);
-                }
-                Some(ManagedContainerHealthStatus::Starting) | None => {}
             }
             tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
         }
+    }
+}
+
+fn health_gate_ready(
+    policy: HealthGatePolicy,
+    status: Option<ployz_core::machine::runtime::ManagedContainerHealthStatus>,
+) -> Result<bool, EffectError> {
+    use ployz_core::machine::runtime::ManagedContainerHealthStatus;
+
+    if matches!(policy, HealthGatePolicy::Skip) {
+        return Ok(true);
+    }
+    match status {
+        None | Some(ManagedContainerHealthStatus::Healthy) => Ok(true),
+        Some(ManagedContainerHealthStatus::Starting) => Ok(false),
+        Some(ManagedContainerHealthStatus::Unhealthy) => Err(EffectError::Failed),
     }
 }
 
@@ -272,13 +423,11 @@ fn validate_prepare_request(
         return Err(());
     };
     let identity = &first.identity;
-    if identity.operation_id != request.operation_id
-        || request.replicas.iter().any(|replica| {
-            replica.identity.namespace_id != identity.namespace_id
-                || replica.identity.service_id != identity.service_id
-                || replica.identity.operation_id != identity.operation_id
-        })
-    {
+    if request.replicas.iter().any(|replica| {
+        replica.identity.namespace_id != request.namespace_name
+            || replica.identity.service_name != request.service_name
+            || replica.identity.operation_id != request.operation_id
+    }) {
         return Err(());
     }
     if has_named_volumes && request.replicas.len() != 1 {
@@ -292,7 +441,40 @@ fn validate_prepare_request(
     if unique.len() != request.replicas.len() {
         return Err(());
     }
+    let stop_identities = request
+        .stop_before_start
+        .iter()
+        .map(|container| container.identity.clone())
+        .collect::<HashSet<_>>();
+    if stop_identities.len() != request.stop_before_start.len()
+        || request.stop_before_start.iter().any(|container| {
+            container.identity.namespace_id != identity.namespace_id
+                || container.identity.operation_id == request.operation_id
+                || !request.replicas.iter().any(|replica| {
+                    replica.host_ports.iter().any(|desired| {
+                        container.host_ports.iter().any(|incumbent| {
+                            desired.protocol == incumbent.protocol
+                                && desired.host_port == incumbent.host_port
+                        })
+                    })
+                })
+        })
+    {
+        return Err(());
+    }
     Ok(identity.clone())
+}
+
+fn has_volume_debris(
+    observed: &[ExistingV2ManagedContainer],
+    target: &V2ManagedContainerIdentity,
+    operation_id: &ployz_core::ids::DeployName,
+) -> bool {
+    observed.iter().any(|container| {
+        container.identity.namespace_id == target.namespace_id
+            && container.identity.service_name == target.service_name
+            && container.identity.operation_id != *operation_id
+    })
 }
 
 fn create_command(
@@ -317,16 +499,24 @@ fn matching_container<'a>(
     observed: &'a [ExistingV2ManagedContainer],
     replica: &DeployDesiredReplica,
 ) -> Result<Option<&'a ExistingV2ManagedContainer>, EffectError> {
+    unique_container(observed, &replica.identity)
+}
+
+fn unique_container<'a>(
+    observed: &'a [ExistingV2ManagedContainer],
+    identity: &V2ManagedContainerIdentity,
+) -> Result<Option<&'a ExistingV2ManagedContainer>, EffectError> {
     let mut matching = observed
         .iter()
-        .filter(|container| container.identity == replica.identity);
+        .filter(|container| &container.identity == identity);
     let first = matching.next();
     if matching.next().is_some() {
-        return Err(EffectError::Failed);
+        return Err(EffectError::Refused);
     }
     Ok(first)
 }
 
+#[derive(Debug)]
 enum EffectError {
     Refused,
     Failed,
@@ -334,28 +524,153 @@ enum EffectError {
 
 async fn observe_running(
     runner: &DockerManagedContainerRunner,
-    container_id: &ContainerId,
     identity: &V2ManagedContainerIdentity,
 ) -> Result<ExistingV2ManagedContainer, EffectError> {
     let containers = runner
         .existing_v2_managed_containers()
         .await
         .map_err(|_| EffectError::Failed)?;
-    let Some(container) = containers
-        .into_iter()
-        .find(|container| &container.container_id == container_id)
-    else {
-        return Err(EffectError::Failed);
-    };
-    if &container.identity != identity {
-        return Err(EffectError::Failed);
-    }
-    Ok(container)
+    unique_container(&containers, identity)?
+        .cloned()
+        .ok_or(EffectError::Failed)
 }
 
 fn require_ipv4(ip: IpAddr) -> Result<Ipv4Addr, EffectError> {
     match ip {
         IpAddr::V4(ip) => Ok(ip),
         IpAddr::V6(_) => Err(EffectError::Failed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName, HostPortBindings};
+    use ployz_core::deploy::{ContainerRuntimeSpec, ReplicaSlot};
+    use ployz_core::ids::{ContainerId, DeployName};
+    use ployz_core::machine::runtime::ManagedContainerHealthStatus;
+
+    use super::*;
+
+    #[test]
+    fn enforced_gate_waits_only_when_docker_reports_a_healthcheck() {
+        assert!(health_gate_ready(HealthGatePolicy::Enforce, None).expect("no healthcheck"));
+        assert!(
+            !health_gate_ready(
+                HealthGatePolicy::Enforce,
+                Some(ManagedContainerHealthStatus::Starting),
+            )
+            .expect("starting healthcheck")
+        );
+        assert!(
+            health_gate_ready(
+                HealthGatePolicy::Enforce,
+                Some(ManagedContainerHealthStatus::Healthy),
+            )
+            .expect("healthy healthcheck")
+        );
+        assert!(
+            health_gate_ready(
+                HealthGatePolicy::Enforce,
+                Some(ManagedContainerHealthStatus::Unhealthy),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn natural_replica_identity_refuses_duplicate_docker_matches() {
+        let identity = identity("production", "api", "release-1");
+        let observed = [
+            stopped_container("docker-a", identity.clone()),
+            stopped_container("docker-b", identity.clone()),
+        ];
+
+        assert!(matches!(
+            unique_container(&observed, &identity),
+            Err(EffectError::Refused)
+        ));
+    }
+
+    #[test]
+    fn volume_debris_is_scoped_to_the_target_service() {
+        let target = identity("production", "db", "release-2");
+        let unrelated = stopped_container("docker-web", identity("production", "web", "release-1"));
+        assert!(!has_volume_debris(
+            &[unrelated],
+            &target,
+            &DeployName::try_new("release-2").expect("deploy"),
+        ));
+
+        let old_db = stopped_container("docker-db", identity("production", "db", "release-1"));
+        assert!(has_volume_debris(
+            &[old_db],
+            &target,
+            &DeployName::try_new("release-2").expect("deploy"),
+        ));
+    }
+
+    #[test]
+    fn prepare_replicas_must_match_the_requested_namespace_and_service() {
+        let request = prepare_request(identity("production", "api", "release-1"));
+        assert!(validate_prepare_request(&request, false).is_ok());
+
+        let mut wrong_namespace = request.clone();
+        wrong_namespace
+            .replicas
+            .first_mut()
+            .expect("one replica")
+            .identity
+            .namespace_id = CorrosionNamespaceName::try_new("staging").expect("namespace");
+        assert!(validate_prepare_request(&wrong_namespace, false).is_err());
+
+        let mut wrong_service = request;
+        wrong_service
+            .replicas
+            .first_mut()
+            .expect("one replica")
+            .identity
+            .service_name = CorrosionServiceName::try_new("worker").expect("service");
+        assert!(validate_prepare_request(&wrong_service, false).is_err());
+    }
+
+    fn prepare_request(identity: V2ManagedContainerIdentity) -> DeployPrepareRequest {
+        DeployPrepareRequest {
+            operation_id: DeployName::try_new("release-1").expect("deploy"),
+            namespace_name: CorrosionNamespaceName::try_new("production").expect("namespace"),
+            service_name: CorrosionServiceName::try_new("api").expect("service"),
+            image: ImageReference::try_new("nginx:latest").expect("image"),
+            credential: None,
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            health_gate: HealthGatePolicy::Enforce,
+            replicas: vec![DeployDesiredReplica {
+                identity,
+                host_ports: HostPortBindings::default(),
+            }],
+            stop_before_start: Vec::new(),
+        }
+    }
+
+    fn identity(namespace: &str, service: &str, deploy: &str) -> V2ManagedContainerIdentity {
+        V2ManagedContainerIdentity {
+            namespace_id: CorrosionNamespaceName::try_new(namespace).expect("namespace"),
+            service_name: CorrosionServiceName::try_new(service).expect("service"),
+            operation_id: DeployName::try_new(deploy).expect("deploy"),
+            replica_slot: ReplicaSlot::Global,
+        }
+    }
+
+    fn stopped_container(
+        docker_id: &str,
+        identity: V2ManagedContainerIdentity,
+    ) -> ExistingV2ManagedContainer {
+        ExistingV2ManagedContainer {
+            container_id: ContainerId::try_new(docker_id).expect("Docker id"),
+            identity,
+            state: ExistingManagedContainerState::StartableStopped,
+            health_status: None,
+            resolved_image_identity: None,
+            created_at_unix_seconds: None,
+            host_ports: Default::default(),
+        }
     }
 }

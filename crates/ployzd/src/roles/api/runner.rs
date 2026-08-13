@@ -31,7 +31,7 @@ pub enum ExistingManagedContainerState {
     },
 }
 
-/// A Corrosion-owned container recovered from its row-id-only Docker labels.
+/// A Ployz-managed container recovered from its natural-identity Docker labels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingV2ManagedContainer {
     pub container_id: ContainerId,
@@ -40,9 +40,10 @@ pub struct ExistingV2ManagedContainer {
     pub health_status: Option<ManagedContainerHealthStatus>,
     pub resolved_image_identity: Option<String>,
     pub created_at_unix_seconds: Option<i64>,
+    pub host_ports: ployz_core::corrosion::HostPortBindings,
 }
 
-/// Complete Docker input for one Corrosion-owned service container.
+/// Complete Docker input for one Ployz-managed service container.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateV2ManagedContainer {
     pub image: ImageReference,

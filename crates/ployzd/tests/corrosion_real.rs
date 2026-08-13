@@ -13,12 +13,12 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ployz_core::corrosion::{
-    AcmeHttp01Document, CertHoldingDocument, ChangeKind, ClusterDocument, ContainerDocument,
-    CorrosionDocument, CorrosionTable, MachineDocument, MachineStatusDocument, NamespaceDocument,
-    OperationDocument, PeerDocument, RouteBindingDocument, ServiceDocument, SqliteParameter,
+    AcmeHttp01Document, CertHoldingDocument, ChangeKind, ClusterDocument, CorrosionDocument,
+    CorrosionTable, MachineDocument, MachineEndpointDocument, MachineStatusDocument,
+    NamespaceDocument, OperationDocument, PeerDocument, RouteBindingDocument, SqliteParameter,
     SqliteValue, Statement, TokenDocument, read_named_rows,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiVersion, DoctorDocument, KnownApiFeature, StatusBarrier,
     StatusDocument,
@@ -35,13 +35,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpSocket;
 use tokio::sync::oneshot;
 
-const CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const SECOND_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-const RESUME_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-const OPERATION_ROW_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
-const API_CLUSTER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
-const API_MACHINE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
+const CLUSTER_ID: &str = "main";
+const ROW_ID: &str = "edge-a";
+const SECOND_ROW_ID: &str = "staging";
+const RESUME_ROW_ID: &str = "resumed";
+const OPERATION_ROW_ID: &str = "production/release-1";
+const API_CLUSTER_ID: &str = "api-cluster";
+const API_MACHINE_ID: &str = "api-node";
 const API_BUILD: &str = "pinned-corrosion-api-version-test";
 const TOKEN: &str = "ployz-stock-corrosion-test";
 
@@ -155,12 +155,12 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
     let [SqliteValue::Text(key), SqliteValue::Text(document)] = values.as_slice() else {
         return Err(format!("namespace query returned values {values:?}"));
     };
-    let cluster_id = ClusterId::try_new(CLUSTER_ID).map_err(|error| error.to_string())?;
+    let cluster_id = ClusterName::try_new(CLUSTER_ID).map_err(|error| error.to_string())?;
     let report = read_named_rows::<NamespaceDocument>(
         &cluster_id,
         [ployz_core::corrosion::StoredRow::new(key, document)],
     );
-    if report.accepted.len() != 1 || !report.skipped.is_empty() || !report.shadows.is_empty() {
+    if report.accepted.len() != 1 || !report.skipped.is_empty() {
         return Err("typed namespace reader rejected the stock query row".to_owned());
     }
 
@@ -174,6 +174,7 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "staging",
+        "services": {},
         "written_by": {"kind": "peer", "peer_id": ROW_ID},
         "written_at": "2026-08-04T10:00:00Z"
     }))?;
@@ -217,6 +218,7 @@ async fn exercise_contract(client: &CorrosionClient) -> Result<(), String> {
         "v": 1,
         "cluster_id": CLUSTER_ID,
         "name": "resumed",
+        "services": {},
         "written_by": {"kind": "peer", "peer_id": ROW_ID},
         "written_at": "2026-08-04T10:00:00Z"
     }))?;
@@ -336,9 +338,9 @@ async fn exercise_api_version(harness: &StockCorrosion) -> Result<(), String> {
 
 async fn insert_api_loopback_roster(
     client: &CorrosionClient,
-) -> Result<(ClusterId, MachineRowId), String> {
-    let cluster_id = ClusterId::try_new(API_CLUSTER_ID).map_err(|error| error.to_string())?;
-    let machine_id = MachineRowId::try_new(API_MACHINE_ID).map_err(|error| error.to_string())?;
+) -> Result<(ClusterName, MachineName), String> {
+    let cluster_id = ClusterName::try_new(API_CLUSTER_ID).map_err(|error| error.to_string())?;
+    let machine_id = MachineName::try_new(API_MACHINE_ID).map_err(|error| error.to_string())?;
     let cluster = encode::<ClusterDocument>(json!({
         "v": 1,
         "cluster_id": cluster_id.as_str(),
@@ -355,7 +357,7 @@ async fn insert_api_loopback_roster(
     let machine = encode::<MachineDocument>(json!({
         "v": 1,
         "cluster_id": cluster_id.as_str(),
-        "name": "api-loopback-machine",
+        "name": machine_id.as_str(),
         "lifecycle": "active",
         "transport": {
             "kind": "tailscale",
@@ -549,19 +551,9 @@ where
 
 fn fixtures() -> Result<Vec<Fixture>, String> {
     let machine_id = ROW_ID;
-    let namespace_id = SECOND_ROW_ID;
-    let service_id = RESUME_ROW_ID;
+    let namespace_id = "production";
+    let deploy_name = "release-1";
     let operation_id = OPERATION_ROW_ID;
-    let base = |name: &str| {
-        json!({
-            "v": 1,
-            "cluster_id": CLUSTER_ID,
-            "name": name,
-            "written_by": {"kind": "peer", "peer_id": ROW_ID},
-            "written_at": "2026-08-04T10:00:00Z"
-        })
-    };
-
     Ok(vec![
         fixture::<ClusterDocument>(
             CorrosionTable::Cluster,
@@ -589,7 +581,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
-                "name": "edge-a",
+                "name": machine_id,
                 "lifecycle": "active",
                 "transport": {
                     "kind": "wireguard",
@@ -602,26 +594,26 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "written_by": {"kind": "peer", "peer_id": ROW_ID},
                 "written_at": "2026-08-04T10:00:00Z"
             }),
-            vec![column("name", "edge-a"), column("lifecycle", "active")],
+            vec![column("lifecycle", "active")],
         )?,
         fixture::<PeerDocument>(
             CorrosionTable::Peers,
             "id",
-            ROW_ID,
+            "operator",
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
-                "name": "operator-laptop",
+                "name": "operator",
                 "transport": {"kind": "tailscale", "ip": "100.64.0.11"},
                 "written_by": {"kind": "peer", "peer_id": ROW_ID},
                 "written_at": "2026-08-04T10:00:00Z"
             }),
-            vec![column("name", "operator-laptop")],
+            vec![],
         )?,
         fixture::<TokenDocument>(
             CorrosionTable::Tokens,
             "id",
-            ROW_ID,
+            "bootstrap",
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
@@ -631,51 +623,43 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "written_by": {"kind": "peer", "peer_id": ROW_ID},
                 "written_at": "2026-08-04T10:00:00Z"
             }),
-            vec![GeneratedColumn {
-                name: "kind",
-                expected: SqliteValue::Null,
-            }],
+            vec![],
         )?,
         fixture::<NamespaceDocument>(
             CorrosionTable::Namespaces,
             "id",
-            ROW_ID,
-            base("production"),
-            vec![column("name", "production")],
-        )?,
-        fixture::<ServiceDocument>(
-            CorrosionTable::Services,
-            "id",
-            ROW_ID,
+            namespace_id,
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
-                "namespace_id": namespace_id,
-                "name": "api",
-                "image": "ghcr.io/acme/api:2026-08-04",
-                "env_fingerprints": {"DATABASE_URL": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-                "mode": "replicated",
-                "replicas": 1,
-                "pinned_machines": [machine_id],
-                "active_deploy": operation_id,
-                "previous_image": null,
-                "deployed_at": "2026-08-04T10:05:00Z",
-                "operation_id": operation_id,
+                "name": "production",
+                "services": {
+                    "api": {
+                        "image": "ghcr.io/acme/api:2026-08-04",
+                        "env_fingerprints": {"DATABASE_URL": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                        "mode": "replicated",
+                        "replicas": 1,
+                        "pinned_machines": [machine_id],
+                        "active_deploy": deploy_name,
+                        "previous_image": null,
+                        "deployed_at": "2026-08-04T10:05:00Z"
+                    }
+                },
                 "written_by": {"kind": "peer", "peer_id": ROW_ID},
                 "written_at": "2026-08-04T10:00:00Z"
             }),
-            vec![column("namespace_id", namespace_id), column("name", "api")],
+            vec![],
         )?,
         fixture::<RouteBindingDocument>(
             CorrosionTable::RouteBindings,
             "id",
-            ROW_ID,
+            "api.example.com",
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
                 "hostname": "api.example.com",
-                "service_id": service_id,
                 "namespace_id": namespace_id,
+                "service_name": "api",
                 "endpoint_port": 8080,
                 "origin": "declared",
                 "ingress_mode": "direct",
@@ -683,29 +667,28 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "written_at": "2026-08-04T10:00:00Z"
             }),
             vec![
-                column("hostname", "api.example.com"),
-                column("service_id", service_id),
+                column("service_name", "api"),
                 column("namespace_id", namespace_id),
             ],
         )?,
-        fixture::<ContainerDocument>(
-            CorrosionTable::Containers,
+        fixture::<MachineEndpointDocument>(
+            CorrosionTable::MachineEndpoints,
             "id",
-            "container-runtime-id",
+            machine_id,
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,
                 "machine_id": machine_id,
-                "service_id": service_id,
-                "namespace_id": namespace_id,
-                "ip": "10.210.20.2",
-                "deploy": operation_id
+                "observed_at": "2026-08-04T10:06:00Z",
+                "endpoints": [{
+                    "namespace_id": namespace_id,
+                    "service_name": "api",
+                    "replica_slot": {"kind": "global"},
+                    "ip": "10.210.20.2",
+                    "deploy": deploy_name
+                }]
             }),
-            vec![
-                column("machine_id", machine_id),
-                column("service_id", service_id),
-                column("namespace_id", namespace_id),
-            ],
+            vec![column("observed_at", "2026-08-04T10:06:00.000000000Z")],
         )?,
         fixture::<MachineStatusDocument>(
             CorrosionTable::MachineStatus,
@@ -734,7 +717,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
                 "cluster_id": CLUSTER_ID,
                 "machine_id": machine_id,
                 "namespace_id": namespace_id,
-                "service_id": service_id,
+                "deploy_name": deploy_name,
                 "initiator": {"kind": "peer", "peer_id": ROW_ID},
                 "state": "created",
                 "created_at": "2026-08-04T10:00:00Z"
@@ -744,7 +727,7 @@ fn fixtures() -> Result<Vec<Fixture>, String> {
         fixture::<CertHoldingDocument>(
             CorrosionTable::CertHoldings,
             "id",
-            "01ARZ3NDEKTSV4RRFFQ69G5FAV:api.example.com",
+            "edge-a:api.example.com",
             json!({
                 "v": 1,
                 "cluster_id": CLUSTER_ID,

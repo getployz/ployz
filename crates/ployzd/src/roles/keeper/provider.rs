@@ -4,7 +4,7 @@ use ployz_core::corrosion::{
     CorrosionTimestamp, DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMesh,
     derive_builtin_wireguard_member,
 };
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 use ployz_core::network::WireGuardPublicKey;
 use ployz_core::operation::FailureMessage;
 use ployz_host_runner::builtin_wireguard::{
@@ -149,7 +149,7 @@ impl KeeperMeshProvider {
     /// Binds the derived local `/112` without observing or changing peers.
     pub(super) async fn bind_ip(
         &self,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
     ) -> Result<BoundKeeperIdentity, KeeperProviderError> {
         let public_key = self.provision_join().await?;
         let cluster_id = cluster_id.clone();
@@ -368,7 +368,7 @@ impl HostRunnerCommandRunner for CancellableHostRunner {
 }
 
 fn desired_local(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     public_key: WireGuardPublicKey,
 ) -> DesiredBuiltinWireguardLocal {
     let identity = derive_builtin_wireguard_member(cluster_id, &public_key);

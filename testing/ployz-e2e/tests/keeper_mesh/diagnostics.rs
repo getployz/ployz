@@ -1,6 +1,6 @@
 use super::{
-    API_PORT, DindMachine, Docker, Ipv6Addr, MACHINE_A_ID, MACHINE_B_ID, corrosion_curl_command,
-    machine_status_query, query_documents, wait_for_command,
+    API_PORT, DindMachine, Docker, Ipv6Addr, MACHINE_A_NAME, MACHINE_B_NAME,
+    corrosion_curl_command, machine_status_query, query_documents, wait_for_command,
 };
 use serde_json::{Value, json};
 
@@ -30,7 +30,7 @@ pub(super) async fn wait_for_public_status_handshake(
     docker: &Docker,
     source: &DindMachine,
     destination: Ipv6Addr,
-    remote_machine_id: &str,
+    remote_machine_name: &str,
 ) -> Result<(), String> {
     let url = format!("http://[{destination}]:{API_PORT}/status");
     wait_for_command(
@@ -50,8 +50,9 @@ pub(super) async fn wait_for_public_status_handshake(
         ],
         |outcome| {
             outcome.success()
-                && serde_json::from_str::<Value>(&outcome.stdout)
-                    .is_ok_and(|status| public_status_has_handshake_age(&status, remote_machine_id))
+                && serde_json::from_str::<Value>(&outcome.stdout).is_ok_and(|status| {
+                    public_status_has_handshake_age(&status, remote_machine_name)
+                })
         },
     )
     .await
@@ -72,14 +73,14 @@ fn has_absolute_handshake(document: &Value, remote_machine_id: &str) -> bool {
             .is_some_and(|unix_seconds| unix_seconds > 0)
 }
 
-fn public_status_has_handshake_age(status: &Value, remote_machine_id: &str) -> bool {
+fn public_status_has_handshake_age(status: &Value, remote_machine_name: &str) -> bool {
     status.get("barrier").and_then(Value::as_str) == Some("ready")
         && status
             .get("machines")
             .and_then(Value::as_array)
             .is_some_and(|machines| {
                 machines.iter().any(|machine| {
-                    machine.get("id").and_then(Value::as_str) == Some(remote_machine_id)
+                    machine.get("name").and_then(Value::as_str) == Some(remote_machine_name)
                         && machine.pointer("/handshake/state").and_then(Value::as_str)
                             == Some("ago")
                         && machine
@@ -93,22 +94,20 @@ fn public_status_has_handshake_age(status: &Value, remote_machine_id: &str) -> b
 #[test]
 fn absolute_machine_handshake_testimony_is_projected_as_a_public_age() {
     let machine_status = json!({
-        "machine_id": MACHINE_B_ID,
+        "machine_id": MACHINE_B_NAME,
         "wireguard_handshakes": {
-            MACHINE_A_ID: {"state": "at", "unix_seconds": 1_775_000_000_u64}
+            MACHINE_A_NAME: {"state": "at", "unix_seconds": 1_775_000_000_u64}
         }
     });
     let status = json!({
         "barrier": "ready",
         "machines": [
             {
-                "id": MACHINE_A_ID,
                 "name": "edge-a",
                 "address": "fd00::1",
                 "handshake": {"state": "ago", "seconds": 4, "freshness": "healthy"}
             },
             {
-                "id": MACHINE_B_ID,
                 "name": "edge-b",
                 "address": "fd00::2",
                 "handshake": {"state": "self_machine"}
@@ -116,16 +115,16 @@ fn absolute_machine_handshake_testimony_is_projected_as_a_public_age() {
         ]
     });
 
-    assert!(has_absolute_handshake(&machine_status, MACHINE_A_ID));
-    assert!(public_status_has_handshake_age(&status, MACHINE_A_ID));
+    assert!(has_absolute_handshake(&machine_status, MACHINE_A_NAME));
+    assert!(public_status_has_handshake_age(&status, MACHINE_A_NAME));
     assert!(!public_status_has_handshake_age(
         &json!({
             "barrier": "ready",
             "machines": [{
-                "id": MACHINE_A_ID,
+                "name": MACHINE_A_NAME,
                 "handshake": {"state": "never"}
             }]
         }),
-        MACHINE_A_ID,
+        MACHINE_A_NAME,
     ));
 }

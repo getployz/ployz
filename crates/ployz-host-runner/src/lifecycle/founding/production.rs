@@ -19,10 +19,10 @@ use ployz_core::founding::{
     InitStorageChoice, InitStorageFacts, InitStorageSelectionError, ValidatedFoundingRequest,
     classify_founding_arrival, select_init_storage,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+use ployz_core::ids::{ClusterName, MachineName, PeerName};
 use ployz_core::install::ExactPloyzVersion;
 use ployz_core::join::{JOIN_DOOR_PORT, JoinMachineSubstrate};
-use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::{MachineEndpointSupernet, WireGuardPublicKey};
 use ployz_core::operation::FailureMessage;
 use serde::{Deserialize, Serialize};
@@ -68,13 +68,11 @@ const DRIVER_PEER_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(60);
 pub enum FoundingDriverInput {
     OnHost,
     Ssh {
-        peer_id: PeerId,
-        name: String,
+        peer_id: PeerName,
         public_key: WireGuardPublicKey,
     },
     Cloud {
-        peer_id: PeerId,
-        name: String,
+        peer_id: PeerName,
         public_key: WireGuardPublicKey,
     },
 }
@@ -130,7 +128,7 @@ pub enum LinuxFoundingPreflight {
     },
     Refused {
         refusal: FoundingRefusal,
-        cluster_id: Option<ClusterId>,
+        cluster_id: Option<ClusterName>,
     },
 }
 
@@ -207,7 +205,7 @@ pub fn inspect_linux_founding(
 
 fn validate_request_cluster(
     request: Option<&ValidatedFoundingRequest>,
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
 ) -> Result<(), FoundingPreparationError> {
     if request.is_some_and(|request| request.request().cluster_id != *cluster_id) {
         return Err(preparation(
@@ -241,7 +239,9 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
     require_linux_root(&mut runner)?;
     let arrival = state.observe_arrival().map_err(preparation)?;
     let cluster_id = match &arrival {
-        ployz_core::founding::FoundingArrival::Clean => ClusterId::generate(),
+        ployz_core::founding::FoundingArrival::Clean => {
+            ClusterName::try_new(input.cluster_name.clone()).map_err(preparation)?
+        }
         ployz_core::founding::FoundingArrival::Partial {
             persisted_cluster_id,
         }
@@ -275,7 +275,7 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
             runner,
         );
     }
-    let seed = read_or_generate_machine_seed(state.path())?;
+    let seed = read_or_generate_machine_seed(state.path(), &input.machine_name)?;
     let key = Key::try_from(seed.private_key.as_str()).map_err(preparation)?;
     let public_key =
         WireGuardPublicKey::try_new(key.public_key().to_string()).map_err(preparation)?;
@@ -311,7 +311,7 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster_id.clone(),
             provenance: provenance.clone(),
-            name: input.cluster_name,
+            name: cluster_id.as_str().to_owned(),
             storage_default: storage.mode,
             hostname_mode: input.hostname_mode,
             prefix: input.prefix,
@@ -324,7 +324,7 @@ pub fn prepare_linux_founding<R: HostRunnerCommandRunner>(
             v: CorrosionDocumentVersion::V1,
             cluster_id: cluster_id.clone(),
             provenance,
-            name: input.machine_name,
+            name: seed.machine_id.clone(),
             lifecycle: MachineLifecycle::Active,
             transport: MachineTransport::Wireguard {
                 addr_v6: derive_builtin_wireguard_member(&cluster_id, &public_key)
@@ -398,7 +398,7 @@ fn preparation(error: impl fmt::Display) -> FoundingPreparationError {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct MachineSeed {
-    machine_id: MachineRowId,
+    machine_id: MachineName,
     private_key: String,
 }
 
@@ -561,12 +561,15 @@ fn generate_door_material() -> Result<DoorMaterial, FailureMessage> {
     })
 }
 
-fn read_or_generate_machine_seed(state: &Path) -> Result<MachineSeed, FoundingPreparationError> {
+fn read_or_generate_machine_seed(
+    state: &Path,
+    machine_name: &MachineName,
+) -> Result<MachineSeed, FoundingPreparationError> {
     let path = state.join(MACHINE_SEED_FILE);
     match fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(preparation),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(MachineSeed {
-            machine_id: MachineRowId::generate(),
+            machine_id: machine_name.clone(),
             private_key: Key::generate().to_string(),
         }),
         Err(error) => Err(preparation(error)),
@@ -668,7 +671,7 @@ fn read_required_zfs_pool(
 }
 
 fn build_driver(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     provenance: &OperatorWriteProvenance,
     input: FoundingDriverInput,
 ) -> FoundingDriverEnrollment {
@@ -689,19 +692,19 @@ fn build_driver(
         FoundingDriverInput::OnHost => FoundingDriverEnrollment::OnHost,
         FoundingDriverInput::Ssh {
             peer_id,
-            name,
             public_key,
+            ..
         } => FoundingDriverEnrollment::Ssh {
+            document: row(peer_id.clone(), public_key),
             peer_id,
-            document: row(name, public_key),
         },
         FoundingDriverInput::Cloud {
             peer_id,
-            name,
             public_key,
+            ..
         } => FoundingDriverEnrollment::Cloud {
+            document: row(peer_id.clone(), public_key),
             peer_id,
-            document: row(name, public_key),
         },
     }
 }

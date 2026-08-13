@@ -6,10 +6,11 @@ use std::net::{Ipv4Addr, SocketAddr};
 use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{
-    ClusterDocument, ContainerDocument, MachineDocument, MachineTransport, NamespaceDocument,
-    ServiceDocument, StoredRow, read_named_roster_rows, read_named_rows, read_rows,
+    ClusterDocument, CorrosionTimestamp, MachineDocument, MachineEndpointDocument,
+    MachineTransport, NamespaceDocument, StoredRow, read_named_roster_rows, read_named_rows,
+    read_rows,
 };
-use crate::ids::{ClusterId, MachineRowId, NamespaceRowId, ServiceRowId};
+use crate::ids::{ClusterName, CorrosionNamespaceName, MachineName};
 
 const MAX_DNS_LABEL_LEN: usize = 63;
 pub const INTERNAL_DNS_SUFFIX: &str = "internal";
@@ -145,13 +146,13 @@ fn is_dns_label(label: &str) -> bool {
 /// DNS view from scratch.
 #[derive(Debug)]
 pub struct InternalDnsRowProjectionInput {
-    pub cluster_id: ClusterId,
-    pub local_machine_id: MachineRowId,
+    pub now: CorrosionTimestamp,
+    pub cluster_id: ClusterName,
+    pub local_machine_id: MachineName,
     pub cluster_rows: Vec<StoredRow>,
     pub machine_rows: Vec<StoredRow>,
     pub namespace_rows: Vec<StoredRow>,
-    pub service_rows: Vec<StoredRow>,
-    pub container_rows: Vec<StoredRow>,
+    pub machine_endpoint_rows: Vec<StoredRow>,
 }
 
 /// One complete internal DNS view derived from current accepted Corrosion
@@ -160,32 +161,35 @@ pub struct InternalDnsRowProjectionInput {
 pub struct InternalDnsRowProjection {
     pub bind: SocketAddr,
     pub records: BTreeMap<InternalServiceName, Vec<Ipv4Addr>>,
+    /// The next instant at which installed records must be reprojected even
+    /// when Corrosion produces no invalidation.
+    pub next_endpoint_expiry: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InternalDnsRowProjectionError {
     #[error("cluster {cluster_id} is not present in the accepted cluster rows")]
-    MissingCluster { cluster_id: ClusterId },
+    MissingCluster { cluster_id: ClusterName },
     #[error("cluster {cluster_id} does not have one valid canonical cluster row")]
-    InvalidCluster { cluster_id: ClusterId },
+    InvalidCluster { cluster_id: ClusterName },
     #[error("local machine {machine_id} is not present in the accepted machine roster")]
-    LocalMachineMissing { machine_id: MachineRowId },
+    LocalMachineMissing { machine_id: MachineName },
 }
 
-/// Applies the shared tolerant-reader, provider-roster, and lowest-ULID name
-/// laws before joining current service intent to retained container rows.
+/// Applies the shared tolerant-reader and provider-roster laws before joining
+/// namespace intent to machine-owned endpoint testimony.
 #[must_use = "the internal DNS projection or startup error must be applied"]
 pub fn project_internal_dns_rows(
     input: InternalDnsRowProjectionInput,
 ) -> Result<InternalDnsRowProjection, InternalDnsRowProjectionError> {
     let InternalDnsRowProjectionInput {
+        now,
         cluster_id,
         local_machine_id,
         cluster_rows,
         machine_rows,
         namespace_rows,
-        service_rows,
-        container_rows,
+        machine_endpoint_rows,
     } = input;
 
     let cluster_report = read_rows::<ClusterDocument>(&cluster_id, cluster_rows);
@@ -206,7 +210,7 @@ pub fn project_internal_dns_rows(
     let mut accepted_machine_ids = BTreeSet::new();
     let mut endpoint_subnet = None;
     for row in machine_report.accepted {
-        let Ok(machine_id) = MachineRowId::try_new(row.id.as_str().to_owned()) else {
+        let Ok(machine_id) = MachineName::try_new(row.source.key) else {
             continue;
         };
         if machine_id == local_machine_id {
@@ -228,59 +232,64 @@ pub fn project_internal_dns_rows(
         .accepted
         .into_iter()
         .filter_map(|row| {
-            NamespaceRowId::try_new(row.id.as_str().to_owned())
-                .ok()
-                .map(|id| (id, row.value.name))
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    let service_report = read_named_rows::<ServiceDocument>(&cluster_id, service_rows);
-    let services = service_report
-        .accepted
-        .into_iter()
-        .filter_map(|row| {
-            ServiceRowId::try_new(row.id.as_str().to_owned())
+            CorrosionNamespaceName::try_new(row.source.key)
                 .ok()
                 .map(|id| (id, row.value))
         })
         .collect::<BTreeMap<_, _>>();
 
     let mut records = BTreeMap::<InternalServiceName, Vec<Ipv4Addr>>::new();
-    for service in services.values() {
-        let Some(namespace_name) = namespaces.get(&service.namespace_id) else {
-            continue;
-        };
-        let Ok(name) = InternalServiceName::try_from_labels(&service.name, namespace_name) else {
-            continue;
-        };
-        if is_reserved_readiness_record(&name) {
-            continue;
+    for namespace in namespaces.values() {
+        for service_name in namespace.services.keys() {
+            let Ok(name) = InternalServiceName::try_from_labels(service_name, &namespace.name)
+            else {
+                continue;
+            };
+            if is_reserved_readiness_record(&name) {
+                continue;
+            }
+            records.entry(name).or_default();
         }
-        records.entry(name).or_default();
     }
-    for row in read_rows::<ContainerDocument>(&cluster_id, container_rows).accepted {
-        let container = row.value;
-        if !accepted_machine_ids.contains(&container.machine_id) {
-            continue;
-        }
-        let Some(service) = services.get(&container.service_id) else {
+    let mut next_endpoint_expiry = None;
+    for row in read_rows::<MachineEndpointDocument>(&cluster_id, machine_endpoint_rows).accepted {
+        let Ok(machine_name) = MachineName::try_new(row.source.key) else {
             continue;
         };
-        if container.namespace_id != service.namespace_id
-            || container.deploy != service.active_deploy
-        {
+        let testimony = row.value;
+        if !accepted_machine_ids.contains(&machine_name) {
             continue;
         }
-        let Some(namespace_name) = namespaces.get(&service.namespace_id) else {
+        let Some(remaining) = testimony.serving_freshness_remaining(now) else {
             continue;
         };
-        let Ok(name) = InternalServiceName::try_from_labels(&service.name, namespace_name) else {
-            continue;
-        };
-        if is_reserved_readiness_record(&name) {
-            continue;
+        if !testimony.endpoints.is_empty() {
+            next_endpoint_expiry = Some(
+                next_endpoint_expiry.map_or(remaining, |current: std::time::Duration| {
+                    current.min(remaining)
+                }),
+            );
         }
-        records.entry(name).or_default().push(container.ip);
+        for endpoint in testimony.endpoints {
+            let Some(namespace) = namespaces.get(&endpoint.namespace_id) else {
+                continue;
+            };
+            let Some(service) = namespace.services.get(&endpoint.service_name) else {
+                continue;
+            };
+            if endpoint.deploy != service.active_deploy {
+                continue;
+            }
+            let Ok(name) =
+                InternalServiceName::try_from_labels(&endpoint.service_name, &namespace.name)
+            else {
+                continue;
+            };
+            if is_reserved_readiness_record(&name) {
+                continue;
+            }
+            records.entry(name).or_default().push(endpoint.ip);
+        }
     }
     for addresses in records.values_mut() {
         addresses.sort_unstable();
@@ -288,7 +297,11 @@ pub fn project_internal_dns_rows(
     }
 
     let bind = SocketAddr::from((endpoint_subnet.bridge_gateway_ipv4(), 53));
-    Ok(InternalDnsRowProjection { bind, records })
+    Ok(InternalDnsRowProjection {
+        bind,
+        records,
+        next_endpoint_expiry,
+    })
 }
 
 fn is_reserved_readiness_record(name: &InternalServiceName) -> bool {

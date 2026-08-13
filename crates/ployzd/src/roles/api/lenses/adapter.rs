@@ -7,7 +7,7 @@ use ployz_core::LensCollection;
 use ployz_core::corrosion::{
     ChangeId, CorrosionTable, QueryIdentity, SqliteParameter, SqliteValue, Statement, StoredRow,
 };
-use ployz_core::ids::ClusterId;
+use ployz_core::ids::ClusterName;
 
 use crate::corrosion::{
     CorrosionClient, CorrosionClientError, StoredRowCollectionError, StoredRowLimit,
@@ -19,8 +19,8 @@ use crate::corrosion::{
 pub(super) enum LensInput {
     Cluster,
     Machines,
-    Services,
-    Containers,
+    Namespaces,
+    Endpoints,
     MachineStatus,
     Operations,
 }
@@ -29,8 +29,8 @@ impl LensInput {
     pub(super) const fn inputs_for(collection: LensCollection) -> &'static [Self] {
         match collection {
             LensCollection::Machines => &[Self::Cluster, Self::Machines],
-            LensCollection::Services => &[Self::Services],
-            LensCollection::Containers => &[Self::Containers],
+            LensCollection::Services => &[Self::Namespaces],
+            LensCollection::Endpoints => &[Self::Endpoints],
             LensCollection::MachineStatus => &[Self::MachineStatus],
             LensCollection::Operations => &[Self::Operations],
         }
@@ -40,14 +40,14 @@ impl LensInput {
         match self {
             Self::Cluster => CorrosionTable::Cluster,
             Self::Machines => CorrosionTable::Machines,
-            Self::Services => CorrosionTable::Services,
-            Self::Containers => CorrosionTable::Containers,
+            Self::Namespaces => CorrosionTable::Namespaces,
+            Self::Endpoints => CorrosionTable::MachineEndpoints,
             Self::MachineStatus => CorrosionTable::MachineStatus,
             Self::Operations => CorrosionTable::Operations,
         }
     }
 
-    pub(super) fn statement(self, cluster_id: &ClusterId) -> Statement {
+    pub(super) fn statement(self, cluster_id: &ClusterName) -> Statement {
         match self {
             Self::Cluster => Statement::with_params(
                 "SELECT id, document FROM cluster WHERE id = ?",
@@ -57,15 +57,17 @@ impl LensInput {
                 "SELECT machine_id AS id, document FROM machine_status WHERE json_extract(document, '$.cluster_id') = ?",
                 vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
             ),
-            Self::Machines | Self::Services | Self::Containers | Self::Operations => {
-                Statement::with_params(
-                    format!(
-                        "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
-                        self.table().as_str()
-                    ),
-                    vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
-                )
-            }
+            Self::Endpoints => Statement::with_params(
+                "SELECT id, document FROM machine_endpoints WHERE json_extract(document, '$.cluster_id') = ?",
+                vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
+            ),
+            Self::Machines | Self::Namespaces | Self::Operations => Statement::with_params(
+                format!(
+                    "SELECT id, document FROM {} WHERE json_extract(document, '$.cluster_id') = ?",
+                    self.table().as_str()
+                ),
+                vec![SqliteParameter::Text(cluster_id.as_str().to_owned())],
+            ),
         }
     }
 }
@@ -124,20 +126,20 @@ pub(super) trait LensStore: Send + Sync {
     async fn query_rows(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
         max_rows: usize,
     ) -> Result<Vec<StoredRow>, LensStoreError>;
 
     async fn subscribe(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError>;
 
     async fn resume(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
         identity: &QueryIdentity,
         cursor: ChangeId,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError>;
@@ -148,7 +150,7 @@ impl LensStore for CorrosionClient {
     async fn query_rows(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
         max_rows: usize,
     ) -> Result<Vec<StoredRow>, LensStoreError> {
         let mut stream = self.query(&input.statement(cluster_id)).await?;
@@ -158,7 +160,7 @@ impl LensStore for CorrosionClient {
     async fn subscribe(
         &self,
         input: LensInput,
-        cluster_id: &ClusterId,
+        cluster_id: &ClusterName,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError> {
         let stream = self.subscribe(&input.statement(cluster_id)).await?;
         Ok(Box::new(ClientLensSubscription::snapshot(input, stream)))
@@ -167,7 +169,7 @@ impl LensStore for CorrosionClient {
     async fn resume(
         &self,
         input: LensInput,
-        _cluster_id: &ClusterId,
+        _cluster_id: &ClusterName,
         identity: &QueryIdentity,
         cursor: ChangeId,
     ) -> Result<Box<dyn LensSubscription>, LensStoreError> {

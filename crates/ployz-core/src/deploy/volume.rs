@@ -29,7 +29,7 @@ impl VolumeName {
     }
 
     #[must_use]
-    pub fn stable_storage_name(&self, namespace_id: &NamespaceId) -> String {
+    pub fn stable_storage_name(&self, namespace_id: &CorrosionNamespaceName) -> String {
         let namespace = namespace_id.as_str();
         format!(
             "ployz-n{}-{namespace}-v{}-{}",
@@ -41,7 +41,7 @@ impl VolumeName {
 
     pub fn try_from_stable_storage_name(
         value: impl Into<String>,
-        expected_namespace_id: &NamespaceId,
+        expected_namespace_id: &CorrosionNamespaceName,
     ) -> Result<Self, VolumeStorageNameError> {
         let value = value.into();
         let Some((namespace_id, volume_name)) = parse_stable_storage_name(&value) else {
@@ -89,8 +89,8 @@ pub enum VolumeStorageNameError {
         .expected.as_str()
     )]
     NamespaceMismatch {
-        expected: NamespaceId,
-        actual: NamespaceId,
+        expected: CorrosionNamespaceName,
+        actual: CorrosionNamespaceName,
     },
 }
 
@@ -186,7 +186,7 @@ impl DatasetName {
     /// Constructs the only dataset namespace used for Provisioned Volumes.
     pub fn for_volume(
         pool: &ZfsPoolName,
-        namespace_id: &NamespaceId,
+        namespace_id: &CorrosionNamespaceName,
         volume_name: &VolumeName,
     ) -> Result<Self, DatasetNameError> {
         Self::try_new(format!(
@@ -213,7 +213,11 @@ impl DatasetName {
     }
 
     #[must_use]
-    pub fn matches_volume(&self, namespace_id: &NamespaceId, volume_name: &VolumeName) -> bool {
+    pub fn matches_volume(
+        &self,
+        namespace_id: &CorrosionNamespaceName,
+        volume_name: &VolumeName,
+    ) -> bool {
         self.0
             .rsplit_once('/')
             .is_some_and(|(_, leaf)| leaf == volume_name.stable_storage_name(namespace_id))
@@ -267,7 +271,7 @@ fn is_canonical_provisioned_dataset_name(value: &str) -> bool {
     parse_stable_storage_name(leaf).is_some()
 }
 
-fn parse_stable_storage_name(value: &str) -> Option<(NamespaceId, VolumeName)> {
+fn parse_stable_storage_name(value: &str) -> Option<(CorrosionNamespaceName, VolumeName)> {
     let framed = value.strip_prefix("ployz-n")?;
     let (namespace_length, framed) = take_decimal_prefix(framed)?;
     let framed = framed.strip_prefix('-')?;
@@ -279,7 +283,7 @@ fn parse_stable_storage_name(value: &str) -> Option<(NamespaceId, VolumeName)> {
     if volume.len() != volume_length {
         return None;
     }
-    let Ok(namespace_id) = NamespaceId::try_new(namespace) else {
+    let Ok(namespace_id) = CorrosionNamespaceName::try_new(namespace) else {
         return None;
     };
     let Ok(volume_name) = VolumeName::try_new(volume) else {
@@ -377,8 +381,8 @@ mod dataset_name_error_tests {
 
     #[test]
     fn stable_storage_name_round_trips_only_for_the_expected_namespace() {
-        let namespace_id = NamespaceId::try_new("default").expect("namespace");
-        let other_namespace_id = NamespaceId::try_new("other").expect("namespace");
+        let namespace_id = CorrosionNamespaceName::try_new("default").expect("namespace");
+        let other_namespace_id = CorrosionNamespaceName::try_new("other").expect("namespace");
         let volume_name = VolumeName::try_new("postgres_data").expect("volume");
         let storage_name = volume_name.stable_storage_name(&namespace_id);
 
@@ -397,7 +401,7 @@ mod dataset_name_error_tests {
 
     #[test]
     fn stable_storage_name_decoder_rejects_noncanonical_framing() {
-        let namespace_id = NamespaceId::try_new("default").expect("namespace");
+        let namespace_id = CorrosionNamespaceName::try_new("default").expect("namespace");
 
         for value in [
             "postgres_data",

@@ -1,13 +1,12 @@
 //! Machine command execution, mesh HTTP, and human presentation.
 
 use std::cmp::Ordering;
-use std::fmt;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use ployz_core::corrosion::MachineTransport;
+use ployz_core::corrosion::{MachineDocument, MachineStatusDocument, MachineTransport};
 use ployz_core::founding::InitStorageChoice;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::ClusterName;
 use ployz_core::install::{ExactPloyzVersion, InstallArtifactVersion};
 use ployz_core::join::{
     JoinStorageChoice, MachineEndpointSetRefusal, MachineEndpointSetReply,
@@ -16,9 +15,8 @@ use ployz_core::join::{
 use ployz_core::machine::MachineName;
 use ployz_core::operation::FailureMessage;
 use ployz_core::{
-    LensCollection, LensSnapshot, MachineLensRow, MachineRemoveRefusal, MachineRemoveReply,
-    MachineRemoveRequest, MachineStatusLensRow, MachineUpgradeRefusal, MachineUpgradeReply,
-    MachineUpgradeRequest,
+    LensCollection, LensSnapshot, MachineRemoveRefusal, MachineRemoveReply, MachineRemoveRequest,
+    MachineUpgradeRefusal, MachineUpgradeReply, MachineUpgradeRequest,
 };
 use ployz_core::{MACHINE_ENDPOINT_ROUTE_PREFIX, MACHINE_REMOVE_ROUTE, MACHINE_UPGRADE_ROUTE};
 use ployz_host_runner::lifecycle::machine_join::{
@@ -79,7 +77,7 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
     for (confirmed, machine) in selected.into_iter().enumerate() {
         let request =
             resolve_machine_upgrade_request(&source, machine.status, &mut cached_artifacts).await?;
-        let name = machine.row.document.name.as_str();
+        let name = machine.row.name.as_str();
         let short_sha256 = &request.sha256.as_str()[..12];
         progress.before_mutation(&format!(
             "{name}  target {} ({short_sha256}...)\n",
@@ -119,7 +117,7 @@ async fn upgrade(command: MachineUpgradeCommand) -> Result<String, MachineExecut
         match source.confirmation() {
             UpgradeConfirmation::ReleaseVersion => {
                 complete_release_upgrade(&mut progress, name, &request.version, confirmed, || {
-                    confirm_upgrade(&direct, &machine.row.id, &request.version)
+                    confirm_upgrade(&direct, &machine.row.name, &request.version)
                 })
                 .await?;
             }
@@ -235,7 +233,7 @@ fn upgrade_halted(machine: &str, confirmed: usize, reason: String) -> MachineExe
 
 async fn confirm_upgrade(
     remote: &OperatorRemote,
-    machine_id: &MachineRowId,
+    machine_id: &MachineName,
     expected_version: &InstallArtifactVersion,
 ) -> bool {
     let deadline = Instant::now() + UPGRADE_CONFIRM_TIMEOUT;
@@ -243,7 +241,7 @@ async fn confirm_upgrade(
         if let Ok(snapshot) = remote.lens(LensCollection::MachineStatus).await
             && matches!(
                 machine_status_for(snapshot_rows(&snapshot), machine_id),
-                Some(status) if same_release_version(&status.document.ployz_version, expected_version.as_str())
+                Some(status) if same_release_version(&status.ployz_version, expected_version.as_str())
             )
         {
             return true;
@@ -255,12 +253,12 @@ async fn confirm_upgrade(
     }
 }
 
-fn snapshot_rows(snapshot: &LensSnapshot) -> &[MachineStatusLensRow] {
+fn snapshot_rows(snapshot: &LensSnapshot) -> &[MachineStatusDocument] {
     match snapshot {
         LensSnapshot::MachineStatus { rows } => rows,
         LensSnapshot::Machines { .. }
         | LensSnapshot::Services { .. }
-        | LensSnapshot::Containers { .. }
+        | LensSnapshot::Endpoints { .. }
         | LensSnapshot::Operations { .. } => &[],
     }
 }
@@ -364,8 +362,8 @@ async fn read_manifest_text(url: String) -> Result<String, MachineExecutionError
 }
 
 struct UpgradeMachine<'a> {
-    row: &'a MachineLensRow,
-    status: &'a MachineStatusLensRow,
+    row: &'a MachineDocument,
+    status: &'a MachineStatusDocument,
 }
 
 fn upgrade_lenses<'machines, 'statuses>(
@@ -373,8 +371,8 @@ fn upgrade_lenses<'machines, 'statuses>(
     statuses: &'statuses LensSnapshot,
 ) -> Result<
     (
-        &'machines [MachineLensRow],
-        &'statuses [MachineStatusLensRow],
+        &'machines [MachineDocument],
+        &'statuses [MachineStatusDocument],
     ),
     MachineExecutionError,
 > {
@@ -397,20 +395,20 @@ fn upgrade_lenses<'machines, 'statuses>(
 
 fn select_upgrade_machines<'a>(
     selector: &MachineUpgradeSelector,
-    machines: &'a [MachineLensRow],
-    statuses: &'a [MachineStatusLensRow],
+    machines: &'a [MachineDocument],
+    statuses: &'a [MachineStatusDocument],
     target_version: Option<&str>,
 ) -> Result<Vec<UpgradeMachine<'a>>, MachineExecutionError> {
     let mut selected = match selector {
         MachineUpgradeSelector::Names(names) => names
             .iter()
             .map(|name| {
-                let Some(row) = machines.iter().find(|row| row.document.name == *name) else {
+                let Some(row) = machines.iter().find(|row| row.name == *name) else {
                     return Err(MachineExecutionError::MachineNotFound {
                         machine: name.as_str().to_owned(),
                     });
                 };
-                let Some(status) = machine_status_for(statuses, &row.id) else {
+                let Some(status) = machine_status_for(statuses, &row.name) else {
                     return Err(MachineExecutionError::MissingMachineStatus {
                         machine: name.as_str().to_owned(),
                     });
@@ -421,9 +419,9 @@ fn select_upgrade_machines<'a>(
         MachineUpgradeSelector::All => machines
             .iter()
             .map(|row| {
-                let Some(status) = machine_status_for(statuses, &row.id) else {
+                let Some(status) = machine_status_for(statuses, &row.name) else {
                     return Err(MachineExecutionError::MissingMachineStatus {
-                        machine: row.document.name.as_str().to_owned(),
+                        machine: row.name.as_str().to_owned(),
                     });
                 };
                 Ok(UpgradeMachine { row, status })
@@ -435,34 +433,29 @@ fn select_upgrade_machines<'a>(
             machines
                 .iter()
                 .filter_map(|row| {
-                    let status = machine_status_for(statuses, &row.id)?;
-                    is_release_behind(&status.document.ployz_version, target_version)
+                    let status = machine_status_for(statuses, &row.name)?;
+                    is_release_behind(&status.ployz_version, target_version)
                         .then_some(UpgradeMachine { row, status })
                 })
                 .collect()
         }
     };
-    selected.sort_by(|left, right| {
-        left.row
-            .document
-            .name
-            .as_str()
-            .cmp(right.row.document.name.as_str())
-            .then_with(|| left.row.id.as_str().cmp(right.row.id.as_str()))
-    });
+    selected.sort_by(|left, right| left.row.name.cmp(&right.row.name));
     Ok(selected)
 }
 
 fn machine_status_for<'a>(
-    statuses: &'a [MachineStatusLensRow],
-    machine_id: &MachineRowId,
-) -> Option<&'a MachineStatusLensRow> {
-    statuses.iter().find(|status| status.id == *machine_id)
+    statuses: &'a [MachineStatusDocument],
+    machine_id: &MachineName,
+) -> Option<&'a MachineStatusDocument> {
+    statuses
+        .iter()
+        .find(|status| status.machine_id == *machine_id)
 }
 
 async fn resolve_machine_upgrade_request(
     source: &UpgradeSource,
-    status: &MachineStatusLensRow,
+    status: &MachineStatusDocument,
     cache: &mut Vec<(ReleasePlatform, MachineUpgradeRequest)>,
 ) -> Result<MachineUpgradeRequest, MachineExecutionError> {
     let UpgradeSource::Release {
@@ -475,7 +468,7 @@ async fn resolve_machine_upgrade_request(
         };
         return Ok(request.clone());
     };
-    let platform = release_platform_for_architecture(&status.document.architecture)?;
+    let platform = release_platform_for_architecture(&status.architecture)?;
     if let Some((_, request)) = cache.iter().find(|(cached, _)| *cached == platform) {
         return Ok(request.clone());
     }
@@ -714,7 +707,7 @@ async fn join(command: MachineJoinCommand) -> Result<String, MachineExecutionErr
     Ok(render_machine_join(
         outcome.kind,
         &outcome.machine_name,
-        &outcome.machine_id,
+        &outcome.machine_name,
     ))
 }
 
@@ -722,7 +715,6 @@ async fn remove(command: MachineRemoveCommand) -> Result<String, MachineExecutio
     let remote = OperatorRemote::load(command.target.as_ref())?;
     let request = MachineRemoveRequest {
         machine_name: command.machine.clone(),
-        machine_id: command.machine_id.clone(),
     };
     let reply = remote
         .request_json_with_refusal::<_, MachineRemoveReply, MachineRemoveRefusal>(
@@ -736,31 +728,15 @@ async fn remove(command: MachineRemoveCommand) -> Result<String, MachineExecutio
         JsonReply::Refused(MachineRemoveRefusal::NotFound { machine_name }) => {
             return Err(MachineExecutionError::MachineRemovalNotFound { machine_name });
         }
-        JsonReply::Refused(MachineRemoveRefusal::Ambiguous {
-            machine_name,
-            machine_ids,
-        }) => {
-            return Err(MachineExecutionError::MachineRemovalAmbiguous(
-                MachineRemovalAmbiguity {
-                    machine_name,
-                    machine_ids,
-                },
-            ));
-        }
-        JsonReply::Refused(MachineRemoveRefusal::IdMismatch {
-            machine_name,
-            machine_id,
-        }) => {
-            return Err(MachineExecutionError::MachineRemovalIdMismatch {
-                machine_name,
-                machine_id,
-            });
+        JsonReply::Refused(MachineRemoveRefusal::ConcurrentMutation { machine_name }) => {
+            return Err(MachineExecutionError::MachineRemovalChanged { machine_name });
         }
     };
-    if !machine_removal_reply_matches_requested_identity(&reply, command.machine_id.as_ref()) {
+    if !matches!(&reply, MachineRemoveReply::Removed { machine_name } if machine_name == &command.machine)
+    {
         return Err(MachineExecutionError::MachineRemovalReplyMismatch);
     }
-    Ok(render_machine_removal(&command.machine, &reply))
+    Ok(render_machine_removal(&reply))
 }
 
 fn reset() -> Result<String, MachineExecutionError> {
@@ -816,7 +792,7 @@ pub enum MachineExecutionError {
         reason: String,
     },
     #[error("machine {machine_id} does not use builtin WireGuard; its endpoint cannot be set")]
-    EndpointProviderMismatch { machine_id: MachineRowId },
+    EndpointProviderMismatch { machine_id: MachineName },
     #[error("machine {machine} endpoint must use a nonzero WireGuard port")]
     EndpointPortZero { machine: String },
     #[error("cluster API endpoint-set reply did not match the requested machine and endpoint")]
@@ -826,16 +802,10 @@ pub enum MachineExecutionError {
         machine_name.as_str()
     )]
     MachineRemovalNotFound { machine_name: MachineName },
-    #[error(transparent)]
-    MachineRemovalAmbiguous(#[from] MachineRemovalAmbiguity),
     #[error(
-        "machine {} does not match identity {machine_id}; omit `--id` to resolve the name again, or retry with a matching identity",
-        machine_name.as_str()
+        "machine {machine_name} changed while its removal was being committed; retry from current reality"
     )]
-    MachineRemovalIdMismatch {
-        machine_name: MachineName,
-        machine_id: MachineRowId,
-    },
+    MachineRemovalChanged { machine_name: MachineName },
     #[error("cluster API machine-removal reply did not match the requested identity")]
     MachineRemovalReplyMismatch,
     #[error(transparent)]
@@ -850,38 +820,10 @@ pub enum MachineSnapshotError {
     WrongLens { actual: LensCollection },
     #[error("cluster API answered for cluster {actual}, expected {expected}")]
     WrongCluster {
-        expected: ClusterId,
-        actual: ClusterId,
+        expected: ClusterName,
+        actual: ClusterName,
     },
 }
-
-/// The actionable choices returned when a roster name has multiple identities.
-#[derive(Debug)]
-pub struct MachineRemovalAmbiguity {
-    machine_name: MachineName,
-    machine_ids: Vec<MachineRowId>,
-}
-
-impl fmt::Display for MachineRemovalAmbiguity {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "machine {} is ambiguous; retry with one of:",
-            self.machine_name.as_str()
-        )?;
-        for machine_id in &self.machine_ids {
-            write!(
-                formatter,
-                "\n  ployz machine rm {} --id {}",
-                self.machine_name.as_str(),
-                machine_id.as_str()
-            )?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for MachineRemovalAmbiguity {}
 
 pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, MachineSnapshotError> {
     let LensSnapshot::Machines { rows, .. } = snapshot else {
@@ -890,17 +832,11 @@ pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, Machine
         });
     };
     let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
-        left.document
-            .name
-            .as_str()
-            .cmp(right.document.name.as_str())
-            .then_with(|| left.id.as_str().cmp(right.id.as_str()))
-    });
+    rows.sort_by(|left, right| left.name.cmp(&right.name));
 
     let mut output = String::from("NAME\tCONTROL ADDRESS\n");
     for row in rows {
-        let address = match &row.document.transport {
+        let address = match &row.transport {
             MachineTransport::Wireguard {
                 pubkey: _,
                 addr_v6,
@@ -909,7 +845,7 @@ pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, Machine
             } => addr_v6.to_string(),
             MachineTransport::Tailscale { ip, subnet_v4: _ } => ip.to_string(),
         };
-        output.push_str(row.document.name.as_str());
+        output.push_str(row.name.as_str());
         output.push('\t');
         output.push_str(&address);
         output.push('\n');
@@ -919,7 +855,7 @@ pub(crate) fn render_machines(snapshot: &LensSnapshot) -> Result<String, Machine
 
 fn validate_snapshot_cluster(
     snapshot: &LensSnapshot,
-    expected: &ClusterId,
+    expected: &ClusterName,
 ) -> Result<(), MachineSnapshotError> {
     let LensSnapshot::Machines { cluster, .. } = snapshot else {
         return Err(MachineSnapshotError::WrongLens {
@@ -939,7 +875,7 @@ const fn snapshot_collection(snapshot: &LensSnapshot) -> LensCollection {
     match snapshot {
         LensSnapshot::Machines { .. } => LensCollection::Machines,
         LensSnapshot::Services { .. } => LensCollection::Services,
-        LensSnapshot::Containers { .. } => LensCollection::Containers,
+        LensSnapshot::Endpoints { .. } => LensCollection::Endpoints,
         LensSnapshot::MachineStatus { .. } => LensCollection::MachineStatus,
         LensSnapshot::Operations { .. } => LensCollection::Operations,
     }
@@ -951,34 +887,11 @@ pub fn render_endpoint_set(machine: &MachineName, endpoint: std::net::SocketAddr
 }
 
 #[must_use]
-pub fn render_machine_removal(machine_name: &MachineName, reply: &MachineRemoveReply) -> String {
+pub fn render_machine_removal(reply: &MachineRemoveReply) -> String {
     match reply {
-        MachineRemoveReply::Removed { machine_id } => format!(
-            "Removed machine {} ({}).\n",
-            machine_name.as_str(),
-            machine_id.as_str()
-        ),
-        MachineRemoveReply::AlreadyAbsent { machine_id } => format!(
-            "Machine {} ({}) was already absent.\n",
-            machine_name.as_str(),
-            machine_id.as_str()
-        ),
-    }
-}
-
-fn machine_removal_reply_matches_requested_identity(
-    reply: &MachineRemoveReply,
-    requested_machine_id: Option<&MachineRowId>,
-) -> bool {
-    match (reply, requested_machine_id) {
-        (MachineRemoveReply::Removed { .. }, None) => true,
-        (MachineRemoveReply::Removed { machine_id }, Some(requested_machine_id)) => {
-            machine_id == requested_machine_id
+        MachineRemoveReply::Removed { machine_name } => {
+            format!("Removed machine {}.\n", machine_name.as_str())
         }
-        (MachineRemoveReply::AlreadyAbsent { machine_id }, Some(requested_machine_id)) => {
-            machine_id == requested_machine_id
-        }
-        (MachineRemoveReply::AlreadyAbsent { .. }, None) => false,
     }
 }
 
@@ -986,7 +899,7 @@ fn machine_removal_reply_matches_requested_identity(
 pub fn render_machine_join(
     outcome: MachineJoinOutcomeKind,
     machine_name: &MachineName,
-    machine_id: &MachineRowId,
+    machine_id: &MachineName,
 ) -> String {
     let verb = match outcome {
         MachineJoinOutcomeKind::Joined => "Joined",
@@ -1015,7 +928,6 @@ mod tests {
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    const MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
     const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
 
     fn machines_snapshot() -> LensSnapshot {
@@ -1036,40 +948,34 @@ mod tests {
             },
             "rows": [
                 {
-                    "id": MACHINE_B,
-                    "document": {
-                        "v": 1,
-                        "cluster_id": CLUSTER,
-                        "written_by": { "kind": "peer", "peer_id": PEER },
-                        "written_at": "2026-08-04T10:00:00Z",
-                        "name": "zeta",
-                        "lifecycle": "active",
-                        "transport": {
-                            "kind": "tailscale",
-                            "ip": "100.64.0.20",
-                            "subnet_v4": "10.210.20.0/24"
-                        },
-                        "storage": { "mode": "plain", "reason": { "kind": "default" } }
-                    }
+                    "v": 1,
+                    "cluster_id": CLUSTER,
+                    "written_by": { "kind": "peer", "peer_id": PEER },
+                    "written_at": "2026-08-04T10:00:00Z",
+                    "name": "zeta",
+                    "lifecycle": "active",
+                    "transport": {
+                        "kind": "tailscale",
+                        "ip": "100.64.0.20",
+                        "subnet_v4": "10.210.20.0/24"
+                    },
+                    "storage": { "mode": "plain", "reason": { "kind": "default" } }
                 },
                 {
-                    "id": MACHINE_A,
-                    "document": {
-                        "v": 1,
-                        "cluster_id": CLUSTER,
-                        "written_by": { "kind": "peer", "peer_id": PEER },
-                        "written_at": "2026-08-04T10:00:00Z",
-                        "name": "alpha",
-                        "lifecycle": "active",
-                        "transport": {
-                            "kind": "wireguard",
-                            "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                            "addr_v6": "fd00::20",
-                            "endpoint": null,
-                            "subnet_v4": "10.210.21.0/24"
-                        },
-                        "storage": { "mode": "plain", "reason": { "kind": "default" } }
-                    }
+                    "v": 1,
+                    "cluster_id": CLUSTER,
+                    "written_by": { "kind": "peer", "peer_id": PEER },
+                    "written_at": "2026-08-04T10:00:00Z",
+                    "name": "alpha",
+                    "lifecycle": "active",
+                    "transport": {
+                        "kind": "wireguard",
+                        "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                        "addr_v6": "fd00::20",
+                        "endpoint": null,
+                        "subnet_v4": "10.210.21.0/24"
+                    },
+                    "storage": { "mode": "plain", "reason": { "kind": "default" } }
                 }
             ]
         }))
@@ -1109,42 +1015,17 @@ mod tests {
     #[test]
     fn machine_removal_uses_the_typed_route_and_renders_terminal_outcomes() {
         let machine_name = MachineName::try_new("edge-b").expect("machine name");
-        let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
         let request = MachineRemoveRequest {
             machine_name: machine_name.clone(),
-            machine_id: Some(machine_id.clone()),
         };
         assert_eq!(MACHINE_REMOVE_ROUTE, "/machines/remove");
         assert_eq!(request.machine_name, machine_name);
-        assert_eq!(request.machine_id, Some(machine_id.clone()));
         assert_eq!(
-            render_machine_removal(
-                &machine_name,
-                &MachineRemoveReply::Removed {
-                    machine_id: machine_id.clone(),
-                },
-            ),
-            format!("Removed machine edge-b ({MACHINE_A}).\n")
+            render_machine_removal(&MachineRemoveReply::Removed {
+                machine_name: machine_name.clone(),
+            }),
+            "Removed machine edge-b.\n"
         );
-        assert_eq!(
-            render_machine_removal(
-                &machine_name,
-                &MachineRemoveReply::AlreadyAbsent {
-                    machine_id: machine_id.clone(),
-                },
-            ),
-            format!("Machine edge-b ({MACHINE_A}) was already absent.\n")
-        );
-        assert!(machine_removal_reply_matches_requested_identity(
-            &MachineRemoveReply::AlreadyAbsent {
-                machine_id: machine_id.clone(),
-            },
-            Some(&machine_id),
-        ));
-        assert!(!machine_removal_reply_matches_requested_identity(
-            &MachineRemoveReply::AlreadyAbsent { machine_id },
-            None,
-        ));
     }
 
     #[test]
@@ -1256,36 +1137,11 @@ mod tests {
     }
 
     #[test]
-    fn machine_removal_refusals_tell_the_operator_how_to_continue() {
+    fn machine_removal_not_found_tells_the_operator_how_to_continue() {
         let machine_name = MachineName::try_new("edge-b").expect("machine name");
-        let lower = MachineRowId::try_new(MACHINE_A).expect("machine id");
-        let higher = MachineRowId::try_new(MACHINE_B).expect("machine id");
-        let ambiguity = MachineExecutionError::MachineRemovalAmbiguous(MachineRemovalAmbiguity {
-            machine_name: machine_name.clone(),
-            machine_ids: vec![lower.clone(), higher.clone()],
-        });
         assert_eq!(
-            ambiguity.to_string(),
-            format!(
-                "machine edge-b is ambiguous; retry with one of:\n  ployz machine rm edge-b --id {MACHINE_A}\n  ployz machine rm edge-b --id {MACHINE_B}"
-            )
-        );
-        assert_eq!(
-            MachineExecutionError::MachineRemovalNotFound {
-                machine_name: machine_name.clone(),
-            }
-            .to_string(),
+            MachineExecutionError::MachineRemovalNotFound { machine_name }.to_string(),
             "machine edge-b is not in the roster; run `ployz machine ls` to inspect current machines"
-        );
-        assert_eq!(
-            MachineExecutionError::MachineRemovalIdMismatch {
-                machine_name,
-                machine_id: lower,
-            }
-            .to_string(),
-            format!(
-                "machine edge-b does not match identity {MACHINE_A}; omit `--id` to resolve the name again, or retry with a matching identity"
-            )
         );
     }
 
@@ -1308,7 +1164,7 @@ mod tests {
     #[test]
     fn join_outcomes_name_the_accepted_machine_identity() {
         let machine_name = MachineName::try_new("edge-b").expect("machine name");
-        let machine_id = MachineRowId::try_new(MACHINE_A).expect("machine id");
+        let machine_id = MachineName::try_new(MACHINE_A).expect("machine id");
         for (outcome, expected) in [
             (MachineJoinOutcomeKind::Joined, "Joined"),
             (MachineJoinOutcomeKind::Resumed, "Resumed"),
@@ -1331,7 +1187,7 @@ mod tests {
 
     #[test]
     fn machine_snapshot_must_belong_to_the_selected_cluster() {
-        let wrong = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAZ").expect("cluster id");
+        let wrong = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAZ").expect("cluster id");
         assert!(matches!(
             validate_snapshot_cluster(&machines_snapshot(), &wrong),
             Err(MachineSnapshotError::WrongCluster { expected, actual })

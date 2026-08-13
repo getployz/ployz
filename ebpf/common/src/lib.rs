@@ -54,19 +54,18 @@ pub struct ContainerIp {
     pub address: u32,
 }
 
-/// Canonical textual Corrosion namespace row id.
+/// Length-prefixed canonical namespace name used as an exact BPF map value.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NamespaceRowId {
-    pub bytes: [u8; 26],
+pub struct NamespaceName {
+    pub bytes: [u8; 64],
 }
 
 /// Padded BPF map value for one container's namespace.
 #[repr(C, align(4))]
 #[derive(Clone, Copy, Debug)]
 pub struct NamespaceTag {
-    pub namespace_id: NamespaceRowId,
-    pub padding: [u8; 2],
+    pub namespace_id: NamespaceName,
 }
 
 impl PartialEq for NamespaceTag {
@@ -216,9 +215,9 @@ mod tests {
         assert_eq!(MAX_ISOLATION_ENTRIES, 65_536);
         assert_eq!(size_of::<ContainerIp>(), 4);
         assert_eq!(align_of::<ContainerIp>(), 4);
-        assert_eq!(size_of::<NamespaceRowId>(), 26);
-        assert_eq!(align_of::<NamespaceRowId>(), 1);
-        assert_eq!(size_of::<NamespaceTag>(), 28);
+        assert_eq!(size_of::<NamespaceName>(), 64);
+        assert_eq!(align_of::<NamespaceName>(), 1);
+        assert_eq!(size_of::<NamespaceTag>(), 64);
         assert_eq!(align_of::<NamespaceTag>(), 4);
         assert_eq!(size_of::<IsolationConfig>(), 12);
         assert_eq!(align_of::<IsolationConfig>(), 4);
@@ -356,8 +355,7 @@ mod tests {
 
     fn namespace_tag(byte: u8) -> NamespaceTag {
         NamespaceTag {
-            namespace_id: NamespaceRowId { bytes: [byte; 26] },
-            padding: [0; 2],
+            namespace_id: NamespaceName { bytes: [byte; 64] },
         }
     }
 

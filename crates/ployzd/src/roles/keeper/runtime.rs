@@ -5,15 +5,13 @@ use std::future::Future;
 use std::time::Duration;
 
 use ployz_core::corrosion::{
-    BuiltinWireguardLocalSubnetReallocation, BuiltinWireguardMeshOutcome,
-    ContainerIsolationDegradationReason, ContainerIsolationTestimony,
+    BuiltinWireguardMeshOutcome, ContainerIsolationDegradationReason, ContainerIsolationTestimony,
     DesiredBuiltinWireguardMachinePeer, DesiredContainerIsolation, EbpfMeshDegradationReason,
-    EbpfMeshDegraded, MachineTransport, MeshComponentDegraded, MeshComponentNotAttempted,
-    MeshComponentReady, MeshConvergenceTestimony, MeshDegradation, MeshNotAttemptedReason,
-    OperatorWriteProvenance, Principal, WireGuardHandshakeEvidence, project_builtin_wireguard_mesh,
-    project_container_isolation,
+    EbpfMeshDegraded, MeshComponentDegraded, MeshComponentNotAttempted, MeshComponentReady,
+    MeshConvergenceTestimony, MeshDegradation, MeshNotAttemptedReason, WireGuardHandshakeEvidence,
+    project_builtin_wireguard_mesh, project_container_isolation,
 };
-use ployz_core::ids::MachineRowId;
+use ployz_core::ids::MachineName;
 use ployz_core::network::WireGuardPublicKey;
 use ployz_core::roles::PloyzdRole;
 use ployz_host_runner::SupervisorBackend;
@@ -28,14 +26,13 @@ use crate::corrosion::CorrosionClient;
 
 use super::control::KeeperControlSocket;
 use super::provider::{BoundKeeperIdentity, KeeperMeshProvider, KeeperProviderError};
-use super::status::{LocalMachineStatusWriter, MachineStatusWriteError, now};
+use super::status::{LocalMachineStatusWriter, MachineStatusWriteError};
 use super::store::{KeeperCorrosion, KeeperStoreError};
 use super::upgrade::{KeeperUpgradeSocket, migrate_api_privileges, restart_systemd_role};
 use super::{KeeperRoleConfig, KeeperRoleConfigError};
 
-const SUBNET_REPAIR_COURTESY_DELAY: Duration = Duration::from_secs(1);
 const UPGRADE_FIRST_CONVERGE_TIMEOUT: Duration = Duration::from_secs(60);
-const CONTAINER_INVALIDATION_COALESCE: Duration = Duration::from_millis(250);
+const ENDPOINT_INVALIDATION_COALESCE: Duration = Duration::from_millis(250);
 
 /// Runs Keeper from the supervisor-owned environment until process shutdown.
 pub async fn run_from_environment() -> Result<(), KeeperRoleRuntimeError> {
@@ -250,11 +247,6 @@ where
                 }
                 retry.reset();
             }
-            Ok(ReconcileProgress::Requery) => {
-                retry.reset();
-                fold = FoldKind::Full;
-                continue;
-            }
             Err(ReconcileError::Retry { detail }) => {
                 if let Some(error) =
                     first_converge_timeout(pending_upgrade.is_some(), upgrade_deadline, &detail)
@@ -281,32 +273,32 @@ where
         enum Wake {
             Shutdown,
             Full(Result<(), KeeperStoreError>),
-            Containers(Result<(), KeeperStoreError>),
+            MachineEndpoints(Result<(), KeeperStoreError>),
         }
         let wake = tokio::select! {
             () = &mut shutdown => Wake::Shutdown,
             _ = periodic.tick() => Wake::Full(Ok(())),
             result = streams.roster.next() => Wake::Full(result),
-            result = streams.containers.next() => Wake::Containers(result),
+            result = streams.machine_endpoints.next() => Wake::MachineEndpoints(result),
         };
         match wake {
             Wake::Shutdown => return Ok(()),
             Wake::Full(Ok(())) => fold = FoldKind::Full,
-            Wake::Full(Err(error)) | Wake::Containers(Err(error)) => {
+            Wake::Full(Err(error)) | Wake::MachineEndpoints(Err(error)) => {
                 tracing::warn!(error = %error, "Keeper subscription disconnected; forcing full re-query");
                 invalidations = None;
                 fold = FoldKind::Full;
             }
-            Wake::Containers(Ok(())) => {
+            Wake::MachineEndpoints(Ok(())) => {
                 fold = FoldKind::IsolationOnly;
-                let deadline = tokio::time::sleep(CONTAINER_INVALIDATION_COALESCE);
+                let deadline = tokio::time::sleep(ENDPOINT_INVALIDATION_COALESCE);
                 tokio::pin!(deadline);
                 loop {
                     let wake = tokio::select! {
                         () = &mut shutdown => Wake::Shutdown,
                         _ = periodic.tick() => Wake::Full(Ok(())),
                         result = streams.roster.next() => Wake::Full(result),
-                        result = streams.containers.next() => Wake::Containers(result),
+                        result = streams.machine_endpoints.next() => Wake::MachineEndpoints(result),
                         () = &mut deadline => break,
                     };
                     match wake {
@@ -315,13 +307,13 @@ where
                             fold = preempt_fold(fold, FoldKind::Full);
                             break;
                         }
-                        Wake::Full(Err(error)) | Wake::Containers(Err(error)) => {
-                            tracing::warn!(error = %error, "Keeper subscription disconnected during container coalescing");
+                        Wake::Full(Err(error)) | Wake::MachineEndpoints(Err(error)) => {
+                            tracing::warn!(error = %error, "Keeper subscription disconnected during machine endpoint coalescing");
                             invalidations = None;
                             fold = FoldKind::Full;
                             break;
                         }
-                        Wake::Containers(Ok(())) => {
+                        Wake::MachineEndpoints(Ok(())) => {
                             fold = preempt_fold(fold, FoldKind::IsolationOnly);
                         }
                     }
@@ -392,7 +384,7 @@ async fn reconcile_once(
     isolation: &mut IsolationCache,
 ) -> Result<ReconcileProgress, ReconcileError> {
     let snapshot = store.read_roster().await.map_err(retry_store)?;
-    let container_rows = store.read_containers().await;
+    let machine_endpoints = store.read_machine_endpoints().await;
     if last_successful_converge.is_none() {
         *last_successful_converge = snapshot
             .local_status
@@ -405,16 +397,16 @@ async fn reconcile_once(
         .as_ref()
         .and_then(|status| status.container_isolation.clone())
         .or_else(|| isolation.testimony.clone());
-    let isolation_projection = container_rows
-        .map(|rows| project_container_isolation(snapshot.cluster.prefix.clone(), rows));
-    isolation.eligible = false;
-    let observed_local_machine_document = snapshot
+    let accepted_machines = snapshot
         .machines
         .accepted
         .iter()
-        .find(|row| row.source.key == config.local_machine_id().as_str())
-        .map(|row| row.source.document.clone());
-    let cluster_prefix = snapshot.cluster.prefix.clone();
+        .map(|row| row.value.name.clone())
+        .collect();
+    let isolation_projection = machine_endpoints.map(|rows| {
+        project_container_isolation(snapshot.cluster.prefix.clone(), &accepted_machines, rows)
+    });
+    isolation.eligible = false;
     let outcome = project_builtin_wireguard_mesh(
         &snapshot.cluster,
         config.local_machine_id().clone(),
@@ -448,7 +440,7 @@ async fn reconcile_once(
                 ?evidence,
                 "Keeper refused a roster with mismatched WireGuard identities"
             );
-            let attempted_at = now().map_err(retry_status)?;
+            let attempted_at = ployz_core::corrosion::CorrosionTimestamp::now_utc();
             write_testimony(
                 store,
                 writer,
@@ -462,57 +454,6 @@ async fn reconcile_once(
             .await?;
             Ok(ReconcileProgress::Settled)
         }
-        BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet { repair, evidence } => {
-            tracing::warn!(machine_id = %repair.machine_id(), occupied_subnets = repair.occupied_subnets().len(), ?evidence, "Keeper must repair its lost local container subnet claim");
-            let Some(observed_document) = observed_local_machine_document else {
-                return Err(ReconcileError::Fatal(KeeperRoleRuntimeError::Invariant(
-                    "subnet repair did not retain the accepted local machine row evidence",
-                )));
-            };
-            repair_local_subnet(store, cluster_prefix, repair, &observed_document).await?;
-            tokio::time::sleep(SUBNET_REPAIR_COURTESY_DELAY).await;
-            let courtesy = store.read_roster().await.map_err(retry_store)?;
-            let courtesy_outcome = project_builtin_wireguard_mesh(
-                &courtesy.cluster,
-                config.local_machine_id().clone(),
-                &bound.public_key,
-                courtesy.machines,
-                courtesy.peers,
-            )
-            .map_err(|source| ReconcileError::Fatal(KeeperRoleRuntimeError::Projection(source)))?;
-            match courtesy_outcome {
-                BuiltinWireguardMeshOutcome::ReallocateLocalContainerSubnet {
-                    repair,
-                    evidence,
-                } => {
-                    tracing::warn!(machine_id = %repair.machine_id(), occupied_subnets = repair.occupied_subnets().len(), ?evidence, "courtesy roster re-read found another lost local subnet claim");
-                }
-                BuiltinWireguardMeshOutcome::NoRoster { evidence } => {
-                    tracing::info!(?evidence, "courtesy roster re-read found an empty roster");
-                }
-                BuiltinWireguardMeshOutcome::Fenced {
-                    local_machine_id,
-                    reason,
-                    evidence,
-                } => {
-                    tracing::warn!(%local_machine_id, ?reason, ?evidence, "courtesy roster re-read found the local machine fenced");
-                }
-                BuiltinWireguardMeshOutcome::KeyMismatch {
-                    mismatches,
-                    evidence,
-                } => {
-                    tracing::warn!(
-                        ?mismatches,
-                        ?evidence,
-                        "courtesy roster re-read found mismatched WireGuard identities"
-                    );
-                }
-                BuiltinWireguardMeshOutcome::Desired(desired) => {
-                    tracing::info!(evidence = ?desired.evidence, "courtesy roster re-read accepted the repaired local subnet claim");
-                }
-            }
-            Ok(ReconcileProgress::Requery)
-        }
         BuiltinWireguardMeshOutcome::Desired(desired) => {
             isolation.eligible = true;
             tracing::info!(
@@ -522,7 +463,7 @@ async fn reconcile_once(
                 evidence = ?desired.evidence,
                 "Keeper is applying the accepted builtin mesh roster"
             );
-            let attempted_at = now().map_err(retry_status)?;
+            let attempted_at = ployz_core::corrosion::CorrosionTimestamp::now_utc();
             let (isolation_testimony, isolation_error) = match isolation_projection {
                 Ok(projection) => {
                     tracing::info!(
@@ -533,7 +474,7 @@ async fn reconcile_once(
                     let (testimony, error) = converge_isolation(
                         provider,
                         &projection.desired,
-                        projection.evidence.observed_rows,
+                        projection.evidence.observed_endpoints,
                         attempted_at,
                         isolation,
                     )
@@ -715,19 +656,29 @@ async fn reconcile_isolation_only(
     }
     let snapshot = store.read_isolation().await.map_err(retry_store)?;
     isolation.seed(snapshot.local_status.as_ref());
-    let projection = project_container_isolation(snapshot.cluster.prefix, snapshot.containers);
-    if isolation_capacity_error(projection.evidence.observed_rows).is_none()
+    let accepted_machines = snapshot
+        .machines
+        .accepted
+        .into_iter()
+        .map(|row| row.value.name)
+        .collect();
+    let projection = project_container_isolation(
+        snapshot.cluster.prefix,
+        &accepted_machines,
+        snapshot.machine_endpoints,
+    );
+    if isolation_capacity_error(projection.evidence.observed_endpoints).is_none()
         && isolation.is_successfully_applied(&projection.desired)
     {
         tracing::debug!(evidence = ?projection.evidence, "container invalidation was semantically unchanged");
         return Ok(ReconcileProgress::Settled);
     }
 
-    let attempted_at = now().map_err(retry_status)?;
+    let attempted_at = ployz_core::corrosion::CorrosionTimestamp::now_utc();
     let (testimony, error) = converge_isolation(
         provider,
         &projection.desired,
-        projection.evidence.observed_rows,
+        projection.evidence.observed_endpoints,
         attempted_at,
         isolation,
     )
@@ -746,11 +697,11 @@ async fn reconcile_isolation_only(
 async fn converge_isolation(
     provider: &KeeperMeshProvider,
     desired: &DesiredContainerIsolation,
-    observed_rows: usize,
+    observed_endpoints: usize,
     attempted_at: ployz_core::corrosion::CorrosionTimestamp,
     isolation: &mut IsolationCache,
 ) -> (ContainerIsolationTestimony, Option<KeeperProviderError>) {
-    let result = if let Some(error) = isolation_capacity_error(observed_rows) {
+    let result = if let Some(error) = isolation_capacity_error(observed_endpoints) {
         Err(error)
     } else {
         provider.converge_isolation(desired).await
@@ -775,13 +726,13 @@ async fn converge_isolation(
     (testimony, result.err())
 }
 
-fn isolation_capacity_error(observed_rows: usize) -> Option<KeeperProviderError> {
+fn isolation_capacity_error(observed_endpoints: usize) -> Option<KeeperProviderError> {
     let capacity = usize::try_from(ployz_ebpf_common::MAX_ISOLATION_ENTRIES)
         .expect("isolation map capacity fits usize");
-    if observed_rows > capacity {
+    if observed_endpoints > capacity {
         Some(KeeperProviderError::Isolation(
             ContainerIsolationHostError::DesiredSetTooLarge {
-                desired: observed_rows,
+                desired: observed_endpoints,
                 capacity,
             },
         ))
@@ -847,54 +798,9 @@ fn map_isolation_degradation(error: &KeeperProviderError) -> ContainerIsolationD
     }
 }
 
-async fn repair_local_subnet(
-    store: &KeeperCorrosion,
-    cluster_prefix: ployz_core::network::MachineEndpointSupernet,
-    repair: BuiltinWireguardLocalSubnetReallocation,
-    observed_document: &str,
-) -> Result<(), ReconcileError> {
-    let (machine_id, mut machine, occupied_subnets) = repair.into_parts();
-    let subnet = cluster_prefix
-        .allocate_random_free(occupied_subnets)
-        .map_err(|source| {
-            ReconcileError::Fatal(KeeperRoleRuntimeError::SubnetAllocation(source))
-        })?;
-    let written_at = now().map_err(retry_status)?;
-    let previous = apply_local_subnet_repair(&machine_id, &mut machine, subnet.clone(), written_at)
-        .map_err(|detail| ReconcileError::Fatal(KeeperRoleRuntimeError::Invariant(detail)))?;
-    store
-        .rewrite_local_machine(&machine_id, observed_document, &machine)
-        .await
-        .map_err(retry_store)?;
-    tracing::warn!(%machine_id, previous_subnet = ?previous, replacement_subnet = ?subnet, "Keeper rewrote its local machine row to repair the container subnet collision");
-    Ok(())
-}
-
-fn apply_local_subnet_repair(
-    machine_id: &ployz_core::ids::MachineRowId,
-    machine: &mut ployz_core::corrosion::MachineDocument,
-    subnet: ployz_core::network::MachineEndpointSubnet,
-    written_at: ployz_core::corrosion::CorrosionTimestamp,
-) -> Result<ployz_core::network::MachineEndpointSubnet, &'static str> {
-    let previous = match &mut machine.transport {
-        MachineTransport::Wireguard { subnet_v4, .. } => std::mem::replace(subnet_v4, subnet),
-        MachineTransport::Tailscale { .. } => {
-            return Err("builtin WireGuard subnet repair carried a Tailscale machine");
-        }
-    };
-    machine.provenance = OperatorWriteProvenance {
-        written_by: Principal::Machine {
-            machine_id: machine_id.clone(),
-        },
-        written_at,
-    };
-    Ok(previous)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReconcileProgress {
     Settled,
-    Requery,
 }
 
 fn last_success_from_status(
@@ -928,7 +834,7 @@ fn map_ebpf_degradation(reason: EbpfDegradedReason) -> EbpfMeshDegradationReason
 fn map_machine_handshakes(
     machine_peers: &[DesiredBuiltinWireguardMachinePeer],
     observed: &BTreeMap<WireGuardPublicKey, BuiltinWireguardLatestHandshake>,
-) -> BTreeMap<MachineRowId, WireGuardHandshakeEvidence> {
+) -> BTreeMap<MachineName, WireGuardHandshakeEvidence> {
     machine_peers
         .iter()
         .filter_map(|peer| {
@@ -950,7 +856,7 @@ async fn write_testimony(
     writer: &LocalMachineStatusWriter,
     mesh: Option<MeshConvergenceTestimony>,
     container_isolation: Option<ContainerIsolationTestimony>,
-    wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+    wireguard_handshakes: Option<BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
 ) -> Result<(), ReconcileError> {
     let statement = writer
         .statement(mesh, container_isolation, wireguard_handshakes)
@@ -1053,8 +959,6 @@ pub enum KeeperRoleRuntimeError {
     Provider { detail: String },
     #[error("Keeper could not project the accepted builtin mesh: {0}")]
     Projection(ployz_core::corrosion::BuiltinWireguardMeshError),
-    #[error("Keeper could not allocate a replacement local container subnet: {0}")]
-    SubnetAllocation(ployz_core::network::MachineEndpointSubnetAllocationError),
     #[error("Keeper runtime invariant failed: {0}")]
     Invariant(&'static str),
     #[error("could not inspect local upgrade artifact state: {0}")]
@@ -1084,11 +988,10 @@ mod tests {
     use super::*;
     use ployz_core::corrosion::{
         DesiredBuiltinWireguardLocal, DesiredBuiltinWireguardMachinePeer,
-        DesiredMachineContainerRoute, MachineDocument, MachineStatusDocument,
+        DesiredMachineContainerRoute, MachineStatusDocument,
     };
-    use ployz_core::ids::{ClusterId, MachineRowId};
+    use ployz_core::ids::{ClusterName, MachineName};
     use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
-    use serde_json::json;
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -1119,7 +1022,7 @@ mod tests {
     }
 
     fn local() -> DesiredBuiltinWireguardLocal {
-        let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster");
+        let cluster_id = ClusterName::try_new(CLUSTER).expect("cluster");
         let public_key =
             WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                 .expect("key");
@@ -1134,9 +1037,9 @@ mod tests {
 
     #[test]
     fn handshake_testimony_names_only_current_machine_peers() {
-        let machine_id = MachineRowId::try_new(MACHINE).expect("machine");
+        let machine_id = MachineName::try_new(MACHINE).expect("machine");
         let never_machine_id =
-            MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("never machine");
+            MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("never machine");
         let machine_key =
             WireGuardPublicKey::try_new("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
                 .expect("machine key");
@@ -1146,7 +1049,7 @@ mod tests {
         let roaming_key =
             WireGuardPublicKey::try_new("AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=")
                 .expect("roaming key");
-        let cluster_id = ClusterId::try_new(CLUSTER).expect("cluster");
+        let cluster_id = ClusterName::try_new(CLUSTER).expect("cluster");
         let identity =
             ployz_core::corrosion::derive_builtin_wireguard_member(&cluster_id, &machine_key);
         let never_identity =
@@ -1323,89 +1226,6 @@ mod tests {
     }
 
     #[test]
-    fn stale_subnet_repair_evidence_is_visible_and_retryable() {
-        let machine_id = MachineRowId::try_new(MACHINE).expect("machine");
-
-        let error = retry_store(KeeperStoreError::StaleLocalMachineRepair {
-            machine_id: machine_id.clone(),
-        });
-
-        assert!(matches!(
-            error,
-            ReconcileError::Retry { detail }
-                if detail.contains(machine_id.as_str()) && detail.contains("became stale")
-        ));
-    }
-
-    #[test]
-    fn local_subnet_repair_changes_only_subnet_and_required_provenance() {
-        let machine_id = MachineRowId::try_new(MACHINE).expect("machine");
-        let mut machine = serde_json::from_value::<MachineDocument>(json!({
-            "v": 1,
-            "cluster_id": CLUSTER,
-            "written_by": { "kind": "peer", "peer_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY" },
-            "written_at": "2026-08-05T10:00:00Z",
-            "name": "machine-one",
-            "lifecycle": "active",
-            "transport": {
-                "kind": "wireguard",
-                "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                "addr_v6": "fd00::1",
-                "endpoint": "192.0.2.1:51820",
-                "subnet_v4": "10.210.1.0/24"
-            },
-            "storage": { "mode": "plain", "reason": { "kind": "default" } }
-        }))
-        .expect("machine fixture");
-        let before = machine.clone();
-        let replacement = MachineEndpointSubnet::try_new("10.210.2.0/24").expect("subnet");
-        let written_at = timestamp("2026-08-05T10:01:00Z");
-
-        let previous =
-            apply_local_subnet_repair(&machine_id, &mut machine, replacement.clone(), written_at)
-                .expect("builtin repair");
-
-        assert_eq!(
-            previous,
-            MachineEndpointSubnet::try_new("10.210.1.0/24").expect("subnet")
-        );
-        assert_eq!(machine.v, before.v);
-        assert_eq!(machine.cluster_id, before.cluster_id);
-        assert_eq!(machine.name, before.name);
-        assert_eq!(machine.lifecycle, before.lifecycle);
-        assert_eq!(machine.storage, before.storage);
-        let MachineTransport::Wireguard {
-            pubkey: before_key,
-            addr_v6: before_addr,
-            endpoint: before_endpoint,
-            ..
-        } = before.transport
-        else {
-            panic!("fixture is builtin WireGuard")
-        };
-        let MachineTransport::Wireguard {
-            pubkey,
-            addr_v6,
-            endpoint,
-            subnet_v4,
-        } = machine.transport
-        else {
-            panic!("repair preserves builtin WireGuard")
-        };
-        assert_eq!(pubkey, before_key);
-        assert_eq!(addr_v6, before_addr);
-        assert_eq!(endpoint, before_endpoint);
-        assert_eq!(subnet_v4, replacement);
-        assert_eq!(
-            machine.provenance,
-            OperatorWriteProvenance {
-                written_by: Principal::Machine { machine_id },
-                written_at,
-            }
-        );
-    }
-
-    #[test]
     fn e_bpf_degradation_preserves_missing_bridge_identity() {
         assert_eq!(
             map_ebpf_degradation(EbpfDegradedReason::MissingBridge {
@@ -1424,8 +1244,8 @@ mod tests {
         let local = local();
         let status = MachineStatusDocument {
             v: ployz_core::corrosion::CorrosionDocumentVersion::V1,
-            cluster_id: ClusterId::try_new(CLUSTER).expect("cluster"),
-            machine_id: MachineRowId::try_new(MACHINE).expect("machine"),
+            cluster_id: ClusterName::try_new(CLUSTER).expect("cluster"),
+            machine_id: MachineName::try_new(MACHINE).expect("machine"),
             ployz_version: "0.1.0".to_owned(),
             corrosion_version: "0.2.0-beta.0".to_owned(),
             architecture: "x86_64".to_owned(),

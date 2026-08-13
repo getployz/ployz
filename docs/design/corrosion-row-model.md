@@ -1,245 +1,113 @@
 # The Corrosion Row Model
 
-Row-model spec from the wayfinder ticket [Decide: the row model — tables,
-ownership map, and the row-ownership law](https://github.com/getployz/ployz/issues/785).
-The companion DDL draft is [corrosion-schema-v1.sql](corrosion-schema-v1.sql).
-This governs the coreless v2 design; it replaces the intent-file / evidence-log
-storage rules of the retired v1 design.
+This is the writable v2 row contract. The companion DDL is
+[corrosion-schema-v1.sql](corrosion-schema-v1.sql), and the identity decision is
+recorded in [ADR 0042](../adr/0042-canonical-names-are-resource-identities.md).
+There is no older v2 shape to accept or migrate.
 
-Schema v1 is the first writable contract. Required provenance, typed identifiers,
-transport separation, and canonical timestamps are part of v1 directly. There
-is no legacy v2 row shape to migrate or accept.
+## Admission rule
 
-## The admission lens
+A fact belongs in Corrosion only when another machine must watch it live.
+Duroxide history remains in node-local SQLite and covers only bounded host
+prepare and retire work. Private keys, secret environment values, deploy-time
+secret payloads, and TLS keys never enter Corrosion.
 
-A table earns a Corrosion row only if someone must watch it live: the
-gateway, DNS, Cloud, or another machine. Everything else stays local.
-Deliberately outside Corrosion:
+## Identity rule
 
-- Duroxide workflow history — private SQLite on each execution node, limited to
-  that node's host-local prepare and retire effects. It is never controller
-  state, a public history, or a cluster recovery source.
-- WG private keys, TLS keys, secret env values, deploy-time secret
-  payloads — never rows in any form.
+Ployz uses canonical names as identities. It does not mint a second random ID
+for a resource that already has a durable name.
 
-## The row-ownership law
+| Table | Key | Meaning |
+|---|---|---|
+| `cluster` | cluster name | one cluster identity |
+| `machines` | machine name | one admitted host |
+| `peers` | peer name | one operator principal; separate from machines |
+| `tokens` | token name | one show-once join credential |
+| `namespaces` | namespace name | complete name-keyed service intent and lifecycle boundary |
+| `route_bindings` | hostname | one ingress binding |
+| `controller` | cluster name | advisory preferred-controller appointment |
+| `machine_endpoints` | machine name | one machine's complete routable endpoint testimony |
+| `machine_status` | machine name | machine-owned testimony |
+| `operations` | `<namespace>/<deploy>` | one namespace-wide deploy result |
+| `cert_holdings` | `<machine>:<hostname>` | one gateway's certificate testimony |
+| `acme_http01` | ACME challenge token | one public challenge |
 
-> Every row has exactly one **authority**: either the operator's command
-> stream, or exactly one machine. Machine-authority rows are keyed so that no
-> two machines can ever address the same row. LWW therefore only ever
-> adjudicates the operator racing themselves — never machine-vs-machine,
-> never machine-vs-operator.
+Docker container IDs remain private runtime handles on their owning machine.
+Randomness remains only where it is the substance of the value: secrets,
+cryptographic keys, Corrosion internals, and external runtime handles.
 
-The singleton `controller` row is the named exception introduced by ADR 0041.
-Any API machine that passes the visibility brake may replace it immediately
-after one hard connect failure. Timeouts, HTTP responses, and protocol failures
-do not replace it. Its LWW result is an advisory appointment, not product intent
-or runtime truth.
+Machines and peers remain separate tables and principals. They have different
+admission, authorization, transport, and lifecycle laws even though both are
+identified by canonical names.
 
-Operator authority means a machine writes only while executing the
-operator's explicit command; Keeper and background loops never touch
-operator-authority rows. Operator self-races are priced in (the accepted
-LWW un-happening position): Cloud serializes its own writes through its job
-runner, the CLI is in one operator's hand.
+## Namespace snapshots and services
 
-## Ownership map
+A deploy request names a namespace and deploy and supplies the complete desired
+name-keyed service object for that namespace. The preferred controller observes reality,
+plans every requested service together, prepares bounded host effects, then
+commits the namespace snapshot. Services omitted from the request are removed,
+and obsolete containers are retired.
 
-| Table | Authority | Writer in practice | PK | Swept by |
-|---|---|---|---|---|
-| `cluster` | operator | `ployz init`, settings commands | `ClusterId` | never (identity) |
-| `machines` | operator | join/admission, machine rm | `MachineRowId` | `machine rm` |
-| `peers` | operator | join/admission, peer rm | `PeerId` | `peer rm` |
-| `tokens` | operator/Cloud | token create/revoke | `TokenId` | `token revoke` / refound |
-| `namespaces` | operator | namespace create/rm | `NamespaceRowId` | namespace rm |
-| `services` | operator | deploy promotion | `ServiceRowId` | superseding deploy |
-| `route_bindings` | operator | route attach/detach | `RouteBindingRowId` | route rm |
-| `controller` | API machines | initialization or visible replacement after one hard connect failure | `ClusterId` | replaced by the next appointment |
-| `containers` | deploy command stream | preferred controller after target prepare, naming the host in `machine_id` | Docker container id | superseding deploy; `machine rm` keys on `machine_id` |
-| `machine_status` | machine | the machine itself | `MachineRowId` | `machine rm` |
-| `operations` | controller appointment | the preferred controller executing a deploy | `OperationRowId` | never in v1 (refound compacts) |
-| `cert_holdings` | machine | the holding gateway | `<MachineRowId>:<hostname>` | owning gateway's tick; `machine rm` |
-| `acme_http01` | machine | the issuing gateway | ACME challenge token | issuer on order settle; `machine rm` |
+The namespace is therefore the atomic reconciliation boundary. A service is
+still the workload and addressability boundary: image, placement, replicas,
+containers, routes, internal DNS, and logs all retain the service name. This
+supports multiple services cleanly without giving each service an unrelated
+random identity.
 
-## Primary-key discipline
+Deploy names are one-shot within their namespace. A used `<namespace>/<deploy>`
+key is refused before host effects; recovery after an accepted or abandoned
+attempt uses a fresh deploy name.
 
-- Every operator-minted row identity is a domain-typed canonical ULID: exactly
-  26 uppercase Crockford Base32 characters. Every cross-row reference uses the
-  corresponding Corrosion identity type. Human names remain handles used for
-  lookup and lowest-ULID claim resolution; they are never row identities or
-  references. The v1 types are `ClusterId`, `MachineRowId`, `PeerId`,
-  `TokenId`, `NamespaceRowId`, `ServiceRowId`, `OperationRowId`, and
-  `RouteBindingRowId`.
-- These Corrosion identity types are the v2 row contract. The incumbent
-  subject-token identifiers remain frozen and are not accepted in Corrosion
-  keys or references.
-- Natural keys remain where the external fact is the identity (Docker
-  container id and ACME challenge token). Composite
-  testimony keys embed typed canonical machine identity and are never reused by
-  construction.
-- Never-reused PKs everywhere keeps every table reaper-eligible later
-  (a reaped-then-reused PK corrupts the cluster).
-- Identity fields are write-once: a row's ULID, a machine's WG public key
-  at admission, a token's hash. Mutation of identity = delete + new row
-  with a new ULID. Route Binding Identity holds: detach + recreate is a
-  new identity even for the same hostname.
-- A deploy operation moves only from created to terminal; terminal outcomes are
-  completed, failed, or interrupted. A live attempt that observes a foreign
-  Controller Appointment may write interrupted. A crashed attempt may leave a
-  created row, which no replacement projects, resumes, or rewrites. There is no
-  running snapshot, resubmit flag, heartbeat, or takeover protocol.
-  `containers.deploy` rides as a generated column in the DDL.
+## Write and conflict law
 
-## Name uniqueness under partitions: deterministic readers
+Every ordinary authority row is addressed by its semantic key. The preferred
+controller serializes cluster mutations in memory and followers forward writes
+to it. A partition can still produce competing writes to the same key; Corrosion
+resolves those whole-document writes. Ployz does not retain duplicate-name rows,
+shadow indexes, ambiguity selectors, `--id` escape hatches, or merge field-level
+intent.
 
-This remains the row-level tie-break for human-name uniqueness. It is not the
-cluster mutation scheduler; ADR 0041's preferred controller handles ordinary
-command serialization. For namespace and route mutations, a healthy controller
-reads the visible name or hostname, refuses an existing winner, and otherwise
-inserts one ordinary row. There is no wait, post-insert adjudication, or
-automatic loser cleanup.
+For scary writes, the controller reads current reality, computes one plan, and
+uses exact observed-state conditions where data safety requires them. After
+controller loss, a later attempt starts again from reality. It does not recover
+an abandoned controller's in-memory history.
 
-Competing controllers in a partition may both observe the name as free and both
-return success. After convergence, the lowest canonical ULID is the winner and
-every other valid row remains a shadow until an operator removes it explicitly.
-No quorum lock exists to prevent this: it would stall exactly when a majority is
-unreachable, the repair-before-command failure class the
-converged-over-coordinated thesis rejects.
+Machine and peer roster rows are accepted only after their transport matches the
+cluster provider. A malformed or foreign row is skipped and surfaced to
+diagnostics; it is never repaired by inventing another identity.
 
-Reader law (where safety actually lives): every reader of a named table —
-gateway, DNS, Cloud, CLI — resolves duplicates by lowest ULID and
-surfaces losers as conflicts (`doctor` names the shadowed row and the
-command that removes it). A partition yields a visible repair, never silent
-merged truth. A future additive layer
-(version-vector ack round for rare cluster-singleton mutations) is noted
-but not built.
+## Ownership and cleanup
 
-Machine and peer claims are eligible for that lowest-ULID fold only after a
-roster-specific reader has checked their transport against the accepted
-`ClusterDocument.provider`. A provider-mismatched row is skipped and surfaced;
-it cannot win a name or subnet claim and shadow a valid row.
+Operator commands own cluster, machine, peer, token, namespace, and route
+intent. A service is nested intent inside its namespace document. Machines own
+their bounded testimony. The controller writes namespace deploy results after
+host preparation.
 
-## Sweep and retention
+Removal is explicit. Removing a machine also sweeps its machine-owned endpoint
+testimony. A namespace deploy replaces the complete desired service set for that
+namespace. There is no background intent reaper or public workflow-history log.
 
-- **Author-sweeps-own.** The only writer of a row is its only deleter.
-  No background deleter exists; every delete happens inside a command or
-  the machine's own testimony maintenance.
-- **Removal transfers sweep duty.** The command that deletes a machine's
-  roster row also sweeps its machine testimony and the committed container
-  rows naming that host. Deleting the author is the one act that lets operator
-  authority touch machine-authority rows.
-- **Never swept in v1:** `operations` rows (coarse command results; compact at refound).
-  Expired tokens are invalid at point of use, deleted only by `token revoke`
-  (verification is an O(1) lookup by the embedded ULID, so deleting the row is
-  itself revocation — one act, no separate `token rm`; see the token/status/
-  doctor UX spec, #793) or refound.
-- No Corrosion reaper in v1. Tombstones ride to refound — teardown +
-  fresh install + re-declared intent (#798) is the escape hatch for
-  corrosion upgrades and destructive schema, and thereby also the
-  compaction event. There is no reseed and no dump format.
+## Wire conventions
 
-## Cross-cutting conventions
+- Every document carries `cluster_id`; readers reject foreign cluster rows.
+- Operator-authority documents carry authenticated `written_by` provenance and
+  a canonical `written_at` timestamp.
+- All timestamps serialize as UTC RFC 3339 with nine fractional digits.
+- Every document carries integer `v`. Readers tolerate additive fields and skip
+  newer versions they cannot interpret.
+- New row shapes roll out only after compatible binaries are present on every
+  machine.
+- Empty, malformed, foreign, noncanonical, or provider-mismatched rows remain
+  visible as diagnostic evidence.
 
-- **`cluster_id` in every document.** A ULID minted by `ployz init`,
-  inert in v1; the cells seed and the stray-node data fence.
-  Readers drop foreign-`cluster_id` rows and surface them in `doctor`.
-- **Provenance in every operator-authority document.** `cluster`, `machines`,
-  `peers`, `tokens`, `namespaces`, `services`, and `route_bindings` serialize
-  the shared `OperatorWriteProvenance` fields at the document top level:
-  `written_by` is the nested `OperationInitiator` shape for the authenticated
-  `Principal` (`machine`, `peer`, or `api_token`, with its typed id), for example
-  `{"kind":"peer","peer_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}`.
-  `written_at` is a `CorrosionTimestamp`. The initiator is the authenticated
-  principal for the explicit command that wrote the row. Missing or malformed
-  provenance makes the document unparseable, so readers skip and surface it
-  rather than invent attribution.
-- **Controller appointment provenance is structural.** The `controller` row
-  carries only the preferred machine id and opaque appointment id. It is
-  infrastructure coordination rather than an operator decision.
-- **One timestamp type everywhere.** Every Corrosion document time, including
-  operation state times, testimony observations, token lifetime, deploy time,
-  certificate issue and expiry, and operator `written_at`, is a
-  `CorrosionTimestamp`. It accepts a valid RFC 3339 instant with an explicit
-  offset and serializes it as UTC with exactly nine fractional digits:
-  `2026-08-04T10:30:00.000000000Z`. Comparisons use the parsed instant, never
-  raw JSON or SQL text. A malformed time makes the containing row unparseable;
-  an accepted offset form is normalized on its next serialization.
-- **`v` integer in every document, skip-if-newer.** Evolution within a
-  version is additive-only; readers parse with unknown fields tolerated
-  (no `deny_unknown_fields` on row documents). `v` bumps only when an
-  old reader would misinterpret, not merely miss a field. A reader
-  seeing a newer `v` skips the row and reports it, never guesses.
-- **Rollout ordering law.** Binaries roll to every machine before any
-  writer emits a new field, new `v`, or new table. DDL is near-frozen:
-  new tables and generated index columns only, riding the same rule.
-- **Reader guards.** Skip rows whose document is empty or unparseable
-  (partial replication mid-sync), whose typed ids or references are
-  noncanonical, or whose roster transport disagrees with the cluster provider
-  — not-yet-arrived or invalid, never truth. Surface every skipped row. Never
-  fold from an empty roster (the WG-lockout guard).
+## Secret and certificate rule
 
-## No secret values
+Join tokens are named. The issued blob contains that name plus a random secret;
+the token row stores only `sha256(secret)`, creation/expiry times, and public
+provenance. Revocation deletes the named row. Environment values remain outside
+Corrosion; the namespace intent document carries service fingerprints only.
 
-No secret value ever enters a Corrosion row. A Corrosion dump must be
-shareable with support without a single credential in it.
-
-- Env: `services` documents carry `env_fingerprints` —
-  `{ KEY: sha256 hex of the JSON-encoded value }`, matching Cloud's
-  existing fingerprint algorithm, so desired-vs-actual env diffs by
-  string equality without values replicating. (Unsalted sha256 of a
-  low-entropy value is dictionary-guessable by mesh members — priced in;
-  membership is the trust ceiling.)
-- Tokens: issued string `pz_<token-ulid>.<32-byte-random-base64>`, shown
-  once. The row keeps `sha256(secret part)`; verification is O(1) lookup
-  by embedded ULID + constant-time compare. Plain sha256 is deliberate:
-  256-bit random secrets, not passwords.
-- The rule has **zero exceptions**. The unified-certificate ticket
-  (#792) closed the once-pending sealed-cert-key exception as
-  unnecessary: TLS keys are machine-local on holders and never rows in
-  any form.
-
-## Certificates
-
-Fixed by the unified-cert ticket (#792). One hostname, one certificate,
-unified across gateways; per-gateway independent issuance stays vetoed.
-
-- **Key material is machine-local on gateways only.** Never rows, never
-  in the join payload, never through Cloud. Cert material is
-  reproducible — one ACME round-trip recreates it — so it needs no
-  durable cluster storage and no seal key exists.
-- **Possession is testimony:** `cert_holdings`, one row per
-  (gateway, hostname), written only by that gateway when it issues or
-  fetches. Readers derive everything: current cert = fingerprint from the row
-  with the chronologically greatest typed expiry; fetch sources = the machines
-  whose rows carry it. A holders array on a shared row is forbidden —
-  membership lists decompose into per-member rows or LWW eats concurrent
-  additions.
-- **Distribution is holder-to-holder mesh fetch** driven by the named
-  set in `cert_holdings` (the known-set gather law), never broadcast
-  discovery. A gateway that sees a fresh row but can reach no holder
-  keeps fetching and **never issues** — degraded is not entitled to a
-  duplicate (protects any CA's duplicate limits).
-- **Renewal is lock-free:** a daily tick with a stable per-machine
-  jitter offset derived from the machine ULID. Renew when a direct-mode
-  hostname is missing a cert or under 1/3 lifetime remains
-  (CA-agnostic; no fixed 30-day constant). Re-read `cert_holdings`
-  first — fetch if a fresher cert exists, else issue. Duplicate
-  issuance under a race is tolerated as harmless; chronologically greatest
-  typed-expiry adjudication converges readers. The same tick deletes the
-  machine's own holding row and local key material when the hostname no longer
-  has a direct-mode binding.
-- **HTTP-01 rides public rows:** `acme_http01`, key authorizations are
-  public by design. The issuing gateway writes the token row, waits for
-  local visibility plus a courtesy beat before triggering validation
-  (gossip must outrun the CA's fetch), and sweeps it when the order
-  settles.
-- **ACME accounts are per-issuing-gateway** — free, reproducible, key
-  on own disk, no shared secret, orphans on `machine rm` are harmless.
-  CA directory URL and optional contact are public fields on the
-  `cluster` document. The named upgrade path to a shared account (for
-  EAB CAs, DNS-PERSIST-01 `accounturi` pinning, CAA account pinning):
-  a public `acme_account` holdings row plus the same holder-to-holder
-  key fetch — additive, not built.
-- **Cert scope derives from ingress mode on the route binding.** Direct
-  hostnames get the full machinery; Cloudflare Tunnel / Tailscale
-  Funnel hostnames get none (the provider terminates TLS). A mode flip
-  is repaired by the ordinary tick noticing the gap.
+TLS and ACME account private keys stay machine-local. `cert_holdings` is
+per-machine testimony, while `acme_http01` contains only public challenge
+material. Certificate selection and renewal derive from current route bindings;
+no shared secret or certificate-key row exists.

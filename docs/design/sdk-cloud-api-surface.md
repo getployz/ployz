@@ -83,7 +83,7 @@ hand-written client wraps and what Cloud may build against. CLI and SDK share
 2. **The caller-composed operation** — `deploy`, returning an op handle;
    `ops list` and lookup from coarse summary rows;
    operation watch is invalidation plus full re-query, not event replay.
-3. **Logs** — tail + follow for a service/container.
+3. **Logs** — tail + follow for a named service's current local containers.
 4. **Tokens** — create, **list** (default-live, `--all`-equivalent flag for
    expired — mirroring the CLI semantics), revoke. Redemption stays at the
    public door, outside the SDK.

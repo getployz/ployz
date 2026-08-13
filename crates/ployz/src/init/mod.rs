@@ -28,8 +28,8 @@ pub async fn execute(mut command: InitCommand) -> Result<(), InitExecutionError>
                 .ok()
                 .filter(|value| !value.is_empty())
                 .map_or_else(
-                    || "operator laptop".to_owned(),
-                    |user| format!("{user} laptop"),
+                    || "operator-laptop".to_owned(),
+                    |user| format!("{user}-laptop"),
                 );
             let key = ssh::SshPeerKey::load_or_create(
                 &ssh::default_config_home(&home),

@@ -13,8 +13,8 @@ use ployz::commands::SshTarget;
 use ployz::mesh::context::{LoadedOperatorContext, OperatorContextStore};
 use ployz::mesh::http::{JsonReply, MeshApiClient};
 use ployz::mesh::{BuiltinWireguardDial, BuiltinWireguardPeer, MeshConnector, MeshDialTimeouts};
-use ployz_core::corrosion::ServiceDocument;
-use ployz_core::ids::{MachineRowId, OperationRowId};
+use ployz_core::corrosion::{CorrosionServiceName, PublishedService, service_key};
+use ployz_core::ids::{CorrosionNamespaceName, DeployName, MachineName};
 use ployz_core::{
     DEPLOY_ROUTE, DeployAccepted, DeployRefusal, DeployRequest, LensCollection, LensSnapshot,
 };
@@ -29,11 +29,11 @@ const WAIT_DELAY: Duration = Duration::from_millis(250);
 /// `data` (`ployz-n{len}-{namespace}-v4-data`).
 pub(super) const DATA_VOLUME_SUFFIX: &str = "-v4-data";
 
-/// The converged post-deploy truth for one service: its row document and one
-/// `(machine, ip)` entry per container row owned by the given operation.
+/// The converged post-deploy truth for one service: its published intent and
+/// one `(machine, ip)` entry per observed endpoint owned by the given deploy.
 pub(super) struct PlacedRows {
-    pub(super) service: ServiceDocument,
-    pub(super) containers: Vec<(MachineRowId, Ipv4Addr)>,
+    pub(super) service: PublishedService,
+    pub(super) endpoints: Vec<(MachineName, Ipv4Addr)>,
 }
 
 /// Sends one typed deploy request over the operator's persisted WireGuard
@@ -72,65 +72,77 @@ pub(super) async fn mesh_deploy(
         .map_err(|error| error.to_string())
 }
 
-/// Waits until the service row belongs to the given operation and exactly
-/// `expected_containers` container rows exist for the service, all owned by
-/// that operation (older revisions cleaned).
+/// Waits until service intent belongs to the given deploy and exactly
+/// `expected_endpoints` fresh endpoints exist for it (older revisions cleaned).
 pub(super) async fn wait_for_placed_rows(
     docker: &Docker,
     requester: &DindMachine,
     api_address: &str,
+    namespace_name: &str,
     service_name: &str,
-    operation_id: &OperationRowId,
-    expected_containers: usize,
+    operation_id: &DeployName,
+    expected_endpoints: usize,
 ) -> Result<PlacedRows, String> {
     let deadline = Instant::now() + WAIT_BUDGET;
     let mut last = String::from("public lenses were not queried");
     while Instant::now() < deadline {
         let services = public_lens(docker, requester, api_address, LensCollection::Services).await;
-        let containers =
-            public_lens(docker, requester, api_address, LensCollection::Containers).await;
-        match (services, containers) {
+        let endpoints =
+            public_lens(docker, requester, api_address, LensCollection::Endpoints).await;
+        match (services, endpoints) {
             (
                 Ok(LensSnapshot::Services { rows: service_rows }),
-                Ok(LensSnapshot::Containers {
-                    rows: container_rows,
+                Ok(LensSnapshot::Endpoints {
+                    rows: endpoint_rows,
                 }),
             ) => {
+                let namespace_name = CorrosionNamespaceName::try_new(namespace_name)
+                    .map_err(|error| error.to_string())?;
+                let service_name = CorrosionServiceName::try_new(service_name)
+                    .map_err(|error| error.to_string())?;
+                let service_key = service_key(&namespace_name, &service_name);
                 let service = service_rows.iter().find(|row| {
-                    row.document.name.as_str() == service_name
-                        && &row.document.operation_id == operation_id
+                    row.key == service_key && &row.document.active_deploy == operation_id
                 });
                 if let Some(service) = service {
-                    let placed = container_rows
+                    let placed = endpoint_rows
                         .iter()
-                        .filter(|row| row.document.service_id == service.id)
+                        .flat_map(|(machine_name, row)| {
+                            row.endpoints
+                                .iter()
+                                .map(move |endpoint| (machine_name, endpoint))
+                        })
+                        .filter(|(_, endpoint)| {
+                            endpoint.namespace_id == namespace_name
+                                && endpoint.service_name == service_name
+                        })
                         .collect::<Vec<_>>();
-                    if placed.len() == expected_containers
+                    if placed.len() == expected_endpoints
                         && placed
                             .iter()
-                            .all(|row| &row.document.deploy == operation_id)
+                            .all(|(_, endpoint)| &endpoint.deploy == operation_id)
                     {
                         return Ok(PlacedRows {
                             service: service.document.clone(),
-                            containers: placed
+                            endpoints: placed
                                 .iter()
-                                .map(|row| (row.document.machine_id.clone(), row.document.ip))
+                                .map(|(machine_id, endpoint)| ((*machine_id).clone(), endpoint.ip))
                                 .collect(),
                         });
                     }
                     last = format!(
-                        "service {service_name} had {} container row(s), wanted {expected_containers} owned by {operation_id}",
+                        "service {service_name} had {} endpoint(s), wanted {expected_endpoints} owned by {operation_id}",
                         placed.len()
                     );
                 } else {
                     last = format!(
-                        "service row for {service_name} under operation {operation_id} had not converged"
+                        "service intent for {service_name} under deploy {operation_id} had not converged"
                     );
                 }
             }
-            (Ok(services), Ok(containers)) => {
+            (Ok(services), Ok(endpoints)) => {
                 last = format!(
-                    "public API returned the wrong lenses: services={services:?} containers={containers:?}"
+                    "public API returned the wrong lenses: services={services:?} endpoints={endpoints:?}"
                 );
             }
             (Err(error), _) | (_, Err(error)) => last = error,

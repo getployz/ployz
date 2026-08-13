@@ -4,14 +4,14 @@ use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::MachineId;
+use crate::ids::MachineName;
 
 /// Gateway role status fact reported by the gateway process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct GatewayStatusObservation {
-    pub machine_id: MachineId,
+    pub machine_id: MachineName,
     pub listen_addr: SocketAddr,
     pub serving: GatewayServingStatus,
     pub route_count: usize,

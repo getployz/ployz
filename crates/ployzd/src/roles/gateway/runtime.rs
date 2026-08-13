@@ -15,6 +15,7 @@ use super::observation::GatewayObservationPublisher;
 use super::pingora::{PingoraRouteRegistry, PloyzGatewayProxy};
 use super::projection::{GatewayFold, GatewayProjectionInput, project_gateway_rows};
 use super::source::{CorrosionGatewaySource, GatewayRows, GatewaySourceError};
+use ployz_core::corrosion::{CorrosionTimestamp, MACHINE_ENDPOINT_TESTIMONY_MAX_AGE};
 use ployz_core::machine::{
     GatewayProcessAttempt, GatewayProcessHealth, GatewayServingStatus, GatewayStatusPublishFailure,
     GatewayWatchFailure,
@@ -114,7 +115,7 @@ async fn run_listener(
 }
 
 async fn run_projection_loop(
-    cluster_id: ployz_core::ids::ClusterId,
+    cluster_id: ployz_core::ids::ClusterName,
     source: CorrosionGatewaySource,
     publisher: GatewayObservationPublisher,
     registry: PingoraRouteRegistry,
@@ -169,6 +170,7 @@ async fn run_projection_loop(
             }
         };
         let fold = project_rows(cluster_id.clone(), rows);
+        let next_endpoint_expiry = fold.next_endpoint_expiry;
         registry.replace_projection(&fold.projection);
         health.record_current(fold.projection.routes.len());
         publish_health(
@@ -187,9 +189,14 @@ async fn run_projection_loop(
         let Some(active) = subscriptions.as_mut() else {
             continue;
         };
-        match until_shutdown(&mut shutdown, active.wait_for_invalidation()).await {
+        let refresh = tokio::time::timeout(
+            next_endpoint_expiry.unwrap_or(MACHINE_ENDPOINT_TESTIMONY_MAX_AGE),
+            active.wait_for_invalidation(),
+        );
+        match until_shutdown(&mut shutdown, refresh).await {
             ShutdownOutcome::Stopped => return Ok(()),
-            ShutdownOutcome::Completed(Ok(())) => {
+            ShutdownOutcome::Completed(Err(_)) => continue,
+            ShutdownOutcome::Completed(Ok(Ok(()))) => {
                 if sleep_or_shutdown(&mut shutdown, INVALIDATION_COALESCE).await {
                     return Ok(());
                 }
@@ -207,7 +214,7 @@ async fn run_projection_loop(
                     .await?;
                 }
             }
-            ShutdownOutcome::Completed(Err(error)) => {
+            ShutdownOutcome::Completed(Ok(Err(error))) => {
                 subscriptions = None;
                 refresh_failure(
                     &mut retry,
@@ -224,14 +231,15 @@ async fn run_projection_loop(
     }
 }
 
-fn project_rows(cluster_id: ployz_core::ids::ClusterId, rows: GatewayRows) -> GatewayFold {
+fn project_rows(cluster_id: ployz_core::ids::ClusterName, rows: GatewayRows) -> GatewayFold {
     project_gateway_rows(GatewayProjectionInput {
+        now: CorrosionTimestamp::now_utc(),
         cluster_id,
         cluster: rows.cluster,
         machines: rows.machines,
-        services: rows.services,
+        namespaces: rows.namespaces,
         route_bindings: rows.route_bindings,
-        containers: rows.containers,
+        machine_endpoints: rows.machine_endpoints,
     })
 }
 

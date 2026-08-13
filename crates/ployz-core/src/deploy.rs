@@ -5,7 +5,7 @@ use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::NamespaceId;
+use crate::ids::CorrosionNamespaceName;
 
 pub mod images;
 pub mod runtime;

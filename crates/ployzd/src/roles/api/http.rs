@@ -7,6 +7,7 @@
 mod config;
 mod controller;
 mod controller_forwarding;
+mod controller_kernel;
 mod deploy_controller;
 mod deploy_effect_http;
 mod deploy_effects;
@@ -16,6 +17,7 @@ mod door;
 mod endpoint_network;
 mod founding;
 mod join;
+mod machine_endpoint_reporter;
 mod mutations;
 mod namespace_store;
 mod node_workflows;

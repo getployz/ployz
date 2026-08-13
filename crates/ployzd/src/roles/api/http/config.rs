@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use hmac::{Hmac, Mac};
 use ployz_core::MachineUpgradeSupervisor;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::join::JOIN_DOOR_PORT;
 use ployz_host_runner::{
     API_UPGRADE_STAGING_DIRECTORY, API_WORKFLOW_DIRECTORY, ArtifactStoreError, PloyzdArtifactStore,
@@ -190,8 +190,8 @@ fn bootstrap_tag(value: &[u8]) -> [u8; 32] {
 #[derive(Debug, Clone)]
 pub struct ApiRoleConfig {
     corrosion: CorrosionClientConfig,
-    cluster_id: ClusterId,
-    local_machine_id: MachineRowId,
+    cluster_id: ClusterName,
+    local_machine_id: MachineName,
     listen_addr: SocketAddr,
     door: JoinDoorConfig,
     build: String,
@@ -224,13 +224,13 @@ impl ApiRoleConfig {
         )
         .map_err(ApiRoleConfigError::CorrosionConfig)?;
         let cluster_id =
-            ClusterId::try_new(environment_value(CLUSTER_ID_ENV)?).map_err(|error| {
+            ClusterName::try_new(environment_value(CLUSTER_ID_ENV)?).map_err(|error| {
                 ApiRoleConfigError::InvalidClusterId {
                     detail: error.to_string(),
                 }
             })?;
         let local_machine_id =
-            MachineRowId::try_new(environment_value(MACHINE_ID_ENV)?).map_err(|error| {
+            MachineName::try_new(environment_value(MACHINE_ID_ENV)?).map_err(|error| {
                 ApiRoleConfigError::InvalidMachineId {
                     detail: error.to_string(),
                 }
@@ -323,8 +323,8 @@ impl ApiRoleConfig {
     /// of command-line arguments.
     pub fn new(
         corrosion: CorrosionClientConfig,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         listen_addr: SocketAddr,
         build: String,
     ) -> Result<Self, ApiRoleConfigError> {
@@ -341,8 +341,8 @@ impl ApiRoleConfig {
     /// Builds founding-mode configuration around a local bootstrap credential.
     pub fn new_founding(
         corrosion: CorrosionClientConfig,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         listen_addr: SocketAddr,
         build: String,
         bootstrap_secret: BootstrapSecret,
@@ -359,8 +359,8 @@ impl ApiRoleConfig {
 
     fn new_with_mode(
         corrosion: CorrosionClientConfig,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         listen_addr: SocketAddr,
         build: String,
         mode: ApiRoleMode,
@@ -388,8 +388,8 @@ impl ApiRoleConfig {
 
     fn new_with_details(
         corrosion: CorrosionClientConfig,
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         listen_addr: SocketAddr,
         details: ApiRoleDetails,
     ) -> Result<Self, ApiRoleConfigError> {
@@ -432,12 +432,12 @@ impl ApiRoleConfig {
     }
 
     #[must_use]
-    pub fn cluster_id(&self) -> &ClusterId {
+    pub fn cluster_id(&self) -> &ClusterName {
         &self.cluster_id
     }
 
     #[must_use]
-    pub fn local_machine_id(&self) -> &MachineRowId {
+    pub fn local_machine_id(&self) -> &MachineName {
         &self.local_machine_id
     }
 

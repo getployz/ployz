@@ -8,10 +8,10 @@ use ployz_core::corrosion::{
     ClusterDocument, CorrosionTable, MachineDocument, MachineStatusDocument, Statement, StoredRow,
     read_named_roster_rows, read_rows,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
-    ApiRefusal, DoctorProjectionInput, DoctorRawRows, MachineLensRow, StatusCorrosionHealth,
-    StatusProjectionInput, project_doctor, project_status,
+    ApiRefusal, DoctorProjectionInput, DoctorRawRows, StatusCorrosionHealth, StatusProjectionInput,
+    project_doctor, project_status,
 };
 
 use super::roster::corrosion_unavailable_refusal;
@@ -87,15 +87,15 @@ fn typed_ok<Value: serde::Serialize>(value: &Value) -> Response<HttpBody> {
 
 struct StatusInputs {
     cluster: Option<ClusterDocument>,
-    machines: Vec<MachineLensRow>,
+    machines: Vec<MachineDocument>,
     wireguard_handshakes:
-        Option<BTreeMap<MachineRowId, ployz_core::corrosion::WireGuardHandshakeEvidence>>,
+        Option<BTreeMap<MachineName, ployz_core::corrosion::WireGuardHandshakeEvidence>>,
 }
 
 async fn read_status_inputs(
     corrosion: &CorrosionClient,
-    cluster_id: &ClusterId,
-    local_machine_id: &MachineRowId,
+    cluster_id: &ClusterName,
+    local_machine_id: &MachineName,
 ) -> Result<StatusInputs, DiagnosticsReadError> {
     let cluster_rows = query_rows(corrosion, select_cluster(cluster_id));
     let machine_rows = query_rows(corrosion, select_all(CorrosionTable::Machines));
@@ -114,19 +114,8 @@ async fn read_status_inputs(
     let machines = read_named_roster_rows::<MachineDocument>(accepted_cluster, machine_rows)
         .accepted
         .into_iter()
-        .map(|row| {
-            let id = MachineRowId::try_new(row.id.as_str().to_owned()).map_err(|error| {
-                DiagnosticsReadError::InvalidAcceptedRow {
-                    table: CorrosionTable::Machines,
-                    detail: error.to_string(),
-                }
-            })?;
-            Ok(MachineLensRow {
-                id,
-                document: row.value,
-            })
-        })
-        .collect::<Result<Vec<_>, DiagnosticsReadError>>()?;
+        .map(|row| row.value)
+        .collect();
 
     let mut statuses = read_rows::<MachineStatusDocument>(cluster_id, local_status_rows)
         .accepted
@@ -161,10 +150,9 @@ async fn read_doctor_rows(
         peers,
         tokens,
         namespaces,
-        services,
         route_bindings,
         controller,
-        containers,
+        machine_endpoints,
         machine_status,
         gateway_observations,
         operations,
@@ -176,10 +164,9 @@ async fn read_doctor_rows(
     let peers = query_rows(corrosion, peers);
     let tokens = query_rows(corrosion, tokens);
     let namespaces = query_rows(corrosion, namespaces);
-    let services = query_rows(corrosion, services);
     let route_bindings = query_rows(corrosion, route_bindings);
     let controller = query_rows(corrosion, controller);
-    let containers = query_rows(corrosion, containers);
+    let machine_endpoints = query_rows(corrosion, machine_endpoints);
     let machine_status = query_rows(corrosion, machine_status);
     let gateway_observations = query_rows(corrosion, gateway_observations);
     let operations = query_rows(corrosion, operations);
@@ -191,10 +178,9 @@ async fn read_doctor_rows(
         peers,
         tokens,
         namespaces,
-        services,
         route_bindings,
         controller,
-        containers,
+        machine_endpoints,
         machine_status,
         gateway_observations,
         operations,
@@ -206,10 +192,9 @@ async fn read_doctor_rows(
         peers,
         tokens,
         namespaces,
-        services,
         route_bindings,
         controller,
-        containers,
+        machine_endpoints,
         machine_status,
         gateway_observations,
         operations,
@@ -223,10 +208,9 @@ async fn read_doctor_rows(
         peers,
         tokens,
         namespaces,
-        services,
         route_bindings,
         controller,
-        containers,
+        machine_endpoints,
         machine_status,
         gateway_observations,
         operations,
@@ -236,7 +220,7 @@ async fn read_doctor_rows(
 }
 
 fn accepted_cluster(
-    cluster_id: &ClusterId,
+    cluster_id: &ClusterName,
     rows: Vec<StoredRow>,
 ) -> Result<Option<ClusterDocument>, DiagnosticsReadError> {
     if rows.is_empty() {
@@ -267,11 +251,11 @@ async fn query_rows(
     .map_err(DiagnosticsReadError::from)
 }
 
-fn doctor_statements() -> [Statement; 14] {
+fn doctor_statements() -> [Statement; 13] {
     CorrosionTable::ALL.map(select_all)
 }
 
-fn select_cluster(cluster_id: &ClusterId) -> Statement {
+fn select_cluster(cluster_id: &ClusterName) -> Statement {
     Statement::with_params(
         "SELECT id, document FROM cluster WHERE id = ?",
         vec![ployz_core::corrosion::SqliteParameter::Text(
@@ -290,10 +274,9 @@ fn select_all(table: CorrosionTable) -> Statement {
         | CorrosionTable::Peers
         | CorrosionTable::Tokens
         | CorrosionTable::Namespaces
-        | CorrosionTable::Services
         | CorrosionTable::RouteBindings
         | CorrosionTable::Controller
-        | CorrosionTable::Containers
+        | CorrosionTable::MachineEndpoints
         | CorrosionTable::Operations
         | CorrosionTable::CertHoldings
         | CorrosionTable::AcmeHttp01 => {
@@ -302,7 +285,7 @@ fn select_all(table: CorrosionTable) -> Statement {
     }
 }
 
-fn select_local_machine_status(machine_id: &MachineRowId) -> Statement {
+fn select_local_machine_status(machine_id: &MachineName) -> Statement {
     Statement::with_params(
         "SELECT machine_id AS id, document FROM machine_status WHERE machine_id = ?",
         vec![ployz_core::corrosion::SqliteParameter::Text(

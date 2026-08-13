@@ -11,8 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::corrosion::{
     CorrosionTimestamp, MachineDocument, MachineTransport, Sha256Hex, TokenDocument,
 };
-use crate::ids::{MachineRowId, TokenId};
-use crate::machine::MachineName;
+use crate::ids::{MachineName, TokenName};
 
 use super::admission::JoinDoorRefusal;
 
@@ -202,7 +201,7 @@ fn hex_nibble(byte: u8) -> u8 {
 #[serde(deny_unknown_fields)]
 struct JoinBlobPayload {
     v: u8,
-    token_id: TokenId,
+    token_id: TokenName,
     secret: JoinTokenSecret,
     door_cert_sha256: JoinDoorCertFingerprint,
     endpoints: AdvertisedJoinDoorEndpoints,
@@ -219,7 +218,7 @@ pub struct JoinBlob {
 
 impl JoinBlob {
     pub fn try_new(
-        token_id: TokenId,
+        token_id: TokenName,
         secret: JoinTokenSecret,
         door_cert_sha256: JoinDoorCertFingerprint,
         endpoints: Vec<SocketAddr>,
@@ -270,7 +269,7 @@ impl JoinBlob {
     }
 
     #[must_use]
-    pub fn token_id(&self) -> &TokenId {
+    pub fn token_id(&self) -> &TokenName {
         &self.payload.token_id
     }
 
@@ -409,6 +408,7 @@ pub enum AdvertisedJoinDoorEndpointsError {
 pub enum TokenCreateRefusal {
     NoAdvertisedDoorEndpoint { repair_command: String },
     TooManyAdvertisedDoorEndpoints { found: usize, maximum: usize },
+    NameConflict { name: TokenName },
 }
 
 /// Derives public HTTPS addresses from accepted WireGuard endpoint IPs.
@@ -441,7 +441,7 @@ pub fn advertise_join_door_endpoints<'machine>(
 /// Verifies a token row at the one public route where API-token principals exist.
 pub fn validate_join_token(
     proof: &JoinTokenProof,
-    token_row: Option<(&TokenId, &TokenDocument)>,
+    token_row: Option<(&TokenName, &TokenDocument)>,
     now: CorrosionTimestamp,
 ) -> Result<crate::corrosion::Principal, JoinDoorRefusal> {
     let Some((row_id, document)) = token_row else {
@@ -565,9 +565,10 @@ impl From<JoinDoorPrivateKeyPem> for String {
 pub struct JoinDoorPrivateKeyPemError;
 
 /// Mesh-authenticated request to mint one show-once join credential.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenCreateRequest {
+    pub name: TokenName,
     pub ttl_seconds: JoinTokenTtlSeconds,
 }
 
@@ -575,7 +576,7 @@ pub struct TokenCreateRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenCreateReply {
-    pub token_id: TokenId,
+    pub token_id: TokenName,
     pub blob: JoinBlob,
     pub created_at: CorrosionTimestamp,
     pub expires_at: CorrosionTimestamp,
@@ -584,14 +585,14 @@ pub struct TokenCreateReply {
 /// A row/reply pair prepared without retaining the plaintext secret in the row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedTokenCreation {
-    pub token_id: TokenId,
+    pub token_id: TokenName,
     pub document: TokenDocument,
     pub reply: TokenCreateReply,
 }
 
 impl PreparedTokenCreation {
     pub fn try_new(
-        token_id: TokenId,
+        token_id: TokenName,
         secret: JoinTokenSecret,
         door_cert_fingerprint: JoinDoorCertFingerprint,
         endpoints: AdvertisedJoinDoorEndpoints,
@@ -635,7 +636,7 @@ pub struct TokenListRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenListItem {
-    pub token_id: TokenId,
+    pub token_id: TokenName,
     pub created_at: CorrosionTimestamp,
     pub expires_at: CorrosionTimestamp,
 }
@@ -650,7 +651,7 @@ pub struct TokenListReply {
 pub fn token_list_reply(
     request: TokenListRequest,
     now: CorrosionTimestamp,
-    rows: impl IntoIterator<Item = (TokenId, TokenDocument)>,
+    rows: impl IntoIterator<Item = (TokenName, TokenDocument)>,
 ) -> TokenListReply {
     let mut tokens = rows
         .into_iter()
@@ -668,20 +669,21 @@ pub fn token_list_reply(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenRevokeRequest {
-    pub token_id: TokenId,
+    pub token_id: TokenName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenRevokeReply {
-    pub token_id: TokenId,
+    pub token_id: TokenName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TokenRevokeRefusal {
-    NotFound { token_id: TokenId },
+    NotFound { token_id: TokenName },
+    ConcurrentMutation { token_id: TokenName },
 }
 
 /// Mesh-authenticated request to change only a WireGuard endpoint.
@@ -696,7 +698,7 @@ pub struct MachineEndpointSetRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineEndpointSetReply {
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub machine: MachineDocument,
 }
 
@@ -706,12 +708,12 @@ pub struct MachineEndpointSetReply {
 pub enum MachineEndpointSetRefusal {
     NotFound { machine_name: MachineName },
     EndpointPortZero { machine_name: MachineName },
-    ProviderDoesNotUseWireguard { machine_id: MachineRowId },
+    ProviderDoesNotUseWireguard { machine_id: MachineName },
 }
 
 /// Applies only the endpoint field, preserving every other roster decision.
 pub fn set_machine_endpoint(
-    machine_id: MachineRowId,
+    machine_id: MachineName,
     request: &MachineEndpointSetRequest,
     mut machine: MachineDocument,
 ) -> Result<MachineEndpointSetReply, MachineEndpointSetRefusal> {
@@ -734,7 +736,7 @@ pub fn set_machine_endpoint(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct JoinTokenProof {
-    pub token_id: TokenId,
+    pub token_id: TokenName,
     pub secret: JoinTokenSecret,
 }
 
@@ -795,4 +797,22 @@ pub struct JoinDoorMaterial {
     pub certificate_pem: JoinDoorCertificatePem,
     pub private_key_pem: JoinDoorPrivateKeyPem,
     pub fingerprint: JoinDoorCertFingerprint,
+}
+
+#[cfg(test)]
+mod revoke_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn concurrent_token_revocation_has_a_typed_wire_refusal() {
+        let refusal = TokenRevokeRefusal::ConcurrentMutation {
+            token_id: TokenName::try_new("bootstrap").expect("token id"),
+        };
+        assert_eq!(
+            serde_json::to_value(refusal).expect("refusal serializes"),
+            json!({ "kind": "concurrent_mutation", "token_id": "bootstrap" })
+        );
+    }
 }

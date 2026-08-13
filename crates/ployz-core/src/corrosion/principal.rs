@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 
 use super::document::{MachineTransport, PeerTransport};
-use crate::ids::{MachineRowId, PeerId, TokenId};
+use crate::ids::{MachineName, PeerName, TokenName};
 
 /// The authenticated identity of a request or durable write provenance.
 ///
@@ -16,9 +16,9 @@ use crate::ids::{MachineRowId, PeerId, TokenId};
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Principal {
-    Machine { machine_id: MachineRowId },
-    Peer { peer_id: PeerId },
-    ApiToken { token_id: TokenId },
+    Machine { machine_id: MachineName },
+    Peer { peer_id: PeerName },
+    ApiToken { token_id: TokenName },
 }
 
 /// The durable-provenance name for [`Principal`].
@@ -32,11 +32,11 @@ pub type OperationInitiator = Principal;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcceptedRosterPrincipal {
     Machine {
-        machine_id: MachineRowId,
+        machine_id: MachineName,
         transport: MachineTransport,
     },
     Peer {
-        peer_id: PeerId,
+        peer_id: PeerName,
         transport: PeerTransport,
     },
 }
@@ -44,7 +44,7 @@ pub enum AcceptedRosterPrincipal {
 impl AcceptedRosterPrincipal {
     /// Creates a machine candidate from an accepted named machines-row winner.
     #[must_use]
-    pub fn machine(machine_id: MachineRowId, transport: MachineTransport) -> Self {
+    pub fn machine(machine_id: MachineName, transport: MachineTransport) -> Self {
         Self::Machine {
             machine_id,
             transport,
@@ -53,7 +53,7 @@ impl AcceptedRosterPrincipal {
 
     /// Creates a peer candidate from an accepted named peers-row winner.
     #[must_use]
-    pub fn peer(peer_id: PeerId, transport: PeerTransport) -> Self {
+    pub fn peer(peer_id: PeerName, transport: PeerTransport) -> Self {
         Self::Peer { peer_id, transport }
     }
 

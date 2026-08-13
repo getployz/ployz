@@ -5,6 +5,7 @@ use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use ployz_core::corrosion::{CorrosionTimestamp, MACHINE_ENDPOINT_TESTIMONY_MAX_AGE};
 use ployz_core::network::internal_dns::{
     INTERNAL_DNS_READINESS_ADDRESS, INTERNAL_DNS_READINESS_NAME, InternalDnsRowProjection,
     InternalDnsRowProjectionInput, InternalServiceName, project_internal_dns_rows,
@@ -102,6 +103,7 @@ async fn run_dns_loop(
                 continue;
             }
         };
+        let next_endpoint_expiry = projection.next_endpoint_expiry;
         if let Err(error) = resolver.apply(projection).await {
             retry_failure(
                 &mut refresh_retry,
@@ -116,11 +118,14 @@ async fn run_dns_loop(
         let Some(active) = subscriptions.as_mut() else {
             continue;
         };
-        match until_shutdown(&mut shutdown, active.wait_for_invalidation()).await {
-            ShutdownOutcome::Stopped => {
-                return Ok(());
-            }
-            ShutdownOutcome::Completed(Ok(())) => {
+        let refresh = tokio::time::timeout(
+            next_endpoint_expiry.unwrap_or(MACHINE_ENDPOINT_TESTIMONY_MAX_AGE),
+            active.wait_for_invalidation(),
+        );
+        match until_shutdown(&mut shutdown, refresh).await {
+            ShutdownOutcome::Stopped => return Ok(()),
+            ShutdownOutcome::Completed(Err(_)) => continue,
+            ShutdownOutcome::Completed(Ok(Ok(()))) => {
                 if sleep_or_shutdown(&mut shutdown, INVALIDATION_COALESCE).await {
                     return Ok(());
                 }
@@ -129,7 +134,7 @@ async fn run_dns_loop(
                     retry_failure(&mut refresh_retry, &mut shutdown, error).await?;
                 }
             }
-            ShutdownOutcome::Completed(Err(error)) => {
+            ShutdownOutcome::Completed(Ok(Err(error))) => {
                 subscriptions = None;
                 retry_failure(&mut refresh_retry, &mut shutdown, error).await?;
             }
@@ -146,13 +151,13 @@ fn project_rows(
     ployz_core::network::internal_dns::InternalDnsRowProjectionError,
 > {
     project_internal_dns_rows(InternalDnsRowProjectionInput {
+        now: CorrosionTimestamp::now_utc(),
         cluster_id: config.cluster_id().clone(),
         local_machine_id: config.local_machine_id().clone(),
         cluster_rows: rows.cluster,
         machine_rows: rows.machines,
         namespace_rows: rows.namespaces,
-        service_rows: rows.services,
-        container_rows: rows.containers,
+        machine_endpoint_rows: rows.machine_endpoints,
     })
 }
 
@@ -417,6 +422,7 @@ mod tests {
         InternalDnsRowProjection {
             bind,
             records: BTreeMap::from([(service_name(), vec![address])]),
+            next_endpoint_expiry: None,
         }
     }
 

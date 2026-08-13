@@ -16,8 +16,8 @@ use ployz_core::corrosion::{
     MachineTransport, MeshProvider, OperationInitiator, OperatorWriteProvenance, PeerDocument,
     PeerTransport, Statement, StorageMode, StoredRow,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
-use ployz_core::machine::{MachineLifecycle, MachineName};
+use ployz_core::ids::{ClusterName, MachineName, PeerName};
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet};
 use ployz_core::{
     ApiRefusal, DoctorDocument, StatusBarrier, StatusDegradationReason, StatusDocument, StatusSync,
@@ -27,9 +27,9 @@ use ployzd::roles::api::http::{ApiRoleConfig, ApiServer, BootstrapSecret};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const MACHINE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+const CLUSTER: &str = "main";
+const MACHINE: &str = "machine-one";
+const PEER: &str = "operator";
 
 #[tokio::test]
 async fn initial_empty_database_serves_only_get_status_as_no_roster() {
@@ -157,14 +157,13 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
         .json::<DoctorDocument>()
         .await
         .expect("doctor JSON");
-    assert!(doctor.shadows.is_empty());
     assert!(doctor.skipped_newer_versions.is_empty());
     assert!(doctor.foreign_clusters.is_empty());
     let queries = corrosion.queries();
     assert_eq!(
         queries.len(),
-        17,
-        "three auth reads plus fourteen doctor reads"
+        16,
+        "three auth reads plus thirteen doctor reads"
     );
     assert!(queries.iter().all(|query| query.starts_with("SELECT ")));
     let [_, _, _, doctor_queries @ ..] = queries.as_slice() else {
@@ -180,9 +179,8 @@ async fn authenticated_doctor_performs_one_read_only_sweep_of_every_table() {
             | CorrosionTable::Peers
             | CorrosionTable::Tokens
             | CorrosionTable::Namespaces
-            | CorrosionTable::Services
             | CorrosionTable::RouteBindings
-            | CorrosionTable::Containers
+            | CorrosionTable::MachineEndpoints
             | CorrosionTable::Operations
             | CorrosionTable::CertHoldings
             | CorrosionTable::AcmeHttp01
@@ -440,12 +438,12 @@ fn unused_loopback_addr() -> SocketAddr {
     listener.local_addr().expect("API address")
 }
 
-fn cluster_id() -> ClusterId {
-    ClusterId::try_new(CLUSTER).expect("cluster id")
+fn cluster_id() -> ClusterName {
+    ClusterName::try_new(CLUSTER).expect("cluster id")
 }
 
-fn machine_id() -> MachineRowId {
-    MachineRowId::try_new(MACHINE).expect("machine id")
+fn machine_id() -> MachineName {
+    MachineName::try_new(MACHINE).expect("machine id")
 }
 
 fn provenance() -> OperatorWriteProvenance {
@@ -495,7 +493,7 @@ fn peer_document() -> PeerDocument {
         v: CorrosionDocumentVersion::V1,
         cluster_id: cluster_id(),
         provenance: provenance(),
-        name: "operator".to_owned(),
+        name: PeerName::try_new("operator").expect("peer name"),
         transport: PeerTransport::Tailscale {
             ip: Ipv4Addr::LOCALHOST,
         },

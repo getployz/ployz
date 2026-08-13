@@ -10,6 +10,8 @@ use duroxide::runtime::{ObservabilityConfig, Runtime, RuntimeOptions};
 use duroxide::{
     Client, OrchestrationContext, OrchestrationRegistry, OrchestrationStatus, RetryPolicy,
 };
+use ployz_core::corrosion::{CorrosionNamespaceName, CorrosionServiceName};
+use ployz_core::ids::DeployName;
 use ployz_core::{
     DeployPrepareOutcome, DeployPrepareRequest, DeployRetireOutcome, DeployRetireRequest,
 };
@@ -87,19 +89,35 @@ impl NodeWorkflows {
     /// Starts or resumes the operation's stable prepare instance and waits for
     /// its typed terminal result. Completed instances do no new host work.
     pub(super) async fn prepare(&self, request: DeployPrepareRequest) -> DeployPrepareOutcome {
-        let instance = format!("deploy-prepare-{}", request.operation_id.as_str());
+        let instance = prepare_instance(
+            &request.namespace_name,
+            &request.service_name,
+            &request.operation_id,
+        );
         self.run(&instance, PREPARE_WORKFLOW, &request, PREPARE_WAIT)
             .await
-            .unwrap_or(DeployPrepareOutcome::Failed {})
+            .unwrap_or(DeployPrepareOutcome::Failed)
     }
 
     /// Starts or resumes the operation's stable retire instance and waits for
-    /// its typed terminal result. Completed instances do no new host work.
+    /// its typed terminal result. Service-removal state and failed deploy
+    /// cleanup are discardable so a later request can retry from Docker reality.
     pub(super) async fn retire(&self, request: DeployRetireRequest) -> DeployRetireOutcome {
-        let instance = format!("deploy-retire-{}", request.operation_id.as_str());
-        self.run(&instance, RETIRE_WORKFLOW, &request, RETIRE_WAIT)
+        let instance = retire_instance(
+            &request.namespace_name,
+            request.removed_service.as_ref(),
+            &request.operation_id,
+        );
+        let outcome = self
+            .run(&instance, RETIRE_WORKFLOW, &request, RETIRE_WAIT)
             .await
-            .unwrap_or(DeployRetireOutcome::Failed {})
+            .unwrap_or(DeployRetireOutcome::Failed);
+        if (request.removed_service.is_some() || outcome == DeployRetireOutcome::Failed)
+            && let Err(error) = self.client.delete_instance(&instance, false).await
+        {
+            tracing::warn!(%instance, %error, "could not discard terminal retire workflow");
+        }
+        outcome
     }
 
     async fn run<Input, Output>(
@@ -139,6 +157,30 @@ impl NodeWorkflows {
     }
 }
 
+fn prepare_instance(
+    namespace: &CorrosionNamespaceName,
+    service: &CorrosionServiceName,
+    deploy: &DeployName,
+) -> String {
+    format!(
+        "deploy-prepare-{}/{}/{}",
+        namespace.as_str(),
+        service.as_str(),
+        deploy.as_str()
+    )
+}
+
+fn retire_instance(
+    namespace: &CorrosionNamespaceName,
+    removed_service: Option<&CorrosionServiceName>,
+    deploy: &DeployName,
+) -> String {
+    match removed_service {
+        Some(service) => format!("service-remove/{}/{}", namespace.as_str(), service.as_str()),
+        None => format!("deploy-retire/{}/{}", namespace.as_str(), deploy.as_str()),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(super) enum NodeWorkflowOpenError {
     #[error("could not protect the node workflow directory: {0}")]
@@ -167,7 +209,7 @@ async fn prepare_workflow(
             activity_policy(PREPARE_ATTEMPT_TIMEOUT),
         )
         .await
-        .unwrap_or(DeployPrepareOutcome::Failed {}))
+        .unwrap_or(DeployPrepareOutcome::Failed))
 }
 
 async fn retire_workflow(
@@ -181,7 +223,7 @@ async fn retire_workflow(
             activity_policy(RETIRE_ATTEMPT_TIMEOUT),
         )
         .await
-        .unwrap_or(DeployRetireOutcome::Failed {}))
+        .unwrap_or(DeployRetireOutcome::Failed))
 }
 
 fn activity_policy(timeout: Duration) -> RetryPolicy {
@@ -235,6 +277,36 @@ mod tests {
     use super::*;
     use crate::WireGuardMtuPolicy;
     use crate::roles::api::execution::docker::runner::DockerManagedContainerRunner;
+
+    #[test]
+    fn workflow_instances_follow_prepare_and_retire_collision_scopes() {
+        let production = CorrosionNamespaceName::try_new("production").expect("namespace");
+        let staging = CorrosionNamespaceName::try_new("staging").expect("namespace");
+        let api = CorrosionServiceName::try_new("api").expect("service");
+        let worker = CorrosionServiceName::try_new("worker").expect("service");
+        let deploy = DeployName::try_new("release-1").expect("deploy");
+
+        assert_ne!(
+            prepare_instance(&production, &api, &deploy),
+            prepare_instance(&production, &worker, &deploy),
+            "services prepared on one machine must not share completed workflow state"
+        );
+        assert_ne!(
+            prepare_instance(&production, &api, &deploy),
+            prepare_instance(&staging, &api, &deploy),
+            "namespace-scoped deploy names must not collide during prepare"
+        );
+        assert_ne!(
+            retire_instance(&production, None, &deploy),
+            retire_instance(&staging, None, &deploy),
+            "namespace-scoped deploy names must not collide during retire"
+        );
+        assert_ne!(
+            retire_instance(&production, None, &deploy),
+            retire_instance(&production, Some(&api), &deploy),
+            "deploy cleanup and service removal have disjoint named scopes"
+        );
+    }
 
     #[tokio::test]
     async fn workflow_directory_is_node_private() {

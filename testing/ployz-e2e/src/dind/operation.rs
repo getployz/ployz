@@ -1,6 +1,7 @@
 //! Shared operator, registry, deploy, and gateway fixtures for DinD scenarios.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -8,14 +9,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bollard::Docker;
+use futures_util::future::try_join_all;
 use ployz::commands::SshTarget;
 use ployz::init::ssh::{SshPeerKey, default_config_home};
 use ployz::mesh::context::{OperatorContextStore, SSH_CONTEXT_HANDOFF_PREFIX, SshContextHandoff};
-use ployz_core::corrosion::{MachineDocument, MachineTransport, SqliteValue};
-use ployz_core::ids::{MachineRowId, OperationRowId};
+use ployz_core::corrosion::{CorrosionServiceName, MachineDocument, MachineTransport, SqliteValue};
+use ployz_core::deploy::{
+    ContainerRuntimeSpec, EnvName, EnvValue, ImageReference, ServiceEnvironment,
+};
+use ployz_core::ids::{DeployName, MachineName};
 use ployz_core::join::JoinBlob;
 use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
-use ployz_core::{LensCollection, LensSnapshot, lens_route};
+use ployz_core::{
+    DeployServiceRequest, DeployServices, HealthGatePolicy, LensCollection, LensSnapshot,
+    lens_route,
+};
 
 use super::{
     DindMachine, RELEASE_MANIFEST, artifact_dir, corrosion_access, corrosion_query,
@@ -23,12 +31,13 @@ use super::{
 };
 
 const CLUSTER_NAME: &str = "dind-operation-deploy";
+const OPERATOR_PEER_NAME: &str = "dind-operation-operator";
 pub const FOUNDER_NAME: &str = "machine-one";
 const WAIT_BUDGET: Duration = Duration::from_secs(60);
 const WAIT_DELAY: Duration = Duration::from_millis(250);
 const CLI_BUDGET: Duration = Duration::from_secs(180);
 pub const REGISTRY_PORT: u16 = 5_000;
-const OPERATION_ROW_ID_LABEL: &str = "plz.operation_row_id";
+const DEPLOY_NAME_LABEL: &str = "plz.deploy";
 const DNS_QUERY_PROGRAM: &str = r#"
 import ipaddress
 import socket
@@ -73,7 +82,7 @@ pub struct OperatorFixture {
     home: PathBuf,
     cli: PathBuf,
     pub founder_target: SshTarget,
-    pub founder_machine_id: MachineRowId,
+    pub founder_machine_id: MachineName,
     pub joiners: Vec<JoinedMachine>,
 }
 
@@ -88,7 +97,7 @@ impl OperatorFixture {
 /// One joined machine's operator-facing coordinates.
 pub struct JoinedMachine {
     pub name: String,
-    pub machine_id: MachineRowId,
+    pub machine_id: MachineName,
     pub target: SshTarget,
     pub api_address: String,
     pub dns_address: Ipv4Addr,
@@ -113,8 +122,8 @@ pub async fn found_and_join_with_service_urls(
     let home = temporary_home.path().to_path_buf();
     let config_home = default_config_home(&home);
     let founder_target: SshTarget = format!("root@{}", founder.bridge_ip).parse()?;
-    let operator = SshPeerKey::generate("dind operation operator".to_owned())
-        .map_err(|error| error.to_string())?;
+    let operator =
+        SshPeerKey::generate(OPERATOR_PEER_NAME.to_owned()).map_err(|error| error.to_string())?;
     let store = OperatorContextStore::new(&config_home);
     store
         .persist_peer_new(&founder_target, &operator)
@@ -125,10 +134,18 @@ pub async fn found_and_join_with_service_urls(
         .persist(&founder_target, handoff.clone(), &operator)
         .map_err(|error| error.to_string())?;
     let cli = artifact_dir().join("ployz");
-    for joiner in joiners {
-        let token = create_join_token(&cli, &home, &founder_target)?;
-        join_machine(docker, joiner, &token).await?;
+    let mut pending_joins = Vec::with_capacity(joiners.len());
+    for (index, joiner) in joiners.iter().enumerate() {
+        let token_name = format!("join-machine-{}", index + 2);
+        let token = create_join_token(&cli, &home, &founder_target, &token_name)?;
+        pending_joins.push((*joiner, token));
     }
+    try_join_all(
+        pending_joins
+            .iter()
+            .map(|(joiner, token)| join_machine(docker, joiner, token)),
+    )
+    .await?;
 
     let (corrosion_address, corrosion_token) = corrosion_access(docker, founder).await?;
     let roster = wait_for_roster(
@@ -309,31 +326,83 @@ pub fn create_namespace_and_deploy(
     image: &str,
     secret_name: &str,
     secret_value: &str,
-) -> Result<OperationRowId, String> {
+) -> Result<DeployName, String> {
     let founder_target = operator.founder_target.clone();
     create_namespace(operator, namespace, &founder_target)?;
-    let environment = format!("{secret_name}={secret_value}");
+    let service = image_service_request(service, image, secret_name, secret_value)?;
+    deploy_namespace(
+        operator,
+        namespace,
+        "release-1",
+        &[service],
+        "first deploy",
+        secret_value,
+    )
+}
+
+pub fn image_service_request(
+    service: &str,
+    image: &str,
+    secret_name: &str,
+    secret_value: &str,
+) -> Result<(CorrosionServiceName, DeployServiceRequest), String> {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.environment = ServiceEnvironment::from(BTreeMap::from([(
+        EnvName::try_new(secret_name).map_err(|error| error.to_string())?,
+        EnvValue::try_new(secret_value).map_err(|error| error.to_string())?,
+    )]));
+    Ok((
+        CorrosionServiceName::try_new(service).map_err(|error| error.to_string())?,
+        DeployServiceRequest {
+            image: ImageReference::try_new(image).map_err(|error| error.to_string())?,
+            credential: None,
+            runtime,
+            health_gate: HealthGatePolicy::Enforce,
+            placement: None,
+            machines: None,
+        },
+    ))
+}
+
+pub fn deploy_namespace(
+    operator: &OperatorFixture,
+    namespace: &str,
+    deploy_name: &str,
+    services: &[(CorrosionServiceName, DeployServiceRequest)],
+    description: &str,
+    secret_value: &str,
+) -> Result<DeployName, String> {
+    let manifest_path = operator
+        .home
+        .join(format!("{namespace}-{deploy_name}.json"));
+    let services = services.iter().cloned().collect::<DeployServices>();
+    let manifest = serde_json::to_vec(&serde_json::json!({ "services": services }))
+        .map_err(|error| format!("serialize {description} manifest: {error}"))?;
+    fs::write(&manifest_path, manifest)
+        .map_err(|error| format!("write {}: {error}", manifest_path.display()))?;
+    let manifest_path = manifest_path
+        .to_str()
+        .ok_or_else(|| "deploy manifest path is not UTF-8".to_owned())?;
     let deployed = run_cli(
         operator,
         &[
             "deploy",
             namespace,
-            service,
-            image,
-            "--env",
-            &environment,
+            deploy_name,
+            "--file",
+            manifest_path,
             "--target",
             operator.founder_target.as_str(),
         ],
     )?;
-    parse_deploy_operation(&deployed, "first deploy", secret_value)
+    parse_accepted_deploy(&deployed, description, secret_value)
 }
 
-pub fn parse_deploy_operation(
+pub fn parse_accepted_deploy(
     output: &Output,
     description: &str,
     secret_value: &str,
-) -> Result<OperationRowId, String> {
+) -> Result<DeployName, String> {
     require_success(output, description)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     require(
@@ -341,18 +410,21 @@ pub fn parse_deploy_operation(
             && !String::from_utf8_lossy(&output.stderr).contains(secret_value),
         format!("{description} output exposed the environment value"),
     )?;
-    let operation_id = stdout
+    let deploy_name = stdout
         .lines()
-        .find_map(|line| line.strip_prefix("accepted operation "))
+        .find_map(|line| line.strip_prefix("accepted deploy "))
         .and_then(|line| line.split_whitespace().next())
-        .ok_or_else(|| format!("{description} output omitted its operation id: {stdout}"))?;
-    OperationRowId::try_new(operation_id).map_err(|error| error.to_string())
+        .and_then(|identity| identity.split_once('/').map(|(_, deploy)| deploy))
+        .ok_or_else(|| format!("{description} output omitted its deploy name: {stdout}"))?;
+    DeployName::try_new(deploy_name).map_err(|error| error.to_string())
 }
 
 pub fn assert_cluster_wide_operation_terminal(
     operator: &OperatorFixture,
-    operation_id: &OperationRowId,
+    namespace: &str,
+    deploy_name: &DeployName,
 ) -> Result<(), String> {
+    let expected_list_prefix = format!("{namespace}\t{deploy_name}\tdeploy\tcompleted");
     for target in std::iter::once(&operator.founder_target)
         .chain(operator.joiners.iter().map(|joined| &joined.target))
     {
@@ -362,9 +434,9 @@ pub fn assert_cluster_wide_operation_terminal(
             &["ops", "list", "--target", target.as_str()],
             |output| {
                 output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-                        line.contains(operation_id.as_str()) && line.contains("completed")
-                    })
+                    && String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .any(|line| line.starts_with(&expected_list_prefix))
             },
             &format!("terminal operation through {target}"),
         )?;
@@ -378,14 +450,15 @@ pub fn assert_cluster_wide_operation_terminal(
         &[
             "ops",
             "watch",
-            operation_id.as_str(),
+            namespace,
+            deploy_name.as_str(),
             "--target",
             watch_via.target.as_str(),
         ],
     )?;
     require_success(&watched, "operation watch through joined machine")?;
     let stdout = String::from_utf8_lossy(&watched.stdout);
-    let terminal = format!("{operation_id} deploy completed");
+    let terminal = format!("{namespace}/{deploy_name} deploy completed");
     require(
         stdout.lines().any(|line| line == terminal),
         format!("operation watch omitted its terminal state: {stdout}"),
@@ -395,9 +468,9 @@ pub fn assert_cluster_wide_operation_terminal(
 pub async fn assert_first_revision_container_is_gone(
     docker: &Docker,
     machines: &[&DindMachine],
-    first_operation: &OperationRowId,
+    first_operation: &DeployName,
 ) -> Result<(), String> {
-    let filter = format!("label={OPERATION_ROW_ID_LABEL}={first_operation}");
+    let filter = format!("label={DEPLOY_NAME_LABEL}={first_operation}");
     for machine in machines.iter().copied() {
         let listed = exec_ok(
             docker,
@@ -669,8 +742,6 @@ async fn run_founding(
         endpoint.to_string(),
         "--driver-peer-id".to_owned(),
         operator.peer_id.to_string(),
-        "--driver-peer-name".to_owned(),
-        operator.peer_name.clone(),
         "--driver-peer-public-key".to_owned(),
         operator.public_key.as_str().to_owned(),
     ];
@@ -699,19 +770,13 @@ fn parse_handoff(stdout: &str) -> Result<SshContextHandoff, String> {
     SshContextHandoff::decode_handoff(line).map_err(|error| error.to_string())
 }
 
-fn create_join_token(cli: &Path, home: &Path, target: &SshTarget) -> Result<JoinBlob, String> {
-    let output = run_cli_bounded(
-        cli,
-        home,
-        &[
-            "token",
-            "create",
-            "--ttl",
-            "1h",
-            "--target",
-            target.as_str(),
-        ],
-    )?;
+fn create_join_token(
+    cli: &Path,
+    home: &Path,
+    target: &SshTarget,
+    token_name: &str,
+) -> Result<JoinBlob, String> {
+    let output = run_cli_bounded(cli, home, &create_join_token_args(target, token_name))?;
     require_success(&output, "join token create")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let blob = stdout
@@ -722,6 +787,18 @@ fn create_join_token(cli: &Path, home: &Path, target: &SshTarget) -> Result<Join
         })
         .ok_or_else(|| format!("token output omitted JOIN_BLOB: {stdout}"))?;
     JoinBlob::try_parse(blob).map_err(|error| error.to_string())
+}
+
+fn create_join_token_args<'a>(target: &'a SshTarget, token_name: &'a str) -> [&'a str; 7] {
+    [
+        "token",
+        "create",
+        "--ttl",
+        "1h",
+        "--target",
+        target.as_str(),
+        token_name,
+    ]
 }
 
 async fn join_machine(
@@ -772,7 +849,7 @@ async fn wait_for_roster(
     address: &str,
     token: &str,
     minimum: usize,
-) -> Result<BTreeMap<MachineRowId, MachineDocument>, String> {
+) -> Result<BTreeMap<MachineName, MachineDocument>, String> {
     let deadline = Instant::now() + WAIT_BUDGET;
     let mut last = String::from("roster was not queried");
     while Instant::now() < deadline {
@@ -821,13 +898,13 @@ async fn wait_for_roster(
 
 fn parse_roster(
     rows: Vec<Vec<SqliteValue>>,
-) -> Result<BTreeMap<MachineRowId, MachineDocument>, String> {
+) -> Result<BTreeMap<MachineName, MachineDocument>, String> {
     let mut roster = BTreeMap::new();
     for row in rows {
         let [SqliteValue::Text(id), SqliteValue::Text(document)] = row.as_slice() else {
             return Err(format!("machine query returned an invalid row: {row:?}"));
         };
-        let id = MachineRowId::try_new(id.clone()).map_err(|error| error.to_string())?;
+        let id = MachineName::try_new(id.clone()).map_err(|error| error.to_string())?;
         let document = serde_json::from_str(document)
             .map_err(|error| format!("machine row was invalid: {error}"))?;
         roster.insert(id, document);
@@ -994,5 +1071,24 @@ fn wait_for_child(mut child: Child, budget: Duration) -> Result<Output, String> 
             ));
         }
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OPERATOR_PEER_NAME, SshPeerKey, SshTarget, create_join_token_args};
+
+    #[test]
+    fn operation_operator_peer_name_is_valid() {
+        SshPeerKey::generate(OPERATOR_PEER_NAME.to_owned())
+            .expect("operation DinD operator peer name must be valid");
+    }
+
+    #[test]
+    fn join_token_command_names_the_target_machine() {
+        let target: SshTarget = "root@192.0.2.1".parse().expect("SSH target");
+        let args = create_join_token_args(&target, "join-machine-2");
+
+        assert!(args.contains(&"join-machine-2"));
     }
 }

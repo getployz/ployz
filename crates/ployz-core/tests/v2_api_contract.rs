@@ -4,45 +4,44 @@ use std::num::NonZeroU16;
 use std::str::FromStr;
 
 use ployz_core::corrosion::{
-    AcceptedRosterPrincipal, CorrosionDocumentVersion, CorrosionNamespaceName, CorrosionTimestamp,
-    HostPortBinding, HostPortBindings, HostPortProtocol, MachineLoadBand, MachineStatusDocument,
-    MachineTransport, OperationInitiator, OperatorWriteProvenance, PeerTransport, Principal,
-    ServicePlacement, ServiceReplicaCount, SourcePrincipalResolutionError,
-    resolve_source_principal,
+    AcceptedRosterPrincipal, CorrosionNamespaceName, CorrosionTimestamp, HostPortBinding,
+    HostPortBindings, HostPortProtocol, MachineLoadBand, MachineTransport, OperationInitiator,
+    OperatorWriteProvenance, PeerTransport, Principal, ServicePlacement, ServiceReplicaCount,
+    SourcePrincipalResolutionError, resolve_source_principal,
 };
 use ployz_core::deploy::{
     ContainerRuntimeSpec, EnvName, EnvValue, ImageReference, ServiceEnvironment,
 };
-use ployz_core::ids::{ClusterId, MachineRowId, PeerId, ServiceRowId, TokenId};
+use ployz_core::ids::{MachineName, PeerName, TokenName};
 use ployz_core::network::{MachineEndpointSubnet, WireGuardPublicKey};
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, CorrosionLogsTailLines, DEPLOY_INSPECT_ROUTE,
     DEPLOY_PREPARE_ROUTE, DEPLOY_RETIRE_ROUTE, DEPLOY_ROUTE, DeployRefusal, DeployRequest,
-    FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature, LENS_SNAPSHOT_EVENT,
-    LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot, LensWatchEvent,
-    MachineStatusLensRow, MachineStatusLensRowIdentityError, NAMESPACE_CREATE_ROUTE,
-    NAMESPACE_REMOVE_ROUTE, RequestedPins, RequestedPlacement, ServiceLogLine, ServiceLogStream,
+    DeployServiceRequest, FOUNDING_ROUTE, HealthGatePolicy, KNOWN_API_FEATURES, KnownApiFeature,
+    LENS_SNAPSHOT_EVENT, LENS_STATE_EVENT, LENS_TERMINAL_EVENT, LensCollection, LensSnapshot,
+    LensWatchEvent, NAMESPACE_CREATE_ROUTE, NAMESPACE_REMOVE_ROUTE, PinnedMachineNames,
+    RequestedPlacement, SERVICE_LOGS_PROBE_ROUTE, ServiceLogLine, ServiceLogStream,
     ServiceLogsFollowEvent, ServiceLogsRefusal, ServiceLogsRequest, V2Method, V2Route,
     VERSION_ROUTE, lens_route, lens_watch_route, service_logs_follow_route,
     service_logs_tail_route,
 };
 use serde_json::json;
 
-const MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-const PEER_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
-const PEER_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+const MACHINE_A: &str = "edge-a";
+const MACHINE_B: &str = "edge-b";
+const PEER_A: &str = "operator-a";
+const PEER_B: &str = "operator-b";
 
-fn machine_id(value: &str) -> MachineRowId {
-    MachineRowId::try_new(value).expect("fixture machine id")
+fn machine_id(value: &str) -> MachineName {
+    MachineName::try_new(value).expect("fixture machine id")
 }
 
-fn service_id(value: &str) -> ServiceRowId {
-    ServiceRowId::try_new(value).expect("fixture service id")
+fn namespace_name(value: &str) -> CorrosionNamespaceName {
+    CorrosionNamespaceName::try_new(value).expect("fixture namespace name")
 }
 
-fn peer_id(value: &str) -> PeerId {
-    PeerId::try_new(value).expect("fixture peer id")
+fn peer_id(value: &str) -> PeerName {
+    PeerName::try_new(value).expect("fixture peer id")
 }
 
 fn wireguard_machine(addr_v6: Ipv6Addr) -> MachineTransport {
@@ -200,7 +199,7 @@ fn duplicate_accepted_addresses_fail_closed_as_ambiguous() {
 
 #[test]
 fn v2_routes_have_exact_paths_methods_features_and_principals() {
-    let service_id = service_id(MACHINE_B);
+    let namespace_name = namespace_name(MACHINE_B);
     let peer = Principal::Peer {
         peer_id: peer_id(PEER_A),
     };
@@ -208,7 +207,7 @@ fn v2_routes_have_exact_paths_methods_features_and_principals() {
         machine_id: machine_id(MACHINE_A),
     };
     let token = Principal::ApiToken {
-        token_id: TokenId::try_new(PEER_B).expect("fixture token id"),
+        token_id: TokenName::try_new(PEER_B).expect("fixture token id"),
     };
 
     let routes = [
@@ -234,15 +233,27 @@ fn v2_routes_have_exact_paths_methods_features_and_principals() {
             false,
         ),
         (
-            V2Route::ServiceLogsTail(service_id.clone()),
-            service_logs_tail_route(&service_id),
+            V2Route::ServiceLogsTail(
+                namespace_name.clone(),
+                ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service"),
+            ),
+            service_logs_tail_route(
+                &namespace_name,
+                &ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service"),
+            ),
             V2Method::Post,
             KnownApiFeature::Logs,
             true,
         ),
         (
-            V2Route::ServiceLogsFollow(service_id.clone()),
-            service_logs_follow_route(&service_id),
+            V2Route::ServiceLogsFollow(
+                namespace_name.clone(),
+                ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service"),
+            ),
+            service_logs_follow_route(
+                &namespace_name,
+                &ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service"),
+            ),
             V2Method::Post,
             KnownApiFeature::Logs,
             true,
@@ -290,15 +301,6 @@ fn missing_namespace_refusal_names_the_resolving_primitive() {
 }
 
 #[test]
-fn named_volume_redeploy_refusal_is_a_small_stable_contract() {
-    assert_eq!(
-        serde_json::to_value(DeployRefusal::NamedVolumeRedeployUnsupported)
-            .expect("refusal serializes"),
-        json!({ "kind": "named_volume_redeploy_unsupported" })
-    );
-}
-
-#[test]
 fn first_deploy_runtime_debug_redacts_environment_values() {
     let secret = "sentinel-secret-never-in-evidence";
     let mut environment = BTreeMap::new();
@@ -311,22 +313,29 @@ fn first_deploy_runtime_debug_redacts_environment_values() {
     let request = DeployRequest {
         namespace_name: CorrosionNamespaceName::try_new("payments")
             .expect("fixture namespace name"),
-        service_name: ployz_core::corrosion::CorrosionServiceName::try_new("api")
-            .expect("fixture service name"),
-        image: ImageReference::try_new("registry.example/api:latest")
-            .expect("fixture image reference"),
-        credential: None,
-        runtime,
-        health_gate: HealthGatePolicy::Enforce,
-        placement: None,
-        machines: None,
+        deploy_name: ployz_core::ids::DeployName::try_new("release-1").expect("deploy"),
+        services: [(
+            ployz_core::corrosion::CorrosionServiceName::try_new("api")
+                .expect("fixture service name"),
+            DeployServiceRequest {
+                image: ImageReference::try_new("registry.example/api:latest")
+                    .expect("fixture image reference"),
+                credential: None,
+                runtime,
+                health_gate: HealthGatePolicy::Enforce,
+                placement: None,
+                machines: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
     };
 
     assert!(!format!("{request:?}").contains(secret));
     let serialized = serde_json::to_value(&request).expect("authenticated request serializes");
     assert_eq!(
         serialized
-            .pointer("/runtime/environment/TOKEN")
+            .pointer("/services/api/runtime/environment/TOKEN")
             .and_then(serde_json::Value::as_str),
         Some(secret)
     );
@@ -394,53 +403,10 @@ fn log_requests_carry_an_optional_machine_selector_and_replay_free_reconnects() 
         selector_required
     );
 
-    let remote_owner = ServiceLogsRefusal::RemoteOwner {
-        machine_id: machine_id(MACHINE_A),
-        machine_name: Some(machine_name),
-    };
+    let remote_owner = ServiceLogsRefusal::RemoteOwner { machine_name };
     assert_eq!(
         serde_json::to_value(&remote_owner).expect("owner refusal serializes"),
-        json!({ "kind": "remote_owner", "machine_id": MACHINE_A, "machine_name": "edge-a" })
-    );
-    let unnamed = serde_json::from_value::<ServiceLogsRefusal>(
-        json!({ "kind": "remote_owner", "machine_id": MACHINE_A }),
-    )
-    .expect("pre-name owner refusal decodes");
-    assert_eq!(
-        unnamed,
-        ServiceLogsRefusal::RemoteOwner {
-            machine_id: machine_id(MACHINE_A),
-            machine_name: None,
-        }
-    );
-}
-
-#[test]
-fn machine_status_lens_row_requires_its_machine_owned_key() {
-    let document = MachineStatusDocument {
-        v: CorrosionDocumentVersion::V1,
-        cluster_id: ClusterId::try_new(MACHINE_A).expect("fixture cluster id"),
-        machine_id: machine_id(MACHINE_A),
-        ployz_version: "0.1.0-alpha.9".to_owned(),
-        corrosion_version: "0.2.0".to_owned(),
-        architecture: "x86_64".to_owned(),
-        free_disk_bytes: 1,
-        free_memory_bytes: 1,
-        load: MachineLoadBand::Idle,
-        observed_at: CorrosionTimestamp::try_new("2026-08-04T10:00:00Z")
-            .expect("fixture timestamp"),
-        mesh: None,
-        container_isolation: None,
-        wireguard_handshakes: None,
-    };
-
-    assert!(MachineStatusLensRow::try_new(machine_id(MACHINE_A), document.clone()).is_ok());
-    assert_eq!(
-        MachineStatusLensRow::try_new(machine_id(MACHINE_B), document),
-        Err(MachineStatusLensRowIdentityError {
-            id: machine_id(MACHINE_B),
-            document_machine_id: machine_id(MACHINE_A),
-        })
+        json!({ "kind": "remote_owner", "machine_name": "edge-a" })
     );
 }
 
@@ -524,6 +490,13 @@ fn deploy_route_and_feature_use_the_generalized_wire_names() {
 }
 
 #[test]
+fn only_scary_cluster_writes_require_the_controller() {
+    assert!(!V2Route::NamespaceCreate.is_controller_mutation());
+    assert!(V2Route::NamespaceRemove.is_controller_mutation());
+    assert!(V2Route::Deploy.is_controller_mutation());
+}
+
+#[test]
 fn deploy_effect_routes_parse_build_and_authorize_only_machines() {
     let peer = Principal::Peer {
         peer_id: peer_id(PEER_A),
@@ -532,7 +505,7 @@ fn deploy_effect_routes_parse_build_and_authorize_only_machines() {
         machine_id: machine_id(MACHINE_A),
     };
     let token = Principal::ApiToken {
-        token_id: TokenId::try_new(PEER_B).expect("fixture token id"),
+        token_id: TokenName::try_new(PEER_B).expect("fixture token id"),
     };
 
     for (route, path) in [
@@ -555,6 +528,27 @@ fn deploy_effect_routes_parse_build_and_authorize_only_machines() {
 }
 
 #[test]
+fn service_log_probe_is_machine_only() {
+    let peer = Principal::Peer {
+        peer_id: peer_id(PEER_A),
+    };
+    let machine = Principal::Machine {
+        machine_id: machine_id(MACHINE_A),
+    };
+    let route = V2Route::ServiceLogsProbe;
+    assert_eq!(route.path(), SERVICE_LOGS_PROBE_ROUTE);
+    assert_eq!(
+        V2Route::parse(SERVICE_LOGS_PROBE_ROUTE),
+        Some(route.clone())
+    );
+    assert_eq!(route.method(), V2Method::Post);
+    assert_eq!(route.feature(), KnownApiFeature::Logs);
+    assert!(route.accepts_principal(&machine));
+    assert!(!route.accepts_principal(&peer));
+    assert_eq!(V2Route::parse("/services/logs/probe/extra"), None);
+}
+
+#[test]
 fn requested_placement_makes_host_ports_unrepresentable_off_global() {
     let replicated: RequestedPlacement = serde_json::from_value(json!({
         "mode": "replicated",
@@ -564,26 +558,12 @@ fn requested_placement_makes_host_ports_unrepresentable_off_global() {
     assert_eq!(
         replicated,
         RequestedPlacement::Replicated {
-            replicas: Some(ServiceReplicaCount::try_new(2).expect("fixture replica count")),
+            replicas: ServiceReplicaCount::try_new(2).expect("fixture replica count"),
         }
     );
-    let mode_only: RequestedPlacement = serde_json::from_value(json!({ "mode": "replicated" }))
-        .expect("count-free replicated placement deserializes");
-    assert_eq!(
-        mode_only,
-        RequestedPlacement::Replicated { replicas: None },
-        "a bare mode change keeps the incumbent's replica count"
-    );
-    let count_only: RequestedPlacement = serde_json::from_value(json!({
-        "mode": "replicas",
-        "replicas": 4
-    }))
-    .expect("mode-preserving replica intent deserializes");
-    assert_eq!(
-        count_only,
-        RequestedPlacement::Replicas {
-            replicas: ServiceReplicaCount::try_new(4).expect("fixture replica count"),
-        }
+    assert!(
+        serde_json::from_value::<RequestedPlacement>(json!({ "mode": "replicated" })).is_err(),
+        "an explicit replicated placement names its count; omit placement for the default"
     );
     assert!(
         serde_json::from_value::<RequestedPlacement>(json!({
@@ -643,43 +623,52 @@ fn host_port_sets_refuse_duplicates_per_protocol_and_allow_tcp_udp_reuse() {
 }
 
 #[test]
-fn requested_pins_require_at_least_one_machine_name_or_the_any_clearer() {
-    let pins: RequestedPins = serde_json::from_value(json!({
-        "kind": "machines",
-        "names": ["edge-a", "edge-b"]
-    }))
-    .expect("named pins deserialize");
-    let RequestedPins::Machines { names } = &pins else {
-        panic!("named pins expected");
-    };
-    assert_eq!(names.iter().count(), 2);
+fn requested_pins_require_at_least_one_machine_name() {
+    let pins: PinnedMachineNames =
+        serde_json::from_value(json!(["edge-a", "edge-b"])).expect("named pins deserialize");
+    assert_eq!(pins.iter().count(), 2);
     assert!(
-        serde_json::from_value::<RequestedPins>(json!({ "kind": "machines", "names": [] }))
-            .is_err(),
-        "an empty pin set is expressed as `any`, never an empty list"
-    );
-    assert_eq!(
-        serde_json::from_value::<RequestedPins>(json!({ "kind": "any" }))
-            .expect("any deserializes"),
-        RequestedPins::Any
+        serde_json::from_value::<PinnedMachineNames>(json!([])).is_err(),
+        "an empty pin set is expressed by omitting machines, never an empty list"
     );
 }
 
 #[test]
-fn deploy_requests_without_placement_or_pins_inherit_by_omission() {
+fn deploy_requests_may_omit_placement_and_pins_for_fixed_defaults() {
     let request: DeployRequest = serde_json::from_value(json!({
         "namespace_name": "payments",
-        "service_name": "api",
-        "image": "registry.example/api:latest",
-        "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
-            .expect("runtime serializes"),
+        "deploy_name": "release-1",
+        "services": {"api": {
+            "image": "registry.example/api:latest",
+            "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
+                .expect("runtime serializes"),
+        }},
     }))
     .expect("request without placement deserializes");
-    assert_eq!(request.placement, None);
-    assert_eq!(request.machines, None);
+    let service = request
+        .services
+        .get(&ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service"))
+        .expect("one requested service");
+    assert_eq!(service.placement, None);
+    assert_eq!(service.machines, None);
     let serialized = serde_json::to_value(&request).expect("request serializes");
-    assert_eq!(serialized.get("placement"), None);
-    assert_eq!(serialized.get("machines"), None);
+    let service = serialized
+        .get("services")
+        .and_then(|services| services.get("api"))
+        .expect("one serialized service");
+    assert_eq!(service.get("placement"), None);
+    assert_eq!(service.get("machines"), None);
+}
+
+#[test]
+fn deploy_requests_reject_duplicate_service_names() {
+    let runtime =
+        serde_json::to_string(&ContainerRuntimeSpec::image_defaults()).expect("runtime serializes");
+    let request = format!(
+        r#"{{"namespace_name":"payments","deploy_name":"release-1","services":{{"api":{{"image":"registry.example/api:v1","runtime":{runtime}}},"api":{{"image":"registry.example/api:v2","runtime":{runtime}}}}}}}"#
+    );
+
+    assert!(serde_json::from_str::<DeployRequest>(&request).is_err());
 }
 
 #[test]
@@ -709,13 +698,22 @@ fn machine_load_bands_order_idle_before_normal_before_hot() {
 fn deploy_request_health_gate_defaults_to_enforce_and_skip_is_explicit() {
     let request: DeployRequest = serde_json::from_value(json!({
         "namespace_name": "payments",
-        "service_name": "api",
-        "image": "registry.example/api:latest",
-        "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
-            .expect("runtime serializes"),
+        "deploy_name": "release-1",
+        "services": {"api": {
+            "image": "registry.example/api:latest",
+            "runtime": serde_json::to_value(ContainerRuntimeSpec::image_defaults())
+                .expect("runtime serializes"),
+        }},
     }))
     .expect("request without health_gate deserializes");
-    assert_eq!(request.health_gate, HealthGatePolicy::Enforce);
+    assert_eq!(
+        request
+            .services
+            .get(&ployz_core::corrosion::CorrosionServiceName::try_new("api").expect("service"))
+            .expect("one requested service")
+            .health_gate,
+        HealthGatePolicy::Enforce
+    );
 
     assert_eq!(
         serde_json::to_value(HealthGatePolicy::Skip).expect("policy serializes"),

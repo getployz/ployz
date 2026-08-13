@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use hyper::Method;
-use ployz_core::corrosion::NameClaim;
+use ployz_core::machine::MachineName;
 use ployz_core::{
     DOCTOR_ROUTE, DoctorDocument, DoctorForeignAuthorship, DoctorMalformedRosterDocumentClass,
     DoctorRosterRowSkipReason, DoctorRosterTable, HandshakeFreshness, STATUS_ROUTE,
@@ -125,8 +125,9 @@ pub fn render_status(document: &StatusDocument) -> String {
     }
 
     let answering_machine = match &document.answering_machine {
-        StatusAnsweringMachine::Known { name, .. } => name.as_str(),
-        StatusAnsweringMachine::Unknown { id } => id.as_str(),
+        StatusAnsweringMachine::Known { name } | StatusAnsweringMachine::Unknown { name } => {
+            name.as_str()
+        }
     };
     match &document.sync {
         StatusSync::CaughtUp { p99_lag } => writeln!(
@@ -220,8 +221,8 @@ fn render_handshake(handshake: &StatusHandshakeEvidence) -> String {
 #[must_use]
 pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
     let actionable_foreign_authors = actionable_foreign_authors(document);
-    let has_findings = !document.shadows.is_empty()
-        || !document.skipped_roster_rows.is_empty()
+    let has_findings = !document.skipped_roster_rows.is_empty()
+        || !document.noncanonical_rows.is_empty()
         || !document.skipped_newer_versions.is_empty()
         || !document.versions.behind.is_empty()
         || !document.versions.invalid.is_empty()
@@ -232,30 +233,6 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
         String::from("doctor\tclean — no actionable anomalies found\n")
     };
 
-    for shadow in &document.shadows {
-        let noun = shadow_noun(&shadow.claim);
-        writeln!(
-            output,
-            "\n⚠ name conflict: {noun} \"{}\"",
-            render_claim(&shadow.claim)
-        )
-        .expect("writing to a String cannot fail");
-        writeln!(
-            output,
-            "    {}  kept (lowest ULID)",
-            shadow.winner_id.as_str()
-        )
-        .expect("writing to a String cannot fail");
-        writeln!(output, "    {}  shadowed, inert", shadow.loser_id.as_str())
-            .expect("writing to a String cannot fail");
-        writeln!(
-            output,
-            "  remove the shadow:  {}",
-            shadow_repair_command(&shadow.claim, shadow.loser_id.as_str())
-        )
-        .expect("writing to a String cannot fail");
-    }
-
     for skipped in &document.skipped_roster_rows {
         writeln!(
             output,
@@ -265,7 +242,18 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
                 DoctorRosterTable::Peers => "peer",
             },
             skipped.key,
-            render_roster_skip_reason(skipped.reason)
+            render_roster_skip_reason(&skipped.reason)
+        )
+        .expect("writing to a String cannot fail");
+    }
+
+    for row in &document.noncanonical_rows {
+        writeln!(
+            output,
+            "\n⚠ noncanonical row: {} {} (expected {})",
+            row.table.as_str(),
+            row.key,
+            row.expected,
         )
         .expect("writing to a String cannot fail");
     }
@@ -288,7 +276,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             let names = newest
                 .machines
                 .iter()
-                .map(|machine| machine.name.as_str())
+                .map(MachineName::as_str)
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(output, "    newest:  {} ({names})", newest.version)
@@ -299,7 +287,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
                 output,
                 "    behind:  {} ({})",
                 behind.version,
-                behind.machine.name.as_str()
+                behind.machine.as_str()
             )
             .expect("writing to a String cannot fail");
         }
@@ -308,7 +296,7 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
                 output,
                 "    invalid:  {:?} ({})",
                 invalid.version,
-                invalid.machine.name.as_str()
+                invalid.machine.as_str()
             )
             .expect("writing to a String cannot fail");
         }
@@ -316,13 +304,13 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
             .versions
             .behind
             .iter()
-            .map(|behind| behind.machine.name.as_str())
+            .map(|behind| behind.machine.as_str())
             .chain(
                 document
                     .versions
                     .invalid
                     .iter()
-                    .map(|invalid| invalid.machine.name.as_str()),
+                    .map(|invalid| invalid.machine.as_str()),
             )
             .collect::<Vec<_>>();
         names.sort_unstable();
@@ -362,120 +350,82 @@ pub fn render_doctor(document: &DoctorDocument) -> (String, bool) {
         writeln!(
             output,
             "\n⚠ {} is writing another cluster's id; repair it in this order:",
-            machine.name.as_str()
+            machine.as_str()
         )
         .expect("writing to a String cannot fail");
         writeln!(
             output,
-            "    ployz machine rm --id {} -- {}",
-            machine.id.as_str(),
-            shell_quote(machine.name.as_str())
+            "    ployz machine rm -- {}",
+            shell_quote(machine.as_str())
         )
         .expect("writing to a String cannot fail");
         writeln!(
             output,
             "    on {}:  sudo ployz machine reset",
-            machine.name.as_str()
+            machine.as_str()
         )
         .expect("writing to a String cannot fail");
-        output.push_str("    ployz token create  →  paste the join line on that machine\n");
+        output.push_str("    ployz token create <name>  →  paste the join line on that machine\n");
     }
 
     (output, has_findings)
 }
 
-fn render_roster_skip_reason(reason: DoctorRosterRowSkipReason) -> &'static str {
+fn render_roster_skip_reason(reason: &DoctorRosterRowSkipReason) -> String {
     match reason {
-        DoctorRosterRowSkipReason::MeshProviderMismatch { .. } => "mesh provider mismatch",
+        DoctorRosterRowSkipReason::MeshProviderMismatch { .. } => {
+            "mesh provider mismatch".to_owned()
+        }
         DoctorRosterRowSkipReason::MalformedDocument { class } => match class {
-            DoctorMalformedRosterDocumentClass::MissingVersion => "missing document version",
-            DoctorMalformedRosterDocumentClass::InvalidVersion => "invalid document version",
-            DoctorMalformedRosterDocumentClass::UnsupportedVersion { .. } => {
-                "unsupported document version"
+            DoctorMalformedRosterDocumentClass::MissingVersion => {
+                "missing document version".to_owned()
             }
-            DoctorMalformedRosterDocumentClass::InvalidPayload => "invalid document payload",
+            DoctorMalformedRosterDocumentClass::InvalidVersion => {
+                "invalid document version".to_owned()
+            }
+            DoctorMalformedRosterDocumentClass::UnsupportedVersion { .. } => {
+                "unsupported document version".to_owned()
+            }
+            DoctorMalformedRosterDocumentClass::InvalidPayload => {
+                "invalid document payload".to_owned()
+            }
         },
-        DoctorRosterRowSkipReason::InvalidRowId => "invalid row id",
     }
 }
 
-fn shadow_repair_command(claim: &NameClaim, loser_id: &str) -> String {
-    match claim {
-        NameClaim::Machine { name } | NameClaim::Peer { name } | NameClaim::Namespace { name } => {
-            format!(
-                "ployz {} rm --id {loser_id} -- {}",
-                shadow_noun(claim),
-                shell_quote(name)
-            )
-        }
-        NameClaim::Service { namespace_id, name } => format!(
-            "ployz service rm --namespace-id {} --id {loser_id} -- {}",
-            namespace_id.as_str(),
-            shell_quote(name)
-        ),
-        NameClaim::RouteBinding { hostname } => {
-            format!("ployz route rm {} --id {loser_id}", hostname.as_str())
-        }
-    }
-}
-
-fn actionable_foreign_authors(
-    document: &DoctorDocument,
-) -> BTreeMap<String, ployz_core::DoctorMachineIdentity> {
+fn actionable_foreign_authors(document: &DoctorDocument) -> BTreeMap<String, MachineName> {
     let mut machines = BTreeMap::new();
     for foreign in &document.foreign_clusters {
         for row in &foreign.rows {
-            if let DoctorForeignAuthorship::CurrentMachine { machine } = &row.authorship {
+            if let DoctorForeignAuthorship::CurrentMachine { machine_name } = &row.authorship {
                 machines
-                    .entry(machine.id.as_str().to_owned())
-                    .or_insert_with(|| machine.clone());
+                    .entry(machine_name.as_str().to_owned())
+                    .or_insert_with(|| machine_name.clone());
             }
         }
     }
     machines
 }
 
-const fn shadow_noun(claim: &NameClaim) -> &'static str {
-    match claim {
-        NameClaim::Machine { .. } => "machine",
-        NameClaim::Peer { .. } => "peer",
-        NameClaim::Namespace { .. } => "namespace",
-        NameClaim::Service { .. } => "service",
-        NameClaim::RouteBinding { .. } => "route",
-    }
-}
-
-fn render_claim(claim: &NameClaim) -> String {
-    match claim {
-        NameClaim::Machine { name } | NameClaim::Peer { name } | NameClaim::Namespace { name } => {
-            name.clone()
-        }
-        NameClaim::Service { namespace_id, name } => {
-            format!("{}/{name}", namespace_id.as_str())
-        }
-        NameClaim::RouteBinding { hostname } => hostname.as_str().to_owned(),
-    }
-}
-
 fn render_foreign_authorship(authorship: &DoctorForeignAuthorship) -> String {
     match authorship {
-        DoctorForeignAuthorship::CurrentMachine { machine } => {
+        DoctorForeignAuthorship::CurrentMachine { machine_name } => {
             format!(
                 "authored by current machine {} (action required)",
-                machine.name.as_str()
+                machine_name.as_str()
             )
         }
-        DoctorForeignAuthorship::NonCurrentMachine { machine_id } => format!(
+        DoctorForeignAuthorship::NonCurrentMachine { machine_name } => format!(
             "authored by non-current machine {}; inert, no repair action",
-            machine_id.as_str()
+            machine_name.as_str()
         ),
-        DoctorForeignAuthorship::Peer { peer_id } => format!(
+        DoctorForeignAuthorship::Peer { peer_name } => format!(
             "authored by peer {}; inert, no repair action",
-            peer_id.as_str()
+            peer_name.as_str()
         ),
-        DoctorForeignAuthorship::ApiToken { token_id } => format!(
+        DoctorForeignAuthorship::ApiToken { token_name } => format!(
             "authored by API token {}; inert, no repair action",
-            token_id.as_str()
+            token_name.as_str()
         ),
         DoctorForeignAuthorship::Unparseable => {
             "authorship unparseable; inert, no repair action".to_owned()
@@ -491,20 +441,17 @@ fn render_unreachable(error: &OperatorRemoteError) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::DoctorNoncanonicalRow;
+    use ployz_core::corrosion::CorrosionTable;
     use serde_json::json;
 
     use super::*;
-    use crate::commands::{
-        Command, MachineCommand, MachineUpgradeSelector, NamespaceCommand, PeerCommand,
-        ServiceCommand,
-    };
+    use crate::commands::{Command, MachineCommand, MachineUpgradeSelector};
     use crate::remote::ContextSelectionError;
 
     const CLUSTER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const MACHINE_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    const MACHINE_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
     const MACHINE_C: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
-    const MACHINE_D: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
     const ROW_WINNER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
     const ROW_LOSER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
     const PEER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
@@ -518,7 +465,6 @@ mod tests {
             },
             "answering_machine": {
                 "state": "known",
-                "id": MACHINE_A,
                 "name": "core-1"
             },
             "sync": {
@@ -530,13 +476,11 @@ mod tests {
             "barrier": "ready",
             "machines": [
                 {
-                    "id": MACHINE_A,
                     "name": "core-1",
                     "address": "fd00::1",
                     "handshake": { "state": "self_machine" }
                 },
                 {
-                    "id": MACHINE_B,
                     "name": "edge-a",
                     "address": "fd00::2",
                     "handshake": {
@@ -544,7 +488,6 @@ mod tests {
                     }
                 },
                 {
-                    "id": MACHINE_C,
                     "name": "edge-b",
                     "address": "fd00::3",
                     "handshake": {
@@ -554,7 +497,6 @@ mod tests {
                     }
                 },
                 {
-                    "id": MACHINE_D,
                     "name": "edge-c",
                     "address": "fd00::4",
                     "handshake": { "state": "never" }
@@ -567,50 +509,10 @@ mod tests {
 
     fn doctor_fixture() -> DoctorDocument {
         serde_json::from_value(json!({
-            "shadows": [
-                {
-                    "claim": { "table": "machine", "name": "edge-a" },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                },
-                {
-                    "claim": { "table": "peer", "name": "laptop" },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                },
-                {
-                    "claim": { "table": "namespace", "name": "prod" },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                },
-                {
-                    "claim": {
-                        "table": "service",
-                        "namespace_id": ROW_WINNER,
-                        "name": "web"
-                    },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                },
-                {
-                    "claim": {
-                        "table": "route_binding",
-                        "hostname": "web.example.com"
-                    },
-                    "winner_id": ROW_WINNER,
-                    "loser_id": ROW_LOSER
-                }
-            ],
-            "skipped_roster_rows": [
-                {
-                    "table": "peers",
-                    "key": "unsafe-peer-row",
-                    "reason": { "kind": "invalid_row_id" }
-                }
-            ],
+            "skipped_roster_rows": [],
             "skipped_newer_versions": [
                 {
-                    "table": "services",
+                    "table": "namespaces",
                     "key": ROW_LOSER,
                     "found": 2,
                     "supported": 1
@@ -619,13 +521,11 @@ mod tests {
             "versions": {
                 "newest": {
                     "version": "0.2.0",
-                    "machines": [
-                        { "id": MACHINE_A, "name": "core-1" }
-                    ]
+                    "machines": ["core-1"]
                 },
                 "behind": [
                     {
-                        "machine": { "id": MACHINE_B, "name": "edge-a" },
+                        "machine": "edge-a",
                         "version": "0.1.0"
                     }
                 ],
@@ -636,29 +536,29 @@ mod tests {
                     "cluster_id": "01ARZ3NDEKTSV4RRFFQ69G5FB3",
                     "rows": [
                         {
-                            "table": "services",
+                            "table": "namespaces",
                             "key": ROW_LOSER,
                             "authorship": {
                                 "kind": "current_machine",
-                                "machine": { "id": MACHINE_B, "name": "edge-a" }
+                                "machine_name": "edge-a"
                             }
                         },
                         {
                             "table": "tokens",
                             "key": ROW_WINNER,
-                            "authorship": { "kind": "peer", "peer_id": PEER }
+                            "authorship": { "kind": "peer", "peer_name": PEER }
                         },
                         {
                             "table": "operations",
                             "key": "operation/orphan",
                             "authorship": {
                                 "kind": "non_current_machine",
-                                "machine_id": MACHINE_C
+                                "machine_name": MACHINE_C
                             }
                         },
                         {
-                            "table": "containers",
-                            "key": "container/broken",
+                            "table": "machine_endpoints",
+                            "key": "machine/broken",
                             "authorship": { "kind": "unparseable" }
                         }
                     ]
@@ -722,7 +622,7 @@ mod tests {
     fn no_roster_names_the_only_join_door() {
         let document: StatusDocument = serde_json::from_value(json!({
             "cluster": null,
-            "answering_machine": { "state": "unknown", "id": MACHINE_A },
+            "answering_machine": { "state": "unknown", "name": MACHINE_A },
             "sync": { "state": "no_lag_sample" },
             "barrier": "no_roster",
             "machines": [],
@@ -738,193 +638,14 @@ mod tests {
     }
 
     #[test]
-    fn doctor_prints_every_shadow_repair_and_ordered_composed_repairs() {
-        let (output, has_findings) = render_doctor(&doctor_fixture());
-
-        assert!(has_findings);
-        assert!(output.contains("skipped roster row: peer unsafe-peer-row (invalid row id)"));
-        assert!(output.contains(&format!("ployz machine rm --id {ROW_LOSER} -- 'edge-a'")));
-        assert!(output.contains(&format!("ployz peer rm --id {ROW_LOSER} -- 'laptop'")));
-        assert!(output.contains(&format!("ployz namespace rm --id {ROW_LOSER} -- 'prod'")));
-        assert!(output.contains(&format!(
-            "ployz service rm --namespace-id {ROW_WINNER} --id {ROW_LOSER} -- 'web'"
-        )));
-        assert!(output.contains(&format!("ployz route rm web.example.com --id {ROW_LOSER}")));
-        for command in [
-            vec!["machine", "rm", "--id", ROW_LOSER, "--", "edge-a"],
-            vec!["peer", "rm", "--id", ROW_LOSER, "--", "laptop"],
-            vec!["namespace", "rm", "--id", ROW_LOSER, "--", "prod"],
-            vec![
-                "service",
-                "rm",
-                "--namespace-id",
-                ROW_WINNER,
-                "--id",
-                ROW_LOSER,
-                "--",
-                "web",
-            ],
-            vec!["route", "rm", "web.example.com", "--id", ROW_LOSER],
-        ] {
-            crate::commands::parse_command(command.into_iter().map(ToOwned::to_owned))
-                .expect("doctor repair command parses");
-        }
-        assert!(output.contains("ployz machine upgrade -- 'edge-a'"));
-        let fence = output
-            .find(&format!("ployz machine rm --id {MACHINE_B} -- 'edge-a'"))
-            .expect("fence repair");
-        let reset = output
-            .find("on edge-a:  sudo ployz machine reset")
-            .expect("reset repair");
-        let rejoin = output.find("ployz token create").expect("rejoin repair");
-        assert!(fence < reset && reset < rejoin);
-        assert!(output.contains(&format!("authored by peer {PEER}; inert, no repair action")));
-        assert!(!output.contains(&format!("ployz machine rm --id {MACHINE_C}")));
-    }
-
-    #[test]
-    fn shadow_repairs_survive_option_looking_and_metacharacter_handles() {
-        let machine_handle = "edge-a";
-        let peer_handle = "--help";
-        // A parsed namespace document carries a validated DNS label, so an
-        // option-looking handle is unrepresentable here; peers keep that case.
-        let namespace_handle = "prod-blue";
-        let service_handle = "dind laptop'; touch /tmp/not-run #";
-        let namespace_id =
-            ployz_core::ids::NamespaceRowId::try_new(ROW_WINNER).expect("namespace row id");
-
-        assert_eq!(
-            shadow_repair_command(
-                &NameClaim::Machine {
-                    name: machine_handle.to_owned(),
-                },
-                ROW_LOSER,
-            ),
-            format!(
-                "ployz machine rm --id {ROW_LOSER} -- {}",
-                shell_quote(machine_handle)
-            )
-        );
-        assert!(matches!(
-            crate::commands::parse_command(
-                ["machine", "rm", "--id", ROW_LOSER, "--", machine_handle]
-                    .into_iter()
-                    .map(ToOwned::to_owned),
-            ),
-            Ok(Command::Machine(MachineCommand::Remove(command)))
-                if command.machine.as_str() == machine_handle
-                    && command.machine_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
-        ));
-
-        assert_eq!(
-            shadow_repair_command(
-                &NameClaim::Peer {
-                    name: peer_handle.to_owned(),
-                },
-                ROW_LOSER,
-            ),
-            format!(
-                "ployz peer rm --id {ROW_LOSER} -- {}",
-                shell_quote(peer_handle)
-            )
-        );
-        assert!(matches!(
-            crate::commands::parse_command(
-                ["peer", "rm", "--id", ROW_LOSER, "--", peer_handle]
-                    .into_iter()
-                    .map(ToOwned::to_owned),
-            ),
-            Ok(Command::Peer(PeerCommand::Remove(command)))
-                if command.name == peer_handle
-                    && command.peer_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
-        ));
-
-        assert_eq!(
-            shadow_repair_command(
-                &NameClaim::Namespace {
-                    name: namespace_handle.to_owned(),
-                },
-                ROW_LOSER,
-            ),
-            format!(
-                "ployz namespace rm --id {ROW_LOSER} -- {}",
-                shell_quote(namespace_handle)
-            )
-        );
-        assert!(matches!(
-            crate::commands::parse_command(
-                [
-                    "namespace",
-                    "rm",
-                    "--id",
-                    ROW_LOSER,
-                    "--",
-                    namespace_handle,
-                ]
-                .into_iter()
-                .map(ToOwned::to_owned),
-            ),
-            Ok(Command::Namespace(NamespaceCommand::Remove(command)))
-                if command.namespace.as_str() == namespace_handle
-                    && command.namespace_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
-        ));
-
-        assert_eq!(
-            shadow_repair_command(
-                &NameClaim::Service {
-                    namespace_id,
-                    name: service_handle.to_owned(),
-                },
-                ROW_LOSER,
-            ),
-            format!(
-                "ployz service rm --namespace-id {ROW_WINNER} --id {ROW_LOSER} -- {}",
-                shell_quote(service_handle)
-            )
-        );
-        assert!(matches!(
-            crate::commands::parse_command(
-                [
-                    "service",
-                    "rm",
-                    "--namespace-id",
-                    ROW_WINNER,
-                    "--id",
-                    ROW_LOSER,
-                    "--",
-                    service_handle,
-                ]
-                .into_iter()
-                .map(ToOwned::to_owned),
-            ),
-            Ok(Command::Service(ServiceCommand::Remove(command)))
-                if command.name == service_handle
-                    && command.namespace_id.as_str() == ROW_WINNER
-                    && command.service_id.as_ref().is_some_and(|id| id.as_str() == ROW_LOSER)
-        ));
-    }
-
-    #[test]
-    fn foreign_current_machine_repair_disambiguates_a_same_name_shadow() {
-        let document = doctor_fixture();
-        assert!(document.shadows.iter().any(|shadow| {
-            matches!(&shadow.claim, NameClaim::Machine { name } if name == "edge-a")
-        }));
-
-        let (output, has_findings) = render_doctor(&document);
-
-        assert!(has_findings);
-        assert!(output.contains(&format!("ployz machine rm --id {ROW_LOSER} -- 'edge-a'")));
-        assert!(output.contains(&format!("ployz machine rm --id {MACHINE_B} -- 'edge-a'")));
-    }
-
-    #[test]
     fn foreign_machine_repair_parses_an_option_looking_exact_name() {
         let mut document = doctor_fixture();
         for foreign in &mut document.foreign_clusters {
             for row in &mut foreign.rows {
-                if let DoctorForeignAuthorship::CurrentMachine { machine } = &mut row.authorship {
-                    machine.name = ployz_core::machine::MachineName::try_new("--help")
+                if let DoctorForeignAuthorship::CurrentMachine { machine_name } =
+                    &mut row.authorship
+                {
+                    *machine_name = ployz_core::machine::MachineName::try_new("--help")
                         .expect("option-looking machine name");
                 }
             }
@@ -933,23 +654,19 @@ mod tests {
         let (output, has_findings) = render_doctor(&document);
 
         assert!(has_findings);
-        assert!(output.contains(&format!("ployz machine rm --id {MACHINE_B} -- '--help'")));
+        assert!(output.contains("ployz machine rm -- '--help'"));
         assert!(matches!(
             crate::commands::parse_command(
-                ["machine", "rm", "--id", MACHINE_B, "--", "--help"]
-                    .into_iter()
-                    .map(ToOwned::to_owned),
+                ["machine", "rm", "--", "--help"].into_iter().map(ToOwned::to_owned),
             ),
             Ok(Command::Machine(MachineCommand::Remove(command)))
                 if command.machine.as_str() == "--help"
-                    && command.machine_id.as_ref().is_some_and(|id| id.as_str() == MACHINE_B)
         ));
     }
 
     #[test]
     fn inert_foreign_cluster_rows_are_still_doctor_findings() {
         let mut document = doctor_fixture();
-        document.shadows.clear();
         document.skipped_newer_versions.clear();
         document.versions.behind.clear();
         document.versions.invalid.clear();
@@ -971,12 +688,26 @@ mod tests {
     }
 
     #[test]
+    fn noncanonical_row_names_its_table_and_exact_expected_key() {
+        let mut document = doctor_fixture();
+        document.noncanonical_rows = vec![DoctorNoncanonicalRow {
+            table: CorrosionTable::Namespaces,
+            key: "wrong-key".to_owned(),
+            expected: "production".to_owned(),
+        }];
+
+        let (output, has_findings) = render_doctor(&document);
+
+        assert!(has_findings);
+        assert!(output.contains("noncanonical row: namespaces wrong-key (expected production)"));
+    }
+
+    #[test]
     fn skipped_newer_rows_with_a_lagging_machine_name_the_upgrade_handoff() {
         let document: DoctorDocument = serde_json::from_value(json!({
-            "shadows": [],
             "skipped_newer_versions": [
                 {
-                    "table": "services",
+                    "table": "namespaces",
                     "key": ROW_LOSER,
                     "found": 2,
                     "supported": 1
@@ -985,17 +716,15 @@ mod tests {
             "versions": {
                 "newest": {
                     "version": "0.2.0",
-                    "machines": [
-                        { "id": MACHINE_A, "name": "core-1" }
-                    ]
+                    "machines": ["core-1"]
                 },
                 "behind": [
                     {
-                        "machine": { "id": MACHINE_B, "name": "--all" },
+                        "machine": "--all",
                         "version": "0.1.0"
                     },
                     {
-                        "machine": { "id": MACHINE_C, "name": "--help" },
+                        "machine": "--help",
                         "version": "0.1.0"
                     }
                 ],
@@ -1008,7 +737,7 @@ mod tests {
         let (output, has_findings) = render_doctor(&document);
         assert!(has_findings);
         assert!(output.contains(&format!(
-            "newer row version: services {ROW_LOSER} has v=2 (this binary supports v=1)"
+            "newer row version: namespaces {ROW_LOSER} has v=2 (this binary supports v=1)"
         )));
         assert!(output.contains("ployz machine upgrade -- '--all' '--help'"));
 
@@ -1034,7 +763,6 @@ mod tests {
     #[test]
     fn clean_findings_and_unreachable_have_distinct_exit_outcomes() {
         let clean: DoctorDocument = serde_json::from_value(json!({
-            "shadows": [],
             "skipped_newer_versions": [],
             "versions": { "newest": null, "behind": [], "invalid": [] },
             "foreign_clusters": []

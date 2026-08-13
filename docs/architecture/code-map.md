@@ -22,8 +22,8 @@ Ployz ships one `ployzd` artifact. Systemd supervises separate invocations:
 | --- | --- | --- |
 | Keeper | machine substrate convergence: mesh, eBPF, sysctls, firewall, component swaps | root with the required host capabilities |
 | API | HTTP/JSON commands, SSE watches, Docker and imperative operations | unprivileged; Docker socket access is root-equivalent |
-| Gateway | public ingress from route and container rows | unprivileged with ambient bind capability for 80/443 |
-| DNS | machine-local service resolution from container rows | unprivileged with ambient bind capability for 53 |
+| Gateway | public ingress from route, namespace-intent, and machine-endpoint publications | unprivileged with ambient bind capability for 80/443 |
+| DNS | machine-local service resolution from namespace-intent and machine-endpoint publications | unprivileged with ambient bind capability for 53 |
 
 Stock Docker and an exact-pinned Corrosion sidecar are separately supervised.
 `ployzd` is not a supervisor. Keeper is mandatory machine substrate rather than
@@ -38,11 +38,12 @@ Classify state before choosing a module or store:
 | Operator decision | the operator command stream owns one Corrosion config row | typed row readers in `ployz-core`; the API fold validates and writes through the bounded Corrosion client |
 | Machine testimony | exactly one machine owns its status row | typed row readers; freshness stays visible and is never promoted into authority |
 | Wake signal | nobody owns truth in a subscription notification | re-query the scoped rows; a notification is invalidation, never an authoritative delta |
-| Controller appointment | API admission writes one advisory Corrosion row | followers forward to its machine; a new appointment starts from current rows and host reality |
+| Controller appointment | every ordinary API process polls one advisory Corrosion row; the named machine refreshes its heartbeat | followers forward to the machine named by their local view; after a stale heartbeat, a follower conditionally replaces the exact observed row and starts from current rows and host reality |
 | Operation summary | the preferred controller writes coarse Corrosion snapshots | typed operation queries and lens invalidation/re-query from any machine |
 | Controller execution | the appointed API process owns one in-memory mutation lock | overlapping mutations may be refused as busy; controller loss leaves nothing to migrate |
 | Node workflow history | each execution node owns one private Duroxide SQLite database | resume host-local prepare/retire work on that same node; never cluster truth or controller state |
 | Execution reality | Docker or machine-local substrate owns the fact | observe at the point of use; rows report reality but do not replace it |
+| Serving publication | one Namespace intent row plus one endpoint-testimony row per machine | Gateway and DNS join them; deploy, cleanup, logs, and start/stop never use them as runtime authority |
 
 The one-authority-per-row law and tolerant reader rules live in the row-model
 spec. Do not add a second cluster-truth store or a hidden background writer.
@@ -90,7 +91,8 @@ API, Gateway, and DNS process implementations. Keep role entrypoints small.
 Transport adapters may call domain policy; domain policy must not import role
 wiring.
 
-The API role owns controller forwarding and in-memory mutation serialization.
+The API role owns controller forwarding, the fixed controller heartbeat loop,
+and in-memory mutation serialization.
 Every API node also owns its private Duroxide/SQLite runtime for local deploy
 prepare and retire effects. Do not put controller admission or cross-node
 orchestration into that runtime.

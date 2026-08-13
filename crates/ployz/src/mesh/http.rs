@@ -475,7 +475,7 @@ const fn snapshot_collection(snapshot: &LensSnapshot) -> LensCollection {
     match snapshot {
         LensSnapshot::Machines { .. } => LensCollection::Machines,
         LensSnapshot::Services { .. } => LensCollection::Services,
-        LensSnapshot::Containers { .. } => LensCollection::Containers,
+        LensSnapshot::Endpoints { .. } => LensCollection::Endpoints,
         LensSnapshot::MachineStatus { .. } => LensCollection::MachineStatus,
         LensSnapshot::Operations { .. } => LensCollection::Operations,
     }

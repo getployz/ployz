@@ -1,9 +1,9 @@
 # A Preferred Controller Serializes Cluster Mutations
 
-Ployz keeps Corrosion as the replicated cluster store and adds one small,
-disposable coordination point. A singleton Corrosion row names the preferred
-controller. Every machine still serves the API; a follower forwards cluster
-mutations to the named machine over bounded HTTP.
+Ployz keeps Corrosion as the replicated intent-and-publication surface and adds
+one small, disposable coordination point. A singleton Corrosion row names the
+preferred controller. Every machine still serves the API; a follower forwards
+cluster mutations to the named machine over bounded HTTP.
 
 The preferred controller is ordinary async Rust guarded by one in-memory
 mutation lock. It observes current rows and target hosts, computes a plan, and
@@ -11,43 +11,48 @@ dispatches bounded effects. It has no durable queue or workflow history.
 Overlapping mutations may be refused as `controller_busy` instead of waiting in
 a persisted scheduler.
 
-This is not a return to the Core. Corrosion remains the only replicated cluster
-store. There is no consensus leader, quorum, sequencer, claim service, or NATS.
+This is not a return to the Core. Corrosion remains the only replicated
+publication mechanism, while nodes answer live runtime questions from Docker
+over bounded RPC. There is no consensus leader, quorum, sequencer, claim
+service, or NATS.
 
 ## Controller appointment
 
-The `controller` row contains the preferred machine id and an opaque
-appointment id. It has no term, lease, heartbeat, expiry, timestamp, or fencing
-meaning.
+The `controller` row contains the preferred machine name and `heartbeat_at`.
+Every ordinary API process runs the same fixed five-second poll. The named
+machine refreshes the timestamp. A follower may replace an appointment after
+its heartbeat is more than 30 seconds old; the write compares the exact
+observed machine and heartbeat. Any machine may similarly create the row when
+it is absent. Corrosion LWW resolves concurrent writes.
 
-The first API machine to handle a mutation may create the row. A follower may
-replace it immediately after one hard connection failure to the current
-preferred machine. Timeouts, HTTP responses, and protocol failures do not
-trigger replacement. Corrosion LWW resolves concurrent replacements.
+The timestamp is weak wall-clock evidence, not a term, lease, expiry guarantee,
+or fencing token. Forwarding failures return unavailable and never elect; this
+leaves the single polling loop as the only appointment-change path. In
+particular, an API listener failure is not detected while the same process can
+still refresh Corrosion. That rare failure waits for process restart or operator
+intervention.
 
-The appointment is advisory. Work is admitted against the exact machine and
-opaque appointment id currently visible. A deploy rechecks that identity before
-dispatching more host work and once immediately before committing cluster rows.
-The commit itself is an ordinary unconditional Corrosion transaction. This
-narrows the everyday race but is not fencing: a stale or partitioned controller
-commit may still be accepted, and the next attempt repairs from current rows and
-host reality.
+The appointment is advisory. Each node admits work from the machine named by
+its own current Corrosion view. A deploy checks its local view when execution
+starts, and target nodes independently admit effects using their own views.
+The commit itself is an ordinary unconditional Corrosion transaction. A stale
+or partitioned controller commit may still be accepted, and the next attempt
+repairs from current rows and host reality.
 
 ## Controller execution
 
-One deploy attempt is a plain function:
+One deploy attempt is a plain function, as amended by ADR 0043:
 
-1. read Corrosion and inspect target hosts;
-2. compute one placement from that fresh reality;
+1. read roster/config intent and inspect target hosts over bounded HTTP;
+2. compute one placement from the complete request and fresh host reality;
 3. ask each target node to prepare its local runtime;
-4. recheck the exact controller appointment, then publish the service,
-   container, and optional automatic-route rows in one ordinary Corrosion
-   transaction;
+4. replace the namespace's one complete serving-intent row and insert missing
+   automatic routes;
 5. ask target nodes to retire exact obsolete runtime identities;
 6. publish the coarse terminal Operation result.
 
 The controller does not persist a plan, step machine, or recovery journal.
-Stable operation, service, replica, and container identities plus fresh
+Stable operation, service, and replica identities plus fresh
 inspection make retrying from reality safe enough for the small-cluster product.
 
 ## Node-local durable execution
@@ -66,10 +71,16 @@ mutations. Read-only inspection bypasses Duroxide.
 
 The databases are not a distributed workflow system. They do not elect the
 controller, order cluster mutations, store cluster truth, or move between
-machines. A host effect admitted under an old appointment may finish after the
-appointment changes. Its controller may also win a later unconditional cluster
+machines. A host effect admitted under an old local view may finish after the
+controller changes. Its controller may also win a later unconditional cluster
 commit. Both races are accepted; a later attempt observes rows and hosts and
 reconciles from that reality.
+
+Before commit, the controller best-effort rolls back only prepares whose
+successful replies it received. A lost prepare reply may leave a candidate
+container or a stopped incumbent on that machine; the next full deploy finds
+and reconciles that local reality. Nodes do not inspect workflow history on
+behalf of a controller trying to close this uncertainty.
 
 ## Operation rows
 
@@ -77,50 +88,43 @@ Corrosion exposes only two deploy snapshots: created and terminal. Terminal
 outcomes are completed, failed, or interrupted. There are no running snapshots,
 step events, heartbeats, worker claims, ownership takeover, or replay journal.
 
-An executing deploy that observes a foreign Controller Appointment may write
-an interrupted terminal result. A controller crash can instead leave a created
-row behind; no other controller projects, resumes, or rewrites it. Operation
-rows are evidence, not a recovery queue. A caller retries from Corrosion and
-host reality rather than invoking a resubmission protocol or consulting
-operation or Duroxide history.
+A deploy whose controller sees a foreign Controller Appointment when execution
+starts may write an interrupted terminal result. A controller crash can instead
+leave a created row behind; no other controller projects, resumes, or rewrites
+it. Operation rows are evidence, not a recovery queue. A caller retries with a
+fresh deploy name from Corrosion and host reality rather than invoking a
+resubmission protocol or consulting operation or Duroxide history.
 
 ## Partition contract
 
 Partitions may create competing preferred controllers. This is accepted. We do
 not add quorum or fencing to disguise it.
 
-The only cluster-wide brake blocks an isolated member:
-
-- one- and two-machine rosters may operate after the local roster query
-  succeeds;
-- a roster with three or more machines requires Corrosion health to report at
-  least one other visible member.
-
-This is deliberately not majority quorum. Equal partitions may both operate.
-Immediate appointment rechecks reduce stale commits after convergence but
-cannot make partitioned execution exclusive or reject a commit atomically.
-Concurrent namespace or route writes may therefore both report success. Named
-row readers select the lowest canonical ULID after convergence; other valid
-rows remain `doctor`-visible shadows until explicit removal.
+Each machine is allowed to act from its own local Corrosion view. Equal
+partitions may both operate. Local admission checks do not make partitioned
+execution exclusive or reject a commit atomically.
+Concurrent namespace or route writes may therefore both report success. They
+target the same canonical name, so Corrosion converges the competing whole
+documents at one row key; the losing intent may disappear without a retained
+shadow. A later command observes that converged document and reconciles from
+reality.
 
 Named-volume support is intentionally one-shot. A namespace may receive its
 first volume-bearing service deploy, but a later volume-bearing deploy is
-refused synchronously while that service row exists. Replicated volume services
+refused synchronously while a different generation is present on an inspected node. Replicated volume services
 are limited to one replica; global mode still means one independent local
 volume per machine. A target also refuses a different deploy generation already
 present in that namespace, and the controller refuses debris reported by any
 responding machine, so a failed first attempt is not silently mounted beside a
 retry. There is no holder discovery, affinity, handoff, migration, or
-distributed volume fencing; an operator must remove the service row and its
-local runtime explicitly before starting over. Because the service row does not
-retain a runtime declaration, a later request that omits all mounts is treated
-as a stateless replacement and may leave the old local volume behind.
+distributed volume fencing; an operator must remove its local runtime
+explicitly before starting over.
 
 ## Failure and recovery
 
-Controller loss abandons its in-memory attempt. A replacement takes a new
-appointment and later caller retries observe Corrosion and hosts. No controller
-history is recovered or migrated.
+Controller loss abandons its in-memory attempt. A replacement writes its
+machine name after the old heartbeat is stale, and later caller retries observe
+Corrosion and hosts. No controller history is recovered or migrated.
 
 A deploy acceptance response may be returned before its first coarse Operation
 row is written. Losing the controller in that window leaves no operation row;

@@ -44,7 +44,7 @@ before beginning; the new cluster does not inherit prior intent.
    remaining host:
 
    ```console
-   ployz token create
+   ployz token create bootstrap
    # on each host:
    sudo ployz machine join pzjoin_...
    ```
@@ -67,7 +67,7 @@ ployz machine rm <machine-name>
 # on that host:
 sudo ployz machine reset
 # from the operator machine:
-ployz token create
+ployz token create bootstrap
 # on that host, using the fresh token:
 sudo ployz machine join pzjoin_...
 ```
@@ -82,7 +82,7 @@ identity-scoped Corrosion write. If the client loses the reply, retry the same
 remote removal with the returned or recorded machine id:
 
 ```console
-ployz machine rm <machine-name> --id <machine-row-id>
+ployz machine rm <machine-name>
 ```
 
 Never substitute a targeted testimony-row delete, SSH-driven reset,

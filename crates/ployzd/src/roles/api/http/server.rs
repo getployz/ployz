@@ -13,7 +13,7 @@ use hyper::body::Frame;
 use hyper::header::{ALLOW, CONTENT_TYPE, HeaderValue, RETRY_AFTER};
 use hyper::{Method, Response, StatusCode};
 use ployz_core::MachineUpgradeSupervisor;
-use ployz_core::ids::{ClusterId, MachineRowId};
+use ployz_core::ids::{ClusterName, MachineName};
 use ployz_core::{
     ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KNOWN_API_FEATURES, LensCollection,
     LensSnapshot, LensWatchEvent, V2Method, V2Route,
@@ -263,7 +263,7 @@ pub(super) fn source_from_peer<Body>(peer: SocketAddr, _request: &hyper::Request
 pub(super) struct ApiLenses {
     machines: LensWatch,
     services: LensWatch,
-    containers: LensWatch,
+    endpoints: LensWatch,
     machine_status: LensWatch,
     operations: LensWatch,
 }
@@ -271,7 +271,7 @@ pub(super) struct ApiLenses {
 impl ApiLenses {
     fn start(
         corrosion: CorrosionClient,
-        cluster_id: ClusterId,
+        cluster_id: ClusterName,
         lifecycle_sender: mpsc::UnboundedSender<LensCollection>,
     ) -> Self {
         let config = lens_engine_config(cluster_id);
@@ -288,9 +288,9 @@ impl ApiLenses {
                 config.clone(),
                 lifecycle_sender.clone(),
             ),
-            containers: start_lens_with_lifecycle(
+            endpoints: start_lens_with_lifecycle(
                 corrosion.clone(),
-                LensCollection::Containers,
+                LensCollection::Endpoints,
                 config.clone(),
                 lifecycle_sender.clone(),
             ),
@@ -313,7 +313,7 @@ impl ApiLenses {
         match collection {
             LensCollection::Machines => &self.machines,
             LensCollection::Services => &self.services,
-            LensCollection::Containers => &self.containers,
+            LensCollection::Endpoints => &self.endpoints,
             LensCollection::MachineStatus => &self.machine_status,
             LensCollection::Operations => &self.operations,
         }
@@ -323,21 +323,21 @@ impl ApiLenses {
         let Self {
             machines,
             services,
-            containers,
+            endpoints,
             machine_status,
             operations,
         } = self;
         tokio::join!(
             machines.shutdown(),
             services.shutdown(),
-            containers.shutdown(),
+            endpoints.shutdown(),
             machine_status.shutdown(),
             operations.shutdown(),
         );
     }
 }
 
-fn lens_engine_config(cluster_id: ClusterId) -> LensEngineConfig {
+fn lens_engine_config(cluster_id: ClusterName) -> LensEngineConfig {
     let Some(max_attempts) = NonZeroU32::new(LENS_RECOVERY_MAX_ATTEMPTS) else {
         unreachable!("the fixed lens recovery attempt count is nonzero");
     };
@@ -352,8 +352,8 @@ fn lens_engine_config(cluster_id: ClusterId) -> LensEngineConfig {
 
 pub(super) struct ApiService {
     pub(super) corrosion: CorrosionClient,
-    pub(super) cluster_id: ClusterId,
-    pub(super) local_machine_id: MachineRowId,
+    pub(super) cluster_id: ClusterName,
+    pub(super) local_machine_id: MachineName,
     pub(super) listen_addr: SocketAddr,
     pub(super) join_door: Arc<JoinDoorRuntime>,
     pub(super) corrosion_gossip_port: u16,
@@ -377,8 +377,8 @@ pub(super) struct ApiService {
 
 pub(super) struct ApiServiceRuntime {
     pub(super) corrosion: CorrosionClient,
-    pub(super) cluster_id: ClusterId,
-    pub(super) local_machine_id: MachineRowId,
+    pub(super) cluster_id: ClusterName,
+    pub(super) local_machine_id: MachineName,
     pub(super) listen_addr: SocketAddr,
     pub(super) corrosion_gossip_port: u16,
     pub(super) build: String,
@@ -463,7 +463,7 @@ impl ApiService {
         peer: SocketAddr,
         request: hyper::Request<hyper::body::Incoming>,
     ) -> Response<HttpBody> {
-        super::join::handle_join(self, peer, request).await
+        super::join::handle_join_door(self, peer, request).await
     }
 
     pub(super) async fn handle(
@@ -512,40 +512,39 @@ impl ApiService {
                 return refusal_response_with_allow(error.refusal, error.allow);
             }
         };
-        let (principal, appointment_id, request) = if route.is_controller_mutation() {
+        let (principal, request) = if route.is_controller_mutation() {
             match self
                 .controller_forwarder
                 .route(&route, &roster, principal, request)
                 .await
             {
-                super::controller_forwarding::MutationRouting::Local(admitted) => (
-                    admitted.principal,
-                    Some(admitted.appointment_id),
-                    admitted.request,
-                ),
+                super::controller_forwarding::MutationRouting::Local(admitted) => {
+                    (admitted.principal, admitted.request)
+                }
                 super::controller_forwarding::MutationRouting::Forwarded(response) => {
                     return response;
                 }
             }
         } else {
-            (principal, None, request)
+            (principal, request)
         };
         if !route.accepts_principal(&principal) {
             return refusal_response(ApiRefusal::UnsupportedRoute);
         }
-        let _controller_guard =
-            if route.is_controller_mutation() && !matches!(&route, V2Route::Deploy) {
-                match Arc::clone(&self.controller_lock).try_lock_owned() {
-                    Ok(guard) => Some(guard),
-                    Err(_) => return super::deploy_controller::controller_busy(),
-                }
-            } else {
-                None
-            };
+        let _controller_guard = if route.is_controller_mutation()
+            && !matches!(&route, V2Route::Deploy | V2Route::Join)
+        {
+            match Arc::clone(&self.controller_lock).try_lock_owned() {
+                Ok(guard) => Some(guard),
+                Err(_) => return super::deploy_controller::controller_busy(),
+            }
+        } else {
+            None
+        };
         match route {
             V2Route::Version => version_response(&self.build),
             V2Route::Founding => unreachable!("founding routes are handled before roster auth"),
-            V2Route::Join => refusal_response(ApiRefusal::UnsupportedRoute),
+            V2Route::Join => super::join::handle_forwarded_join(self, peer, request).await,
             V2Route::Status => super::diagnostics::status_response(self).await,
             V2Route::Doctor => super::diagnostics::doctor_response(self).await,
             V2Route::TokenCreate
@@ -558,30 +557,38 @@ impl ApiService {
                 super::mutations::handle_mutation(self, route, principal, request).await
             }
             V2Route::PeerRemove | V2Route::ServiceRemove | V2Route::RouteRemove => {
-                super::removals::handle_removal(self, route, request).await
+                super::removals::handle_removal(self, route, principal, request).await
             }
             V2Route::RouteAttach => super::routes::handle_attach(self, principal, request).await,
             V2Route::MachineUpgrade => super::upgrade::handle_machine_upgrade(self, request).await,
-            V2Route::Deploy => {
-                let Some(appointment_id) = appointment_id else {
-                    unreachable!("controller mutations carry an appointment")
-                };
-                super::deploy_controller::handle(self, principal, appointment_id, request).await
-            }
-            V2Route::DeployInspect => {
-                super::deploy_effect_http::inspect(self, &principal, request).await
-            }
+            V2Route::Deploy => super::deploy_controller::handle(self, principal, request).await,
+            V2Route::DeployInspect => super::deploy_effect_http::inspect(self, request).await,
             V2Route::DeployPrepare => {
                 super::deploy_effect_http::prepare(self, &principal, request).await
             }
             V2Route::DeployRetire => {
                 super::deploy_effect_http::retire(self, &principal, request).await
             }
-            V2Route::ServiceLogsTail(service_id) => {
-                super::service_logs::handle_tail(self, service_id, request, shutdown).await
+            V2Route::ServiceLogsProbe => super::service_logs::handle_probe(self, request).await,
+            V2Route::ServiceLogsTail(namespace_name, service_name) => {
+                super::service_logs::handle_tail(
+                    self,
+                    namespace_name,
+                    service_name,
+                    request,
+                    shutdown,
+                )
+                .await
             }
-            V2Route::ServiceLogsFollow(service_id) => {
-                super::service_logs::handle_follow(self, service_id, request, shutdown).await
+            V2Route::ServiceLogsFollow(namespace_name, service_name) => {
+                super::service_logs::handle_follow(
+                    self,
+                    namespace_name,
+                    service_name,
+                    request,
+                    shutdown,
+                )
+                .await
             }
             V2Route::Lens(collection) => self.snapshot_response(collection).await,
             V2Route::LensWatch(collection) => self.watch_response(collection, shutdown).await,
@@ -677,13 +684,13 @@ pub(super) fn founding_route_disabled(mode: &ApiRoleMode, path: &str) -> bool {
     matches!(mode, ApiRoleMode::Ordinary) && path == FOUNDING_ROUTE
 }
 
-async fn machines_lens_contains(lenses: &ApiLenses, machine_id: &MachineRowId) -> bool {
+async fn machines_lens_contains(lenses: &ApiLenses, machine_id: &MachineName) -> bool {
     let mut updates = lenses.watch(LensCollection::Machines).subscribe();
     let state = tokio::time::timeout(LENS_INITIAL_WAIT, await_lens_state(&mut updates)).await;
     matches!(
         state,
         Ok(Ok(Ok(LensSnapshot::Machines { rows, .. })))
-            if rows.iter().any(|row| &row.id == machine_id)
+            if rows.iter().any(|row| &row.name == machine_id)
     )
 }
 

@@ -52,11 +52,11 @@ pub(super) fn sibling_pin_path(tc_pin_path: &str) -> Result<PathBuf, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesiredNamespace {
     address: u32,
-    namespace_id: [u8; 26],
+    namespace_id: [u8; 64],
 }
 
 fn parse_rows(contents: &str) -> Result<Vec<DesiredNamespace>, String> {
-    let mut desired = BTreeMap::<u32, [u8; 26]>::new();
+    let mut desired = BTreeMap::<u32, [u8; 64]>::new();
     for (index, line) in contents.lines().enumerate() {
         let line_number = index + 1;
         let mut fields = line.split_whitespace();
@@ -65,7 +65,7 @@ fn parse_rows(contents: &str) -> Result<Vec<DesiredNamespace>, String> {
         };
         let Some(namespace_id) = fields.next() else {
             return Err(format!(
-                "isolation rows line {line_number} must contain an IPv4 address and namespace ULID"
+                "isolation rows line {line_number} must contain an IPv4 address and namespace name"
             ));
         };
         if fields.next().is_some() {
@@ -76,18 +76,9 @@ fn parse_rows(contents: &str) -> Result<Vec<DesiredNamespace>, String> {
         let address = address.parse::<Ipv4Addr>().map_err(|error| {
             format!("invalid isolation IPv4 address on line {line_number}: {error}")
         })?;
-        let namespace_text = namespace_id;
-        let namespace_id = namespace_text
-            .parse::<ulid::Ulid>()
-            .map_err(|_| format!("invalid namespace ULID on isolation rows line {line_number}"))?;
-        let canonical = namespace_id.to_string();
-        if canonical != namespace_text {
-            return Err(format!(
-                "namespace ULID on isolation rows line {line_number} is not canonical"
-            ));
-        }
-        let mut bytes = [0_u8; 26];
-        bytes.copy_from_slice(canonical.as_bytes());
+        let bytes = encode_namespace_name(namespace_id).map_err(|detail| {
+            format!("invalid namespace name on isolation rows line {line_number}: {detail}")
+        })?;
         let address = u32::from(address).to_be();
         match desired.entry(address) {
             std::collections::btree_map::Entry::Vacant(entry) => {
@@ -141,7 +132,7 @@ struct NamespaceReplacementPlan {
 }
 
 fn plan_replacement(
-    observed: &[(u32, [u8; 26])],
+    observed: &[(u32, [u8; 64])],
     desired: &[DesiredNamespace],
 ) -> NamespaceReplacementPlan {
     let desired_by_address = desired
@@ -163,6 +154,32 @@ fn plan_replacement(
         .collect();
 
     NamespaceReplacementPlan { remove, insert }
+}
+
+fn encode_namespace_name(value: &str) -> Result<[u8; 64], &'static str> {
+    let source = value.as_bytes();
+    let is_alphanumeric = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    if source.is_empty() || source.len() > 63 {
+        return Err("must contain 1 to 63 bytes");
+    }
+    if !source.first().copied().is_some_and(is_alphanumeric)
+        || !source.last().copied().is_some_and(is_alphanumeric)
+    {
+        return Err("must start and end with a lowercase ASCII letter or digit");
+    }
+    if !source
+        .iter()
+        .all(|byte| is_alphanumeric(*byte) || *byte == b'-')
+    {
+        return Err("must be a lowercase DNS label");
+    }
+    let mut encoded = [0_u8; 64];
+    encoded[0] = source.len() as u8;
+    encoded
+        .get_mut(1..=source.len())
+        .ok_or("namespace encoding exceeds 64 bytes")?
+        .copy_from_slice(source);
+    Ok(encoded)
 }
 
 fn config_prefix(config: ployz_ebpf_common::IsolationConfig) -> Result<ipnet::Ipv4Net, String> {
@@ -391,10 +408,9 @@ pub(super) mod linux {
                     address: row.address,
                 }),
                 PodNamespaceTag(ployz_ebpf_common::NamespaceTag {
-                    namespace_id: ployz_ebpf_common::NamespaceRowId {
+                    namespace_id: ployz_ebpf_common::NamespaceName {
                         bytes: row.namespace_id,
                     },
-                    padding: [0; 2],
                 }),
                 0,
             )
@@ -647,8 +663,8 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    const NS_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-    const NS_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    const NS_A: &str = "alpha";
+    const NS_B: &str = "beta";
 
     #[test]
     fn isolation_pin_root_is_a_sibling_of_the_tc_root() {
@@ -694,13 +710,16 @@ mod tests {
             first.address,
             u32::from(Ipv4Addr::new(10, 210, 1, 2)).to_be()
         );
-        assert_eq!(first.namespace_id, NS_A.as_bytes());
+        assert_eq!(
+            first.namespace_id,
+            encode_namespace_name(NS_A).expect("namespace A")
+        );
     }
 
     #[test]
     fn malformed_or_conflicting_rows_fail_before_a_plan_exists() {
-        assert!(parse_rows("not-an-ip 01ARZ3NDEKTSV4RRFFQ69G5FAV\n").is_err());
-        assert!(parse_rows("10.210.1.2 lowercase00000000000000000\n").is_err());
+        assert!(parse_rows("not-an-ip alpha\n").is_err());
+        assert!(parse_rows("10.210.1.2 Not-Canonical\n").is_err());
         assert!(parse_rows(&format!("10.210.1.2 {NS_A}\n10.210.1.2 {NS_B}\n")).is_err());
     }
 
@@ -736,8 +755,8 @@ mod tests {
 
     #[test]
     fn replacement_removes_stale_and_changed_rows_before_inserting() {
-        let a = *NS_A.as_bytes().first_chunk::<26>().expect("namespace A");
-        let b = *NS_B.as_bytes().first_chunk::<26>().expect("namespace B");
+        let a = encode_namespace_name(NS_A).expect("namespace A");
+        let b = encode_namespace_name(NS_B).expect("namespace B");
         let retained = u32::from(Ipv4Addr::new(10, 210, 1, 2)).to_be();
         let changed = u32::from(Ipv4Addr::new(10, 210, 1, 3)).to_be();
         let stale = u32::from(Ipv4Addr::new(10, 210, 1, 4)).to_be();
@@ -771,7 +790,7 @@ mod tests {
 
     #[test]
     fn unchanged_rows_require_no_map_mutation() {
-        let namespace = *NS_A.as_bytes().first_chunk::<26>().expect("namespace");
+        let namespace = encode_namespace_name(NS_A).expect("namespace");
         let address = u32::from(Ipv4Addr::new(10, 210, 1, 2)).to_be();
         let desired = [DesiredNamespace {
             address,

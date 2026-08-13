@@ -2,32 +2,29 @@
 
 use std::collections::BTreeMap;
 
+use crate::roles::system_observation::{SystemObservation, SystemObservationError};
 use ployz_core::corrosion::{
     ContainerIsolationTestimony, CorrosionDocumentVersion, CorrosionTimestamp,
     MachineStatusDocument, MeshConvergenceTestimony, SqliteParameter, Statement,
     WireGuardHandshakeEvidence,
 };
-use ployz_core::ids::{ClusterId, MachineRowId};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
-
-use crate::roles::system_observation::{SystemObservation, SystemObservationError};
+use ployz_core::ids::{ClusterName, MachineName};
 
 /// The only constructor for Keeper's machine_status UPSERT.
 ///
 /// The row key and JSON `machine_id` are derived from the same stored value;
 /// callers cannot supply a second identity that could disagree.
 pub(super) struct LocalMachineStatusWriter {
-    cluster_id: ClusterId,
-    local_machine_id: MachineRowId,
+    cluster_id: ClusterName,
+    local_machine_id: MachineName,
     corrosion_version: String,
 }
 
 impl LocalMachineStatusWriter {
     #[must_use]
     pub(super) const fn new(
-        cluster_id: ClusterId,
-        local_machine_id: MachineRowId,
+        cluster_id: ClusterName,
+        local_machine_id: MachineName,
         corrosion_version: String,
     ) -> Self {
         Self {
@@ -41,14 +38,14 @@ impl LocalMachineStatusWriter {
         &self,
         mesh: Option<MeshConvergenceTestimony>,
         container_isolation: Option<ContainerIsolationTestimony>,
-        wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+        wireguard_handshakes: Option<BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
     ) -> Result<Statement, MachineStatusWriteError> {
         self.statement_with_observation(
             mesh,
             container_isolation,
             wireguard_handshakes,
             SystemObservation::read()?,
-            now()?,
+            CorrosionTimestamp::now_utc(),
         )
     }
 
@@ -56,7 +53,7 @@ impl LocalMachineStatusWriter {
         &self,
         mesh: Option<MeshConvergenceTestimony>,
         container_isolation: Option<ContainerIsolationTestimony>,
-        wireguard_handshakes: Option<BTreeMap<MachineRowId, WireGuardHandshakeEvidence>>,
+        wireguard_handshakes: Option<BTreeMap<MachineName, WireGuardHandshakeEvidence>>,
         observation: SystemObservation,
         observed_at: CorrosionTimestamp,
     ) -> Result<Statement, MachineStatusWriteError> {
@@ -97,17 +94,6 @@ impl From<SystemObservationError> for MachineStatusWriteError {
     }
 }
 
-pub(super) fn now() -> Result<CorrosionTimestamp, MachineStatusWriteError> {
-    let value = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|source| MachineStatusWriteError::Timestamp {
-            detail: source.to_string(),
-        })?;
-    CorrosionTimestamp::try_new(value).map_err(|source| MachineStatusWriteError::Timestamp {
-        detail: source.to_string(),
-    })
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(super) enum MachineStatusWriteError {
     #[error("could not observe {resource}: {detail}")]
@@ -115,8 +101,6 @@ pub(super) enum MachineStatusWriteError {
         resource: &'static str,
         detail: String,
     },
-    #[error("could not construct machine status timestamp: {detail}")]
-    Timestamp { detail: String },
     #[error("could not encode machine status document: {detail}")]
     Encode { detail: String },
 }
@@ -137,14 +121,14 @@ mod tests {
     #[test]
     fn local_writer_encodes_key_mismatch_upsert_with_one_identity() {
         let writer = LocalMachineStatusWriter::new(
-            ClusterId::try_new(CLUSTER).expect("cluster"),
-            MachineRowId::try_new(MACHINE).expect("machine"),
+            ClusterName::try_new(CLUSTER).expect("cluster"),
+            MachineName::try_new(MACHINE).expect("machine"),
             "0.2.0-beta.0".to_owned(),
         );
         let testimony = MeshConvergenceTestimony::KeyMismatch {
             attempted_at: timestamp(),
             mismatches: vec![BuiltinWireguardKeyMismatch::LocalPublicKey {
-                machine_id: MachineRowId::try_new(MACHINE).expect("machine"),
+                machine_id: MachineName::try_new(MACHINE).expect("machine"),
                 stored: WireGuardPublicKey::try_new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                     .expect("stored key"),
                 local: WireGuardPublicKey::try_new("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
@@ -189,8 +173,8 @@ mod tests {
     #[test]
     fn local_writer_composes_both_testimony_families_in_one_upsert() {
         let writer = LocalMachineStatusWriter::new(
-            ClusterId::try_new(CLUSTER).expect("cluster"),
-            MachineRowId::try_new(MACHINE).expect("machine"),
+            ClusterName::try_new(CLUSTER).expect("cluster"),
+            MachineName::try_new(MACHINE).expect("machine"),
             "0.2.0-beta.0".to_owned(),
         );
         let isolation = ContainerIsolationTestimony::Converged {
@@ -226,8 +210,8 @@ mod tests {
     #[test]
     fn local_writer_serializes_an_observed_empty_handshake_map_as_an_object() {
         let writer = LocalMachineStatusWriter::new(
-            ClusterId::try_new(CLUSTER).expect("cluster"),
-            MachineRowId::try_new(MACHINE).expect("machine"),
+            ClusterName::try_new(CLUSTER).expect("cluster"),
+            MachineName::try_new(MACHINE).expect("machine"),
             "0.2.0-beta.0".to_owned(),
         );
         let statement = writer

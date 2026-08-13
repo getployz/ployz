@@ -35,3 +35,17 @@ impl MachineName {
         self.0.as_str()
     }
 }
+
+impl std::fmt::Display for MachineName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for MachineName {
+    type Err = SubjectTokenError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_new(value)
+    }
+}

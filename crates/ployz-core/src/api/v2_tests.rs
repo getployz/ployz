@@ -1,14 +1,56 @@
 use serde_json::json;
 
 use super::*;
-use crate::ids::PeerId;
+use crate::ids::PeerName;
 
-fn machine_id(value: &str) -> MachineRowId {
-    MachineRowId::try_new(value).expect("fixture machine id")
+fn machine_id(value: &str) -> MachineName {
+    MachineName::try_new(value).expect("fixture machine id")
 }
 
 fn machine_name() -> MachineName {
     MachineName::try_new("edge-a").expect("fixture machine name")
+}
+
+#[test]
+fn deploy_host_replies_use_only_natural_replica_identity() {
+    let identity = V2ManagedContainerIdentity {
+        namespace_id: CorrosionNamespaceName::try_new("production").expect("namespace"),
+        service_name: CorrosionServiceName::try_new("api").expect("service"),
+        operation_id: DeployName::try_new("release-1").expect("deploy"),
+        replica_slot: crate::deploy::ReplicaSlot::Global,
+    };
+    let observed = DeployObservedContainer {
+        identity: identity.clone(),
+        host_ports: Default::default(),
+    };
+    let prepared = DeployPreparedReplica {
+        identity,
+        ip: "10.210.20.2".parse().expect("ip"),
+    };
+
+    assert_eq!(
+        serde_json::to_value(observed).expect("observed replica serializes"),
+        json!({
+            "identity": {
+                "namespace_id": "production",
+                "service_name": "api",
+                "operation_id": "release-1",
+                "replica_slot": { "kind": "global" }
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(prepared).expect("prepared replica serializes"),
+        json!({
+            "identity": {
+                "namespace_id": "production",
+                "service_name": "api",
+                "operation_id": "release-1",
+                "replica_slot": { "kind": "global" }
+            },
+            "ip": "10.210.20.2"
+        })
+    );
 }
 
 #[test]
@@ -19,37 +61,34 @@ fn machine_remove_has_one_exact_route_feature_method_and_principal_policy() {
     assert_eq!(route.method(), V2Method::Post);
     assert_eq!(route.feature(), KnownApiFeature::MachineRemove);
     assert!(route.accepts_principal(&Principal::Peer {
-        peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("fixture peer id"),
+        peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("fixture peer id"),
     }));
     assert!(!route.accepts_principal(&Principal::Machine {
         machine_id: machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
     }));
     assert!(!route.accepts_principal(&Principal::ApiToken {
-        token_id: TokenId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture token id"),
+        token_id: TokenName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("fixture token id"),
     }));
 }
 
 #[test]
-fn machine_remove_contract_serializes_the_optional_id_and_typed_outcomes() {
+fn machine_remove_contract_uses_only_the_canonical_name() {
     let request = MachineRemoveRequest {
         machine_name: machine_name(),
-        machine_id: None,
     };
     assert_eq!(
         serde_json::to_value(&request).expect("request serializes"),
         json!({ "machine_name": "edge-a" })
     );
-    let machine_id = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV");
-    let reply = MachineRemoveReply::AlreadyAbsent {
-        machine_id: machine_id.clone(),
+    let reply = MachineRemoveReply::Removed {
+        machine_name: machine_name(),
     };
     assert_eq!(
         serde_json::to_value(reply).expect("reply serializes"),
-        json!({ "kind": "already_absent", "machine_id": machine_id.as_str() })
+        json!({ "kind": "removed", "machine_name": "edge-a" })
     );
-    let refusal = MachineRemoveRefusal::IdMismatch {
+    let refusal = MachineRemoveRefusal::NotFound {
         machine_name: machine_name(),
-        machine_id: machine_id.clone(),
     };
     assert_eq!(
         serde_json::from_value::<MachineRemoveRefusal>(
@@ -58,67 +97,28 @@ fn machine_remove_contract_serializes_the_optional_id_and_typed_outcomes() {
         .expect("refusal deserializes"),
         refusal
     );
+    assert_eq!(
+        serde_json::to_value(MachineRemoveRefusal::ConcurrentMutation {
+            machine_name: machine_name(),
+        })
+        .expect("concurrent refusal serializes"),
+        json!({ "kind": "concurrent_mutation", "machine_name": "edge-a" })
+    );
 }
 
 #[test]
-fn machine_remove_selection_requires_an_unambiguous_accepted_roster_row() {
-    let lower = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAV");
-    let higher = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAW");
+fn machine_remove_selection_uses_the_name_as_the_row_key() {
     let request = MachineRemoveRequest {
         machine_name: machine_name(),
-        machine_id: None,
     };
     assert_eq!(
-        select_machine_removal(
-            &request,
-            [
-                (higher.clone(), machine_name()),
-                (lower.clone(), machine_name()),
-            ],
-        ),
-        Err(MachineRemoveRefusal::Ambiguous {
+        select_machine_removal(&request, [machine_id("edge-b"), machine_name()],),
+        Ok(machine_name())
+    );
+    assert_eq!(
+        select_machine_removal(&request, [machine_id("edge-b")]),
+        Err(MachineRemoveRefusal::NotFound {
             machine_name: machine_name(),
-            machine_ids: vec![lower.clone(), higher.clone()],
-        })
-    );
-
-    let request = MachineRemoveRequest {
-        machine_name: machine_name(),
-        machine_id: Some(higher.clone()),
-    };
-    assert_eq!(
-        select_machine_removal(
-            &request,
-            [
-                (lower.clone(), machine_name()),
-                (higher.clone(), machine_name()),
-            ],
-        ),
-        Ok(higher.clone())
-    );
-
-    let missing = machine_id("01ARZ3NDEKTSV4RRFFQ69G5FAX");
-    let request = MachineRemoveRequest {
-        machine_name: machine_name(),
-        machine_id: Some(missing.clone()),
-    };
-    assert_eq!(
-        select_machine_removal(&request, [(lower, machine_name())]),
-        Err(MachineRemoveRefusal::IdMismatch {
-            machine_name: machine_name(),
-            machine_id: missing,
-        })
-    );
-
-    let request = MachineRemoveRequest {
-        machine_name: MachineName::try_new("edge-b").expect("fixture machine name"),
-        machine_id: Some(higher.clone()),
-    };
-    assert_eq!(
-        select_machine_removal(&request, [(higher.clone(), machine_name())]),
-        Err(MachineRemoveRefusal::IdMismatch {
-            machine_name: MachineName::try_new("edge-b").expect("fixture machine name"),
-            machine_id: higher,
         })
     );
 }
@@ -141,13 +141,13 @@ fn machine_upgrade_route_is_post_advertised_and_peer_only() {
     assert_eq!(route.feature(), KnownApiFeature::MachineUpgrade);
     assert!(KNOWN_API_FEATURES.contains(&KnownApiFeature::MachineUpgrade));
     assert!(route.accepts_principal(&Principal::Peer {
-        peer_id: PeerId::generate(),
+        peer_id: PeerName::try_new("operator").expect("peer name"),
     }));
     assert!(!route.accepts_principal(&Principal::Machine {
-        machine_id: MachineRowId::generate(),
+        machine_id: MachineName::try_new("edge-a").expect("machine name"),
     }));
     assert!(!route.accepts_principal(&Principal::ApiToken {
-        token_id: TokenId::generate(),
+        token_id: TokenName::try_new("bootstrap").expect("token name"),
     }));
     assert_eq!(V2Route::parse("/machines/upgrade/next"), None);
 }

@@ -35,7 +35,6 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "proce
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-ulid.workspace = true
 time.workspace = true
 hyper = { version = "=1.10.1", features = ["server", "http1"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }

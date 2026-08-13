@@ -8,7 +8,7 @@ use crate::init::orchestration::{FoundingControlPlane, FoundingReadiness};
 use futures_util::StreamExt as _;
 use ployz_core::founding::ValidatedFoundingRequest;
 use ployz_core::founding::{FoundingRefusal, FoundingRequest, FoundingResult};
-use ployz_core::ids::MachineRowId;
+use ployz_core::ids::MachineName;
 use ployz_core::operation::FailureMessage;
 use ployz_core::{
     API_MAJOR, ApiFeature, ApiRefusal, ApiVersion, FOUNDING_ROUTE, KnownApiFeature, LensCollection,
@@ -140,12 +140,12 @@ impl HttpFoundingControlPlane {
     /// Docker inspection.
     pub async fn await_endpoint_network_ready(
         &self,
-        machine_id: &MachineRowId,
+        machine_id: &MachineName,
     ) -> Result<(), HttpFoundingError> {
         self.retry_until_ready(|snapshot| match snapshot {
-            LensSnapshot::Machines { rows, .. } => rows.iter().any(|row| row.id == *machine_id),
+            LensSnapshot::Machines { rows, .. } => rows.iter().any(|row| row.name == *machine_id),
             LensSnapshot::Services { .. }
-            | LensSnapshot::Containers { .. }
+            | LensSnapshot::Endpoints { .. }
             | LensSnapshot::MachineStatus { .. }
             | LensSnapshot::Operations { .. } => false,
         })
@@ -357,15 +357,15 @@ mod tests {
         derive_builtin_wireguard_member,
     };
     use ployz_core::founding::{FoundingDriverEnrollment, FoundingRequest};
-    use ployz_core::ids::{ClusterId, MachineRowId};
-    use ployz_core::machine::{MachineLifecycle, MachineName};
+    use ployz_core::ids::{ClusterName, MachineName};
+    use ployz_core::machine::MachineLifecycle;
     use ployz_core::network::{MachineEndpointSubnet, MachineEndpointSupernet, WireGuardPublicKey};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
 
     fn request() -> FoundingRequest {
-        let cluster_id = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
-        let machine_id = MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("machine id");
+        let cluster_id = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster id");
+        let machine_id = MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("machine id");
         let provenance = OperatorWriteProvenance {
             written_by: OperationInitiator::Machine {
                 machine_id: machine_id.clone(),
@@ -497,12 +497,11 @@ mod tests {
     #[tokio::test]
     async fn public_fold_and_ordinary_route_refusal_prove_readiness() {
         let request = request();
+        let mut machine = request.machine.clone();
+        machine.name = request.machine_id.clone();
         let lens = LensSnapshot::Machines {
             cluster: Box::new(request.cluster.clone()),
-            rows: vec![ployz_core::MachineLensRow {
-                id: request.machine_id.clone(),
-                document: request.machine.clone(),
-            }],
+            rows: vec![machine],
         };
         let version = ApiVersion::new("test", [ApiFeature::Known(KnownApiFeature::Founding)]);
         let unsupported = serde_json::to_vec(&ApiRefusal::UnsupportedRoute).expect("refusal JSON");

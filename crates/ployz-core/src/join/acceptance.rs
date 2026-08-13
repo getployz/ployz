@@ -5,12 +5,13 @@ use std::net::{IpAddr, SocketAddr};
 use serde::{Deserialize, Serialize};
 
 use crate::corrosion::{
-    ClusterDocument, MachineTransport, MeshProvider, derive_builtin_wireguard_member,
+    ClusterDocument, MachineDocument, MachineTransport, MeshProvider, PeerDocument,
+    derive_builtin_wireguard_member,
 };
-use crate::ids::MachineRowId;
+use crate::ids::MachineName;
 
 use super::JoinAcceptanceValidationError;
-use super::admission::{AcceptedMachineRow, AcceptedPeerRow, MachineJoinRequest, PeerJoinRequest};
+use super::admission::{MachineJoinRequest, PeerJoinRequest};
 use super::substrate::JoinMachineSubstrate;
 use super::token::{JoinDoorCertFingerprint, JoinDoorMaterial};
 
@@ -18,13 +19,13 @@ use super::token::{JoinDoorCertFingerprint, JoinDoorMaterial};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ReachableSeedMachine {
-    pub machine_id: MachineRowId,
+    pub machine_name: MachineName,
     pub transport: MachineTransport,
 }
 
 impl ReachableSeedMachine {
     pub fn try_new(
-        machine_id: MachineRowId,
+        machine_name: MachineName,
         transport: MachineTransport,
     ) -> Result<Self, JoinAcceptanceValidationError> {
         if matches!(
@@ -34,7 +35,7 @@ impl ReachableSeedMachine {
             return Err(JoinAcceptanceValidationError::SeedIsNotReachable);
         }
         Ok(Self {
-            machine_id,
+            machine_name,
             transport,
         })
     }
@@ -64,7 +65,7 @@ impl CorrosionBootstrapFacts {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MachineJoinAccepted {
     pub cluster: ClusterDocument,
-    pub machine: AcceptedMachineRow,
+    pub machine: MachineDocument,
     pub seed: ReachableSeedMachine,
     pub door: JoinDoorMaterial,
     pub corrosion: CorrosionBootstrapFacts,
@@ -81,13 +82,10 @@ impl MachineJoinAccepted {
         if self.cluster.provider != MeshProvider::BuiltinWireguard {
             return Err(JoinAcceptanceValidationError::ProviderMismatch);
         }
-        if self.machine.machine_id != request.machine_id {
-            return Err(JoinAcceptanceValidationError::AcceptedIdentityMismatch);
-        }
-        if self.machine.document.cluster_id != self.cluster.cluster_id {
+        if self.machine.cluster_id != self.cluster.cluster_id {
             return Err(JoinAcceptanceValidationError::ClusterMismatch);
         }
-        if self.machine.document.name != request.name {
+        if self.machine.name != request.name {
             return Err(JoinAcceptanceValidationError::AcceptedNameMismatch);
         }
         let MachineTransport::Wireguard {
@@ -95,7 +93,7 @@ impl MachineJoinAccepted {
             addr_v6,
             endpoint,
             subnet_v4,
-        } = &self.machine.document.transport
+        } = &self.machine.transport
         else {
             return Err(JoinAcceptanceValidationError::AcceptedTransportMismatch);
         };
@@ -118,7 +116,7 @@ impl MachineJoinAccepted {
         validate_seed(
             &self.cluster,
             &self.seed,
-            Some(&request.machine_id),
+            Some(&request.name),
             &self.corrosion,
         )?;
         Ok(ValidatedMachineJoinAccepted(self))
@@ -145,7 +143,7 @@ impl ValidatedMachineJoinAccepted {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PeerJoinAccepted {
     pub cluster: ClusterDocument,
-    pub peer: AcceptedPeerRow,
+    pub peer: PeerDocument,
     pub seed: ReachableSeedMachine,
     pub corrosion: CorrosionBootstrapFacts,
 }
@@ -158,19 +156,17 @@ impl PeerJoinAccepted {
         if self.cluster.provider != MeshProvider::BuiltinWireguard {
             return Err(JoinAcceptanceValidationError::ProviderMismatch);
         }
-        if self.peer.peer_id != request.peer_id
-            || self.peer.document.cluster_id != self.cluster.cluster_id
-        {
-            return Err(JoinAcceptanceValidationError::AcceptedIdentityMismatch);
+        if self.peer.cluster_id != self.cluster.cluster_id {
+            return Err(JoinAcceptanceValidationError::ClusterMismatch);
         }
-        if self.peer.document.name != request.name {
+        if self.peer.name != request.name {
             return Err(JoinAcceptanceValidationError::AcceptedNameMismatch);
         }
         let crate::corrosion::PeerTransport::Wireguard {
             pubkey,
             addr_v6,
             endpoint,
-        } = &self.peer.document.transport
+        } = &self.peer.transport
         else {
             return Err(JoinAcceptanceValidationError::AcceptedTransportMismatch);
         };
@@ -192,11 +188,11 @@ impl PeerJoinAccepted {
 fn validate_seed(
     cluster: &ClusterDocument,
     seed: &ReachableSeedMachine,
-    joining_machine_id: Option<&MachineRowId>,
+    joining_machine_id: Option<&MachineName>,
     corrosion: &CorrosionBootstrapFacts,
 ) -> Result<(), JoinAcceptanceValidationError> {
-    ReachableSeedMachine::try_new(seed.machine_id.clone(), seed.transport.clone())?;
-    if joining_machine_id.is_some_and(|joining| joining == &seed.machine_id) {
+    ReachableSeedMachine::try_new(seed.machine_name.clone(), seed.transport.clone())?;
+    if joining_machine_id.is_some_and(|joining| joining == &seed.machine_name) {
         return Err(JoinAcceptanceValidationError::SeedIsJoiningMachine);
     }
     let MachineTransport::Wireguard {

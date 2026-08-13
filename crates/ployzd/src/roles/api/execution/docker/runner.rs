@@ -18,20 +18,22 @@ use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
     ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthConfig,
-    HostConfig, Mount, MountType, NetworkingConfig, PortBinding, PortMap, RestartPolicy,
-    RestartPolicyNameEnum,
+    HostConfig, Mount, MountType, NetworkingConfig, PortBinding, PortMap, PortSummary,
+    PortSummaryTypeEnum, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
     LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::{Stream, StreamExt};
-use ployz_core::corrosion::V2ManagedContainerIdentity;
+use ployz_core::corrosion::{
+    HostPortBinding, HostPortBindings, HostPortProtocol, V2ManagedContainerIdentity,
+};
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRuntimeSpec,
     ImageReference, VolumeName,
 };
-use ployz_core::ids::{ContainerId, NamespaceRowId, SubjectTokenError};
+use ployz_core::ids::{ContainerId, CorrosionNamespaceName, SubjectTokenError};
 use ployz_core::machine::runtime::{ContainerHealth, ManagedContainerHealthStatus};
 use ployz_core::network::internal_dns::InternalDnsSearchDomain;
 use ployz_core::network::{
@@ -39,6 +41,7 @@ use ployz_core::network::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -440,10 +443,14 @@ fn v2_container_name(identity: &V2ManagedContainerIdentity) -> String {
         ployz_core::deploy::ReplicaSlot::Global => "global".to_owned(),
         ployz_core::deploy::ReplicaSlot::Replicated { number } => number.get().to_string(),
     };
+    // Docker accepts dots, while every identity component excludes them.
+    // The natural identity is therefore readable and injective without a
+    // container-name-specific length cap.
     format!(
-        "plz-{}-{}-{slot}",
+        "plz.{}.{}.{}.{slot}",
+        identity.namespace_id.as_str(),
+        identity.service_name.as_str(),
         identity.operation_id.as_str(),
-        identity.service_id.as_str()
     )
 }
 impl V2MachineLogReader for DockerManagedContainerRunner {
@@ -970,8 +977,11 @@ fn docker_container_state(
     }
 }
 
-/// Storage identity of a row-scoped v2 named volume on the local Docker host.
-fn v2_volume_storage_name(namespace_id: &NamespaceRowId, volume_name: &VolumeName) -> String {
+/// Storage identity of a namespace-scoped v2 named volume on the local Docker host.
+fn v2_volume_storage_name(
+    namespace_id: &CorrosionNamespaceName,
+    volume_name: &VolumeName,
+) -> String {
     let namespace = namespace_id.as_str();
     format!(
         "ployz-v2-n{}-{namespace}-v{}-{}",
@@ -1242,6 +1252,7 @@ fn existing_v2_container_from_summary(
         .and_then(docker_health_status);
     let identity = v2_labels::parse(&btree_from_hashmap(labels))
         .map_err(DockerManagedContainerSummaryError::InvalidV2Labels)?;
+    let host_ports = published_host_ports(summary.ports)?;
     Ok(ExistingV2ManagedContainer {
         container_id: ContainerId::try_new(id)
             .map_err(DockerManagedContainerSummaryError::InvalidContainerId)?,
@@ -1250,7 +1261,37 @@ fn existing_v2_container_from_summary(
         health_status: health_status.or_else(|| summary.status.as_deref().and_then(status_health)),
         resolved_image_identity: summary.image_id,
         created_at_unix_seconds: summary.created,
+        host_ports,
     })
+}
+
+fn published_host_ports(
+    ports: Option<Vec<PortSummary>>,
+) -> Result<HostPortBindings, DockerManagedContainerSummaryError> {
+    let mut bindings = Vec::new();
+    for port in ports.into_iter().flatten() {
+        let Some(public_port) = port.public_port else {
+            continue;
+        };
+        let protocol = match port.typ {
+            Some(PortSummaryTypeEnum::TCP) => HostPortProtocol::Tcp,
+            Some(PortSummaryTypeEnum::UDP) => HostPortProtocol::Udp,
+            Some(PortSummaryTypeEnum::EMPTY | PortSummaryTypeEnum::SCTP) | None => {
+                return Err(DockerManagedContainerSummaryError::InvalidPublishedPort);
+            }
+        };
+        let host_port = NonZeroU16::new(public_port)
+            .ok_or(DockerManagedContainerSummaryError::InvalidPublishedPort)?;
+        let container_port = NonZeroU16::new(port.private_port)
+            .ok_or(DockerManagedContainerSummaryError::InvalidPublishedPort)?;
+        bindings.push(HostPortBinding {
+            host_port,
+            container_port,
+            protocol,
+        });
+    }
+    HostPortBindings::try_new(bindings)
+        .map_err(|_| DockerManagedContainerSummaryError::InvalidPublishedPort)
 }
 
 fn docker_health_status(
@@ -1321,6 +1362,8 @@ enum DockerManagedContainerSummaryError {
     InvalidContainerId(SubjectTokenError),
     #[error("managed Docker container has invalid v2 labels: {0:?}")]
     InvalidV2Labels(V2ManagedContainerLabelError),
+    #[error("managed Docker container has an invalid published port")]
+    InvalidPublishedPort,
 }
 
 fn hashmap_from_btree(map: BTreeMap<String, String>) -> HashMap<String, String> {
@@ -1753,7 +1796,7 @@ mod tests {
         };
         assert_eq!(
             mount.source.as_deref(),
-            Some("ployz-v2-n26-01K00000000000000000000001-v4-data")
+            Some("ployz-v2-n10-production-v4-data")
         );
     }
 
@@ -1886,7 +1929,7 @@ mod tests {
         let (runner, requests, _socket_dir) =
             recording_runner_with_responses(vec![(200, list)]).await;
         let mut wrong = v2_managed_identity();
-        wrong.operation_id = ployz_core::ids::OperationRowId::try_new("01K00000000000000000000009")
+        wrong.operation_id = ployz_core::ids::DeployName::try_new("01K00000000000000000000009")
             .expect("operation row");
 
         let error = runner
@@ -1917,6 +1960,12 @@ mod tests {
 
     #[test]
     fn v2_summary_recovers_the_row_only_identity() {
+        let host_ports = HostPortBindings::try_new([HostPortBinding {
+            host_port: NonZeroU16::new(8080).expect("host port"),
+            container_port: NonZeroU16::new(80).expect("container port"),
+            protocol: HostPortProtocol::Tcp,
+        }])
+        .expect("host ports");
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
             labels: Some(hashmap_from_btree(
@@ -1926,6 +1975,12 @@ mod tests {
             image_id: Some("sha256:resolved".to_owned()),
             created: Some(42),
             mounts: Some(Vec::new()),
+            ports: Some(vec![PortSummary {
+                ip: Some("0.0.0.0".to_owned()),
+                private_port: 80,
+                public_port: Some(8080),
+                typ: Some(PortSummaryTypeEnum::TCP),
+            }]),
             ..Default::default()
         };
 
@@ -1938,6 +1993,7 @@ mod tests {
                 health_status: None,
                 resolved_image_identity: Some("sha256:resolved".to_owned()),
                 created_at_unix_seconds: Some(42),
+                host_ports,
             }
         );
     }
@@ -2120,24 +2176,43 @@ mod tests {
         let mut identity = v2_managed_identity();
         assert_eq!(
             v2_container_name(&identity),
-            "plz-01K00000000000000000000003-01K00000000000000000000002-global"
+            "plz.production.api.release-1.global"
         );
         identity.replica_slot = ployz_core::deploy::ReplicaSlot::Replicated {
             number: ployz_core::deploy::ReplicatedReplicaSlot::try_new(2).expect("slot"),
         };
         assert_eq!(
             v2_container_name(&identity),
-            "plz-01K00000000000000000000003-01K00000000000000000000002-2"
+            "plz.production.api.release-1.2"
         );
+    }
+
+    #[test]
+    fn v2_container_name_distinguishes_hyphens_in_adjacent_components() {
+        let mut left = v2_managed_identity();
+        left.namespace_id =
+            ployz_core::ids::CorrosionNamespaceName::try_new("a-b").expect("namespace");
+        left.service_name =
+            ployz_core::corrosion::CorrosionServiceName::try_new("c").expect("service");
+        left.operation_id = ployz_core::ids::DeployName::try_new("d").expect("deploy");
+
+        let mut right = left.clone();
+        right.namespace_id =
+            ployz_core::ids::CorrosionNamespaceName::try_new("a").expect("namespace");
+        right.service_name =
+            ployz_core::corrosion::CorrosionServiceName::try_new("b-c").expect("service");
+
+        assert_eq!(v2_container_name(&left), "plz.a-b.c.d.global");
+        assert_eq!(v2_container_name(&right), "plz.a.b-c.d.global");
+        assert_ne!(v2_container_name(&left), v2_container_name(&right));
     }
     fn v2_managed_identity() -> V2ManagedContainerIdentity {
         V2ManagedContainerIdentity {
-            namespace_id: ployz_core::ids::NamespaceRowId::try_new("01K00000000000000000000001")
+            namespace_id: ployz_core::ids::CorrosionNamespaceName::try_new("production")
                 .expect("namespace row"),
-            service_id: ployz_core::ids::ServiceRowId::try_new("01K00000000000000000000002")
-                .expect("service row"),
-            operation_id: ployz_core::ids::OperationRowId::try_new("01K00000000000000000000003")
-                .expect("operation row"),
+            service_name: ployz_core::corrosion::CorrosionServiceName::try_new("api")
+                .expect("service"),
+            operation_id: ployz_core::ids::DeployName::try_new("release-1").expect("operation row"),
             replica_slot: ployz_core::deploy::ReplicaSlot::Global,
         }
     }

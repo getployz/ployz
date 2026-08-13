@@ -402,7 +402,7 @@ mod tests {
         DesiredBuiltinWireguardMachinePeer, DesiredBuiltinWireguardRoamingPeer,
         derive_builtin_wireguard_member,
     };
-    use ployz_core::ids::{ClusterId, MachineRowId, PeerId};
+    use ployz_core::ids::{ClusterName, MachineName, PeerName};
 
     use super::*;
 
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn gossip_sources_include_local_and_remote_machines_but_not_roaming_peers() {
-        let cluster = ClusterId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster");
+        let cluster = ClusterName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("cluster");
         let local_key = key(1);
         let machine_key = key(2);
         let roaming_key = key(3);
@@ -435,7 +435,7 @@ mod tests {
             )
             .expect("cluster prefix"),
             machine_peers: vec![DesiredBuiltinWireguardMachinePeer {
-                machine_id: MachineRowId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
+                machine_id: MachineName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAW").expect("machine"),
                 public_key: machine_key,
                 subnet_v6: machine.subnet(),
                 endpoint: None,
@@ -445,7 +445,7 @@ mod tests {
                 },
             }],
             roaming_peers: vec![DesiredBuiltinWireguardRoamingPeer {
-                peer_id: PeerId::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("peer"),
+                peer_id: PeerName::try_new("01ARZ3NDEKTSV4RRFFQ69G5FAX").expect("peer"),
                 public_key: roaming_key,
                 subnet_v6: roaming.subnet(),
                 endpoint: None,
@@ -453,9 +453,7 @@ mod tests {
             ebpf_routes: Vec::new(),
             evidence: BuiltinWireguardRosterEvidence {
                 machine_skipped: Vec::new(),
-                machine_shadows: Vec::new(),
                 peer_skipped: Vec::new(),
-                peer_shadows: Vec::new(),
                 address_mismatches: Vec::new(),
                 identity_conflicts: Vec::new(),
             },
