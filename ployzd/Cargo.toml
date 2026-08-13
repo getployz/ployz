@@ -6,10 +6,10 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-ployz-core = { path = "../ployz-core" }
+ployz-core.workspace = true
 
 [dev-dependencies]
-ployz-testkit = { path = "../ployz-testkit" }
+ployz-testkit.workspace = true
 
 [lints]
 workspace = true

@@ -24,6 +24,7 @@ pub enum NameMatches<T> {
 }
 
 impl<T> NameMatches<T> {
+    #[must_use]
     pub fn from_matches(mut matches: Vec<T>) -> Self {
         match matches.len() {
             0 => Self::None,
@@ -60,6 +61,7 @@ pub struct PartialResult<T, E> {
 }
 
 impl<T, E> PartialResult<T, E> {
+    #[must_use]
     pub fn all_targets_succeeded(&self) -> bool {
         self.failures.is_empty() && self.omissions.is_empty()
     }

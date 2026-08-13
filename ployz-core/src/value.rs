@@ -108,12 +108,14 @@ validated_string_newtype!(
 
 impl MachineId {
     /// Generate the same 32-character lowercase hexadecimal identity shape as the baseline.
+    #[must_use]
     pub fn random() -> Self {
         Self(uuid::Uuid::new_v4().simple().to_string())
     }
 }
 
 impl ServiceId {
+    #[must_use]
     pub fn random() -> Self {
         Self(uuid::Uuid::new_v4().simple().to_string())
     }
@@ -213,8 +215,8 @@ validated_string_newtype!(
         let bytes = value.as_bytes();
         !bytes.is_empty()
             && bytes.len() <= 63
-            && bytes[0].is_ascii_alphanumeric()
-            && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+            && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
             && bytes
                 .iter()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')

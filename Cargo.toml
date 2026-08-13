@@ -9,5 +9,16 @@ edition = "2024"
 rust-version = "1.85"
 repository = "https://github.com/getployz/ployz2"
 
+[workspace.dependencies]
+ployz-core = { path = "ployz-core" }
+ployz-testkit = { path = "ployz-testkit" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"

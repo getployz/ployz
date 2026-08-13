@@ -28,6 +28,7 @@ pub mod env {
     ];
 }
 
+#[must_use]
 pub fn command() -> Command {
     base("ployz", "Manage Ployz machines, services, and volumes")
         .subcommand(build())

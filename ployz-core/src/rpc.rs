@@ -28,6 +28,7 @@ pub use transport::{
 };
 
 impl OpaquePayload {
+    #[must_use]
     pub fn new(json: Vec<u8>) -> Self {
         Self { json }
     }
@@ -105,6 +106,7 @@ pub struct RpcRequest {
 }
 
 impl RpcRequest {
+    #[must_use]
     pub fn describe_contract() -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -137,6 +139,7 @@ pub enum RpcResponseBody {
 }
 
 impl RpcResponseBody {
+    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         match self {
             Self::ContractDescription(_) => ResponseKind::ContractDescription,
@@ -153,6 +156,7 @@ pub struct RpcResponse {
 }
 
 impl RpcResponse {
+    #[must_use]
     pub fn contract_description(description: ContractDescription) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -160,6 +164,7 @@ impl RpcResponse {
         }
     }
 
+    #[must_use]
     pub fn error(error: RpcError) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -167,6 +172,7 @@ impl RpcResponse {
         }
     }
 
+    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
     }
@@ -175,10 +181,12 @@ impl RpcResponse {
         validate_protocol_major(self.protocol_major)?;
         match &self.body {
             RpcResponseBody::ContractDescription(description) => Ok(description),
-            body => Err(CodecError::UnexpectedResponse {
-                expected: "contract_description",
-                actual: body.kind().as_str().to_owned(),
-            }),
+            body @ (RpcResponseBody::Error(_) | RpcResponseBody::Unknown { .. }) => {
+                Err(CodecError::UnexpectedResponse {
+                    expected: "contract_description",
+                    actual: body.kind().as_str().to_owned(),
+                })
+            }
         }
     }
 
@@ -257,6 +265,7 @@ pub struct ContractDescription {
 }
 
 impl ContractDescription {
+    #[must_use]
     pub fn supports(&self, capability: &str) -> bool {
         self.capabilities
             .iter()

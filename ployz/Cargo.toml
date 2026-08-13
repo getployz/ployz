@@ -8,10 +8,10 @@ repository.workspace = true
 [dependencies]
 clap = { version = "4.6.6", features = ["env"] }
 clap_complete = "4.6.9"
-ployz-core = { path = "../ployz-core" }
+ployz-core.workspace = true
 
 [dev-dependencies]
-ployz-testkit = { path = "../ployz-testkit" }
+ployz-testkit.workspace = true
 
 [lints]
 workspace = true

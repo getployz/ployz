@@ -340,7 +340,11 @@ fn reference_positionals(
         ));
     }
     if command_path == "ployz machine init" && deviations.contains("local-machine-init-stub") {
-        positionals[0].1.required = false;
+        positionals
+            .first_mut()
+            .expect("machine init has a destination positional")
+            .1
+            .required = false;
     }
     positionals
         .into_iter()
