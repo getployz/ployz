@@ -34,8 +34,9 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-macro_rules! opaque_hex_id {
-    ($name:ident, $label:literal, $len:literal) => {
+macro_rules! validated_string_newtype {
+    ($(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
+        $(#[$attribute])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
@@ -43,14 +44,11 @@ macro_rules! opaque_hex_id {
         impl $name {
             pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
                 let value = value.into();
-                if is_lower_hex(&value, $len) {
+                let $value = value.as_str();
+                if $valid {
                     Ok(Self(value))
                 } else {
-                    Err(ValueError::new(
-                        $label,
-                        value,
-                        concat!($len, " lowercase hexadecimal characters"),
-                    ))
+                    Err(ValueError::new($label, value, $expected))
                 }
             }
 
@@ -89,9 +87,24 @@ macro_rules! opaque_hex_id {
     };
 }
 
-opaque_hex_id!(MachineId, "Machine ID", 32);
-opaque_hex_id!(ServiceId, "Service ID", 32);
-opaque_hex_id!(ContainerId, "Container ID", 64);
+validated_string_newtype!(
+    MachineId,
+    "Machine ID",
+    "32 lowercase hexadecimal characters",
+    |value| is_lower_hex(value, 32)
+);
+validated_string_newtype!(
+    ServiceId,
+    "Service ID",
+    "32 lowercase hexadecimal characters",
+    |value| is_lower_hex(value, 32)
+);
+validated_string_newtype!(
+    ContainerId,
+    "Container ID",
+    "64 lowercase hexadecimal characters",
+    |value| is_lower_hex(value, 64)
+);
 
 impl MachineId {
     /// Generate the same 32-character lowercase hexadecimal identity shape as the baseline.
@@ -104,57 +117,6 @@ impl ServiceId {
     pub fn random() -> Self {
         Self(uuid::Uuid::new_v4().simple().to_string())
     }
-}
-
-macro_rules! nonempty_name {
-    ($name:ident, $label:literal) => {
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-        #[serde(try_from = "String", into = "String")]
-        pub struct $name(String);
-
-        impl $name {
-            pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
-                let value = value.into();
-                if value.is_empty() {
-                    Err(ValueError::new($label, value, "a non-empty string"))
-                } else {
-                    Ok(Self(value))
-                }
-            }
-
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(&self.0)
-            }
-        }
-
-        impl FromStr for $name {
-            type Err = ValueError;
-
-            fn from_str(value: &str) -> Result<Self, Self::Err> {
-                Self::parse(value)
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = ValueError;
-
-            fn try_from(value: String) -> Result<Self, Self::Error> {
-                Self::parse(value)
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(value: $name) -> Self {
-                value.0
-            }
-        }
-    };
 }
 
 macro_rules! open_string_enum {
@@ -200,63 +162,33 @@ macro_rules! open_string_enum {
 
 pub(crate) use open_string_enum;
 
-nonempty_name!(MachineName, "Machine Name");
-nonempty_name!(DockerVolumeName, "Docker Volume name");
-nonempty_name!(ServiceVolumeReference, "Service Volume Reference");
-
-macro_rules! absolute_path {
-    ($name:ident, $label:literal) => {
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-        #[serde(try_from = "String", into = "String")]
-        pub struct $name(String);
-
-        impl $name {
-            pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
-                let value = value.into();
-                if value.starts_with('/') {
-                    Ok(Self(value))
-                } else {
-                    Err(ValueError::new($label, value, "an absolute Unix path"))
-                }
-            }
-
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(&self.0)
-            }
-        }
-
-        impl FromStr for $name {
-            type Err = ValueError;
-
-            fn from_str(value: &str) -> Result<Self, Self::Err> {
-                Self::parse(value)
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = ValueError;
-
-            fn try_from(value: String) -> Result<Self, Self::Error> {
-                Self::parse(value)
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(value: $name) -> Self {
-                value.0
-            }
-        }
-    };
-}
-
-absolute_path!(HostPath, "Bind Mount host path");
-absolute_path!(ContainerPath, "container mount target");
+validated_string_newtype!(MachineName, "Machine Name", "a non-empty string", |value| {
+    !value.is_empty()
+});
+validated_string_newtype!(
+    DockerVolumeName,
+    "Docker Volume name",
+    "a non-empty string",
+    |value| !value.is_empty()
+);
+validated_string_newtype!(
+    ServiceVolumeReference,
+    "Service Volume Reference",
+    "a non-empty string",
+    |value| !value.is_empty()
+);
+validated_string_newtype!(
+    HostPath,
+    "Bind Mount host path",
+    "an absolute Unix path",
+    |value| value.starts_with('/')
+);
+validated_string_newtype!(
+    ContainerPath,
+    "container mount target",
+    "an absolute Unix path",
+    |value| value.starts_with('/')
+);
 
 /// A machine-local Docker Volume identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -265,65 +197,22 @@ pub struct DockerVolumeId {
     pub name: DockerVolumeName,
 }
 
-/// A DNS-label Service selector. It is not a unique identity.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ServiceName(String);
-
-impl ServiceName {
-    pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
-        let value = value.into();
+validated_string_newtype!(
+    /// A DNS-label Service selector. It is not a unique identity.
+    ServiceName,
+    "Service Name",
+    "a 1-63 character lowercase DNS label",
+    |value| {
         let bytes = value.as_bytes();
-        let valid = !bytes.is_empty()
+        !bytes.is_empty()
             && bytes.len() <= 63
             && bytes[0].is_ascii_alphanumeric()
             && bytes[bytes.len() - 1].is_ascii_alphanumeric()
             && bytes
                 .iter()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
-        if valid {
-            Ok(Self(value))
-        } else {
-            Err(ValueError::new(
-                "Service Name",
-                value,
-                "a 1-63 character lowercase DNS label",
-            ))
-        }
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for ServiceName {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl FromStr for ServiceName {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-impl TryFrom<String> for ServiceName {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(value)
-    }
-}
-
-impl From<ServiceName> for String {
-    fn from(value: ServiceName) -> Self {
-        value.0
-    }
-}
+);
 
 /// One Machine's optimistic container subnet candidate.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -354,60 +243,18 @@ pub struct SelectedEndpoint(pub SocketAddr);
 #[serde(transparent)]
 pub struct WireGuardPublicKey(pub [u8; 32]);
 
-/// An open wire capability name. Ployz-defined values use stable namespaces.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct CapabilityName(String);
-
-impl CapabilityName {
-    pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
-        let value = value.into();
+validated_string_newtype!(
+    /// An open wire capability name using a stable namespace.
+    CapabilityName,
+    "capability name",
+    "at least three dot-separated lowercase namespace segments",
+    |value| {
         let valid_segment = |segment: &str| {
             !segment.is_empty()
                 && segment
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         };
-        if value.split('.').count() >= 3 && value.split('.').all(valid_segment) {
-            Ok(Self(value))
-        } else {
-            Err(ValueError::new(
-                "capability name",
-                value,
-                "at least three dot-separated lowercase namespace segments",
-            ))
-        }
+        value.split('.').count() >= 3 && value.split('.').all(valid_segment)
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for CapabilityName {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl FromStr for CapabilityName {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-impl TryFrom<String> for CapabilityName {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(value)
-    }
-}
-
-impl From<CapabilityName> for String {
-    fn from(value: CapabilityName) -> Self {
-        value.0
-    }
-}
+);

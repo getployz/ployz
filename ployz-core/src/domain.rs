@@ -242,9 +242,41 @@ pub enum PortPublication {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum VolumeSource {
-    Bind { host_path: HostPath },
-    Named { name: DockerVolumeName },
-    Tmpfs,
+    Bind {
+        host_path: HostPath,
+        #[serde(default)]
+        create_host_path: bool,
+        #[serde(default)]
+        propagation: Option<String>,
+        #[serde(default)]
+        recursive: Option<String>,
+    },
+    Named {
+        name: DockerVolumeName,
+        #[serde(default)]
+        driver: Option<VolumeDriver>,
+        #[serde(default)]
+        labels: BTreeMap<String, String>,
+        #[serde(default)]
+        no_copy: bool,
+        #[serde(default)]
+        subpath: Option<String>,
+    },
+    Tmpfs {
+        #[serde(default)]
+        size_bytes: Option<u64>,
+        #[serde(default)]
+        mode: Option<u32>,
+        #[serde(default)]
+        options: Vec<Vec<String>>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VolumeDriver {
+    pub name: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
 }
 
 /// A storage source declared under a service-local reference.
@@ -261,6 +293,125 @@ pub struct ServiceMount {
     pub target: ContainerPath,
     #[serde(default)]
     pub read_only: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConfigSpec {
+    pub name: String,
+    #[serde(default)]
+    pub content: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConfigMount {
+    pub config_name: String,
+    #[serde(default)]
+    pub target: Option<ContainerPath>,
+    #[serde(default)]
+    pub uid: Option<u64>,
+    #[serde(default)]
+    pub gid: Option<u64>,
+    #[serde(default)]
+    pub mode: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Placement {
+    /// Machine Names or IDs. Resolution remains observer-relative and may be ambiguous.
+    #[serde(default)]
+    pub machines: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HealthcheckSpec {
+    #[serde(default)]
+    pub test: Vec<String>,
+    #[serde(default)]
+    pub interval_millis: Option<u64>,
+    #[serde(default)]
+    pub timeout_millis: Option<u64>,
+    #[serde(default)]
+    pub start_period_millis: Option<u64>,
+    #[serde(default)]
+    pub start_interval_millis: Option<u64>,
+    #[serde(default)]
+    pub retries: Option<u32>,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LogDriver {
+    pub name: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeviceMapping {
+    pub host_path: HostPath,
+    pub container_path: ContainerPath,
+    pub cgroup_permissions: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeviceReservation {
+    #[serde(default)]
+    pub driver: Option<String>,
+    #[serde(default)]
+    pub count: Option<i64>,
+    #[serde(default)]
+    pub device_ids: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<Vec<String>>,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Ulimit {
+    pub soft: i64,
+    pub hard: i64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerResources {
+    #[serde(default)]
+    pub cpu_nanos: Option<i64>,
+    #[serde(default)]
+    pub memory_bytes: Option<i64>,
+    #[serde(default)]
+    pub memory_reservation_bytes: Option<i64>,
+    #[serde(default)]
+    pub shared_memory_bytes: Option<i64>,
+    #[serde(default)]
+    pub devices: Vec<DeviceMapping>,
+    #[serde(default)]
+    pub device_reservations: Vec<DeviceReservation>,
+    #[serde(default)]
+    pub ulimits: BTreeMap<String, Ulimit>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreDeployHook {
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub privileged: Option<bool>,
+    #[serde(default)]
+    pub timeout_millis: Option<u64>,
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdateConfig {
+    /// Absence means derive the order from the deploy snapshot.
+    #[serde(default)]
+    pub order: Option<UpdateOrder>,
+    #[serde(default)]
+    pub monitor_millis: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -303,17 +454,37 @@ pub struct ServiceContainerSpec {
     pub entrypoint: Vec<String>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
+    #[serde(default)]
+    pub healthcheck: Option<HealthcheckSpec>,
     pub pull_policy: PullPolicy,
     #[serde(default)]
     pub init: Option<bool>,
     #[serde(default)]
     pub user: Option<String>,
     #[serde(default)]
+    pub working_directory: Option<ContainerPath>,
+    #[serde(default)]
     pub tty: bool,
     #[serde(default)]
     pub open_stdin: bool,
     #[serde(default)]
     pub privileged: bool,
+    #[serde(default)]
+    pub pid_mode: Option<String>,
+    #[serde(default)]
+    pub log_driver: Option<LogDriver>,
+    #[serde(default)]
+    pub resources: ContainerResources,
+    #[serde(default)]
+    pub stop_grace_period_millis: Option<u64>,
+    #[serde(default)]
+    pub sysctls: BTreeMap<String, String>,
+    #[serde(default)]
+    pub config_mounts: Vec<ConfigMount>,
 }
 
 /// Normalized deploy input before placement and container-specific resolution.
@@ -323,14 +494,21 @@ pub struct RequestedServiceSpec {
     pub mode: ServiceMode,
     pub container: ServiceContainerSpec,
     #[serde(default)]
+    pub placement: Placement,
+    #[serde(default)]
     pub ports: Vec<PortPublication>,
     #[serde(default)]
     pub volumes: Vec<ServiceVolume>,
     #[serde(default)]
     pub mounts: Vec<ServiceMount>,
-    /// Absence means the deploy planner derives the order from its snapshot.
     #[serde(default)]
-    pub update_order: Option<UpdateOrder>,
+    pub configs: Vec<ConfigSpec>,
+    #[serde(default)]
+    pub pre_deploy: Option<PreDeployHook>,
+    #[serde(default)]
+    pub caddy_config: Option<String>,
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 /// The exact, fully resolved Service Spec attached to one created container.
@@ -341,12 +519,21 @@ pub struct ResolvedServiceSpec {
     pub mode: ServiceMode,
     pub container: ServiceContainerSpec,
     #[serde(default)]
+    pub placement: Placement,
+    #[serde(default)]
     pub ports: Vec<PortPublication>,
     #[serde(default)]
     pub volumes: Vec<ServiceVolume>,
     #[serde(default)]
     pub mounts: Vec<ServiceMount>,
-    pub update_order: UpdateOrder,
+    #[serde(default)]
+    pub configs: Vec<ConfigSpec>,
+    #[serde(default)]
+    pub pre_deploy: Option<PreDeployHook>,
+    #[serde(default)]
+    pub caddy_config: Option<String>,
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 /// The redacted, replicated observation of one managed container.

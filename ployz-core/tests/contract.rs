@@ -1,13 +1,14 @@
 use std::{collections::BTreeSet, num::NonZeroU32};
 
 use ployz_core::{
-    CapabilityName, CodecError, ContainerPath, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, HealthObservation, HostPath, MachineFailure, MachineId,
-    MachineRpc, MachineRpcClient, MachineRpcServer, MachineSuccess, NameMatches, OpaquePayload,
-    PROTOCOL_MAJOR, PartialResult, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec,
-    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, UpdateOrder, VolumeSource,
+    CapabilityName, CodecError, ConfigMount, ConfigSpec, ContainerPath, ContainerResources,
+    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
+    HealthObservation, HostPath, MachineFailure, MachineId, MachineRpc, MachineRpcClient,
+    MachineRpcServer, MachineSuccess, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
+    Placement, PreDeployHook, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, ResponseKind,
+    RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody, ServiceContainerSpec,
+    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
+    UpdateConfig, UpdateOrder, VolumeSource,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -258,18 +259,40 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         command: vec!["serve".into()],
         entrypoint: Vec::new(),
         environment: Default::default(),
+        cap_add: vec!["NET_ADMIN".into()],
+        cap_drop: Vec::new(),
+        healthcheck: None,
         pull_policy: PullPolicy::Missing,
         init: None,
         user: None,
+        working_directory: Some(ContainerPath::parse("/srv/app").unwrap()),
         tty: false,
         open_stdin: false,
         privileged: false,
+        pid_mode: None,
+        log_driver: None,
+        resources: ContainerResources {
+            memory_bytes: Some(256 * 1024 * 1024),
+            ..Default::default()
+        },
+        stop_grace_period_millis: Some(10_000),
+        sysctls: Default::default(),
+        config_mounts: vec![ConfigMount {
+            config_name: "settings".into(),
+            target: Some(ContainerPath::parse("/etc/api/settings.toml").unwrap()),
+            uid: Some(1000),
+            gid: Some(1000),
+            mode: Some(0o440),
+        }],
     };
     let reference = ServiceVolumeReference::parse("data").unwrap();
     let volume = ServiceVolume {
         reference: reference.clone(),
         source: VolumeSource::Bind {
             host_path: HostPath::parse("/srv/api").unwrap(),
+            create_host_path: true,
+            propagation: None,
+            recursive: None,
         },
     };
     let mount = ServiceMount {
@@ -283,26 +306,62 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             replicas: NonZeroU32::new(2).unwrap(),
         },
         container: container.clone(),
+        placement: Placement {
+            machines: vec!["edge".into()],
+        },
         ports: Vec::new(),
         volumes: vec![volume.clone()],
         mounts: vec![mount.clone()],
-        update_order: None,
+        configs: vec![ConfigSpec {
+            name: "settings".into(),
+            content: b"port = 8080".to_vec(),
+        }],
+        pre_deploy: Some(PreDeployHook {
+            command: vec!["migrate".into()],
+            environment: Default::default(),
+            privileged: None,
+            timeout_millis: Some(30_000),
+            user: None,
+        }),
+        caddy_config: Some("reverse_proxy localhost:8080".into()),
+        update: UpdateConfig {
+            order: None,
+            monitor_millis: Some(5_000),
+        },
     };
     let resolved = ResolvedServiceSpec {
         service_id: ServiceId::parse("11111111111111111111111111111111").unwrap(),
         name: requested.name.clone(),
         mode: requested.mode.clone(),
         container,
+        placement: requested.placement.clone(),
         ports: Vec::new(),
         volumes: vec![volume],
         mounts: vec![mount],
-        update_order: UpdateOrder::StartFirst,
+        configs: requested.configs.clone(),
+        pre_deploy: requested.pre_deploy.clone(),
+        caddy_config: requested.caddy_config.clone(),
+        update: UpdateConfig {
+            order: Some(UpdateOrder::StartFirst),
+            monitor_millis: Some(5_000),
+        },
     };
 
     let requested_json = serde_json::to_value(&requested).unwrap();
     assert_eq!(
-        serde_json::from_value::<RequestedServiceSpec>(requested_json).unwrap(),
+        serde_json::from_value::<RequestedServiceSpec>(requested_json.clone()).unwrap(),
         requested
+    );
+    let mut older_requested_json = requested_json;
+    older_requested_json
+        .as_object_mut()
+        .unwrap()
+        .remove("update");
+    assert_eq!(
+        serde_json::from_value::<RequestedServiceSpec>(older_requested_json)
+            .unwrap()
+            .update,
+        UpdateConfig::default()
     );
     let resolved_json = serde_json::to_value(&resolved).unwrap();
     assert_eq!(
