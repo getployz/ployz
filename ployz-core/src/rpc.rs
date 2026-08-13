@@ -1,15 +1,27 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
+use ipnet::Ipv4Net;
 use prost::{Message, Oneof};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{CapabilityName, MachineId, MachineName, ValueError};
+use crate::{
+    AdvertisedEndpoint, CapabilityName, LocalMachinePhase, Machine, MachineId, MachineName,
+    MachineObservation, ValueError, WireGuardPublicKey,
+};
 
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const DESCRIBE_CONTRACT_CAPABILITY: &str = "ployz.rpc.describe-contract.v1";
 pub const RESET_MACHINE_CAPABILITY: &str = "ployz.machine.reset.v1";
+pub const INSPECT_MACHINE_CAPABILITY: &str = "ployz.machine.inspect.v1";
+pub const INITIALIZE_MACHINE_CAPABILITY: &str = "ployz.machine.initialize.v1";
+pub const REGISTER_MACHINE_CAPABILITY: &str = "ployz.machine.register.v1";
+pub const JOIN_MACHINE_CAPABILITY: &str = "ployz.machine.join.v1";
+pub const LIST_MACHINES_CAPABILITY: &str = "ployz.machine.list.v1";
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
 #[derive(Clone, PartialEq, Message)]
@@ -47,7 +59,16 @@ impl OpaquePayload {
     pub fn decode_request(&self) -> Result<RpcRequest, CodecError> {
         let header: RequestHeader = self.decode_json()?;
         validate_protocol_major(header.protocol_major)?;
-        if !matches!(header.command.as_str(), "describe_contract" | "reset") {
+        if !matches!(
+            header.command.as_str(),
+            "describe_contract"
+                | "inspect"
+                | "initialize"
+                | "register"
+                | "join"
+                | "list_machines"
+                | "reset"
+        ) {
             return Err(CodecError::UnsupportedCommand(header.command));
         }
         self.decode_json()
@@ -96,11 +117,56 @@ pub struct DescribeContractRequest {}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResetRequest {}
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InspectRequest {
+    #[serde(default)]
+    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
+    #[serde(default)]
+    pub public_ip_override: Option<IpAddr>,
+    #[serde(default = "default_wireguard_port")]
+    pub wireguard_port: u16,
+}
+
+fn default_wireguard_port() -> u16 {
+    51820
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InitializeRequest {
+    pub name: MachineName,
+    pub cluster_network: Ipv4Net,
+    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
+    #[serde(default)]
+    pub wireguard_mtu: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RegisterRequest {
+    pub name: MachineName,
+    pub public_key: WireGuardPublicKey,
+    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JoinRequest {
+    pub registration: Registered,
+    #[serde(default)]
+    pub wireguard_mtu: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ListMachinesRequest {}
+
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
 pub enum RpcRequestBody {
     DescribeContract(DescribeContractRequest),
+    Inspect(InspectRequest),
+    Initialize(InitializeRequest),
+    Register(RegisterRequest),
+    Join(JoinRequest),
+    ListMachines(ListMachinesRequest),
     Reset(ResetRequest),
 }
 
@@ -128,6 +194,46 @@ impl RpcRequest {
         }
     }
 
+    #[must_use]
+    pub fn inspect(request: InspectRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::Inspect(request),
+        }
+    }
+
+    #[must_use]
+    pub fn initialize(request: InitializeRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::Initialize(request),
+        }
+    }
+
+    #[must_use]
+    pub fn register(request: RegisterRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::Register(request),
+        }
+    }
+
+    #[must_use]
+    pub fn join(request: JoinRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::Join(request),
+        }
+    }
+
+    #[must_use]
+    pub fn list_machines() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::ListMachines(ListMachinesRequest {}),
+        }
+    }
+
     pub fn encode(&self) -> Result<OpaquePayload, CodecError> {
         OpaquePayload::from_json(self)
     }
@@ -141,6 +247,11 @@ struct RequestHeader {
 
 crate::value::open_string_enum!(ResponseKind, Unknown {
     ContractDescription => "contract_description",
+    MachineDetails => "machine_details",
+    Initialized => "initialized",
+    Registered => "registered",
+    JoinAccepted => "join_accepted",
+    MachineList => "machine_list",
     ResetAccepted => "reset_accepted",
     Error => "error",
 });
@@ -148,10 +259,48 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResetAccepted {}
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineDetails {
+    pub id: MachineId,
+    pub phase: LocalMachinePhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<Machine>,
+    pub public_key: WireGuardPublicKey,
+    #[serde(default)]
+    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
+    #[serde(default)]
+    pub store_version: BTreeMap<String, i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Initialized {
+    pub machine: Machine,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Registered {
+    pub assigned_machine: Machine,
+    pub visible_peers: Vec<Machine>,
+    pub target_versions: BTreeMap<String, i64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JoinAccepted {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineList {
+    pub machines: Vec<MachineObservation>,
+}
+
 /// Known responses own typed payloads; future responses retain their raw value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RpcResponseBody {
     ContractDescription(ContractDescription),
+    MachineDetails(MachineDetails),
+    Initialized(Initialized),
+    Registered(Registered),
+    JoinAccepted(JoinAccepted),
+    MachineList(MachineList),
     ResetAccepted(ResetAccepted),
     Error(RpcError),
     Unknown { kind: String, payload: Value },
@@ -162,6 +311,11 @@ impl RpcResponseBody {
     pub fn kind(&self) -> ResponseKind {
         match self {
             Self::ContractDescription(_) => ResponseKind::ContractDescription,
+            Self::MachineDetails(_) => ResponseKind::MachineDetails,
+            Self::Initialized(_) => ResponseKind::Initialized,
+            Self::Registered(_) => ResponseKind::Registered,
+            Self::JoinAccepted(_) => ResponseKind::JoinAccepted,
+            Self::MachineList(_) => ResponseKind::MachineList,
             Self::ResetAccepted(_) => ResponseKind::ResetAccepted,
             Self::Error(_) => ResponseKind::Error,
             Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
@@ -201,33 +355,117 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn machine_details(details: MachineDetails) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::MachineDetails(details),
+        }
+    }
+
+    #[must_use]
+    pub fn initialized(machine: Machine) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::Initialized(Initialized { machine }),
+        }
+    }
+
+    #[must_use]
+    pub fn registered(registered: Registered) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::Registered(registered),
+        }
+    }
+
+    #[must_use]
+    pub fn join_accepted() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::JoinAccepted(JoinAccepted {}),
+        }
+    }
+
+    #[must_use]
+    pub fn machine_list(machines: Vec<MachineObservation>) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::MachineList(MachineList { machines }),
+        }
+    }
+
+    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
     }
 
     pub fn decode_contract_description(&self) -> Result<&ContractDescription, CodecError> {
         validate_protocol_major(self.protocol_major)?;
-        match &self.body {
-            RpcResponseBody::ContractDescription(description) => Ok(description),
-            body @ (RpcResponseBody::ResetAccepted(_)
-            | RpcResponseBody::Error(_)
-            | RpcResponseBody::Unknown { .. }) => Err(CodecError::UnexpectedResponse {
-                expected: "contract_description",
-                actual: body.kind().as_str().to_owned(),
-            }),
+        if let RpcResponseBody::ContractDescription(description) = &self.body {
+            Ok(description)
+        } else {
+            Err(self.unexpected("contract_description"))
+        }
+    }
+
+    pub fn decode_machine_details(&self) -> Result<&MachineDetails, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::MachineDetails(details) = &self.body {
+            Ok(details)
+        } else {
+            Err(self.unexpected("machine_details"))
+        }
+    }
+
+    pub fn decode_initialized(&self) -> Result<&Machine, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::Initialized(initialized) = &self.body {
+            Ok(&initialized.machine)
+        } else {
+            Err(self.unexpected("initialized"))
+        }
+    }
+
+    pub fn decode_registered(&self) -> Result<&Registered, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::Registered(registered) = &self.body {
+            Ok(registered)
+        } else {
+            Err(self.unexpected("registered"))
+        }
+    }
+
+    pub fn decode_join_accepted(&self) -> Result<(), CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::JoinAccepted(_) = &self.body {
+            Ok(())
+        } else {
+            Err(self.unexpected("join_accepted"))
+        }
+    }
+
+    pub fn decode_machine_list(&self) -> Result<&[MachineObservation], CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::MachineList(list) = &self.body {
+            Ok(&list.machines)
+        } else {
+            Err(self.unexpected("machine_list"))
         }
     }
 
     pub fn decode_reset_accepted(&self) -> Result<(), CodecError> {
         validate_protocol_major(self.protocol_major)?;
-        match &self.body {
-            RpcResponseBody::ResetAccepted(_) => Ok(()),
-            body @ (RpcResponseBody::ContractDescription(_)
-            | RpcResponseBody::Error(_)
-            | RpcResponseBody::Unknown { .. }) => Err(CodecError::UnexpectedResponse {
-                expected: "reset_accepted",
-                actual: body.kind().as_str().to_owned(),
-            }),
+        if let RpcResponseBody::ResetAccepted(_) = &self.body {
+            Ok(())
+        } else {
+            Err(self.unexpected("reset_accepted"))
+        }
+    }
+
+    fn unexpected(&self, expected: &'static str) -> CodecError {
+        CodecError::UnexpectedResponse {
+            expected,
+            actual: self.kind().as_str().to_owned(),
         }
     }
 
@@ -252,6 +490,21 @@ impl Serialize for RpcResponse {
         let payload = match &self.body {
             RpcResponseBody::ContractDescription(description) => {
                 serde_json::to_value(description).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::MachineDetails(details) => {
+                serde_json::to_value(details).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::Initialized(initialized) => {
+                serde_json::to_value(initialized).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::Registered(registered) => {
+                serde_json::to_value(registered).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::JoinAccepted(accepted) => {
+                serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::MachineList(list) => {
+                serde_json::to_value(list).map_err(serde::ser::Error::custom)?
             }
             RpcResponseBody::ResetAccepted(accepted) => {
                 serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
@@ -278,6 +531,21 @@ impl<'de> Deserialize<'de> for RpcResponse {
         let wire = WireResponse::deserialize(deserializer)?;
         let body = match wire.kind {
             ResponseKind::ContractDescription => RpcResponseBody::ContractDescription(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::MachineDetails => RpcResponseBody::MachineDetails(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::Initialized => RpcResponseBody::Initialized(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::Registered => RpcResponseBody::Registered(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::JoinAccepted => RpcResponseBody::JoinAccepted(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::MachineList => RpcResponseBody::MachineList(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(

@@ -6,11 +6,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use ipnet::Ipv4Net;
 use ployz_core::{LocalMachinePhase, Machine, MachineId, SelectedEndpoint};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::network::WireGuardPrivateKey;
+use crate::network::{allocate_machine_subnet, management_address};
 
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
@@ -27,6 +29,10 @@ pub struct LocalMachineRecord {
     pub wireguard_private_key: Option<WireGuardPrivateKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_network: Option<Ipv4Net>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bootstrap_machines: Vec<Machine>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -72,8 +78,10 @@ impl LocalMachineStore {
                     id: MachineId::random(),
                     phase: LocalMachinePhase::Uninitialized,
                     machine: None,
-                    wireguard_private_key: None,
+                    wireguard_private_key: Some(WireGuardPrivateKey::generate()),
                     wireguard_mtu: None,
+                    cluster_network: None,
+                    bootstrap_machines: Vec::new(),
                     selected_endpoints: BTreeMap::new(),
                     min_store_version: BTreeMap::new(),
                 };
@@ -122,6 +130,81 @@ impl LocalMachineStore {
         save(&self.data_dir, &resetting)?;
         self.record = resetting;
         Ok(())
+    }
+
+    pub fn initialize(
+        &mut self,
+        name: ployz_core::MachineName,
+        cluster_network: Ipv4Net,
+        advertised_endpoints: Vec<ployz_core::AdvertisedEndpoint>,
+        wireguard_mtu: Option<u32>,
+    ) -> Result<Machine, StoreError> {
+        self.require_uninitialized()?;
+        if advertised_endpoints.is_empty() {
+            return Err(StoreError::MissingEndpoints);
+        }
+        let private_key = self
+            .record
+            .wireguard_private_key
+            .clone()
+            .ok_or(StoreError::MissingPrivateKey)?;
+        let public_key = private_key.public_key();
+        let machine = Machine {
+            id: self.record.id.clone(),
+            name,
+            subnet: allocate_machine_subnet(cluster_network, [])
+                .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
+            management_address: management_address(public_key),
+            public_key,
+            advertised_endpoints,
+        };
+        let mut initialized = self.record.clone();
+        initialized.phase = LocalMachinePhase::Participating;
+        initialized.machine = Some(machine.clone());
+        initialized.wireguard_mtu = wireguard_mtu;
+        initialized.cluster_network = Some(cluster_network);
+        save(&self.data_dir, &initialized)?;
+        self.record = initialized;
+        Ok(machine)
+    }
+
+    pub fn join(
+        &mut self,
+        assigned_machine: Machine,
+        visible_peers: Vec<Machine>,
+        target_versions: BTreeMap<String, i64>,
+        wireguard_mtu: Option<u32>,
+    ) -> Result<(), StoreError> {
+        self.require_uninitialized()?;
+        if visible_peers.is_empty() {
+            return Err(StoreError::MissingPeers);
+        }
+        let private_key = self
+            .record
+            .wireguard_private_key
+            .clone()
+            .ok_or(StoreError::MissingPrivateKey)?;
+        if private_key.public_key() != assigned_machine.public_key {
+            return Err(StoreError::KeyMismatch);
+        }
+        let mut joining = self.record.clone();
+        joining.id = assigned_machine.id.clone();
+        joining.phase = LocalMachinePhase::Joining;
+        joining.machine = Some(assigned_machine);
+        joining.wireguard_mtu = wireguard_mtu;
+        joining.bootstrap_machines = visible_peers;
+        joining.min_store_version = target_versions;
+        save(&self.data_dir, &joining)?;
+        self.record = joining;
+        Ok(())
+    }
+
+    fn require_uninitialized(&self) -> Result<(), StoreError> {
+        if self.record.phase == LocalMachinePhase::Uninitialized {
+            Ok(())
+        } else {
+            Err(StoreError::AlreadyInitialized)
+        }
     }
 
     pub fn complete_catch_up(&mut self) -> Result<(), StoreError> {
@@ -230,6 +313,18 @@ pub enum StoreError {
     NotResetting,
     #[error("machine is not joining")]
     NotJoining,
+    #[error("machine is already initialized")]
+    AlreadyInitialized,
+    #[error("at least one advertised endpoint is required")]
+    MissingEndpoints,
+    #[error("at least one visible peer is required to join")]
+    MissingPeers,
+    #[error("local WireGuard private key is missing")]
+    MissingPrivateKey,
+    #[error("assigned public key does not match this Machine")]
+    KeyMismatch,
+    #[error("invalid Cluster network: {0}")]
+    InvalidNetwork(String),
     #[error("another daemon already owns data directory {0:?}")]
     AlreadyRunning(PathBuf),
     #[error("refusing to clear broad data directory {0:?}")]

@@ -263,12 +263,12 @@ impl EndpointSelection {
         last_handshake: Option<SystemTime>,
         device_endpoint: Option<std::net::SocketAddr>,
     ) -> Option<SelectedEndpoint> {
-        if let Some(endpoint) = device_endpoint {
-            if self.selected().map(|selected| selected.0) != Some(endpoint) {
-                let endpoint = SelectedEndpoint(endpoint);
-                self.state = EndpointState::Established(endpoint);
-                return Some(endpoint);
-            }
+        if let Some(endpoint) = device_endpoint
+            && self.selected().map(|selected| selected.0) != Some(endpoint)
+        {
+            let endpoint = SelectedEndpoint(endpoint);
+            self.state = EndpointState::Established(endpoint);
+            return Some(endpoint);
         }
 
         let status = self.status(now, last_handshake);

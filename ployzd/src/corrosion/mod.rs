@@ -6,7 +6,7 @@ mod store;
 #[cfg(test)]
 mod integration_tests;
 
-use admin::AdminClient;
+pub use admin::{AdminClient, MembershipState};
 use api::{ApiClient, Statement};
 pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,

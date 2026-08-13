@@ -49,6 +49,8 @@ struct Args {
     socket: PathBuf,
     #[arg(long, default_value = DEFAULT_METRICS_ADDRESS)]
     metrics_address: SocketAddr,
+    #[arg(long, hide = true)]
+    machine_api_address: Option<SocketAddr>,
 }
 
 #[derive(Subcommand)]
@@ -79,7 +81,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .record()
         .clone();
     let mut network = NetworkPlane::start(&local_record).await?;
-    let machine_api_listeners = if let Some(network) = &network {
+    let machine_api_listeners = if args.machine_api_address.is_none()
+        && let Some(network) = &network
+    {
         let [management, gateway] = network.machine_api_addresses()?;
         Some((
             TcpListener::bind(management).await?,
@@ -87,6 +91,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ))
     } else {
         None
+    };
+    let explicit_machine_api_listener = match args.machine_api_address {
+        Some(address) => Some(TcpListener::bind(address).await?),
+        None => None,
     };
     let mut corrosion = start_corrosion(&args, &store).await?;
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
@@ -102,7 +110,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (reset, mut reset_rx) = watch::channel(false);
-    let service = MachineService::new(Arc::clone(&store), reset);
+    let service = MachineService::with_cluster(
+        Arc::clone(&store),
+        reset,
+        corrosion
+            .as_ref()
+            .map(|running| (running.store().clone(), running.admin_client())),
+    );
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
         local_record.id.clone(),
@@ -122,24 +136,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
         shutdown_rx.clone(),
     );
     let network_rpc = async {
-        if let Some((management, gateway)) = machine_api_listeners {
-            let management = Server::builder().serve_with_incoming_shutdown(
-                proxy.clone(),
-                TcpListenerStream::new(management),
-                wait_for_shutdown(shutdown_rx.clone()),
-            );
-            let gateway = Server::builder().serve_with_incoming_shutdown(
-                proxy,
-                TcpListenerStream::new(gateway),
-                wait_for_shutdown(shutdown_rx.clone()),
-            );
-            tokio::try_join!(management, gateway)
-                .map(|_| ())
-                .map_err(io::Error::other)
-        } else {
-            wait_for_shutdown(shutdown_rx.clone()).await;
-            Ok(())
-        }
+        let explicit = async {
+            match explicit_machine_api_listener {
+                Some(listener) => Server::builder()
+                    .serve_with_incoming_shutdown(
+                        proxy.clone(),
+                        TcpListenerStream::new(listener),
+                        wait_for_shutdown(shutdown_rx.clone()),
+                    )
+                    .await
+                    .map_err(io::Error::other),
+                None => {
+                    wait_for_shutdown(shutdown_rx.clone()).await;
+                    Ok(())
+                }
+            }
+        };
+        let mesh = async {
+            if let Some((management, gateway)) = machine_api_listeners {
+                let management = Server::builder().serve_with_incoming_shutdown(
+                    proxy.clone(),
+                    TcpListenerStream::new(management),
+                    wait_for_shutdown(shutdown_rx.clone()),
+                );
+                let gateway = Server::builder().serve_with_incoming_shutdown(
+                    proxy.clone(),
+                    TcpListenerStream::new(gateway),
+                    wait_for_shutdown(shutdown_rx.clone()),
+                );
+                tokio::try_join!(management, gateway)
+                    .map(|_| ())
+                    .map_err(io::Error::other)
+            } else {
+                wait_for_shutdown(shutdown_rx.clone()).await;
+                Ok(())
+            }
+        };
+        tokio::try_join!(explicit, mesh).map(|_| ())
     };
     let network_runner = async {
         if let Some(network) = &mut network {
@@ -249,6 +282,12 @@ async fn start_corrosion(
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
         .join("corrosion");
+    let bootstrap = record.bootstrap_machines.iter().map(|machine| {
+        SocketAddr::new(
+            IpAddr::V6(machine.management_address.0),
+            CORROSION_GOSSIP_PORT,
+        )
+    });
     Ok(Some(
         CorrosionConfig::new(
             args.data_dir.join("corrosion"),
@@ -260,6 +299,7 @@ async fn start_corrosion(
             ),
             DEFAULT_CONTAINER_NAME,
         )
+        .with_bootstrap(bootstrap)
         .start()
         .await?,
     ))

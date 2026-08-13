@@ -1,1 +1,822 @@
-//! Shared parity-test support for Ployz workspace crates.
+//! Docker-in-Docker support for the ignored Layer 3 parity suite.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
+    io,
+    net::{Ipv4Addr, TcpListener},
+    process::{Command, Output},
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
+};
+
+use ployz_core::{
+    AdvertisedEndpoint, InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase, Machine,
+    MachineName, MachineRpcClient, MembershipObservation, OpaquePayload, RegisterRequest,
+    Registered, RpcRequest, RpcResponse, RpcResponseBody,
+};
+use thiserror::Error;
+
+pub const IMAGE: &str = "ghcr.io/getployz/ployz2-testkit:main";
+pub const CORROSION_IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
+pub const OWNER_LABEL: &str = "dev.ployz.testkit";
+pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
+pub const MACHINE_API_PORT: u16 = 51000;
+static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
+    LazyLock::new(|| Mutex::new(BTreeSet::new()));
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImageTarget {
+    pub platform: &'static str,
+    pub requires: [&'static str; 4],
+}
+
+#[must_use]
+pub fn image_targets() -> [ImageTarget; 2] {
+    let requires = ["ployzd", "dockerd", "wg", CORROSION_IMAGE];
+    [
+        ImageTarget {
+            platform: "linux/amd64",
+            requires,
+        },
+        ImageTarget {
+            platform: "linux/arm64",
+            requires,
+        },
+    ]
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MachinePlan {
+    pub name: String,
+    pub api_port: u16,
+    pub privileged: bool,
+    pub labels: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClusterPlan {
+    pub name: String,
+    pub network: String,
+    pub labels: BTreeMap<String, String>,
+    pub machines: Vec<MachinePlan>,
+}
+
+impl ClusterPlan {
+    pub fn new(name: &str, machine_count: usize) -> Result<Self, TestkitError> {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(TestkitError::InvalidClusterName(name.to_owned()));
+        }
+        let labels = labels(name);
+        let machines = (0..machine_count)
+            .map(|index| {
+                Ok(MachinePlan {
+                    name: format!("ployz-testkit-{name}-{index}"),
+                    api_port: reserve_loopback_port()?,
+                    privileged: true,
+                    labels: labels.clone(),
+                })
+            })
+            .collect::<Result<_, io::Error>>()
+            .map_err(TestkitError::PortAllocation)?;
+        Ok(Self {
+            name: name.to_owned(),
+            network: format!("ployz-testkit-{name}"),
+            labels,
+            machines,
+        })
+    }
+
+    #[must_use]
+    pub fn teardown_filters(&self) -> [String; 2] {
+        [
+            format!("label={OWNER_LABEL}=true"),
+            format!("label={CLUSTER_LABEL}={}", self.name),
+        ]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrchestrationStep {
+    Initialize,
+    Register,
+    Join,
+}
+
+#[must_use]
+pub const fn two_machine_orchestration() -> [OrchestrationStep; 3] {
+    [
+        OrchestrationStep::Initialize,
+        OrchestrationStep::Register,
+        OrchestrationStep::Join,
+    ]
+}
+
+#[must_use]
+pub fn join_request(first: &Machine, registration: &Registered) -> JoinRequest {
+    JoinRequest {
+        registration: Registered {
+            visible_peers: vec![first.clone()],
+            ..registration.clone()
+        },
+        wireguard_mtu: None,
+    }
+}
+
+fn labels(cluster: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (OWNER_LABEL.to_owned(), "true".to_owned()),
+        (CLUSTER_LABEL.to_owned(), cluster.to_owned()),
+    ])
+}
+
+fn reserve_loopback_port() -> io::Result<u16> {
+    loop {
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?
+            .local_addr()?
+            .port();
+        if RESERVED_PORTS
+            .lock()
+            .map_err(|_| io::Error::other("testkit port reservation lock poisoned"))?
+            .insert(port)
+        {
+            return Ok(port);
+        }
+    }
+}
+
+pub struct Cluster {
+    plan: ClusterPlan,
+}
+
+impl Cluster {
+    pub fn create(plan: ClusterPlan) -> Result<Self, TestkitError> {
+        let mut network_args = vec!["network".to_owned(), "create".to_owned()];
+        for (key, value) in &plan.labels {
+            network_args.extend(["--label".to_owned(), format!("{key}={value}")]);
+        }
+        network_args.push(plan.network.clone());
+        docker(network_args)?;
+        let cluster = Self { plan };
+        let image = std::env::var("PLOYZ_TESTKIT_IMAGE").unwrap_or_else(|_| IMAGE.into());
+        for machine in &cluster.plan.machines {
+            let mut args = vec!["run".to_owned(), "--detach".to_owned()];
+            if machine.privileged {
+                args.push("--privileged".to_owned());
+            }
+            args.extend([
+                "--name".to_owned(),
+                machine.name.clone(),
+                "--network".to_owned(),
+                cluster.plan.network.clone(),
+            ]);
+            for (key, value) in &machine.labels {
+                args.extend(["--label".to_owned(), format!("{key}={value}")]);
+            }
+            args.extend([
+                "--publish".to_owned(),
+                format!("127.0.0.1:{}:{MACHINE_API_PORT}", machine.api_port),
+                image.clone(),
+            ]);
+            if let Err(error) = docker(args) {
+                let _ = cluster.teardown();
+                return Err(error);
+            }
+        }
+        Ok(cluster)
+    }
+
+    pub async fn wait_ready(&self, timeout: Duration) -> Result<(), TestkitError> {
+        let deadline = Instant::now() + timeout;
+        for index in 0..self.plan.machines.len() {
+            loop {
+                let ready = match self.client(index).await {
+                    Ok(mut client) => client
+                        .describe_contract(RpcRequest::describe_contract().encode()?)
+                        .await
+                        .is_ok(),
+                    Err(_) => false,
+                };
+                if ready {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(TestkitError::ReadinessTimeout(
+                        self.machine(index)?.name.clone(),
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn initialize_two(&self) -> Result<[Machine; 2], TestkitError> {
+        if self.plan.machines.len() != 2 {
+            return Err(TestkitError::MachineCount(self.plan.machines.len()));
+        }
+        self.wait_ready(Duration::from_secs(30)).await?;
+        let mut first = None;
+        let mut registered = None;
+        for step in two_machine_orchestration() {
+            match step {
+                OrchestrationStep::Initialize => {
+                    let initialized = self.initialize_first().await?;
+                    let participating = self
+                        .wait_phase(0, LocalMachinePhase::Participating, Duration::from_secs(60))
+                        .await?
+                        .machine
+                        .ok_or_else(|| {
+                            TestkitError::Rpc("initialized Machine record is missing".into())
+                        })?;
+                    if participating != initialized {
+                        return Err(TestkitError::Rpc(
+                            "initialized Machine changed across restart".into(),
+                        ));
+                    }
+                    first = Some(participating);
+                }
+                OrchestrationStep::Register => {
+                    self.wait_machine_count(0, 1, Duration::from_secs(60))
+                        .await?;
+                    self.seed_observation(0)?;
+                    registered = Some(self.register_second().await?);
+                }
+                OrchestrationStep::Join => {
+                    let first = first.as_ref().ok_or_else(|| {
+                        TestkitError::Rpc("orchestration joined before initialization".into())
+                    })?;
+                    let registered = registered.as_ref().ok_or_else(|| {
+                        TestkitError::Rpc("orchestration joined before registration".into())
+                    })?;
+                    self.gossip_rule(1, "--insert")?;
+                    self.join(1, join_request(first, registered)).await?;
+                    self.wait_for_join_barrier(registered).await?;
+                }
+            }
+        }
+        let first = first.ok_or_else(|| TestkitError::Rpc("Machine was not initialized".into()))?;
+        let registered =
+            registered.ok_or_else(|| TestkitError::Rpc("Machine was not registered".into()))?;
+        self.wait_machine_count(0, 2, Duration::from_secs(60))
+            .await?;
+        self.wait_machine_count(1, 2, Duration::from_secs(60))
+            .await?;
+        Ok([first, registered.assigned_machine])
+    }
+
+    async fn wait_for_join_barrier(&self, registered: &Registered) -> Result<(), TestkitError> {
+        self.wait_phase(1, LocalMachinePhase::Joining, Duration::from_secs(60))
+            .await?;
+        if self.inspect(1, Vec::new()).await.is_ok_and(|details| {
+            version_reached(&details.store_version, &registered.target_versions)
+        }) {
+            return Err(TestkitError::Rpc(
+                "joining Machine reached its frontier while gossip was blocked".into(),
+            ));
+        }
+        if self.machines(1).await.is_ok() {
+            return Err(TestkitError::Rpc(
+                "joining Machine served store-dependent data below its frontier".into(),
+            ));
+        }
+        self.insert_known_gap(
+            1,
+            registered.target_versions.keys().next().ok_or_else(|| {
+                TestkitError::Rpc("registration returned an empty join frontier".into())
+            })?,
+        )?;
+        self.gossip_rule(1, "--delete")?;
+        self.wait_store_version(1, &registered.target_versions, Duration::from_secs(120))
+            .await?;
+        if self.machines(1).await.is_ok() {
+            return Err(TestkitError::Rpc(
+                "joining Machine served store-dependent data while a known gap remained".into(),
+            ));
+        }
+        self.clear_known_gaps(1)?;
+        self.wait_phase(
+            1,
+            LocalMachinePhase::Participating,
+            Duration::from_secs(120),
+        )
+        .await?;
+        self.read_seeded_observation(1)
+    }
+
+    pub async fn initialize_first(&self) -> Result<Machine, TestkitError> {
+        let mut client = self.client(0).await?;
+        Ok(response(
+            client
+                .initialize(
+                    RpcRequest::initialize(InitializeRequest {
+                        name: MachineName::parse("machine-1")?,
+                        cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
+                        advertised_endpoints: vec![self.endpoint(0)?],
+                        wireguard_mtu: None,
+                    })
+                    .encode()?,
+                )
+                .await?
+                .into_inner(),
+        )?
+        .decode_initialized()?
+        .clone())
+    }
+
+    pub async fn register_second(&self) -> Result<ployz_core::Registered, TestkitError> {
+        let second = self.inspect(1, vec![self.endpoint(1)?]).await?;
+        let mut client = self.client(0).await?;
+        Ok(response(
+            client
+                .register(
+                    RpcRequest::register(RegisterRequest {
+                        name: MachineName::parse("machine-2")?,
+                        public_key: second.public_key,
+                        advertised_endpoints: second.advertised_endpoints,
+                    })
+                    .encode()?,
+                )
+                .await?
+                .into_inner(),
+        )?
+        .decode_registered()?
+        .clone())
+    }
+
+    pub async fn join(&self, index: usize, request: JoinRequest) -> Result<(), TestkitError> {
+        let mut client = self.client(index).await?;
+        response(
+            client
+                .join(RpcRequest::join(request).encode()?)
+                .await?
+                .into_inner(),
+        )?
+        .decode_join_accepted()
+        .map_err(Into::into)
+    }
+
+    fn seed_observation(&self, index: usize) -> Result<(), TestkitError> {
+        self.corrosion_transaction(
+            index,
+            r#"[{"query":"INSERT INTO cluster (key, value, updated_at) VALUES ('l3_seed', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at","params":["seeded"]}]"#,
+        )
+    }
+
+    fn read_seeded_observation(&self, index: usize) -> Result<(), TestkitError> {
+        let output = self.corrosion_request(
+            index,
+            "v1/queries",
+            r#"{"query":"SELECT value FROM cluster WHERE key = 'l3_seed'","params":[]}"#,
+        )?;
+        if String::from_utf8_lossy(&output.stdout).contains("seeded") {
+            Ok(())
+        } else {
+            Err(TestkitError::Rpc(
+                "joining Machine did not replicate the seeded observation".into(),
+            ))
+        }
+    }
+
+    fn insert_known_gap(&self, index: usize, actor: &str) -> Result<(), TestkitError> {
+        if !actor.len().is_multiple_of(2) {
+            return Err(TestkitError::Rpc(
+                "invalid actor ID in join frontier".into(),
+            ));
+        }
+        let bytes = actor
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                std::str::from_utf8(pair)
+                    .ok()
+                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                    .map(|byte| byte.to_string())
+                    .ok_or_else(|| TestkitError::Rpc("invalid actor ID in join frontier".into()))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join(",");
+        self.corrosion_transaction(
+            index,
+            &format!(
+                r#"[{{"query":"INSERT INTO __corro_bookkeeping_gaps (actor_id, start, end) VALUES (?, 1, 1)","params":[[{bytes}]]}}]"#,
+            ),
+        )
+    }
+
+    fn clear_known_gaps(&self, index: usize) -> Result<(), TestkitError> {
+        self.corrosion_transaction(
+            index,
+            r#"[{"query":"DELETE FROM __corro_bookkeeping_gaps","params":[]}]"#,
+        )
+    }
+
+    fn corrosion_transaction(&self, index: usize, payload: &str) -> Result<(), TestkitError> {
+        let output = self.corrosion_request(index, "v1/transactions", payload)?;
+        if String::from_utf8_lossy(&output.stdout).contains("\"error\"") {
+            Err(TestkitError::Rpc(format!(
+                "Corrosion transaction failed: {}",
+                String::from_utf8_lossy(&output.stdout).trim()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn corrosion_request(
+        &self,
+        index: usize,
+        path: &str,
+        payload: &str,
+    ) -> Result<Output, TestkitError> {
+        let script = format!(
+            "token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H \"Authorization: Bearer $token\" -H 'Content-Type: application/json' --data-binary {} http://127.0.0.1:51002/{path}",
+            shell_quote(payload)
+        );
+        let output = docker_output(["exec", &self.machine(index)?.name, "sh", "-c", &script])?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            Err(command_error(output))
+        }
+    }
+
+    fn gossip_rule(&self, index: usize, action: &str) -> Result<(), TestkitError> {
+        docker([
+            "exec",
+            &self.machine(index)?.name,
+            "ip6tables",
+            action,
+            "OUTPUT",
+            "--protocol",
+            "udp",
+            "--destination-port",
+            "51001",
+            "--jump",
+            "DROP",
+        ])
+    }
+
+    pub async fn machines(
+        &self,
+        index: usize,
+    ) -> Result<Vec<ployz_core::MachineObservation>, TestkitError> {
+        let mut client = self.client(index).await?;
+        Ok(response(
+            client
+                .list_machines(RpcRequest::list_machines().encode()?)
+                .await?
+                .into_inner(),
+        )?
+        .decode_machine_list()?
+        .to_vec())
+    }
+
+    pub fn restart(&self, index: usize) -> Result<(), TestkitError> {
+        docker(["restart", &self.machine(index)?.name])
+    }
+
+    async fn wait_phase(
+        &self,
+        index: usize,
+        phase: LocalMachinePhase,
+        timeout: Duration,
+    ) -> Result<ployz_core::MachineDetails, TestkitError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(details) = self.inspect(index, Vec::new()).await
+                && details.phase == phase
+            {
+                return Ok(details);
+            }
+            if Instant::now() >= deadline {
+                return Err(TestkitError::ReadinessTimeout(
+                    self.machine(index)?.name.clone(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn wait_machine_count(
+        &self,
+        index: usize,
+        count: usize,
+        timeout: Duration,
+    ) -> Result<(), TestkitError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(machines) = self.machines(index).await
+                && machines.len() == count
+                && machines
+                    .iter()
+                    .all(|machine| machine.membership == MembershipObservation::Up)
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(TestkitError::ReadinessTimeout(
+                    self.machine(index)?.name.clone(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn wait_store_version(
+        &self,
+        index: usize,
+        target: &BTreeMap<String, i64>,
+        timeout: Duration,
+    ) -> Result<(), TestkitError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self
+                .inspect(index, Vec::new())
+                .await
+                .is_ok_and(|details| version_reached(&details.store_version, target))
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(TestkitError::ReadinessTimeout(
+                    self.machine(index)?.name.clone(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    pub async fn inspect(
+        &self,
+        index: usize,
+        advertised_endpoints: Vec<AdvertisedEndpoint>,
+    ) -> Result<ployz_core::MachineDetails, TestkitError> {
+        let mut client = self.client(index).await?;
+        Ok(response(
+            client
+                .inspect(
+                    RpcRequest::inspect(InspectRequest {
+                        advertised_endpoints,
+                        public_ip_override: None,
+                        wireguard_port: 51820,
+                    })
+                    .encode()?,
+                )
+                .await?
+                .into_inner(),
+        )?
+        .decode_machine_details()?
+        .clone())
+    }
+
+    async fn client(
+        &self,
+        index: usize,
+    ) -> Result<MachineRpcClient<tonic::transport::Channel>, TestkitError> {
+        let port = self.machine(index)?.api_port;
+        MachineRpcClient::connect(format!("http://127.0.0.1:{port}"))
+            .await
+            .map_err(|error| TestkitError::Rpc(error.to_string()))
+    }
+
+    pub fn endpoint(&self, index: usize) -> Result<AdvertisedEndpoint, TestkitError> {
+        let machine = self.machine(index)?;
+        let output = docker_output([
+            "inspect",
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            &machine.name,
+        ])?;
+        if !output.status.success() {
+            return Err(command_error(output));
+        }
+        let address = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .map_err(|_| TestkitError::Rpc("Docker returned an invalid Machine IP".into()))?;
+        Ok(AdvertisedEndpoint(std::net::SocketAddr::new(
+            address, 51820,
+        )))
+    }
+
+    fn machine(&self, index: usize) -> Result<&MachinePlan, TestkitError> {
+        self.plan
+            .machines
+            .get(index)
+            .ok_or(TestkitError::MachineIndex(index))
+    }
+
+    pub fn teardown(&self) -> Result<(), TestkitError> {
+        let filters = self.plan.teardown_filters();
+        let listed = docker_output([
+            "ps",
+            "--all",
+            "--quiet",
+            "--filter",
+            &filters[0],
+            "--filter",
+            &filters[1],
+        ])?;
+        for id in String::from_utf8_lossy(&listed.stdout).split_whitespace() {
+            docker(["rm", "--force", "--volumes", id])?;
+        }
+        match docker_output(["network", "rm", &self.plan.network]) {
+            Ok(output)
+                if output.status.success()
+                    || String::from_utf8_lossy(&output.stderr).contains("not found") =>
+            {
+                if let Ok(mut ports) = RESERVED_PORTS.lock() {
+                    for machine in &self.plan.machines {
+                        ports.remove(&machine.api_port);
+                    }
+                }
+                Ok(())
+            }
+            Ok(output) => Err(command_error(output)),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for Cluster {
+    fn drop(&mut self) {
+        let _ = self.teardown();
+    }
+}
+
+fn docker<I, S>(args: I) -> Result<(), TestkitError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = docker_output(args)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_error(output))
+    }
+}
+
+fn docker_output<I, S>(args: I) -> Result<Output, TestkitError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Command::new("docker")
+        .args(args)
+        .output()
+        .map_err(TestkitError::DockerIo)
+}
+
+fn command_error(output: Output) -> TestkitError {
+    TestkitError::DockerCommand(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn version_reached(current: &BTreeMap<String, i64>, target: &BTreeMap<String, i64>) -> bool {
+    target
+        .iter()
+        .all(|(actor, version)| current.get(actor).is_some_and(|current| current >= version))
+}
+
+#[derive(Debug, Error)]
+pub enum TestkitError {
+    #[error("invalid Cluster name {0:?}")]
+    InvalidClusterName(String),
+    #[error("could not allocate a loopback API port: {0}")]
+    PortAllocation(io::Error),
+    #[error("Docker command could not run: {0}")]
+    DockerIo(io::Error),
+    #[error("Docker command failed: {0}")]
+    DockerCommand(String),
+    #[error("Machine {0} did not become ready")]
+    ReadinessTimeout(String),
+    #[error("expected two Machines, found {0}")]
+    MachineCount(usize),
+    #[error("Machine index {0} is out of range")]
+    MachineIndex(usize),
+    #[error("Machine API failed: {0}")]
+    Rpc(String),
+}
+
+impl From<ployz_core::CodecError> for TestkitError {
+    fn from(error: ployz_core::CodecError) -> Self {
+        Self::Rpc(error.to_string())
+    }
+}
+
+impl From<ployz_core::ValueError> for TestkitError {
+    fn from(error: ployz_core::ValueError) -> Self {
+        Self::Rpc(error.to_string())
+    }
+}
+
+impl From<tonic::Status> for TestkitError {
+    fn from(error: tonic::Status) -> Self {
+        Self::Rpc(error.to_string())
+    }
+}
+
+fn response(payload: OpaquePayload) -> Result<RpcResponse, TestkitError> {
+    let response = payload.decode_response()?;
+    if let RpcResponseBody::Error(error) = &response.body {
+        Err(TestkitError::Rpc(error.message.clone()))
+    } else {
+        Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plans_two_isolated_privileged_machines() {
+        let plan = ClusterPlan::new("l3-001", 2).unwrap();
+        assert_eq!(plan.machines.len(), 2);
+        let [first, second] = plan.machines.as_slice() else {
+            panic!("expected two Machines")
+        };
+        assert_ne!(first.name, second.name);
+        assert_ne!(first.api_port, second.api_port);
+        assert!(plan.machines.iter().all(|machine| machine.privileged));
+        assert_eq!(
+            plan.labels,
+            BTreeMap::from([
+                (OWNER_LABEL.to_owned(), "true".to_owned()),
+                (CLUSTER_LABEL.to_owned(), "l3-001".to_owned()),
+            ])
+        );
+        assert!(
+            plan.machines
+                .iter()
+                .all(|machine| { machine.labels == plan.labels })
+        );
+        assert_eq!(
+            plan.teardown_filters(),
+            [
+                "label=dev.ployz.testkit=true",
+                "label=dev.ployz.testkit.cluster=l3-001",
+            ]
+        );
+
+        let targets = image_targets();
+        assert_eq!(
+            targets.map(|target| target.platform),
+            ["linux/amd64", "linux/arm64"]
+        );
+        assert!(
+            targets
+                .iter()
+                .all(|target| { target.requires == ["ployzd", "dockerd", "wg", CORROSION_IMAGE] })
+        );
+    }
+
+    #[test]
+    fn models_unfenced_registration_before_join_without_compensation() {
+        use ployz_core::{MachineId, MachineSubnet, ManagementAddress, WireGuardPublicKey};
+
+        fn machine(name: &str, key: u8) -> Machine {
+            Machine {
+                id: MachineId::random(),
+                name: MachineName::parse(name).unwrap(),
+                subnet: MachineSubnet(format!("10.210.{key}.0/24").parse().unwrap()),
+                management_address: ManagementAddress(format!("fdcc::{key}").parse().unwrap()),
+                public_key: WireGuardPublicKey([key; 32]),
+                advertised_endpoints: vec![AdvertisedEndpoint(
+                    format!("127.0.0.1:{}", 51000 + u16::from(key))
+                        .parse()
+                        .unwrap(),
+                )],
+            }
+        }
+
+        let first = machine("machine-1", 1);
+        let second = machine("machine-2", 2);
+        let registration = Registered {
+            assigned_machine: second.clone(),
+            visible_peers: Vec::new(),
+            target_versions: BTreeMap::from([("actor".to_owned(), 7)]),
+        };
+        assert_eq!(
+            two_machine_orchestration(),
+            [
+                OrchestrationStep::Initialize,
+                OrchestrationStep::Register,
+                OrchestrationStep::Join,
+            ]
+        );
+        let join = join_request(&first, &registration);
+        assert_eq!(join.registration.assigned_machine, second);
+        assert_eq!(join.registration.visible_peers, vec![first]);
+        assert_eq!(join.registration.target_versions.get("actor"), Some(&7));
+    }
+}

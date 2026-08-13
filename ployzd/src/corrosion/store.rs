@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use ipnet::Ipv4Net;
 use ployz_core::{ContainerId, ContainerObservation, LocalMachinePhase, Machine, MachineId};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -41,6 +42,33 @@ impl ReplicatedStore {
             )])
             .await?;
         Ok(())
+    }
+
+    pub async fn publish_cluster_network(&self, network: Ipv4Net) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value, updated_at) VALUES ('network', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                [json!(network.to_string())],
+            )])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = 'network'",
+                [],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Err(Error::Protocol("Cluster network is missing".into()));
+        };
+        text(value, "Cluster network")?
+            .parse()
+            .map_err(|error| Error::Protocol(format!("invalid Cluster network: {error}")))
     }
 
     pub async fn machine(&self, id: &str) -> Result<Option<Machine>, Error> {
@@ -392,16 +420,24 @@ pub async fn run_machine_publisher(
     }
     loop {
         if let Some(replicated) = &replicated {
-            let machine = local
-                .lock()
-                .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
-                .record()
-                .machine
-                .clone();
-            if let Some(machine) = machine {
-                if let Err(error) = replicated.publish_local_machine(&machine).await {
-                    eprintln!("failed to publish local Machine: {error}");
-                }
+            let (machine, cluster_network) = {
+                let local = local
+                    .lock()
+                    .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
+                (
+                    local.record().machine.clone(),
+                    local.record().cluster_network,
+                )
+            };
+            if let Some(network) = cluster_network
+                && let Err(error) = replicated.publish_cluster_network(network).await
+            {
+                eprintln!("failed to publish Cluster network: {error}");
+            }
+            if let Some(machine) = machine
+                && let Err(error) = replicated.publish_local_machine(&machine).await
+            {
+                eprintln!("failed to publish local Machine: {error}");
             }
         }
         tokio::select! {

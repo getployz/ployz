@@ -6,7 +6,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.97.1"
 repository = "https://github.com/getployz/ployz2"
 
 [workspace.dependencies]

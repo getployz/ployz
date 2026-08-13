@@ -9,8 +9,8 @@ use std::{
 };
 
 use ployz_core::{
-    LocalMachinePhase, MachineId, MachineRpc, RpcErrorCode, RpcRequest, RpcResponseBody,
-    SelectedEndpoint,
+    AdvertisedEndpoint, LocalMachinePhase, Machine, MachineId, MachineName, MachineRpc,
+    MachineSubnet, RpcErrorCode, RpcRequest, RpcResponseBody, SelectedEndpoint,
 };
 use ployzd::{
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
@@ -26,6 +26,7 @@ fn machine_record_is_created_once_and_reopened_with_private_permissions() {
     let machine_id = created.record().id.clone();
 
     assert_eq!(created.record().phase, LocalMachinePhase::Uninitialized);
+    assert!(created.record().wireguard_private_key.is_some());
     assert!(created.record().min_store_version.is_empty());
     assert_eq!(
         fs::metadata(&dir.0).unwrap().permissions().mode() & 0o777,
@@ -44,6 +45,65 @@ fn machine_record_is_created_once_and_reopened_with_private_permissions() {
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(reopened.record().id, machine_id);
     assert_eq!(reopened.record().phase, LocalMachinePhase::Uninitialized);
+}
+
+#[test]
+fn initialize_and_join_persist_the_only_supported_transitions() {
+    let first_dir = TestDir::new("ployzd-initialize");
+    let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
+    let initialized = first
+        .initialize(
+            MachineName::parse("first").unwrap(),
+            "10.210.0.0/16".parse().unwrap(),
+            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            Some(1400),
+        )
+        .unwrap();
+    assert_eq!(first.record().phase, LocalMachinePhase::Participating);
+    assert_eq!(first.record().machine.as_ref(), Some(&initialized));
+    assert_eq!(
+        first.record().cluster_network.unwrap().to_string(),
+        "10.210.0.0/16"
+    );
+    assert!(
+        first
+            .initialize(
+                MachineName::parse("again").unwrap(),
+                "10.210.0.0/16".parse().unwrap(),
+                vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+                None,
+            )
+            .is_err()
+    );
+
+    let second_dir = TestDir::new("ployzd-join");
+    let mut second = LocalMachineStore::open(&second_dir.0).unwrap();
+    let public_key = second
+        .record()
+        .wireguard_private_key
+        .as_ref()
+        .unwrap()
+        .public_key();
+    let assigned = Machine {
+        id: MachineId::random(),
+        name: MachineName::parse("second").unwrap(),
+        subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
+        management_address: ployzd::network::management_address(public_key),
+        public_key,
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+    };
+    second
+        .join(
+            assigned.clone(),
+            vec![initialized.clone()],
+            BTreeMap::from([("actor".into(), 4)]),
+            None,
+        )
+        .unwrap();
+    assert_eq!(second.record().id, assigned.id);
+    assert_eq!(second.record().phase, LocalMachinePhase::Joining);
+    assert_eq!(second.record().bootstrap_machines, vec![initialized]);
+    assert_eq!(second.record().min_store_version.get("actor"), Some(&4));
 }
 
 #[test]
@@ -116,6 +176,8 @@ fn reset_stops_if_the_machine_record_changes() {
         machine: None,
         wireguard_private_key: None,
         wireguard_mtu: None,
+        cluster_network: None,
+        bootstrap_machines: Vec::new(),
         selected_endpoints: BTreeMap::new(),
         min_store_version: BTreeMap::new(),
     };
@@ -163,6 +225,8 @@ fn completing_catch_up_persists_participation_and_clears_the_target() {
         machine: None,
         wireguard_private_key: None,
         wireguard_mtu: None,
+        cluster_network: None,
+        bootstrap_machines: Vec::new(),
         selected_endpoints: BTreeMap::new(),
         min_store_version: BTreeMap::from([("actor".to_owned(), 4)]),
     };

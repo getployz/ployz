@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  RUST_VERSION: 1.85.1
+  RUST_VERSION: 1.97.1
   ZIG_VERSION: 0.13.0
   CARGO_ZIGBUILD_VERSION: 0.19.7
   GORELEASER_VERSION: 2.5.1

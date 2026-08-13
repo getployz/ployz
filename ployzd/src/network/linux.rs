@@ -41,6 +41,7 @@ pub struct NetworkPlane {
     mtu: u32,
     routes: BTreeSet<IpNet>,
     selections: BTreeMap<MachineId, EndpointSelection>,
+    bootstrap_peers: Vec<MeshPeer>,
     peers: Vec<MeshPeer>,
 }
 
@@ -70,6 +71,21 @@ impl NetworkPlane {
         let docker = Docker::connect_with_socket_defaults()?;
         let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
         wireguard.create_interface()?;
+        let now = SystemTime::now();
+        let peers = peers_for(&machine.id, &record.bootstrap_machines);
+        let selections = peers
+            .iter()
+            .filter_map(|peer| {
+                let selection = EndpointSelection::new(
+                    &peer.advertised_endpoints,
+                    record.selected_endpoints.get(&peer.machine_id).copied(),
+                    now,
+                );
+                selection
+                    .selected()
+                    .map(|_| (peer.machine_id.clone(), selection))
+            })
+            .collect();
         let mut plane = Self {
             machine,
             private_key,
@@ -77,13 +93,10 @@ impl NetworkPlane {
             wireguard,
             mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
             routes: BTreeSet::new(),
-            selections: BTreeMap::new(),
-            peers: Vec::new(),
+            selections,
+            bootstrap_peers: peers.clone(),
+            peers: peers.clone(),
         };
-        if let Err(error) = plane.apply_peers(&[]) {
-            let _ = plane.wireguard.remove_interface();
-            return Err(error);
-        }
         let docker_created = match plane.ensure_docker_network().await {
             Ok(created) => created,
             Err(error) => {
@@ -91,6 +104,10 @@ impl NetworkPlane {
                 return Err(error);
             }
         };
+        if let Err(error) = plane.apply_peers(&peers) {
+            plane.rollback_start(docker_created).await;
+            return Err(error);
+        }
         if let Err(error) = super::apply_firewall_rules(plane.machine.subnet) {
             plane.rollback_start(docker_created).await;
             return Err(error);
@@ -183,14 +200,29 @@ impl NetworkPlane {
         snapshot: &ReplicatedObservations<Machine>,
         local: &Arc<Mutex<LocalMachineStore>>,
     ) -> Result<(), NetworkError> {
-        let selected = local
-            .lock()
-            .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
-            .record()
-            .selected_endpoints
-            .clone();
+        let (selected, joining) = {
+            let local = local
+                .lock()
+                .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
+            (
+                local.record().selected_endpoints.clone(),
+                local.record().phase == LocalMachinePhase::Joining,
+            )
+        };
         let now = SystemTime::now();
-        let planned = peers_for(&self.machine.id, &snapshot.observations);
+        let mut planned = peers_for(&self.machine.id, &snapshot.observations);
+        if joining {
+            let known = planned
+                .iter()
+                .map(|peer| peer.machine_id.clone())
+                .collect::<BTreeSet<_>>();
+            planned.extend(
+                self.bootstrap_peers
+                    .iter()
+                    .filter(|peer| !known.contains(&peer.machine_id))
+                    .cloned(),
+            );
+        }
         let live_ids = planned
             .iter()
             .map(|peer| peer.machine_id.clone())
@@ -209,10 +241,10 @@ impl NetworkPlane {
             } else {
                 let persisted = selected.get(&peer.machine_id).copied();
                 let selection = EndpointSelection::new(&peer.advertised_endpoints, persisted, now);
-                if persisted.is_none() {
-                    if let Some(endpoint) = selection.selected() {
-                        persist_selection(local, peer.machine_id.clone(), endpoint);
-                    }
+                if persisted.is_none()
+                    && let Some(endpoint) = selection.selected()
+                {
+                    persist_selection(local, peer.machine_id.clone(), endpoint);
                 }
                 self.selections.insert(peer.machine_id.clone(), selection);
             }

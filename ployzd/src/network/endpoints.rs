@@ -17,10 +17,10 @@ pub async fn discover_endpoints(
         Some(address) => Some(address),
         None => discover_public_ip().await,
     };
-    if let Some(address) = public_ip {
-        if !addresses.contains(&address) {
-            addresses.push(address);
-        }
+    if let Some(address) = public_ip
+        && !addresses.contains(&address)
+    {
+        addresses.push(address);
     }
     Ok(addresses
         .into_iter()
@@ -85,14 +85,12 @@ async fn discover_public_ip() -> Option<IpAddr> {
         "https://ipinfo.io/ip",
         "http://ip-api.com/line/?fields=query",
     ] {
-        if let Ok(response) = client.get(url).send().await {
-            if let Ok(response) = response.error_for_status() {
-                if let Ok(body) = response.text().await {
-                    if let Ok(address) = body.trim().parse() {
-                        return Some(address);
-                    }
-                }
-            }
+        if let Ok(response) = client.get(url).send().await
+            && let Ok(response) = response.error_for_status()
+            && let Ok(body) = response.text().await
+            && let Ok(address) = body.trim().parse()
+        {
+            return Some(address);
         }
     }
     None

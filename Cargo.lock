@@ -1304,7 +1304,11 @@ dependencies = [
 name = "ployz-testkit"
 version = "0.1.0"
 dependencies = [
+ "ployz-core",
  "rusqlite",
+ "thiserror 2.0.20",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]

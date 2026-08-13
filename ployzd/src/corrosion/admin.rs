@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -8,9 +8,16 @@ use tokio::net::UnixStream;
 use tokio_util::codec::LengthDelimitedCodec;
 
 use super::Error;
+use ployz_core::MembershipObservation;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MembershipState {
+    pub address: SocketAddr,
+    pub membership: MembershipObservation,
+}
 
 #[derive(Clone, Debug)]
-pub(crate) struct AdminClient {
+pub struct AdminClient {
     socket_path: PathBuf,
 }
 
@@ -22,7 +29,7 @@ impl AdminClient {
         }
     }
 
-    pub(crate) async fn command(&self, command: &impl Serialize) -> Result<Vec<Value>, Error> {
+    async fn command(&self, command: &impl Serialize) -> Result<Vec<Value>, Error> {
         let stream = UnixStream::connect(&self.socket_path).await?;
         let mut framed = LengthDelimitedCodec::builder()
             .big_endian()
@@ -47,6 +54,38 @@ impl AdminClient {
             "admin response ended before Success".into(),
         ))
     }
+
+    pub async fn membership_states(&self) -> Result<Vec<MembershipState>, Error> {
+        self.command(&serde_json::json!({"Cluster": "MembershipStates"}))
+            .await?
+            .into_iter()
+            .map(decode_membership_state)
+            .collect()
+    }
+}
+
+fn decode_membership_state(value: Value) -> Result<MembershipState, Error> {
+    #[derive(Deserialize)]
+    struct RawState {
+        id: RawId,
+        state: String,
+    }
+
+    #[derive(Deserialize)]
+    struct RawId {
+        addr: SocketAddr,
+    }
+
+    let raw: RawState = serde_json::from_value(value)?;
+    let membership = match raw.state.as_str() {
+        "Alive" => MembershipObservation::Up,
+        "Suspect" => MembershipObservation::Suspect,
+        _ => MembershipObservation::Down,
+    };
+    Ok(MembershipState {
+        address: raw.id.addr,
+        membership,
+    })
 }
 
 fn decode_response(frame: &[u8]) -> Result<AdminResponse, Error> {
@@ -81,7 +120,7 @@ mod tests {
         net::UnixListener,
     };
 
-    use super::{AdminClient, decode_response};
+    use super::{AdminClient, decode_membership_state, decode_response};
     use crate::corrosion::Error;
 
     #[test]
@@ -90,6 +129,17 @@ mod tests {
             decode_response(b"not json"),
             Err(Error::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn membership_state_is_decoded_at_the_admin_boundary() {
+        let state = decode_membership_state(json!({
+            "id": {"addr": "[fdcc::1]:51001"},
+            "state": "Alive"
+        }))
+        .unwrap();
+        assert_eq!(state.address, "[fdcc::1]:51001".parse().unwrap());
+        assert_eq!(state.membership, ployz_core::MembershipObservation::Up);
     }
 
     #[tokio::test]

@@ -153,10 +153,13 @@ impl RunningCorrosion {
         &self.store
     }
 
-    pub async fn membership_states(&self) -> Result<Vec<serde_json::Value>, Error> {
-        self.admin
-            .command(&serde_json::json!({"Cluster": "MembershipStates"}))
-            .await
+    #[must_use]
+    pub fn admin_client(&self) -> AdminClient {
+        self.admin.clone()
+    }
+
+    pub async fn membership_states(&self) -> Result<Vec<super::MembershipState>, Error> {
+        self.admin.membership_states().await
     }
 
     pub async fn stop(&mut self) -> Result<(), Error> {

@@ -31,10 +31,11 @@ fn ssh_parts(destination: &str) -> Result<(String, Option<String>), String> {
     if destination.is_empty() {
         return Err("remote machine destination is empty".into());
     }
-    if let Some((host, port)) = destination.rsplit_once(':') {
-        if !port.is_empty() && port.chars().all(|character| character.is_ascii_digit()) {
-            return Ok((host.to_owned(), Some(port.to_owned())));
-        }
+    if let Some((host, port)) = destination.rsplit_once(':')
+        && !port.is_empty()
+        && port.chars().all(|character| character.is_ascii_digit())
+    {
+        return Ok((host.to_owned(), Some(port.to_owned())));
     }
     Ok((destination.to_owned(), None))
 }
