@@ -23,7 +23,6 @@ CREATE TABLE containers (
   machine_id TEXT NOT NULL DEFAULT '',
   service_id TEXT GENERATED ALWAYS AS (json_extract(container, '$.service_id')) VIRTUAL,
   service_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.service_name')) VIRTUAL,
-  docker_sync_status TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
 );
 

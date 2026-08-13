@@ -868,7 +868,7 @@ dependencies = [
  "clap_complete",
  "ployz-core",
  "ployz-testkit",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

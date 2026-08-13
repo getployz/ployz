@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{ContainerObservation, Machine};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{ApiClient, Error, Statement};
@@ -63,48 +63,26 @@ impl ReplicatedStore {
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
-                "INSERT INTO containers (id, container, machine_id, docker_sync_status, updated_at) VALUES (?, ?, ?, ?, datetime('now')) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id, docker_sync_status = excluded.docker_sync_status, updated_at = excluded.updated_at",
+                "INSERT INTO containers (id, container, machine_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id, updated_at = excluded.updated_at",
                 [
                     json!(observation.container_id),
                     json!(serde_json::to_string(observation)?),
                     json!(observation.machine_id),
-                    json!(DockerSyncStatus::Synced),
                 ],
             )])
             .await?;
         Ok(())
     }
 
-    pub async fn containers(&self) -> Result<ReplicatedObservations<ContainerRecord>, Error> {
+    pub async fn containers(&self) -> Result<ReplicatedObservations<ContainerObservation>, Error> {
         let query = self
             .api
             .query(Statement::new(
-                "SELECT id, container, docker_sync_status FROM containers WHERE docker_sync_status = 'synced' ORDER BY id",
+                "SELECT id, container FROM containers ORDER BY id",
                 [],
             ))
             .await?;
-        let mut observations = Vec::new();
-        let mut incomplete_ids = Vec::new();
-        for row in query.rows {
-            let id = text(row.first(), "row ID")?.to_owned();
-            let encoded = text(row.get(1), "replicated JSON")?;
-            if encoded.is_empty() || encoded == "{}" {
-                incomplete_ids.push(id);
-                continue;
-            }
-            observations.push(ContainerRecord {
-                observation: serde_json::from_str(encoded)?,
-                docker_sync_status: serde_json::from_value(
-                    row.get(2)
-                        .cloned()
-                        .ok_or_else(|| Error::Protocol("missing Docker sync status".into()))?,
-                )?,
-            });
-        }
-        Ok(ReplicatedObservations {
-            observations,
-            incomplete_ids,
-        })
+        decode_observations(query.rows, 1)
     }
 
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
@@ -149,19 +127,6 @@ impl ReplicatedStore {
             })
             .collect()
     }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DockerSyncStatus {
-    /// A successful local Docker read at write time, not Cluster freshness.
-    Synced,
-}
-
-#[derive(Debug, PartialEq)]
-pub struct ContainerRecord {
-    pub observation: ContainerObservation,
-    pub docker_sync_status: DockerSyncStatus,
 }
 
 #[derive(Debug, Eq, PartialEq)]

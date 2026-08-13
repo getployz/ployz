@@ -56,32 +56,20 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert!(machines.observations.contains(&local));
     assert!(machines.observations.contains(&duplicate));
 
-    let synced = container(&local.id, "a");
-    store.publish_container(&synced).await.unwrap();
-    let unsynced = container(&local.id, "b");
+    let observation = container(&local.id, "a");
+    store.publish_container(&observation).await.unwrap();
+    let incomplete_id = format!("{:0<64}", "incomplete");
     running
         .api()
         .execute([Statement::new(
-            "INSERT INTO containers (id, container, machine_id, docker_sync_status) VALUES (?, ?, ?, '')",
-            [
-                json!(unsynced.container_id),
-                json!(serde_json::to_string(&unsynced).unwrap()),
-                json!(unsynced.machine_id),
-            ],
+            "INSERT INTO containers (id) VALUES (?)",
+            [json!(&incomplete_id)],
         )])
         .await
         .unwrap();
-    assert_eq!(
-        store
-            .containers()
-            .await
-            .unwrap()
-            .observations
-            .into_iter()
-            .map(|record| record.observation)
-            .collect::<Vec<_>>(),
-        vec![synced]
-    );
+    let containers = store.containers().await.unwrap();
+    assert_eq!(containers.observations, vec![observation]);
+    assert_eq!(containers.incomplete_ids, vec![incomplete_id]);
 
     let target = store.version().await.unwrap();
     assert!(store.known_missing_changes().await.unwrap().is_empty());

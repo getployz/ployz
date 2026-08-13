@@ -9,10 +9,7 @@ pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
     RunningCorrosion,
 };
-pub use store::{
-    ContainerRecord, DockerSyncStatus, MissingChange, ReplicatedObservations, ReplicatedStore,
-    wait_for_catch_up,
-};
+pub use store::{MissingChange, ReplicatedObservations, ReplicatedStore, wait_for_catch_up};
 
 use thiserror::Error;
 
