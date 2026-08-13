@@ -3,11 +3,15 @@ mod test_dir;
 use std::{
     collections::BTreeMap,
     fs,
+    net::SocketAddr,
     os::unix::fs::PermissionsExt,
     sync::{Arc, Mutex},
 };
 
-use ployz_core::{LocalMachinePhase, MachineRpc, RpcErrorCode, RpcRequest, RpcResponseBody};
+use ployz_core::{
+    LocalMachinePhase, MachineId, MachineRpc, RpcErrorCode, RpcRequest, RpcResponseBody,
+    SelectedEndpoint,
+};
 use ployzd::{
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
     rpc::MachineService,
@@ -110,6 +114,9 @@ fn reset_stops_if_the_machine_record_changes() {
         id: ployz_core::MachineId::random(),
         phase: LocalMachinePhase::Resetting,
         machine: None,
+        wireguard_private_key: None,
+        wireguard_mtu: None,
+        selected_endpoints: BTreeMap::new(),
         min_store_version: BTreeMap::new(),
     };
     fs::write(
@@ -154,6 +161,9 @@ fn completing_catch_up_persists_participation_and_clears_the_target() {
         id: ployz_core::MachineId::random(),
         phase: LocalMachinePhase::Joining,
         machine: None,
+        wireguard_private_key: None,
+        wireguard_mtu: None,
+        selected_endpoints: BTreeMap::new(),
         min_store_version: BTreeMap::from([("actor".to_owned(), 4)]),
     };
     fs::write(
@@ -169,4 +179,22 @@ fn completing_catch_up_persists_participation_and_clears_the_target() {
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(reopened.record().phase, LocalMachinePhase::Participating);
     assert!(reopened.record().min_store_version.is_empty());
+}
+
+#[test]
+fn selected_endpoint_is_best_effort_local_state() {
+    let dir = TestDir::new("ployzd-state");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    let peer = MachineId::random();
+    let endpoint = SelectedEndpoint(SocketAddr::from(([192, 0, 2, 4], 51820)));
+    store
+        .persist_selected_endpoint(peer.clone(), endpoint)
+        .unwrap();
+    drop(store);
+
+    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(
+        reopened.record().selected_endpoints.get(&peer),
+        Some(&endpoint)
+    );
 }

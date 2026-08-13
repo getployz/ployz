@@ -3,4 +3,5 @@
 pub mod corrosion;
 pub mod machine;
 pub mod metrics;
+pub mod network;
 pub mod rpc;

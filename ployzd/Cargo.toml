@@ -9,11 +9,15 @@ repository.workspace = true
 bollard = "0.21.0"
 bytes = "1.12.1"
 clap = { version = "4.6.6", features = ["derive"] }
+defguard_wireguard_rs = "=0.7.1"
+# 0.2.4 mixes incompatible netlink-packet-generic major versions with defguard 0.7.
+netlink-packet-wireguard = "=0.2.3"
 fs2 = "0.4.3"
 futures-util = { version = "0.3.34", features = ["sink"] }
+ipnet = "2.12.1"
 ployz-core.workspace = true
 prometheus = "0.14.0"
-reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls"] }
 sd-notify = "0.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

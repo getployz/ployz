@@ -150,6 +150,9 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
             id: published.id.clone(),
             phase: LocalMachinePhase::Joining,
             machine: Some(published.clone()),
+            wireguard_private_key: None,
+            wireguard_mtu: None,
+            selected_endpoints: BTreeMap::new(),
             min_store_version: store.version().await.unwrap(),
         },
     );
@@ -185,6 +188,9 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
             id: MachineId::random(),
             phase: LocalMachinePhase::Joining,
             machine: None,
+            wireguard_private_key: None,
+            wireguard_mtu: None,
+            selected_endpoints: BTreeMap::new(),
             min_store_version: target.clone(),
         },
     );
