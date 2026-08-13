@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use ployz_core::{LocalMachinePhase, MachineRpcServer};
 use ployzd::{
     machine::{DEFAULT_DATA_DIR, StateStore},
@@ -32,6 +32,8 @@ const DEFAULT_METRICS_ADDRESS: &str = "127.0.0.1:51090";
 #[derive(Parser)]
 #[command(about = "Ployz Machine daemon")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     #[arg(short, long, default_value = DEFAULT_DATA_DIR)]
     data_dir: PathBuf,
     #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
@@ -40,9 +42,19 @@ struct Args {
     metrics_address: SocketAddr,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Print the daemon version.
+    Version,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+    if matches!(args.command, Some(Command::Version)) {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let state = Arc::new(Mutex::new(StateStore::open(&args.data_dir)?));
     let rpc_listener = bind_socket(&args.socket)?;
     let metrics_listener = TcpListener::bind(args.metrics_address).await?;
@@ -79,8 +91,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let store = state
         .lock()
         .map_err(|_| io::Error::other("machine state lock poisoned"))?;
-    if store.state().phase == LocalMachinePhase::Resetting {
-        store.clear()?;
+    if store.local_state().phase == LocalMachinePhase::Resetting {
+        store.complete_reset()?;
     }
     Ok(())
 }

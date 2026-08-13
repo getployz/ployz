@@ -1,4 +1,4 @@
-use std::{io, sync::Arc};
+use std::io;
 
 use prometheus::{Encoder, IntGaugeVec, Opts, Registry, TextEncoder};
 use tokio::{
@@ -7,7 +7,7 @@ use tokio::{
     sync::watch,
 };
 
-pub fn registry(version: &str) -> Result<Arc<Registry>, prometheus::Error> {
+pub fn registry(version: &str) -> Result<Registry, prometheus::Error> {
     let registry = Registry::new_custom(Some("ployz".to_owned()), None)?;
     let build = IntGaugeVec::new(
         Opts::new("ployzd_build_info", "Build information."),
@@ -15,12 +15,12 @@ pub fn registry(version: &str) -> Result<Arc<Registry>, prometheus::Error> {
     )?;
     build.with_label_values(&[version]).set(1);
     registry.register(Box::new(build))?;
-    Ok(Arc::new(registry))
+    Ok(registry)
 }
 
 pub async fn serve(
     listener: TcpListener,
-    registry: Arc<Registry>,
+    registry: Registry,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     loop {

@@ -1,9 +1,11 @@
+mod common;
+
 use std::{
     fs,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     os::unix::net::UnixDatagram,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -11,25 +13,13 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    DESCRIBE_CONTRACT_CAPABILITY, MachineId, MachineRpcClient, RESET_MACHINE_CAPABILITY, RpcRequest,
+    DESCRIBE_CONTRACT_CAPABILITY, MachineRpcClient, RESET_MACHINE_CAPABILITY, RpcRequest,
 };
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 
-struct TestDir(PathBuf);
-
-impl TestDir {
-    fn new() -> Self {
-        Self(std::env::temp_dir().join(format!("ployzd-process-{}", MachineId::random())))
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use common::TestDir;
 
 struct ChildGuard(Child);
 
@@ -42,7 +32,17 @@ impl Drop for ChildGuard {
 
 #[test]
 fn daemon_create_reopen_signal_and_reset_lifecycle() {
-    let root = TestDir::new();
+    let version = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .arg("version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        version.stdout,
+        format!("{}\n", env!("CARGO_PKG_VERSION")).as_bytes()
+    );
+
+    let root = TestDir::new("ployzd-process");
     fs::create_dir_all(&root.0).unwrap();
     let data_dir = root.0.join("data");
     let socket = root.0.join("run/ployz.sock");

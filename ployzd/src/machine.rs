@@ -13,14 +13,14 @@ pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MachineState {
+pub struct LocalMachineState {
     pub id: MachineId,
     pub phase: LocalMachinePhase,
 }
 
 pub struct StateStore {
     data_dir: PathBuf,
-    state: MachineState,
+    local_state: LocalMachineState,
 }
 
 impl StateStore {
@@ -31,7 +31,7 @@ impl StateStore {
         let state = match fs::read(&path) {
             Ok(data) => serde_json::from_slice(&data)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let state = MachineState {
+                let state = LocalMachineState {
                     id: MachineId::random(),
                     phase: LocalMachinePhase::Uninitialized,
                 };
@@ -45,28 +45,37 @@ impl StateStore {
             return Err(StateError::InvalidPhase);
         }
 
-        let store = Self { data_dir, state };
-        if store.state.phase == LocalMachinePhase::Resetting {
-            store.clear()?;
+        let store = Self {
+            data_dir,
+            local_state: state,
+        };
+        if store.local_state.phase == LocalMachinePhase::Resetting {
+            store.complete_reset()?;
             return Self::open(&store.data_dir);
         }
         Ok(store)
     }
 
     #[must_use]
-    pub fn state(&self) -> &MachineState {
-        &self.state
+    pub fn local_state(&self) -> &LocalMachineState {
+        &self.local_state
     }
 
     pub fn begin_reset(&mut self) -> Result<(), StateError> {
-        if self.state.phase == LocalMachinePhase::Resetting {
+        if self.local_state.phase == LocalMachinePhase::Resetting {
             return Err(StateError::AlreadyResetting);
         }
-        self.state.phase = LocalMachinePhase::Resetting;
-        save(&self.data_dir, &self.state)
+        let mut resetting = self.local_state.clone();
+        resetting.phase = LocalMachinePhase::Resetting;
+        save(&self.data_dir, &resetting)?;
+        self.local_state = resetting;
+        Ok(())
     }
 
-    pub fn clear(&self) -> Result<(), StateError> {
+    pub fn complete_reset(&self) -> Result<(), StateError> {
+        if self.local_state.phase != LocalMachinePhase::Resetting {
+            return Err(StateError::NotResetting);
+        }
         fs::remove_dir_all(&self.data_dir).map_err(StateError::Io)
     }
 }
@@ -82,7 +91,7 @@ fn validate_data_dir(path: &Path) -> Result<(), StateError> {
     Ok(())
 }
 
-fn save(data_dir: &Path, state: &MachineState) -> Result<(), StateError> {
+fn save(data_dir: &Path, state: &LocalMachineState) -> Result<(), StateError> {
     fs::create_dir_all(data_dir)?;
     fs::set_permissions(data_dir, fs::Permissions::from_mode(0o711))?;
 
@@ -113,6 +122,8 @@ pub enum StateError {
     InvalidPhase,
     #[error("machine is already resetting")]
     AlreadyResetting,
+    #[error("machine is not resetting")]
+    NotResetting,
     #[error("refusing to clear broad data directory {0:?}")]
     UnsafeDataDirectory(PathBuf),
 }

@@ -5,8 +5,9 @@ use std::{
 
 use ployz_core::{
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, MachineRpc, OpaquePayload,
-    PROTOCOL_MAJOR, RESET_MACHINE_CAPABILITY, RpcRequestBody, RpcResponse,
+    PROTOCOL_MAJOR, RESET_MACHINE_CAPABILITY, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
 };
+use serde_json::Value;
 use tokio::sync::watch;
 use tonic::{Request, Response, Status};
 
@@ -44,7 +45,7 @@ impl MachineRpc for MachineService {
             .state
             .lock()
             .map_err(|_| Status::internal("machine state lock poisoned"))?
-            .state()
+            .local_state()
             .id
             .clone();
         let capabilities = [DESCRIBE_CONTRACT_CAPABILITY, RESET_MACHINE_CAPABILITY]
@@ -71,22 +72,38 @@ impl MachineRpc for MachineService {
         if !matches!(request.body, RpcRequestBody::Reset(_)) {
             return Err(Status::invalid_argument("expected reset request"));
         }
-        self.state
+        let reset = self
+            .state
             .lock()
             .map_err(|_| Status::internal("machine state lock poisoned"))?
-            .begin_reset()
-            .map_err(|error| match error {
-                StateError::AlreadyResetting => Status::failed_precondition(error.to_string()),
-                StateError::Io(_)
-                | StateError::Json(_)
-                | StateError::InvalidPhase
-                | StateError::UnsafeDataDirectory(_) => Status::internal(error.to_string()),
-            })?;
-        let response = RpcResponse::reset_accepted()
-            .encode()
-            .map_err(internal_response)?;
-        self.reset.send_replace(true);
+            .begin_reset();
+        let accepted = reset.is_ok();
+        let response = match reset {
+            Ok(()) => RpcResponse::reset_accepted(),
+            Err(error) => RpcResponse::error(state_error(error)),
+        }
+        .encode()
+        .map_err(internal_response)?;
+        if accepted {
+            self.reset.send_replace(true);
+        }
         Ok(Response::new(response))
+    }
+}
+
+fn state_error(error: StateError) -> RpcError {
+    let code = match error {
+        StateError::AlreadyResetting => RpcErrorCode::Conflict,
+        StateError::Io(_)
+        | StateError::Json(_)
+        | StateError::InvalidPhase
+        | StateError::NotResetting
+        | StateError::UnsafeDataDirectory(_) => RpcErrorCode::Internal,
+    };
+    RpcError {
+        code,
+        message: error.to_string(),
+        details: Value::Null,
     }
 }
 
