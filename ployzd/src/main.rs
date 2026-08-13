@@ -3,9 +3,10 @@ compile_error!("ployzd supports Linux only");
 
 use std::{
     error::Error,
-    fs, io,
+    fs::{self, File, OpenOptions},
+    io,
     net::SocketAddr,
-    os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
+    os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, chown},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -56,7 +57,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let store = Arc::new(Mutex::new(LocalMachineStore::open(&args.data_dir)?));
-    let rpc_listener = bind_socket(&args.socket)?;
+    let (rpc_listener, _socket_lock) = bind_socket(&args.socket)?;
     let metrics_listener = TcpListener::bind(args.metrics_address).await?;
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
@@ -113,7 +114,7 @@ async fn shutdown_signal() -> io::Result<()> {
     Ok(())
 }
 
-fn bind_socket(path: &Path) -> io::Result<UnixListener> {
+fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
@@ -123,6 +124,25 @@ fn bind_socket(path: &Path) -> io::Result<UnixListener> {
         fs::set_permissions(parent, fs::Permissions::from_mode(0o750))?;
         set_socket_group(parent)?;
     }
+
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(lock_path)?;
+    fs2::FileExt::try_lock_exclusive(&lock).map_err(|error| {
+        if error.kind() == io::ErrorKind::WouldBlock {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "socket is owned by another daemon",
+            )
+        } else {
+            error
+        }
+    })?;
 
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
@@ -138,7 +158,7 @@ fn bind_socket(path: &Path) -> io::Result<UnixListener> {
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
     set_socket_group(path)?;
-    Ok(listener)
+    Ok((listener, lock))
 }
 
 fn set_socket_group(path: &Path) -> io::Result<()> {

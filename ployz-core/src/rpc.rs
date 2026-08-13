@@ -239,7 +239,7 @@ impl RpcResponse {
 #[derive(Serialize, Deserialize)]
 struct WireResponse {
     protocol_major: u32,
-    kind: String,
+    kind: ResponseKind,
     #[serde(default)]
     payload: Value,
 }
@@ -249,24 +249,21 @@ impl Serialize for RpcResponse {
     where
         S: Serializer,
     {
-        let (kind, payload) = match &self.body {
-            RpcResponseBody::ContractDescription(description) => (
-                "contract_description".to_owned(),
-                serde_json::to_value(description).map_err(serde::ser::Error::custom)?,
-            ),
-            RpcResponseBody::ResetAccepted(accepted) => (
-                "reset_accepted".to_owned(),
-                serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?,
-            ),
-            RpcResponseBody::Error(error) => (
-                "error".to_owned(),
-                serde_json::to_value(error).map_err(serde::ser::Error::custom)?,
-            ),
-            RpcResponseBody::Unknown { kind, payload } => (kind.clone(), payload.clone()),
+        let payload = match &self.body {
+            RpcResponseBody::ContractDescription(description) => {
+                serde_json::to_value(description).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::ResetAccepted(accepted) => {
+                serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::Error(error) => {
+                serde_json::to_value(error).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::Unknown { payload, .. } => payload.clone(),
         };
         WireResponse {
             protocol_major: self.protocol_major,
-            kind,
+            kind: self.kind(),
             payload,
         }
         .serialize(serializer)
@@ -279,18 +276,18 @@ impl<'de> Deserialize<'de> for RpcResponse {
         D: Deserializer<'de>,
     {
         let wire = WireResponse::deserialize(deserializer)?;
-        let body = match wire.kind.as_str() {
-            "contract_description" => RpcResponseBody::ContractDescription(
+        let body = match wire.kind {
+            ResponseKind::ContractDescription => RpcResponseBody::ContractDescription(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
-            "reset_accepted" => RpcResponseBody::ResetAccepted(
+            ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
-            "error" => RpcResponseBody::Error(
+            ResponseKind::Error => RpcResponseBody::Error(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
-            _ => RpcResponseBody::Unknown {
-                kind: wire.kind,
+            ResponseKind::Unknown(kind) => RpcResponseBody::Unknown {
+                kind,
                 payload: wire.payload,
             },
         };

@@ -33,6 +33,7 @@ fn machine_record_is_created_once_and_reopened_with_private_permissions() {
             & 0o777,
         0o600
     );
+    drop(created);
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(reopened.record().id, machine_id);
@@ -115,4 +116,28 @@ fn reset_stops_if_the_machine_record_changes() {
 
     assert!(store.complete_reset().is_err());
     assert!(dir.0.exists());
+}
+
+#[test]
+fn machine_store_is_process_exclusive() {
+    let dir = TestDir::new("ployzd-state");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+
+    assert!(matches!(
+        LocalMachineStore::open(&dir.0),
+        Err(StoreError::AlreadyRunning(_))
+    ));
+    drop(store);
+    LocalMachineStore::open(&dir.0).unwrap();
+}
+
+#[test]
+fn interrupted_initial_write_is_recovered() {
+    let dir = TestDir::new("ployzd-state");
+    fs::create_dir_all(&dir.0).unwrap();
+    fs::write(dir.0.join(".machine.json.tmp"), b"partial").unwrap();
+
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(store.record().phase, LocalMachinePhase::Uninitialized);
+    assert!(!dir.0.join(".machine.json.tmp").exists());
 }

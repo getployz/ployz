@@ -98,6 +98,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::Json(_)
         | StoreError::InvalidPhase
         | StoreError::NotResetting
+        | StoreError::AlreadyRunning(_)
         | StoreError::UnsafeDataDirectory(_)
         | StoreError::UnownedDataDirectory(_)
         | StoreError::OwnershipLost(_) => RpcErrorCode::Internal,

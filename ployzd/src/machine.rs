@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
@@ -11,6 +11,8 @@ use thiserror::Error;
 
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
+const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
+const LOCK_FILE_NAME: &str = ".ployzd.lock";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LocalMachineRecord {
@@ -21,17 +23,38 @@ pub struct LocalMachineRecord {
 pub struct LocalMachineStore {
     data_dir: PathBuf,
     record: LocalMachineRecord,
+    _lock: File,
 }
 
 impl LocalMachineStore {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self, StoreError> {
         let data_dir = data_dir.as_ref().to_owned();
         validate_data_dir(&data_dir)?;
+        claim_data_dir(&data_dir)?;
+        fs::create_dir_all(&data_dir)?;
+        fs::set_permissions(&data_dir, fs::Permissions::from_mode(0o711))?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(data_dir.join(LOCK_FILE_NAME))?;
+        fs2::FileExt::try_lock_exclusive(&lock).map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                StoreError::AlreadyRunning(data_dir.clone())
+            } else {
+                StoreError::Io(error)
+            }
+        })?;
         let path = data_dir.join(STATE_FILE_NAME);
         let record = match fs::read(&path) {
             Ok(data) => serde_json::from_slice(&data)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                claim_data_dir(&data_dir)?;
+                match fs::remove_file(data_dir.join(TEMPORARY_FILE_NAME)) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
                 let record = LocalMachineRecord {
                     id: MachineId::random(),
                     phase: LocalMachinePhase::Uninitialized,
@@ -46,10 +69,16 @@ impl LocalMachineStore {
             return Err(StoreError::InvalidPhase);
         }
 
-        let store = Self { data_dir, record };
+        let store = Self {
+            data_dir,
+            record,
+            _lock: lock,
+        };
         if store.record.phase == LocalMachinePhase::Resetting {
+            let data_dir = store.data_dir.clone();
             store.complete_reset()?;
-            return Self::open(&store.data_dir);
+            drop(store);
+            return Self::open(data_dir);
         }
         Ok(store)
     }
@@ -96,10 +125,20 @@ fn validate_data_dir(path: &Path) -> Result<(), StoreError> {
 
 fn claim_data_dir(data_dir: &Path) -> Result<(), StoreError> {
     match fs::read_dir(data_dir) {
-        Ok(mut entries) => match entries.next().transpose()? {
-            Some(_) => Err(StoreError::UnownedDataDirectory(data_dir.to_owned())),
-            None => Ok(()),
-        },
+        Ok(entries) => {
+            let names = entries
+                .map(|entry| Ok(entry?.file_name()))
+                .collect::<io::Result<Vec<_>>>()?;
+            let owns_directory = names.iter().any(|name| name == STATE_FILE_NAME)
+                || names
+                    .iter()
+                    .all(|name| name == TEMPORARY_FILE_NAME || name == LOCK_FILE_NAME);
+            if owns_directory {
+                Ok(())
+            } else {
+                Err(StoreError::UnownedDataDirectory(data_dir.to_owned()))
+            }
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
@@ -110,7 +149,7 @@ fn save(data_dir: &Path, record: &LocalMachineRecord) -> Result<(), StoreError> 
     fs::set_permissions(data_dir, fs::Permissions::from_mode(0o711))?;
 
     let path = data_dir.join(STATE_FILE_NAME);
-    let temporary = data_dir.join(".machine.json.tmp");
+    let temporary = data_dir.join(TEMPORARY_FILE_NAME);
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -121,8 +160,8 @@ fn save(data_dir: &Path, record: &LocalMachineRecord) -> Result<(), StoreError> 
     serde_json::to_writer_pretty(&mut file, record)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
-    drop(file);
     fs::rename(temporary, path)?;
+    File::open(data_dir)?.sync_all()?;
     Ok(())
 }
 
@@ -138,6 +177,8 @@ pub enum StoreError {
     AlreadyResetting,
     #[error("machine is not resetting")]
     NotResetting,
+    #[error("another daemon already owns data directory {0:?}")]
+    AlreadyRunning(PathBuf),
     #[error("refusing to clear broad data directory {0:?}")]
     UnsafeDataDirectory(PathBuf),
     #[error("refusing to claim nonempty data directory {0:?}")]

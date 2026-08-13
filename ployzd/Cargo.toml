@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
+fs2 = "0.4.3"
 ployz-core.workspace = true
 prometheus = "0.14.0"
 sd-notify = "0.5.0"

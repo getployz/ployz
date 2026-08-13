@@ -3,7 +3,7 @@ mod common;
 use std::{
     fs,
     io::{Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     os::unix::net::UnixDatagram,
     path::Path,
     process::{Child, Command, Stdio},
@@ -52,10 +52,27 @@ fn daemon_create_reopen_signal_and_reset_lifecycle() {
     assert_eq!(first.daemon_version, env!("CARGO_PKG_VERSION"));
     assert!(first.supports(DESCRIBE_CONTRACT_CAPABILITY));
     assert!(first.supports(RESET_MACHINE_CAPABILITY));
+    let duplicate = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args([
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--socket",
+            socket.to_str().unwrap(),
+            "--metrics-address",
+            &unused_address().to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!duplicate.status.success());
+    assert_eq!(describe(&socket).machine_id, first.machine_id);
     assert!(metrics(metrics_address).contains(&format!(
         "ployz_ployzd_build_info{{version=\"{}\"}} 1",
         env!("CARGO_PKG_VERSION")
     )));
+    let disconnected = TcpStream::connect(metrics_address).unwrap();
+    disconnected.shutdown(Shutdown::Both).unwrap();
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(describe(&socket).machine_id, first.machine_id);
     Command::new("kill")
         .args(["-TERM", &daemon.0.id().to_string()])
         .status()
@@ -107,10 +124,11 @@ fn start_daemon(data_dir: &Path, socket: &Path, notify_socket: &Path) -> (ChildG
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let child = ChildGuard(child);
     let mut message = [0; 64];
     let length = notify.recv(&mut message).unwrap();
     assert_eq!(message.get(..length).unwrap(), b"READY=1\n");
-    (ChildGuard(child), metrics_address)
+    (child, metrics_address)
 }
 
 fn unused_address() -> SocketAddr {
