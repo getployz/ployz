@@ -5,4 +5,5 @@ pub mod docker;
 pub mod machine;
 pub mod metrics;
 pub mod network;
+pub mod proxy;
 pub mod rpc;

@@ -2,13 +2,15 @@ use std::{collections::BTreeSet, num::NonZeroU32};
 
 use ployz_core::{
     CapabilityName, CodecError, ConfigMount, ConfigSpec, ContainerPath, ContainerResources,
-    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
-    HealthObservation, MachineFailure, MachineId, MachinePath, MachineRpc, MachineRpcClient,
-    MachineRpcServer, MachineSelector, MachineSuccess, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
-    PartialResult, Placement, PreDeployHook, PullPolicy, RESET_MACHINE_CAPABILITY,
-    RequestedServiceSpec, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequest,
-    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
-    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource,
+    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, FanoutFailure,
+    FanoutOutcome, FanoutResponse, FramingError, HealthObservation, MachineFailure, MachineId,
+    MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector,
+    MachineSuccess, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement,
+    PreDeployHook, PullPolicy, RESET_MACHINE_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec,
+    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame,
+    grpc_frames,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -229,6 +231,47 @@ fn json_payload_round_trips_through_the_opaque_prost_envelope() {
     assert_eq!(
         response_payload.decode_json::<RpcResponse>().unwrap(),
         response
+    );
+}
+
+#[test]
+fn fanout_frames_preserve_opaque_messages_and_type_target_failures() {
+    let machine_id = MachineId::parse(MACHINE_ID).unwrap();
+    let machine_name = MachineName::parse("machine-a").unwrap();
+    let original = encode_grpc_frame(br#"{\"future\":true}"#);
+    let success = FanoutResponse::success(&machine_id, &machine_name, original.clone()).unwrap();
+    let encoded = success.encode_grpc_frame();
+
+    let frames = grpc_frames(&encoded).unwrap();
+    let [outer] = frames.as_slice() else {
+        panic!("expected one outer gRPC frame")
+    };
+    let decoded = FanoutResponse::decode_grpc_frame(outer).unwrap();
+    assert_eq!(decoded.machine_id().unwrap(), machine_id);
+    assert_eq!(decoded.machine_name().unwrap(), machine_name);
+    assert!(matches!(
+        decoded.outcome,
+        Some(FanoutOutcome::FramedPayload(payload)) if payload == original
+    ));
+
+    let failure = FanoutFailure {
+        code: tonic::Code::Unavailable as u32,
+        message: "connection refused".into(),
+        details: vec![1, 2, 3],
+    };
+    let decoded = FanoutResponse::decode_grpc_frame(
+        &FanoutResponse::failure(&machine_id, &machine_name, failure.clone()).encode_grpc_frame(),
+    )
+    .unwrap();
+    assert_eq!(decoded.outcome, Some(FanoutOutcome::Failure(failure)));
+
+    assert_eq!(grpc_frames(&[0, 0]), Err(FramingError::TruncatedHeader));
+    assert_eq!(
+        grpc_frames(&[0, 0, 0, 0, 4, 1, 2, 3]),
+        Err(FramingError::TruncatedMessage {
+            declared: 4,
+            available: 3,
+        })
     );
 }
 

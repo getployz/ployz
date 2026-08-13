@@ -21,7 +21,8 @@ use ployzd::{
     docker::{ContainerObserver, LocalDocker, MachineSpecStore},
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
-    network::{CORROSION_GOSSIP_PORT, NetworkPlane},
+    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkPlane},
+    proxy::MachineProxy,
     rpc::MachineService,
 };
 use sd_notify::NotifyState;
@@ -31,7 +32,7 @@ use tokio::{
     sync::watch,
 };
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
-use tonic::transport::Server;
+use tonic::{service::Routes, transport::Server};
 
 const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
 const DEFAULT_METRICS_ADDRESS: &str = "127.0.0.1:51090";
@@ -65,14 +66,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let store = Arc::new(Mutex::new(LocalMachineStore::open(&args.data_dir)?));
     let (rpc_listener, _socket_lock) = bind_socket(&args.socket)?;
     let metrics_listener = TcpListener::bind(args.metrics_address).await?;
-    let mut network = {
-        let record = store
-            .lock()
-            .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
-            .record()
-            .clone();
-        NetworkPlane::start(&record).await?
-    };
+    let local_record = store
+        .lock()
+        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
+        .record()
+        .clone();
+    let mut network = NetworkPlane::start(&local_record).await?;
     let machine_api_listeners = if let Some(network) = &network {
         let [management, gateway] = network.machine_api_addresses()?;
         Some((
@@ -88,27 +87,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let observer = replicated_store
         .clone()
         .map(|replicated| {
-            let machine_id = store
-                .lock()
-                .expect("local Machine record lock was checked above")
-                .record()
-                .id
-                .clone();
-            LocalDocker::connect()
-                .map(|docker| ContainerObserver::new(docker, specs, replicated, machine_id))
+            LocalDocker::connect().map(|docker| {
+                ContainerObserver::new(docker, specs, replicated, local_record.id.clone())
+            })
         })
         .transpose()?;
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (reset, mut reset_rx) = watch::channel(false);
     let service = MachineService::new(Arc::clone(&store), reset);
+    let proxy = MachineProxy::new(
+        Routes::new(MachineRpcServer::new(service)),
+        local_record.id.clone(),
+        MACHINE_API_PORT,
+        replicated_store.clone(),
+    );
 
-    let rpc = Server::builder()
-        .add_service(MachineRpcServer::new(service.clone()))
-        .serve_with_incoming_shutdown(
-            UnixListenerStream::new(rpc_listener),
-            wait_for_shutdown(shutdown_rx.clone()),
-        );
+    let rpc = Server::builder().serve_with_incoming_shutdown(
+        proxy.clone(),
+        UnixListenerStream::new(rpc_listener),
+        wait_for_shutdown(shutdown_rx.clone()),
+    );
     let metrics = metrics::serve(metrics_listener, registry, shutdown_rx.clone());
     let publisher = run_machine_publisher(
         replicated_store.clone(),
@@ -117,18 +116,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let network_rpc = async {
         if let Some((management, gateway)) = machine_api_listeners {
-            let management = Server::builder()
-                .add_service(MachineRpcServer::new(service.clone()))
-                .serve_with_incoming_shutdown(
-                    TcpListenerStream::new(management),
-                    wait_for_shutdown(shutdown_rx.clone()),
-                );
-            let gateway = Server::builder()
-                .add_service(MachineRpcServer::new(service))
-                .serve_with_incoming_shutdown(
-                    TcpListenerStream::new(gateway),
-                    wait_for_shutdown(shutdown_rx.clone()),
-                );
+            let management = Server::builder().serve_with_incoming_shutdown(
+                proxy.clone(),
+                TcpListenerStream::new(management),
+                wait_for_shutdown(shutdown_rx.clone()),
+            );
+            let gateway = Server::builder().serve_with_incoming_shutdown(
+                proxy,
+                TcpListenerStream::new(gateway),
+                wait_for_shutdown(shutdown_rx.clone()),
+            );
             tokio::try_join!(management, gateway)
                 .map(|_| ())
                 .map_err(io::Error::other)

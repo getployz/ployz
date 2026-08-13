@@ -1,0 +1,226 @@
+mod echo_service;
+
+use std::net::Ipv6Addr;
+
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use ipnet::Ipv4Net;
+use ployz_core::{
+    FanoutOutcome, FanoutResponse, Machine, MachineId, MachineName, MachineSelector, MachineSubnet,
+    ManagementAddress, WireGuardPublicKey, encode_grpc_frame, grpc_frames,
+};
+use ployzd::proxy::{
+    MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route,
+};
+use tokio::{net::TcpListener, sync::oneshot};
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::{body::Body, codegen::http, service::Routes, transport::Server};
+
+use echo_service::EchoService;
+
+#[test]
+fn routing_resolves_visible_targets_without_repairing_ambiguity() {
+    let local = machine('1', "local", 1);
+    let first = machine('2', "duplicate", 2);
+    let second = machine('3', "duplicate", 3);
+    let collision = machine('4', first.id.as_str(), 4);
+    let visible = vec![
+        local.clone(),
+        first.clone(),
+        second.clone(),
+        collision.clone(),
+    ];
+
+    assert_eq!(
+        resolve_route(RoutingRequest::Local, &visible).unwrap(),
+        ProxyRoute::Local
+    );
+    let resolved = resolve_route(
+        RoutingRequest::Many(vec![
+            selector("local"),
+            selector(first.id.as_str()),
+            selector("local"),
+        ]),
+        &visible,
+    )
+    .unwrap();
+    assert_eq!(resolved, ProxyRoute::Many(vec![local, first.clone()]));
+
+    assert_eq!(
+        resolve_route(RoutingRequest::Many(vec![selector("*")]), &visible).unwrap(),
+        ProxyRoute::Many(visible.clone())
+    );
+    assert_eq!(
+        resolve_route(
+            RoutingRequest::Many(vec![selector("*"), selector("missing")]),
+            &visible,
+        ),
+        Err(TargetResolutionError::NotFound(vec![selector("missing")]))
+    );
+
+    let ProxyRoute::One(ambiguous) =
+        resolve_route(RoutingRequest::One(selector("duplicate")), &visible).unwrap()
+    else {
+        panic!("expected one observed ambiguity winner")
+    };
+    assert!(ambiguous == first || ambiguous == second);
+
+    let ProxyRoute::One(shared_namespace) =
+        resolve_route(RoutingRequest::One(selector(first.id.as_str())), &visible).unwrap()
+    else {
+        panic!("expected one observed name-or-ID winner")
+    };
+    assert!(shared_namespace == first || shared_namespace == collision);
+
+    assert_eq!(
+        resolve_route(RoutingRequest::One(selector("missing")), &visible),
+        Err(TargetResolutionError::NotFound(vec![selector("missing")]))
+    );
+}
+
+#[tokio::test]
+async fn one_to_one_forwards_unknown_bytes_unchanged() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let remote_port = listener.local_addr().unwrap().port();
+    let (shutdown, shutdown_rx) = oneshot::channel();
+    let remote_machine = machine('2', "remote", 2);
+    let target_proxy = MachineProxy::new(
+        Routes::new(EchoService::default()),
+        remote_machine.id.clone(),
+        remote_port,
+        None,
+    );
+    let server = tokio::spawn(Server::builder().serve_with_incoming_shutdown(
+        target_proxy,
+        TcpListenerStream::new(listener),
+        async { _ = shutdown_rx.await },
+    ));
+
+    let local = machine('1', "local", 1);
+    let mut remote = remote_machine;
+    remote.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
+    let proxy = MachineProxy::new(
+        Routes::new(EchoService::default()),
+        local.id.clone(),
+        remote_port,
+        None,
+    );
+    let opaque = br#"{\"future_field\":{\"raw\":[0,255]}}"#;
+    let framed = ployz_core::encode_grpc_frame(opaque);
+    let request = http::Request::builder()
+        .uri("/test.Echo/Call")
+        .header("content-type", "application/grpc")
+        .header("machine", remote.name.as_str())
+        .body(Body::new(Full::new(Bytes::from(framed.clone()))))
+        .unwrap();
+
+    let response = proxy.dispatch_with_snapshot(request, &[remote]).await;
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        framed
+    );
+
+    let _ = shutdown.send(());
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn fanout_keeps_successes_and_target_failures_as_valid_frames() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let remote_port = listener.local_addr().unwrap().port();
+    let (shutdown, shutdown_rx) = oneshot::channel();
+    let target_machine = machine('2', "reachable", 2);
+    let target_proxy = MachineProxy::new(
+        Routes::new(EchoService::default()),
+        target_machine.id.clone(),
+        remote_port,
+        None,
+    );
+    let server = tokio::spawn(Server::builder().serve_with_incoming_shutdown(
+        target_proxy,
+        TcpListenerStream::new(listener),
+        async { _ = shutdown_rx.await },
+    ));
+
+    let local = machine('1', "local", 1);
+    let mut reachable = target_machine;
+    reachable.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
+    let unreachable = machine('3', "unreachable", 3);
+    let proxy = MachineProxy::new(
+        Routes::new(EchoService::default()),
+        local.id.clone(),
+        remote_port,
+        None,
+    );
+    let request_frames = [encode_grpc_frame(b"opaque"), encode_grpc_frame(b"future")];
+    let request_body = request_frames.concat();
+    let request = http::Request::builder()
+        .uri("/test.Echo/Call")
+        .header("content-type", "application/grpc")
+        .header("machines", local.name.as_str())
+        .header("machines", reachable.name.as_str())
+        .header("machines", unreachable.name.as_str())
+        .body(Body::new(Full::new(Bytes::from(request_body))))
+        .unwrap();
+
+    let response = proxy
+        .dispatch_with_snapshot(
+            request,
+            &[local.clone(), reachable.clone(), unreachable.clone()],
+        )
+        .await;
+    let merged = response.into_body().collect().await.unwrap().to_bytes();
+    let outcomes = grpc_frames(&merged)
+        .unwrap()
+        .into_iter()
+        .map(|frame| FanoutResponse::decode_grpc_frame(frame).unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(outcomes.len(), 5);
+    let local_payloads = outcomes
+        .iter()
+        .filter(|outcome| outcome.machine_id().unwrap() == local.id)
+        .filter_map(|outcome| match &outcome.outcome {
+            Some(FanoutOutcome::FramedPayload(payload)) => Some(payload.clone()),
+            Some(FanoutOutcome::Failure(_)) | None => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(local_payloads, request_frames);
+    let reachable_payloads = outcomes
+        .iter()
+        .filter(|outcome| outcome.machine_id().unwrap() == reachable.id)
+        .filter_map(|outcome| match &outcome.outcome {
+            Some(FanoutOutcome::FramedPayload(payload)) => Some(payload.clone()),
+            Some(FanoutOutcome::Failure(_)) | None => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reachable_payloads, request_frames);
+    let unreachable_outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.machine_id().unwrap() == unreachable.id)
+        .unwrap();
+    assert!(matches!(
+        unreachable_outcome.outcome,
+        Some(FanoutOutcome::Failure(_))
+    ));
+
+    let _ = shutdown.send(());
+    server.await.unwrap().unwrap();
+}
+
+fn selector(value: &str) -> MachineSelector {
+    MachineSelector::parse(value).unwrap()
+}
+
+fn machine(id: char, name: &str, subnet: u8) -> Machine {
+    Machine {
+        id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
+        name: MachineName::parse(name).unwrap(),
+        subnet: MachineSubnet(Ipv4Net::new([10, 210, subnet, 0].into(), 24).unwrap()),
+        management_address: ManagementAddress(Ipv6Addr::from([
+            0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, subnet,
+        ])),
+        public_key: WireGuardPublicKey([subnet; 32]),
+        advertised_endpoints: Vec::new(),
+    }
+}

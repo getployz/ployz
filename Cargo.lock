@@ -1279,6 +1279,8 @@ dependencies = [
  "defguard_wireguard_rs",
  "fs2",
  "futures-util",
+ "http-body",
+ "http-body-util",
  "ipnet",
  "netlink-packet-wireguard",
  "ployz-core",

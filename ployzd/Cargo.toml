@@ -14,6 +14,8 @@ defguard_wireguard_rs = "=0.7.1"
 netlink-packet-wireguard = "=0.2.3"
 fs2 = "0.4.3"
 futures-util = { version = "0.3.34", features = ["sink"] }
+http-body = "1.1.0"
+http-body-util = "0.1.5"
 ipnet = "2.12.1"
 ployz-core.workspace = true
 prometheus = "0.14.0"
