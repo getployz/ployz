@@ -11,13 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hyper_util::rt::TokioIo;
 use ployz_core::{
     DESCRIBE_CONTRACT_CAPABILITY, MachineRpcClient, RESET_MACHINE_CAPABILITY, RpcRequest,
 };
-use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint};
-use tower::service_fn;
 
 use common::TestDir;
 
@@ -71,6 +68,22 @@ fn daemon_create_reopen_signal_and_reset_lifecycle() {
     reset(&socket);
     wait_for_success(&mut daemon.0, "reset");
     assert!(!data_dir.exists());
+
+    let existing_parent = root.0.join("existing");
+    fs::create_dir(&existing_parent).unwrap();
+    set_mode(&existing_parent, 0o711);
+    let existing_socket = existing_parent.join("ployz.sock");
+    let (mut daemon, _) = start_daemon(
+        &root.0.join("second-data"),
+        &existing_socket,
+        &notify_socket,
+    );
+    assert_eq!(mode(&existing_parent), 0o711);
+    Command::new("kill")
+        .args(["-TERM", &daemon.0.id().to_string()])
+        .status()
+        .unwrap();
+    wait_for_success(&mut daemon.0, "existing socket parent");
 }
 
 fn start_daemon(data_dir: &Path, socket: &Path, notify_socket: &Path) -> (ChildGuard, SocketAddr) {
@@ -110,13 +123,15 @@ fn mode(path: &Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
 async fn connect(path: &Path) -> MachineRpcClient<Channel> {
-    let path = path.to_owned();
-    let channel = Endpoint::from_static("http://[::]:50051")
-        .connect_with_connector(service_fn(move |_| {
-            let path = path.clone();
-            async move { UnixStream::connect(path).await.map(TokioIo::new) }
-        }))
+    let channel = Endpoint::from_shared(format!("unix:{}", path.display()))
+        .unwrap()
+        .connect()
         .await
         .unwrap();
     MachineRpcClient::new(channel)

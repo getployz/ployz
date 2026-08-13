@@ -18,9 +18,7 @@ tokio-stream = { version = "0.1.19", features = ["net"] }
 tonic = { version = "0.13.1", features = ["transport"] }
 
 [dev-dependencies]
-hyper-util = { version = "0.1.20", features = ["tokio"] }
 ployz-testkit.workspace = true
-tower = { version = "0.5.3", features = ["util"] }
 
 [lints]
 workspace = true

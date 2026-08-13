@@ -11,18 +11,18 @@ use serde_json::Value;
 use tokio::sync::watch;
 use tonic::{Request, Response, Status};
 
-use crate::machine::{StateError, StateStore};
+use crate::machine::{LocalMachineStore, StoreError};
 
 #[derive(Clone)]
 pub struct MachineService {
-    state: Arc<Mutex<StateStore>>,
+    store: Arc<Mutex<LocalMachineStore>>,
     reset: watch::Sender<bool>,
 }
 
 impl MachineService {
     #[must_use]
-    pub fn new(state: Arc<Mutex<StateStore>>, reset: watch::Sender<bool>) -> Self {
-        Self { state, reset }
+    pub fn new(store: Arc<Mutex<LocalMachineStore>>, reset: watch::Sender<bool>) -> Self {
+        Self { store, reset }
     }
 }
 
@@ -42,10 +42,10 @@ impl MachineRpc for MachineService {
             ));
         }
         let machine_id = self
-            .state
+            .store
             .lock()
-            .map_err(|_| Status::internal("machine state lock poisoned"))?
-            .local_state()
+            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
+            .record()
             .id
             .clone();
         let capabilities = [DESCRIBE_CONTRACT_CAPABILITY, RESET_MACHINE_CAPABILITY]
@@ -73,14 +73,14 @@ impl MachineRpc for MachineService {
             return Err(Status::invalid_argument("expected reset request"));
         }
         let reset = self
-            .state
+            .store
             .lock()
-            .map_err(|_| Status::internal("machine state lock poisoned"))?
+            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
             .begin_reset();
         let accepted = reset.is_ok();
         let response = match reset {
             Ok(()) => RpcResponse::reset_accepted(),
-            Err(error) => RpcResponse::error(state_error(error)),
+            Err(error) => RpcResponse::error(store_error(error)),
         }
         .encode()
         .map_err(internal_response)?;
@@ -91,14 +91,16 @@ impl MachineRpc for MachineService {
     }
 }
 
-fn state_error(error: StateError) -> RpcError {
+fn store_error(error: StoreError) -> RpcError {
     let code = match error {
-        StateError::AlreadyResetting => RpcErrorCode::Conflict,
-        StateError::Io(_)
-        | StateError::Json(_)
-        | StateError::InvalidPhase
-        | StateError::NotResetting
-        | StateError::UnsafeDataDirectory(_) => RpcErrorCode::Internal,
+        StoreError::AlreadyResetting => RpcErrorCode::Conflict,
+        StoreError::Io(_)
+        | StoreError::Json(_)
+        | StoreError::InvalidPhase
+        | StoreError::NotResetting
+        | StoreError::UnsafeDataDirectory(_)
+        | StoreError::UnownedDataDirectory(_)
+        | StoreError::OwnershipLost(_) => RpcErrorCode::Internal,
     };
     RpcError {
         code,

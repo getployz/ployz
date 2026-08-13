@@ -613,7 +613,6 @@ name = "ployzd"
 version = "0.1.0"
 dependencies = [
  "clap",
- "hyper-util",
  "ployz-core",
  "ployz-testkit",
  "prometheus",
@@ -624,7 +623,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "tower",
 ]
 
 [[package]]

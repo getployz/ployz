@@ -13,7 +13,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use ployz_core::{LocalMachinePhase, MachineRpcServer};
 use ployzd::{
-    machine::{DEFAULT_DATA_DIR, StateStore},
+    machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
     rpc::MachineService,
 };
@@ -55,13 +55,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    let state = Arc::new(Mutex::new(StateStore::open(&args.data_dir)?));
+    let store = Arc::new(Mutex::new(LocalMachineStore::open(&args.data_dir)?));
     let rpc_listener = bind_socket(&args.socket)?;
     let metrics_listener = TcpListener::bind(args.metrics_address).await?;
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (reset, mut reset_rx) = watch::channel(false);
-    let service = MachineRpcServer::new(MachineService::new(Arc::clone(&state), reset));
+    let service = MachineRpcServer::new(MachineService::new(Arc::clone(&store), reset));
 
     let rpc = Server::builder()
         .add_service(service)
@@ -88,10 +88,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // TODO(UT-098): preserve the baseline's unbounded graceful shutdown until a timeout is explicitly chosen.
     servers.await?;
 
-    let store = state
+    let store = store
         .lock()
-        .map_err(|_| io::Error::other("machine state lock poisoned"))?;
-    if store.local_state().phase == LocalMachinePhase::Resetting {
+        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
+    if store.record().phase == LocalMachinePhase::Resetting {
         store.complete_reset()?;
     }
     Ok(())
@@ -117,9 +117,12 @@ fn bind_socket(path: &Path) -> io::Result<UnixListener> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
+    let parent_created = !parent.exists();
     fs::create_dir_all(parent)?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o750))?;
-    set_socket_group(parent)?;
+    if parent_created {
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o750))?;
+        set_socket_group(parent)?;
+    }
 
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,

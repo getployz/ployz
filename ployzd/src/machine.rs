@@ -13,43 +13,41 @@ pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct LocalMachineState {
+pub struct LocalMachineRecord {
     pub id: MachineId,
     pub phase: LocalMachinePhase,
 }
 
-pub struct StateStore {
+pub struct LocalMachineStore {
     data_dir: PathBuf,
-    local_state: LocalMachineState,
+    record: LocalMachineRecord,
 }
 
-impl StateStore {
-    pub fn open(data_dir: impl AsRef<Path>) -> Result<Self, StateError> {
+impl LocalMachineStore {
+    pub fn open(data_dir: impl AsRef<Path>) -> Result<Self, StoreError> {
         let data_dir = data_dir.as_ref().to_owned();
         validate_data_dir(&data_dir)?;
         let path = data_dir.join(STATE_FILE_NAME);
-        let state = match fs::read(&path) {
+        let record = match fs::read(&path) {
             Ok(data) => serde_json::from_slice(&data)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let state = LocalMachineState {
+                claim_data_dir(&data_dir)?;
+                let record = LocalMachineRecord {
                     id: MachineId::random(),
                     phase: LocalMachinePhase::Uninitialized,
                 };
-                save(&data_dir, &state)?;
-                state
+                save(&data_dir, &record)?;
+                record
             }
             Err(error) => return Err(error.into()),
         };
 
-        if matches!(state.phase, LocalMachinePhase::Unrecognized(_)) {
-            return Err(StateError::InvalidPhase);
+        if matches!(record.phase, LocalMachinePhase::Unrecognized(_)) {
+            return Err(StoreError::InvalidPhase);
         }
 
-        let store = Self {
-            data_dir,
-            local_state: state,
-        };
-        if store.local_state.phase == LocalMachinePhase::Resetting {
+        let store = Self { data_dir, record };
+        if store.record.phase == LocalMachinePhase::Resetting {
             store.complete_reset()?;
             return Self::open(&store.data_dir);
         }
@@ -57,41 +55,57 @@ impl StateStore {
     }
 
     #[must_use]
-    pub fn local_state(&self) -> &LocalMachineState {
-        &self.local_state
+    pub fn record(&self) -> &LocalMachineRecord {
+        &self.record
     }
 
-    pub fn begin_reset(&mut self) -> Result<(), StateError> {
-        if self.local_state.phase == LocalMachinePhase::Resetting {
-            return Err(StateError::AlreadyResetting);
+    pub fn begin_reset(&mut self) -> Result<(), StoreError> {
+        if self.record.phase == LocalMachinePhase::Resetting {
+            return Err(StoreError::AlreadyResetting);
         }
-        let mut resetting = self.local_state.clone();
+        let mut resetting = self.record.clone();
         resetting.phase = LocalMachinePhase::Resetting;
         save(&self.data_dir, &resetting)?;
-        self.local_state = resetting;
+        self.record = resetting;
         Ok(())
     }
 
-    pub fn complete_reset(&self) -> Result<(), StateError> {
-        if self.local_state.phase != LocalMachinePhase::Resetting {
-            return Err(StateError::NotResetting);
+    pub fn complete_reset(&self) -> Result<(), StoreError> {
+        if self.record.phase != LocalMachinePhase::Resetting {
+            return Err(StoreError::NotResetting);
         }
-        fs::remove_dir_all(&self.data_dir).map_err(StateError::Io)
+        let persisted: LocalMachineRecord =
+            serde_json::from_slice(&fs::read(self.data_dir.join(STATE_FILE_NAME))?)?;
+        if persisted != self.record {
+            return Err(StoreError::OwnershipLost(self.data_dir.clone()));
+        }
+        fs::remove_dir_all(&self.data_dir).map_err(StoreError::Io)
     }
 }
 
-fn validate_data_dir(path: &Path) -> Result<(), StateError> {
+fn validate_data_dir(path: &Path) -> Result<(), StoreError> {
     if path.file_name().is_none()
         || path
             .components()
             .any(|component| component == Component::ParentDir)
     {
-        return Err(StateError::UnsafeDataDirectory(path.to_owned()));
+        return Err(StoreError::UnsafeDataDirectory(path.to_owned()));
     }
     Ok(())
 }
 
-fn save(data_dir: &Path, state: &LocalMachineState) -> Result<(), StateError> {
+fn claim_data_dir(data_dir: &Path) -> Result<(), StoreError> {
+    match fs::read_dir(data_dir) {
+        Ok(mut entries) => match entries.next().transpose()? {
+            Some(_) => Err(StoreError::UnownedDataDirectory(data_dir.to_owned())),
+            None => Ok(()),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn save(data_dir: &Path, record: &LocalMachineRecord) -> Result<(), StoreError> {
     fs::create_dir_all(data_dir)?;
     fs::set_permissions(data_dir, fs::Permissions::from_mode(0o711))?;
 
@@ -104,7 +118,7 @@ fn save(data_dir: &Path, state: &LocalMachineState) -> Result<(), StateError> {
         .mode(0o600)
         .open(&temporary)?;
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    serde_json::to_writer_pretty(&mut file, state)?;
+    serde_json::to_writer_pretty(&mut file, record)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
     drop(file);
@@ -113,12 +127,12 @@ fn save(data_dir: &Path, state: &LocalMachineState) -> Result<(), StateError> {
 }
 
 #[derive(Debug, Error)]
-pub enum StateError {
-    #[error("machine state I/O failed: {0}")]
+pub enum StoreError {
+    #[error("local Machine record I/O failed: {0}")]
     Io(#[from] io::Error),
-    #[error("machine state JSON is invalid: {0}")]
+    #[error("local Machine record JSON is invalid: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("machine state contains an unrecognized local phase")]
+    #[error("local Machine record contains an unrecognized phase")]
     InvalidPhase,
     #[error("machine is already resetting")]
     AlreadyResetting,
@@ -126,4 +140,8 @@ pub enum StateError {
     NotResetting,
     #[error("refusing to clear broad data directory {0:?}")]
     UnsafeDataDirectory(PathBuf),
+    #[error("refusing to claim nonempty data directory {0:?}")]
+    UnownedDataDirectory(PathBuf),
+    #[error("local Machine record changed before clearing data directory {0:?}")]
+    OwnershipLost(PathBuf),
 }
