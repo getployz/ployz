@@ -9,9 +9,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
 
 use crate::{
-    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerPath, DockerVolumeName, HostPath,
-    MachineId, MachineName, MachineSubnet, ManagementAddress, SelectedEndpoint, ServiceId,
-    ServiceName, ServiceVolumeReference, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerPath, DockerVolumeName, MachineId,
+    MachineName, MachinePath, MachineSelector, MachineSubnet, ManagementAddress, SelectedEndpoint,
+    ServiceId, ServiceName, ServiceVolumeReference, WireGuardPublicKey,
 };
 
 /// A name lookup result. Duplicate names are a normal observable state.
@@ -60,7 +60,7 @@ pub struct PartialResult<T, E> {
 }
 
 impl<T, E> PartialResult<T, E> {
-    pub fn is_complete(&self) -> bool {
+    pub fn all_targets_succeeded(&self) -> bool {
         self.failures.is_empty() && self.omissions.is_empty()
     }
 }
@@ -243,9 +243,9 @@ pub enum PortPublication {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum VolumeSource {
     Bind {
-        host_path: HostPath,
+        machine_path: MachinePath,
         #[serde(default)]
-        create_host_path: bool,
+        create_machine_path: bool,
         #[serde(default)]
         propagation: Option<String>,
         #[serde(default)]
@@ -319,7 +319,7 @@ pub struct ConfigMount {
 pub struct Placement {
     /// Machine Names or IDs. Resolution remains observer-relative and may be ambiguous.
     #[serde(default)]
-    pub machines: Vec<String>,
+    pub machines: Vec<MachineSelector>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -349,7 +349,7 @@ pub struct LogDriver {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeviceMapping {
-    pub host_path: HostPath,
+    pub machine_path: MachinePath,
     pub container_path: ContainerPath,
     pub cgroup_permissions: String,
 }

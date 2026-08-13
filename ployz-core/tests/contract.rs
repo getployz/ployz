@@ -3,12 +3,12 @@ use std::{collections::BTreeSet, num::NonZeroU32};
 use ployz_core::{
     CapabilityName, CodecError, ConfigMount, ConfigSpec, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
-    HealthObservation, HostPath, MachineFailure, MachineId, MachineRpc, MachineRpcClient,
-    MachineRpcServer, MachineSuccess, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
-    Placement, PreDeployHook, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, ResponseKind,
-    RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody, ServiceContainerSpec,
-    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
-    UpdateConfig, UpdateOrder, VolumeSource,
+    HealthObservation, MachineFailure, MachineId, MachinePath, MachineRpc, MachineRpcClient,
+    MachineRpcServer, MachineSelector, MachineSuccess, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
+    PartialResult, Placement, PreDeployHook, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec,
+    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -59,7 +59,7 @@ fn partial_results_keep_successes_failures_and_omissions_together() {
         omissions: vec![MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap()],
     };
 
-    assert!(!result.is_complete());
+    assert!(!result.all_targets_succeeded());
     let round_trip: PartialResult<String, String> =
         serde_json::from_value(serde_json::to_value(&result).unwrap()).unwrap();
     assert_eq!(round_trip, result);
@@ -289,8 +289,8 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
     let volume = ServiceVolume {
         reference: reference.clone(),
         source: VolumeSource::Bind {
-            host_path: HostPath::parse("/srv/api").unwrap(),
-            create_host_path: true,
+            machine_path: MachinePath::parse("/srv/api").unwrap(),
+            create_machine_path: true,
             propagation: None,
             recursive: None,
         },
@@ -307,7 +307,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         },
         container: container.clone(),
         placement: Placement {
-            machines: vec!["edge".into()],
+            machines: vec![MachineSelector::parse("edge").unwrap()],
         },
         ports: Vec::new(),
         volumes: vec![volume.clone()],

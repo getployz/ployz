@@ -23,19 +23,10 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         generate(shell, command, "ployz", &mut std::io::stdout());
         return Ok(());
     }
-    if name == "machine"
-        && child.subcommand_name() == Some("init")
-        && child
-            .subcommand_matches("init")
-            .and_then(|init| init.get_one::<String>("destination"))
-            .is_none()
-    {
-        return Err(
-            "local machine initialisation is not implemented; specify a remote machine".into(),
-        );
-    }
     let path = command_path(matches);
-    dispatch_stub(&path).ok_or_else(|| format!("no handler declared for ployz {path}"))?
+    let handler =
+        handler_for(&path).ok_or_else(|| format!("no handler declared for ployz {path}"))?;
+    handler(leaf_matches(matches))
 }
 
 fn command_path(mut matches: &ArgMatches) -> String {
@@ -47,19 +38,37 @@ fn command_path(mut matches: &ArgMatches) -> String {
     parts.join(" ")
 }
 
+fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
+    while let Some((_, child)) = matches.subcommand() {
+        matches = child;
+    }
+    matches
+}
+
 fn not_implemented(command: &str) -> Result<(), Error> {
     Err(format!("ployz {command} is not implemented yet"))
 }
 
-macro_rules! stub_handlers {
-    ($($function:ident => $path:literal),+ $(,)?) => {
-        $(fn $function() -> Result<(), Error> {
-            not_implemented($path)
-        })+
+type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
-        fn dispatch_stub(path: &str) -> Option<Result<(), Error>> {
+macro_rules! declare_handler {
+    ($function:ident => $path:literal) => {
+        fn $function(_matches: &ArgMatches) -> Result<(), Error> {
+            not_implemented($path)
+        }
+    };
+    ($function:ident => $path:literal, $matches:ident $body:block) => {
+        fn $function($matches: &ArgMatches) -> Result<(), Error> $body
+    };
+}
+
+macro_rules! stub_handlers {
+    ($($function:ident $(($matches:ident) $body:block)? => $path:literal);+ $(;)?) => {
+        $(declare_handler!($function => $path $(, $matches $body)?);)+
+
+        fn handler_for(path: &str) -> Option<Handler> {
             match path {
-                $($path => Some($function()),)+
+                $($path => Some($function),)+
                 _ => None,
             }
         }
@@ -67,56 +76,62 @@ macro_rules! stub_handlers {
 }
 
 stub_handlers! {
-    build => "build",
-    caddy_config => "caddy config",
-    caddy_deploy => "caddy deploy",
-    caddy_logs => "caddy logs",
-    context => "ctx",
-    context_connection => "ctx connection",
-    context_list => "ctx ls",
-    context_show => "ctx show",
-    context_use => "ctx use",
-    deploy => "deploy",
-    dns_release => "dns release",
-    dns_reserve => "dns reserve",
-    dns_show => "dns show",
-    exec => "exec",
-    image_list => "image ls",
-    image_push => "image push",
-    images => "images",
-    inspect => "inspect",
-    logs => "logs",
-    list => "ls",
-    machine_add => "machine add",
-    machine_init => "machine init",
-    machine_logs => "machine logs",
-    machine_list => "machine ls",
-    machine_rename => "machine rename",
-    machine_remove => "machine rm",
-    machine_rtt => "machine rtt",
-    machine_update => "machine update",
-    proxy => "proxy",
-    process_list => "ps",
-    remove => "rm",
-    run_service => "run",
-    scale => "scale",
-    service_exec => "service exec",
-    service_inspect => "service inspect",
-    service_logs => "service logs",
-    service_list => "service ls",
-    service_remove => "service rm",
-    service_run => "service run",
-    service_scale => "service scale",
-    service_start => "service start",
-    service_stop => "service stop",
-    start => "start",
-    stop => "stop",
-    version => "version",
-    volume_create => "volume create",
-    volume_inspect => "volume inspect",
-    volume_list => "volume ls",
-    volume_remove => "volume rm",
-    wireguard_show => "wg show",
+    build => "build";
+    caddy_config => "caddy config";
+    caddy_deploy => "caddy deploy";
+    caddy_logs => "caddy logs";
+    context => "ctx";
+    context_connection => "ctx connection";
+    context_list => "ctx ls";
+    context_show => "ctx show";
+    context_use => "ctx use";
+    deploy => "deploy";
+    dns_release => "dns release";
+    dns_reserve => "dns reserve";
+    dns_show => "dns show";
+    exec => "exec";
+    image_list => "image ls";
+    image_push => "image push";
+    images => "images";
+    inspect => "inspect";
+    logs => "logs";
+    list => "ls";
+    machine_add => "machine add";
+    machine_init(matches) {
+        if matches.get_one::<String>("destination").is_none() {
+            Err("local machine initialisation is not implemented; specify a remote machine".into())
+        } else {
+            not_implemented("machine init")
+        }
+    } => "machine init";
+    machine_logs => "machine logs";
+    machine_list => "machine ls";
+    machine_rename => "machine rename";
+    machine_remove => "machine rm";
+    machine_rtt => "machine rtt";
+    machine_update => "machine update";
+    proxy => "proxy";
+    process_list => "ps";
+    remove => "rm";
+    run_service => "run";
+    scale => "scale";
+    service_exec => "service exec";
+    service_inspect => "service inspect";
+    service_logs => "service logs";
+    service_list => "service ls";
+    service_remove => "service rm";
+    service_run => "service run";
+    service_scale => "service scale";
+    service_start => "service start";
+    service_stop => "service stop";
+    start => "start";
+    stop => "stop";
+    version => "version";
+    volume_create => "volume create";
+    volume_inspect => "volume inspect";
+    volume_list => "volume ls";
+    volume_remove => "volume rm";
+    wireguard_show => "wg show";
 }
 
 #[cfg(test)]
@@ -159,7 +174,7 @@ mod tests {
         collect_actionable_paths(&command, "", &mut paths);
         paths.remove("completion");
         for path in paths {
-            assert!(dispatch_stub(&path).is_some(), "no handler for {path}");
+            assert!(handler_for(&path).is_some(), "no handler for {path}");
         }
     }
 

@@ -178,8 +178,8 @@ validated_string_newtype!(
     |value| !value.is_empty()
 );
 validated_string_newtype!(
-    HostPath,
-    "Bind Mount host path",
+    MachinePath,
+    "Bind Mount Machine path",
     "an absolute Unix path",
     |value| value.starts_with('/')
 );
@@ -188,6 +188,13 @@ validated_string_newtype!(
     "container mount target",
     "an absolute Unix path",
     |value| value.starts_with('/')
+);
+validated_string_newtype!(
+    /// The unresolved name-or-ID text used to select a Machine.
+    MachineSelector,
+    "Machine selector",
+    "a non-empty Machine Name or Machine ID",
+    |value| !value.is_empty()
 );
 
 /// A machine-local Docker Volume identity.
