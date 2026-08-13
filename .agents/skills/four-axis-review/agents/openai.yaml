@@ -1,0 +1,4 @@
+interface:
+  display_name: "Four-Axis Review"
+  short_description: "Review code on four independent quality axes"
+  default_prompt: "Use $four-axis-review on the current implementation change."
