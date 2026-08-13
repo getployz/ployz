@@ -416,6 +416,23 @@ pub struct UpdateConfig {
     pub monitor_millis: Option<u64>,
 }
 
+/// Update configuration after deploy-time order resolution.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedUpdateConfig {
+    pub order: UpdateOrder,
+    #[serde(default)]
+    pub monitor_millis: Option<u64>,
+}
+
+impl Default for ResolvedUpdateConfig {
+    fn default() -> Self {
+        Self {
+            order: UpdateOrder::StartFirst,
+            monitor_millis: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerKind {
@@ -535,7 +552,7 @@ pub struct ResolvedServiceSpec {
     #[serde(default)]
     pub caddy_config: Option<String>,
     #[serde(default)]
-    pub update: UpdateConfig,
+    pub update: ResolvedUpdateConfig,
 }
 
 /// The redacted, replicated observation of one managed container.

@@ -341,8 +341,8 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         configs: requested.configs.clone(),
         pre_deploy: requested.pre_deploy.clone(),
         caddy_config: requested.caddy_config.clone(),
-        update: UpdateConfig {
-            order: Some(UpdateOrder::StartFirst),
+        update: ployz_core::ResolvedUpdateConfig {
+            order: UpdateOrder::StartFirst,
             monitor_millis: Some(5_000),
         },
     };

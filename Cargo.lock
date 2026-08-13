@@ -515,6 +515,7 @@ dependencies = [
  "clap_complete",
  "ployz-core",
  "ployz-testkit",
+ "thiserror",
 ]
 
 [[package]]
