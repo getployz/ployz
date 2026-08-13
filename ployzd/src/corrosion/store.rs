@@ -1,11 +1,11 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use ployz_core::{ContainerObservation, LocalMachinePhase, Machine};
+use ployz_core::{ContainerId, ContainerObservation, LocalMachinePhase, Machine, MachineId};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::watch;
@@ -74,16 +74,117 @@ impl ReplicatedStore {
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
-        self.api
-            .execute([Statement::new(
-                "INSERT INTO containers (id, container, machine_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id, updated_at = excluded.updated_at",
-                [
-                    json!(observation.container_id),
-                    json!(serde_json::to_string(observation)?),
-                    json!(observation.machine_id),
-                ],
-            )])
+        let observation = redacted_container(observation);
+        if self.container(&observation.container_id).await? == Some(observation.clone()) {
+            return Ok(());
+        }
+        self.api.execute([container_upsert(&observation)?]).await?;
+        Ok(())
+    }
+
+    pub async fn container(&self, id: &ContainerId) -> Result<Option<ContainerObservation>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT container FROM containers WHERE id = ?",
+                [json!(id)],
+            ))
             .await?;
+        let rows = query.rows(["container"])?;
+        let Some([encoded]) = rows.first() else {
+            return Ok(None);
+        };
+        let encoded = text(encoded, "replicated container JSON")?;
+        if encoded.is_empty() || encoded == "{}" {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_str(encoded)?))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn raw_container(&self, id: &ContainerId) -> Result<Option<String>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT container FROM containers WHERE id = ?",
+                [json!(id)],
+            ))
+            .await?;
+        query
+            .rows(["container"])?
+            .first()
+            .map(|[encoded]| text(encoded, "replicated container JSON").map(ToOwned::to_owned))
+            .transpose()
+    }
+
+    async fn local_containers(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<LocalContainerSnapshot, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT id, container FROM containers WHERE machine_id = ? ORDER BY id",
+                [json!(machine_id)],
+            ))
+            .await?;
+        let mut snapshot = LocalContainerSnapshot::default();
+        for [id, encoded] in query.rows(["id", "container"])? {
+            let id = ContainerId::parse(text(&id, "container ID")?.to_owned())?;
+            let encoded = text(&encoded, "replicated container JSON")?;
+            let observation = if encoded.is_empty() || encoded == "{}" {
+                None
+            } else {
+                Some(serde_json::from_str(encoded)?)
+            };
+            snapshot.inventory.insert(id.clone());
+            if let Some(observation) = observation {
+                snapshot.observations.insert(id, observation);
+            }
+        }
+        Ok(snapshot)
+    }
+
+    pub(crate) async fn reconcile_local_containers(
+        &self,
+        machine_id: &MachineId,
+        current: &LocalContainerSnapshot,
+    ) -> Result<(), Error> {
+        if current
+            .observations
+            .values()
+            .any(|observation| &observation.machine_id != machine_id)
+        {
+            return Err(Error::Protocol(
+                "local container reconciliation crossed Machine authority".into(),
+            ));
+        }
+        let existing = self.local_containers(machine_id).await?;
+        let current = LocalContainerSnapshot {
+            inventory: current.inventory.clone(),
+            observations: current
+                .observations
+                .iter()
+                .map(|(id, observation)| (id.clone(), redacted_container(observation)))
+                .collect(),
+        };
+        let changes = local_container_changes(&existing, &current);
+        let mut statements = changes
+            .deletions
+            .iter()
+            .map(|id| {
+                Statement::new(
+                    "DELETE FROM containers WHERE id = ? AND machine_id = ?",
+                    [json!(id), json!(machine_id)],
+                )
+            })
+            .collect::<Vec<_>>();
+        for observation in &changes.upserts {
+            statements.push(container_upsert(observation)?);
+        }
+        if !statements.is_empty() {
+            self.api.execute(statements).await?;
+        }
         Ok(())
     }
 
@@ -136,6 +237,79 @@ impl ReplicatedStore {
             _ => Err(Error::Protocol("invalid gap status row".into())),
         }
     }
+}
+
+#[derive(Debug, PartialEq)]
+struct LocalContainerChanges {
+    deletions: Vec<ContainerId>,
+    upserts: Vec<ContainerObservation>,
+}
+
+#[derive(Default)]
+pub(crate) struct LocalContainerSnapshot {
+    inventory: BTreeSet<ContainerId>,
+    observations: BTreeMap<ContainerId, ContainerObservation>,
+}
+
+impl LocalContainerSnapshot {
+    pub(crate) fn from_inventory(ids: Vec<ContainerId>) -> Self {
+        Self {
+            inventory: ids.into_iter().collect(),
+            observations: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn ids(&self) -> impl Iterator<Item = &ContainerId> {
+        self.inventory.iter()
+    }
+
+    pub(crate) fn observed(&mut self, observation: ContainerObservation) {
+        debug_assert!(self.inventory.contains(&observation.container_id));
+        self.observations
+            .insert(observation.container_id.clone(), observation);
+    }
+}
+
+fn local_container_changes(
+    existing: &LocalContainerSnapshot,
+    current: &LocalContainerSnapshot,
+) -> LocalContainerChanges {
+    LocalContainerChanges {
+        deletions: existing
+            .inventory
+            .iter()
+            .filter(|id| !current.inventory.contains(id))
+            .cloned()
+            .collect(),
+        upserts: current
+            .observations
+            .values()
+            .filter(|observation| {
+                existing.observations.get(&observation.container_id) != Some(observation)
+            })
+            .cloned()
+            .collect(),
+    }
+}
+
+fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Error> {
+    Ok(Statement::new(
+        "INSERT INTO containers (id, container, machine_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id, updated_at = excluded.updated_at",
+        [
+            json!(observation.container_id),
+            json!(serde_json::to_string(observation)?),
+            json!(observation.machine_id),
+        ],
+    ))
+}
+
+fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
+    let mut observation = observation.clone();
+    observation.resolved_spec.container.environment.clear();
+    if let Some(hook) = &mut observation.resolved_spec.pre_deploy {
+        hook.environment.clear();
+    }
+    observation
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -281,5 +455,117 @@ fn actor_id(value: &Value) -> Result<String, Error> {
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => {
             Err(Error::Protocol("invalid actor ID".into()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use ployz_core::{ContainerId, ContainerObservation};
+    use serde_json::json;
+
+    use super::{LocalContainerSnapshot, local_container_changes, redacted_container};
+
+    #[test]
+    fn publication_redacts_service_and_hook_environment_values() {
+        let observation: ContainerObservation = serde_json::from_value(json!({
+            "container_id": "a".repeat(64),
+            "display_name": "api-test",
+            "machine_id": "b".repeat(32),
+            "service_id": "c".repeat(32),
+            "service_name": "api",
+            "kind": "service_container",
+            "runtime": { "state": "created" },
+            "resolved_spec": {
+                "service_id": "c".repeat(32),
+                "name": "api",
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": {
+                    "image": "alpine:3.23.3",
+                    "environment": { "TOKEN": "service-secret" },
+                    "pull_policy": "missing"
+                },
+                "pre_deploy": {
+                    "command": ["true"],
+                    "environment": { "TOKEN": "hook-secret" }
+                }
+            }
+        }))
+        .unwrap();
+
+        let redacted = redacted_container(&observation);
+        assert!(redacted.resolved_spec.container.environment.is_empty());
+        assert!(
+            redacted
+                .resolved_spec
+                .pre_deploy
+                .unwrap()
+                .environment
+                .is_empty()
+        );
+        assert_eq!(
+            observation
+                .resolved_spec
+                .container
+                .environment
+                .get("TOKEN")
+                .map(String::as_str),
+            Some("service-secret")
+        );
+    }
+
+    #[test]
+    fn snapshot_diff_upserts_changes_and_deletes_only_absent_ids() {
+        let observation: ContainerObservation = serde_json::from_value(json!({
+            "container_id": "a".repeat(64),
+            "display_name": "api-test",
+            "machine_id": "b".repeat(32),
+            "service_id": "c".repeat(32),
+            "service_name": "api",
+            "kind": "service_container",
+            "runtime": { "state": "created" },
+            "resolved_spec": {
+                "service_id": "c".repeat(32),
+                "name": "api",
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
+            }
+        }))
+        .unwrap();
+        let stable = observation.clone();
+        let mut stale = observation.clone();
+        stale.container_id = ContainerId::parse("b".repeat(64)).unwrap();
+        let mut old_changed = observation.clone();
+        old_changed.container_id = ContainerId::parse("c".repeat(64)).unwrap();
+        let mut changed = old_changed.clone();
+        changed.display_name = "renamed".into();
+        let mut new = observation.clone();
+        new.container_id = ContainerId::parse("d".repeat(64)).unwrap();
+
+        let existing = LocalContainerSnapshot {
+            inventory: [stable.clone(), stale.clone(), old_changed.clone()]
+                .into_iter()
+                .map(|item| item.container_id.clone())
+                .collect(),
+            observations: [stable.clone(), stale.clone(), old_changed]
+                .into_iter()
+                .map(|item| (item.container_id.clone(), item))
+                .collect::<BTreeMap<_, _>>(),
+        };
+        let current = LocalContainerSnapshot {
+            inventory: [stable.clone(), changed.clone(), new.clone()]
+                .into_iter()
+                .map(|item| item.container_id.clone())
+                .collect(),
+            observations: [stable, changed.clone(), new.clone()]
+                .into_iter()
+                .map(|item| (item.container_id.clone(), item))
+                .collect::<BTreeMap<_, _>>(),
+        };
+        let changes = local_container_changes(&existing, &current);
+
+        assert_eq!(changes.deletions, vec![stale.container_id]);
+        assert_eq!(changes.upserts, vec![changed, new]);
     }
 }

@@ -18,6 +18,7 @@ use ployzd::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, RunningCorrosion,
         run_machine_publisher,
     },
+    docker::{ContainerObserver, LocalDocker, MachineSpecStore},
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
     network::{CORROSION_GOSSIP_PORT, NetworkPlane},
@@ -83,6 +84,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut corrosion = start_corrosion(&args, &store).await?;
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
+    let specs = MachineSpecStore::open(args.data_dir.join("machine.db")).await?;
+    let observer = replicated_store
+        .clone()
+        .map(|replicated| {
+            let machine_id = store
+                .lock()
+                .expect("local Machine record lock was checked above")
+                .record()
+                .id
+                .clone();
+            LocalDocker::connect()
+                .map(|docker| ContainerObserver::new(docker, specs, replicated, machine_id))
+        })
+        .transpose()?;
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (reset, mut reset_rx) = watch::channel(false);
@@ -132,6 +147,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
     };
+    let observer = async {
+        match observer {
+            Some(observer) => observer
+                .run(shutdown_rx.clone())
+                .await
+                .map_err(io::Error::other),
+            None => {
+                wait_for_shutdown(shutdown_rx.clone()).await;
+                Ok(())
+            }
+        }
+    };
     let servers = async {
         tokio::try_join!(
             async { rpc.await.map_err(io::Error::other) },
@@ -139,6 +166,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             publisher,
             network_rpc,
             network_runner,
+            observer,
         )
         .map(|_| ())
     };
