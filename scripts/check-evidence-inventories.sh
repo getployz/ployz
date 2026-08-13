@@ -63,7 +63,8 @@ reference_count=$(find "$repo_root/evidence/upstream/cli-reference" -type f | wc
 [ "$fixture_count" -eq 13 ] || fail "expected 13 fixture files, found $fixture_count"
 [ "$reference_count" -eq 58 ] || fail "expected 58 command-reference pages, found $reference_count"
 
-[ ! -s "$repo_root/CLI_DEVIATIONS.md" ] || fail "CLI_DEVIATIONS.md must start empty"
+bad_deviation_lines=$(grep -Evc '^- .+' "$repo_root/CLI_DEVIATIONS.md" || true)
+[ "$bad_deviation_lines" -eq 0 ] || fail "$bad_deviation_lines malformed CLI deviation lines"
 
 (
   cd "$repo_root/evidence"

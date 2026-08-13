@@ -1,0 +1,330 @@
+use std::{collections::BTreeSet, num::NonZeroU32};
+
+use ployz_core::{
+    CapabilityName, CodecError, ContainerPath, ContainerRuntimeObservation, ContractDescription,
+    DESCRIBE_CONTRACT_CAPABILITY, HealthObservation, HostPath, MachineFailure, MachineId,
+    MachineRpc, MachineRpcClient, MachineRpcServer, MachineSuccess, NameMatches, OpaquePayload,
+    PROTOCOL_MAJOR, PartialResult, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec,
+    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, UpdateOrder, VolumeSource,
+};
+use prost::Message;
+use serde_json::{Value, json};
+
+const MACHINE_ID: &str = "0123456789abcdef0123456789abcdef";
+const OTHER_MACHINE_ID: &str = "fedcba9876543210fedcba9876543210";
+
+#[test]
+fn identities_validate_and_serialize_as_their_wire_strings() {
+    let machine = MachineId::parse(MACHINE_ID).unwrap();
+    assert_eq!(
+        serde_json::to_string(&machine).unwrap(),
+        format!("\"{MACHINE_ID}\"")
+    );
+    assert_eq!(
+        serde_json::from_str::<MachineId>(&format!("\"{MACHINE_ID}\"")).unwrap(),
+        machine
+    );
+
+    assert!(MachineId::parse("0123456789ABCDEF0123456789ABCDEF").is_err());
+    assert!(ServiceId::parse("too-short").is_err());
+    assert!(ServiceName::parse("Uppercase").is_err());
+    assert!(ServiceName::parse("valid-service").is_ok());
+}
+
+#[test]
+fn duplicate_name_matches_remain_ambiguous() {
+    let first = ServiceId::parse("11111111111111111111111111111111").unwrap();
+    let second = ServiceId::parse("22222222222222222222222222222222").unwrap();
+
+    assert_eq!(
+        NameMatches::from_matches(vec![first.clone(), second.clone()]),
+        NameMatches::Ambiguous(vec![first, second])
+    );
+}
+
+#[test]
+fn partial_results_keep_successes_failures_and_omissions_together() {
+    let result = PartialResult {
+        successes: vec![MachineSuccess {
+            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+            value: "running".to_owned(),
+        }],
+        failures: vec![MachineFailure {
+            machine_id: MachineId::parse(OTHER_MACHINE_ID).unwrap(),
+            error: "unreachable".to_owned(),
+        }],
+        omissions: vec![MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap()],
+    };
+
+    assert!(!result.is_complete());
+    let round_trip: PartialResult<String, String> =
+        serde_json::from_value(serde_json::to_value(&result).unwrap()).unwrap();
+    assert_eq!(round_trip, result);
+}
+
+#[test]
+fn unknown_observation_variants_preserve_the_raw_value() {
+    let future = json!({
+        "state": "hibernating",
+        "wake_at": "tomorrow",
+        "vendor": { "reason": 7 }
+    });
+    let observation: ContainerRuntimeObservation = serde_json::from_value(future.clone()).unwrap();
+
+    assert_eq!(
+        observation,
+        ContainerRuntimeObservation::Unknown {
+            raw: future.clone()
+        }
+    );
+    assert_eq!(serde_json::to_value(observation).unwrap(), future);
+
+    let health: HealthObservation = serde_json::from_str("\"degraded\"").unwrap();
+    assert_eq!(health, HealthObservation::Unrecognized("degraded".into()));
+
+    let known_with_addition: ContainerRuntimeObservation = serde_json::from_value(json!({
+        "state": "running",
+        "health": "healthy",
+        "engine_detail": "accepted and ignored"
+    }))
+    .unwrap();
+    assert_eq!(
+        known_with_addition,
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy
+        }
+    );
+}
+
+#[test]
+fn additive_fields_are_accepted_on_requests_and_responses() {
+    let request = OpaquePayload::new(
+        serde_json::to_vec(&json!({
+            "protocol_major": 1,
+            "command": "describe_contract",
+            "payload": {},
+            "future_request_metadata": true
+        }))
+        .unwrap(),
+    );
+    assert_eq!(
+        request.decode_request().unwrap(),
+        RpcRequest::describe_contract()
+    );
+
+    let response: RpcResponse = serde_json::from_value(json!({
+        "protocol_major": 1,
+        "kind": "future_response",
+        "payload": { "answer": 42 },
+        "future_response_metadata": true
+    }))
+    .unwrap();
+    assert_eq!(
+        response.kind(),
+        ResponseKind::Unknown("future_response".into())
+    );
+    assert!(matches!(
+        response.body,
+        RpcResponseBody::Unknown { ref payload, .. }
+            if payload == &json!({ "answer": 42 })
+    ));
+}
+
+#[test]
+fn unknown_commands_are_rejected_with_a_typed_error() {
+    let payload = OpaquePayload::new(
+        br#"{"protocol_major":1,"command":"future_mutation","payload":{}}"#.to_vec(),
+    );
+
+    assert!(matches!(
+        payload.decode_request(),
+        Err(CodecError::UnsupportedCommand(command)) if command == "future_mutation"
+    ));
+}
+
+#[test]
+fn incompatible_protocol_majors_are_rejected_explicitly() {
+    let payload = OpaquePayload::new(
+        br#"{"protocol_major":2,"command":"describe_contract","payload":{}}"#.to_vec(),
+    );
+
+    assert!(matches!(
+        payload.decode_request(),
+        Err(CodecError::UnsupportedProtocolMajor {
+            requested: 2,
+            supported: PROTOCOL_MAJOR
+        })
+    ));
+
+    let response = OpaquePayload::new(
+        br#"{"protocol_major":2,"kind":"future_response","payload":{}}"#.to_vec(),
+    );
+    assert!(matches!(
+        response.decode_response(),
+        Err(CodecError::UnsupportedProtocolMajor {
+            requested: 2,
+            supported: PROTOCOL_MAJOR
+        })
+    ));
+}
+
+#[test]
+fn per_machine_capability_fixture_is_stable_and_additive() {
+    let description = ContractDescription {
+        machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+        protocol_major: PROTOCOL_MAJOR,
+        daemon_version: "0.1.0".into(),
+        capabilities: BTreeSet::from([
+            CapabilityName::parse("ployz.containers.inspect.v1").unwrap(),
+            CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY).unwrap(),
+        ]),
+    };
+
+    assert!(description.supports(DESCRIBE_CONTRACT_CAPABILITY));
+    assert!(!description.supports("ployz.containers.replace.v2"));
+    assert_eq!(
+        serde_json::to_string(&description).unwrap(),
+        concat!(
+            "{\"machine_id\":\"0123456789abcdef0123456789abcdef\",",
+            "\"protocol_major\":1,\"daemon_version\":\"0.1.0\",",
+            "\"capabilities\":[\"ployz.containers.inspect.v1\",",
+            "\"ployz.rpc.describe-contract.v1\"]}"
+        )
+    );
+
+    let with_future_field: ContractDescription = serde_json::from_value(json!({
+        "machine_id": MACHINE_ID,
+        "protocol_major": 1,
+        "daemon_version": "0.2.0",
+        "capabilities": [DESCRIBE_CONTRACT_CAPABILITY, "vendor.future.contract.v1"],
+        "build_revision": "future"
+    }))
+    .unwrap();
+    assert!(with_future_field.supports("vendor.future.contract.v1"));
+    assert!(CapabilityName::parse("future_contract").is_err());
+}
+
+#[test]
+fn json_payload_round_trips_through_the_opaque_prost_envelope() {
+    let request = RpcRequest::describe_contract().encode().unwrap();
+    let framed = request.encode_to_vec();
+    let decoded = OpaquePayload::decode(framed.as_slice()).unwrap();
+
+    assert_eq!(
+        decoded.decode_request().unwrap(),
+        RpcRequest::describe_contract()
+    );
+
+    let response = RpcResponse {
+        protocol_major: PROTOCOL_MAJOR,
+        body: RpcResponseBody::Unknown {
+            kind: "ployz.future.result.v1".into(),
+            payload: Value::Array(vec![json!(1), json!(2)]),
+        },
+    };
+    let response_payload = response.encode().unwrap();
+    assert_eq!(
+        response_payload.decode_json::<RpcResponse>().unwrap(),
+        response
+    );
+}
+
+#[test]
+fn typed_errors_preserve_future_error_codes() {
+    let error: RpcError = serde_json::from_value(json!({
+        "code": "rate_limited",
+        "message": "try later",
+        "details": { "retry_after_seconds": 2 },
+        "future_metadata": true
+    }))
+    .unwrap();
+
+    assert_eq!(error.code, RpcErrorCode::Unknown("rate_limited".into()));
+    let response = RpcResponse::error(error);
+    assert_eq!(response.kind(), ResponseKind::Error);
+    assert!(matches!(
+        response.body,
+        RpcResponseBody::Error(RpcError { ref details, .. })
+            if details["retry_after_seconds"] == 2
+    ));
+}
+
+#[test]
+fn requested_and_resolved_specs_and_mounts_round_trip() {
+    let container = ServiceContainerSpec {
+        image: "ghcr.io/example/api:sha".into(),
+        command: vec!["serve".into()],
+        entrypoint: Vec::new(),
+        environment: Default::default(),
+        pull_policy: PullPolicy::Missing,
+        init: None,
+        user: None,
+        tty: false,
+        open_stdin: false,
+        privileged: false,
+    };
+    let reference = ServiceVolumeReference::parse("data").unwrap();
+    let volume = ServiceVolume {
+        reference: reference.clone(),
+        source: VolumeSource::Bind {
+            host_path: HostPath::parse("/srv/api").unwrap(),
+        },
+    };
+    let mount = ServiceMount {
+        volume: reference,
+        target: ContainerPath::parse("/var/lib/api").unwrap(),
+        read_only: false,
+    };
+    let requested = RequestedServiceSpec {
+        name: ServiceName::parse("api").unwrap(),
+        mode: ServiceMode::Replicated {
+            replicas: NonZeroU32::new(2).unwrap(),
+        },
+        container: container.clone(),
+        ports: Vec::new(),
+        volumes: vec![volume.clone()],
+        mounts: vec![mount.clone()],
+        update_order: None,
+    };
+    let resolved = ResolvedServiceSpec {
+        service_id: ServiceId::parse("11111111111111111111111111111111").unwrap(),
+        name: requested.name.clone(),
+        mode: requested.mode.clone(),
+        container,
+        ports: Vec::new(),
+        volumes: vec![volume],
+        mounts: vec![mount],
+        update_order: UpdateOrder::StartFirst,
+    };
+
+    let requested_json = serde_json::to_value(&requested).unwrap();
+    assert_eq!(
+        serde_json::from_value::<RequestedServiceSpec>(requested_json).unwrap(),
+        requested
+    );
+    let resolved_json = serde_json::to_value(&resolved).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ResolvedServiceSpec>(resolved_json).unwrap(),
+        resolved
+    );
+}
+
+struct FixtureMachineRpc;
+
+#[tonic::async_trait]
+impl MachineRpc for FixtureMachineRpc {
+    async fn describe_contract(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+}
+
+#[test]
+fn tonic_generates_both_sides_of_the_contract_description_rpc() {
+    let _server = MachineRpcServer::new(FixtureMachineRpc);
+    let _client: Option<MachineRpcClient<tonic::transport::Channel>> = None;
+}

@@ -5,5 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
+[dependencies]
+ipnet = { version = "2.12.1", features = ["serde"] }
+prost = "0.13.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tonic = { version = "0.13.1", features = ["transport"] }
+uuid = { version = "1.24.0", features = ["v4"] }
+
+[build-dependencies]
+tonic-build = { version = "0.13.1", default-features = false, features = ["transport"] }
+
 [lints]
 workspace = true
