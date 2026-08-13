@@ -1,0 +1,32 @@
+name: Fast CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+
+  macos-cli:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --package ployz --all-targets --locked
+      - name: Check the daemon stays outside the CLI graph
+        run: |
+          if cargo tree --package ployz --target all --edges normal --prefix none --locked | grep -q '^ployzd '; then
+            echo 'ployz must not depend on the Linux-only ployzd crate'
+            exit 1
+          fi

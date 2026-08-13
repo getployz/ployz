@@ -1,0 +1,15 @@
+[package]
+name = "ployz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+ployz-core = { path = "../ployz-core" }
+
+[dev-dependencies]
+ployz-testkit = { path = "../ployz-testkit" }
+
+[lints]
+workspace = true
