@@ -5,7 +5,7 @@ use std::{
     error::Error,
     fs::{self, File, OpenOptions},
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, chown},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -14,19 +14,26 @@ use std::{
 use clap::{Parser, Subcommand};
 use ployz_core::{LocalMachinePhase, MachineRpcServer};
 use ployzd::{
-    corrosion::{CorrosionConfig, RunningCorrosion, run_machine_publisher},
+    corrosion::{
+        CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, RunningCorrosion,
+        run_machine_publisher,
+    },
+    docker::{ContainerObserver, LocalDocker, MachineSpecStore},
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
+    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkPlane},
+    proxy::MachineProxy,
     rpc::MachineService,
 };
 use sd_notify::NotifyState;
 use tokio::{
+    io::{AsyncWriteExt, copy, stdin, stdout},
     net::{TcpListener, UnixListener},
     signal::unix::{SignalKind, signal},
     sync::watch,
 };
-use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::Server;
+use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tonic::{service::Routes, transport::Server};
 
 const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
 const DEFAULT_METRICS_ADDRESS: &str = "127.0.0.1:51090";
@@ -48,6 +55,9 @@ struct Args {
 enum Command {
     /// Print the daemon version.
     Version,
+    /// Bridge standard input/output to the local Machine API socket.
+    #[command(hide = true)]
+    DialStdio,
 }
 
 #[tokio::main]
@@ -57,30 +67,110 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if matches!(args.command, Some(Command::DialStdio)) {
+        return dial_stdio(&args.socket).await.map_err(Into::into);
+    }
     let store = Arc::new(Mutex::new(LocalMachineStore::open(&args.data_dir)?));
     let (rpc_listener, _socket_lock) = bind_socket(&args.socket)?;
     let metrics_listener = TcpListener::bind(args.metrics_address).await?;
+    let local_record = store
+        .lock()
+        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
+        .record()
+        .clone();
+    let mut network = NetworkPlane::start(&local_record).await?;
+    let machine_api_listeners = if let Some(network) = &network {
+        let [management, gateway] = network.machine_api_addresses()?;
+        Some((
+            TcpListener::bind(management).await?,
+            TcpListener::bind(gateway).await?,
+        ))
+    } else {
+        None
+    };
     let mut corrosion = start_corrosion(&args, &store).await?;
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
+    let specs = MachineSpecStore::open(args.data_dir.join("machine.db")).await?;
+    let observer = replicated_store
+        .clone()
+        .map(|replicated| {
+            LocalDocker::connect().map(|docker| {
+                ContainerObserver::new(docker, specs, replicated, local_record.id.clone())
+            })
+        })
+        .transpose()?;
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (reset, mut reset_rx) = watch::channel(false);
-    let service = MachineRpcServer::new(MachineService::new(Arc::clone(&store), reset));
+    let service = MachineService::new(Arc::clone(&store), reset);
+    let proxy = MachineProxy::new(
+        Routes::new(MachineRpcServer::new(service)),
+        local_record.id.clone(),
+        MACHINE_API_PORT,
+        replicated_store.clone(),
+    );
 
-    let rpc = Server::builder()
-        .add_service(service)
-        .serve_with_incoming_shutdown(
-            UnixListenerStream::new(rpc_listener),
-            wait_for_shutdown(shutdown_rx.clone()),
-        );
+    let rpc = Server::builder().serve_with_incoming_shutdown(
+        proxy.clone(),
+        UnixListenerStream::new(rpc_listener),
+        wait_for_shutdown(shutdown_rx.clone()),
+    );
     let metrics = metrics::serve(metrics_listener, registry, shutdown_rx.clone());
-    let publisher =
-        run_machine_publisher(replicated_store, Arc::clone(&store), shutdown_rx.clone());
+    let publisher = run_machine_publisher(
+        replicated_store.clone(),
+        Arc::clone(&store),
+        shutdown_rx.clone(),
+    );
+    let network_rpc = async {
+        if let Some((management, gateway)) = machine_api_listeners {
+            let management = Server::builder().serve_with_incoming_shutdown(
+                proxy.clone(),
+                TcpListenerStream::new(management),
+                wait_for_shutdown(shutdown_rx.clone()),
+            );
+            let gateway = Server::builder().serve_with_incoming_shutdown(
+                proxy,
+                TcpListenerStream::new(gateway),
+                wait_for_shutdown(shutdown_rx.clone()),
+            );
+            tokio::try_join!(management, gateway)
+                .map(|_| ())
+                .map_err(io::Error::other)
+        } else {
+            wait_for_shutdown(shutdown_rx.clone()).await;
+            Ok(())
+        }
+    };
+    let network_runner = async {
+        if let Some(network) = &mut network {
+            network
+                .run(replicated_store, Arc::clone(&store), shutdown_rx.clone())
+                .await
+        } else {
+            wait_for_shutdown(shutdown_rx.clone()).await;
+            Ok(())
+        }
+    };
+    let observer = async {
+        match observer {
+            Some(observer) => observer
+                .run(shutdown_rx.clone())
+                .await
+                .map_err(io::Error::other),
+            None => {
+                wait_for_shutdown(shutdown_rx.clone()).await;
+                Ok(())
+            }
+        }
+    };
     let servers = async {
         tokio::try_join!(
             async { rpc.await.map_err(io::Error::other) },
             metrics,
-            publisher
+            publisher,
+            network_rpc,
+            network_runner,
+            observer,
         )
         .map(|_| ())
     };
@@ -121,31 +211,57 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn dial_stdio(path: &Path) -> io::Result<()> {
+    let stream = tokio::net::UnixStream::connect(path).await?;
+    let (mut socket_read, mut socket_write) = stream.into_split();
+    let input = async {
+        copy(&mut stdin(), &mut socket_write).await?;
+        socket_write.shutdown().await
+    };
+    let output = async {
+        copy(&mut socket_read, &mut stdout()).await?;
+        stdout().flush().await
+    };
+    tokio::try_join!(input, output).map(|_| ())
+}
+
 async fn start_corrosion(
     args: &Args,
     store: &Arc<Mutex<LocalMachineStore>>,
 ) -> Result<Option<RunningCorrosion>, Box<dyn Error>> {
-    let phase = store
+    let record = store
         .lock()
         .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
         .record()
-        .phase
         .clone();
+    let phase = record.phase;
     if !matches!(
         phase,
         LocalMachinePhase::Joining | LocalMachinePhase::Participating
     ) {
         return Ok(None);
     }
+    let Some(machine) = record.machine else {
+        return Ok(None);
+    };
     let run_dir = args
         .socket
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
         .join("corrosion");
     Ok(Some(
-        CorrosionConfig::local(args.data_dir.join("corrosion"), run_dir)
-            .start()
-            .await?,
+        CorrosionConfig::new(
+            args.data_dir.join("corrosion"),
+            run_dir,
+            DEFAULT_API_ADDRESS.parse()?,
+            SocketAddr::new(
+                IpAddr::V6(machine.management_address.0),
+                CORROSION_GOSSIP_PORT,
+            ),
+            DEFAULT_CONTAINER_NAME,
+        )
+        .start()
+        .await?,
     ))
 }
 

@@ -63,11 +63,12 @@ fn base(name: &'static str, about: &'static str) -> Command {
 
 fn connection_args(include_context: bool) -> Vec<Arg> {
     let mut args = vec![
-        value("connect", None).env(env::CONNECT),
+        value("connect", None).env(env::CONNECT).global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
             .default_value("~/.config/ployz/config.yaml")
-            .value_hint(ValueHint::FilePath),
+            .value_hint(ValueHint::FilePath)
+            .global(true),
     ];
     if include_context {
         args.push(value("context", Some('c')).env(env::CONTEXT));

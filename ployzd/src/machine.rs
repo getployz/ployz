@@ -6,9 +6,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use ployz_core::{LocalMachinePhase, Machine, MachineId};
+use ployz_core::{LocalMachinePhase, Machine, MachineId, SelectedEndpoint};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::network::WireGuardPrivateKey;
 
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
@@ -21,6 +23,12 @@ pub struct LocalMachineRecord {
     pub phase: LocalMachinePhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<Machine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_private_key: Option<WireGuardPrivateKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub min_store_version: BTreeMap<String, i64>,
 }
@@ -64,6 +72,9 @@ impl LocalMachineStore {
                     id: MachineId::random(),
                     phase: LocalMachinePhase::Uninitialized,
                     machine: None,
+                    wireguard_private_key: None,
+                    wireguard_mtu: None,
+                    selected_endpoints: BTreeMap::new(),
                     min_store_version: BTreeMap::new(),
                 };
                 save(&data_dir, &record)?;
@@ -122,6 +133,18 @@ impl LocalMachineStore {
         participating.min_store_version.clear();
         save(&self.data_dir, &participating)?;
         self.record = participating;
+        Ok(())
+    }
+
+    pub fn persist_selected_endpoint(
+        &mut self,
+        machine_id: MachineId,
+        endpoint: SelectedEndpoint,
+    ) -> Result<(), StoreError> {
+        let mut updated = self.record.clone();
+        updated.selected_endpoints.insert(machine_id, endpoint);
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
         Ok(())
     }
 

@@ -12,6 +12,7 @@ pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
     RunningCorrosion,
 };
+pub(crate) use store::LocalContainerSnapshot;
 pub use store::{
     ReplicatedObservations, ReplicatedStore, run_machine_publisher, wait_for_catch_up,
 };
@@ -26,6 +27,8 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("Corrosion JSON failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Value(#[from] ployz_core::ValueError),
     #[error("Corrosion TOML failed: {0}")]
     Toml(#[from] toml::ser::Error),
     #[error("Docker operation for Corrosion failed: {0}")]

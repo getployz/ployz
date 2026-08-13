@@ -555,7 +555,7 @@ pub struct ResolvedServiceSpec {
     pub update: ResolvedUpdateConfig,
 }
 
-/// The redacted, replicated observation of one managed container.
+/// A local observation of one managed container. Replication redacts it at the store boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContainerObservation {
     pub container_id: ContainerId,
