@@ -1,0 +1,2 @@
+# Frozen upstream evidence is byte-for-byte, including source whitespace.
+evidence/upstream/** -whitespace
