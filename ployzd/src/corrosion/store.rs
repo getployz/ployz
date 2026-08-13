@@ -224,10 +224,10 @@ pub async fn run_machine_publisher(
                 .record()
                 .machine
                 .clone();
-            if let Some(machine) = machine
-                && let Err(error) = replicated.publish_local_machine(&machine).await
-            {
-                eprintln!("failed to publish local Machine: {error}");
+            if let Some(machine) = machine {
+                if let Err(error) = replicated.publish_local_machine(&machine).await {
+                    eprintln!("failed to publish local Machine: {error}");
+                }
             }
         }
         tokio::select! {

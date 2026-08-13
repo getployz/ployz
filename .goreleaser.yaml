@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: ployz
+
+builds:
+  - id: ployz
+    builder: rust
+    binary: ployz
+    targets:
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-musl
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+    flags:
+      - --release
+      - --locked
+      - --package=ployz
+      - --bin=ployz
+
+  - id: ployzd
+    builder: rust
+    binary: ployzd
+    targets:
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-musl
+    flags:
+      - --release
+      - --locked
+      - --package=ployzd
+      - --bin=ployzd
+    hooks:
+      pre:
+        - cargo zigbuild --release --locked --package ployz-testkit --bin sqlite-probe --target {{ .Target }}
+
+archives:
+  - id: ployz
+    builds: [ployz]
+    format: tar.gz
+    name_template: >-
+      ployz_
+      {{- if eq .Os "darwin" }}macos
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- .Arch }}
+    builds_info:
+      mode: 0755
+    files:
+      - none*
+
+  - id: ployzd
+    builds: [ployzd]
+    format: tar.gz
+    name_template: "ployzd_{{ .Os }}_{{ .Arch }}"
+    builds_info:
+      mode: 0755
+    files:
+      - src: scripts/uninstall.sh
+        dst: ployz-uninstall
+        info:
+          mode: 0755
+
+checksum:
+  name_template: checksums.txt
+  ids: [ployz]
+
+brews:
+  - name: ployz
+    description: Ployz CLI
+    homepage: https://github.com/getployz/ployz2
+    ids: [ployz]
+    install: bin.install "ployz"
+    skip_upload: true
+    repository:
+      owner: getployz
+      name: homebrew-ployz
+
+changelog:
+  disable: true

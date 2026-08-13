@@ -105,6 +105,14 @@ fn positional(name: &'static str, required: bool) -> Arg {
     Arg::new(name).required(required).action(ArgAction::Set)
 }
 
+fn daemon_version(value: &str) -> Result<String, String> {
+    if value == "nightly" {
+        Err("nightly is not a supported release channel".into())
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
 fn trailing(name: &'static str) -> Arg {
     Arg::new(name)
         .num_args(0..)
@@ -288,7 +296,8 @@ fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("version", None)
                 .env(env::DAEMON_VERSION)
-                .default_value("latest"),
+                .default_value("latest")
+                .value_parser(daemon_version),
         )
         .arg(many("wg-endpoint", None))
         .arg(value("wg-mtu", None))

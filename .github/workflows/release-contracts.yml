@@ -1,0 +1,67 @@
+name: Release contracts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release-contracts.yml
+      - .goreleaser.yaml
+      - Cargo.lock
+      - Cargo.toml
+      - install.sh
+      - ployz/**
+      - ployzd/**
+      - ployz-testkit/**
+      - scripts/*.sh
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: 1.85.1
+  ZIG_VERSION: 0.13.0
+  CARGO_ZIGBUILD_VERSION: 0.19.7
+  GORELEASER_VERSION: 2.5.1
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - run: cargo install cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION" --locked
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: v${{ env.GORELEASER_VERSION }}
+          args: release --snapshot --clean --skip=publish
+      - run: bash scripts/test-release-contracts.sh && bash scripts/test-cli-installer.sh
+      - run: softwareupdate --install-rosetta --agree-to-license
+      - run: scripts/verify-release.sh macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-contracts
+          path: |
+            dist
+            target/x86_64-unknown-linux-musl/release/sqlite-probe
+            target/aarch64-unknown-linux-musl/release/sqlite-probe
+
+  linux-smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-contracts
+          path: .
+      - run: sudo apt-get update && sudo apt-get install -y file qemu-user
+      - run: scripts/verify-release.sh linux
+      - run: bash scripts/test-daemon-lifecycle.sh

@@ -75,6 +75,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
         BTreeSet::from([
             "local-machine-init-stub".to_owned(),
             "native-completion".to_owned(),
+            "no-nightly-daemon-channel".to_owned(),
             "plain-caddy-config".to_owned(),
             "product-identity".to_owned(),
         ])

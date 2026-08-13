@@ -49,6 +49,13 @@ fn not_implemented(command: &str) -> Result<(), Error> {
     Err(format!("ployz {command} is not implemented yet"))
 }
 
+fn provision_then_continue(matches: &ArgMatches, command: &str) -> Result<(), Error> {
+    if !matches.get_flag("no-install") {
+        crate::provisioning::provision(matches)?;
+    }
+    not_implemented(command)
+}
+
 type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
 macro_rules! declare_handler {
@@ -96,12 +103,12 @@ stub_handlers! {
     inspect => "inspect";
     logs => "logs";
     list => "ls";
-    machine_add => "machine add";
+    machine_add(matches) { provision_then_continue(matches, "machine add") } => "machine add";
     machine_init(matches) {
         if matches.get_one::<String>("destination").is_none() {
             Err("local machine initialisation is not implemented; specify a remote machine".into())
         } else {
-            not_implemented("machine init")
+            provision_then_continue(matches, "machine init")
         }
     } => "machine init";
     machine_logs => "machine logs";
@@ -126,7 +133,15 @@ stub_handlers! {
     service_stop => "service stop";
     start => "start";
     stop => "stop";
-    version => "version";
+    version(matches) {
+        let version = env!("CARGO_PKG_VERSION");
+        if let Some(template) = matches.get_one::<String>("output") {
+            println!("{}", template.replace("{{.Version}}", version));
+        } else {
+            println!("{version}");
+        }
+        Ok(())
+    } => "version";
     volume_create => "volume create";
     volume_inspect => "volume inspect";
     volume_list => "volume ls";
@@ -163,6 +178,25 @@ mod tests {
         assert_eq!(
             dispatch(&matches, &mut command),
             Err("ployz service inspect is not implemented yet".into())
+        );
+    }
+
+    #[test]
+    fn nightly_daemon_channel_is_rejected() {
+        let error = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "machine",
+                "add",
+                "root@example.com",
+                "--version",
+                "nightly",
+            ])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("nightly is not a supported release channel")
         );
     }
 
