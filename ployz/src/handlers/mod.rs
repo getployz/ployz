@@ -1,6 +1,8 @@
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
 
+mod context;
+
 pub type Error = String;
 
 pub fn run() -> Result<(), Error> {
@@ -26,7 +28,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let path = command_path(matches);
     let handler =
         handler_for(&path).ok_or_else(|| format!("no handler declared for ployz {path}"))?;
-    handler(leaf_matches(matches))
+    handler(matches)
 }
 
 fn command_path(mut matches: &ArgMatches) -> String {
@@ -80,11 +82,18 @@ stub_handlers! {
     caddy_config => "caddy config";
     caddy_deploy => "caddy deploy";
     caddy_logs => "caddy logs";
-    context => "ctx";
-    context_connection => "ctx connection";
-    context_list => "ctx ls";
-    context_show => "ctx show";
-    context_use => "ctx use";
+    context(root) { context::select(root, None) } => "ctx";
+    context_connection(root) { context::select_connection(root) } => "ctx connection";
+    context_list(root) { context::list(root) } => "ctx ls";
+    context_show(root) { context::show(root) } => "ctx show";
+    context_use(root) {
+        context::select(
+            root,
+            leaf_matches(root)
+                .get_one::<String>("context-name")
+                .map(String::as_str),
+        )
+    } => "ctx use";
     deploy => "deploy";
     dns_release => "dns release";
     dns_reserve => "dns reserve";
@@ -97,8 +106,8 @@ stub_handlers! {
     logs => "logs";
     list => "ls";
     machine_add => "machine add";
-    machine_init(matches) {
-        if matches.get_one::<String>("destination").is_none() {
+    machine_init(root) {
+        if leaf_matches(root).get_one::<String>("destination").is_none() {
             Err("local machine initialisation is not implemented; specify a remote machine".into())
         } else {
             not_implemented("machine init")

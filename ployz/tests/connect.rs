@@ -1,0 +1,245 @@
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+
+use ployz::{
+    connect::{
+        BoxProxyStream, ConnectError, Connector, SystemConnector, connect_selected_with,
+        resolve_connections,
+    },
+    context::{Connection, ConnectionSource, SelectedConnections},
+};
+use ployz_core::{
+    CapabilityName, ContractDescription, MachineId, MachineRpc, MachineRpcServer, OpaquePayload,
+    PROTOCOL_MAJOR, RpcRequestBody, RpcResponse,
+};
+use tokio::net::{TcpListener, UnixListener};
+use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tonic::{
+    Request, Response, Status,
+    transport::{Channel, Endpoint, Server},
+};
+
+struct FakeConnector {
+    outcomes: Mutex<VecDeque<bool>>,
+    attempts: Mutex<Vec<String>>,
+}
+
+#[tokio::test]
+async fn tcp_and_unix_proxy_dialing_is_unsupported_without_connecting() {
+    let connector = SystemConnector::default();
+    for connection in [
+        Connection::tcp("127.0.0.1:1".parse().unwrap()),
+        Connection::unix("/path/that/does/not/exist.sock").unwrap(),
+    ] {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            connector.dial_proxy(&connection, "tcp", "127.0.0.1:80"),
+        )
+        .await
+        .expect("unsupported result is immediate");
+        assert!(matches!(result, Err(ConnectError::ProxyUnsupported(_))));
+    }
+}
+
+#[tonic::async_trait]
+impl Connector for FakeConnector {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.attempts.lock().unwrap().push(connection.to_string());
+        if self.outcomes.lock().unwrap().pop_front().unwrap() {
+            Ok(Endpoint::from_static("http://127.0.0.1:1").connect_lazy())
+        } else {
+            Err(ConnectError::Attempt("unreachable".into()))
+        }
+    }
+
+    async fn dial_proxy(
+        &self,
+        _connection: &Connection,
+        _network: &str,
+        _address: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        Err(ConnectError::Attempt("unused".into()))
+    }
+}
+
+#[tokio::test]
+async fn ordered_connections_stop_after_the_first_success() {
+    let connector = Arc::new(FakeConnector {
+        outcomes: Mutex::new(VecDeque::from([false, true, true])),
+        attempts: Mutex::new(Vec::new()),
+    });
+    let selected = SelectedConnections {
+        source: ConnectionSource::Context("prod".into()),
+        connections: [51000, 51001, 51002]
+            .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
+            .into(),
+    };
+
+    let client = connect_selected_with(selected, connector.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(client.connection().to_string(), "tcp://127.0.0.1:51001");
+    assert_eq!(
+        *connector.attempts.lock().unwrap(),
+        ["tcp://127.0.0.1:51000", "tcp://127.0.0.1:51001"]
+    );
+}
+
+#[tokio::test]
+async fn failed_connection_attempts_do_not_reorder_the_context() {
+    let connector = Arc::new(FakeConnector {
+        outcomes: Mutex::new(VecDeque::from([false, false])),
+        attempts: Mutex::new(Vec::new()),
+    });
+    let selected = SelectedConnections {
+        source: ConnectionSource::Context("prod".into()),
+        connections: [51000, 51001]
+            .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
+            .into(),
+    };
+    let original = selected.connections.clone();
+
+    assert!(
+        connect_selected_with(selected, connector.clone())
+            .await
+            .is_err()
+    );
+
+    assert_eq!(
+        *connector.attempts.lock().unwrap(),
+        original.iter().map(ToString::to_string).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        original.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        ["tcp://127.0.0.1:51000", "tcp://127.0.0.1:51001"]
+    );
+}
+
+#[derive(Clone)]
+struct DiscoveryService {
+    description: ContractDescription,
+}
+
+#[tonic::async_trait]
+impl MachineRpc for DiscoveryService {
+    async fn describe_contract(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        if !matches!(request.body, RpcRequestBody::DescribeContract(_)) {
+            return Err(Status::invalid_argument("expected discovery request"));
+        }
+        Ok(Response::new(
+            RpcResponse::contract_description(self.description.clone())
+                .encode()
+                .unwrap(),
+        ))
+    }
+
+    async fn reset(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+}
+
+#[tokio::test]
+async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
+    let root = std::env::temp_dir().join(format!("ployz-connect-{}", std::process::id()));
+    let config = root.join("config.yaml");
+    let socket = root.join("ployz.sock");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tcp_address = tcp.local_addr().unwrap();
+    let unix = UnixListener::bind(&socket).unwrap();
+    let description = ContractDescription {
+        machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        protocol_major: PROTOCOL_MAJOR,
+        daemon_version: "test".into(),
+        capabilities: [CapabilityName::parse("ployz.rpc.describe-contract.v1").unwrap()]
+            .into_iter()
+            .collect(),
+    };
+    let service = DiscoveryService {
+        description: description.clone(),
+    };
+    let tcp_server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(service.clone()))
+            .serve_with_incoming(TcpListenerStream::new(tcp)),
+    );
+    let unix_server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(service))
+            .serve_with_incoming(UnixListenerStream::new(unix)),
+    );
+    for connection in [
+        Connection::tcp(tcp_address),
+        Connection::unix(&socket).unwrap(),
+    ] {
+        let mut client = connect_selected_with(
+            SelectedConnections {
+                source: ConnectionSource::Direct,
+                connections: vec![connection],
+            },
+            Arc::new(SystemConnector::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(client.describe_contract().await.unwrap(), description);
+    }
+
+    let fallback = resolve_connections(&config, None, None, &socket).unwrap();
+    let mut fallback = connect_selected_with(fallback, Arc::new(SystemConnector::default()))
+        .await
+        .unwrap();
+    assert_eq!(fallback.describe_contract().await.unwrap(), description);
+
+    std::fs::write(&config, "deliberately: [unusable").unwrap();
+    let direct = resolve_connections(
+        &config,
+        Some(&format!("tcp://{tcp_address}")),
+        Some("missing"),
+        &socket,
+    )
+    .unwrap();
+    let mut direct = connect_selected_with(direct, Arc::new(SystemConnector::default()))
+        .await
+        .unwrap();
+    assert_eq!(direct.describe_contract().await.unwrap(), description);
+
+    let unavailable_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable = unavailable_listener.local_addr().unwrap();
+    drop(unavailable_listener);
+    let mut failed_over = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Context("prod".into()),
+            connections: vec![
+                Connection::tcp(unavailable),
+                Connection::tcp(tcp_address),
+                Connection::unix(&socket).unwrap(),
+            ],
+        },
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        failed_over.connection().to_string(),
+        format!("tcp://{tcp_address}")
+    );
+    assert_eq!(failed_over.describe_contract().await.unwrap(), description);
+
+    tcp_server.abort();
+    unix_server.abort();
+    std::fs::remove_dir_all(root).unwrap();
+}

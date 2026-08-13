@@ -25,13 +25,14 @@ sd-notify = "0.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio-util = { version = "0.7.19", features = ["codec"] }
 toml = "1.1.4"
 tonic = { version = "0.13.1", features = ["transport"] }
 
 [dev-dependencies]
+ployz = { path = "../ployz" }
 ployz-testkit.workspace = true
 
 [lints]

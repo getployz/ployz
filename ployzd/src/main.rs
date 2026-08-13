@@ -27,6 +27,7 @@ use ployzd::{
 };
 use sd_notify::NotifyState;
 use tokio::{
+    io::{AsyncWriteExt, copy, stdin, stdout},
     net::{TcpListener, UnixListener},
     signal::unix::{SignalKind, signal},
     sync::watch,
@@ -54,6 +55,9 @@ struct Args {
 enum Command {
     /// Print the daemon version.
     Version,
+    /// Bridge standard input/output to the local Machine API socket.
+    #[command(hide = true)]
+    DialStdio,
 }
 
 #[tokio::main]
@@ -62,6 +66,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if matches!(args.command, Some(Command::Version)) {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+    if matches!(args.command, Some(Command::DialStdio)) {
+        return dial_stdio(&args.socket).await.map_err(Into::into);
     }
     let store = Arc::new(Mutex::new(LocalMachineStore::open(&args.data_dir)?));
     let (rpc_listener, _socket_lock) = bind_socket(&args.socket)?;
@@ -202,6 +209,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         store.complete_reset()?;
     }
     Ok(())
+}
+
+async fn dial_stdio(path: &Path) -> io::Result<()> {
+    let stream = tokio::net::UnixStream::connect(path).await?;
+    let (mut socket_read, mut socket_write) = stream.into_split();
+    let input = async {
+        copy(&mut stdin(), &mut socket_write).await?;
+        socket_write.shutdown().await
+    };
+    let output = async {
+        copy(&mut socket_read, &mut stdout()).await?;
+        stdout().flush().await
+    };
+    tokio::try_join!(input, output).map(|_| ())
 }
 
 async fn start_corrosion(
