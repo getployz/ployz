@@ -5,7 +5,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use ployz_core::{LocalMachinePhase, MachineId};
+use ployz_core::{LocalMachinePhase, Machine, MachineId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -18,6 +18,8 @@ const LOCK_FILE_NAME: &str = ".ployzd.lock";
 pub struct LocalMachineRecord {
     pub id: MachineId,
     pub phase: LocalMachinePhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<Machine>,
 }
 
 pub struct LocalMachineStore {
@@ -58,6 +60,7 @@ impl LocalMachineStore {
                 let record = LocalMachineRecord {
                     id: MachineId::random(),
                     phase: LocalMachinePhase::Uninitialized,
+                    machine: None,
                 };
                 save(&data_dir, &record)?;
                 record
@@ -67,6 +70,13 @@ impl LocalMachineStore {
 
         if matches!(record.phase, LocalMachinePhase::Unrecognized(_)) {
             return Err(StoreError::InvalidPhase);
+        }
+        if record
+            .machine
+            .as_ref()
+            .is_some_and(|machine| machine.id != record.id)
+        {
+            return Err(StoreError::MachineIdMismatch);
         }
 
         let store = Self {
@@ -173,6 +183,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("local Machine record contains an unrecognized phase")]
     InvalidPhase,
+    #[error("local Machine identity does not match its advertised record")]
+    MachineIdMismatch,
     #[error("machine is already resetting")]
     AlreadyResetting,
     #[error("machine is not resetting")]

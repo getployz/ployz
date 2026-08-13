@@ -97,6 +97,7 @@ fn store_error(error: StoreError) -> RpcError {
         StoreError::Io(_)
         | StoreError::Json(_)
         | StoreError::InvalidPhase
+        | StoreError::MachineIdMismatch
         | StoreError::NotResetting
         | StoreError::AlreadyRunning(_)
         | StoreError::UnsafeDataDirectory(_)

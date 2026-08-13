@@ -107,6 +107,7 @@ fn reset_stops_if_the_machine_record_changes() {
     let replacement = LocalMachineRecord {
         id: ployz_core::MachineId::random(),
         phase: LocalMachinePhase::Resetting,
+        machine: None,
     };
     fs::write(
         dir.0.join("machine.json"),

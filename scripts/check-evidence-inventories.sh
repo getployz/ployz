@@ -16,7 +16,7 @@ explicit_count=$(grep -Ec '^\| UT-[0-9]{3} \|' "$todo_ledger")
 [ "$explicit_count" -eq 151 ] || fail "expected 151 explicit TODO rows, found $explicit_count"
 
 omission_count=$(grep -Ec '^\| EO-[0-9]{3} \|' "$todo_ledger")
-[ "$omission_count" -eq 18 ] || fail "expected 18 equivalent omission rows, found $omission_count"
+[ "$omission_count" -eq 19 ] || fail "expected 19 equivalent omission rows, found $omission_count"
 
 ledger_rows=$(grep -E '^\| (UT|EO)-[0-9]{3} \|' "$todo_ledger")
 unpinned=$(printf '%s\n' "$ledger_rows" | grep -Fvc "$baseline" || true)
@@ -71,4 +71,4 @@ bad_deviation_lines=$(grep -Evc '^- .+' "$repo_root/CLI_DEVIATIONS.md" || true)
   sha256sum --check --quiet SHA256SUMS
 )
 
-echo "evidence inventories verified: 151 TODO markers, 18 equivalent omissions, 76 Layer 3 declarations (60 selected, 16 not ported), 13 fixtures, 58 command pages"
+echo "evidence inventories verified: 151 TODO markers, 19 equivalent omissions, 76 Layer 3 declarations (60 selected, 16 not ported), 13 fixtures, 58 command pages"

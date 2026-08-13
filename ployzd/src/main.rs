@@ -14,6 +14,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use ployz_core::{LocalMachinePhase, MachineRpcServer};
 use ployzd::{
+    corrosion::{CorrosionConfig, ReplicatedStore, RunningCorrosion},
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
     rpc::MachineService,
@@ -59,6 +60,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let store = Arc::new(Mutex::new(LocalMachineStore::open(&args.data_dir)?));
     let (rpc_listener, _socket_lock) = bind_socket(&args.socket)?;
     let metrics_listener = TcpListener::bind(args.metrics_address).await?;
+    let mut corrosion = start_corrosion(&args, &store).await?;
+    let replicated_store = corrosion
+        .as_ref()
+        .map(|running| ReplicatedStore::new(running.api().clone()));
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (reset, mut reset_rx) = watch::channel(false);
@@ -70,9 +75,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             UnixListenerStream::new(rpc_listener),
             wait_for_shutdown(shutdown_rx.clone()),
         );
-    let metrics = metrics::serve(metrics_listener, registry, shutdown_rx);
+    let metrics = metrics::serve(metrics_listener, registry, shutdown_rx.clone());
+    let publisher =
+        run_machine_publisher(replicated_store, Arc::clone(&store), shutdown_rx.clone());
     let servers = async {
-        tokio::try_join!(async { rpc.await.map_err(io::Error::other) }, metrics).map(|_| ())
+        tokio::try_join!(
+            async { rpc.await.map_err(io::Error::other) },
+            metrics,
+            publisher
+        )
+        .map(|_| ())
     };
     tokio::pin!(servers);
 
@@ -89,13 +101,83 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // TODO(UT-098): preserve the baseline's unbounded graceful shutdown until a timeout is explicitly chosen.
     servers.await?;
 
-    let store = store
+    let resetting = store
         .lock()
-        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-    if store.record().phase == LocalMachinePhase::Resetting {
+        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
+        .record()
+        .phase
+        == LocalMachinePhase::Resetting;
+    if let Some(running) = &mut corrosion {
+        if resetting {
+            running.cleanup().await?;
+        } else {
+            running.stop().await?;
+        }
+    }
+    if resetting {
+        let store = store
+            .lock()
+            .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
         store.complete_reset()?;
     }
     Ok(())
+}
+
+async fn start_corrosion(
+    args: &Args,
+    store: &Arc<Mutex<LocalMachineStore>>,
+) -> Result<Option<RunningCorrosion>, Box<dyn Error>> {
+    let phase = store
+        .lock()
+        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
+        .record()
+        .phase
+        .clone();
+    if !matches!(
+        phase,
+        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+    ) {
+        return Ok(None);
+    }
+    let run_dir = args
+        .socket
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
+        .join("corrosion");
+    Ok(Some(
+        CorrosionConfig::local(args.data_dir.join("corrosion"), run_dir)
+            .start()
+            .await?,
+    ))
+}
+
+async fn run_machine_publisher(
+    replicated: Option<ReplicatedStore>,
+    local: Arc<Mutex<LocalMachineStore>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> io::Result<()> {
+    loop {
+        if let Some(replicated) = &replicated {
+            let machine = local
+                .lock()
+                .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
+                .record()
+                .machine
+                .clone();
+            if let Some(machine) = machine
+                && let Err(error) = replicated.publish_local_machine(&machine).await
+            {
+                eprintln!("failed to publish local Machine: {error}");
+            }
+        }
+        tokio::select! {
+            () = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+            changed = shutdown.changed() => {
+                changed.map_err(io::Error::other)?;
+                return Ok(());
+            }
+        }
+    }
 }
 
 async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
