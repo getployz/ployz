@@ -233,6 +233,14 @@ pub enum PortPublication {
         container_port: NonZeroU16,
         http_protocol: HttpProtocol,
     },
+    /// A normalized Compose ingress publication that baseline validation rejects later for
+    /// using TCP or UDP rather than HTTP(S). Keeping it typed preserves that incomplete flow.
+    IngressTransport {
+        #[serde(default)]
+        load_balancer_port: Option<NonZeroU16>,
+        container_port: NonZeroU16,
+        transport_protocol: TransportProtocol,
+    },
     Host {
         bind: HostBind,
         published_port: NonZeroU16,
@@ -255,6 +263,8 @@ pub enum VolumeSource {
     },
     Named {
         name: DockerVolumeName,
+        #[serde(default)]
+        external: bool,
         #[serde(default)]
         driver: Option<VolumeDriver>,
         #[serde(default)]

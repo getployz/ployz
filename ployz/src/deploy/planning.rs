@@ -21,88 +21,8 @@ pub fn plan_deploy(
     let requested = normalize_and_validate(requested)?;
     let requested = &requested;
     // A Deploy is a finite calculation over this supplied snapshot, never a reconciliation loop.
-    let mut machines = snapshot
-        .machines
-        .iter()
-        .filter(|machine| machine.membership != MembershipObservation::Down)
-        .filter(|machine| {
-            requested.placement.machines.is_empty()
-                || requested.placement.machines.iter().any(|selector| {
-                    selector.as_str() == machine.machine.id.as_str()
-                        || selector.as_str() == machine.machine.name.as_str()
-                })
-        })
-        .collect::<Vec<_>>();
-    shuffle(&mut machines, options.placement_seed);
-    // TODO(UT-001, UT-007, UT-008, UT-051, UT-052, UT-078): preserve the baseline
-    // placement/pull ceiling: do not filter by memory, image platform, or local image presence,
-    // and do not pull images from other Machines.
-    let mounted_volumes = mounted_named_volumes(requested)?;
-    if mounted_volumes.iter().any(|volume| {
-        snapshot.volumes.iter().any(|observed| {
-            volume_has_same_name(observed, volume) && !volume_matches(observed, volume)
-        })
-    }) {
-        return Err(PlanError::NoEligibleMachines);
-    }
-    let mut missing_volumes = Vec::new();
-    if matches!(requested.mode, ServiceMode::Replicated { .. }) {
-        for volume in &mounted_volumes {
-            let locations = snapshot
-                .volumes
-                .iter()
-                .filter(|observed| volume_matches(observed, volume))
-                .map(|observed| &observed.id.machine_id)
-                .collect::<BTreeSet<_>>();
-            if !locations.is_empty() {
-                machines.retain(|machine| locations.contains(&machine.machine.id));
-            } else {
-                missing_volumes.push((*volume).clone());
-            }
-        }
-    }
-    if machines.is_empty() {
-        // TODO(UT-079, UT-093): keep the baseline's coarse constraint failure until a
-        // separately approved diagnostic contract defines a detailed report.
-        return Err(PlanError::NoEligibleMachines);
-    }
-    let mut operations = Vec::new();
-    match requested.mode {
-        ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {
-            // TODO(UT-005): named-volume driver and label options remain part of planned creation;
-            // revisit only if Ployz changes to externally managed volumes exclusively.
-            let machine_id = machines
-                .first()
-                .map(|machine| machine.machine.id.clone())
-                .ok_or(PlanError::NoEligibleMachines)?;
-            machines.retain(|machine| machine.machine.id == machine_id);
-            operations.extend(missing_volumes.into_iter().map(|volume| {
-                DeployOperation::CreateVolume {
-                    machine_id: machine_id.clone(),
-                    volume,
-                }
-            }));
-        }
-        ServiceMode::Global => {
-            for machine in &machines {
-                operations.extend(
-                    mounted_volumes
-                        .iter()
-                        .filter(|volume| {
-                            !snapshot.volumes.iter().any(|observed| {
-                                observed.id.machine_id == machine.machine.id
-                                    && volume_matches(observed, volume)
-                            })
-                        })
-                        .map(|volume| DeployOperation::CreateVolume {
-                            machine_id: machine.machine.id.clone(),
-                            volume: (*volume).clone(),
-                        }),
-                );
-            }
-        }
-        ServiceMode::Replicated { .. } => {}
-    }
+    let mut machines = eligible_machines(requested, snapshot, options);
+    let mut operations = volume_operations(requested, snapshot, &mut machines)?;
 
     let matching_service_ids = snapshot
         .containers
@@ -157,6 +77,114 @@ pub fn plan_deploy(
         is_new_service,
         operation: DeployOperation::Sequence { operations },
     })
+}
+
+pub(crate) fn plan_volume_operations(
+    requested: &RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+    options: PlanOptions,
+) -> Result<Vec<DeployOperation>, PlanError> {
+    let requested = normalize_and_validate(requested)?;
+    let mut machines = eligible_machines(&requested, snapshot, options);
+    volume_operations(&requested, snapshot, &mut machines)
+}
+
+fn eligible_machines<'a>(
+    requested: &RequestedServiceSpec,
+    snapshot: &'a DeploySnapshot,
+    options: PlanOptions,
+) -> Vec<&'a MachineObservation> {
+    let mut machines = snapshot
+        .machines
+        .iter()
+        .filter(|machine| machine.membership != MembershipObservation::Down)
+        .filter(|machine| {
+            requested.placement.machines.is_empty()
+                || requested.placement.machines.iter().any(|selector| {
+                    selector.as_str() == machine.machine.id.as_str()
+                        || selector.as_str() == machine.machine.name.as_str()
+                })
+        })
+        .collect::<Vec<_>>();
+    shuffle(&mut machines, options.placement_seed);
+    machines
+}
+
+fn volume_operations(
+    requested: &RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+    machines: &mut Vec<&MachineObservation>,
+) -> Result<Vec<DeployOperation>, PlanError> {
+    // TODO(UT-001, UT-007, UT-008, UT-051, UT-052, UT-078): preserve the baseline
+    // placement/pull ceiling: do not filter by memory, image platform, or local image presence,
+    // and do not pull images from other Machines.
+    let mounted_volumes = mounted_named_volumes(requested)?;
+    if mounted_volumes.iter().any(|volume| {
+        snapshot.volumes.iter().any(|observed| {
+            volume_has_same_name(observed, volume) && !volume_matches(observed, volume)
+        })
+    }) {
+        return Err(PlanError::NoEligibleMachines);
+    }
+    let mut missing_volumes = Vec::new();
+    if matches!(requested.mode, ServiceMode::Replicated { .. }) {
+        for volume in &mounted_volumes {
+            let locations = snapshot
+                .volumes
+                .iter()
+                .filter(|observed| volume_matches(observed, volume))
+                .map(|observed| &observed.id.machine_id)
+                .collect::<BTreeSet<_>>();
+            if !locations.is_empty() {
+                machines.retain(|machine| locations.contains(&machine.machine.id));
+            } else {
+                missing_volumes.push((*volume).clone());
+            }
+        }
+    }
+    if machines.is_empty() {
+        // TODO(UT-079, UT-093): keep the baseline's coarse constraint failure until a
+        // separately approved diagnostic contract defines a detailed report.
+        return Err(PlanError::NoEligibleMachines);
+    }
+    let mut operations = Vec::new();
+    match requested.mode {
+        ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {
+            // TODO(UT-005): named-volume driver and label options remain part of planned creation;
+            // revisit only if Ployz changes to externally managed volumes exclusively.
+            let machine_id = machines
+                .first()
+                .map(|machine| machine.machine.id.clone())
+                .ok_or(PlanError::NoEligibleMachines)?;
+            machines.retain(|machine| machine.machine.id == machine_id);
+            operations.extend(missing_volumes.into_iter().map(|volume| {
+                DeployOperation::CreateVolume {
+                    machine_id: machine_id.clone(),
+                    volume,
+                }
+            }));
+        }
+        ServiceMode::Global => {
+            for machine in machines.iter() {
+                operations.extend(
+                    mounted_volumes
+                        .iter()
+                        .filter(|volume| {
+                            !snapshot.volumes.iter().any(|observed| {
+                                observed.id.machine_id == machine.machine.id
+                                    && volume_matches(observed, volume)
+                            })
+                        })
+                        .map(|volume| DeployOperation::CreateVolume {
+                            machine_id: machine.machine.id.clone(),
+                            volume: (*volume).clone(),
+                        }),
+                );
+            }
+        }
+        ServiceMode::Replicated { .. } => {}
+    }
+    Ok(operations)
 }
 
 fn normalize_and_validate(

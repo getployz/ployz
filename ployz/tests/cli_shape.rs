@@ -73,6 +73,9 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
     assert_eq!(
         deviations,
         BTreeSet::from([
+            "compose-diagnostics-source".to_owned(),
+            "compose-plugin-scope".to_owned(),
+            "compose-prerequisite-errors".to_owned(),
             "local-machine-init-stub".to_owned(),
             "native-completion".to_owned(),
             "no-nightly-daemon-channel".to_owned(),

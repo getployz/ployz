@@ -1,6 +1,8 @@
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
 
+use crate::compose::{LoadOptions, load_project};
+
 mod context;
 
 pub type Error = String;
@@ -51,6 +53,44 @@ fn not_implemented(command: &str) -> Result<(), Error> {
     Err(format!("ployz {command} is not implemented yet"))
 }
 
+fn compose_not_implemented(
+    matches: &ArgMatches,
+    command: &str,
+    all_profiles: bool,
+) -> Result<(), Error> {
+    let leaf = leaf_matches(matches);
+    let project = load_project(&LoadOptions {
+        command: command.into(),
+        files: string_values(leaf, "file")
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        profiles: string_values(leaf, "profile"),
+        all_profiles,
+        ..Default::default()
+    })
+    .map_err(|error| error.to_string())?;
+    for warning in &project.warnings {
+        eprintln!("WARNING: {warning}");
+    }
+    not_implemented(command)
+}
+
+fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
+    if matches.try_contains_id(id).ok() != Some(true) {
+        return Vec::new();
+    }
+    if matches.value_source(id) == Some(clap::parser::ValueSource::DefaultValue) {
+        return Vec::new();
+    }
+    matches
+        .try_get_many::<String>(id)
+        .ok()
+        .flatten()
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default()
+}
+
 fn provision_then_continue(matches: &ArgMatches, command: &str) -> Result<(), Error> {
     if !matches.get_flag("no-install") {
         crate::provisioning::provision(matches)?;
@@ -85,7 +125,7 @@ macro_rules! stub_handlers {
 }
 
 stub_handlers! {
-    build => "build";
+    build(root) { compose_not_implemented(root, "build", false) } => "build";
     caddy_config => "caddy config";
     caddy_deploy => "caddy deploy";
     caddy_logs => "caddy logs";
@@ -101,7 +141,7 @@ stub_handlers! {
                 .map(String::as_str),
         )
     } => "ctx use";
-    deploy => "deploy";
+    deploy(root) { compose_not_implemented(root, "deploy", false) } => "deploy";
     dns_release => "dns release";
     dns_reserve => "dns reserve";
     dns_show => "dns show";
@@ -110,7 +150,16 @@ stub_handlers! {
     image_push => "image push";
     images => "images";
     inspect => "inspect";
-    logs => "logs";
+    logs(root) {
+        if leaf_matches(root)
+            .get_many::<String>("service-or-container")
+            .is_some_and(|services| services.len() > 0)
+        {
+            not_implemented("logs")
+        } else {
+            compose_not_implemented(root, "logs", true)
+        }
+    } => "logs";
     list => "ls";
     machine_add(root) { provision_then_continue(leaf_matches(root), "machine add") } => "machine add";
     machine_init(root) {

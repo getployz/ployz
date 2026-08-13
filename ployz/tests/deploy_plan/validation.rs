@@ -166,6 +166,7 @@ fn conflicting_named_volume_aliases_are_rejected() {
         reference: alias.clone(),
         source: VolumeSource::Named {
             name: DockerVolumeName::parse("data").unwrap(),
+            external: false,
             driver: Some(ployz_core::VolumeDriver {
                 name: "nfs".into(),
                 options: Default::default(),

@@ -92,6 +92,7 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
         reference: reference.clone(),
         source: VolumeSource::Named {
             name: DockerVolumeName::parse(name).unwrap(),
+            external: false,
             driver: None,
             labels: Default::default(),
             no_copy: false,
