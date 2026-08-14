@@ -91,37 +91,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         &generated_global.containers.first().unwrap().machine_id,
         machine_1
     );
-    let initial_ids = initial_run
-        .services
-        .iter()
-        .flat_map(|service| &service.containers)
-        .map(|container| container.container_id.clone())
-        .collect::<BTreeSet<_>>();
-    assert!(
-        !ployz(address, ["machine", "rename", "machine-1", ""])
-            .status
-            .success()
-    );
-    assert_success(ployz(
-        address,
-        ["machine", "rename", "machine-1", "workflow-renamed"],
-    ));
-    wait_for_machine_name(&mut client, machine_1, "workflow-renamed").await;
-    let after_rename = wait_for_services(&mut client, &["scaled-workflow"], 3).await;
-    assert_eq!(
-        after_rename
-            .services
-            .iter()
-            .flat_map(|service| &service.containers)
-            .map(|container| container.container_id.clone())
-            .collect::<BTreeSet<_>>(),
-        initial_ids
-    );
-    assert_success(ployz(
-        address,
-        ["machine", "rename", machine_1.as_str(), "machine-1"],
-    ));
-    wait_for_machine_name(&mut client, machine_1, "machine-1").await;
+    assert_machine_rename_preserves_containers(address, &mut client, machine_1, &initial_run).await;
 
     let root = std::env::temp_dir().join(format!("ployz-l3-workflows-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -270,6 +240,45 @@ fn deploy(
         .current_dir(root)
         .env_remove("PLOYZ_AUTO_CONFIRM");
     command.output().unwrap()
+}
+
+async fn assert_machine_rename_preserves_containers(
+    address: std::net::SocketAddr,
+    client: &mut ployz::connect::Client,
+    machine_id: &ployz_core::MachineId,
+    initial: &ployz_core::LiveServices<ployz_core::RpcError>,
+) {
+    let initial_ids = initial
+        .services
+        .iter()
+        .flat_map(|service| &service.containers)
+        .map(|container| container.container_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !ployz(address, ["machine", "rename", "machine-1", ""])
+            .status
+            .success()
+    );
+    assert_success(ployz(
+        address,
+        ["machine", "rename", "machine-1", "workflow-renamed"],
+    ));
+    wait_for_machine_name(client, machine_id, "workflow-renamed").await;
+    let after_rename = wait_for_services(client, &["scaled-workflow"], 3).await;
+    assert_eq!(
+        after_rename
+            .services
+            .iter()
+            .flat_map(|service| &service.containers)
+            .map(|container| container.container_id.clone())
+            .collect::<BTreeSet<_>>(),
+        initial_ids
+    );
+    assert_success(ployz(
+        address,
+        ["machine", "rename", machine_id.as_str(), "machine-1"],
+    ));
+    wait_for_machine_name(client, machine_id, "machine-1").await;
 }
 
 fn observed_service<'a, E>(

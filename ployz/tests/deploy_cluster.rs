@@ -40,7 +40,6 @@ async fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
 async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, machine: &Machine) {
     let healthy_id = ServiceId::random();
     let mut healthy = service_spec(&healthy_id, "healthy-startup");
-    healthy.container.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
     healthy.container.healthcheck = Some(healthcheck("true", 2));
     healthy.update.monitor_millis = Some(3_000);
     let healthy_plan = deploy_plan(
