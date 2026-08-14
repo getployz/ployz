@@ -277,6 +277,125 @@ fn fanout_frames_preserve_opaque_messages_and_type_target_failures() {
 }
 
 #[test]
+fn stream_frames_round_trip_binary_exec_payloads_and_control_kinds() {
+    use ployz_core::{ExecConfig, ExecOptions, ExecRequestFrame, ExecResponseFrame};
+
+    let container_id = ployz_core::ContainerId::parse("a".repeat(64)).unwrap();
+    let config = ExecRequestFrame::Config(ExecConfig {
+        container_id,
+        options: ExecOptions {
+            command: vec!["printf".into(), "\\377".into()],
+            attach_stdin: true,
+            attach_stdout: true,
+            attach_stderr: true,
+            tty: false,
+            detach: false,
+        },
+    });
+    assert_eq!(
+        ExecRequestFrame::decode(&config.encode().unwrap()).unwrap(),
+        config
+    );
+
+    for request in [
+        ExecRequestFrame::Stdin(Vec::new()),
+        ExecRequestFrame::Stdin(vec![0, 0xff, b'\n']),
+        ExecRequestFrame::Resize {
+            width: 132,
+            height: 43,
+        },
+    ] {
+        assert_eq!(
+            ExecRequestFrame::decode(&request.encode().unwrap()).unwrap(),
+            request
+        );
+    }
+    for response in [
+        ExecResponseFrame::ExecId("exec-1".into()),
+        ExecResponseFrame::Stdout(vec![0, 0xff]),
+        ExecResponseFrame::Stderr(Vec::new()),
+        ExecResponseFrame::Exit(42),
+    ] {
+        assert_eq!(
+            ExecResponseFrame::decode(&response.encode().unwrap()).unwrap(),
+            response
+        );
+    }
+}
+
+#[test]
+fn streaming_requests_keep_typed_control_options_outside_raw_frames() {
+    use ployz_core::{ContainerLogsRequest, LogsOptions, MachineLogService, MachineLogsRequest};
+
+    let options = LogsOptions {
+        follow: true,
+        tail: -1,
+        since: "2m30s".into(),
+        until: "2026-08-14T09:00:00Z".into(),
+    };
+    for request in [
+        RpcRequest::container_logs(ContainerLogsRequest {
+            container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+            options: options.clone(),
+        }),
+        RpcRequest::machine_logs(MachineLogsRequest {
+            service: MachineLogService::Ployz,
+            options,
+        }),
+    ] {
+        assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    }
+}
+
+#[test]
+fn log_frames_keep_identity_outside_untouched_message_bytes() {
+    use ployz_core::{LogEntry, LogMetadata, LogOrigin, LogStream};
+
+    let entry = LogEntry {
+        metadata: LogMetadata {
+            origin: LogOrigin::Service {
+                service_id: ployz_core::ServiceId::parse("1".repeat(32)).unwrap(),
+                service_name: ployz_core::ServiceName::parse("api").unwrap(),
+                container_id: ployz_core::ContainerId::parse("b".repeat(64)).unwrap(),
+                hook: Some("pre-deploy".into()),
+            },
+            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+            machine_name: MachineName::parse("machine-a").unwrap(),
+        },
+        stream: LogStream::Stderr,
+        timestamp_unix_nanos: 1_765_000_000_123_456_789,
+        message: vec![0, 0xff, b'\n'],
+        error: None,
+    };
+    let encoded = entry.encode().unwrap();
+    let decoded = LogEntry::decode(&encoded).unwrap();
+
+    assert_eq!(decoded, entry);
+    assert_eq!(decoded.message, vec![0, 0xff, b'\n']);
+}
+
+#[test]
+fn malformed_stream_frames_return_protocol_errors() {
+    use ployz_core::{ExecRequestFrame, StreamProtocolError};
+
+    assert_eq!(
+        ExecRequestFrame::decode(&OpaquePayload::new(vec![1, 0, 0])),
+        Err(StreamProtocolError::TruncatedHeader)
+    );
+    assert_eq!(
+        ExecRequestFrame::decode(&OpaquePayload::new(vec![0xfe, 0, 0, 0, 0])),
+        Err(StreamProtocolError::UnknownKind(0xfe))
+    );
+    assert_eq!(
+        ExecRequestFrame::decode(&OpaquePayload::new(vec![2, 0, 0, 0, 3, 1, 2])),
+        Err(StreamProtocolError::LengthMismatch {
+            declared: 3,
+            actual: 2,
+        })
+    );
+}
+
+#[test]
 fn typed_errors_preserve_future_error_codes() {
     let error: RpcError = serde_json::from_value(json!({
         "code": "rate_limited",
@@ -523,6 +642,12 @@ struct FixtureMachineRpc;
 
 #[tonic::async_trait]
 impl MachineRpc for FixtureMachineRpc {
+    type ExecStream = tonic::codegen::tokio_stream::Empty<Result<OpaquePayload, tonic::Status>>;
+    type ContainerLogsStream =
+        tonic::codegen::tokio_stream::Empty<Result<OpaquePayload, tonic::Status>>;
+    type MachineLogsStream =
+        tonic::codegen::tokio_stream::Empty<Result<OpaquePayload, tonic::Status>>;
+
     async fn describe_contract(
         &self,
         _request: tonic::Request<OpaquePayload>,
@@ -632,6 +757,27 @@ impl MachineRpc for FixtureMachineRpc {
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn exec(
+        &self,
+        _request: tonic::Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<tonic::Response<Self::ExecStream>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn container_logs(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<Self::ContainerLogsStream>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn machine_logs(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<Self::MachineLogsStream>, tonic::Status> {
         unreachable!("compile-time service fixture")
     }
 

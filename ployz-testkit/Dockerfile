@@ -26,7 +26,8 @@ RUN mkdir -p /opt/ployz/images \
  && skopeo copy docker://docker.io/library/alpine:3.23.3 docker-archive:/opt/ployz/images/alpine.tar:alpine:3.23.3
 COPY --from=build /ployzd /usr/local/bin/ployzd
 COPY ployz-testkit/entrypoint.sh /usr/local/bin/ployz-testkit-entrypoint
-RUN chmod +x /usr/local/bin/ployz-testkit-entrypoint \
+COPY ployz-testkit/journalctl /usr/local/bin/journalctl
+RUN chmod +x /usr/local/bin/ployz-testkit-entrypoint /usr/local/bin/journalctl \
  && dockerd --version \
  && wg --version \
  && ployzd version

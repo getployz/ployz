@@ -1,6 +1,7 @@
 mod create;
 mod lifecycle;
 mod spec_store;
+mod stream;
 mod volume;
 
 #[cfg(test)]

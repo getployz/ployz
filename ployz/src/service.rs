@@ -205,7 +205,7 @@ impl Client {
     }
 }
 
-async fn entry_machines(
+pub(crate) async fn entry_machines(
     rpc: &mut MachineRpcClient<Channel>,
 ) -> Result<Vec<MachineObservation>, ConnectError> {
     let response = rpc

@@ -21,7 +21,7 @@ fn config(matches: &ArgMatches) -> Result<Config, Error> {
         .map(Path::new)
         .map(expand_home)
         .ok_or_else(|| "Ployz config path is required".to_owned())?;
-    Config::load_or_empty(path).map_err(|error| error.to_string())
+    Ok(Config::load_or_empty(path).map_err(|error| error.to_string())?)
 }
 
 pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
@@ -56,7 +56,8 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
         return Err(format!(
             "no contexts found in Ployz config {}",
             config.path().display()
-        ));
+        )
+        .into());
     }
     let selected = match requested {
         Some(name) => name.to_owned(),
@@ -76,7 +77,7 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
         }
     };
     if !config.contexts.contains_key(&selected) {
-        return Err(format!("context {selected:?} not found"));
+        return Err(format!("context {selected:?} not found").into());
     }
     config.current_context = selected.clone();
     config.save().map_err(|error| error.to_string())?;
@@ -92,7 +93,7 @@ pub(super) fn select_connection(matches: &ArgMatches) -> Result<(), Error> {
         .get_mut(&name)
         .ok_or_else(|| format!("current context {name:?} not found"))?;
     if context.connections.is_empty() {
-        return Err(format!("no connections found in context {name:?}"));
+        return Err(format!("no connections found in context {name:?}").into());
     }
     let labels = context
         .connections
@@ -121,7 +122,7 @@ fn prompt<'a>(
     default: Option<usize>,
 ) -> Result<usize, Error> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(format!("cannot {title} interactively without a terminal"));
+        return Err(format!("cannot {title} interactively without a terminal").into());
     }
     let choices = choices.collect::<Vec<_>>();
     println!("{title}:");
