@@ -596,7 +596,10 @@ mod tests {
             }],
             "pre_deploy": {
                 "command": ["migrate"],
-                "environment": { "TOKEN": "hook" },
+                "environment": {
+                    "TOKEN": "hook",
+                    "PLOYZ_MACHINE_ID": "not-the-machine"
+                },
                 "privileged": true,
                 "user": "1000"
             }
@@ -626,13 +629,11 @@ mod tests {
             .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
         assert_eq!(hook.user.as_deref(), Some("1000"));
-        assert!(hook.env.as_ref().unwrap().contains(&"TOKEN=hook".into()));
-        assert!(
-            hook.env
-                .as_ref()
-                .unwrap()
-                .contains(&"PLOYZ_HOOK_PRE_DEPLOY=true".into())
-        );
+        let hook_env = hook.env.as_ref().unwrap();
+        assert!(hook_env.contains(&"TOKEN=hook".into()));
+        assert!(hook_env.contains(&format!("PLOYZ_MACHINE_ID={machine_id}")));
+        assert!(!hook_env.contains(&"PLOYZ_MACHINE_ID=not-the-machine".into()));
+        assert!(hook_env.contains(&"PLOYZ_HOOK_PRE_DEPLOY=true".into()));
         assert_eq!(hook.healthcheck.unwrap().test, Some(vec!["NONE".into()]));
         let hook_host = hook.host_config.unwrap();
         assert_eq!(hook_host.privileged, Some(true));

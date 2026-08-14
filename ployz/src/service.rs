@@ -402,7 +402,7 @@ fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
     match grace_period_seconds {
         Some(seconds) if seconds < 0 => None,
         Some(seconds) => Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64)),
-        None => Some(TARGET_RPC_TIMEOUT),
+        None => None,
     }
 }
 
@@ -423,9 +423,9 @@ mod tests {
     }
 
     #[test]
-    fn negative_stop_timeout_has_no_rpc_deadline() {
+    fn unspecified_or_negative_stop_timeout_has_no_rpc_deadline() {
         assert_eq!(stop_rpc_timeout(Some(-1)), None);
-        assert_eq!(stop_rpc_timeout(None), Some(TARGET_RPC_TIMEOUT));
+        assert_eq!(stop_rpc_timeout(None), None);
         assert_eq!(
             stop_rpc_timeout(Some(5)),
             Some(TARGET_RPC_TIMEOUT + Duration::from_secs(5))

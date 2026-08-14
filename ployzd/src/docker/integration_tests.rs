@@ -197,6 +197,13 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     );
     assert_eq!(specs.get(&created.container_id).await.unwrap(), Some(spec));
 
+    docker.start(&specs, &created.container_id).await.unwrap();
+    docker.start(&specs, &created.container_id).await.unwrap();
+    docker
+        .stop(&specs, &created.container_id, None, Some(0))
+        .await
+        .unwrap();
+
     docker
         .remove(&specs, &created.container_id, true, true)
         .await

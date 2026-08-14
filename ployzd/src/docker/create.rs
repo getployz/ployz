@@ -31,11 +31,11 @@ pub(super) fn container_create_body(
     };
     let container = &spec.container;
     let mut environment = container.environment.clone();
-    environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
     if let Some(hook) = hook {
         environment.extend(hook.environment.clone());
         environment.insert("PLOYZ_HOOK_PRE_DEPLOY".into(), "true".into());
     }
+    environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
     let mut labels = HashMap::from([
         (LABEL_MANAGED.into(), String::new()),
         (LABEL_SERVICE_ID.into(), spec.service_id.to_string()),

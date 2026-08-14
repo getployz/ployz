@@ -143,11 +143,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
         .ok_or_else(|| "at least one Service selector is required".to_owned())?
         .cloned()
         .collect::<Vec<_>>();
-    let signal = leaf.get_one::<String>("signal").cloned();
-    let timeout = leaf
-        .get_one::<String>("timeout")
-        .map(|value| value.parse::<i32>().map_err(|error| error.to_string()))
-        .transpose()?;
+    let (signal, timeout) = stop_options(leaf, action)?;
     with_client(root, |client| {
         Box::pin(async move {
             let live = client
@@ -187,6 +183,21 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             }
         })
     })
+}
+
+fn stop_options(
+    matches: &ArgMatches,
+    action: ContainerAction,
+) -> Result<(Option<String>, Option<i32>), Error> {
+    if action != ContainerAction::Stop {
+        return Ok((None, None));
+    }
+    let signal = matches.get_one::<String>("signal").cloned();
+    let timeout = matches
+        .get_one::<String>("timeout")
+        .map(|value| value.parse::<i32>().map_err(|error| error.to_string()))
+        .transpose()?;
+    Ok((signal, timeout))
 }
 
 fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
@@ -261,6 +272,30 @@ mod tests {
         assert_eq!(names(&containers), ["gamma", "beta", "alpha"]);
         sort_processes(&mut containers, "health");
         assert_eq!(names(&containers), ["alpha", "gamma", "beta"]);
+    }
+
+    #[test]
+    fn stop_options_are_only_read_for_stop_actions() {
+        for (command, action) in [
+            ("start", ContainerAction::Start),
+            ("rm", ContainerAction::Remove),
+        ] {
+            let matches = crate::cli::command()
+                .try_get_matches_from(["ployz", command, "api"])
+                .unwrap();
+            assert_eq!(
+                stop_options(leaf_matches(&matches), action).unwrap(),
+                (None, None)
+            );
+        }
+
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "stop", "api"])
+            .unwrap();
+        assert_eq!(
+            stop_options(leaf_matches(&matches), ContainerAction::Stop).unwrap(),
+            (Some("SIGTERM".into()), Some(10))
+        );
     }
 
     fn names<'a>(containers: &'a [&ContainerObservation]) -> Vec<&'a str> {

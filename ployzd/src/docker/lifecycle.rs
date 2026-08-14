@@ -71,10 +71,11 @@ impl LocalDocker {
         container_id: &ContainerId,
     ) -> Result<(), Error> {
         self.ensure_managed(specs, container_id).await?;
-        self.client
+        let result = self
+            .client
             .start_container(container_id.as_str(), None)
-            .await
-            .map_err(|error| docker_error(container_id, error))
+            .await;
+        idempotent_lifecycle_result(container_id, result)
     }
 
     pub async fn stop(
@@ -92,17 +93,11 @@ impl LocalDocker {
         if let Some(seconds) = grace_period_seconds {
             options = options.t(seconds);
         }
-        match self
+        let result = self
             .client
             .stop_container(container_id.as_str(), Some(options.build()))
-            .await
-        {
-            Ok(())
-            | Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 304, ..
-            }) => Ok(()),
-            Err(error) => Err(docker_error(container_id, error)),
-        }
+            .await;
+        idempotent_lifecycle_result(container_id, result)
     }
 
     pub async fn remove(
@@ -239,6 +234,19 @@ impl LocalDocker {
 
 const fn should_pull(policy: PullPolicy, present: bool) -> bool {
     matches!(policy, PullPolicy::Always) || matches!(policy, PullPolicy::Missing) && !present
+}
+
+fn idempotent_lifecycle_result(
+    container_id: &ContainerId,
+    result: Result<(), bollard::errors::Error>,
+) -> Result<(), Error> {
+    match result {
+        Ok(())
+        | Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 304, ..
+        }) => Ok(()),
+        Err(error) => Err(docker_error(container_id, error)),
+    }
 }
 
 fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
