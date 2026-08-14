@@ -44,9 +44,25 @@ struct InterfaceAddress {
 }
 
 fn routable_interface_addresses() -> Result<Vec<IpAddr>, NetworkError> {
-    let output = checked_command("ip", &["-json", "address", "show", "up"])?;
-    let interfaces: Vec<Interface> = serde_json::from_slice(&output.stdout)?;
-    Ok(routable_addresses(interfaces))
+    Ok(routable_addresses(read_interfaces(true)?))
+}
+
+pub(crate) fn interface_addresses() -> Result<Vec<IpAddr>, NetworkError> {
+    Ok(read_interfaces(false)?
+        .into_iter()
+        .flat_map(|interface| interface.addr_info)
+        .map(|address| address.local)
+        .collect())
+}
+
+fn read_interfaces(up_only: bool) -> Result<Vec<Interface>, NetworkError> {
+    let args = if up_only {
+        &["-json", "address", "show", "up"][..]
+    } else {
+        &["-json", "address", "show"][..]
+    };
+    let output = checked_command("ip", args)?;
+    Ok(serde_json::from_slice(&output.stdout)?)
 }
 
 fn routable_addresses(interfaces: Vec<Interface>) -> Vec<IpAddr> {

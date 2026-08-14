@@ -10,17 +10,16 @@ use std::{
 
 use bollard::{
     Docker,
-    errors::Error as DockerError,
     models::{
         ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, RestartPolicy,
         RestartPolicyNameEnum,
     },
-    query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
-    },
+    query_parameters::{CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder},
 };
-use futures_util::TryStreamExt;
+use ployz_core::PullPolicy;
 use serde::Serialize;
+
+use crate::docker_image::{is_not_found, prepare_image};
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
@@ -201,23 +200,7 @@ impl DockerService {
     }
 
     async fn create(&self) -> Result<(), Error> {
-        if let Err(error) = self.docker.inspect_image(IMAGE).await {
-            if !is_not_found(&error) {
-                return Err(error.into());
-            }
-            self.docker
-                .create_image(
-                    Some(
-                        CreateImageOptionsBuilder::default()
-                            .from_image(IMAGE)
-                            .build(),
-                    ),
-                    None,
-                    None,
-                )
-                .try_collect::<Vec<_>>()
-                .await?;
-        }
+        prepare_image(&self.docker, IMAGE, PullPolicy::Missing).await?;
 
         let mounts = [&self.data_dir, &self.run_dir]
             .into_iter()
@@ -294,16 +277,6 @@ impl DockerService {
             Err(error) => Err(error.into()),
         }
     }
-}
-
-fn is_not_found(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
 }
 
 async fn wait_ready(api: &ApiClient) -> Result<(), Error> {

@@ -1,5 +1,7 @@
 //! Linux daemon runtime for one Ployz Machine.
 
+mod docker_image;
+
 pub mod corrosion;
 pub mod docker;
 pub mod machine;

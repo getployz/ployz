@@ -94,8 +94,10 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     run(async move {
         let mut client = connect_from(root).await?;
         let (volumes, result) = discover(&mut client, &selectors).await?;
+        if !result.all_targets_succeeded() {
+            return Err(failure_summary(&result));
+        }
         match NameMatches::from_matches(filter_volumes(&volumes, std::slice::from_ref(&name))) {
-            NameMatches::None if !result.failures.is_empty() => Err(failure_summary(&result)),
             NameMatches::None => Err(format!("Docker Volume {name:?} was not found")),
             NameMatches::One(mut volume) => {
                 volume.volume = client
@@ -106,7 +108,6 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     "{}",
                     serde_json::to_string_pretty(&volume).map_err(|error| error.to_string())?
                 );
-                report_failures(&result);
                 Ok(())
             }
             NameMatches::Ambiguous(volumes) => Err(format!(
@@ -136,12 +137,15 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let mut client = connect_from(root).await?;
         let (volumes, result) = discover(&mut client, &selectors).await?;
         let volumes = filter_volumes(&volumes, &names);
+        if result.all_targets_succeeded()
+            && let Some(name) = names
+                .iter()
+                .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
+        {
+            return Err(format!("Docker Volume {name:?} was not found"));
+        }
         if volumes.is_empty() {
-            return if result.all_targets_succeeded() {
-                Err("no matching Docker Volumes found".into())
-            } else {
-                Err(failure_summary(&result))
-            };
+            return Err(failure_summary(&result));
         }
         println!("The following Docker Volumes will be removed:");
         for volume in &volumes {

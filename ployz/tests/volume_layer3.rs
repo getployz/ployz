@@ -76,6 +76,26 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     assert!(qualified.status.success());
     assert!(String::from_utf8_lossy(&qualified.stdout).contains("\"site\": \"one\""));
 
+    let mixed_remove = ployz(
+        address,
+        [
+            "volume",
+            "rm",
+            "shared",
+            "missing",
+            "--machine",
+            "machine-1",
+            "--yes",
+        ],
+    );
+    assert!(!mixed_remove.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&ployz(address, ["volume", "ls"]).stdout)
+            .matches("shared")
+            .count(),
+        2
+    );
+
     let cancelled = ployz(
         address,
         ["volume", "rm", "shared", "--machine", "machine-1"],
@@ -234,6 +254,9 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
         panic!("expected one failed target: {partial:?}")
     };
     assert_eq!(failure.machine_id, second_machine.machine.id);
+
+    let partial_inspect = ployz(address, ["volume", "inspect", "reachable"]);
+    assert!(!partial_inspect.status.success());
 
     let partial_remove = ployz(address, ["volume", "rm", "reachable", "--yes"]);
     assert!(!partial_remove.status.success());

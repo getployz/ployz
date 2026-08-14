@@ -1,14 +1,24 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{BTreeSet, HashMap},
+    net::IpAddr,
+    str::FromStr,
+};
 
 use bollard::{
+    body_full,
     models::{
-        ContainerCreateBody, DeviceMapping, DeviceRequest, HostConfig, Mount, MountBindOptions,
-        MountTmpfsOptions, MountType, MountVolumeOptions, MountVolumeOptionsDriverConfig,
-        ResourcesUlimits,
+        ContainerCreateBody, DeviceMapping, DeviceRequest, HealthConfig, HostConfig,
+        HostConfigLogConfig, Mount, MountBindOptions, MountTmpfsOptions, MountType,
+        MountVolumeOptions, MountVolumeOptionsDriverConfig, PortBinding, PortMap, ResourcesUlimits,
     },
-    query_parameters::RemoveContainerOptionsBuilder,
+    query_parameters::{RemoveContainerOptionsBuilder, UploadToContainerOptionsBuilder},
 };
-use ployz_core::{ContainerId, ContainerResources, ResolvedServiceSpec, VolumeSource};
+use ployz_core::{
+    ContainerId, ContainerResources, HealthcheckSpec, HostBind, PortPublication,
+    ResolvedServiceSpec, TransportProtocol, VolumeSource,
+};
+
+use crate::docker_image::prepare_image;
 
 use super::{
     Error, LABEL_MANAGED, LABEL_SERVICE_ID, LABEL_SERVICE_NAME, LocalDocker, MachineSpecStore,
@@ -34,47 +44,88 @@ impl LocalDocker {
             self.client.inspect_volume(name).await?;
             // TODO(UT-128): existence is the only mount-time check; do not recheck driver/options.
         }
+        prepare_image(
+            &self.client,
+            &spec.container.image,
+            spec.container.pull_policy,
+        )
+        .await?;
+        let configs = docker_config_archive(&spec)?;
+        let interface_addresses = if spec.ports.iter().any(|port| {
+            matches!(
+                port,
+                PortPublication::Host {
+                    bind: HostBind::Prefix { .. },
+                    ..
+                }
+            )
+        }) {
+            crate::network::interface_addresses()?
+        } else {
+            Vec::new()
+        };
+        let (exposed_ports, port_bindings) = docker_ports(&spec.ports, &interface_addresses)?;
         let labels = HashMap::from([
             (LABEL_MANAGED.to_owned(), String::new()),
             (LABEL_SERVICE_ID.to_owned(), spec.service_id.to_string()),
             (LABEL_SERVICE_NAME.to_owned(), spec.name.to_string()),
         ]);
-        let config = ContainerCreateBody {
-            image: Some(spec.container.image.clone()),
-            cmd: (!spec.container.command.is_empty()).then(|| spec.container.command.clone()),
-            entrypoint: (!spec.container.entrypoint.is_empty())
-                .then(|| spec.container.entrypoint.clone()),
-            env: (!spec.container.environment.is_empty()).then(|| {
-                spec.container
-                    .environment
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect()
-            }),
-            labels: Some(labels),
-            user: spec.container.user.clone(),
-            working_dir: spec
-                .container
-                .working_directory
-                .as_ref()
-                .map(ToString::to_string),
-            tty: spec.container.tty.then_some(true),
-            open_stdin: spec.container.open_stdin.then_some(true),
-            host_config: Some(HostConfig {
-                mounts: Some(mounts),
-                init: spec.container.init,
-                cap_add: some_vec(spec.container.cap_add.clone()),
-                cap_drop: some_vec(spec.container.cap_drop.clone()),
-                pid_mode: spec.container.pid_mode.clone(),
-                privileged: spec.container.privileged.then_some(true),
-                sysctls: some_map(spec.container.sysctls.clone()),
-                ..docker_resources(&spec.container.resources)
-            }),
-            ..Default::default()
-        };
+        let config =
+            ContainerCreateBody {
+                image: Some(spec.container.image.clone()),
+                cmd: (!spec.container.command.is_empty()).then(|| spec.container.command.clone()),
+                entrypoint: (!spec.container.entrypoint.is_empty())
+                    .then(|| spec.container.entrypoint.clone()),
+                env: (!spec.container.environment.is_empty()).then(|| {
+                    spec.container
+                        .environment
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect()
+                }),
+                labels: Some(labels),
+                exposed_ports,
+                healthcheck: docker_healthcheck(spec.container.healthcheck.as_ref())?,
+                user: spec.container.user.clone(),
+                working_dir: spec
+                    .container
+                    .working_directory
+                    .as_ref()
+                    .map(ToString::to_string),
+                tty: spec.container.tty.then_some(true),
+                open_stdin: spec.container.open_stdin.then_some(true),
+                host_config: Some(HostConfig {
+                    mounts: Some(mounts),
+                    network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),
+                    port_bindings,
+                    log_config: spec.container.log_driver.as_ref().map(|driver| {
+                        HostConfigLogConfig {
+                            typ: Some(driver.name.clone()),
+                            config: some_map(driver.options.clone()),
+                        }
+                    }),
+                    init: spec.container.init,
+                    cap_add: some_vec(spec.container.cap_add.clone()),
+                    cap_drop: some_vec(spec.container.cap_drop.clone()),
+                    pid_mode: spec.container.pid_mode.clone(),
+                    privileged: spec.container.privileged.then_some(true),
+                    sysctls: some_map(spec.container.sysctls.clone()),
+                    ..docker_resources(&spec.container.resources)
+                }),
+                ..Default::default()
+            };
         let created = self.client.create_container(None, config).await?;
         let created_id = created.id;
         let result = async {
+            if let Some(configs) = configs {
+                self.client
+                    .upload_to_container(
+                        &created_id,
+                        Some(UploadToContainerOptionsBuilder::default().path("/").build()),
+                        body_full(configs.into()),
+                    )
+                    .await?;
+            }
             let container_id =
                 ContainerId::parse(created_id.clone()).map_err(|source| Error::InvalidValue {
                     field: "container ID",
@@ -102,6 +153,138 @@ impl LocalDocker {
         }
         result
     }
+}
+
+pub(super) fn docker_ports(
+    ports: &[PortPublication],
+    interface_addresses: &[IpAddr],
+) -> Result<(Option<Vec<String>>, Option<PortMap>), Error> {
+    let mut exposed = BTreeSet::new();
+    let mut bindings = PortMap::new();
+    for port in ports {
+        let PortPublication::Host {
+            bind,
+            published_port,
+            container_port,
+            transport_protocol,
+        } = port
+        else {
+            continue;
+        };
+        let protocol = match transport_protocol {
+            TransportProtocol::Tcp => "tcp",
+            TransportProtocol::Udp => "udp",
+        };
+        let key = format!("{container_port}/{protocol}");
+        exposed.insert(key.clone());
+        let host_ips = match bind {
+            HostBind::All => vec![None],
+            HostBind::Address { address } => vec![Some(address.to_string())],
+            HostBind::Prefix { prefix } => {
+                let addresses = interface_addresses
+                    .iter()
+                    .filter(|address| prefix.contains(*address))
+                    .map(ToString::to_string)
+                    .map(Some)
+                    .collect::<Vec<_>>();
+                if addresses.is_empty() {
+                    return Err(Error::InvalidContainerConfig(format!(
+                        "no host addresses are contained in prefix {prefix:?}"
+                    )));
+                }
+                addresses
+            }
+        };
+        bindings
+            .entry(key)
+            .or_default()
+            .get_or_insert_with(Vec::new)
+            .extend(host_ips.into_iter().map(|host_ip| PortBinding {
+                host_ip,
+                host_port: Some(published_port.to_string()),
+            }));
+    }
+    Ok((
+        (!exposed.is_empty()).then(|| exposed.into_iter().collect()),
+        (!bindings.is_empty()).then_some(bindings),
+    ))
+}
+
+pub(super) fn docker_healthcheck(
+    healthcheck: Option<&HealthcheckSpec>,
+) -> Result<Option<HealthConfig>, Error> {
+    let Some(healthcheck) = healthcheck else {
+        return Ok(None);
+    };
+    if healthcheck.disabled {
+        return Ok(Some(HealthConfig {
+            test: Some(vec!["NONE".into()]),
+            ..Default::default()
+        }));
+    }
+    Ok(Some(HealthConfig {
+        test: Some(healthcheck.test.clone()),
+        interval: duration_nanos(healthcheck.interval_millis, "healthcheck interval")?,
+        timeout: duration_nanos(healthcheck.timeout_millis, "healthcheck timeout")?,
+        start_period: duration_nanos(healthcheck.start_period_millis, "healthcheck start period")?,
+        start_interval: duration_nanos(
+            healthcheck.start_interval_millis,
+            "healthcheck start interval",
+        )?,
+        retries: healthcheck.retries.map(i64::from),
+    }))
+}
+
+fn duration_nanos(value: Option<u64>, field: &str) -> Result<Option<i64>, Error> {
+    value
+        .map(|millis| {
+            millis
+                .checked_mul(1_000_000)
+                .and_then(|nanos| i64::try_from(nanos).ok())
+                .ok_or_else(|| Error::InvalidContainerConfig(format!("{field} is too large")))
+        })
+        .transpose()
+}
+
+fn docker_config_archive(spec: &ResolvedServiceSpec) -> Result<Option<Vec<u8>>, Error> {
+    if spec.container.config_mounts.is_empty() {
+        return Ok(None);
+    }
+    let mut archive = tar::Builder::new(Vec::new());
+    for mount in &spec.container.config_mounts {
+        let config = spec
+            .configs
+            .iter()
+            .find(|config| config.name == mount.config_name)
+            .ok_or_else(|| {
+                Error::InvalidMount(format!(
+                    "config references undeclared config {:?}",
+                    mount.config_name
+                ))
+            })?;
+        let target = mount
+            .target
+            .as_ref()
+            .map_or_else(|| format!("/{}", mount.config_name), ToString::to_string);
+        let path = target
+            .strip_prefix('/')
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| Error::InvalidMount(format!("invalid config target {target:?}")))?;
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(config.content.len() as u64);
+        header.set_mode(mount.mode.unwrap_or(0o444));
+        header.set_uid(mount.uid.unwrap_or(0));
+        header.set_gid(mount.gid.unwrap_or(0));
+        header.set_cksum();
+        archive
+            .append_data(&mut header, path, config.content.as_slice())
+            .map_err(|error| Error::InvalidMount(format!("invalid config archive: {error}")))?;
+    }
+    archive
+        .into_inner()
+        .map(Some)
+        .map_err(|error| Error::InvalidMount(format!("invalid config archive: {error}")))
 }
 
 pub(super) fn docker_resources(resources: &ContainerResources) -> HostConfig {

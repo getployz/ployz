@@ -30,7 +30,7 @@ use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
 
 #[cfg(test)]
-use service_container::{docker_mounts, docker_resources};
+use service_container::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
 
 pub const LABEL_MANAGED: &str = "ployz.managed";
 pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
@@ -509,6 +509,8 @@ pub enum Error {
     #[error("container archive failed: {0}")]
     Archive(#[from] io::Error),
     #[error(transparent)]
+    Network(#[from] crate::network::NetworkError),
+    #[error(transparent)]
     SpecStore(#[from] SpecStoreError),
     #[error(transparent)]
     ReplicatedStore(#[from] crate::corrosion::Error),
@@ -526,6 +528,8 @@ pub enum Error {
     UnknownVolumeReference(ServiceVolumeReference),
     #[error("invalid Docker mount: {0}")]
     InvalidMount(String),
+    #[error("invalid container configuration: {0}")]
+    InvalidContainerConfig(String),
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -568,6 +572,7 @@ impl Error {
             | Self::PortBindPrefixTooLarge(_)
             | Self::UnknownVolumeReference(_)
             | Self::InvalidMount(_)
+            | Self::InvalidContainerConfig(_)
             | Self::MissingField(_)
             | Self::MissingLabel(_)
             | Self::InvalidValue { .. }
@@ -575,6 +580,7 @@ impl Error {
             Self::Docker(_)
             | Self::Json(_)
             | Self::Archive(_)
+            | Self::Network(_)
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)
             | Self::EventStreamClosed
@@ -780,6 +786,87 @@ mod tests {
         };
         assert_eq!(ulimit.name.as_deref(), Some("nofile"));
         assert_eq!((ulimit.soft, ulimit.hard), (Some(20_000), Some(40_000)));
+    }
+
+    #[test]
+    fn host_ports_and_healthchecks_map_without_losing_bind_or_timing_details() {
+        let ports: Vec<ployz_core::PortPublication> = serde_json::from_value(serde_json::json!([
+            {
+                "mode":"host",
+                "bind":{"kind":"all"},
+                "published_port":8080,
+                "container_port":80,
+                "transport_protocol":"tcp"
+            },
+            {
+                "mode":"host",
+                "bind":{"kind":"prefix","prefix":"192.0.2.0/24"},
+                "published_port":5353,
+                "container_port":53,
+                "transport_protocol":"udp"
+            },
+            {
+                "mode":"ingress",
+                "hostname":"api.example.com",
+                "load_balancer_port":443,
+                "container_port":8443,
+                "http_protocol":"https"
+            }
+        ]))
+        .unwrap();
+        let (exposed, bindings) = docker_ports(
+            &ports,
+            &[
+                "192.0.2.4".parse().unwrap(),
+                "198.51.100.8".parse().unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(exposed.unwrap(), ["53/udp", "80/tcp"]);
+        let bindings = bindings.unwrap();
+        let tcp = bindings
+            .get("80/tcp")
+            .and_then(Option::as_ref)
+            .and_then(|bindings| bindings.first())
+            .unwrap();
+        let udp = bindings
+            .get("53/udp")
+            .and_then(Option::as_ref)
+            .and_then(|bindings| bindings.first())
+            .unwrap();
+        assert_eq!(tcp.host_ip, None);
+        assert_eq!(udp.host_ip.as_deref(), Some("192.0.2.4"));
+        assert_eq!(udp.host_port.as_deref(), Some("5353"));
+
+        let healthcheck = serde_json::from_value(serde_json::json!({
+            "test":["CMD","true"],
+            "interval_millis":1000,
+            "timeout_millis":2000,
+            "start_period_millis":3000,
+            "start_interval_millis":4000,
+            "retries":5
+        }))
+        .unwrap();
+        let mapped = docker_healthcheck(Some(&healthcheck)).unwrap().unwrap();
+        assert_eq!(mapped.test.unwrap(), ["CMD", "true"]);
+        assert_eq!(mapped.interval, Some(1_000_000_000));
+        assert_eq!(mapped.timeout, Some(2_000_000_000));
+        assert_eq!(mapped.start_period, Some(3_000_000_000));
+        assert_eq!(mapped.start_interval, Some(4_000_000_000));
+        assert_eq!(mapped.retries, Some(5));
+
+        let disabled = ployz_core::HealthcheckSpec {
+            disabled: true,
+            ..healthcheck
+        };
+        assert_eq!(
+            docker_healthcheck(Some(&disabled))
+                .unwrap()
+                .unwrap()
+                .test
+                .unwrap(),
+            ["NONE"]
+        );
     }
 
     #[test]
