@@ -14,7 +14,7 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    ApiClient, CorrosionConfig, ReplicatedStore, Statement, run_machine_publisher,
+    ApiClient, CorrosionConfig, ReplicatedStore, Statement, run_machine_publisher_with_restart,
     wait_for_catch_up,
 };
 use crate::machine::{LocalMachineRecord, LocalMachineStore};
@@ -167,7 +167,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
     let (restart, restart_rx) = tokio::sync::watch::channel(false);
-    let publisher = tokio::spawn(run_machine_publisher(
+    let publisher = tokio::spawn(run_machine_publisher_with_restart(
         Some(store.clone()),
         Arc::clone(&local),
         participating,
@@ -216,12 +216,10 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         ReplicatedStore::new(ApiClient::new(unused_address(), &"a".repeat(64)).unwrap());
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
-    let (restart, restart_rx) = tokio::sync::watch::channel(false);
     let publisher = tokio::spawn(run_machine_publisher(
         Some(unavailable),
         interrupted,
         participating,
-        restart,
         shutdown_rx,
     ));
     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -233,7 +231,6 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(persisted.phase, LocalMachinePhase::Joining);
     assert_eq!(persisted.min_store_version, target);
     assert!(!*participating_rx.borrow());
-    assert!(!*restart_rx.borrow());
 
     running.cleanup().await.unwrap();
 }

@@ -15,7 +15,8 @@ pub use service::{
 };
 pub(crate) use store::LocalContainerSnapshot;
 pub use store::{
-    ReplicatedObservations, ReplicatedStore, run_machine_publisher, wait_for_catch_up,
+    ReplicatedObservations, ReplicatedStore, run_machine_publisher,
+    run_machine_publisher_with_restart, wait_for_catch_up,
 };
 
 use thiserror::Error;

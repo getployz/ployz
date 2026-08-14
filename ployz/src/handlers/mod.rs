@@ -1,3 +1,5 @@
+use std::{future::Future, path::Path, pin::Pin};
+
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
 use thiserror::Error as ThisError;
@@ -113,6 +115,59 @@ fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
         .flatten()
         .map(|values| values.cloned().collect())
         .unwrap_or_default()
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, Error> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+async fn connect_client(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<crate::connect::Client, Error> {
+    let config = matches
+        .get_one::<String>("ployz-config")
+        .map(Path::new)
+        .map(crate::context::expand_home)
+        .ok_or_else(|| "Ployz config path is required".to_owned())?;
+    crate::connect::connect(
+        &config,
+        matches.get_one::<String>("connect").map(String::as_str),
+        context,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
+    with_client_context(root, None, work)
+}
+
+fn with_client_context<F>(
+    root: &ArgMatches,
+    context_override: Option<&str>,
+    work: F,
+) -> Result<(), Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
+    let leaf = leaf_matches(root);
+    let context =
+        context_override.or_else(|| leaf.get_one::<String>("context").map(String::as_str));
+    runtime()?.block_on(async {
+        let mut client = connect_client(leaf, context).await?;
+        work(&mut client).await
+    })
 }
 
 fn provision_then_continue(matches: &ArgMatches, command: &str) -> Result<(), Error> {

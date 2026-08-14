@@ -16,7 +16,7 @@ use ployz_core::{LocalMachinePhase, MachineRpcServer};
 use ployzd::{
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, RunningCorrosion,
-        run_machine_publisher,
+        run_machine_publisher_with_restart,
     },
     dns,
     docker::{ContainerObserver, LocalDocker, MachineSpecStore},
@@ -165,7 +165,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client())),
     )
-    .with_containers(docker, specs);
+    .with_optional_containers(docker, specs);
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
         local_record.id.clone(),
@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         wait_for_shutdown(shutdown_rx.clone()),
     );
     let metrics = metrics::serve(metrics_listener, registry, shutdown_rx.clone());
-    let publisher = run_machine_publisher(
+    let publisher = run_machine_publisher_with_restart(
         replicated_store.clone(),
         Arc::clone(&store),
         participating,

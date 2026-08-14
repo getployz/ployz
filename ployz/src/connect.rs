@@ -427,11 +427,16 @@ impl Client {
     pub async fn list_machines(
         &mut self,
     ) -> Result<Vec<ployz_core::MachineObservation>, ConnectError> {
-        self.rpc
+        let response = self
+            .rpc
             .list_machines(RpcRequest::list_machines().encode()?)
             .await?
             .into_inner()
-            .decode_response()?
+            .decode_response()?;
+        if let RpcResponseBody::Error(error) = &response.body {
+            return Err(ConnectError::Remote(error.clone()));
+        }
+        response
             .decode_machine_list()
             .map(<[_]>::to_vec)
             .map_err(ConnectError::Codec)

@@ -51,7 +51,7 @@ pub(crate) async fn create_volume_on_machine(
 
 impl Client {
     pub async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
-        let machines = entry_machines(&mut self.rpc).await?;
+        let machines = self.list_machines().await?;
         let mut tasks = JoinSet::new();
         let mut omissions = Vec::new();
         for machine in machines {

@@ -2,7 +2,7 @@ use clap::ArgMatches;
 
 use crate::compose::{BuildOptions, LoadOptions, execute_build, load_project, plan_build};
 
-use super::{Error, image, leaf_matches, string_values};
+use super::{Error, connect_client, leaf_matches, runtime, string_values};
 
 pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
@@ -43,9 +43,9 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         leaf.get_one::<String>("context").map(String::as_str),
         matches.get_one::<String>("connect").map(String::as_str),
     );
-    let runtime = image::runtime()?;
+    let runtime = runtime()?;
     let failures = runtime.block_on(async {
-        let mut client = image::connect_client(matches, context).await?;
+        let mut client = connect_client(matches, context).await?;
         let mut failures = Vec::new();
         for service in &plan {
             let targets = push_targets(&explicit, &service.machines);

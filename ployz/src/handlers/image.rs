@@ -1,13 +1,6 @@
-use std::path::Path;
-
 use clap::ArgMatches;
 
-use crate::{
-    connect::{Client, connect},
-    context::expand_home,
-};
-
-use super::{Error, leaf_matches, string_values};
+use super::{Error, connect_client, leaf_matches, runtime, string_values};
 
 pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
@@ -84,7 +77,7 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
     for failure in &result.failures {
         eprintln!("WARNING: {}: {}", failure.machine_id, failure.error);
     }
-    if result.failures.is_empty() && result.omissions.is_empty() {
+    if result.all_targets_succeeded() {
         Ok(())
     } else {
         Err(format!(
@@ -92,26 +85,4 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
             result.failures.len() + result.omissions.len()
         ))
     }
-}
-
-pub(super) async fn connect_client(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<Client, Error> {
-    let config = matches
-        .get_one::<String>("ployz-config")
-        .map(Path::new)
-        .map(expand_home)
-        .ok_or_else(|| "Ployz config path is required".to_owned())?;
-    connect(
-        &config,
-        matches.get_one::<String>("connect").map(String::as_str),
-        context,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-pub(super) fn runtime() -> Result<tokio::runtime::Runtime, Error> {
-    tokio::runtime::Runtime::new().map_err(|error| error.to_string())
 }

@@ -44,6 +44,8 @@ pub enum ProxyRoute {
     Many(Vec<Machine>),
 }
 
+pub type TargetResolutionError = MachineTargetError;
+
 pub fn resolve_route(
     request: RoutingRequest,
     visible: &[Machine],

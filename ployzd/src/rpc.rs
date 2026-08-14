@@ -69,10 +69,21 @@ impl MachineService {
     }
 
     #[must_use]
-    pub fn with_containers(mut self, docker: Option<LocalDocker>, specs: MachineSpecStore) -> Self {
+    pub fn with_containers(mut self, docker: LocalDocker, specs: MachineSpecStore) -> Self {
+        self.containers = Some(ContainerContext { docker, specs });
+        self
+    }
+
+    #[must_use]
+    pub fn with_optional_containers(
+        mut self,
+        docker: Option<LocalDocker>,
+        specs: MachineSpecStore,
+    ) -> Self {
         self.containers = docker.map(|docker| ContainerContext { docker, specs });
         self
     }
+
     #[allow(clippy::result_large_err)]
     fn local_record(&self) -> Result<crate::machine::LocalMachineRecord, Status> {
         self.store
@@ -122,7 +133,6 @@ impl MachineRpc for MachineService {
             REGISTER_MACHINE_CAPABILITY,
             JOIN_MACHINE_CAPABILITY,
             LIST_MACHINES_CAPABILITY,
-            LIST_IMAGES_CAPABILITY,
             RESET_MACHINE_CAPABILITY,
         ]
         .into_iter()
@@ -144,6 +154,7 @@ impl MachineRpc for MachineService {
                     EXEC_CONTAINER_CAPABILITY,
                     CONTAINER_LOGS_CAPABILITY,
                     MACHINE_LOGS_CAPABILITY,
+                    LIST_IMAGES_CAPABILITY,
                 ]
                 .into_iter()
                 .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
