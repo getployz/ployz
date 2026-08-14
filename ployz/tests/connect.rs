@@ -329,6 +329,34 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
+    async fn reserve_domain(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn get_domain(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn release_domain(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn create_domain_records(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn reset(
         &self,
         _request: Request<OpaquePayload>,

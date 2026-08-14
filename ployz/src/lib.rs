@@ -4,6 +4,7 @@ pub mod compose;
 pub mod connect;
 pub mod context;
 pub mod deploy;
+pub mod dns;
 pub mod handlers;
 pub mod image;
 pub mod operator;

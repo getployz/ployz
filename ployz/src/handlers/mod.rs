@@ -12,6 +12,7 @@ use thiserror::Error as ThisError;
 mod build;
 mod caddy;
 mod context;
+mod dns;
 mod image;
 mod machine;
 mod operator;
@@ -79,10 +80,6 @@ fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
         matches = child;
     }
     matches
-}
-
-fn not_implemented(command: &str) -> Result<(), Error> {
-    Err(format!("ployz {command} is not implemented yet").into())
 }
 
 fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
@@ -176,11 +173,6 @@ where
 type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
 macro_rules! declare_handler {
-    ($function:ident => $path:literal) => {
-        fn $function(_matches: &ArgMatches) -> Result<(), Error> {
-            not_implemented($path)
-        }
-    };
     ($function:ident => $path:literal, $matches:ident $body:block) => {
         fn $function($matches: &ArgMatches) -> Result<(), Error> $body
     };
@@ -217,9 +209,9 @@ stub_handlers! {
         )
     } => "ctx use";
     deploy(root) { workflow::deploy(root) } => "deploy";
-    dns_release => "dns release";
-    dns_reserve => "dns reserve";
-    dns_show => "dns show";
+    dns_release(root) { dns::release(root) } => "dns release";
+    dns_reserve(root) { dns::reserve(root) } => "dns reserve";
+    dns_show(root) { dns::show(root) } => "dns show";
     exec(root) { operator::exec(root) } => "exec";
     image_list(root) { image::list(root) } => "image ls";
     image_push(root) { image::push(root) } => "image push";
@@ -289,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_commands_report_their_full_path() {
+    fn dns_show_uses_the_real_handler() {
         let mut command = crate::cli::command();
         let matches = command
             .clone()
@@ -297,7 +289,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("ployz dns show is not implemented yet".into())
+            Err("no Ployz config or local daemon socket is available".into())
         );
     }
 

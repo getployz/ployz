@@ -4,17 +4,18 @@ use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CapabilityName, CodecError, ConfigMount, ConfigSpec,
     ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
-    DESCRIBE_CONTRACT_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
+    CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DnsRecord, DnsRecordRequest,
+    DnsRecordType, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
     GET_CADDY_CONFIG_CAPABILITY, HealthObservation, ImageSummary, LIST_IMAGES_CAPABILITY,
     MachineFailure, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
     MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, MachineTokenRequest,
     MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement,
     PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ResolvedServiceSpec,
-    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse, RpcResponseBody,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame,
-    grpc_frames,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
+    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcRequestBody,
+    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource,
+    encode_grpc_frame, grpc_frames,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -285,6 +286,62 @@ fn caddy_config_contract_returns_the_owned_plain_file() {
         "example.test { respond ok }\n"
     );
     assert_eq!(GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1");
+}
+
+#[test]
+fn hosted_dns_contract_keeps_credentials_daemon_side_and_records_exact() {
+    let reserve = RpcRequest::reserve_domain("https://dns.example/v1".into());
+    assert_eq!(
+        reserve.encode().unwrap().decode_request().unwrap().body,
+        RpcRequestBody::ReserveDomain(ReserveDomainRequest {
+            endpoint: "https://dns.example/v1".into(),
+        })
+    );
+
+    let records = vec![
+        DnsRecordRequest {
+            name: "*".into(),
+            record_type: DnsRecordType::A,
+            values: vec!["192.0.2.1".into()],
+        },
+        DnsRecordRequest {
+            name: "*".into(),
+            record_type: DnsRecordType::Aaaa,
+            values: vec!["2001:db8::1".into()],
+        },
+    ];
+    assert_eq!(
+        serde_json::to_value(&records).unwrap(),
+        json!([
+            { "name": "*", "type": "A", "values": ["192.0.2.1"] },
+            { "name": "*", "type": "AAAA", "values": ["2001:db8::1"] }
+        ])
+    );
+    let request = RpcRequest::create_domain_records(records.clone());
+    assert_eq!(
+        request.encode().unwrap().decode_request().unwrap().body,
+        RpcRequestBody::CreateDomainRecords(CreateDomainRecordsRequest {
+            records: records.clone(),
+        })
+    );
+
+    assert_eq!(
+        RpcResponse::domain("opaque.ployz.example".into())
+            .decode_domain()
+            .unwrap(),
+        "opaque.ployz.example"
+    );
+    let created = vec![DnsRecord {
+        name: "*.opaque.ployz.example".into(),
+        record_type: DnsRecordType::A,
+        values: vec!["192.0.2.1".into()],
+    }];
+    assert_eq!(
+        RpcResponse::domain_records(created.clone())
+            .decode_domain_records()
+            .unwrap(),
+        created
+    );
 }
 
 #[test]
@@ -909,6 +966,34 @@ impl MachineRpc for FixtureMachineRpc {
     }
 
     async fn get_caddy_config(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn reserve_domain(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn get_domain(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn release_domain(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn create_domain_records(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {

@@ -6,20 +6,21 @@ use std::{
 };
 
 use ployz_core::{
-    CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CREATE_VOLUME_CAPABILITY,
-    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
-    GET_CADDY_CONFIG_CAPABILITY, INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY,
-    INSPECT_MACHINE_CAPABILITY, INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY,
-    JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
-    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LocalMachineRemoved,
-    LogMetadata, LogOrigin, MACHINE_LOGS_CAPABILITY, MACHINE_TOKEN_CAPABILITY, Machine,
-    MachineDetails, MachineId, MachineIdentity, MachineLogService, MachineRpc, MachineToken,
-    OpaquePayload, PROTOCOL_MAJOR, PublicIpDiscovery, REGISTER_MACHINE_CAPABILITY,
+    CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CREATE_DOMAIN_RECORDS_CAPABILITY,
+    CREATE_VOLUME_CAPABILITY, CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
+    EXEC_CONTAINER_CAPABILITY, GET_CADDY_CONFIG_CAPABILITY, GET_DOMAIN_CAPABILITY,
+    INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
+    INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY, JOIN_MACHINE_CAPABILITY,
+    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
+    LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LocalMachineRemoved, LogMetadata, LogOrigin,
+    MACHINE_LOGS_CAPABILITY, MACHINE_TOKEN_CAPABILITY, Machine, MachineDetails, MachineId,
+    MachineIdentity, MachineLogService, MachineRpc, MachineToken, OpaquePayload, PROTOCOL_MAJOR,
+    PublicIpDiscovery, REGISTER_MACHINE_CAPABILITY, RELEASE_DOMAIN_CAPABILITY,
     REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RttObservation, START_CONTAINER_CAPABILITY,
-    STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY, associate_wireguard_peers,
-    synthesize_membership,
+    REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RttObservation,
+    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    associate_wireguard_peers, synthesize_membership,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -119,6 +120,20 @@ impl MachineService {
             })
     }
 
+    fn ready_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
+        let participating = self
+            .store
+            .lock()
+            .map_err(|_| unavailable("local Machine record lock poisoned"))?
+            .record()
+            .phase
+            == LocalMachinePhase::Participating;
+        if !participating {
+            return Err(unavailable("Machine is not participating"));
+        }
+        self.replicated()
+    }
+
     fn containers(&self) -> Result<&ContainerContext, RpcError> {
         self.containers
             .as_ref()
@@ -185,6 +200,18 @@ impl MachineRpc for MachineService {
             capabilities.insert(
                 CapabilityName::parse(GET_CADDY_CONFIG_CAPABILITY)
                     .expect("static capability name is valid"),
+            );
+        }
+        if self.cluster.is_some() {
+            capabilities.extend(
+                [
+                    RESERVE_DOMAIN_CAPABILITY,
+                    GET_DOMAIN_CAPABILITY,
+                    RELEASE_DOMAIN_CAPABILITY,
+                    CREATE_DOMAIN_RECORDS_CAPABILITY,
+                ]
+                .into_iter()
+                .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
             );
         }
         respond(RpcResponse::contract_description(ContractDescription {
@@ -987,6 +1014,126 @@ impl MachineRpc for MachineService {
         }
     }
 
+    async fn reserve_domain(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::ReserveDomain(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected reserve_domain request"));
+        };
+        if request.endpoint.is_empty() {
+            return respond(RpcResponse::error(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "hosted DNS endpoint is required".into(),
+                details: Value::Null,
+            }));
+        }
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        if replicated
+            .domain_reservation()
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+            .is_some()
+        {
+            return respond(RpcResponse::error(RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "Cluster domain is already reserved".into(),
+                details: Value::Null,
+            }));
+        }
+        let reservation = match crate::hosted_dns::HostedDnsClient::new()
+            .reserve(&request.endpoint)
+            .await
+        {
+            Ok(reservation) => reservation,
+            Err(error) => return respond(RpcResponse::error(hosted_dns_error(error))),
+        };
+        replicated
+            .publish_domain_reservation(&reservation)
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+        respond(RpcResponse::domain(reservation.name))
+    }
+
+    async fn get_domain(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !matches!(request_body(request)?, RpcRequestBody::GetDomain(_)) {
+            return Err(Status::invalid_argument("expected get_domain request"));
+        }
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let domain = replicated
+            .domain_reservation()
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+        match domain {
+            Some(domain) => respond(RpcResponse::domain(domain.name)),
+            None => respond(RpcResponse::error(domain_not_found())),
+        }
+    }
+
+    async fn release_domain(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !matches!(request_body(request)?, RpcRequestBody::ReleaseDomain(_)) {
+            return Err(Status::invalid_argument("expected release_domain request"));
+        }
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let Some(domain) = replicated
+            .domain_reservation()
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+        else {
+            return respond(RpcResponse::error(domain_not_found()));
+        };
+        replicated
+            .remove_domain_reservation()
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+        // TODO(UT-142): implement and call the Uncloud DNS endpoint to release/delete the domain.
+        respond(RpcResponse::domain(domain.name))
+    }
+
+    async fn create_domain_records(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::CreateDomainRecords(request) = request_body(request)? else {
+            return Err(Status::invalid_argument(
+                "expected create_domain_records request",
+            ));
+        };
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let Some(domain) = replicated
+            .domain_reservation()
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+        else {
+            return respond(RpcResponse::error(domain_not_found()));
+        };
+        match crate::hosted_dns::HostedDnsClient::new()
+            .create_records(&domain, &request.records)
+            .await
+        {
+            Ok(records) => respond(RpcResponse::domain_records(records)),
+            Err(error) => respond(RpcResponse::error(hosted_dns_error(error))),
+        }
+    }
+
     async fn reset(
         &self,
         request: Request<OpaquePayload>,
@@ -1061,6 +1208,33 @@ fn unavailable(message: &str) -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: message.into(),
         details: Value::Null,
+    }
+}
+
+fn domain_not_found() -> RpcError {
+    RpcError {
+        code: RpcErrorCode::NotFound,
+        message: "Cluster domain was not found".into(),
+        details: Value::Null,
+    }
+}
+
+fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {
+    let (code, details) = match error {
+        crate::hosted_dns::Error::AuthNoDomain => (
+            RpcErrorCode::Unauthenticated,
+            serde_json::json!({ "no_domain": true }),
+        ),
+        crate::hosted_dns::Error::Authentication => (RpcErrorCode::Unauthenticated, Value::Null),
+        crate::hosted_dns::Error::Http(_)
+        | crate::hosted_dns::Error::Json(_)
+        | crate::hosted_dns::Error::InvalidEndpoint(_)
+        | crate::hosted_dns::Error::Status(_) => (RpcErrorCode::Internal, Value::Null),
+    };
+    RpcError {
+        code,
+        message: error.to_string(),
+        details,
     }
 }
 

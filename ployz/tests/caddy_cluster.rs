@@ -4,8 +4,8 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerAction, ContainerKind, Machine, MachineSelector, MembershipObservation,
-    RequestedServiceSpec, ResolvedServiceSpec, ServiceId,
+    CADDY_VERIFY_PATH, ContainerAction, ContainerKind, Machine, MachineSelector,
+    MembershipObservation, RequestedServiceSpec, ResolvedServiceSpec, ServiceId,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use semver::Version;
@@ -31,7 +31,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             config.contains("admin API is not reachable")
         })
         .await;
-        assert!(config.contains("/.ployz-verify"));
+        assert!(config.contains(CADDY_VERIFY_PATH));
     }
 
     let selected_image = ployz::caddy::latest_image().await.unwrap();
@@ -119,7 +119,10 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         );
         assert_eq!(
             cluster
-                .machine_shell(index, "curl -fsS http://127.0.0.1/.ployz-verify")
+                .machine_shell(
+                    index,
+                    &format!("curl -fsS http://127.0.0.1{CADDY_VERIFY_PATH}")
+                )
                 .unwrap()
                 .trim(),
             machine.id.as_str()
@@ -128,7 +131,9 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             cluster
                 .machine_shell(
                     index,
-                    "curl -fsS -H 'Host: example.test' http://127.0.0.1/.ployz-verify",
+                    &format!(
+                        "curl -fsS -H 'Host: example.test' http://127.0.0.1{CADDY_VERIFY_PATH}"
+                    ),
                 )
                 .unwrap()
                 .trim(),

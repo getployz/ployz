@@ -489,6 +489,8 @@ impl Client {
                         | RpcResponseBody::VolumeDetails(_)
                         | RpcResponseBody::VolumeRemoved(_)
                         | RpcResponseBody::CaddyConfig(_)
+                        | RpcResponseBody::Domain(_)
+                        | RpcResponseBody::DomainRecords(_)
                         | RpcResponseBody::MachineUpdated(_)
                         | RpcResponseBody::LocalMachineRemoved(_)
                         | RpcResponseBody::MachineRemoved(_)
@@ -562,6 +564,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
                     RpcErrorCode::Unavailable
                 }
                 tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
+                tonic::Code::Unauthenticated => RpcErrorCode::Unauthenticated,
                 tonic::Code::Ok
                 | tonic::Code::Cancelled
                 | tonic::Code::Unknown
@@ -570,8 +573,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
                 | tonic::Code::FailedPrecondition
                 | tonic::Code::OutOfRange
                 | tonic::Code::Internal
-                | tonic::Code::DataLoss
-                | tonic::Code::Unauthenticated => RpcErrorCode::Internal,
+                | tonic::Code::DataLoss => RpcErrorCode::Internal,
             },
             message: status.message().into(),
             details: if status.details().is_empty() {
@@ -607,16 +609,16 @@ fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
             RpcErrorCode::Conflict
         }
         tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
+        tonic::Code::Unauthenticated => RpcErrorCode::Unauthenticated,
         tonic::Code::DeadlineExceeded
         | tonic::Code::ResourceExhausted
         | tonic::Code::Unavailable => RpcErrorCode::Unavailable,
         tonic::Code::Internal | tonic::Code::DataLoss | tonic::Code::Unknown => {
             RpcErrorCode::Internal
         }
-        tonic::Code::Ok
-        | tonic::Code::Cancelled
-        | tonic::Code::PermissionDenied
-        | tonic::Code::Unauthenticated => RpcErrorCode::Unknown(format!("grpc_{}", failure.code)),
+        tonic::Code::Ok | tonic::Code::Cancelled | tonic::Code::PermissionDenied => {
+            RpcErrorCode::Unknown(format!("grpc_{}", failure.code))
+        }
     };
     RpcError {
         code,

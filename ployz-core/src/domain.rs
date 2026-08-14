@@ -13,6 +13,8 @@ use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
 
+pub const CADDY_VERIFY_PATH: &str = "/.ployz-verify";
+
 /// A name lookup result. Duplicate names are a normal observable state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "match", content = "values")]

@@ -228,6 +228,7 @@ fn docker_status(error: super::Error) -> Status {
         RpcErrorCode::Unavailable => tonic::Code::Unavailable,
         RpcErrorCode::Unsupported => tonic::Code::Unimplemented,
         RpcErrorCode::Internal | RpcErrorCode::Unknown(_) => tonic::Code::Internal,
+        RpcErrorCode::Unauthenticated => tonic::Code::Unauthenticated,
     };
     Status::new(code, error.to_string())
 }

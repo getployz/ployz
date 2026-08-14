@@ -45,6 +45,10 @@ pub const REMOVE_MACHINE_CAPABILITY: &str = "ployz.machine.remove.v1";
 pub const INSPECT_WIREGUARD_CAPABILITY: &str = "ployz.wireguard.inspect.v1";
 pub const LIST_IMAGES_CAPABILITY: &str = "ployz.image.list.v1";
 pub const GET_CADDY_CONFIG_CAPABILITY: &str = "ployz.caddy.config.v1";
+pub const RESERVE_DOMAIN_CAPABILITY: &str = "ployz.dns.reserve.v1";
+pub const GET_DOMAIN_CAPABILITY: &str = "ployz.dns.show.v1";
+pub const RELEASE_DOMAIN_CAPABILITY: &str = "ployz.dns.release.v1";
+pub const CREATE_DOMAIN_RECORDS_CAPABILITY: &str = "ployz.dns.records.create.v1";
 pub const UNREGISTRY_PORT: u16 = 51500;
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
@@ -283,6 +287,38 @@ pub struct ListImagesRequest {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetCaddyConfigRequest {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReserveDomainRequest {
+    pub endpoint: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetDomainRequest {}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseDomainRequest {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DnsRecordType {
+    #[serde(rename = "A")]
+    A,
+    #[serde(rename = "AAAA")]
+    Aaaa,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DnsRecordRequest {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub record_type: DnsRecordType,
+    pub values: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreateDomainRecordsRequest {
+    pub records: Vec<DnsRecordRequest>,
+}
 
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -532,6 +568,38 @@ impl RpcRequest {
     }
 
     #[must_use]
+    pub fn reserve_domain(endpoint: String) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::ReserveDomain(ReserveDomainRequest { endpoint }),
+        }
+    }
+
+    #[must_use]
+    pub fn get_domain() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::GetDomain(GetDomainRequest {}),
+        }
+    }
+
+    #[must_use]
+    pub fn release_domain() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::ReleaseDomain(ReleaseDomainRequest {}),
+        }
+    }
+
+    #[must_use]
+    pub fn create_domain_records(records: Vec<DnsRecordRequest>) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::CreateDomainRecords(CreateDomainRecordsRequest { records }),
+        }
+    }
+
+    #[must_use]
     pub fn inspect_wireguard() -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -568,6 +636,8 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     VolumeRemoved => "volume_removed",
     MachineImages => "machine_images",
     CaddyConfig => "caddy_config",
+    Domain => "domain",
+    DomainRecords => "domain_records",
     MachineUpdated => "machine_updated",
     LocalMachineRemoved => "local_machine_removed",
     MachineRemoved => "machine_removed",
@@ -657,6 +727,24 @@ pub struct CaddyConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Domain {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DnsRecord {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub record_type: DnsRecordType,
+    pub values: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DomainRecords {
+    pub records: Vec<DnsRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineUpdated {
     pub machine: Machine,
 }
@@ -728,6 +816,8 @@ define_response_body! {
     VolumeRemoved(VolumeRemoved) => VolumeRemoved,
     MachineImages(MachineImages) => MachineImages,
     CaddyConfig(CaddyConfig) => CaddyConfig,
+    Domain(Domain) => Domain,
+    DomainRecords(DomainRecords) => DomainRecords,
     MachineUpdated(MachineUpdated) => MachineUpdated,
     LocalMachineRemoved(LocalMachineRemoved) => LocalMachineRemoved,
     MachineRemoved(MachineRemoved) => MachineRemoved,
@@ -920,6 +1010,22 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn domain(name: String) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::Domain(Domain { name }),
+        }
+    }
+
+    #[must_use]
+    pub fn domain_records(records: Vec<DnsRecord>) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::DomainRecords(DomainRecords { records }),
+        }
+    }
+
+    #[must_use]
     pub fn wireguard_inspected(device: WireGuardDevice) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -1085,6 +1191,24 @@ impl RpcResponse {
         }
     }
 
+    pub fn decode_domain(&self) -> Result<&str, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::Domain(domain) = &self.body {
+            Ok(&domain.name)
+        } else {
+            Err(self.unexpected("domain"))
+        }
+    }
+
+    pub fn decode_domain_records(&self) -> Result<Vec<DnsRecord>, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::DomainRecords(records) = &self.body {
+            Ok(records.records.clone())
+        } else {
+            Err(self.unexpected("domain_records"))
+        }
+    }
+
     pub fn decode_machine_updated(&self) -> Result<&Machine, CodecError> {
         validate_protocol_major(self.protocol_major)?;
         if let RpcResponseBody::MachineUpdated(updated) = &self.body {
@@ -1211,6 +1335,7 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     Unavailable => "unavailable",
     Conflict => "conflict",
     Internal => "internal",
+    Unauthenticated => "unauthenticated",
 });
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

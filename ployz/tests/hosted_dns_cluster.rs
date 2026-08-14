@@ -1,0 +1,425 @@
+use std::{
+    net::{IpAddr, Ipv6Addr},
+    process::{self, Command, Output},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use ployz_core::{DnsRecordRequest, DnsRecordType, MachineUpdate, PublicIpUpdate, RpcRequest};
+use ployz_testkit::{Cluster, ClusterPlan};
+use reqwest::{Client as HttpClient, redirect::Policy};
+use serde_json::{Value, json};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+};
+
+#[derive(Clone, Debug)]
+struct CapturedRequest {
+    head: String,
+    body: Vec<u8>,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster_boundaries() {
+    let plan = ClusterPlan::new(&format!("l3-hosted-dns-{}", process::id()), 2).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    let machines = cluster.initialize_two().await.unwrap();
+    let direct = cluster.api_address(0).unwrap();
+
+    let first_ip = outer_ipv4(&cluster, 0);
+    let second_ip = outer_ipv4(&cluster, 1);
+    let mapped_second = IpAddr::V6(second_ip.to_ipv6_mapped());
+    cluster
+        .update_machine(
+            0,
+            machines[0].id.as_str(),
+            MachineUpdate {
+                public_ip: PublicIpUpdate::Set(IpAddr::V4(first_ip)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    cluster
+        .update_machine(
+            0,
+            machines[1].id.as_str(),
+            MachineUpdate {
+                public_ip: PublicIpUpdate::Set(mapped_second),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_exact_caddy(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
+    wait_exact_caddy(mapped_second, machines[1].id.as_str().as_bytes()).await;
+
+    let (port, captured) = fake_hosted_service().await;
+    let gateway = cluster
+        .machine_shell(0, "ip route show default | awk '{print $3; exit}'")
+        .unwrap();
+    let endpoint = format!("http://{}:{port}", gateway.trim());
+    cli(
+        &direct,
+        &["dns", "reserve", "--endpoint", endpoint.as_str()],
+    );
+
+    let stored = cluster
+        .machine_shell(
+            0,
+            r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary '{"query":"SELECT value FROM cluster WHERE key = ?","params":["hosted_dns"]}' http://127.0.0.1:51002/v1/queries"#,
+        )
+        .unwrap();
+    assert!(stored.contains("raw-token"), "stored reservation: {stored}");
+    assert!(stored.contains("opaque.ployz.example"));
+
+    let initial = snapshot(&captured);
+    assert_eq!(domain_requests(&initial), 1);
+    let reservation_request = initial
+        .iter()
+        .find(|request| request.head.starts_with("POST /domains HTTP/1.1"))
+        .unwrap();
+    assert!(reservation_request.body.is_empty());
+    assert!(
+        !reservation_request
+            .head
+            .to_ascii_lowercase()
+            .contains("authorization:")
+    );
+    assert_eq!(record_requests(&initial).len(), 2);
+    assert_record(record_request(&initial, 0), "A", &[first_ip.to_string()]);
+    assert_record(
+        record_request(&initial, 1),
+        "AAAA",
+        &[mapped_second.to_string()],
+    );
+
+    let second_direct = cluster.api_address(1).unwrap();
+    assert_eq!(
+        cli(&second_direct, &["dns", "show"]).trim(),
+        "opaque.ployz.example"
+    );
+    cluster.restart(1).unwrap();
+    assert_eq!(
+        wait_cli_success(&second_direct, &["dns", "show"])
+            .await
+            .trim(),
+        "opaque.ployz.example"
+    );
+    let duplicate = run_cli(
+        &second_direct,
+        &["dns", "reserve", "--endpoint", endpoint.as_str()],
+    );
+    assert!(!duplicate.status.success());
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already reserved"));
+    assert_eq!(domain_requests(&snapshot(&captured)), 1);
+
+    cluster
+        .update_machine(
+            0,
+            machines[1].id.as_str(),
+            MachineUpdate {
+                public_ip: PublicIpUpdate::Set("2001:db8::2".parse().unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    let partial = snapshot(&captured);
+    assert_eq!(record_requests(&partial).len(), 3);
+    assert_record(record_request(&partial, 2), "A", &[first_ip.to_string()]);
+
+    cluster
+        .update_machine(
+            0,
+            machines[0].id.as_str(),
+            MachineUpdate {
+                public_ip: PublicIpUpdate::Set("192.0.2.1".parse().unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let before_empty = snapshot(&captured).len();
+    let empty = run_cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    assert!(!empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("no publicly reachable"));
+    assert_eq!(snapshot(&captured).len(), before_empty);
+    assert_eq!(
+        cli(&direct, &["dns", "show"]).trim(),
+        "opaque.ployz.example"
+    );
+
+    let mut client = ployz::connect::connect(
+        std::path::Path::new("/missing-ployz-test-config"),
+        Some(&direct),
+        None,
+    )
+    .await
+    .unwrap();
+    let error = client
+        .request(
+            RpcRequest::create_domain_records(vec![
+                DnsRecordRequest {
+                    name: "*".into(),
+                    record_type: DnsRecordType::A,
+                    values: vec![first_ip.to_string()],
+                },
+                DnsRecordRequest {
+                    name: "*".into(),
+                    record_type: DnsRecordType::Aaaa,
+                    values: vec![Ipv6Addr::LOCALHOST.to_string()],
+                },
+            ]),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("HTTP 500"));
+    let after_rejection = snapshot(&captured);
+    assert_eq!(record_requests(&after_rejection).len(), 5);
+    assert_record(
+        record_request(&after_rejection, 3),
+        "A",
+        &[first_ip.to_string()],
+    );
+    assert_record(
+        record_request(&after_rejection, 4),
+        "AAAA",
+        &[Ipv6Addr::LOCALHOST.to_string()],
+    );
+    assert!(after_rejection.iter().all(|request| {
+        request.head.starts_with("POST ")
+            && !request
+                .head
+                .to_ascii_lowercase()
+                .contains("dns.uncloud.run")
+    }));
+
+    let before_release = after_rejection.len();
+    assert_eq!(
+        cli(&direct, &["dns", "release"]).trim(),
+        "Released Cluster domain: opaque.ployz.example"
+    );
+    let missing = run_cli(&direct, &["dns", "show"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("was not found"));
+    assert_eq!(snapshot(&captured).len(), before_release);
+}
+
+fn outer_ipv4(cluster: &Cluster, index: usize) -> std::net::Ipv4Addr {
+    cluster
+        .machine_shell(index, "hostname -i | awk '{print $1}'")
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+async fn wait_exact_caddy(address: IpAddr, expected: &[u8]) {
+    let http = HttpClient::builder()
+        .no_proxy()
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Ok(response) = http
+                .get(format!(
+                    "http://{}{}",
+                    std::net::SocketAddr::new(address, 80),
+                    ployz_core::CADDY_VERIFY_PATH
+                ))
+                .send()
+                .await
+                && response.status().as_u16() == 200
+                && response.bytes().await.ok().as_deref() == Some(expected)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Caddy verification endpoint did not become reachable");
+}
+
+fn cli(direct: &str, args: &[&str]) -> String {
+    let output = run_cli(direct, args);
+    assert!(
+        output.status.success(),
+        "ployz {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn run_cli(direct: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            direct,
+            "--ployz-config",
+            "/missing-ployz-test-config",
+        ])
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+async fn wait_cli_success(direct: &str, args: &[&str]) -> String {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let output = run_cli(direct, args);
+            if output.status.success() {
+                return String::from_utf8(output.stdout).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("CLI did not become ready")
+}
+
+async fn fake_hosted_service() -> (u16, Arc<Mutex<Vec<CapturedRequest>>>) {
+    let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let requests = Arc::clone(&captured);
+    tokio::spawn(async move {
+        let mut record_index = 0;
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            let path = request
+                .head
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap()
+                .to_owned();
+            let (status, response) = if path == "/domains" {
+                (
+                    200,
+                    json!({"name":"opaque.ployz.example","token":"raw-token"}),
+                )
+            } else {
+                assert_eq!(path, "/domains/opaque.ployz.example/records");
+                record_index += 1;
+                if record_index == 5 {
+                    (500, json!({"error":"rejected later record"}))
+                } else {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap();
+                    (
+                        200,
+                        json!({
+                            "name": body.get("name").unwrap(),
+                            "type": body.get("type").unwrap(),
+                            "values": body.get("values").unwrap(),
+                            "fqdn": "*.opaque.ployz.example"
+                        }),
+                    )
+                }
+            };
+            requests.lock().unwrap().push(request);
+            let body = response.to_string();
+            let reason = if status == 200 {
+                "OK"
+            } else {
+                "Internal Server Error"
+            };
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    (port, captured)
+}
+
+async fn read_request(stream: &mut tokio::net::TcpStream) -> CapturedRequest {
+    let mut bytes = Vec::new();
+    let header_end = loop {
+        let mut chunk = [0; 1024];
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0);
+        bytes.extend_from_slice(chunk.get(..read).unwrap());
+        if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break end + 4;
+        }
+    };
+    let head = String::from_utf8(bytes.get(..header_end).unwrap().to_vec()).unwrap();
+    let content_length = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        })
+        .unwrap_or_default();
+    while bytes.len() < header_end + content_length {
+        let mut chunk = [0; 1024];
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0);
+        bytes.extend_from_slice(chunk.get(..read).unwrap());
+    }
+    CapturedRequest {
+        head,
+        body: bytes
+            .get(header_end..header_end + content_length)
+            .unwrap()
+            .to_vec(),
+    }
+}
+
+fn snapshot(captured: &Arc<Mutex<Vec<CapturedRequest>>>) -> Vec<CapturedRequest> {
+    captured.lock().unwrap().clone()
+}
+
+fn domain_requests(requests: &[CapturedRequest]) -> usize {
+    requests
+        .iter()
+        .filter(|request| request.head.starts_with("POST /domains HTTP/1.1"))
+        .count()
+}
+
+fn record_requests(requests: &[CapturedRequest]) -> Vec<&CapturedRequest> {
+    requests
+        .iter()
+        .filter(|request| request.head.contains("/records HTTP/1.1"))
+        .collect()
+}
+
+fn record_request(requests: &[CapturedRequest], index: usize) -> &CapturedRequest {
+    requests
+        .iter()
+        .filter(|request| request.head.contains("/records HTTP/1.1"))
+        .nth(index)
+        .unwrap()
+}
+
+fn assert_record(request: &CapturedRequest, record_type: &str, values: &[String]) {
+    assert!(
+        request
+            .head
+            .to_ascii_lowercase()
+            .contains("authorization: bearer raw-token\r\n")
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&request.body).unwrap(),
+        json!({"name":"*","type":record_type,"values":values})
+    );
+}
