@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::IpAddr,
     num::{NonZeroU16, NonZeroU32},
 };
@@ -86,6 +86,70 @@ pub struct MachineObservation {
     pub membership: MembershipObservation,
     #[serde(default)]
     pub selected_endpoint: Option<SelectedEndpoint>,
+}
+
+#[must_use]
+pub fn machine_matches_selector(machine: &Machine, selector: &MachineSelector) -> bool {
+    selector.as_str() == "*"
+        || machine.id.as_str() == selector.as_str()
+        || machine.name.as_str() == selector.as_str()
+}
+
+pub fn resolve_machine_selectors(
+    visible: &[Machine],
+    selectors: &[MachineSelector],
+) -> Result<Vec<Machine>, MachineSelectorError> {
+    if selectors.is_empty() {
+        return Err(MachineSelectorError::NoTargets);
+    }
+    let mut targets = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut missing = Vec::new();
+    for selector in selectors {
+        let matches = visible
+            .iter()
+            .filter(|machine| machine_matches_selector(machine, selector))
+            .collect::<Vec<_>>();
+        if selector.as_str() != "*" && matches.len() > 1 {
+            return Err(MachineSelectorError::Ambiguous {
+                selector: selector.clone(),
+                matches: matches
+                    .into_iter()
+                    .map(|machine| machine.id.clone())
+                    .collect(),
+            });
+        }
+        if matches.is_empty() {
+            missing.push(selector.clone());
+        }
+        for machine in matches {
+            if seen.insert(machine.id.clone()) {
+                targets.push(machine.clone());
+            }
+        }
+    }
+    if !missing.is_empty() {
+        Err(MachineSelectorError::NotFound(missing))
+    } else if targets.is_empty() {
+        Err(MachineSelectorError::NoVisibleMachines)
+    } else {
+        Ok(targets)
+    }
+}
+
+#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
+pub enum MachineSelectorError {
+    #[error("no Machine targets were requested")]
+    NoTargets,
+    #[error("no Machines are visible to this entry Machine")]
+    NoVisibleMachines,
+    #[error("Machine selectors were not found: {0:?}")]
+    NotFound(Vec<MachineSelector>),
+    #[error("Machine selector {selector:?} is ambiguous: {matches:?}")]
+    Ambiguous {
+        selector: MachineSelector,
+        matches: Vec<MachineId>,
+    },
 }
 
 crate::value::open_string_enum!(LocalMachinePhase, Unrecognized {
@@ -289,6 +353,17 @@ pub struct VolumeDriver {
     pub name: String,
     #[serde(default)]
     pub options: BTreeMap<String, String>,
+}
+
+/// One Docker Volume observed on one Machine.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DockerVolume {
+    pub id: crate::DockerVolumeId,
+    pub driver: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 /// A storage source declared under a service-local reference.

@@ -17,6 +17,7 @@ mod firewall;
 mod linux;
 
 pub use endpoints::discover_endpoints;
+pub(crate) use endpoints::interface_addresses;
 pub use firewall::apply_firewall_rules;
 pub use linux::NetworkPlane;
 

@@ -38,13 +38,13 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
     let resolved = resolve_route(
         RoutingRequest::Many(vec![
             selector("local"),
-            selector(first.id.as_str()),
+            selector(second.id.as_str()),
             selector("local"),
         ]),
         &visible,
     )
     .unwrap();
-    assert_eq!(resolved, ProxyRoute::Many(vec![local, first.clone()]));
+    assert_eq!(resolved, ProxyRoute::Many(vec![local, second.clone()]));
 
     assert_eq!(
         resolve_route(RoutingRequest::Many(vec![selector("*")]), &visible).unwrap(),
@@ -58,19 +58,20 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
         Err(TargetResolutionError::NotFound(vec![selector("missing")]))
     );
 
-    let ProxyRoute::One(ambiguous) =
-        resolve_route(RoutingRequest::One(selector("duplicate")), &visible).unwrap()
-    else {
-        panic!("expected one observed ambiguity winner")
-    };
-    assert!(ambiguous == first || ambiguous == second);
-
-    let ProxyRoute::One(shared_namespace) =
-        resolve_route(RoutingRequest::One(selector(first.id.as_str())), &visible).unwrap()
-    else {
-        panic!("expected one observed name-or-ID winner")
-    };
-    assert!(shared_namespace == first || shared_namespace == collision);
+    assert_eq!(
+        resolve_route(RoutingRequest::One(selector("duplicate")), &visible),
+        Err(TargetResolutionError::Ambiguous {
+            selector: selector("duplicate"),
+            matches: vec![first.id.clone(), second.id.clone()],
+        })
+    );
+    assert_eq!(
+        resolve_route(RoutingRequest::One(selector(first.id.as_str())), &visible),
+        Err(TargetResolutionError::Ambiguous {
+            selector: selector(first.id.as_str()),
+            matches: vec![first.id.clone(), collision.id],
+        })
+    );
 
     assert_eq!(
         resolve_route(RoutingRequest::One(selector("missing")), &visible),

@@ -8,8 +8,8 @@ use std::{
 };
 
 use ployz::{
-    compose::{ComposeProject, parse_normalized, plan_compose_deploy},
-    deploy::{DeployOperation, DeploySnapshot, PlanOptions},
+    compose::{ComposePlanError, ComposeProject, parse_normalized, plan_compose_deploy},
+    deploy::{DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanOptions},
 };
 use ployz_core::{
     AdvertisedEndpoint, HostBind, HttpProtocol, Machine, MachineId, MachineName,
@@ -642,6 +642,203 @@ secrets: {token: {x-command: "printf resolved"}}
     assert!(matches!(
         plan.service_plans.get(1).unwrap().operations(),
         [DeployOperation::RunContainer { .. }]
+    ));
+}
+
+#[test]
+fn compose_plan_anchors_shared_replicated_volumes_and_rejects_mixed_modes() {
+    let replicated = parse_normalized(
+        r#"
+name: demo
+services:
+  first: {image: app, x-machines: [one, two], volumes: [{type: volume, source: data, target: /first}]}
+  second: {image: app, x-machines: two, volumes: [{type: volume, source: data, target: /second}]}
+volumes: {data: {name: demo_data}}
+"#,
+        ".",
+    )
+    .unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('a', "one"), machine('b', "two")],
+        ..Default::default()
+    };
+    let plan = plan_compose_deploy(&replicated, &snapshot, PlanOptions::default()).unwrap();
+    assert_eq!(plan.volume_operations.len(), 1);
+    let Some(DeployOperation::CreateVolume {
+        machine_id: anchor,
+        volume,
+    }) = plan.volume_operations.first()
+    else {
+        panic!("missing Volume creation: {plan:?}")
+    };
+    assert_eq!(anchor, &machine('b', "two").machine.id);
+    assert!(plan.service_plans.iter().all(|service| matches!(
+        service.operations(),
+        [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
+    )));
+
+    let VolumeSource::Named {
+        name: existing_name,
+        ..
+    } = &volume.source
+    else {
+        panic!("unexpected shared Volume: {volume:?}")
+    };
+    let mut existing_snapshot = snapshot.clone();
+    existing_snapshot.volumes = snapshot
+        .machines
+        .iter()
+        .map(|machine| ObservedDockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id: machine.machine.id.clone(),
+                name: existing_name.clone(),
+            },
+            driver: "local".into(),
+            options: BTreeMap::new(),
+        })
+        .collect();
+    let existing_on_both =
+        plan_compose_deploy(&replicated, &existing_snapshot, PlanOptions::default()).unwrap();
+    assert!(existing_on_both.volume_operations.is_empty());
+    assert!(
+        existing_on_both
+            .service_plans
+            .iter()
+            .all(|service| matches!(
+                service.operations(),
+                [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
+            ))
+    );
+
+    let connected = parse_normalized(
+        r#"
+services:
+  a-peer: {image: app, x-machines: [one, two], volumes: [{type: volume, source: a, target: /a}]}
+  b-peer: {image: app, x-machines: two, volumes: [{type: volume, source: b, target: /b}]}
+  flexible:
+    image: app
+    x-machines: [one, two]
+    volumes:
+      - {type: volume, source: a, target: /a}
+      - {type: volume, source: b, target: /b}
+volumes: {a: {}, b: {}}
+"#,
+        ".",
+    )
+    .unwrap();
+    let connected_plan =
+        plan_compose_deploy(&connected, &snapshot, PlanOptions::default()).unwrap();
+    assert_eq!(connected_plan.volume_operations.len(), 2);
+    assert!(
+        connected_plan
+            .volume_operations
+            .iter()
+            .all(|operation| matches!(
+                operation,
+                DeployOperation::CreateVolume { machine_id, .. } if machine_id == anchor
+            ))
+    );
+    assert!(connected_plan.service_plans.iter().all(|service| matches!(
+        service.operations(),
+        [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
+    )));
+
+    let constrained = parse_normalized(
+        r#"
+services:
+  first:
+    image: app
+    volumes:
+      - {type: volume, source: shared, target: /shared}
+      - {type: volume, source: existing, target: /existing}
+  second: {image: app, volumes: [{type: volume, source: shared, target: /shared}]}
+volumes:
+  shared: {name: shared}
+  existing: {name: existing}
+"#,
+        ".",
+    )
+    .unwrap();
+    let existing_machine = machine('b', "two").machine.id;
+    let constrained_plan = plan_compose_deploy(
+        &constrained,
+        &DeploySnapshot {
+            machines: snapshot.machines.clone(),
+            volumes: vec![ObservedDockerVolume {
+                id: ployz_core::DockerVolumeId {
+                    machine_id: existing_machine.clone(),
+                    name: ployz_core::DockerVolumeName::parse("existing").unwrap(),
+                },
+                driver: "local".into(),
+                options: BTreeMap::new(),
+            }],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        constrained_plan.volume_operations.as_slice(),
+        [DeployOperation::CreateVolume { machine_id, .. }] if machine_id == &existing_machine
+    ));
+
+    let different_replica_counts = parse_normalized(
+        r#"
+services:
+  first:
+    image: app
+    deploy: {replicas: 1}
+    volumes: [{type: volume, source: data, target: /first}]
+  second:
+    image: app
+    deploy: {replicas: 2}
+    volumes: [{type: volume, source: data, target: /second}]
+volumes: {data: {name: shared}}
+"#,
+        ".",
+    )
+    .unwrap();
+    assert!(
+        plan_compose_deploy(&different_replica_counts, &snapshot, PlanOptions::default()).is_ok()
+    );
+
+    let disjoint = parse_normalized(
+        r#"
+services:
+  first: {image: app, x-machines: one, volumes: [{type: volume, source: data, target: /first}]}
+  second: {image: app, x-machines: two, volumes: [{type: volume, source: data, target: /second}]}
+volumes: {data: {name: shared}}
+"#,
+        ".",
+    )
+    .unwrap();
+    assert!(matches!(
+        plan_compose_deploy(&disjoint, &snapshot, PlanOptions::default()),
+        Err(ComposePlanError::Service {
+            source: ployz::deploy::PlanError::NoEligibleMachines,
+            ..
+        })
+    ));
+
+    let mixed = parse_normalized(
+        r#"
+services:
+  everywhere:
+    image: app
+    deploy: {mode: global}
+    volumes: [{type: volume, source: data, target: /global}]
+  singleton:
+    image: app
+    volumes: [{type: volume, source: data, target: /replicated}]
+volumes: {data: {name: shared}}
+"#,
+        ".",
+    )
+    .unwrap();
+    assert!(matches!(
+        plan_compose_deploy(&mixed, &snapshot, PlanOptions::default()),
+        Err(ComposePlanError::MixedVolumeModes { name, global, replicated })
+            if name.as_str() == "shared" && global == "everywhere" && replicated == "singleton"
     ));
 }
 

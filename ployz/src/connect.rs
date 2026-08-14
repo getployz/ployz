@@ -9,7 +9,12 @@ use std::{
 };
 
 use hyper_util::rt::TokioIo;
-use ployz_core::{CodecError, ContractDescription, MachineRpcClient, RpcRequest};
+use ployz_core::{
+    CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
+    MachineFailure, MachineId, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload,
+    PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+};
+use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -265,6 +270,7 @@ impl AsyncWrite for SshIo {
     }
 }
 
+#[derive(Clone)]
 pub struct Client {
     pub(crate) rpc: MachineRpcClient<Channel>,
     connection: Connection,
@@ -278,14 +284,131 @@ impl Client {
     }
 
     pub async fn describe_contract(&mut self) -> Result<ContractDescription, ConnectError> {
-        self.rpc
+        let response = self
+            .rpc
             .describe_contract(RpcRequest::describe_contract().encode()?)
             .await?
             .into_inner()
-            .decode_response()?
-            .decode_contract_description()
-            .cloned()
-            .map_err(ConnectError::Codec)
+            .decode_response()?;
+        decode_rpc(response, |response| {
+            response.decode_contract_description().cloned()
+        })
+    }
+
+    pub async fn list_machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
+        let response = self
+            .rpc
+            .list_machines(RpcRequest::list_machines().encode()?)
+            .await?
+            .into_inner()
+            .decode_response()?;
+        decode_rpc(response, |response| {
+            response.decode_machine_list().map(<[_]>::to_vec)
+        })
+    }
+
+    pub async fn create_volume(
+        &mut self,
+        machine_id: &MachineId,
+        request: CreateVolumeRequest,
+    ) -> Result<DockerVolume, ConnectError> {
+        let request = targeted(RpcRequest::create_volume(request).encode()?, machine_id)?;
+        let response = self
+            .rpc
+            .create_volume(request)
+            .await?
+            .into_inner()
+            .decode_response()?;
+        decode_rpc(response, |response| {
+            response.decode_volume_created().cloned()
+        })
+    }
+
+    pub async fn list_volumes(
+        &mut self,
+        machines: &[MachineObservation],
+    ) -> PartialResult<Vec<DockerVolume>, RpcError> {
+        // UT-028: keep every target's success or typed failure instead of warning and omitting it.
+        let mut requests = tokio::task::JoinSet::new();
+        for (index, machine) in machines.iter().enumerate() {
+            let machine_id = machine.machine.id.clone();
+            let mut rpc = self.rpc.clone();
+            requests.spawn(async move {
+                let outcome = async {
+                    let request = targeted(RpcRequest::list_volumes().encode()?, &machine_id)?;
+                    let response = rpc
+                        .list_volumes(request)
+                        .await?
+                        .into_inner()
+                        .decode_response()?;
+                    decode_rpc(response, |response| {
+                        response.decode_volume_list().map(<[_]>::to_vec)
+                    })
+                }
+                .await;
+                (index, machine_id, outcome)
+            });
+        }
+        let mut outcomes = Vec::with_capacity(machines.len());
+        while let Some(outcome) = requests.join_next().await {
+            outcomes.push(outcome.expect("Volume listing task does not panic"));
+        }
+        outcomes.sort_by_key(|(index, _, _)| *index);
+        let mut result = PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        };
+        for (_, machine_id, outcome) in outcomes {
+            match outcome {
+                Ok(volumes) => result.successes.push(MachineSuccess {
+                    machine_id,
+                    value: volumes,
+                }),
+                Err(error) => result.failures.push(MachineFailure {
+                    machine_id,
+                    error: rpc_error(error),
+                }),
+            }
+        }
+        result
+    }
+
+    pub async fn inspect_volume(
+        &mut self,
+        id: &DockerVolumeId,
+    ) -> Result<DockerVolume, ConnectError> {
+        let request = targeted(
+            RpcRequest::inspect_volume(id.name.clone()).encode()?,
+            &id.machine_id,
+        )?;
+        let response = self
+            .rpc
+            .inspect_volume(request)
+            .await?
+            .into_inner()
+            .decode_response()?;
+        decode_rpc(response, |response| {
+            response.decode_volume_details().cloned()
+        })
+    }
+
+    pub async fn remove_volume(
+        &mut self,
+        id: DockerVolumeId,
+        force: bool,
+    ) -> Result<(), ConnectError> {
+        let request = targeted(
+            RpcRequest::remove_volume(id.name, force).encode()?,
+            &id.machine_id,
+        )?;
+        let response = self
+            .rpc
+            .remove_volume(request)
+            .await?
+            .into_inner()
+            .decode_response()?;
+        decode_rpc(response, RpcResponse::decode_volume_removed)
     }
 
     pub async fn dial_proxy(
@@ -296,6 +419,78 @@ impl Client {
         self.connector
             .dial_proxy(&self.connection, network, address)
             .await
+    }
+}
+
+fn targeted(
+    payload: OpaquePayload,
+    machine_id: &MachineId,
+) -> Result<tonic::Request<OpaquePayload>, ConnectError> {
+    let mut request = tonic::Request::new(payload);
+    request.metadata_mut().insert(
+        "machine",
+        machine_id
+            .as_str()
+            .parse()
+            .map_err(|_| ConnectError::InvalidMachineMetadata)?,
+    );
+    Ok(request)
+}
+
+fn decode_rpc<T>(
+    response: RpcResponse,
+    decode: impl FnOnce(&RpcResponse) -> Result<T, CodecError>,
+) -> Result<T, ConnectError> {
+    if let RpcResponseBody::Error(error) = &response.body {
+        return Err(ConnectError::Remote(error.clone()));
+    }
+    decode(&response).map_err(ConnectError::Codec)
+}
+
+pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
+    match error {
+        ConnectError::Remote(error) => error,
+        ConnectError::Rpc(status) => RpcError {
+            code: match status.code() {
+                tonic::Code::InvalidArgument => RpcErrorCode::InvalidArgument,
+                tonic::Code::NotFound => RpcErrorCode::NotFound,
+                tonic::Code::AlreadyExists | tonic::Code::Aborted => RpcErrorCode::Conflict,
+                tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => {
+                    RpcErrorCode::Unavailable
+                }
+                tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
+                tonic::Code::Ok
+                | tonic::Code::Cancelled
+                | tonic::Code::Unknown
+                | tonic::Code::PermissionDenied
+                | tonic::Code::ResourceExhausted
+                | tonic::Code::FailedPrecondition
+                | tonic::Code::OutOfRange
+                | tonic::Code::Internal
+                | tonic::Code::DataLoss
+                | tonic::Code::Unauthenticated => RpcErrorCode::Internal,
+            },
+            message: status.message().into(),
+            details: if status.details().is_empty() {
+                Value::Null
+            } else {
+                json!({ "grpc_details": String::from_utf8_lossy(status.details()) })
+            },
+        },
+        error @ (ConnectError::Attempt(_)
+        | ConnectError::ProxyUnsupported(_)
+        | ConnectError::UnsupportedNetwork(_)
+        | ConnectError::Config(_)
+        | ConnectError::Connection(_)
+        | ConnectError::Context(_)
+        | ConnectError::Path { .. }
+        | ConnectError::AllFailed { .. }
+        | ConnectError::Codec(_)
+        | ConnectError::InvalidMachineMetadata) => RpcError {
+            code: RpcErrorCode::Internal,
+            message: error.to_string(),
+            details: Value::Null,
+        },
     }
 }
 
@@ -399,7 +594,9 @@ pub enum ConnectError {
     #[error("Machine RPC payload failed: {0}")]
     Codec(#[from] CodecError),
     #[error("Machine RPC returned: {}", .0.message)]
-    Remote(ployz_core::RpcError),
+    Remote(RpcError),
+    #[error("Machine ID cannot be used as routing metadata")]
+    InvalidMachineMetadata,
 }
 
 impl From<tonic::Status> for ConnectError {

@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeSet, HashMap},
+    net::IpAddr,
+};
 
 use bollard::models::{
-    ContainerCreateBody, DeviceMapping as DockerDeviceMapping, DeviceRequest, EndpointSettings,
-    HealthConfig, HostConfig, HostConfigLogConfig, Mount, MountBindOptions, MountTmpfsOptions,
-    MountType, MountVolumeOptions, MountVolumeOptionsDriverConfig, NetworkingConfig, PortBinding,
-    ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
+    ContainerCreateBody, DeviceMapping as DockerDeviceMapping, DeviceRequest, HealthConfig,
+    HostConfig, HostConfigLogConfig, Mount, MountBindOptions, MountTmpfsOptions, MountType,
+    MountVolumeOptions, MountVolumeOptionsDriverConfig, PortBinding, PortMap, ResourcesUlimits,
+    RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
     ContainerKind, HealthcheckSpec, HostBind, MachineId, PortPublication, ResolvedServiceSpec,
@@ -13,7 +16,6 @@ use ployz_core::{
 
 use super::{
     Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_SERVICE_ID, LABEL_SERVICE_NAME,
-    MAX_HOST_BIND_ADDRESSES,
 };
 
 pub(super) fn container_create_body(
@@ -45,54 +47,29 @@ pub(super) fn container_create_body(
         labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
     }
     let mounts = docker_mounts(&spec.volumes, &spec.mounts)?;
-    let port_bindings = if hook.is_none() {
-        docker_port_bindings(&spec.ports)?
+    let interface_addresses = if hook.is_none()
+        && spec.ports.iter().any(|port| {
+            matches!(
+                port,
+                PortPublication::Host {
+                    bind: HostBind::Prefix { .. },
+                    ..
+                }
+            )
+        }) {
+        crate::network::interface_addresses()?
     } else {
-        HashMap::new()
+        Vec::new()
     };
-    let exposed_ports =
-        (!port_bindings.is_empty()).then(|| port_bindings.keys().cloned().collect());
+    let (exposed_ports, port_bindings) = if hook.is_none() {
+        docker_ports(&spec.ports, &interface_addresses)?
+    } else {
+        (None, None)
+    };
     let resources = &container.resources;
     let host_config = HostConfig {
-        memory: resources.memory_bytes,
-        memory_reservation: resources.memory_reservation_bytes,
-        nano_cpus: resources.cpu_nanos,
         init: container.init,
-        devices: (!resources.devices.is_empty()).then(|| {
-            resources
-                .devices
-                .iter()
-                .map(|device| DockerDeviceMapping {
-                    path_on_host: Some(device.machine_path.to_string()),
-                    path_in_container: Some(device.container_path.to_string()),
-                    cgroup_permissions: Some(device.cgroup_permissions.clone()),
-                })
-                .collect()
-        }),
-        device_requests: (!resources.device_reservations.is_empty()).then(|| {
-            resources
-                .device_reservations
-                .iter()
-                .map(|reservation| DeviceRequest {
-                    driver: reservation.driver.clone(),
-                    count: reservation.count,
-                    device_ids: Some(reservation.device_ids.clone()),
-                    capabilities: Some(reservation.capabilities.clone()),
-                    options: Some(reservation.options.clone().into_iter().collect()),
-                })
-                .collect()
-        }),
-        ulimits: (!resources.ulimits.is_empty()).then(|| {
-            resources
-                .ulimits
-                .iter()
-                .map(|(name, limit)| ResourcesUlimits {
-                    name: Some(name.clone()),
-                    soft: Some(limit.soft),
-                    hard: Some(limit.hard),
-                })
-                .collect()
-        }),
+        network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),
         log_config: container
             .log_driver
             .as_ref()
@@ -100,7 +77,7 @@ pub(super) fn container_create_body(
                 typ: Some(driver.name.clone()),
                 config: Some(driver.options.clone().into_iter().collect()),
             }),
-        port_bindings: (!port_bindings.is_empty()).then_some(port_bindings),
+        port_bindings,
         restart_policy: Some(RestartPolicy {
             name: Some(if hook.is_some() {
                 RestartPolicyNameEnum::NO
@@ -117,10 +94,9 @@ pub(super) fn container_create_body(
             hook.and_then(|hook| hook.privileged)
                 .unwrap_or(container.privileged),
         ),
-        shm_size: resources.shared_memory_bytes,
         sysctls: (!container.sysctls.is_empty())
             .then(|| container.sysctls.clone().into_iter().collect()),
-        ..Default::default()
+        ..docker_resources(resources)
     };
     Ok(ContainerCreateBody {
         user: hook
@@ -161,17 +137,11 @@ pub(super) fn container_create_body(
             .transpose()
             .map_err(|_| Error::DurationOverflow)?,
         host_config: Some(host_config),
-        networking_config: Some(NetworkingConfig {
-            endpoints_config: Some(HashMap::from([(
-                crate::network::DOCKER_NETWORK_NAME.into(),
-                EndpointSettings::default(),
-            )])),
-        }),
         ..Default::default()
     })
 }
 
-fn docker_healthcheck(spec: &HealthcheckSpec) -> Result<HealthConfig, Error> {
+pub(super) fn docker_healthcheck(spec: &HealthcheckSpec) -> Result<HealthConfig, Error> {
     Ok(HealthConfig {
         test: Some(if spec.disabled {
             vec!["NONE".into()]
@@ -197,10 +167,12 @@ fn millis_to_nanos(value: Option<u64>) -> Result<Option<i64>, Error> {
         .transpose()
 }
 
-fn docker_port_bindings(
+pub(super) fn docker_ports(
     ports: &[PortPublication],
-) -> Result<HashMap<String, Option<Vec<PortBinding>>>, Error> {
-    let mut bindings = HashMap::<String, Option<Vec<PortBinding>>>::new();
+    interface_addresses: &[IpAddr],
+) -> Result<(Option<Vec<String>>, Option<PortMap>), Error> {
+    let mut exposed = BTreeSet::new();
+    let mut bindings = PortMap::new();
     for port in ports {
         let PortPublication::Host {
             bind,
@@ -218,18 +190,20 @@ fn docker_port_bindings(
                 TransportProtocol::Udp => "udp",
             }
         );
+        exposed.insert(key.clone());
         let host_ips = match bind {
             HostBind::All => vec![None],
             HostBind::Address { address } => vec![Some(address.to_string())],
             HostBind::Prefix { prefix } => {
-                // ponytail: bound CIDR expansion; lift only if Docker gains native prefix binds.
-                let addresses = prefix
-                    .hosts()
-                    .take(MAX_HOST_BIND_ADDRESSES + 1)
+                let addresses = interface_addresses
+                    .iter()
+                    .filter(|address| prefix.contains(*address))
                     .map(|address| Some(address.to_string()))
                     .collect::<Vec<_>>();
-                if addresses.len() > MAX_HOST_BIND_ADDRESSES {
-                    return Err(Error::PortBindPrefixTooLarge(prefix.to_string()));
+                if addresses.is_empty() {
+                    return Err(Error::InvalidContainerConfig(format!(
+                        "no host addresses are contained in prefix {prefix:?}"
+                    )));
                 }
                 addresses
             }
@@ -243,10 +217,58 @@ fn docker_port_bindings(
                 host_port: Some(published_port.to_string()),
             }));
     }
-    Ok(bindings)
+    Ok((
+        (!exposed.is_empty()).then(|| exposed.into_iter().collect()),
+        (!bindings.is_empty()).then_some(bindings),
+    ))
 }
 
-fn docker_mounts(
+pub(super) fn docker_resources(resources: &ployz_core::ContainerResources) -> HostConfig {
+    HostConfig {
+        memory: resources.memory_bytes,
+        memory_reservation: resources.memory_reservation_bytes,
+        nano_cpus: resources.cpu_nanos,
+        devices: (!resources.devices.is_empty()).then(|| {
+            resources
+                .devices
+                .iter()
+                .map(|device| DockerDeviceMapping {
+                    path_on_host: Some(device.machine_path.to_string()),
+                    path_in_container: Some(device.container_path.to_string()),
+                    cgroup_permissions: Some(device.cgroup_permissions.clone()),
+                })
+                .collect()
+        }),
+        device_requests: (!resources.device_reservations.is_empty()).then(|| {
+            resources
+                .device_reservations
+                .iter()
+                .map(|reservation| DeviceRequest {
+                    driver: reservation.driver.clone(),
+                    count: reservation.count,
+                    device_ids: Some(reservation.device_ids.clone()),
+                    capabilities: Some(reservation.capabilities.clone()),
+                    options: Some(reservation.options.clone().into_iter().collect()),
+                })
+                .collect()
+        }),
+        ulimits: (!resources.ulimits.is_empty()).then(|| {
+            resources
+                .ulimits
+                .iter()
+                .map(|(name, limit)| ResourcesUlimits {
+                    name: Some(name.clone()),
+                    soft: Some(limit.soft),
+                    hard: Some(limit.hard),
+                })
+                .collect()
+        }),
+        shm_size: resources.shared_memory_bytes,
+        ..Default::default()
+    }
+}
+
+pub(super) fn docker_mounts(
     volumes: &[ServiceVolume],
     mounts: &[ployz_core::ServiceMount],
 ) -> Result<Vec<Mount>, Error> {
@@ -277,9 +299,12 @@ fn docker_mounts(
                             .map(str::parse)
                             .transpose()
                             .map_err(Error::InvalidMountPropagation)?,
-                        non_recursive: recursive.as_deref().map(|value| value == "disabled"),
-                        create_mountpoint: Some(*create_machine_path),
-                        ..Default::default()
+                        create_mountpoint: create_machine_path.then_some(true),
+                        non_recursive: (recursive.as_deref() == Some("disabled")).then_some(true),
+                        read_only_non_recursive: (recursive.as_deref() == Some("writable"))
+                            .then_some(true),
+                        read_only_force_recursive: (recursive.as_deref() == Some("readonly"))
+                            .then_some(true),
                     });
                 }
                 VolumeSource::Named {
@@ -290,8 +315,6 @@ fn docker_mounts(
                     subpath,
                     ..
                 } => {
-                    // TODO(UT-127): investigate different handling for non-local volume drivers.
-                    // TODO(UT-128): reject existing volumes whose driver or options conflict.
                     translated.typ = Some(MountType::VOLUME);
                     translated.source = Some(name.to_string());
                     translated.volume_options = Some(MountVolumeOptions {

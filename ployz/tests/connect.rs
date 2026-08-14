@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    net::Ipv6Addr,
     sync::{Arc, Mutex},
 };
 
@@ -11,9 +12,12 @@ use ployz::{
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    CapabilityName, ContractDescription, MachineId, MachineRpc, MachineRpcServer, OpaquePayload,
-    PROTOCOL_MAJOR, RpcRequestBody, RpcResponse,
+    AdvertisedEndpoint, CapabilityName, ContractDescription, DockerVolume, DockerVolumeId,
+    DockerVolumeName, Machine, MachineId, MachineName, MachineObservation, MachineRpc,
+    MachineRpcServer, MachineSubnet, ManagementAddress, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, WireGuardPublicKey,
 };
+use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tonic::{
@@ -185,6 +189,13 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
+    async fn create_volume(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn inspect_container(
         &self,
         _request: Request<OpaquePayload>,
@@ -192,7 +203,49 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
+    async fn list_volumes(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let request = request.into_inner().decode_request().unwrap();
+        assert!(matches!(request.body, RpcRequestBody::ListVolumes(_)));
+        let response = if machine_id.as_str().starts_with('b') {
+            RpcResponse::error(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "target unavailable".into(),
+                details: Value::Null,
+            })
+        } else {
+            RpcResponse::volume_list(vec![DockerVolume {
+                id: DockerVolumeId {
+                    machine_id,
+                    name: DockerVolumeName::parse("data").unwrap(),
+                },
+                driver: "local".into(),
+                options: Default::default(),
+                labels: Default::default(),
+            }])
+        };
+        Ok(Response::new(response.encode().unwrap()))
+    }
+
+    async fn inspect_volume(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn create_container(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn remove_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -226,6 +279,73 @@ impl MachineRpc for DiscoveryService {
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
+}
+
+#[tokio::test]
+async fn volume_listing_retains_successes_and_target_failures() {
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let description = ContractDescription {
+        machine_id: MachineId::random(),
+        protocol_major: PROTOCOL_MAJOR,
+        daemon_version: "test".into(),
+        capabilities: Default::default(),
+    };
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(DiscoveryService { description }))
+            .serve_with_incoming(TcpListenerStream::new(tcp)),
+    );
+    let mut client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::tcp(address)],
+        },
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+
+    let result = client
+        .list_volumes(&[machine('a', "one"), machine('b', "two")])
+        .await;
+
+    let [success] = result.successes.as_slice() else {
+        panic!("expected one success: {result:?}")
+    };
+    let [volume] = success.value.as_slice() else {
+        panic!("expected one Volume: {success:?}")
+    };
+    assert_eq!(volume.id.machine_id, machine_id('a'));
+    let [failure] = result.failures.as_slice() else {
+        panic!("expected one failure: {result:?}")
+    };
+    assert_eq!(failure.machine_id, machine_id('b'));
+    assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
+    server.abort();
+}
+
+fn machine(hex: char, name: &str) -> MachineObservation {
+    MachineObservation {
+        machine: Machine {
+            id: machine_id(hex),
+            name: MachineName::parse(name).unwrap(),
+            subnet: MachineSubnet(
+                format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
+                    .parse()
+                    .unwrap(),
+            ),
+            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
+            public_key: WireGuardPublicKey([hex as u8; 32]),
+            advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
+        },
+        membership: MembershipObservation::Up,
+        selected_endpoint: None,
+    }
+}
+
+fn machine_id(hex: char) -> MachineId {
+    MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
 
 #[tokio::test]

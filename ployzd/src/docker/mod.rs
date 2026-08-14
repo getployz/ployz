@@ -1,11 +1,12 @@
 mod create;
 mod lifecycle;
 mod spec_store;
+mod volume;
 
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, io, net::Ipv4Addr, time::Duration, time::SystemTime};
+use std::{collections::HashMap, net::Ipv4Addr, time::Duration, time::SystemTime};
 
 use bollard::{
     Docker,
@@ -27,6 +28,9 @@ use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
 
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
 
+#[cfg(test)]
+use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
+
 pub const LABEL_MANAGED: &str = "ployz.managed";
 pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
@@ -34,7 +38,6 @@ pub const LABEL_HOOK: &str = "ployz.service.hook";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
-const MAX_HOST_BIND_ADDRESSES: usize = 4096;
 
 #[derive(Clone)]
 pub struct LocalDocker {
@@ -163,6 +166,14 @@ fn malformed_container(error: &Error) -> bool {
             | Error::SpecNotFound(_)
             | Error::ContainerNotFound(_)
     )
+}
+
+fn some_map<K, V>(values: impl IntoIterator<Item = (K, V)>) -> Option<HashMap<K, V>>
+where
+    K: Eq + std::hash::Hash,
+{
+    let values = values.into_iter().collect::<HashMap<_, _>>();
+    (!values.is_empty()).then_some(values)
 }
 
 fn display_name(name: Option<&str>) -> String {
@@ -493,8 +504,8 @@ pub enum Error {
     Docker(#[from] bollard::errors::Error),
     #[error("Docker inspect JSON failed: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("container archive failed: {0}")]
-    Archive(#[from] io::Error),
+    #[error(transparent)]
+    Network(#[from] crate::network::NetworkError),
     #[error(transparent)]
     SpecStore(#[from] SpecStoreError),
     #[error(transparent)]
@@ -509,6 +520,8 @@ pub enum Error {
         #[source]
         source: ValueError,
     },
+    #[error("invalid container configuration: {0}")]
+    InvalidContainerConfig(String),
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -527,8 +540,6 @@ pub enum Error {
     DurationOverflow,
     #[error("container size exceeds Docker's range")]
     SizeOverflow,
-    #[error("host bind prefix {0} expands beyond 4096 addresses")]
-    PortBindPrefixTooLarge(String),
     #[error("Docker event stream closed")]
     EventStreamClosed,
     #[error("observer shutdown channel closed")]
@@ -539,23 +550,33 @@ pub enum Error {
 
 impl Error {
     #[must_use]
-    pub const fn container_rpc_code(&self) -> RpcErrorCode {
+    pub const fn rpc_code(&self) -> RpcErrorCode {
         match self {
-            Self::ContainerNotFound(_) | Self::SpecNotFound(_) => RpcErrorCode::NotFound,
+            Self::ContainerNotFound(_)
+            | Self::SpecNotFound(_)
+            | Self::Docker(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }) => RpcErrorCode::NotFound,
+            Self::Docker(bollard::errors::Error::DockerResponseServerError {
+                status_code: 409,
+                ..
+            }) => RpcErrorCode::Conflict,
             Self::MissingPreDeployHook
             | Self::ConfigNotFound(_)
             | Self::VolumeNotFound(_)
             | Self::InvalidMountPropagation(_)
             | Self::DurationOverflow
             | Self::SizeOverflow
-            | Self::PortBindPrefixTooLarge(_)
+            | Self::InvalidContainerConfig(_)
+            | Self::SpecStore(SpecStoreError::InvalidConfig(_))
             | Self::MissingField(_)
             | Self::MissingLabel(_)
             | Self::InvalidValue { .. }
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::Json(_)
-            | Self::Archive(_)
+            | Self::Network(_)
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)
             | Self::EventStreamClosed
@@ -641,6 +662,234 @@ mod tests {
         assert_eq!(
             hook_host.restart_policy.unwrap().name,
             Some(bollard::models::RestartPolicyNameEnum::NO)
+        );
+    }
+
+    #[test]
+    fn resolved_mounts_map_bind_named_alias_and_tmpfs_without_inventing_defaults() {
+        use bollard::models::MountType;
+        use ployz_core::ResolvedServiceSpec;
+
+        let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+            "service_id": "11111111111111111111111111111111",
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
+            "volumes": [
+                {"reference":"host","source":{"kind":"bind","machine_path":"/srv/api"}},
+                {"reference":"alias","source":{"kind":"named","name":"database","driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
+                {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
+            ],
+            "mounts": [
+                {"volume":"host","target":"/host"},
+                {"volume":"alias","target":"/data","read_only":true},
+                {"volume":"memory","target":"/run/cache"}
+            ]
+        }))
+        .unwrap();
+
+        let mounts = docker_mounts(&spec.volumes, &spec.mounts).unwrap();
+        let [bind_mount, named_mount, tmpfs_mount] = mounts.as_slice() else {
+            panic!("expected three mounts: {mounts:?}")
+        };
+        assert_eq!(bind_mount.typ, Some(MountType::BIND));
+        assert_eq!(bind_mount.source.as_deref(), Some("/srv/api"));
+        let bind = bind_mount.bind_options.as_ref().unwrap();
+        assert!(bind.propagation.is_none());
+        assert!(bind.non_recursive.is_none());
+        assert!(bind.read_only_non_recursive.is_none());
+        assert!(bind.read_only_force_recursive.is_none());
+
+        for (recursive, expected) in [
+            ("disabled", (Some(true), None, None)),
+            ("writable", (None, Some(true), None)),
+            ("readonly", (None, None, Some(true))),
+        ] {
+            let mut recursive_spec = spec.clone();
+            let ployz_core::VolumeSource::Bind {
+                recursive: setting, ..
+            } = &mut recursive_spec
+                .volumes
+                .first_mut()
+                .expect("fixture has a bind volume")
+                .source
+            else {
+                panic!("expected bind volume")
+            };
+            *setting = Some(recursive.into());
+            let translated = docker_mounts(&recursive_spec.volumes, &recursive_spec.mounts)
+                .unwrap()
+                .remove(0)
+                .bind_options
+                .unwrap();
+            assert_eq!(
+                (
+                    translated.non_recursive,
+                    translated.read_only_non_recursive,
+                    translated.read_only_force_recursive,
+                ),
+                expected
+            );
+        }
+        assert_eq!(named_mount.typ, Some(MountType::VOLUME));
+        assert_eq!(named_mount.source.as_deref(), Some("database"));
+        assert_eq!(named_mount.read_only, Some(true));
+        assert_eq!(
+            named_mount
+                .volume_options
+                .as_ref()
+                .unwrap()
+                .driver_config
+                .as_ref()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("local")
+        );
+        assert_eq!(tmpfs_mount.typ, Some(MountType::TMPFS));
+        assert!(tmpfs_mount.source.is_none());
+        assert_eq!(
+            tmpfs_mount.tmpfs_options.as_ref().unwrap().size_bytes,
+            Some(4096)
+        );
+
+        let mut missing = spec;
+        missing.mounts.first_mut().unwrap().volume =
+            ployz_core::ServiceVolumeReference::parse("missing").unwrap();
+        assert!(matches!(
+            docker_mounts(&missing.volumes, &missing.mounts),
+            Err(Error::VolumeNotFound(reference)) if reference == "missing"
+        ));
+    }
+
+    #[test]
+    fn container_resources_map_to_docker_without_dropping_limits() {
+        let resources = serde_json::from_value(serde_json::json!({
+            "cpu_nanos": 500_000_000,
+            "memory_bytes": 104_857_600,
+            "memory_reservation_bytes": 52_428_800,
+            "shared_memory_bytes": 26_214_400,
+            "devices": [{
+                "machine_path": "/dev/fuse",
+                "container_path": "/dev/fuse",
+                "cgroup_permissions": "rwm"
+            }],
+            "device_reservations": [{
+                "driver": "nvidia",
+                "count": -1,
+                "capabilities": [["gpu"]],
+                "options": {"virtualization": "false"}
+            }],
+            "ulimits": {"nofile": {"soft": 20_000, "hard": 40_000}}
+        }))
+        .unwrap();
+
+        let mapped = docker_resources(&resources);
+        assert_eq!(mapped.nano_cpus, Some(500_000_000));
+        assert_eq!(mapped.memory, Some(104_857_600));
+        assert_eq!(mapped.memory_reservation, Some(52_428_800));
+        assert_eq!(mapped.shm_size, Some(26_214_400));
+        let [device] = mapped.devices.as_deref().unwrap() else {
+            panic!("expected one Docker device: {mapped:?}")
+        };
+        assert_eq!(device.path_on_host.as_deref(), Some("/dev/fuse"));
+        assert_eq!(device.path_in_container.as_deref(), Some("/dev/fuse"));
+        assert_eq!(device.cgroup_permissions.as_deref(), Some("rwm"));
+        let [request] = mapped.device_requests.as_deref().unwrap() else {
+            panic!("expected one Docker device request: {mapped:?}")
+        };
+        assert_eq!(request.driver.as_deref(), Some("nvidia"));
+        assert_eq!(request.count, Some(-1));
+        assert_eq!(request.capabilities, Some(vec![vec!["gpu".into()]]));
+        assert_eq!(
+            request
+                .options
+                .as_ref()
+                .and_then(|options| options.get("virtualization"))
+                .map(String::as_str),
+            Some("false")
+        );
+        let [ulimit] = mapped.ulimits.as_deref().unwrap() else {
+            panic!("expected one Docker ulimit: {mapped:?}")
+        };
+        assert_eq!(ulimit.name.as_deref(), Some("nofile"));
+        assert_eq!((ulimit.soft, ulimit.hard), (Some(20_000), Some(40_000)));
+    }
+
+    #[test]
+    fn host_ports_and_healthchecks_map_without_losing_bind_or_timing_details() {
+        let ports: Vec<ployz_core::PortPublication> = serde_json::from_value(serde_json::json!([
+            {
+                "mode":"host",
+                "bind":{"kind":"all"},
+                "published_port":8080,
+                "container_port":80,
+                "transport_protocol":"tcp"
+            },
+            {
+                "mode":"host",
+                "bind":{"kind":"prefix","prefix":"192.0.2.0/24"},
+                "published_port":5353,
+                "container_port":53,
+                "transport_protocol":"udp"
+            },
+            {
+                "mode":"ingress",
+                "hostname":"api.example.com",
+                "load_balancer_port":443,
+                "container_port":8443,
+                "http_protocol":"https"
+            }
+        ]))
+        .unwrap();
+        let (exposed, bindings) = docker_ports(
+            &ports,
+            &[
+                "192.0.2.4".parse().unwrap(),
+                "198.51.100.8".parse().unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(exposed.unwrap(), ["53/udp", "80/tcp"]);
+        let bindings = bindings.unwrap();
+        let tcp = bindings
+            .get("80/tcp")
+            .and_then(Option::as_ref)
+            .and_then(|bindings| bindings.first())
+            .unwrap();
+        let udp = bindings
+            .get("53/udp")
+            .and_then(Option::as_ref)
+            .and_then(|bindings| bindings.first())
+            .unwrap();
+        assert_eq!(tcp.host_ip, None);
+        assert_eq!(udp.host_ip.as_deref(), Some("192.0.2.4"));
+        assert_eq!(udp.host_port.as_deref(), Some("5353"));
+
+        let healthcheck = serde_json::from_value(serde_json::json!({
+            "test":["CMD","true"],
+            "interval_millis":1000,
+            "timeout_millis":2000,
+            "start_period_millis":3000,
+            "start_interval_millis":4000,
+            "retries":5
+        }))
+        .unwrap();
+        let mapped = docker_healthcheck(&healthcheck).unwrap();
+        assert_eq!(mapped.test.unwrap(), ["CMD", "true"]);
+        assert_eq!(mapped.interval, Some(1_000_000_000));
+        assert_eq!(mapped.timeout, Some(2_000_000_000));
+        assert_eq!(mapped.start_period, Some(3_000_000_000));
+        assert_eq!(mapped.start_interval, Some(4_000_000_000));
+        assert_eq!(mapped.retries, Some(5));
+
+        let disabled = ployz_core::HealthcheckSpec {
+            disabled: true,
+            ..healthcheck
+        };
+        assert_eq!(
+            docker_healthcheck(&disabled).unwrap().test.unwrap(),
+            ["NONE"]
         );
     }
 

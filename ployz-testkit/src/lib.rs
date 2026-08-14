@@ -11,14 +11,15 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase, Machine,
-    MachineName, MachineRpcClient, MembershipObservation, OpaquePayload, RegisterRequest,
-    Registered, RpcRequest, RpcResponse, RpcResponseBody,
+    AdvertisedEndpoint, ContainerId, DockerVolumeName, InitializeRequest, InspectRequest,
+    JoinRequest, LocalMachinePhase, Machine, MachineName, MachineRpcClient, MembershipObservation,
+    OpaquePayload, RegisterRequest, Registered, RpcRequest, RpcResponse, RpcResponseBody,
 };
 use thiserror::Error;
 
 pub const IMAGE: &str = "ghcr.io/getployz/ployz2-testkit:main";
 pub const CORROSION_IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
+pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
 pub const MACHINE_API_PORT: u16 = 51000;
@@ -29,12 +30,18 @@ static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageTarget {
     pub platform: &'static str,
-    pub requires: [&'static str; 4],
+    pub requires: [&'static str; 5],
 }
 
 #[must_use]
 pub fn image_targets() -> [ImageTarget; 2] {
-    let requires = ["ployzd", "dockerd", "wg", CORROSION_IMAGE];
+    let requires = [
+        "ployzd",
+        "dockerd",
+        "wg",
+        CORROSION_IMAGE,
+        SERVICE_CONTAINER_IMAGE,
+    ];
     [
         ImageTarget {
             platform: "linux/amd64",
@@ -479,6 +486,119 @@ impl Cluster {
         .to_vec())
     }
 
+    pub fn write_volume_data(
+        &self,
+        index: usize,
+        name: &DockerVolumeName,
+        value: &str,
+    ) -> Result<(), TestkitError> {
+        docker([
+            "exec",
+            &self.machine(index)?.name,
+            "sh",
+            "-c",
+            &format!(
+                "printf %s {} > /var/lib/docker/volumes/{}/_data/value",
+                shell_quote(value),
+                name
+            ),
+        ])
+    }
+
+    pub fn stop(&self, index: usize) -> Result<(), TestkitError> {
+        docker(["stop", &self.machine(index)?.name])
+    }
+
+    pub fn api_socket_address(&self, index: usize) -> Result<std::net::SocketAddr, TestkitError> {
+        Ok((Ipv4Addr::LOCALHOST, self.machine(index)?.api_port).into())
+    }
+
+    pub fn prepare_bind(&self, index: usize, path: &str, value: &str) -> Result<(), TestkitError> {
+        let path = shell_quote(path);
+        docker([
+            "exec",
+            &self.machine(index)?.name,
+            "sh",
+            "-c",
+            &format!(
+                "mkdir -p {path} && printf %s {} > {path}/value",
+                shell_quote(value)
+            ),
+        ])
+    }
+
+    pub fn start_container(
+        &self,
+        index: usize,
+        container_id: &ContainerId,
+    ) -> Result<(), TestkitError> {
+        docker([
+            "exec",
+            &self.machine(index)?.name,
+            "docker",
+            "start",
+            container_id.as_str(),
+        ])
+    }
+
+    pub fn read_container_file(
+        &self,
+        index: usize,
+        container_id: &ContainerId,
+        path: &str,
+    ) -> Result<String, TestkitError> {
+        let output = docker_output([
+            "exec",
+            &self.machine(index)?.name,
+            "docker",
+            "exec",
+            container_id.as_str(),
+            "cat",
+            path,
+        ])?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(command_error(output))
+        }
+    }
+
+    pub fn container_mounts(
+        &self,
+        index: usize,
+        container_id: &ContainerId,
+    ) -> Result<String, TestkitError> {
+        let output = docker_output([
+            "exec",
+            &self.machine(index)?.name,
+            "docker",
+            "inspect",
+            "--format",
+            "{{json .Mounts}}",
+            container_id.as_str(),
+        ])?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(command_error(output))
+        }
+    }
+
+    pub fn remove_container(
+        &self,
+        index: usize,
+        container_id: &ContainerId,
+    ) -> Result<(), TestkitError> {
+        docker([
+            "exec",
+            &self.machine(index)?.name,
+            "docker",
+            "rm",
+            "--force",
+            container_id.as_str(),
+        ])
+    }
+
     pub fn restart(&self, index: usize) -> Result<(), TestkitError> {
         docker(["restart", &self.machine(index)?.name])
     }
@@ -809,11 +929,16 @@ mod tests {
             targets.map(|target| target.platform),
             ["linux/amd64", "linux/arm64"]
         );
-        assert!(
-            targets
-                .iter()
-                .all(|target| { target.requires == ["ployzd", "dockerd", "wg", CORROSION_IMAGE] })
-        );
+        assert!(targets.iter().all(|target| {
+            target.requires
+                == [
+                    "ployzd",
+                    "dockerd",
+                    "wg",
+                    CORROSION_IMAGE,
+                    SERVICE_CONTAINER_IMAGE,
+                ]
+        }));
     }
 
     #[test]

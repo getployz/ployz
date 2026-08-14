@@ -24,6 +24,10 @@ fn main() {
     let start_container = method("start_container", "StartContainer");
     let stop_container = method("stop_container", "StopContainer");
     let remove_container = method("remove_container", "RemoveContainer");
+    let create_volume = method("create_volume", "CreateVolume");
+    let list_volumes = method("list_volumes", "ListVolumes");
+    let inspect_volume = method("inspect_volume", "InspectVolume");
+    let remove_volume = method("remove_volume", "RemoveVolume");
     let machine_rpc = tonic_build::manual::Service::builder()
         .name("MachineRpc")
         .package("ployz.rpc.v1")
@@ -40,6 +44,10 @@ fn main() {
         .method(start_container)
         .method(stop_container)
         .method(remove_container)
+        .method(create_volume)
+        .method(list_volumes)
+        .method(inspect_volume)
+        .method(remove_volume)
         .method(reset)
         .build();
     tonic_build::manual::Builder::new().compile(&[machine_rpc]);

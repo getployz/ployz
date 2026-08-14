@@ -1,13 +1,18 @@
-use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
-    StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
+use bollard::{
+    Docker,
+    models::{Mount, MountType},
+    query_parameters::{
+        CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
+    },
 };
-use futures_util::TryStreamExt;
-use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, MachineId, PullPolicy, ResolvedServiceSpec,
-};
+use ployz_core::{ContainerCreated, ContainerId, ContainerKind, MachineId, ResolvedServiceSpec};
 
-use super::{Error, LocalDocker, MachineSpecStore, ManagedLabels, create, docker_error};
+use crate::docker_image::prepare_image;
+
+use super::{
+    Error, LocalDocker, MachineSpecStore, ManagedLabels, create, docker_error,
+    spec_store::ConfigOperation,
+};
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
@@ -21,48 +26,65 @@ impl LocalDocker {
     ) -> Result<ContainerCreated, Error> {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
-        let body = create::container_create_body(machine_id, kind, spec)?;
-        self.prepare_image(&spec.container.image, spec.container.pull_policy)
-            .await?;
-        let mut attempt = 0;
-        let (created, display_name) = loop {
-            attempt += 1;
-            let suffix = MachineId::random().as_str()[..4].to_owned();
-            let display_name = match kind {
-                ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
-                ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
+        let mut body = create::container_create_body(machine_id, kind, spec)?;
+        let mounts = body
+            .host_config
+            .get_or_insert_default()
+            .mounts
+            .get_or_insert_default();
+        preflight_named_volumes(&self.client, mounts).await?;
+        prepare_image(
+            &self.client,
+            &spec.container.image,
+            spec.container.pull_policy,
+        )
+        .await?;
+        let mut config_operation = specs.config_operation().await;
+        mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
+        let result = async {
+            let mut attempt = 0;
+            let (created, display_name) = loop {
+                attempt += 1;
+                let suffix = MachineId::random().as_str()[..4].to_owned();
+                let display_name = match kind {
+                    ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
+                    ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
+                };
+                let options = CreateContainerOptionsBuilder::default()
+                    .name(&display_name)
+                    .build();
+                match self
+                    .client
+                    .create_container(Some(options), body.clone())
+                    .await
+                {
+                    Ok(created) => break (created, display_name),
+                    Err(error) if retry_name_conflict(attempt, &error) => {}
+                    Err(error) => return Err(error.into()),
+                }
             };
-            let options = CreateContainerOptionsBuilder::default()
-                .name(&display_name)
-                .build();
-            match self
-                .client
-                .create_container(Some(options), body.clone())
-                .await
-            {
-                Ok(created) => break (created, display_name),
-                Err(error) if retry_name_conflict(attempt, &error) => {}
-                Err(error) => return Err(error.into()),
-            }
-        };
-        let container_id =
-            ContainerId::parse(created.id).map_err(|source| Error::InvalidValue {
-                field: "container ID",
-                source,
-            })?;
+            let container_id =
+                ContainerId::parse(created.id).map_err(|source| Error::InvalidValue {
+                    field: "container ID",
+                    source,
+                })?;
 
-        if let Err(error) = self.inject_configs(&container_id, spec).await {
-            self.force_remove_container(&container_id).await?;
-            return Err(error);
+            if let Err(error) = config_operation.put(&container_id, spec).await {
+                self.force_remove_container(&container_id).await?;
+                return Err(error.into());
+            }
+            Ok(ContainerCreated {
+                container_id,
+                display_name,
+            })
+        };
+        let result = result.await;
+        if result.is_err()
+            && let Err(error) = config_operation.garbage_collect_configs().await
+        {
+            eprintln!("failed to reclaim materialized configs: {error}");
         }
-        if let Err(error) = specs.put(&container_id, spec).await {
-            self.force_remove_container(&container_id).await?;
-            return Err(error.into());
-        }
-        Ok(ContainerCreated {
-            container_id,
-            display_name,
-        })
+        result
     }
 
     pub async fn start(
@@ -107,9 +129,12 @@ impl LocalDocker {
         remove_volumes: bool,
         force: bool,
     ) -> Result<(), Error> {
+        let mut config_operation = specs.config_operation().await;
         match self.ensure_managed(specs, container_id).await {
             Ok(()) => {}
-            Err(Error::ContainerNotFound(_)) if specs.remove(container_id).await? => return Ok(()),
+            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
+                return Ok(());
+            }
             Err(error) => return Err(error),
         }
         let options = RemoveContainerOptionsBuilder::default()
@@ -123,42 +148,21 @@ impl LocalDocker {
             .map_err(|error| docker_error(container_id, error))
         {
             Ok(()) => {
-                specs.remove(container_id).await?;
+                config_operation.remove(container_id).await?;
                 Ok(())
             }
-            Err(Error::ContainerNotFound(_)) if specs.remove(container_id).await? => Ok(()),
+            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
+                Ok(())
+            }
             Err(error) => Err(error),
         }
     }
 
     pub async fn remove_all_managed(&self, specs: &MachineSpecStore) -> Result<(), Error> {
+        let mut config_operation = specs.config_operation().await;
         for container_id in self.managed_container_ids().await? {
             self.force_remove_container(&container_id).await?;
-            specs.remove(&container_id).await?;
-        }
-        Ok(())
-    }
-
-    async fn prepare_image(&self, image: &str, policy: PullPolicy) -> Result<(), Error> {
-        let present = if policy == PullPolicy::Missing {
-            match self.client.inspect_image(image).await {
-                Ok(_) => true,
-                Err(bollard::errors::Error::DockerResponseServerError {
-                    status_code: 404, ..
-                }) => false,
-                Err(error) => return Err(error.into()),
-            }
-        } else {
-            false
-        };
-        if should_pull(policy, present) {
-            let options = CreateImageOptionsBuilder::default()
-                .from_image(image)
-                .build();
-            self.client
-                .create_image(Some(options), None, None)
-                .try_for_each(|_| async { Ok(()) })
-                .await?;
+            config_operation.remove(&container_id).await?;
         }
         Ok(())
     }
@@ -185,49 +189,6 @@ impl LocalDocker {
         Ok(())
     }
 
-    async fn inject_configs(
-        &self,
-        container_id: &ContainerId,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<(), Error> {
-        if spec.container.config_mounts.is_empty() {
-            return Ok(());
-        }
-        let mut archive = tar::Builder::new(Vec::new());
-        for mount in &spec.container.config_mounts {
-            let config = spec
-                .configs
-                .iter()
-                .find(|config| config.name == mount.config_name)
-                .ok_or_else(|| Error::ConfigNotFound(mount.config_name.clone()))?;
-            let target = mount
-                .target
-                .as_ref()
-                .map_or_else(|| format!("/{}", config.name), ToString::to_string);
-            let mut header = tar::Header::new_gnu();
-            header.set_path(target.trim_start_matches('/'))?;
-            header.set_size(config.content.len() as u64);
-            header.set_mode(mount.mode.unwrap_or(0o444));
-            header.set_uid(mount.uid.unwrap_or(0));
-            header.set_gid(mount.gid.unwrap_or(0));
-            header.set_cksum();
-            archive.append(&header, config.content.as_slice())?;
-        }
-        let bytes = archive.into_inner()?;
-        let options = UploadToContainerOptionsBuilder::default()
-            .path("/")
-            .copy_uidgid("true")
-            .build();
-        self.client
-            .upload_to_container(
-                container_id.as_str(),
-                Some(options),
-                bollard::body_full(bytes.into()),
-            )
-            .await?;
-        Ok(())
-    }
-
     async fn force_remove_container(&self, container_id: &ContainerId) -> Result<(), Error> {
         let options = RemoveContainerOptionsBuilder::default()
             .v(true)
@@ -245,8 +206,54 @@ impl LocalDocker {
     }
 }
 
-const fn should_pull(policy: PullPolicy, present: bool) -> bool {
-    matches!(policy, PullPolicy::Always) || matches!(policy, PullPolicy::Missing) && !present
+async fn preflight_named_volumes(docker: &Docker, mounts: &[Mount]) -> Result<(), Error> {
+    // TODO(UT-127): non-local drivers intentionally receive no special handling.
+    for mount in mounts
+        .iter()
+        .filter(|mount| mount.typ == Some(MountType::VOLUME))
+    {
+        let name = mount.source.as_deref().ok_or_else(|| {
+            Error::InvalidContainerConfig("named Volume source is missing".into())
+        })?;
+        docker.inspect_volume(name).await?;
+        // TODO(UT-128): existence is the only mount-time check; do not recheck driver/options.
+    }
+    Ok(())
+}
+
+async fn docker_config_mounts(
+    configs: &mut ConfigOperation<'_>,
+    spec: &ResolvedServiceSpec,
+) -> Result<Vec<Mount>, Error> {
+    let mut mounts = Vec::with_capacity(spec.container.config_mounts.len());
+    for mount in &spec.container.config_mounts {
+        let config = spec
+            .configs
+            .iter()
+            .find(|config| config.name == mount.config_name)
+            .ok_or_else(|| Error::ConfigNotFound(mount.config_name.clone()))?;
+        let target = mount
+            .target
+            .as_ref()
+            .map_or_else(|| format!("/{}", mount.config_name), ToString::to_string);
+        if target == "/" {
+            return Err(Error::InvalidContainerConfig(format!(
+                "invalid config target {target:?}"
+            )));
+        }
+        let source = configs.materialize_config(config, mount).await?;
+        let source = source.to_str().ok_or_else(|| {
+            Error::InvalidContainerConfig("config path is not valid UTF-8".into())
+        })?;
+        mounts.push(Mount {
+            typ: Some(MountType::BIND),
+            source: Some(source.into()),
+            target: Some(target),
+            read_only: Some(true),
+            ..Default::default()
+        });
+    }
+    Ok(mounts)
 }
 
 fn idempotent_lifecycle_result(
@@ -276,16 +283,6 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pull_policy_controls_image_refresh() {
-        assert!(should_pull(PullPolicy::Always, true));
-        assert!(should_pull(PullPolicy::Always, false));
-        assert!(!should_pull(PullPolicy::Missing, true));
-        assert!(should_pull(PullPolicy::Missing, false));
-        assert!(!should_pull(PullPolicy::Never, true));
-        assert!(!should_pull(PullPolicy::Never, false));
-    }
 
     #[test]
     fn name_conflicts_retry_with_a_fresh_four_character_suffix() {
