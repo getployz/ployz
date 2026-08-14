@@ -1,10 +1,13 @@
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
-    UploadToContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
 };
-use ployz_core::{ContainerCreated, ContainerId, ContainerKind, MachineId, ResolvedServiceSpec};
+use futures_util::TryStreamExt;
+use ployz_core::{
+    ContainerCreated, ContainerId, ContainerKind, MachineId, PullPolicy, ResolvedServiceSpec,
+};
 
-use super::{Error, LocalDocker, MachineSpecStore, create, docker_error};
+use super::{Error, LocalDocker, MachineSpecStore, ManagedLabels, create, docker_error};
 
 impl LocalDocker {
     pub async fn create(
@@ -22,6 +25,8 @@ impl LocalDocker {
             ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
         };
         let body = create::container_create_body(machine_id, kind, spec)?;
+        self.prepare_image(&spec.container.image, spec.container.pull_policy)
+            .await?;
         let options = CreateContainerOptionsBuilder::default()
             .name(&display_name)
             .build();
@@ -46,7 +51,12 @@ impl LocalDocker {
         })
     }
 
-    pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
+    pub async fn start(
+        &self,
+        specs: &MachineSpecStore,
+        container_id: &ContainerId,
+    ) -> Result<(), Error> {
+        self.ensure_managed(specs, container_id).await?;
         self.client
             .start_container(container_id.as_str(), None)
             .await
@@ -55,10 +65,12 @@ impl LocalDocker {
 
     pub async fn stop(
         &self,
+        specs: &MachineSpecStore,
         container_id: &ContainerId,
         signal: Option<&str>,
         grace_period_seconds: Option<i32>,
     ) -> Result<(), Error> {
+        self.ensure_managed(specs, container_id).await?;
         let mut options = StopContainerOptionsBuilder::default();
         if let Some(signal) = signal {
             options = options.signal(signal);
@@ -86,6 +98,11 @@ impl LocalDocker {
         remove_volumes: bool,
         force: bool,
     ) -> Result<(), Error> {
+        match self.ensure_managed(specs, container_id).await {
+            Ok(()) => {}
+            Err(Error::ContainerNotFound(_)) if specs.remove(container_id).await? => return Ok(()),
+            Err(error) => return Err(error),
+        }
         let options = RemoveContainerOptionsBuilder::default()
             .v(remove_volumes)
             .force(force)
@@ -103,6 +120,52 @@ impl LocalDocker {
             Err(Error::ContainerNotFound(_)) if specs.remove(container_id).await? => Ok(()),
             Err(error) => Err(error),
         }
+    }
+
+    async fn prepare_image(&self, image: &str, policy: PullPolicy) -> Result<(), Error> {
+        let present = if policy == PullPolicy::Missing {
+            match self.client.inspect_image(image).await {
+                Ok(_) => true,
+                Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => false,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            false
+        };
+        if should_pull(policy, present) {
+            let options = CreateImageOptionsBuilder::default()
+                .from_image(image)
+                .build();
+            self.client
+                .create_image(Some(options), None, None)
+                .try_for_each(|_| async { Ok(()) })
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_managed(
+        &self,
+        specs: &MachineSpecStore,
+        container_id: &ContainerId,
+    ) -> Result<(), Error> {
+        let inspected = self
+            .client
+            .inspect_container(container_id.as_str(), None)
+            .await
+            .map_err(|error| docker_error(container_id, error))?;
+        let labels = inspected
+            .config
+            .and_then(|config| config.labels)
+            .ok_or(Error::NotManaged)?;
+        ManagedLabels::parse(&labels)?;
+        specs
+            .get(container_id)
+            .await?
+            .ok_or_else(|| Error::SpecNotFound(container_id.clone()))?;
+        Ok(())
     }
 
     async fn inject_configs(
@@ -157,5 +220,24 @@ impl LocalDocker {
             .client
             .remove_container(container_id.as_str(), Some(options))
             .await;
+    }
+}
+
+const fn should_pull(policy: PullPolicy, present: bool) -> bool {
+    matches!(policy, PullPolicy::Always) || matches!(policy, PullPolicy::Missing) && !present
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pull_policy_controls_image_refresh() {
+        assert!(should_pull(PullPolicy::Always, true));
+        assert!(should_pull(PullPolicy::Always, false));
+        assert!(!should_pull(PullPolicy::Missing, true));
+        assert!(should_pull(PullPolicy::Missing, false));
+        assert!(!should_pull(PullPolicy::Never, true));
+        assert!(!should_pull(PullPolicy::Never, false));
     }
 }

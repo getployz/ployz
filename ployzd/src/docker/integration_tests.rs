@@ -10,6 +10,7 @@ use ployz_core::ResolvedServiceSpec;
 
 use super::*;
 
+// ponytail: serialize tests sharing the fixed Ployz network; use unique networks if parallelism matters.
 static DOCKER_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
@@ -61,6 +62,38 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         docker.remove(&specs, &orphan, true, true).await,
         Err(Error::ContainerNotFound(_))
     ));
+
+    let unmanaged = docker
+        .client
+        .create_container(
+            None::<bollard::query_parameters::CreateContainerOptions>,
+            ContainerCreateBody {
+                image: Some("alpine:3.23.3".into()),
+                cmd: Some(vec!["sleep".into(), "30".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let unmanaged = ContainerId::parse(unmanaged.id).unwrap();
+    assert!(matches!(
+        docker.start(&specs, &unmanaged).await,
+        Err(Error::NotManaged)
+    ));
+    assert!(matches!(
+        docker.stop(&specs, &unmanaged, None, None).await,
+        Err(Error::NotManaged)
+    ));
+    assert!(matches!(
+        docker.remove(&specs, &unmanaged, true, true).await,
+        Err(Error::NotManaged)
+    ));
+    docker
+        .client
+        .inspect_container(unmanaged.as_str(), None)
+        .await
+        .unwrap();
+    remove_container(&docker.client, &unmanaged).await;
     cleanup_ployz_network(&docker.client, created_network).await;
 }
 
@@ -86,7 +119,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
             "cap_add": ["CHOWN"],
             "cap_drop": ["NET_RAW"],
             "healthcheck": { "test": ["CMD", "true"], "interval_millis": 1000 },
-            "pull_policy": "missing",
+            "pull_policy": "always",
             "init": true,
             "user": "0",
             "working_directory": "/tmp",

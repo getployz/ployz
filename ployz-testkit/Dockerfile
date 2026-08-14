@@ -19,7 +19,7 @@ RUN --mount=type=cache,id=ployz-cargo-registry,target=/usr/local/cargo/registry,
 
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl docker.io iproute2 iptables skopeo sqlite3 wireguard-tools \
+ && apt-get install -y --no-install-recommends ca-certificates curl docker.io iproute2 iptables skopeo socat sqlite3 wireguard-tools \
  && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /opt/ployz/images \
  && skopeo copy docker://ghcr.io/unlabs-dev/corrosion:2026.6.15 docker-archive:/opt/ployz/images/corrosion.tar:ghcr.io/unlabs-dev/corrosion:2026.6.15 \

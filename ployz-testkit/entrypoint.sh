@@ -17,8 +17,11 @@ fi
 
 docker load --input /opt/ployz/images/corrosion.tar >/dev/null
 docker load --input /opt/ployz/images/alpine.tar >/dev/null
+if [ -n "${PLOYZ_TESTKIT_HOST_API_PORT:-}" ]; then
+  socat TCP-LISTEN:"$PLOYZ_TESTKIT_HOST_API_PORT",bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/run/ployz/ployz.sock &
+fi
 while :; do
-  ployzd --machine-api-address 0.0.0.0:51003 "$@" &
+  ployzd "$@" &
   ployzd_pid=$!
   echo "$ployzd_pid" >/run/ployzd.pid
   wait "$ployzd_pid" || exit $?

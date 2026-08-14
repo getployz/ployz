@@ -81,7 +81,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .record()
         .clone();
     let mut network = NetworkPlane::start(&local_record).await?;
-    let machine_api_listeners = if let Some(network) = &network {
+    let machine_api_listeners = if args.machine_api_address.is_none()
+        && let Some(network) = &network
+    {
         let [management, gateway] = network.machine_api_addresses()?;
         Some((
             TcpListener::bind(management).await?,

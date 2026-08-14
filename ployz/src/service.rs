@@ -294,12 +294,11 @@ async fn change_container_rpc(
                 grace_period_seconds,
             }),
         )?;
-        let timeout = grace_period_seconds
-            .and_then(|seconds| u64::try_from(seconds).ok())
-            .map_or(TARGET_RPC_TIMEOUT, |seconds| {
-                TARGET_RPC_TIMEOUT + Duration::from_secs(seconds)
-            });
-        let response = timed_rpc_with_timeout(timeout, rpc.stop_container(request)).await?;
+        let response = rpc_with_timeout(
+            stop_rpc_timeout(grace_period_seconds),
+            rpc.stop_container(request),
+        )
+        .await?;
         expect_changed(target_response(response)?)?;
     }
     let response = match action {
@@ -373,20 +372,24 @@ fn codec_error(error: ployz_core::CodecError) -> RpcError {
 async fn timed_rpc(
     future: impl Future<Output = Result<Response<OpaquePayload>, tonic::Status>>,
 ) -> Result<OpaquePayload, RpcError> {
-    timed_rpc_with_timeout(TARGET_RPC_TIMEOUT, future).await
+    rpc_with_timeout(Some(TARGET_RPC_TIMEOUT), future).await
 }
 
-async fn timed_rpc_with_timeout(
-    timeout: Duration,
+async fn rpc_with_timeout(
+    timeout: Option<Duration>,
     future: impl Future<Output = Result<Response<OpaquePayload>, tonic::Status>>,
 ) -> Result<OpaquePayload, RpcError> {
-    tokio::time::timeout(timeout, future)
-        .await
-        .map_err(|_| RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "target Machine RPC timed out".into(),
-            details: Value::Null,
-        })?
+    let response = match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .map_err(|_| RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "target Machine RPC timed out".into(),
+                details: Value::Null,
+            })?,
+        None => future.await,
+    };
+    response
         .map(Response::into_inner)
         .map_err(|error| RpcError {
             code: RpcErrorCode::Unavailable,
@@ -395,19 +398,37 @@ async fn timed_rpc_with_timeout(
         })
 }
 
+fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
+    match grace_period_seconds {
+        Some(seconds) if seconds < 0 => None,
+        Some(seconds) => Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64)),
+        None => Some(TARGET_RPC_TIMEOUT),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn target_timeout_becomes_a_typed_partial_failure() {
-        let error = timed_rpc_with_timeout(
-            Duration::from_millis(1),
+        let error = rpc_with_timeout(
+            Some(Duration::from_millis(1)),
             std::future::pending::<Result<Response<OpaquePayload>, tonic::Status>>(),
         )
         .await
         .unwrap_err();
 
         assert_eq!(error.code, RpcErrorCode::Unavailable);
+    }
+
+    #[test]
+    fn negative_stop_timeout_has_no_rpc_deadline() {
+        assert_eq!(stop_rpc_timeout(Some(-1)), None);
+        assert_eq!(stop_rpc_timeout(None), Some(TARGET_RPC_TIMEOUT));
+        assert_eq!(
+            stop_rpc_timeout(Some(5)),
+            Some(TARGET_RPC_TIMEOUT + Duration::from_secs(5))
+        );
     }
 }

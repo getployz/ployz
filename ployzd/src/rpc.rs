@@ -437,7 +437,11 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        match containers.docker.start(&request.container_id).await {
+        match containers
+            .docker
+            .start(&containers.specs, &request.container_id)
+            .await
+        {
             Ok(()) => respond(RpcResponse::container_changed(request.container_id)),
             Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
         }
@@ -457,6 +461,7 @@ impl MachineRpc for MachineService {
         match containers
             .docker
             .stop(
+                &containers.specs,
                 &request.container_id,
                 request.signal.as_deref(),
                 request.grace_period_seconds,

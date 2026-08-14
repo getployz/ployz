@@ -179,6 +179,8 @@ impl Cluster {
                 args.extend(["--label".to_owned(), format!("{key}={value}")]);
             }
             args.extend([
+                "--env".to_owned(),
+                format!("PLOYZ_TESTKIT_HOST_API_PORT={HOST_ENTRY_API_PORT}"),
                 "--publish".to_owned(),
                 format!("127.0.0.1:{}:{HOST_ENTRY_API_PORT}", machine.api_port),
                 image.clone(),

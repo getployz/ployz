@@ -290,6 +290,8 @@ fn docker_mounts(
                     subpath,
                     ..
                 } => {
+                    // TODO(UT-127): investigate different handling for non-local volume drivers.
+                    // TODO(UT-128): reject existing volumes whose driver or options conflict.
                     translated.typ = Some(MountType::VOLUME);
                     translated.source = Some(name.to_string());
                     translated.volume_options = Some(MountVolumeOptions {
