@@ -276,12 +276,12 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         .push(connection);
     config.save().map_err(|error| error.to_string())?;
 
-    if let Some((image, caddy_config)) = caddy_settings {
+    if let Some((image, machines, caddy_config)) = caddy_settings {
         runtime()?.block_on(async {
             let mut entry = options.connect().await?;
             wait_machine_up(&mut entry, &assigned.id).await?;
             // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
-            let requested = crate::caddy::service_spec(image, Vec::new(), caddy_config);
+            let requested = crate::caddy::service_spec(image, machines, caddy_config);
             crate::handlers::workflow::deploy_requested(&mut entry, &requested).await
         })?;
     }

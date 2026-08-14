@@ -45,7 +45,7 @@ pub fn select_image(tags: &[String]) -> String {
 #[must_use]
 pub fn newest_existing_settings(
     observations: &[ContainerObservation],
-) -> Option<(String, Option<String>)> {
+) -> Option<(String, Vec<MachineSelector>, Option<String>)> {
     observations
         .iter()
         .filter(|container| {
@@ -61,6 +61,7 @@ pub fn newest_existing_settings(
         .map(|container| {
             (
                 container.resolved_spec.container.image.clone(),
+                container.resolved_spec.placement.machines.clone(),
                 container.resolved_spec.caddy_config.clone(),
             )
         })
@@ -202,11 +203,16 @@ mod tests {
         newer.container_id = ployz_core::ContainerId::parse("b".repeat(64)).unwrap();
         newer.created_at_unix_nanos = 2;
         newer.resolved_spec.container.image = "caddy:2.10.2".into();
+        newer.resolved_spec.placement.machines = vec![MachineSelector::parse("edge").unwrap()];
         newer.resolved_spec.caddy_config = Some("{ admin off }".into());
 
         assert_eq!(
             newest_existing_settings(&[newer, older]),
-            Some(("caddy:2.10.2".into(), Some("{ admin off }".into())))
+            Some((
+                "caddy:2.10.2".into(),
+                vec![MachineSelector::parse("edge").unwrap()],
+                Some("{ admin off }".into())
+            ))
         );
         assert_eq!(newest_existing_settings(&[]), None);
     }
