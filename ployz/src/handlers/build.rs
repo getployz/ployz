@@ -67,7 +67,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
                         ));
                     }
                 }
-                Err(error) => failures.push(format!("{}: {error}", service.image)),
+                Err(error) => failures.push(push_failure(&service.image, error)?),
             }
         }
         Ok::<_, Error>(failures)
@@ -87,6 +87,15 @@ fn push_targets(explicit: &[String], configured: &[ployz_core::MachineSelector])
     }
 }
 
+fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, Error> {
+    let message = format!("{image}: {error}");
+    if error.is_cancellation() {
+        Err(message.into())
+    } else {
+        Ok(message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ployz_core::MachineSelector;
@@ -102,5 +111,18 @@ mod tests {
         );
         assert_eq!(push_targets(&[], &configured), ["service-machine"]);
         assert!(push_targets(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn cancellation_is_terminal_while_other_push_errors_accumulate() {
+        assert!(push_failure("example.test/api", crate::image::PushError::Cancelled).is_err());
+        assert_eq!(
+            push_failure(
+                "example.test/api",
+                crate::image::PushError::ImageNotFound("example.test/api".into()),
+            )
+            .unwrap(),
+            "example.test/api: image 'example.test/api' not found locally"
+        );
     }
 }

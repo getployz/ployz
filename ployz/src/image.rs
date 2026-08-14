@@ -70,7 +70,7 @@ pub enum PushError {
 }
 
 impl PushError {
-    fn is_cancellation(&self) -> bool {
+    pub(crate) fn is_cancellation(&self) -> bool {
         matches!(self, Self::Cancelled | Self::Cancellation(_))
             || matches!(self, Self::CleanupAfter { primary, .. } if primary.is_cancellation())
     }
