@@ -896,6 +896,7 @@ fn fixture_observation(
         service_name: service_name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Created,
+        effective_healthcheck: None,
         resolved_spec: fixture_spec(&service_id, &service_name),
         address: None,
         labels: BTreeMap::new(),

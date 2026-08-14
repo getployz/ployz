@@ -651,6 +651,9 @@ pub struct ContainerObservation {
     pub service_name: ServiceName,
     pub kind: ContainerKind,
     pub runtime: ContainerRuntimeObservation,
+    /// Effective Docker health check, including image-inherited configuration.
+    #[serde(default)]
+    pub effective_healthcheck: Option<HealthcheckSpec>,
     /// Historical spec used to create this container; not a current Service spec.
     pub resolved_spec: ResolvedServiceSpec,
     #[serde(default)]

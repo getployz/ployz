@@ -11,14 +11,14 @@ use std::{collections::HashMap, net::Ipv4Addr, time::Duration, time::SystemTime}
 
 use bollard::{
     Docker,
-    models::ContainerInspectResponse,
+    models::{ContainerInspectResponse, HealthConfig},
     query_parameters::{EventsOptionsBuilder, ListContainersOptionsBuilder},
 };
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, MachineId, RpcErrorCode, ServiceId,
-    ServiceName, ValueError,
+    ContainerRuntimeObservation, HealthObservation, HealthcheckSpec, MachineId, RpcErrorCode,
+    ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -135,6 +135,7 @@ impl LocalDocker {
             service_name: managed.service_name,
             kind: managed.kind,
             runtime: runtime_observation(inspected.state.as_ref()),
+            effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
             resolved_spec,
             address,
             labels: labels
@@ -196,6 +197,7 @@ impl RawContainerInspect {
             name: inspected.name.clone(),
             config: inspected.config.as_ref().map(|config| RawContainerConfig {
                 labels: config.labels.clone(),
+                healthcheck: config.healthcheck.clone(),
             }),
             state: inspected
                 .state
@@ -229,6 +231,7 @@ impl RawContainerInspect {
 #[serde(rename_all = "PascalCase")]
 struct RawContainerConfig {
     labels: Option<HashMap<String, String>>,
+    healthcheck: Option<HealthConfig>,
 }
 
 #[derive(Deserialize)]
@@ -441,6 +444,30 @@ fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObs
         .and_then(serde_json::Value::as_str);
     let exit_code = state.get("ExitCode").and_then(serde_json::Value::as_i64);
     runtime_from_parts_with_raw(status, exit_code, health, state)
+}
+
+fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<HealthcheckSpec> {
+    let healthcheck = config?.healthcheck.as_ref()?;
+    let test = healthcheck.test.clone().unwrap_or_default();
+    Some(HealthcheckSpec {
+        disabled: test.first().is_some_and(|command| command == "NONE"),
+        test,
+        interval_millis: nanos_to_millis(healthcheck.interval),
+        timeout_millis: nanos_to_millis(healthcheck.timeout),
+        start_period_millis: nanos_to_millis(healthcheck.start_period),
+        start_interval_millis: nanos_to_millis(healthcheck.start_interval),
+        retries: healthcheck
+            .retries
+            .filter(|retries| *retries > 0)
+            .and_then(|retries| u32::try_from(retries).ok()),
+    })
+}
+
+fn nanos_to_millis(nanos: Option<i64>) -> Option<u64> {
+    nanos
+        .filter(|nanos| *nanos > 0)
+        .and_then(|nanos| u64::try_from(nanos).ok())
+        .map(|nanos| nanos.div_ceil(1_000_000))
 }
 
 #[cfg(test)]
@@ -998,8 +1025,18 @@ mod tests {
     }
 
     #[test]
-    fn raw_docker_inspect_keeps_future_state_and_health_values() {
+    fn raw_docker_inspect_keeps_future_state_and_effective_healthcheck() {
         let inspected: RawContainerInspect = serde_json::from_value(json!({
+            "Config": {
+                "Healthcheck": {
+                    "Test": ["CMD", "true"],
+                    "Interval": 1_500_000,
+                    "Timeout": 2_000_000,
+                    "Retries": 4,
+                    "StartPeriod": 300_000_001,
+                    "StartInterval": 4_000_000
+                }
+            },
             "State": {
                 "Status": "future-state",
                 "ExitCode": 7,
@@ -1016,5 +1053,17 @@ mod tests {
                     "Health": { "Status": "future-health" }
                 })
         ));
+        assert_eq!(
+            effective_healthcheck(inspected.config.as_ref()),
+            Some(HealthcheckSpec {
+                test: vec!["CMD".into(), "true".into()],
+                interval_millis: Some(2),
+                timeout_millis: Some(2),
+                start_period_millis: Some(301),
+                start_interval_millis: Some(4),
+                retries: Some(4),
+                disabled: false,
+            })
+        );
     }
 }

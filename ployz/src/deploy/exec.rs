@@ -465,11 +465,11 @@ async fn monitor_container<C: MachineOperations>(
         .update
         .monitor_millis
         .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis);
-    let healthcheck = spec.container.healthcheck.as_ref().filter(|healthcheck| {
-        !healthcheck.disabled
-            && !healthcheck.test.is_empty()
-            && healthcheck.test.first().is_none_or(|first| first != "NONE")
-    });
+    let healthcheck = spec
+        .container
+        .healthcheck
+        .as_ref()
+        .filter(|healthcheck| is_configured_healthcheck(healthcheck));
     let started = Instant::now();
 
     if healthcheck.is_none() && !monitor.is_zero() {
@@ -482,24 +482,35 @@ async fn monitor_container<C: MachineOperations>(
     }
 
     let monitor_deadline = started + monitor;
-    let health_deadline = started + healthcheck_timeout(healthcheck);
     loop {
         if cancellation.is_cancelled() {
             return Err(health_error(container_id, HealthFailure::Cancelled));
         }
         let observed = inspect(client, machine_id, container_id).await?;
         let now = Instant::now();
-        let wake_deadline = match classify_health(
-            &observed.runtime,
-            now,
-            monitor_deadline,
-            health_deadline,
-            healthcheck.is_some(),
-        ) {
-            HealthPoll::Complete => return Ok(()),
-            HealthPoll::PendingUntil(deadline) => deadline,
-            HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
-        };
+        let health_deadline = healthcheck
+            .or_else(|| {
+                observed
+                    .effective_healthcheck
+                    .as_ref()
+                    .filter(|healthcheck| is_configured_healthcheck(healthcheck))
+            })
+            .map(|healthcheck| started + healthcheck_timeout(Some(healthcheck)))
+            .or_else(|| {
+                matches!(
+                    &observed.runtime,
+                    ContainerRuntimeObservation::Running {
+                        health: HealthObservation::Starting | HealthObservation::Unrecognized(_),
+                    }
+                )
+                .then(|| started + healthcheck_timeout(None))
+            });
+        let wake_deadline =
+            match classify_health(&observed.runtime, now, monitor_deadline, health_deadline) {
+                HealthPoll::Complete => return Ok(()),
+                HealthPoll::PendingUntil(deadline) => deadline,
+                HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
+            };
         let wake = std::cmp::min(now + POLL_INTERVAL, wake_deadline);
         tokio::select! {
             () = cancellation.cancelled() => {
@@ -514,8 +525,7 @@ fn classify_health(
     runtime: &ContainerRuntimeObservation,
     now: Instant,
     monitor_deadline: Instant,
-    health_deadline: Instant,
-    has_healthcheck: bool,
+    health_deadline: Option<Instant>,
 ) -> HealthPoll {
     match runtime {
         ContainerRuntimeObservation::Running {
@@ -523,13 +533,16 @@ fn classify_health(
         } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
-        } if !has_healthcheck => HealthPoll::Complete,
+        } if health_deadline.is_none() => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health:
                 HealthObservation::Starting
                 | HealthObservation::NotConfigured
                 | HealthObservation::Unrecognized(_),
         } => {
+            let Some(health_deadline) = health_deadline else {
+                return HealthPoll::Failed(HealthFailure::Runtime(runtime.clone()));
+            };
             if now >= health_deadline {
                 HealthPoll::Failed(HealthFailure::TimedOut)
             } else {
@@ -694,6 +707,12 @@ fn stop_grace_period(spec: &ResolvedServiceSpec) -> Option<i32> {
     spec.container
         .stop_grace_period_millis
         .map(|millis| i32::try_from(millis.div_ceil(1_000)).unwrap_or(i32::MAX))
+}
+
+fn is_configured_healthcheck(healthcheck: &ployz_core::HealthcheckSpec) -> bool {
+    !healthcheck.disabled
+        && !healthcheck.test.is_empty()
+        && healthcheck.test.first().is_none_or(|first| first != "NONE")
 }
 
 fn healthcheck_timeout(healthcheck: Option<&ployz_core::HealthcheckSpec>) -> Duration {

@@ -338,6 +338,7 @@ fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservatio
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         },
+        effective_healthcheck: None,
         resolved_spec: ResolvedServiceSpec {
             service_id,
             name: ServiceName::parse("api").unwrap(),

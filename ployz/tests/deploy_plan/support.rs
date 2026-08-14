@@ -131,6 +131,7 @@ pub(super) fn container(
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         },
+        effective_healthcheck: None,
         resolved_spec: ResolvedServiceSpec {
             service_id: service_id.clone(),
             name: requested.name.clone(),

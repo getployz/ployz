@@ -381,6 +381,7 @@ mod tests {
             service_name,
             kind,
             runtime: ContainerRuntimeObservation::Created,
+            effective_healthcheck: None,
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),

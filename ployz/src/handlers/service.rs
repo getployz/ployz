@@ -363,6 +363,7 @@ mod tests {
             service_name: service_name.clone(),
             kind: ContainerKind::ServiceContainer,
             runtime,
+            effective_healthcheck: None,
             resolved_spec: serde_json::from_value(json!({
                 "service_id": service_id,
                 "name": service_name,

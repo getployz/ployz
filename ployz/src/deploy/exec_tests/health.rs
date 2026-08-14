@@ -7,6 +7,8 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
     let inherited = container('b');
     let early = container('c');
     let transient = container('d');
+    let mut inherited_healthcheck = healthcheck();
+    inherited_healthcheck.start_period_millis = Some(300_000);
     let plan = plan(vec![
         run(&machine, spec(Some(25), None, None), false),
         run(&machine, spec(Some(5_000), None, None), false),
@@ -33,9 +35,10 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
             &inherited,
         ),
         ok(Call::Start(machine.clone(), inherited.clone())),
-        observed(
+        observed_with_healthcheck(
             Call::Inspect(machine.clone(), inherited.clone()),
             starting(),
+            inherited_healthcheck,
         ),
         observed(Call::Inspect(machine.clone(), inherited), healthy()),
         created(

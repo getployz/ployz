@@ -2,7 +2,10 @@ use super::*;
 
 #[tokio::test]
 async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook() {
-    for reply in [Reply::Observed(exited(7)), Reply::Error(error("inspect"))] {
+    for reply in [
+        Reply::Observed(exited(7), None),
+        Reply::Error(error("inspect")),
+    ] {
         let machine = machine('1');
         let hook_id = container('a');
         let suffix = container('b');

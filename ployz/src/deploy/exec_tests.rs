@@ -24,7 +24,10 @@ enum Call {
 enum Reply {
     Ok,
     Created(ContainerId),
-    Observed(ContainerRuntimeObservation),
+    Observed(
+        ContainerRuntimeObservation,
+        Option<ployz_core::HealthcheckSpec>,
+    ),
     Pending,
     Error(RpcError),
 }
@@ -79,7 +82,7 @@ impl MachineOperations for Scripted {
                 container_id,
             }),
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Observed(_) | Reply::Pending => {
+            Reply::Ok | Reply::Observed(_, _) | Reply::Pending => {
                 panic!("scripted create requires Created or Error")
             }
         }
@@ -99,7 +102,11 @@ impl MachineOperations for Scripted {
         container_id: &ContainerId,
     ) -> Result<ContainerObservation, RpcError> {
         match self.next(Call::Inspect(machine_id.clone(), container_id.clone())) {
-            Reply::Observed(runtime) => Ok(observation(machine_id, container_id, runtime)),
+            Reply::Observed(runtime, healthcheck) => {
+                let mut observation = observation(machine_id, container_id, runtime);
+                observation.effective_healthcheck = healthcheck;
+                Ok(observation)
+            }
             Reply::Pending => std::future::pending().await,
             Reply::Error(error) => Err(error),
             Reply::Ok | Reply::Created(_) => {
@@ -134,7 +141,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
     match reply {
         Reply::Ok => Ok(()),
         Reply::Error(error) => Err(error),
-        Reply::Created(_) | Reply::Observed(_) | Reply::Pending => {
+        Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
             panic!("scripted mutation requires Ok or Error")
         }
     }
@@ -269,6 +276,7 @@ fn observation(
         service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime,
+        effective_healthcheck: None,
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
@@ -332,7 +340,15 @@ fn created(call: Call, container_id: &ContainerId) -> Step {
 }
 
 fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {
-    Step(call, Reply::Observed(runtime))
+    Step(call, Reply::Observed(runtime, None))
+}
+
+fn observed_with_healthcheck(
+    call: Call,
+    runtime: ContainerRuntimeObservation,
+    healthcheck: ployz_core::HealthcheckSpec,
+) -> Step {
+    Step(call, Reply::Observed(runtime, Some(healthcheck)))
 }
 
 fn failed(call: Call, message: &str) -> Step {
