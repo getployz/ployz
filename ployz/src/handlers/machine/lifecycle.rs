@@ -15,7 +15,7 @@ use ployz_core::{
 use super::{ConnectionOptions, machine_list, parse_endpoints, runtime, target};
 use crate::{
     connect::{Client, ConnectError, SystemConnector, connect_selected_with},
-    context::{Connection, ConnectionSource, SelectedConnections},
+    context::{Connection, ConnectionSource, SelectedConnections, Transport},
     handlers::{Error, leaf_matches, string_values},
 };
 
@@ -41,7 +41,10 @@ fn select_machine(
 fn is_target_unreachable(error: &ConnectError) -> bool {
     matches!(
         error,
-        ConnectError::Rpc(_) | ConnectError::Attempt(_) | ConnectError::AllFailed { .. }
+        ConnectError::Attempt(_) | ConnectError::AllFailed { .. }
+    ) || matches!(
+        error,
+        ConnectError::Rpc(status) if status.code() == tonic::Code::Unavailable
     )
 }
 
@@ -142,14 +145,13 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
     let (mut config, context_name) = options.active_config()?;
     let destination = target(matches, "destination")?;
-    let mut connection = destination
+    let connection = destination
         .parse::<Connection>()
         .map_err(|error| error.to_string())?;
-    if let Some(key) = matches.get_one::<String>("ssh-key") {
-        connection = connection
-            .with_ssh_key_file(key)
-            .map_err(|error| error.to_string())?;
-    }
+    let mut connection = configure_ssh_key(
+        connection,
+        matches.get_one::<String>("ssh-key").map(String::as_str),
+    )?;
     let name = matches
         .get_one::<String>("name")
         .map(|name| MachineName::parse(name).map_err(|error| error.to_string()))
@@ -283,6 +285,17 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
+fn configure_ssh_key(mut connection: Connection, key: Option<&str>) -> Result<Connection, Error> {
+    if matches!(connection.transport(), Transport::Ssh { .. })
+        && let Some(key) = key
+    {
+        connection = connection
+            .with_ssh_key_file(key)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(connection)
+}
+
 async fn connect_direct(connection: &Connection) -> Result<Client, Error> {
     connect_selected_with(
         SelectedConnections {
@@ -341,10 +354,25 @@ mod tests {
         assert!(is_target_unreachable(&ConnectError::Rpc(Box::new(
             tonic::Status::unavailable("route failed")
         ))));
+        assert!(!is_target_unreachable(&ConnectError::Rpc(Box::new(
+            tonic::Status::unimplemented("older daemon")
+        ))));
         assert!(!is_target_unreachable(&ConnectError::Remote(RpcError {
             code: RpcErrorCode::Unavailable,
             message: "Docker is unavailable".into(),
             details: Value::Null,
         })));
+    }
+
+    #[test]
+    fn machine_add_only_configures_keys_for_ssh_connections() {
+        let key = "/tmp/id_ed25519";
+        let ssh = configure_ssh_key("root@example.com".parse().unwrap(), Some(key)).unwrap();
+        assert_eq!(ssh.ssh_key_file(), Some(std::path::Path::new(key)));
+
+        for destination in ["tcp://127.0.0.1:51000", "unix:///tmp/ployz.sock"] {
+            let connection = configure_ssh_key(destination.parse().unwrap(), Some(key)).unwrap();
+            assert_eq!(connection.ssh_key_file(), None, "destination {destination}");
+        }
     }
 }
