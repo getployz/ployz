@@ -83,10 +83,13 @@ impl LocalDocker {
     ) -> Result<Vec<ContainerObservation>, Error> {
         let mut observations = Vec::new();
         for container_id in self.managed_container_ids().await? {
-            observations.push(
-                self.inspect_managed(&container_id, machine_id, specs)
-                    .await?,
-            );
+            match self.inspect_managed(&container_id, machine_id, specs).await {
+                Ok(observation) => observations.push(observation),
+                Err(error) if malformed_container(&error) => {
+                    eprintln!("ignoring malformed managed container {container_id}: {error}");
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(observations)
     }
@@ -146,6 +149,20 @@ fn docker_error(container_id: &ContainerId, error: bollard::errors::Error) -> Er
         } => Error::ContainerNotFound(container_id.clone()),
         error => Error::Docker(error),
     }
+}
+
+fn malformed_container(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Json(_)
+            | Error::SpecStore(SpecStoreError::Json(_))
+            | Error::MissingField(_)
+            | Error::MissingLabel(_)
+            | Error::InvalidValue { .. }
+            | Error::NotManaged
+            | Error::SpecNotFound(_)
+            | Error::ContainerNotFound(_)
+    )
 }
 
 fn display_name(name: Option<&str>) -> String {

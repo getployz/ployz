@@ -40,6 +40,26 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     assert_eq!(inspected.kind, ContainerKind::ServiceContainer);
     assert_eq!(specs.get(&created.container_id).await.unwrap(), Some(spec));
 
+    let malformed = create_managed_container(
+        &docker.client,
+        &service_id,
+        &service_name,
+        ContainerKind::ServiceContainer,
+    )
+    .await;
+    let listed = docker.list_managed(&machine_id, &specs).await.unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|container| container.container_id == created.container_id)
+    );
+    assert!(
+        listed
+            .iter()
+            .all(|container| container.container_id != malformed)
+    );
+    remove_container(&docker.client, &malformed).await;
+
     docker
         .remove(&specs, &created.container_id, true, true)
         .await

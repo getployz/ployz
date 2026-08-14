@@ -9,6 +9,8 @@ use ployz_core::{
 
 use super::{Error, LocalDocker, MachineSpecStore, ManagedLabels, create, docker_error};
 
+const CONTAINER_NAME_ATTEMPTS: u8 = 4;
+
 impl LocalDocker {
     pub async fn create(
         &self,
@@ -19,18 +21,30 @@ impl LocalDocker {
     ) -> Result<ContainerCreated, Error> {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
-        let suffix = MachineId::random().as_str()[..4].to_owned();
-        let display_name = match kind {
-            ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
-            ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
-        };
         let body = create::container_create_body(machine_id, kind, spec)?;
         self.prepare_image(&spec.container.image, spec.container.pull_policy)
             .await?;
-        let options = CreateContainerOptionsBuilder::default()
-            .name(&display_name)
-            .build();
-        let created = self.client.create_container(Some(options), body).await?;
+        let mut attempt = 0;
+        let (created, display_name) = loop {
+            attempt += 1;
+            let suffix = MachineId::random().as_str()[..4].to_owned();
+            let display_name = match kind {
+                ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
+                ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
+            };
+            let options = CreateContainerOptionsBuilder::default()
+                .name(&display_name)
+                .build();
+            match self
+                .client
+                .create_container(Some(options), body.clone())
+                .await
+            {
+                Ok(created) => break (created, display_name),
+                Err(error) if retry_name_conflict(attempt, &error) => {}
+                Err(error) => return Err(error.into()),
+            }
+        };
         let container_id =
             ContainerId::parse(created.id).map_err(|source| Error::InvalidValue {
                 field: "container ID",
@@ -227,6 +241,17 @@ const fn should_pull(policy: PullPolicy, present: bool) -> bool {
     matches!(policy, PullPolicy::Always) || matches!(policy, PullPolicy::Missing) && !present
 }
 
+fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
+    attempt < CONTAINER_NAME_ATTEMPTS
+        && matches!(
+            error,
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 409,
+                ..
+            }
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +264,21 @@ mod tests {
         assert!(should_pull(PullPolicy::Missing, false));
         assert!(!should_pull(PullPolicy::Never, true));
         assert!(!should_pull(PullPolicy::Never, false));
+    }
+
+    #[test]
+    fn name_conflicts_retry_with_a_fresh_four_character_suffix() {
+        let conflict = bollard::errors::Error::DockerResponseServerError {
+            status_code: 409,
+            message: "name already in use".into(),
+        };
+        let server_error = bollard::errors::Error::DockerResponseServerError {
+            status_code: 500,
+            message: "failed".into(),
+        };
+
+        assert!(retry_name_conflict(1, &conflict));
+        assert!(!retry_name_conflict(CONTAINER_NAME_ATTEMPTS, &conflict));
+        assert!(!retry_name_conflict(1, &server_error));
     }
 }
