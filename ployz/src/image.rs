@@ -75,7 +75,7 @@ pub async fn push(
 ) -> Result<PartialResult<(), PushError>, PushError> {
     // TODO(UT-022): without an explicit platform, Docker chooses what to push; target platforms are not inferred.
     let platform = platform.map(validated_platform).transpose()?;
-    let reference = tagged_reference(image)?;
+    let reference = push_reference(image)?;
     let inspected = docker_output(["image", "inspect", image]).await?;
     if !inspected.status.success() {
         return Err(if not_found(&inspected) {
@@ -140,7 +140,7 @@ async fn push_to_machine(
     client: &Client,
     image: &str,
     platform: Option<&str>,
-    reference: &Reference,
+    reference: &PushReference,
     machine: &Machine,
     mode: ProxyMode,
 ) -> Result<(), PushError> {
@@ -185,7 +185,7 @@ impl PushSession {
         mode: ProxyMode,
         image: &str,
         platform: Option<&str>,
-        reference: &Reference,
+        reference: &PushReference,
     ) -> Result<(), PushError> {
         let mut session = Self {
             proxy: ImageProxy::open(mode).await?,
@@ -212,14 +212,14 @@ impl PushSession {
         remote: String,
         image: &str,
         platform: Option<&str>,
-        reference: &Reference,
+        reference: &PushReference,
     ) -> Result<(), PushError> {
         let temporary = temporary_reference(self.proxy.push_port(), reference);
+        self.temporary = Some(temporary.clone());
         let tagged = docker_output(["tag", image, &temporary]).await?;
         if !tagged.status.success() {
             return Err(command_error("tag image for push", &tagged));
         }
-        self.temporary = Some(temporary.clone());
         let push = async {
             let mut command = Command::new("docker");
             command.arg("push");
@@ -272,28 +272,41 @@ async fn cancellation() -> PushError {
     }
 }
 
-fn tagged_reference(image: &str) -> Result<Reference, PushError> {
+struct PushReference {
+    repository: String,
+    tag: String,
+}
+
+fn push_reference(image: &str) -> Result<PushReference, PushError> {
     let reference = image
         .parse::<Reference>()
         .map_err(|error| PushError::InvalidReference {
             reference: image.into(),
             message: error.to_string(),
         })?;
-    if reference.digest().is_some() {
-        return Err(PushError::DigestReference);
-    }
     if reference.registry().contains(':') {
         return Err(PushError::RegistryPortReference(image.into()));
     }
-    Ok(reference)
+    if reference.digest().is_some() {
+        return Err(PushError::DigestReference);
+    }
+    let tag = reference
+        .tag()
+        .expect("digest references were rejected")
+        .to_owned();
+    Ok(PushReference {
+        repository: image
+            .strip_suffix(&format!(":{tag}"))
+            .unwrap_or(image)
+            .into(),
+        tag,
+    })
 }
 
-fn temporary_reference(port: u16, reference: &Reference) -> String {
+fn temporary_reference(port: u16, reference: &PushReference) -> String {
     format!(
-        "127.0.0.1:{port}/{}/{}:{}",
-        reference.registry(),
-        reference.repository(),
-        reference.tag().expect("digest references were rejected")
+        "127.0.0.1:{port}/{}:{}",
+        reference.repository, reference.tag
     )
 }
 
@@ -321,6 +334,7 @@ where
     Command::new("docker")
         .args(args)
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|error| PushError::Docker {
@@ -385,16 +399,23 @@ mod tests {
         assert_eq!(proxy::mode_for(false, true), ProxyMode::Rootless);
         assert_eq!(proxy::mode_for(true, false), ProxyMode::Vm);
         assert_eq!(proxy::mode_for(true, true), ProxyMode::Vm);
-        let reference = temporary_reference(
-            5000,
-            &tagged_reference("registry.test/team/api:v1").unwrap(),
-        );
+        let reference =
+            temporary_reference(5000, &push_reference("registry.test/team/api:v1").unwrap());
         assert_eq!(reference, "127.0.0.1:5000/registry.test/team/api:v1");
+        assert_eq!(
+            temporary_reference(5000, &push_reference("alpine:3.23").unwrap()),
+            "127.0.0.1:5000/alpine:3.23"
+        );
+        let digest = format!("sha256:{}", "a".repeat(64));
         assert!(matches!(
-            tagged_reference("localhost:5000/team/api:v1"),
+            push_reference(&format!("registry.test/team/api@{digest}")),
+            Err(PushError::DigestReference)
+        ));
+        assert!(matches!(
+            push_reference("localhost:5000/team/api:v1"),
             Err(PushError::RegistryPortReference(_))
         ));
-        assert!(tagged_reference("registry.test/team/api@sha256:abc").is_err());
+        assert!(push_reference("registry.test/team/api@sha256:abc").is_err());
         assert!(validated_platform("linux/riscv64").is_err());
     }
 }
