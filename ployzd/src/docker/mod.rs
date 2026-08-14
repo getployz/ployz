@@ -1,9 +1,11 @@
+mod create;
+mod lifecycle;
 mod spec_store;
 
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, net::Ipv4Addr, time::Duration, time::SystemTime};
+use std::{collections::HashMap, io, net::Ipv4Addr, time::Duration, time::SystemTime};
 
 use bollard::{
     Docker,
@@ -13,7 +15,8 @@ use bollard::{
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, MachineId, ServiceId, ServiceName, ValueError,
+    ContainerRuntimeObservation, HealthObservation, MachineId, RpcErrorCode, ServiceId,
+    ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -31,6 +34,7 @@ pub const LABEL_HOOK: &str = "ployz.service.hook";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
+const MAX_HOST_BIND_ADDRESSES: usize = 4096;
 
 #[derive(Clone)]
 pub struct LocalDocker {
@@ -72,7 +76,25 @@ impl LocalDocker {
             .collect()
     }
 
-    async fn inspect_managed(
+    pub async fn list_managed(
+        &self,
+        machine_id: &MachineId,
+        specs: &MachineSpecStore,
+    ) -> Result<Vec<ContainerObservation>, Error> {
+        let mut observations = Vec::new();
+        for container_id in self.managed_container_ids().await? {
+            match self.inspect_managed(&container_id, machine_id, specs).await {
+                Ok(observation) => observations.push(observation),
+                Err(error) if malformed_container(&error) => {
+                    eprintln!("ignoring malformed managed container {container_id}: {error}");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(observations)
+    }
+
+    pub async fn inspect_managed(
         &self,
         container_id: &ContainerId,
         machine_id: &MachineId,
@@ -87,7 +109,7 @@ impl LocalDocker {
             Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
                 serde_json::from_str(&contents)?
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(docker_error(container_id, error)),
         };
         let address = container_address(&inspected);
         let labels = inspected
@@ -117,6 +139,30 @@ impl LocalDocker {
                 .collect(),
         })
     }
+}
+
+#[allow(clippy::wildcard_enum_match_arm)]
+fn docker_error(container_id: &ContainerId, error: bollard::errors::Error) -> Error {
+    match error {
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        } => Error::ContainerNotFound(container_id.clone()),
+        error => Error::Docker(error),
+    }
+}
+
+fn malformed_container(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Json(_)
+            | Error::SpecStore(SpecStoreError::Json(_))
+            | Error::MissingField(_)
+            | Error::MissingLabel(_)
+            | Error::InvalidValue { .. }
+            | Error::NotManaged
+            | Error::SpecNotFound(_)
+            | Error::ContainerNotFound(_)
+    )
 }
 
 fn display_name(name: Option<&str>) -> String {
@@ -447,6 +493,8 @@ pub enum Error {
     Docker(#[from] bollard::errors::Error),
     #[error("Docker inspect JSON failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("container archive failed: {0}")]
+    Archive(#[from] io::Error),
     #[error(transparent)]
     SpecStore(#[from] SpecStoreError),
     #[error(transparent)]
@@ -465,6 +513,22 @@ pub enum Error {
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
     SpecNotFound(ContainerId),
+    #[error("container {0} was not found")]
+    ContainerNotFound(ContainerId),
+    #[error("pre-deploy container requested without a pre-deploy hook")]
+    MissingPreDeployHook,
+    #[error("config {0:?} referenced by a mount was not found")]
+    ConfigNotFound(String),
+    #[error("Volume {0:?} referenced by a mount was not found")]
+    VolumeNotFound(String),
+    #[error("invalid bind propagation: {0}")]
+    InvalidMountPropagation(String),
+    #[error("container duration exceeds Docker's range")]
+    DurationOverflow,
+    #[error("container size exceeds Docker's range")]
+    SizeOverflow,
+    #[error("host bind prefix {0} expands beyond 4096 addresses")]
+    PortBindPrefixTooLarge(String),
     #[error("Docker event stream closed")]
     EventStreamClosed,
     #[error("observer shutdown channel closed")]
@@ -473,9 +537,112 @@ pub enum Error {
     Clock(String),
 }
 
+impl Error {
+    #[must_use]
+    pub const fn container_rpc_code(&self) -> RpcErrorCode {
+        match self {
+            Self::ContainerNotFound(_) | Self::SpecNotFound(_) => RpcErrorCode::NotFound,
+            Self::MissingPreDeployHook
+            | Self::ConfigNotFound(_)
+            | Self::VolumeNotFound(_)
+            | Self::InvalidMountPropagation(_)
+            | Self::DurationOverflow
+            | Self::SizeOverflow
+            | Self::PortBindPrefixTooLarge(_)
+            | Self::MissingField(_)
+            | Self::MissingLabel(_)
+            | Self::InvalidValue { .. }
+            | Self::NotManaged => RpcErrorCode::InvalidArgument,
+            Self::Docker(_)
+            | Self::Json(_)
+            | Self::Archive(_)
+            | Self::SpecStore(_)
+            | Self::ReplicatedStore(_)
+            | Self::EventStreamClosed
+            | Self::ShutdownClosed
+            | Self::Clock(_) => RpcErrorCode::Internal,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use ployz_core::ResolvedServiceSpec;
+
     use super::*;
+
+    #[test]
+    fn create_body_translates_runtime_fields_and_hook_overrides() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+            "service_id": "a".repeat(32),
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": {
+                "image": "alpine:3.23.3",
+                "command": ["serve"],
+                "environment": { "TOKEN": "service" },
+                "pull_policy": "missing",
+                "privileged": false,
+                "resources": { "memory_bytes": 1048576 },
+                "healthcheck": { "test": ["CMD", "true"], "interval_millis": 1000 }
+            },
+            "ports": [{
+                "mode": "host",
+                "bind": { "kind": "address", "address": "127.0.0.1" },
+                "published_port": 8080,
+                "container_port": 80,
+                "transport_protocol": "tcp"
+            }],
+            "pre_deploy": {
+                "command": ["migrate"],
+                "environment": {
+                    "TOKEN": "hook",
+                    "PLOYZ_MACHINE_ID": "not-the-machine"
+                },
+                "privileged": true,
+                "user": "1000"
+            }
+        }))
+        .unwrap();
+
+        let regular =
+            create::container_create_body(&machine_id, ContainerKind::ServiceContainer, &spec)
+                .unwrap();
+        assert!(
+            regular
+                .env
+                .as_ref()
+                .unwrap()
+                .contains(&format!("PLOYZ_MACHINE_ID={machine_id}"))
+        );
+        assert_eq!(regular.cmd, Some(vec!["serve".into()]));
+        let regular_host = regular.host_config.unwrap();
+        assert_eq!(regular_host.memory, Some(1_048_576));
+        assert_eq!(
+            regular_host.restart_policy.unwrap().name,
+            Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED)
+        );
+        assert!(regular_host.port_bindings.is_some());
+
+        let hook = create::container_create_body(&machine_id, ContainerKind::PreDeployHook, &spec)
+            .unwrap();
+        assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
+        assert_eq!(hook.user.as_deref(), Some("1000"));
+        let hook_env = hook.env.as_ref().unwrap();
+        assert!(hook_env.contains(&"TOKEN=hook".into()));
+        assert!(hook_env.contains(&format!("PLOYZ_MACHINE_ID={machine_id}")));
+        assert!(!hook_env.contains(&"PLOYZ_MACHINE_ID=not-the-machine".into()));
+        assert!(hook_env.contains(&"PLOYZ_HOOK_PRE_DEPLOY=true".into()));
+        assert_eq!(hook.healthcheck.unwrap().test, Some(vec!["NONE".into()]));
+        let hook_host = hook.host_config.unwrap();
+        assert_eq!(hook_host.privileged, Some(true));
+        assert!(hook_host.port_bindings.is_none());
+        assert_eq!(
+            hook_host.restart_policy.unwrap().name,
+            Some(bollard::models::RestartPolicyNameEnum::NO)
+        );
+    }
 
     #[test]
     fn managed_labels_distinguish_service_and_hook_containers() {

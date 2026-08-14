@@ -1,0 +1,328 @@
+use std::collections::HashMap;
+
+use bollard::models::{
+    ContainerCreateBody, DeviceMapping as DockerDeviceMapping, DeviceRequest, EndpointSettings,
+    HealthConfig, HostConfig, HostConfigLogConfig, Mount, MountBindOptions, MountTmpfsOptions,
+    MountType, MountVolumeOptions, MountVolumeOptionsDriverConfig, NetworkingConfig, PortBinding,
+    ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
+};
+use ployz_core::{
+    ContainerKind, HealthcheckSpec, HostBind, MachineId, PortPublication, ResolvedServiceSpec,
+    ServiceVolume, TransportProtocol, VolumeSource,
+};
+
+use super::{
+    Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_SERVICE_ID, LABEL_SERVICE_NAME,
+    MAX_HOST_BIND_ADDRESSES,
+};
+
+pub(super) fn container_create_body(
+    machine_id: &MachineId,
+    kind: ContainerKind,
+    spec: &ResolvedServiceSpec,
+) -> Result<ContainerCreateBody, Error> {
+    let hook = match kind {
+        ContainerKind::ServiceContainer => None,
+        ContainerKind::PreDeployHook => Some(
+            spec.pre_deploy
+                .as_ref()
+                .ok_or(Error::MissingPreDeployHook)?,
+        ),
+    };
+    let container = &spec.container;
+    let mut environment = container.environment.clone();
+    if let Some(hook) = hook {
+        environment.extend(hook.environment.clone());
+        environment.insert("PLOYZ_HOOK_PRE_DEPLOY".into(), "true".into());
+    }
+    environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
+    let mut labels = HashMap::from([
+        (LABEL_MANAGED.into(), String::new()),
+        (LABEL_SERVICE_ID.into(), spec.service_id.to_string()),
+        (LABEL_SERVICE_NAME.into(), spec.name.to_string()),
+    ]);
+    if hook.is_some() {
+        labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
+    }
+    let mounts = docker_mounts(&spec.volumes, &spec.mounts)?;
+    let port_bindings = if hook.is_none() {
+        docker_port_bindings(&spec.ports)?
+    } else {
+        HashMap::new()
+    };
+    let exposed_ports =
+        (!port_bindings.is_empty()).then(|| port_bindings.keys().cloned().collect());
+    let resources = &container.resources;
+    let host_config = HostConfig {
+        memory: resources.memory_bytes,
+        memory_reservation: resources.memory_reservation_bytes,
+        nano_cpus: resources.cpu_nanos,
+        init: container.init,
+        devices: (!resources.devices.is_empty()).then(|| {
+            resources
+                .devices
+                .iter()
+                .map(|device| DockerDeviceMapping {
+                    path_on_host: Some(device.machine_path.to_string()),
+                    path_in_container: Some(device.container_path.to_string()),
+                    cgroup_permissions: Some(device.cgroup_permissions.clone()),
+                })
+                .collect()
+        }),
+        device_requests: (!resources.device_reservations.is_empty()).then(|| {
+            resources
+                .device_reservations
+                .iter()
+                .map(|reservation| DeviceRequest {
+                    driver: reservation.driver.clone(),
+                    count: reservation.count,
+                    device_ids: Some(reservation.device_ids.clone()),
+                    capabilities: Some(reservation.capabilities.clone()),
+                    options: Some(reservation.options.clone().into_iter().collect()),
+                })
+                .collect()
+        }),
+        ulimits: (!resources.ulimits.is_empty()).then(|| {
+            resources
+                .ulimits
+                .iter()
+                .map(|(name, limit)| ResourcesUlimits {
+                    name: Some(name.clone()),
+                    soft: Some(limit.soft),
+                    hard: Some(limit.hard),
+                })
+                .collect()
+        }),
+        log_config: container
+            .log_driver
+            .as_ref()
+            .map(|driver| HostConfigLogConfig {
+                typ: Some(driver.name.clone()),
+                config: Some(driver.options.clone().into_iter().collect()),
+            }),
+        port_bindings: (!port_bindings.is_empty()).then_some(port_bindings),
+        restart_policy: Some(RestartPolicy {
+            name: Some(if hook.is_some() {
+                RestartPolicyNameEnum::NO
+            } else {
+                RestartPolicyNameEnum::UNLESS_STOPPED
+            }),
+            maximum_retry_count: None,
+        }),
+        mounts: (!mounts.is_empty()).then_some(mounts),
+        cap_add: (!container.cap_add.is_empty()).then(|| container.cap_add.clone()),
+        cap_drop: (!container.cap_drop.is_empty()).then(|| container.cap_drop.clone()),
+        pid_mode: container.pid_mode.clone(),
+        privileged: Some(
+            hook.and_then(|hook| hook.privileged)
+                .unwrap_or(container.privileged),
+        ),
+        shm_size: resources.shared_memory_bytes,
+        sysctls: (!container.sysctls.is_empty())
+            .then(|| container.sysctls.clone().into_iter().collect()),
+        ..Default::default()
+    };
+    Ok(ContainerCreateBody {
+        user: hook
+            .and_then(|hook| hook.user.clone())
+            .or_else(|| container.user.clone()),
+        tty: Some(container.tty),
+        open_stdin: Some(container.open_stdin),
+        env: Some(
+            environment
+                .into_iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect(),
+        ),
+        cmd: Some(hook.map_or_else(|| container.command.clone(), |hook| hook.command.clone())),
+        healthcheck: if hook.is_some() {
+            Some(HealthConfig {
+                test: Some(vec!["NONE".into()]),
+                ..Default::default()
+            })
+        } else {
+            container
+                .healthcheck
+                .as_ref()
+                .map(docker_healthcheck)
+                .transpose()?
+        },
+        image: Some(container.image.clone()),
+        working_dir: container
+            .working_directory
+            .as_ref()
+            .map(ToString::to_string),
+        entrypoint: (!container.entrypoint.is_empty()).then(|| container.entrypoint.clone()),
+        exposed_ports,
+        labels: Some(labels),
+        stop_timeout: container
+            .stop_grace_period_millis
+            .map(|millis| i64::try_from(millis.div_ceil(1000)))
+            .transpose()
+            .map_err(|_| Error::DurationOverflow)?,
+        host_config: Some(host_config),
+        networking_config: Some(NetworkingConfig {
+            endpoints_config: Some(HashMap::from([(
+                crate::network::DOCKER_NETWORK_NAME.into(),
+                EndpointSettings::default(),
+            )])),
+        }),
+        ..Default::default()
+    })
+}
+
+fn docker_healthcheck(spec: &HealthcheckSpec) -> Result<HealthConfig, Error> {
+    Ok(HealthConfig {
+        test: Some(if spec.disabled {
+            vec!["NONE".into()]
+        } else {
+            spec.test.clone()
+        }),
+        interval: millis_to_nanos(spec.interval_millis)?,
+        timeout: millis_to_nanos(spec.timeout_millis)?,
+        retries: spec.retries.map(i64::from),
+        start_period: millis_to_nanos(spec.start_period_millis)?,
+        start_interval: millis_to_nanos(spec.start_interval_millis)?,
+    })
+}
+
+fn millis_to_nanos(value: Option<u64>) -> Result<Option<i64>, Error> {
+    value
+        .map(|value| {
+            value
+                .checked_mul(1_000_000)
+                .and_then(|value| i64::try_from(value).ok())
+                .ok_or(Error::DurationOverflow)
+        })
+        .transpose()
+}
+
+fn docker_port_bindings(
+    ports: &[PortPublication],
+) -> Result<HashMap<String, Option<Vec<PortBinding>>>, Error> {
+    let mut bindings = HashMap::<String, Option<Vec<PortBinding>>>::new();
+    for port in ports {
+        let PortPublication::Host {
+            bind,
+            published_port,
+            container_port,
+            transport_protocol,
+        } = port
+        else {
+            continue;
+        };
+        let key = format!(
+            "{container_port}/{}",
+            match transport_protocol {
+                TransportProtocol::Tcp => "tcp",
+                TransportProtocol::Udp => "udp",
+            }
+        );
+        let host_ips = match bind {
+            HostBind::All => vec![None],
+            HostBind::Address { address } => vec![Some(address.to_string())],
+            HostBind::Prefix { prefix } => {
+                // ponytail: bound CIDR expansion; lift only if Docker gains native prefix binds.
+                let addresses = prefix
+                    .hosts()
+                    .take(MAX_HOST_BIND_ADDRESSES + 1)
+                    .map(|address| Some(address.to_string()))
+                    .collect::<Vec<_>>();
+                if addresses.len() > MAX_HOST_BIND_ADDRESSES {
+                    return Err(Error::PortBindPrefixTooLarge(prefix.to_string()));
+                }
+                addresses
+            }
+        };
+        bindings
+            .entry(key)
+            .or_default()
+            .get_or_insert_default()
+            .extend(host_ips.into_iter().map(|host_ip| PortBinding {
+                host_ip,
+                host_port: Some(published_port.to_string()),
+            }));
+    }
+    Ok(bindings)
+}
+
+fn docker_mounts(
+    volumes: &[ServiceVolume],
+    mounts: &[ployz_core::ServiceMount],
+) -> Result<Vec<Mount>, Error> {
+    mounts
+        .iter()
+        .map(|mount| {
+            let volume = volumes
+                .iter()
+                .find(|volume| volume.reference == mount.volume)
+                .ok_or_else(|| Error::VolumeNotFound(mount.volume.to_string()))?;
+            let mut translated = Mount {
+                target: Some(mount.target.to_string()),
+                read_only: Some(mount.read_only),
+                ..Default::default()
+            };
+            match &volume.source {
+                VolumeSource::Bind {
+                    machine_path,
+                    create_machine_path,
+                    propagation,
+                    recursive,
+                } => {
+                    translated.typ = Some(MountType::BIND);
+                    translated.source = Some(machine_path.to_string());
+                    translated.bind_options = Some(MountBindOptions {
+                        propagation: propagation
+                            .as_deref()
+                            .map(str::parse)
+                            .transpose()
+                            .map_err(Error::InvalidMountPropagation)?,
+                        non_recursive: recursive.as_deref().map(|value| value == "disabled"),
+                        create_mountpoint: Some(*create_machine_path),
+                        ..Default::default()
+                    });
+                }
+                VolumeSource::Named {
+                    name,
+                    driver,
+                    labels,
+                    no_copy,
+                    subpath,
+                    ..
+                } => {
+                    // TODO(UT-127): investigate different handling for non-local volume drivers.
+                    // TODO(UT-128): reject existing volumes whose driver or options conflict.
+                    translated.typ = Some(MountType::VOLUME);
+                    translated.source = Some(name.to_string());
+                    translated.volume_options = Some(MountVolumeOptions {
+                        no_copy: Some(*no_copy),
+                        labels: Some(labels.clone().into_iter().collect()),
+                        driver_config: driver.as_ref().map(|driver| {
+                            MountVolumeOptionsDriverConfig {
+                                name: Some(driver.name.clone()),
+                                options: Some(driver.options.clone().into_iter().collect()),
+                            }
+                        }),
+                        subpath: subpath.clone(),
+                    });
+                }
+                VolumeSource::Tmpfs {
+                    size_bytes,
+                    mode,
+                    options,
+                } => {
+                    translated.typ = Some(MountType::TMPFS);
+                    translated.tmpfs_options = Some(MountTmpfsOptions {
+                        size_bytes: size_bytes
+                            .map(i64::try_from)
+                            .transpose()
+                            .map_err(|_| Error::SizeOverflow)?,
+                        mode: mode.map(i64::from),
+                        options: Some(options.clone()),
+                    });
+                }
+            }
+            Ok(translated)
+        })
+        .collect()
+}

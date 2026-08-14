@@ -10,8 +10,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AdvertisedEndpoint, CapabilityName, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineObservation, ValueError, WireGuardPublicKey,
+    AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
+    LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, ResolvedServiceSpec,
+    ValueError, WireGuardPublicKey,
 };
 
 pub const PROTOCOL_MAJOR: u32 = 1;
@@ -22,6 +23,12 @@ pub const INITIALIZE_MACHINE_CAPABILITY: &str = "ployz.machine.initialize.v1";
 pub const REGISTER_MACHINE_CAPABILITY: &str = "ployz.machine.register.v1";
 pub const JOIN_MACHINE_CAPABILITY: &str = "ployz.machine.join.v1";
 pub const LIST_MACHINES_CAPABILITY: &str = "ployz.machine.list.v1";
+pub const LIST_CONTAINERS_CAPABILITY: &str = "ployz.container.list.v1";
+pub const INSPECT_CONTAINER_CAPABILITY: &str = "ployz.container.inspect.v1";
+pub const CREATE_CONTAINER_CAPABILITY: &str = "ployz.container.create.v1";
+pub const START_CONTAINER_CAPABILITY: &str = "ployz.container.start.v1";
+pub const STOP_CONTAINER_CAPABILITY: &str = "ployz.container.stop.v1";
+pub const REMOVE_CONTAINER_CAPABILITY: &str = "ployz.container.remove.v1";
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
 #[derive(Clone, PartialEq, Message)]
@@ -67,6 +74,12 @@ impl OpaquePayload {
                 | "register"
                 | "join"
                 | "list_machines"
+                | "list_containers"
+                | "inspect_container"
+                | "create_container"
+                | "start_container"
+                | "stop_container"
+                | "remove_container"
                 | "reset"
         ) {
             return Err(CodecError::UnsupportedCommand(header.command));
@@ -157,6 +170,43 @@ pub struct JoinRequest {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ListMachinesRequest {}
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ListContainersRequest {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InspectContainerRequest {
+    pub container_id: ContainerId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreateContainerRequest {
+    pub kind: ContainerKind,
+    pub resolved_spec: ResolvedServiceSpec,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StartContainerRequest {
+    pub container_id: ContainerId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StopContainerRequest {
+    pub container_id: ContainerId,
+    #[serde(default)]
+    pub signal: Option<String>,
+    #[serde(default)]
+    pub grace_period_seconds: Option<i32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoveContainerRequest {
+    pub container_id: ContainerId,
+    #[serde(default)]
+    pub remove_volumes: bool,
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
@@ -167,6 +217,12 @@ pub enum RpcRequestBody {
     Register(RegisterRequest),
     Join(JoinRequest),
     ListMachines(ListMachinesRequest),
+    ListContainers(ListContainersRequest),
+    InspectContainer(InspectContainerRequest),
+    CreateContainer(Box<CreateContainerRequest>),
+    StartContainer(StartContainerRequest),
+    StopContainer(StopContainerRequest),
+    RemoveContainer(RemoveContainerRequest),
     Reset(ResetRequest),
 }
 
@@ -234,6 +290,54 @@ impl RpcRequest {
         }
     }
 
+    #[must_use]
+    pub fn list_containers() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::ListContainers(ListContainersRequest {}),
+        }
+    }
+
+    #[must_use]
+    pub fn inspect_container(request: InspectContainerRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::InspectContainer(request),
+        }
+    }
+
+    #[must_use]
+    pub fn create_container(request: CreateContainerRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::CreateContainer(Box::new(request)),
+        }
+    }
+
+    #[must_use]
+    pub fn start_container(request: StartContainerRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::StartContainer(request),
+        }
+    }
+
+    #[must_use]
+    pub fn stop_container(request: StopContainerRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::StopContainer(request),
+        }
+    }
+
+    #[must_use]
+    pub fn remove_container(request: RemoveContainerRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::RemoveContainer(request),
+        }
+    }
+
     pub fn encode(&self) -> Result<OpaquePayload, CodecError> {
         OpaquePayload::from_json(self)
     }
@@ -252,6 +356,10 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     Registered => "registered",
     JoinAccepted => "join_accepted",
     MachineList => "machine_list",
+    ContainerList => "container_list",
+    ContainerDetails => "container_details",
+    ContainerCreated => "container_created",
+    ContainerChanged => "container_changed",
     ResetAccepted => "reset_accepted",
     Error => "error",
 });
@@ -292,6 +400,27 @@ pub struct MachineList {
     pub machines: Vec<MachineObservation>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContainerList {
+    pub containers: Vec<ContainerObservation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContainerDetails {
+    pub container: ContainerObservation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerCreated {
+    pub container_id: ContainerId,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerChanged {
+    pub container_id: ContainerId,
+}
+
 /// Known responses own typed payloads; future responses retain their raw value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RpcResponseBody {
@@ -301,6 +430,10 @@ pub enum RpcResponseBody {
     Registered(Registered),
     JoinAccepted(JoinAccepted),
     MachineList(MachineList),
+    ContainerList(ContainerList),
+    ContainerDetails(Box<ContainerDetails>),
+    ContainerCreated(ContainerCreated),
+    ContainerChanged(ContainerChanged),
     ResetAccepted(ResetAccepted),
     Error(RpcError),
     Unknown { kind: String, payload: Value },
@@ -316,6 +449,10 @@ impl RpcResponseBody {
             Self::Registered(_) => ResponseKind::Registered,
             Self::JoinAccepted(_) => ResponseKind::JoinAccepted,
             Self::MachineList(_) => ResponseKind::MachineList,
+            Self::ContainerList(_) => ResponseKind::ContainerList,
+            Self::ContainerDetails(_) => ResponseKind::ContainerDetails,
+            Self::ContainerCreated(_) => ResponseKind::ContainerCreated,
+            Self::ContainerChanged(_) => ResponseKind::ContainerChanged,
             Self::ResetAccepted(_) => ResponseKind::ResetAccepted,
             Self::Error(_) => ResponseKind::Error,
             Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
@@ -395,6 +532,38 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn container_list(containers: Vec<ContainerObservation>) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::ContainerList(ContainerList { containers }),
+        }
+    }
+
+    #[must_use]
+    pub fn container_details(container: ContainerObservation) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::ContainerDetails(Box::new(ContainerDetails { container })),
+        }
+    }
+
+    #[must_use]
+    pub fn container_created(created: ContainerCreated) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::ContainerCreated(created),
+        }
+    }
+
+    #[must_use]
+    pub fn container_changed(container_id: ContainerId) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::ContainerChanged(ContainerChanged { container_id }),
+        }
+    }
+
+    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
     }
@@ -453,6 +622,42 @@ impl RpcResponse {
         }
     }
 
+    pub fn decode_container_list(&self) -> Result<&[ContainerObservation], CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::ContainerList(list) = &self.body {
+            Ok(&list.containers)
+        } else {
+            Err(self.unexpected("container_list"))
+        }
+    }
+
+    pub fn decode_container_details(&self) -> Result<&ContainerObservation, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::ContainerDetails(details) = &self.body {
+            Ok(&details.container)
+        } else {
+            Err(self.unexpected("container_details"))
+        }
+    }
+
+    pub fn decode_container_created(&self) -> Result<&ContainerCreated, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::ContainerCreated(created) = &self.body {
+            Ok(created)
+        } else {
+            Err(self.unexpected("container_created"))
+        }
+    }
+
+    pub fn decode_container_changed(&self) -> Result<&ContainerId, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::ContainerChanged(changed) = &self.body {
+            Ok(&changed.container_id)
+        } else {
+            Err(self.unexpected("container_changed"))
+        }
+    }
+
     pub fn decode_reset_accepted(&self) -> Result<(), CodecError> {
         validate_protocol_major(self.protocol_major)?;
         if let RpcResponseBody::ResetAccepted(_) = &self.body {
@@ -506,6 +711,18 @@ impl Serialize for RpcResponse {
             RpcResponseBody::MachineList(list) => {
                 serde_json::to_value(list).map_err(serde::ser::Error::custom)?
             }
+            RpcResponseBody::ContainerList(list) => {
+                serde_json::to_value(list).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::ContainerDetails(details) => {
+                serde_json::to_value(details).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::ContainerCreated(created) => {
+                serde_json::to_value(created).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::ContainerChanged(changed) => {
+                serde_json::to_value(changed).map_err(serde::ser::Error::custom)?
+            }
             RpcResponseBody::ResetAccepted(accepted) => {
                 serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
             }
@@ -546,6 +763,18 @@ impl<'de> Deserialize<'de> for RpcResponse {
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::MachineList => RpcResponseBody::MachineList(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::ContainerList => RpcResponseBody::ContainerList(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::ContainerDetails => RpcResponseBody::ContainerDetails(Box::new(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            )),
+            ResponseKind::ContainerCreated => RpcResponseBody::ContainerCreated(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::ContainerChanged => RpcResponseBody::ContainerChanged(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(

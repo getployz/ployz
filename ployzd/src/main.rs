@@ -99,14 +99,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut corrosion = start_corrosion(&args, &store).await?;
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
     let specs = MachineSpecStore::open(args.data_dir.join("machine.db")).await?;
-    let observer = replicated_store
-        .clone()
-        .map(|replicated| {
-            LocalDocker::connect().map(|docker| {
-                ContainerObserver::new(docker, specs, replicated, local_record.id.clone())
-            })
-        })
-        .transpose()?;
+    let docker = LocalDocker::connect()?;
+    let observer = replicated_store.clone().map(|replicated| {
+        ContainerObserver::new(
+            docker.clone(),
+            specs.clone(),
+            replicated,
+            local_record.id.clone(),
+        )
+    });
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (reset, mut reset_rx) = watch::channel(false);
@@ -116,7 +117,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         corrosion
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client())),
-    );
+    )
+    .with_containers(docker, specs);
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
         local_record.id.clone(),

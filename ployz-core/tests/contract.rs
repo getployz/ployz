@@ -1,16 +1,17 @@
 use std::{collections::BTreeSet, num::NonZeroU32};
 
 use ployz_core::{
-    CapabilityName, CodecError, ConfigMount, ConfigSpec, ContainerPath, ContainerResources,
-    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, FanoutFailure,
-    FanoutOutcome, FanoutResponse, FramingError, HealthObservation, MachineFailure, MachineId,
-    MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector,
-    MachineSuccess, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement,
-    PreDeployHook, PullPolicy, RESET_MACHINE_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec,
-    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame,
-    grpc_frames,
+    CREATE_CONTAINER_CAPABILITY, CapabilityName, CodecError, ConfigMount, ConfigSpec,
+    ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
+    ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
+    DESCRIBE_CONTRACT_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
+    HealthObservation, MachineFailure, MachineId, MachineName, MachinePath, MachineRpc,
+    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, NameMatches,
+    OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PreDeployHook, PullPolicy,
+    RESET_MACHINE_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, ResponseKind, RpcError,
+    RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
+    UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -307,6 +308,30 @@ fn reset_command_and_acknowledgement_have_a_stable_capability() {
 }
 
 #[test]
+fn direct_container_commands_round_trip_through_the_typed_opaque_contract() {
+    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+        "service_id": "11111111111111111111111111111111",
+        "name": "api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
+    }))
+    .unwrap();
+    let request = RpcRequest::create_container(CreateContainerRequest {
+        kind: ContainerKind::ServiceContainer,
+        resolved_spec: spec,
+    });
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+
+    let created = ContainerCreated {
+        container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
+        display_name: "api-abcd".into(),
+    };
+    let response = RpcResponse::container_created(created.clone());
+    assert_eq!(response.decode_container_created().unwrap(), &created);
+    assert_eq!(CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1");
+}
+
+#[test]
 fn requested_and_resolved_specs_and_mounts_round_trip() {
     let container = ServiceContainerSpec {
         image: "ghcr.io/example/api:sha".into(),
@@ -464,6 +489,48 @@ impl MachineRpc for FixtureMachineRpc {
     }
 
     async fn list_machines(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn list_containers(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn inspect_container(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn create_container(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn start_container(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn stop_container(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn remove_container(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {

@@ -328,7 +328,11 @@ fn proxy() -> Command {
 }
 
 fn ps() -> Command {
-    base("ps", "List service containers").arg(value("sort", Some('s')).default_value("service"))
+    base("ps", "List service containers").arg(
+        value("sort", Some('s'))
+            .default_value("service")
+            .value_parser(["service", "machine", "health"]),
+    )
 }
 
 fn service_ls(name: &'static str) -> Command {

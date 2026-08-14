@@ -4,6 +4,7 @@ use clap_complete::{Shell, generate};
 use crate::compose::{LoadOptions, load_project};
 
 mod context;
+mod service;
 
 pub type Error = String;
 
@@ -149,7 +150,7 @@ stub_handlers! {
     image_list => "image ls";
     image_push => "image push";
     images => "images";
-    inspect => "inspect";
+    inspect(root) { service::inspect(root) } => "inspect";
     logs(root) {
         if leaf_matches(root)
             .get_many::<String>("service-or-container")
@@ -160,7 +161,7 @@ stub_handlers! {
             compose_not_implemented(root, "logs", true)
         }
     } => "logs";
-    list => "ls";
+    list(root) { service::list(root) } => "ls";
     machine_add(root) { provision_then_continue(leaf_matches(root), "machine add") } => "machine add";
     machine_init(root) {
         let matches = leaf_matches(root);
@@ -177,21 +178,21 @@ stub_handlers! {
     machine_rtt => "machine rtt";
     machine_update => "machine update";
     proxy => "proxy";
-    process_list => "ps";
-    remove => "rm";
+    process_list(root) { service::processes(root) } => "ps";
+    remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "rm";
     run_service => "run";
     scale => "scale";
     service_exec => "service exec";
-    service_inspect => "service inspect";
+    service_inspect(root) { service::inspect(root) } => "service inspect";
     service_logs => "service logs";
-    service_list => "service ls";
-    service_remove => "service rm";
+    service_list(root) { service::list(root) } => "service ls";
+    service_remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "service rm";
     service_run => "service run";
     service_scale => "service scale";
-    service_start => "service start";
-    service_stop => "service stop";
-    start => "start";
-    stop => "stop";
+    service_start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "service start";
+    service_stop(root) { service::change(root, ployz_core::ContainerAction::Stop) } => "service stop";
+    start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "start";
+    stop(root) { service::change(root, ployz_core::ContainerAction::Stop) } => "stop";
     version(matches) {
         let version = env!("CARGO_PKG_VERSION");
         if let Some(template) = matches.get_one::<String>("output") {
@@ -232,11 +233,11 @@ mod tests {
         let mut command = crate::cli::command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "service", "inspect", "api"])
+            .try_get_matches_from(["ployz", "caddy", "config"])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("ployz service inspect is not implemented yet".into())
+            Err("ployz caddy config is not implemented yet".into())
         );
     }
 

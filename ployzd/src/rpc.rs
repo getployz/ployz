@@ -5,12 +5,13 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
-    INITIALIZE_MACHINE_CAPABILITY, INSPECT_MACHINE_CAPABILITY, JOIN_MACHINE_CAPABILITY,
-    LIST_MACHINES_CAPABILITY, LocalMachinePhase, Machine, MachineDetails, MachineId,
-    MachineObservation, MachineRpc, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
-    REGISTER_MACHINE_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse,
+    CREATE_CONTAINER_CAPABILITY, CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
+    INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
+    JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_MACHINES_CAPABILITY,
+    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineObservation, MachineRpc,
+    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, REGISTER_MACHINE_CAPABILITY,
+    REMOVE_CONTAINER_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -18,6 +19,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore},
+    docker::{Error as DockerError, LocalDocker, MachineSpecStore},
     machine::{LocalMachineStore, StoreError},
     network::{allocate_machine_subnet, discover_endpoints, management_address},
 };
@@ -27,6 +29,7 @@ pub struct MachineService {
     store: Arc<Mutex<LocalMachineStore>>,
     restart: watch::Sender<bool>,
     cluster: Option<ClusterContext>,
+    containers: Option<ContainerContext>,
 }
 
 #[derive(Clone)]
@@ -35,14 +38,16 @@ struct ClusterContext {
     admin: AdminClient,
 }
 
+#[derive(Clone)]
+struct ContainerContext {
+    docker: LocalDocker,
+    specs: MachineSpecStore,
+}
+
 impl MachineService {
     #[must_use]
     pub fn new(store: Arc<Mutex<LocalMachineStore>>, restart: watch::Sender<bool>) -> Self {
-        Self {
-            store,
-            restart,
-            cluster: None,
-        }
+        Self::with_cluster(store, restart, None)
     }
 
     #[must_use]
@@ -55,7 +60,14 @@ impl MachineService {
             store,
             restart,
             cluster: cluster.map(|(replicated, admin)| ClusterContext { replicated, admin }),
+            containers: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_containers(mut self, docker: LocalDocker, specs: MachineSpecStore) -> Self {
+        self.containers = Some(ContainerContext { docker, specs });
+        self
     }
 
     #[allow(clippy::result_large_err)]
@@ -76,6 +88,12 @@ impl MachineService {
                 details: Value::Null,
             })
     }
+
+    fn containers(&self) -> Result<&ContainerContext, RpcError> {
+        self.containers
+            .as_ref()
+            .ok_or_else(|| unavailable("Docker is not available"))
+    }
 }
 
 #[tonic::async_trait]
@@ -84,17 +102,13 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        if !matches!(request.body, RpcRequestBody::DescribeContract(_)) {
+        if !matches!(request_body(request)?, RpcRequestBody::DescribeContract(_)) {
             return Err(Status::invalid_argument(
                 "expected describe_contract request",
             ));
         }
         let machine_id = self.local_record()?.id;
-        let capabilities = [
+        let mut capabilities = [
             DESCRIBE_CONTRACT_CAPABILITY,
             INSPECT_MACHINE_CAPABILITY,
             INITIALIZE_MACHINE_CAPABILITY,
@@ -106,6 +120,20 @@ impl MachineRpc for MachineService {
         .into_iter()
         .map(|name| CapabilityName::parse(name).expect("static capability name is valid"))
         .collect::<BTreeSet<_>>();
+        if self.containers.is_some() {
+            capabilities.extend(
+                [
+                    LIST_CONTAINERS_CAPABILITY,
+                    INSPECT_CONTAINER_CAPABILITY,
+                    CREATE_CONTAINER_CAPABILITY,
+                    START_CONTAINER_CAPABILITY,
+                    STOP_CONTAINER_CAPABILITY,
+                    REMOVE_CONTAINER_CAPABILITY,
+                ]
+                .into_iter()
+                .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
+            );
+        }
         respond(RpcResponse::contract_description(ContractDescription {
             machine_id,
             protocol_major: PROTOCOL_MAJOR,
@@ -118,11 +146,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        let RpcRequestBody::Inspect(request) = request.body else {
+        let RpcRequestBody::Inspect(request) = request_body(request)? else {
             return Err(Status::invalid_argument("expected inspect request"));
         };
         let record = self.local_record()?;
@@ -162,11 +186,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        let RpcRequestBody::Initialize(request) = request.body else {
+        let RpcRequestBody::Initialize(request) = request_body(request)? else {
             return Err(Status::invalid_argument("expected initialize request"));
         };
         let result = self
@@ -192,11 +212,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        let RpcRequestBody::Register(request) = request.body else {
+        let RpcRequestBody::Register(request) = request_body(request)? else {
             return Err(Status::invalid_argument("expected register request"));
         };
         if request.advertised_endpoints.is_empty() {
@@ -272,11 +288,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        let RpcRequestBody::Join(request) = request.body else {
+        let RpcRequestBody::Join(request) = request_body(request)? else {
             return Err(Status::invalid_argument("expected join request"));
         };
         let result = self
@@ -302,11 +314,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        if !matches!(request.body, RpcRequestBody::ListMachines(_)) {
+        if !matches!(request_body(request)?, RpcRequestBody::ListMachines(_)) {
             return Err(Status::invalid_argument("expected list_machines request"));
         }
         let local = self.local_record()?;
@@ -343,16 +351,170 @@ impl MachineRpc for MachineService {
         respond(RpcResponse::machine_list(observations))
     }
 
+    async fn list_containers(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !matches!(request_body(request)?, RpcRequestBody::ListContainers(_)) {
+            return Err(Status::invalid_argument("expected list_containers request"));
+        }
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let machine_id = self.local_record()?.id;
+        match containers
+            .docker
+            .list_managed(&machine_id, &containers.specs)
+            .await
+        {
+            Ok(observations) => respond(RpcResponse::container_list(observations)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn inspect_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::InspectContainer(request) = request_body(request)? else {
+            return Err(Status::invalid_argument(
+                "expected inspect_container request",
+            ));
+        };
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let machine_id = self.local_record()?.id;
+        match containers
+            .docker
+            .inspect_managed(&request.container_id, &machine_id, &containers.specs)
+            .await
+        {
+            Ok(observation) => respond(RpcResponse::container_details(observation)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn create_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::CreateContainer(request) = request_body(request)? else {
+            return Err(Status::invalid_argument(
+                "expected create_container request",
+            ));
+        };
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let machine_id = self.local_record()?.id;
+        match containers
+            .docker
+            .create(
+                &machine_id,
+                &containers.specs,
+                request.kind,
+                &request.resolved_spec,
+            )
+            .await
+        {
+            Ok(created) => respond(RpcResponse::container_created(created)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn start_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::StartContainer(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected start_container request"));
+        };
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match containers
+            .docker
+            .start(&containers.specs, &request.container_id)
+            .await
+        {
+            Ok(()) => respond(RpcResponse::container_changed(request.container_id)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn stop_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::StopContainer(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected stop_container request"));
+        };
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match containers
+            .docker
+            .stop(
+                &containers.specs,
+                &request.container_id,
+                request.signal.as_deref(),
+                request.grace_period_seconds,
+            )
+            .await
+        {
+            Ok(()) => respond(RpcResponse::container_changed(request.container_id)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn remove_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::RemoveContainer(request) = request_body(request)? else {
+            return Err(Status::invalid_argument(
+                "expected remove_container request",
+            ));
+        };
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match containers
+            .docker
+            .remove(
+                &containers.specs,
+                &request.container_id,
+                request.remove_volumes,
+                request.force,
+            )
+            .await
+        {
+            Ok(()) => respond(RpcResponse::container_changed(request.container_id)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
     async fn reset(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        if !matches!(request.body, RpcRequestBody::Reset(_)) {
+        if !matches!(request_body(request)?, RpcRequestBody::Reset(_)) {
             return Err(Status::invalid_argument("expected reset request"));
+        }
+        if let Some(containers) = &self.containers
+            && let Err(error) = containers
+                .docker
+                .remove_all_managed(&containers.specs)
+                .await
+        {
+            return respond(RpcResponse::error(docker_rpc_error(error)));
         }
         let reset = self
             .store
@@ -418,6 +580,14 @@ fn store_error(error: StoreError) -> RpcError {
     }
 }
 
+fn docker_rpc_error(error: DockerError) -> RpcError {
+    RpcError {
+        code: error.container_rpc_code(),
+        message: error.to_string(),
+        details: Value::Null,
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn respond(response: RpcResponse) -> Result<Response<OpaquePayload>, Status> {
     Ok(Response::new(response.encode().map_err(internal_response)?))
@@ -425,6 +595,15 @@ fn respond(response: RpcResponse) -> Result<Response<OpaquePayload>, Status> {
 
 fn invalid_request(error: impl std::fmt::Display) -> Status {
     Status::invalid_argument(error.to_string())
+}
+
+#[allow(clippy::result_large_err)]
+fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Status> {
+    request
+        .into_inner()
+        .decode_request()
+        .map(|request| request.body)
+        .map_err(invalid_request)
 }
 
 fn internal_response(error: impl std::fmt::Display) -> Status {
