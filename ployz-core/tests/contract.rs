@@ -6,12 +6,14 @@ use ployz_core::{
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     DESCRIBE_CONTRACT_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
     HealthObservation, MachineFailure, MachineId, MachineName, MachinePath, MachineRpc,
-    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, NameMatches,
-    OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PreDeployHook, PullPolicy,
-    RESET_MACHINE_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, ResponseKind, RpcError,
-    RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec,
-    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
-    UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames,
+    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, MachineTokenRequest,
+    MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement,
+    PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ResolvedServiceSpec,
+    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse, RpcResponseBody,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame,
+    grpc_frames,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -521,6 +523,62 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
 }
 
 #[test]
+fn machine_administration_requests_round_trip_as_typed_payloads() {
+    let token = MachineTokenRequest {
+        public_ip: PublicIpDiscovery::Override("203.0.113.7".parse().unwrap()),
+        ..Default::default()
+    };
+    assert_eq!(
+        RpcRequest::machine_token(token.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap(),
+        RpcRequest::machine_token(token)
+    );
+    let update = MachineUpdate {
+        name: Some(MachineName::parse("renamed").unwrap()),
+        public_ip: PublicIpUpdate::Remove,
+        advertised_endpoints: None,
+    };
+    assert_eq!(
+        RpcRequest::update_machine(update.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap(),
+        RpcRequest::update_machine(update)
+    );
+    assert_eq!(
+        RpcRequest::remove_local_machine(RemoveLocalMachineRequest {})
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap(),
+        RpcRequest::remove_local_machine(RemoveLocalMachineRequest {})
+    );
+    let remove = RemoveMachineRequest {
+        machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+    };
+    assert_eq!(
+        RpcRequest::remove_machine(remove.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap(),
+        RpcRequest::remove_machine(remove)
+    );
+    assert_eq!(
+        RpcRequest::inspect_wireguard()
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap(),
+        RpcRequest::inspect_wireguard()
+    );
+}
+
+#[test]
 fn requested_and_resolved_specs_and_mounts_round_trip() {
     let container = ServiceContainerSpec {
         image: "ghcr.io/example/api:sha".into(),
@@ -662,6 +720,13 @@ impl MachineRpc for FixtureMachineRpc {
         unreachable!("compile-time service fixture")
     }
 
+    async fn machine_token(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
     async fn initialize(
         &self,
         _request: tonic::Request<OpaquePayload>,
@@ -782,6 +847,34 @@ impl MachineRpc for FixtureMachineRpc {
     }
 
     async fn reset(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn update_machine(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn remove_local_machine(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn remove_machine(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn inspect_wireguard(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {

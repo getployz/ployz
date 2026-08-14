@@ -259,7 +259,7 @@ fn machine() -> Command {
         .subcommand(
             base("ls", "List machines")
                 .visible_alias("list")
-                .arg(value("output", Some('o'))),
+                .arg(value("output", Some('o')).value_parser(["json"])),
         )
         .subcommand(
             base("rename", "Rename a machine")

@@ -84,13 +84,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .record()
         .clone();
     let mut network = NetworkPlane::start(&local_record).await?;
-    let machine_api_listeners = if args.machine_api_address.is_none()
-        && let Some(network) = &network
-    {
+    let machine_api_listeners = if let Some(network) = &network {
         let [management, gateway] = network.machine_api_addresses()?;
         Some((
             TcpListener::bind(management).await?,
-            TcpListener::bind(gateway).await?,
+            match args.machine_api_address {
+                Some(_) => None,
+                None => Some(TcpListener::bind(gateway).await?),
+            },
         ))
     } else {
         None
@@ -144,44 +145,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         participating,
         shutdown_rx.clone(),
     );
+    let (management_listener, gateway_listener) = machine_api_listeners
+        .map(|(management, gateway)| (Some(management), gateway))
+        .unwrap_or_default();
     let network_rpc = async {
-        let explicit = async {
-            match explicit_machine_api_listener {
-                Some(listener) => Server::builder()
-                    .serve_with_incoming_shutdown(
-                        proxy.clone(),
-                        TcpListenerStream::new(listener),
-                        wait_for_shutdown(shutdown_rx.clone()),
-                    )
-                    .await
-                    .map_err(io::Error::other),
-                None => {
-                    wait_for_shutdown(shutdown_rx.clone()).await;
-                    Ok(())
-                }
-            }
-        };
-        let mesh = async {
-            if let Some((management, gateway)) = machine_api_listeners {
-                let management = Server::builder().serve_with_incoming_shutdown(
-                    proxy.clone(),
-                    TcpListenerStream::new(management),
-                    wait_for_shutdown(shutdown_rx.clone()),
-                );
-                let gateway = Server::builder().serve_with_incoming_shutdown(
-                    proxy.clone(),
-                    TcpListenerStream::new(gateway),
-                    wait_for_shutdown(shutdown_rx.clone()),
-                );
-                tokio::try_join!(management, gateway)
-                    .map(|_| ())
-                    .map_err(io::Error::other)
-            } else {
-                wait_for_shutdown(shutdown_rx.clone()).await;
-                Ok(())
-            }
-        };
-        tokio::try_join!(explicit, mesh).map(|_| ())
+        tokio::try_join!(
+            serve_machine_api(
+                explicit_machine_api_listener,
+                proxy.clone(),
+                shutdown_rx.clone()
+            ),
+            serve_machine_api(management_listener, proxy.clone(), shutdown_rx.clone()),
+            serve_machine_api(gateway_listener, proxy.clone(), shutdown_rx.clone()),
+        )
+        .map(|_| ())
     };
     let network_runner = async {
         if let Some(network) = &mut network {
@@ -356,6 +333,27 @@ async fn wait_for_participation(
                 Err(_) if *shutdown.borrow() => Ok(false),
                 Err(error) => Err(io::Error::other(error)),
             }
+        }
+    }
+}
+
+async fn serve_machine_api(
+    listener: Option<TcpListener>,
+    proxy: MachineProxy,
+    shutdown: watch::Receiver<bool>,
+) -> io::Result<()> {
+    match listener {
+        Some(listener) => Server::builder()
+            .serve_with_incoming_shutdown(
+                proxy,
+                TcpListenerStream::new(listener),
+                wait_for_shutdown(shutdown),
+            )
+            .await
+            .map_err(io::Error::other),
+        None => {
+            wait_for_shutdown(shutdown).await;
+            Ok(())
         }
     }
 }

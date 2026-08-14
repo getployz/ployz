@@ -1,5 +1,7 @@
 //! Docker-in-Docker support for the ignored Layer 3 parity suite.
 
+mod machine_admin;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
@@ -354,7 +356,6 @@ impl Cluster {
         .decode_registered()?
         .clone())
     }
-
     pub async fn join(&self, index: usize, request: JoinRequest) -> Result<(), TestkitError> {
         let mut client = self.client(index).await?;
         response(
@@ -468,19 +469,12 @@ impl Cluster {
         ])
     }
 
-    pub async fn machines(
-        &self,
-        index: usize,
-    ) -> Result<Vec<ployz_core::MachineObservation>, TestkitError> {
-        let mut client = self.client(index).await?;
-        Ok(response(
-            client
-                .list_machines(RpcRequest::list_machines().encode()?)
-                .await?
-                .into_inner(),
-        )?
-        .decode_machine_list()?
-        .to_vec())
+    pub fn block_gossip(&self, index: usize) -> Result<(), TestkitError> {
+        self.gossip_rule(index, "--insert")
+    }
+
+    pub fn unblock_gossip(&self, index: usize) -> Result<(), TestkitError> {
+        self.gossip_rule(index, "--delete")
     }
 
     pub fn write_volume_data(
@@ -656,7 +650,7 @@ impl Cluster {
     ) -> Result<ployz_core::MachineDetails, TestkitError> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Ok(details) = self.inspect(index, Vec::new()).await
+            if let Ok(details) = self.inspect(index).await
                 && details.phase == phase
             {
                 return Ok(details);
@@ -704,7 +698,7 @@ impl Cluster {
         let deadline = Instant::now() + timeout;
         loop {
             if self
-                .inspect(index, Vec::new())
+                .inspect(index)
                 .await
                 .is_ok_and(|details| version_reached(&details.store_version, target))
             {
@@ -719,22 +713,11 @@ impl Cluster {
         }
     }
 
-    pub async fn inspect(
-        &self,
-        index: usize,
-        advertised_endpoints: Vec<AdvertisedEndpoint>,
-    ) -> Result<ployz_core::MachineDetails, TestkitError> {
+    pub async fn inspect(&self, index: usize) -> Result<ployz_core::MachineDetails, TestkitError> {
         let mut client = self.client(index).await?;
         Ok(response(
             client
-                .inspect(
-                    RpcRequest::inspect(InspectRequest {
-                        advertised_endpoints,
-                        public_ip_override: None,
-                        wireguard_port: 51820,
-                    })
-                    .encode()?,
-                )
+                .inspect(RpcRequest::inspect(InspectRequest::default()).encode()?)
                 .await?
                 .into_inner(),
         )?
@@ -964,11 +947,13 @@ mod tests {
                 subnet: MachineSubnet(format!("10.210.{key}.0/24").parse().unwrap()),
                 management_address: ManagementAddress(format!("fdcc::{key}").parse().unwrap()),
                 public_key: WireGuardPublicKey([key; 32]),
+                public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint(
                     format!("127.0.0.1:{}", 51000 + u16::from(key))
                         .parse()
                         .unwrap(),
                 )],
+                runtime: Default::default(),
             }
         }
 

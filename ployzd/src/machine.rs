@@ -4,10 +4,14 @@ use std::{
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
+    process::Command,
 };
 
 use ipnet::Ipv4Net;
-use ployz_core::{LocalMachinePhase, Machine, MachineId, SelectedEndpoint};
+use ployz_core::{
+    LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineUpdate, MachineUpdateError,
+    SelectedEndpoint, apply_machine_update,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -156,7 +160,9 @@ impl LocalMachineStore {
                 .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
             management_address: management_address(public_key),
             public_key,
+            public_ip: None,
             advertised_endpoints,
+            runtime: local_runtime(),
         };
         let mut initialized = self.record.clone();
         initialized.phase = LocalMachinePhase::Participating;
@@ -170,7 +176,7 @@ impl LocalMachineStore {
 
     pub fn join(
         &mut self,
-        assigned_machine: Machine,
+        mut assigned_machine: Machine,
         visible_peers: Vec<Machine>,
         target_versions: BTreeMap<String, i64>,
         wireguard_mtu: Option<u32>,
@@ -187,6 +193,7 @@ impl LocalMachineStore {
         if private_key.public_key() != assigned_machine.public_key {
             return Err(StoreError::KeyMismatch);
         }
+        assigned_machine.runtime = local_runtime();
         let mut joining = self.record.clone();
         joining.id = assigned_machine.id.clone();
         joining.phase = LocalMachinePhase::Joining;
@@ -197,6 +204,24 @@ impl LocalMachineStore {
         save(&self.data_dir, &joining)?;
         self.record = joining;
         Ok(())
+    }
+
+    pub fn update(
+        &mut self,
+        update: MachineUpdate,
+        visible: &[Machine],
+    ) -> Result<Machine, StoreError> {
+        let machine = self
+            .record
+            .machine
+            .as_ref()
+            .ok_or(StoreError::InvalidPhase)?;
+        let updated = apply_machine_update(machine, visible, update)?;
+        let mut record = self.record.clone();
+        record.machine = Some(updated.clone());
+        save(&self.data_dir, &record)?;
+        self.record = record;
+        Ok(updated)
     }
 
     fn require_uninitialized(&self) -> Result<(), StoreError> {
@@ -242,6 +267,39 @@ impl LocalMachineStore {
         }
         fs::remove_dir_all(&self.data_dir).map_err(StoreError::Io)
     }
+}
+
+#[must_use]
+pub fn local_runtime() -> MachineRuntime {
+    MachineRuntime {
+        daemon_version: env!("CARGO_PKG_VERSION").into(),
+        docker_version: Command::new("docker")
+            .args(["version", "--format", "{{.Server.Version}}"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|version| version.trim().to_owned())
+            .unwrap_or_default(),
+        hostname: read_trimmed("/etc/hostname"),
+        architecture: std::env::consts::ARCH.into(),
+        os_pretty_name: fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|contents| {
+                contents.lines().find_map(|line| {
+                    line.strip_prefix("PRETTY_NAME=")
+                        .map(|value| value.trim_matches('"').to_owned())
+                })
+            })
+            .unwrap_or_default(),
+        kernel_version: read_trimmed("/proc/sys/kernel/osrelease"),
+    }
+}
+
+fn read_trimmed(path: &str) -> String {
+    fs::read_to_string(path)
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_default()
 }
 
 fn validate_data_dir(path: &Path) -> Result<(), StoreError> {
@@ -325,6 +383,8 @@ pub enum StoreError {
     KeyMismatch,
     #[error("invalid Cluster network: {0}")]
     InvalidNetwork(String),
+    #[error(transparent)]
+    MachineUpdate(#[from] MachineUpdateError),
     #[error("another daemon already owns data directory {0:?}")]
     AlreadyRunning(PathBuf),
     #[error("refusing to clear broad data directory {0:?}")]

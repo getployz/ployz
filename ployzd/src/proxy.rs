@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     convert::Infallible,
     future::poll_fn,
     sync::{Arc, Mutex},
@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full, StreamBody};
 use ployz_core::{
     FanoutFailure, FanoutResponse, FramingError, Machine, MachineId, MachineSelector,
-    ManagementAddress, grpc_frame_length, grpc_frames, resolve_machine_selectors,
+    ManagementAddress, NameMatches, grpc_frame_length, grpc_frames, resolve_machine_selector,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -25,9 +25,8 @@ use tonic::{
 
 use crate::corrosion::ReplicatedStore;
 
-pub use ployz_core::MachineSelectorError as TargetResolutionError;
-
 const ONE_TARGET_HEADER: &str = "machine";
+const ONE_TARGET_BINARY_HEADER: &str = "machine-bin";
 const MANY_TARGETS_HEADER: &str = "machines";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,7 +39,7 @@ pub enum RoutingRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProxyRoute {
     Local,
-    One(Machine),
+    One(Box<Machine>),
     Many(Vec<Machine>),
 }
 
@@ -50,12 +49,72 @@ pub fn resolve_route(
 ) -> Result<ProxyRoute, TargetResolutionError> {
     match request {
         RoutingRequest::Local => Ok(ProxyRoute::Local),
-        RoutingRequest::One(selector) => resolve_machine_selectors(visible, &[selector])
-            .map(|mut targets| ProxyRoute::One(targets.remove(0))),
+        RoutingRequest::One(selector) => resolve_targets(visible, &[selector])
+            .map(|mut targets| ProxyRoute::One(Box::new(targets.remove(0)))),
         RoutingRequest::Many(selectors) => {
-            resolve_machine_selectors(visible, &selectors).map(ProxyRoute::Many)
+            resolve_targets(visible, &selectors).map(ProxyRoute::Many)
         }
     }
+}
+
+fn resolve_targets(
+    visible: &[Machine],
+    selectors: &[MachineSelector],
+) -> Result<Vec<Machine>, TargetResolutionError> {
+    if selectors.is_empty() {
+        return Err(TargetResolutionError::NoTargets);
+    }
+    let mut targets = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut missing = Vec::new();
+    for selector in selectors {
+        if selector.as_str() == "*" {
+            for target in visible {
+                if seen.insert(target.id.clone()) {
+                    targets.push(target.clone());
+                }
+            }
+            continue;
+        }
+        match resolve_machine_selector(selector, visible) {
+            NameMatches::One(target) if seen.insert(target.id.clone()) => {
+                targets.push(target.clone());
+            }
+            NameMatches::One(_) => {}
+            NameMatches::None => missing.push(selector.clone()),
+            NameMatches::Ambiguous(matches) => {
+                return Err(TargetResolutionError::Ambiguous {
+                    selector: selector.clone(),
+                    machine_ids: matches
+                        .into_iter()
+                        .map(|machine| machine.id.clone())
+                        .collect(),
+                });
+            }
+        }
+    }
+    if !missing.is_empty() {
+        Err(TargetResolutionError::NotFound(missing))
+    } else if targets.is_empty() {
+        Err(TargetResolutionError::NoVisibleMachines)
+    } else {
+        Ok(targets)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum TargetResolutionError {
+    #[error("no Machine targets were requested")]
+    NoTargets,
+    #[error("no Machines are visible to this entry Machine")]
+    NoVisibleMachines,
+    #[error("Machine selectors were not found: {0:?}")]
+    NotFound(Vec<MachineSelector>),
+    #[error("Machine selector {selector:?} is ambiguous: {machine_ids:?}")]
+    Ambiguous {
+        selector: MachineSelector,
+        machine_ids: Vec<MachineId>,
+    },
 }
 
 #[derive(Clone)]
@@ -120,6 +179,7 @@ impl MachineProxy {
         target: &Machine,
     ) -> http::Response<Body> {
         request.headers_mut().remove(ONE_TARGET_HEADER);
+        request.headers_mut().remove(ONE_TARGET_BINARY_HEADER);
         request.headers_mut().remove(MANY_TARGETS_HEADER);
         if target.id == self.local_id {
             return self.call_local(request).await;
@@ -317,7 +377,12 @@ fn grpc_response(receiver: mpsc::Receiver<Bytes>) -> http::Response<Body> {
 }
 
 fn routing_request(headers: &http::HeaderMap) -> Result<RoutingRequest, RoutingMetadataError> {
-    let has_one = headers.contains_key(ONE_TARGET_HEADER);
+    let has_text_target = headers.contains_key(ONE_TARGET_HEADER);
+    let has_binary_target = headers.contains_key(ONE_TARGET_BINARY_HEADER);
+    if has_text_target && has_binary_target {
+        return Err(RoutingMetadataError::ConflictingSingleTargets);
+    }
+    let has_one = has_text_target || has_binary_target;
     let has_many = headers.contains_key(MANY_TARGETS_HEADER);
     if has_one && has_many {
         return Err(RoutingMetadataError::ConflictingTargets);
@@ -338,6 +403,19 @@ fn routing_request(headers: &http::HeaderMap) -> Result<RoutingRequest, RoutingM
             .collect::<Result<Vec<_>, _>>()
     };
     if has_one {
+        if has_binary_target {
+            let metadata = tonic::metadata::MetadataMap::from_headers(headers.clone());
+            let encoded = metadata
+                .get_bin(ONE_TARGET_BINARY_HEADER)
+                .ok_or(RoutingMetadataError::InvalidTarget)?
+                .to_bytes()
+                .map_err(|_| RoutingMetadataError::InvalidTarget)?;
+            let value =
+                std::str::from_utf8(&encoded).map_err(|_| RoutingMetadataError::InvalidTarget)?;
+            return MachineSelector::parse(value)
+                .map(RoutingRequest::One)
+                .map_err(|_| RoutingMetadataError::InvalidTarget);
+        }
         let mut selectors = selectors(ONE_TARGET_HEADER)?;
         if selectors.len() != 1 {
             return Err(RoutingMetadataError::InvalidSingleTarget);
@@ -354,6 +432,8 @@ fn routing_request(headers: &http::HeaderMap) -> Result<RoutingRequest, RoutingM
 enum RoutingMetadataError {
     #[error("both one-target and fan-out routing metadata are set")]
     ConflictingTargets,
+    #[error("both text and binary one-target routing metadata are set")]
+    ConflictingSingleTargets,
     #[error("one-target routing metadata must contain exactly one Machine selector")]
     InvalidSingleTarget,
     #[error("routing metadata contains an invalid Machine selector")]
@@ -407,7 +487,22 @@ mod tests {
     use ployz_core::{MachineId, ManagementAddress};
     use tonic::service::Routes;
 
-    use super::MachineProxy;
+    use super::{MachineProxy, RoutingRequest, routing_request};
+
+    #[test]
+    fn binary_routing_metadata_preserves_unicode_machine_names() {
+        let selector = ployz_core::MachineSelector::parse("München edge").unwrap();
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert_bin(
+            "machine-bin",
+            tonic::metadata::MetadataValue::from_bytes(selector.as_str().as_bytes()),
+        );
+
+        assert_eq!(
+            routing_request(&metadata.into_headers()).unwrap(),
+            RoutingRequest::One(selector)
+        );
+    }
 
     #[tokio::test]
     async fn remote_backend_survives_disappearance_from_later_snapshots() {

@@ -6,11 +6,11 @@ use std::{
 use ipnet::{IpNet, Ipv4Net};
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineName, MachineSubnet, ManagementAddress,
-    SelectedEndpoint, WireGuardPublicKey,
+    PublicIpDiscovery, SelectedEndpoint, WireGuardPublicKey,
 };
 use ployzd::network::{
     EndpointSelection, PeerStatus, WIREGUARD_KEEPALIVE_SECONDS, allocate_machine_subnet,
-    default_cluster_network, discover_endpoints, machine_gateway, management_address, peers_for,
+    default_cluster_network, discover_network, machine_gateway, management_address, peers_for,
 };
 
 #[test]
@@ -130,7 +130,10 @@ fn endpoint_selection_preserves_unknown_down_rotation_and_reverse_learning() {
 #[tokio::test]
 async fn explicit_public_ip_is_added_without_a_reachability_probe() {
     let public = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
-    let endpoints = discover_endpoints(51820, Some(public)).await.unwrap();
+    let endpoints = discover_network(51820, PublicIpDiscovery::Override(public))
+        .await
+        .unwrap()
+        .endpoints;
     assert!(endpoints.contains(&AdvertisedEndpoint(SocketAddr::new(public, 51820))));
 }
 
@@ -143,7 +146,9 @@ fn machine(seed: u8) -> Machine {
             0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, seed,
         ])),
         public_key: WireGuardPublicKey([seed; 32]),
+        public_ip: None,
         advertised_endpoints: vec![endpoint(seed)],
+        runtime: Default::default(),
     }
 }
 

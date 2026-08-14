@@ -8,12 +8,19 @@ use tokio::net::UnixStream;
 use tokio_util::codec::LengthDelimitedCodec;
 
 use super::Error;
-use ployz_core::MembershipObservation;
+use ployz_core::{MembershipObservation, RttStatistics, rtt_statistics};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MembershipState {
     pub address: SocketAddr,
     pub membership: MembershipObservation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemberRtt {
+    pub peer_id: String,
+    pub address: SocketAddr,
+    pub statistics: RttStatistics,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +69,40 @@ impl AdminClient {
             .map(decode_membership_state)
             .collect()
     }
+
+    pub async fn member_rtts(&self) -> Result<Vec<MemberRtt>, Error> {
+        self.command(&serde_json::json!({"Cluster": "Members"}))
+            .await?
+            .into_iter()
+            .map(decode_member_rtt)
+            .filter_map(|result| result.transpose())
+            .collect()
+    }
+}
+
+fn decode_member_rtt(value: Value) -> Result<Option<MemberRtt>, Error> {
+    #[derive(Deserialize)]
+    struct RawMemberRtt {
+        id: String,
+        state: RawState,
+        #[serde(default)]
+        rtts: Option<Vec<f64>>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawState {
+        addr: SocketAddr,
+    }
+
+    let raw: RawMemberRtt = serde_json::from_value(value)?;
+    let Some(samples) = raw.rtts else {
+        return Ok(None);
+    };
+    Ok(rtt_statistics(&samples).map(|statistics| MemberRtt {
+        peer_id: raw.id,
+        address: raw.state.addr,
+        statistics,
+    }))
 }
 
 fn decode_membership_state(value: Value) -> Result<MembershipState, Error> {
@@ -120,7 +161,7 @@ mod tests {
         net::UnixListener,
     };
 
-    use super::{AdminClient, decode_membership_state, decode_response};
+    use super::{AdminClient, decode_member_rtt, decode_membership_state, decode_response};
     use crate::corrosion::Error;
 
     #[test]
@@ -140,6 +181,30 @@ mod tests {
         .unwrap();
         assert_eq!(state.address, "[fdcc::1]:51001".parse().unwrap());
         assert_eq!(state.membership, ployz_core::MembershipObservation::Up);
+    }
+
+    #[test]
+    fn rtt_samples_are_decoded_without_inventing_missing_measurements() {
+        let address = "[fdcc::1]:51001";
+        let decoded = decode_member_rtt(json!({
+            "id": "peer-1",
+            "state": {"addr": address},
+            "rtts": [10.0, 20.0]
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(decoded.address.to_string(), address);
+        assert_eq!(decoded.peer_id, "peer-1");
+        assert_eq!(decoded.statistics.median_ns, 15_000_000);
+        assert!(
+            decode_member_rtt(json!({"id": "peer-1", "state": {"addr": address}, "rtts": null}))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            decode_member_rtt(json!({"id": "peer-1", "state": {"addr": address}, "rtts": ["bad"]}))
+                .is_err()
+        );
     }
 
     #[tokio::test]

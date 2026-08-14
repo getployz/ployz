@@ -11,8 +11,9 @@ use std::{
 use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
-    MachineFailure, MachineId, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload,
-    PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    MachineFailure, MachineId, MachineObservation, MachineRpcClient, MachineSelector,
+    MachineSuccess, OpaquePayload, PartialResult, RpcError, RpcErrorCode, RpcRequest,
+    RpcRequestBody, RpcResponse, RpcResponseBody,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -284,15 +285,11 @@ impl Client {
     }
 
     pub async fn describe_contract(&mut self) -> Result<ContractDescription, ConnectError> {
-        let response = self
-            .rpc
-            .describe_contract(RpcRequest::describe_contract().encode()?)
+        self.request(RpcRequest::describe_contract(), None)
             .await?
-            .into_inner()
-            .decode_response()?;
-        decode_rpc(response, |response| {
-            response.decode_contract_description().cloned()
-        })
+            .decode_contract_description()
+            .cloned()
+            .map_err(ConnectError::Codec)
     }
 
     pub async fn list_machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
@@ -411,6 +408,23 @@ impl Client {
         decode_rpc(response, RpcResponse::decode_volume_removed)
     }
 
+    pub async fn request(
+        &mut self,
+        request: RpcRequest,
+        target: Option<&MachineSelector>,
+    ) -> Result<RpcResponse, ConnectError> {
+        let payload = target_request(request.encode()?, target);
+        macro_rules! dispatch {
+            ($($variant:ident: ($method:ident, $route:literal, $request:ty, $command:literal),)+) => {
+                match request.body {
+                    $(RpcRequestBody::$variant(_) => self.rpc.$method(payload).await?,)+
+                }
+            };
+        }
+        let payload = ployz_core::rpc_catalog!(dispatch);
+        decode_response(payload.into_inner())
+    }
+
     pub async fn dial_proxy(
         &self,
         network: &str,
@@ -492,6 +506,39 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             details: Value::Null,
         },
     }
+}
+
+fn target_request(
+    payload: ployz_core::OpaquePayload,
+    target: Option<&MachineSelector>,
+) -> tonic::Request<ployz_core::OpaquePayload> {
+    let mut request = tonic::Request::new(payload);
+    if let Some(target) = target {
+        if target
+            .as_str()
+            .bytes()
+            .all(|byte| (b'!'..=b'~').contains(&byte))
+        {
+            request.metadata_mut().insert(
+                "machine",
+                target.as_str().parse().expect("visible ASCII metadata"),
+            );
+        } else {
+            request.metadata_mut().insert_bin(
+                "machine-bin",
+                tonic::metadata::MetadataValue::from_bytes(target.as_str().as_bytes()),
+            );
+        }
+    }
+    request
+}
+
+fn decode_response(payload: ployz_core::OpaquePayload) -> Result<RpcResponse, ConnectError> {
+    let response = payload.decode_response()?;
+    if let RpcResponseBody::Error(error) = &response.body {
+        return Err(ConnectError::Remote(error.clone()));
+    }
+    Ok(response)
 }
 
 pub async fn connect_selected_with(

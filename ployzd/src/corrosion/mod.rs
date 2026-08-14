@@ -6,7 +6,7 @@ mod store;
 #[cfg(test)]
 mod integration_tests;
 
-pub use admin::{AdminClient, MembershipState};
+pub use admin::{AdminClient, MemberRtt, MembershipState};
 pub(crate) use api::Subscription;
 use api::{ApiClient, Statement};
 pub use service::{

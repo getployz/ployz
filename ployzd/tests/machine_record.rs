@@ -10,7 +10,8 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, LocalMachinePhase, Machine, MachineId, MachineName, MachineRpc,
-    MachineSubnet, RpcErrorCode, RpcRequest, RpcResponseBody, SelectedEndpoint,
+    MachineSubnet, MachineUpdate, PublicIpUpdate, RpcErrorCode, RpcRequest, RpcResponseBody,
+    SelectedEndpoint,
 };
 use ployzd::{
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
@@ -90,7 +91,9 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
         management_address: ployzd::network::management_address(public_key),
         public_key,
+        public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+        runtime: Default::default(),
     };
     second
         .join(
@@ -104,6 +107,41 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     assert_eq!(second.record().phase, LocalMachinePhase::Joining);
     assert_eq!(second.record().bootstrap_machines, vec![initialized]);
     assert_eq!(second.record().min_store_version.get("actor"), Some(&4));
+}
+
+#[test]
+fn machine_update_is_atomic_and_durable() {
+    let dir = TestDir::new("ployzd-update");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    let original = store
+        .initialize(
+            MachineName::parse("before").unwrap(),
+            "10.210.0.0/16".parse().unwrap(),
+            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            None,
+        )
+        .unwrap();
+    let endpoints = vec![AdvertisedEndpoint("198.51.100.2:6000".parse().unwrap())];
+    let updated = store
+        .update(
+            MachineUpdate {
+                name: Some(MachineName::parse("after").unwrap()),
+                public_ip: PublicIpUpdate::Set("203.0.113.7".parse().unwrap()),
+                advertised_endpoints: Some(endpoints.clone()),
+            },
+            std::slice::from_ref(&original),
+        )
+        .unwrap();
+
+    assert_eq!(updated.id, original.id);
+    assert_eq!(updated.subnet, original.subnet);
+    assert_eq!(updated.management_address, original.management_address);
+    assert_eq!(updated.public_key, original.public_key);
+    assert_eq!(updated.advertised_endpoints, endpoints);
+    drop(store);
+
+    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(reopened.record().machine.as_ref(), Some(&updated));
 }
 
 #[test]

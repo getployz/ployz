@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     net::IpAddr,
     sync::{Arc, Mutex},
 };
@@ -8,24 +8,31 @@ use ployz_core::{
     CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CREATE_VOLUME_CAPABILITY,
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
     INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_VOLUME_CAPABILITY, JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
-    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LogMetadata, LogOrigin,
-    MACHINE_LOGS_CAPABILITY, Machine, MachineDetails, MachineId, MachineLogService,
-    MachineObservation, MachineRpc, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
-    REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY, JOIN_MACHINE_CAPABILITY,
+    LIST_CONTAINERS_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
+    LocalMachinePhase, LocalMachineRemoved, LogMetadata, LogOrigin, MACHINE_LOGS_CAPABILITY,
+    MACHINE_TOKEN_CAPABILITY, Machine, MachineDetails, MachineId, MachineIdentity,
+    MachineLogService, MachineObservation, MachineRpc, MachineToken, OpaquePayload, PROTOCOL_MAJOR,
+    PublicIpDiscovery, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
+    REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
+    RttObservation, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, associate_wireguard_peers, synthesize_membership,
 };
 use serde_json::Value;
 use tokio::sync::watch;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    corrosion::{AdminClient, MembershipState, ReplicatedStore},
+    corrosion::{AdminClient, ReplicatedStore},
     docker::{Error as DockerError, LocalDocker, MachineSpecStore},
     logs::{RpcStream, open_journal_logs, serve_logs},
+    machine::local_runtime,
     machine::{LocalMachineStore, StoreError},
-    network::{allocate_machine_subnet, discover_endpoints, machine_gateway, management_address},
+    network::{
+        allocate_machine_subnet, discover_endpoints, discover_network, inspect_wireguard_device,
+        machine_gateway, management_address,
+    },
 };
 
 #[derive(Clone)]
@@ -98,6 +105,14 @@ impl MachineService {
             .as_ref()
             .ok_or_else(|| unavailable("Docker is not available"))
     }
+
+    async fn delete_replicated_machine(
+        replicated: &ReplicatedStore,
+        machine_id: &MachineId,
+    ) -> Result<bool, crate::corrosion::Error> {
+        replicated.delete_machine_containers(machine_id).await?;
+        replicated.delete_machine(machine_id).await
+    }
 }
 
 #[tonic::async_trait]
@@ -119,10 +134,15 @@ impl MachineRpc for MachineService {
         let mut capabilities = [
             DESCRIBE_CONTRACT_CAPABILITY,
             INSPECT_MACHINE_CAPABILITY,
+            MACHINE_TOKEN_CAPABILITY,
             INITIALIZE_MACHINE_CAPABILITY,
             REGISTER_MACHINE_CAPABILITY,
             JOIN_MACHINE_CAPABILITY,
             LIST_MACHINES_CAPABILITY,
+            UPDATE_MACHINE_CAPABILITY,
+            REMOVE_LOCAL_MACHINE_CAPABILITY,
+            REMOVE_MACHINE_CAPABILITY,
+            INSPECT_WIREGUARD_CAPABILITY,
             RESET_MACHINE_CAPABILITY,
         ]
         .into_iter()
@@ -170,14 +190,20 @@ impl MachineRpc for MachineService {
                 StoreError::MissingPrivateKey,
             )));
         };
-        let endpoints = if !request.advertised_endpoints.is_empty() {
+        let advertised_endpoints = if !request.advertised_endpoints.is_empty() {
             request.advertised_endpoints
         } else if let Some(machine) = &record.machine {
             machine.advertised_endpoints.clone()
         } else {
-            discover_endpoints(request.wireguard_port, request.public_ip_override)
-                .await
-                .map_err(|error| Status::internal(error.to_string()))?
+            discover_network(
+                request.wireguard_port,
+                request
+                    .public_ip_override
+                    .map_or(PublicIpDiscovery::Auto, PublicIpDiscovery::Override),
+            )
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+            .endpoints
         };
         let store_version = match &self.cluster {
             Some(cluster) => cluster
@@ -187,13 +213,58 @@ impl MachineRpc for MachineService {
                 .map_err(|error| Status::internal(error.to_string()))?,
             None => Default::default(),
         };
+        let rtts = if request.include_rtts && record.phase == LocalMachinePhase::Participating {
+            machine_rtts(
+                &self
+                    .cluster
+                    .as_ref()
+                    .ok_or_else(|| Status::unavailable("Cluster is not available"))?
+                    .admin,
+                self.replicated()
+                    .map_err(|error| Status::unavailable(error.message))?,
+            )
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+        } else {
+            Vec::new()
+        };
+        let machine = record.machine;
         respond(RpcResponse::machine_details(MachineDetails {
             id: record.id,
             phase: record.phase,
-            machine: record.machine,
+            machine,
             public_key: private_key.public_key(),
-            advertised_endpoints: endpoints,
+            advertised_endpoints,
             store_version,
+            rtts,
+        }))
+    }
+
+    async fn machine_token(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::MachineToken(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected machine_token request"));
+        };
+        let record = self.local_record()?;
+        let Some(private_key) = record.wireguard_private_key else {
+            return respond(RpcResponse::error(store_error(
+                StoreError::MissingPrivateKey,
+            )));
+        };
+        let discovered = discover_network(request.wireguard_port, request.public_ip)
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+        respond(RpcResponse::machine_token(MachineToken {
+            public_key: private_key.public_key(),
+            public_ip: discovered.public_ip,
+            advertised_endpoints: if request.advertised_endpoints.is_empty() {
+                discovered.endpoints
+            } else {
+                request.advertised_endpoints
+            },
+            runtime: local_runtime(),
         }))
     }
 
@@ -273,7 +344,9 @@ impl MachineRpc for MachineService {
             .map_err(|error| Status::internal(error.to_string()))?,
             management_address: management_address(request.public_key),
             public_key: request.public_key,
+            public_ip: request.public_ip,
             advertised_endpoints: request.advertised_endpoints,
+            runtime: request.runtime,
         };
         // TODO(UT-140): the imperative registration is deliberately unfenced and has no rollback.
         replicated
@@ -355,14 +428,22 @@ impl MachineRpc for MachineService {
                 .map_err(|error| Status::internal(error.to_string()))?,
             None => Vec::new(),
         };
-        let observations = machines
+        let states = states
             .into_iter()
-            .map(|machine| MachineObservation {
-                membership: membership(&machine, &local.id, &states),
-                selected_endpoint: local.selected_endpoints.get(&machine.id).copied(),
-                machine,
+            .filter_map(|state| match state.address.ip() {
+                IpAddr::V6(address) => {
+                    Some((ployz_core::ManagementAddress(address), state.membership))
+                }
+                IpAddr::V4(_) => None,
             })
             .collect();
+        let mut observations = synthesize_membership(machines, &local.id, &states);
+        for observation in &mut observations {
+            observation.selected_endpoint = local
+                .selected_endpoints
+                .get(&observation.machine.id)
+                .copied();
+        }
         respond(RpcResponse::machine_list(observations))
     }
 
@@ -527,11 +608,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        let RpcRequestBody::CreateVolume(request) = request.body else {
+        let RpcRequestBody::CreateVolume(request) = request_body(request)? else {
             return Err(Status::invalid_argument("expected create_volume request"));
         };
         let machine_id = self.local_record()?.id;
@@ -549,11 +626,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        if !matches!(request.body, RpcRequestBody::ListVolumes(_)) {
+        if !matches!(request_body(request)?, RpcRequestBody::ListVolumes(_)) {
             return Err(Status::invalid_argument("expected list_volumes request"));
         }
         let machine_id = self.local_record()?.id;
@@ -571,11 +644,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        let RpcRequestBody::InspectVolume(request) = request.body else {
+        let RpcRequestBody::InspectVolume(request) = request_body(request)? else {
             return Err(Status::invalid_argument("expected inspect_volume request"));
         };
         let machine_id = self.local_record()?.id;
@@ -597,11 +666,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(invalid_request)?;
-        let RpcRequestBody::RemoveVolume(request) = request.body else {
+        let RpcRequestBody::RemoveVolume(request) = request_body(request)? else {
             return Err(Status::invalid_argument("expected remove_volume request"));
         };
         let docker = match self.containers() {
@@ -688,6 +753,157 @@ impl MachineRpc for MachineService {
         )))
     }
 
+    async fn update_machine(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::UpdateMachine(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected update_machine request"));
+        };
+        if request.update.is_empty() {
+            return respond(RpcResponse::error(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "at least one Machine update is required".into(),
+                details: Value::Null,
+            }));
+        }
+        let replicated = match self.replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let visible = replicated
+            .machines()
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+            .observations;
+        let updated = self
+            .store
+            .lock()
+            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
+            .update(request.update, &visible);
+        match updated {
+            Ok(machine) => {
+                if let Err(error) = replicated.publish_local_machine(&machine).await {
+                    eprintln!("failed to publish updated local Machine: {error}");
+                }
+                respond(RpcResponse::machine_updated(machine))
+            }
+            Err(error) => respond(RpcResponse::error(store_error(error))),
+        }
+    }
+
+    async fn remove_local_machine(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !matches!(
+            request_body(request)?,
+            RpcRequestBody::RemoveLocalMachine(_)
+        ) {
+            return Err(Status::invalid_argument(
+                "expected remove_local_machine request",
+            ));
+        }
+        let machine_id = self.local_record()?.id;
+        let replicated = match self.replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let docker = match LocalDocker::connect() {
+            Ok(docker) => docker,
+            Err(error) => return respond(RpcResponse::error(unavailable(&error.to_string()))),
+        };
+        let containers = match docker.managed_container_ids().await {
+            Ok(containers) => containers,
+            Err(error) => return respond(RpcResponse::error(unavailable(&error.to_string()))),
+        };
+        if let Err(error) = docker.remove_managed_containers(&containers).await {
+            return respond(RpcResponse::error(RpcError {
+                code: RpcErrorCode::Internal,
+                message: error.to_string(),
+                details: Value::Null,
+            }));
+        }
+        let reset = self
+            .store
+            .lock()
+            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
+            .begin_reset();
+        if let Err(error) = reset {
+            return respond(RpcResponse::error(store_error(error)));
+        }
+        let removed = Self::delete_replicated_machine(replicated, &machine_id).await;
+        self.restart.send_replace(true);
+        removed.map_err(|error| Status::internal(error.to_string()))?;
+        respond(RpcResponse::local_machine_removed(
+            LocalMachineRemoved::default(),
+        ))
+    }
+
+    async fn remove_machine(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::RemoveMachine(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected remove_machine request"));
+        };
+        let replicated = match self.replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match Self::delete_replicated_machine(replicated, &request.machine_id)
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+        {
+            true => respond(RpcResponse::machine_removed()),
+            false => respond(RpcResponse::error(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: format!("Machine {} is not visible", request.machine_id),
+                details: Value::Null,
+            })),
+        }
+    }
+
+    async fn inspect_wireguard(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !matches!(request_body(request)?, RpcRequestBody::InspectWireguard(_)) {
+            return Err(Status::invalid_argument(
+                "expected inspect_wireguard request",
+            ));
+        }
+        let device =
+            inspect_wireguard_device().map_err(|error| Status::internal(error.to_string()))?;
+        let Some(cluster) = &self.cluster else {
+            return respond(RpcResponse::wireguard_inspected(device));
+        };
+        let machines = match cluster.replicated.machines().await {
+            Ok(snapshot) => snapshot.observations,
+            Err(error) => {
+                eprintln!("WireGuard Machine enrichment is unavailable: {error}");
+                Vec::new()
+            }
+        };
+        let rtts = match machine_rtts(&cluster.admin, &cluster.replicated).await {
+            Ok(rtts) => rtts,
+            Err(error) => {
+                eprintln!("WireGuard RTT enrichment is unavailable: {error}");
+                Vec::new()
+            }
+        }
+        .into_iter()
+        .filter_map(|observation| {
+            observation
+                .machine
+                .map(|machine| (machine.id, observation.statistics))
+        })
+        .collect();
+        respond(RpcResponse::wireguard_inspected(associate_wireguard_peers(
+            device, &machines, &rtts,
+        )))
+    }
+
     async fn reset(
         &self,
         request: Request<OpaquePayload>,
@@ -718,19 +934,45 @@ impl MachineRpc for MachineService {
     }
 }
 
-fn membership(
-    machine: &Machine,
-    local_id: &MachineId,
-    states: &[MembershipState],
-) -> MembershipObservation {
-    if machine.id == *local_id {
-        return MembershipObservation::Up;
+async fn machine_rtts(
+    admin: &AdminClient,
+    replicated: &ReplicatedStore,
+) -> Result<Vec<RttObservation>, crate::corrosion::Error> {
+    let machines = replicated.machines().await?.observations;
+    let identities = unique_identities(machines.into_iter().map(|machine| {
+        (
+            IpAddr::V6(machine.management_address.0),
+            MachineIdentity {
+                id: machine.id,
+                name: machine.name,
+            },
+        )
+    }));
+    Ok(admin
+        .member_rtts()
+        .await?
+        .into_iter()
+        .map(|mut observation| {
+            observation.machine = identities.get(&observation.address.ip()).cloned();
+            observation
+        })
+        .collect())
+}
+
+fn unique_identities(
+    entries: impl IntoIterator<Item = (IpAddr, MachineIdentity)>,
+) -> BTreeMap<IpAddr, MachineIdentity> {
+    let mut identities = BTreeMap::new();
+    let mut ambiguous = BTreeSet::new();
+    for (address, identity) in entries {
+        if identities.insert(address, identity).is_some() {
+            ambiguous.insert(address);
+        }
     }
-    states
-        .iter()
-        .find(|state| state.address.ip() == IpAddr::V6(machine.management_address.0))
-        .map(|state| state.membership.clone())
-        .unwrap_or(MembershipObservation::Down)
+    for address in ambiguous {
+        identities.remove(&address);
+    }
+    identities
 }
 
 fn unavailable(message: &str) -> RpcError {
@@ -749,6 +991,12 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::MissingPrivateKey
         | StoreError::KeyMismatch
         | StoreError::InvalidNetwork(_) => RpcErrorCode::InvalidArgument,
+        StoreError::MachineUpdate(ployz_core::MachineUpdateError::DuplicateName) => {
+            RpcErrorCode::Conflict
+        }
+        StoreError::MachineUpdate(ployz_core::MachineUpdateError::MissingEndpoints) => {
+            RpcErrorCode::InvalidArgument
+        }
         StoreError::Io(_)
         | StoreError::Json(_)
         | StoreError::InvalidPhase
@@ -795,4 +1043,28 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
 
 fn internal_response(error: impl std::fmt::Display) -> Status {
     Status::internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unique_identities;
+    use ployz_core::{MachineId, MachineIdentity, MachineName};
+
+    #[test]
+    fn duplicate_management_addresses_have_no_identity_winner() {
+        let duplicate = "192.0.2.1".parse().unwrap();
+        let unique = "192.0.2.2".parse().unwrap();
+        let identity = |seed: char| MachineIdentity {
+            id: MachineId::parse(seed.to_string().repeat(32)).unwrap(),
+            name: MachineName::parse(seed.to_string()).unwrap(),
+        };
+        let identities = unique_identities([
+            (duplicate, identity('1')),
+            (duplicate, identity('2')),
+            (unique, identity('3')),
+        ]);
+
+        assert!(!identities.contains_key(&duplicate));
+        assert_eq!(identities.get(&unique), Some(&identity('3')));
+    }
 }

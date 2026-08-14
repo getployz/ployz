@@ -101,6 +101,29 @@ impl ReplicatedStore {
         decode_observations(query.rows(["id", "info"])?)
     }
 
+    pub async fn delete_machine_containers(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "DELETE FROM containers WHERE machine_id = ?",
+                [json!(machine_id)],
+            )])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_machine(&self, machine_id: &MachineId) -> Result<bool, Error> {
+        if self.machine(machine_id.as_str()).await?.is_none() {
+            return Ok(false);
+        }
+        self.api
+            .execute([Statement::new(
+                "DELETE FROM machines WHERE id = ?",
+                [json!(machine_id)],
+            )])
+            .await?;
+        Ok(true)
+    }
+
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
         let observation = redacted_container(observation);
         if self.container(&observation.container_id).await? == Some(observation.clone()) {

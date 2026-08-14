@@ -11,8 +11,11 @@ use std::{collections::HashMap, net::Ipv4Addr, time::Duration, time::SystemTime}
 
 use bollard::{
     Docker,
+    errors::Error as DockerError,
     models::{ContainerInspectResponse, HealthConfig},
-    query_parameters::{EventsOptionsBuilder, ListContainersOptionsBuilder},
+    query_parameters::{
+        EventsOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    },
 };
 use futures_util::StreamExt;
 use ployz_core::{
@@ -60,7 +63,7 @@ impl LocalDocker {
         })
     }
 
-    async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
+    pub async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
         let filters = HashMap::from([("label", vec![LABEL_MANAGED, LABEL_SERVICE_ID])]);
         let options = ListContainersOptionsBuilder::default()
             .all(true)
@@ -96,6 +99,26 @@ impl LocalDocker {
             }
         }
         Ok(observations)
+    }
+
+    pub async fn remove_managed_containers(&self, ids: &[ContainerId]) -> Result<(), Error> {
+        for id in ids {
+            match self.client.stop_container(id.as_str(), None).await {
+                Ok(()) => {}
+                Err(DockerError::DockerResponseServerError {
+                    status_code: 304 | 404,
+                    ..
+                }) => {}
+                Err(error) => return Err(error.into()),
+            }
+            self.client
+                .remove_container(
+                    id.as_str(),
+                    Some(RemoveContainerOptionsBuilder::default().v(true).build()),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn inspect_managed(

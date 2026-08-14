@@ -281,9 +281,11 @@ fn machine(name: &str, seed: u8) -> Machine {
         subnet: MachineSubnet(format!("10.210.{seed}.0/24").parse().unwrap()),
         management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
         public_key: WireGuardPublicKey([seed; 32]),
+        public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(
             format!("192.0.2.{seed}:51000").parse().unwrap(),
         )],
+        runtime: Default::default(),
     }
 }
 

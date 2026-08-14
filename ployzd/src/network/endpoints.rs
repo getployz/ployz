@@ -3,29 +3,38 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::AdvertisedEndpoint;
+use ployz_core::{AdvertisedEndpoint, PublicIpDiscovery};
 use serde::Deserialize;
 
 use super::{DOCKER_NETWORK_NAME, NetworkError, WIREGUARD_INTERFACE_NAME, checked_command};
 
-pub async fn discover_endpoints(
+pub struct DiscoveredNetwork {
+    pub public_ip: Option<IpAddr>,
+    pub endpoints: Vec<AdvertisedEndpoint>,
+}
+
+pub async fn discover_network(
     port: u16,
-    public_ip_override: Option<IpAddr>,
-) -> Result<Vec<AdvertisedEndpoint>, NetworkError> {
+    public_ip: PublicIpDiscovery,
+) -> Result<DiscoveredNetwork, NetworkError> {
     let mut addresses = routable_interface_addresses()?;
-    let public_ip = match public_ip_override {
-        Some(address) => Some(address),
-        None => discover_public_ip().await,
+    let public_ip = match public_ip {
+        PublicIpDiscovery::Auto => discover_public_ip().await,
+        PublicIpDiscovery::Disabled => None,
+        PublicIpDiscovery::Override(address) => Some(address),
     };
     if let Some(address) = public_ip
         && !addresses.contains(&address)
     {
         addresses.push(address);
     }
-    Ok(addresses
-        .into_iter()
-        .map(|address| AdvertisedEndpoint(SocketAddr::new(address, port)))
-        .collect())
+    Ok(DiscoveredNetwork {
+        public_ip,
+        endpoints: addresses
+            .into_iter()
+            .map(|address| AdvertisedEndpoint(SocketAddr::new(address, port)))
+            .collect(),
+    })
 }
 
 #[derive(Deserialize)]

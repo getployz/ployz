@@ -158,6 +158,13 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
+    async fn machine_token(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn initialize(
         &self,
         _request: Request<OpaquePayload>,
@@ -299,6 +306,34 @@ impl MachineRpc for DiscoveryService {
     }
 
     async fn reset(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn update_machine(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn remove_local_machine(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn remove_machine(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn inspect_wireguard(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
