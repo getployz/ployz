@@ -1,9 +1,7 @@
 use std::{
     fs,
-    future::Future,
     net::Ipv4Addr,
     path::{Path, PathBuf},
-    pin::Pin,
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -18,7 +16,7 @@ use tokio::{
 
 use crate::connect::{BoxProxyStream, Client};
 
-use super::{PushError, cancellation_error, command_error, docker_output, not_found, stop_command};
+use super::{Cancellation, PushError, command_error, docker_output, not_found, stop_command};
 
 const HELPER_IMAGE: &str = "alpine/socat:1.8.0.3";
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -74,13 +72,10 @@ pub(super) struct ImageProxy {
 }
 
 impl ImageProxy {
-    pub(super) async fn open<F>(
+    pub(super) async fn open(
         mode: ProxyMode,
-        mut cancellation: Pin<&mut F>,
-    ) -> Result<Self, PushError>
-    where
-        F: Future<Output = std::io::Result<()>>,
-    {
+        cancellation: &mut Cancellation,
+    ) -> Result<Self, PushError> {
         let mut proxy = Self {
             listener: Listener::bind(mode).await?,
             helper: None,
@@ -88,9 +83,9 @@ impl ImageProxy {
             connections: JoinSet::new(),
             push_port: 0,
         };
-        let setup = tokio::select! {
-            setup = proxy.setup(mode) => setup,
-            result = cancellation.as_mut() => Err(cancellation_error(result)),
+        let setup = match cancellation.race(proxy.setup(mode)).await {
+            Ok(setup) => setup,
+            Err(error) => Err(error),
         };
         match setup {
             Ok(()) => Ok(proxy),

@@ -69,16 +69,38 @@ pub enum PushError {
     },
 }
 
+struct Cancellation {
+    signal: Pin<Box<dyn Future<Output = std::io::Result<()>>>>,
+}
+
+impl Cancellation {
+    fn new() -> Self {
+        Self {
+            signal: Box::pin(tokio::signal::ctrl_c()),
+        }
+    }
+
+    async fn race<T>(&mut self, future: impl Future<Output = T>) -> Result<T, PushError> {
+        tokio::select! {
+            output = future => Ok(output),
+            result = self.signal.as_mut() => Err(cancellation_error(result)),
+        }
+    }
+}
+
 pub async fn push(
     client: &mut Client,
     image: &str,
     platform: Option<&str>,
     selectors: &[String],
 ) -> Result<PartialResult<(), PushError>, PushError> {
+    let mut cancellation = Cancellation::new();
     // TODO(UT-022): without an explicit platform, Docker chooses what to push; target platforms are not inferred.
     let platform = platform.map(validated_platform).transpose()?;
     validate_push_reference(image)?;
-    let inspected = docker_output(["image", "inspect", image]).await?;
+    let inspected = cancellation
+        .race(docker_output(["image", "inspect", image]))
+        .await??;
     if !inspected.status.success() {
         return Err(if not_found(&inspected) {
             PushError::ImageNotFound(image.into())
@@ -86,32 +108,19 @@ pub async fn push(
             command_error("inspect local image", &inspected)
         });
     }
-    let targets = select_targets(
-        &client
-            .list_machines()
-            .await
-            .map_err(|error| PushError::Cluster(error.to_string()))?,
-        selectors,
-    )?;
-    let mode = detect_mode().await?;
-    let cancellation = tokio::signal::ctrl_c();
-    tokio::pin!(cancellation);
+    let machines = cancellation
+        .race(client.list_machines())
+        .await?
+        .map_err(|error| PushError::Cluster(error.to_string()))?;
+    let targets = select_targets(&machines, selectors)?;
+    let mode = cancellation.race(detect_mode()).await??;
     let mut result = PartialResult {
         successes: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
     for machine in targets {
-        match push_to_machine(
-            client,
-            image,
-            platform,
-            &machine,
-            mode,
-            cancellation.as_mut(),
-        )
-        .await
-        {
+        match push_to_machine(client, image, platform, &machine, mode, &mut cancellation).await {
             Ok(()) => result.successes.push(MachineSuccess {
                 machine_id: machine.id,
                 value: (),
@@ -152,20 +161,17 @@ fn select_targets(
         .map_err(|error| PushError::TargetSelection(error.to_string()))
 }
 
-async fn push_to_machine<F>(
+async fn push_to_machine(
     client: &Client,
     image: &str,
     platform: Option<&str>,
     machine: &Machine,
     mode: ProxyMode,
-    cancellation: Pin<&mut F>,
-) -> Result<(), PushError>
-where
-    F: Future<Output = std::io::Result<()>>,
-{
-    let store = client
-        .list_images(Some(image.into()), &[machine.id.to_string()])
-        .await
+    cancellation: &mut Cancellation,
+) -> Result<(), PushError> {
+    let store = cancellation
+        .race(client.list_images(Some(image.into()), &[machine.id.to_string()]))
+        .await?
         .map_err(|error| PushError::Cluster(format!("check image store: {error}")))?;
     let store = store.successes.first().ok_or_else(|| {
         PushError::Cluster(
@@ -185,9 +191,9 @@ where
     }
     let gateway = Ipv4Addr::from(u32::from(network.network()) + 1);
     let remote = format!("{gateway}:{UNREGISTRY_PORT}");
-    client
-        .dial_proxy("tcp", &remote)
-        .await
+    cancellation
+        .race(client.dial_proxy("tcp", &remote))
+        .await?
         .map_err(|error| PushError::Cluster(format!("reach unregistry: {error}")))?;
     PushSession::run(client, remote, mode, image, platform, cancellation).await
 }
@@ -199,25 +205,25 @@ struct PushSession {
 }
 
 impl PushSession {
-    async fn run<F>(
+    async fn run(
         client: &Client,
         remote: String,
         mode: ProxyMode,
         image: &str,
         platform: Option<&str>,
-        mut cancellation: Pin<&mut F>,
-    ) -> Result<(), PushError>
-    where
-        F: Future<Output = std::io::Result<()>>,
-    {
+        cancellation: &mut Cancellation,
+    ) -> Result<(), PushError> {
         let mut session = Self {
-            proxy: ImageProxy::open(mode, cancellation.as_mut()).await?,
+            proxy: ImageProxy::open(mode, cancellation).await?,
             temporary: None,
             command: None,
         };
-        let outcome = tokio::select! {
-            outcome = session.push(client, remote, image, platform) => outcome,
-            result = cancellation.as_mut() => Err(cancellation_error(result)),
+        let outcome = match cancellation
+            .race(session.push(client, remote, image, platform))
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => Err(error),
         };
         let cleanup = session.cleanup().await;
         match (outcome, cleanup) {
@@ -347,14 +353,10 @@ fn temporary_reference(port: u16, image: &str) -> String {
     format!("127.0.0.1:{port}/{image}")
 }
 
-async fn stop_command(command: &mut Child) -> Result<(), PushError> {
-    match command.try_wait() {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => command
-            .kill()
-            .await
-            .map_err(|error| PushError::Cleanup(error.to_string())),
-        Err(error) => Err(PushError::Cleanup(error.to_string())),
+async fn stop_command(command: &mut Child) -> std::io::Result<()> {
+    match command.try_wait()? {
+        Some(_) => Ok(()),
+        None => command.kill().await,
     }
 }
 
