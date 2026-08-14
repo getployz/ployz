@@ -462,7 +462,27 @@ impl Client {
                         RpcResponseBody::Error(error) => {
                             result.failures.push(MachineFailure { machine_id, error });
                         }
-                        _ => {
+                        RpcResponseBody::ContractDescription(_)
+                        | RpcResponseBody::MachineDetails(_)
+                        | RpcResponseBody::MachineToken(_)
+                        | RpcResponseBody::Initialized(_)
+                        | RpcResponseBody::Registered(_)
+                        | RpcResponseBody::JoinAccepted(_)
+                        | RpcResponseBody::MachineList(_)
+                        | RpcResponseBody::ContainerList(_)
+                        | RpcResponseBody::ContainerDetails(_)
+                        | RpcResponseBody::ContainerCreated(_)
+                        | RpcResponseBody::ContainerChanged(_)
+                        | RpcResponseBody::VolumeCreated(_)
+                        | RpcResponseBody::VolumeList(_)
+                        | RpcResponseBody::VolumeDetails(_)
+                        | RpcResponseBody::VolumeRemoved(_)
+                        | RpcResponseBody::MachineUpdated(_)
+                        | RpcResponseBody::LocalMachineRemoved(_)
+                        | RpcResponseBody::MachineRemoved(_)
+                        | RpcResponseBody::WireGuardInspected(_)
+                        | RpcResponseBody::ResetAccepted(_)
+                        | RpcResponseBody::Unknown { .. } => {
                             return Err(ConnectError::Codec(CodecError::UnexpectedResponse {
                                 expected: "machine_images",
                                 actual,
