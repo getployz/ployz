@@ -2,7 +2,15 @@
 FROM rust:1.97.1-bookworm AS build
 ARG TARGETARCH
 WORKDIR /src
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY ployz-core/Cargo.toml ployz-core/build.rs ployz-core/
+COPY ployz-core/src ployz-core/src
+COPY ployz/Cargo.toml ployz/
+COPY ployz/src ployz/src
+COPY ployzd/Cargo.toml ployzd/
+COPY ployzd/src ployzd/src
+COPY ployz-testkit/Cargo.toml ployz-testkit/
+COPY ployz-testkit/src ployz-testkit/src
 RUN --mount=type=cache,id=ployz-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=ployz-target-${TARGETARCH},target=/src/target,sharing=locked \
     cargo build --locked --release --package ployzd \
