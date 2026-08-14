@@ -86,28 +86,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .record()
         .clone();
     let mut network = NetworkPlane::start(&local_record).await?;
-    let [management_listener, gateway_listener] = if let Some(network) = &network {
+    let machine_api_listeners = if args.machine_api_address.is_none()
+        && let Some(network) = &network
+    {
         let [management, gateway] = network.machine_api_addresses()?;
-        [
-            if args
-                .machine_api_address
-                .is_none_or(|address| address.is_ipv4())
-            {
-                Some(TcpListener::bind(management).await?)
-            } else {
-                None
-            },
-            if args
-                .machine_api_address
-                .is_none_or(|address| address.is_ipv6())
-            {
-                Some(TcpListener::bind(gateway).await?)
-            } else {
-                None
-            },
-        ]
+        Some((
+            TcpListener::bind(management).await?,
+            TcpListener::bind(gateway).await?,
+        ))
     } else {
-        [None, None]
+        None
     };
     let explicit_machine_api_listener = match args.machine_api_address {
         Some(address) => Some(TcpListener::bind(address).await?),
@@ -186,6 +174,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         reset.clone(),
         shutdown_rx.clone(),
     );
+    let (management_listener, gateway_listener) = machine_api_listeners
+        .map_or((None, None), |(management, gateway)| {
+            (Some(management), Some(gateway))
+        });
     let network_rpc = async {
         tokio::try_join!(
             serve_machine_api(

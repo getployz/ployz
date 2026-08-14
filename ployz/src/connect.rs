@@ -12,8 +12,8 @@ use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
     FanoutFailure, FanoutOutcome, FanoutResponse, FramingError, MachineFailure, MachineId,
-    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload,
-    PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
+    OpaquePayload, PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -428,24 +428,6 @@ impl Client {
         decode_rpc(response, RpcResponse::decode_volume_removed)
     }
 
-    pub async fn list_machines(
-        &mut self,
-    ) -> Result<Vec<ployz_core::MachineObservation>, ConnectError> {
-        let response = self
-            .rpc
-            .list_machines(RpcRequest::list_machines().encode()?)
-            .await?
-            .into_inner()
-            .decode_response()?;
-        if let RpcResponseBody::Error(error) = &response.body {
-            return Err(ConnectError::Remote(error.clone()));
-        }
-        response
-            .decode_machine_list()
-            .map(<[_]>::to_vec)
-            .map_err(ConnectError::Codec)
-    }
-
     pub async fn list_images(
         &self,
         reference: Option<String>,
@@ -509,6 +491,10 @@ impl Client {
                         | RpcResponseBody::ContainerDetails(_)
                         | RpcResponseBody::ContainerCreated(_)
                         | RpcResponseBody::ContainerChanged(_)
+                        | RpcResponseBody::VolumeCreated(_)
+                        | RpcResponseBody::VolumeList(_)
+                        | RpcResponseBody::VolumeDetails(_)
+                        | RpcResponseBody::VolumeRemoved(_)
                         | RpcResponseBody::ResetAccepted(_)
                         | RpcResponseBody::Unknown { .. } => {
                             return Err(ConnectError::Codec(CodecError::UnexpectedResponse {

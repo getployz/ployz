@@ -12,7 +12,7 @@ use thiserror::Error;
 use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
     DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineLogService,
-    MachineName, MachineObservation, ResolvedServiceSpec, ValueError, WireGuardPublicKey,
+    MachineName, MachineObservation, ResolvedServiceSpec, WireGuardPublicKey,
 };
 
 mod docker;

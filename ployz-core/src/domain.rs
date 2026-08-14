@@ -4,14 +4,14 @@ use std::{
     num::{NonZeroU16, NonZeroU32},
 };
 
-use ipnet::IpNet;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use serde_json::{Map, Value};
 use crate::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerPath, DockerVolumeName, MachineId,
     MachineName, MachinePath, MachineSelector, MachineSubnet, ManagementAddress, SelectedEndpoint,
     ServiceId, ServiceName, ServiceVolumeReference, WireGuardPublicKey,
 };
+use ipnet::IpNet;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde_json::{Map, Value};
 
 /// A name lookup result. Duplicate names are a normal observable state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

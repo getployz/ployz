@@ -3,8 +3,8 @@ mod lifecycle;
 mod managed_service;
 mod spec_store;
 mod stream;
-mod volume;
 mod unregistry;
+mod volume;
 
 #[cfg(test)]
 mod integration_tests;

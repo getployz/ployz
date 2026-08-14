@@ -1021,6 +1021,7 @@ mod tests {
                     "wg",
                     CORROSION_IMAGE,
                     SERVICE_CONTAINER_IMAGE,
+                    UNREGISTRY_IMAGE,
                 ]
         }));
     }
