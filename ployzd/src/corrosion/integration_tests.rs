@@ -166,10 +166,12 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
+    let (restart, restart_rx) = tokio::sync::watch::channel(false);
     let publisher = tokio::spawn(run_machine_publisher(
         Some(store.clone()),
         Arc::clone(&local),
         participating,
+        restart,
         shutdown_rx,
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -189,6 +191,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(persisted.phase, LocalMachinePhase::Participating);
     assert!(persisted.min_store_version.is_empty());
     assert!(*participating_rx.borrow());
+    assert!(*restart_rx.borrow());
 
     let interrupted_dir = root.0.join("interrupted-machine");
     let target = BTreeMap::from([("unreachable-actor".to_owned(), 1)]);
@@ -213,10 +216,12 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         ReplicatedStore::new(ApiClient::new(unused_address(), &"a".repeat(64)).unwrap());
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
+    let (restart, restart_rx) = tokio::sync::watch::channel(false);
     let publisher = tokio::spawn(run_machine_publisher(
         Some(unavailable),
         interrupted,
         participating,
+        restart,
         shutdown_rx,
     ));
     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -228,6 +233,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(persisted.phase, LocalMachinePhase::Joining);
     assert_eq!(persisted.min_store_version, target);
     assert!(!*participating_rx.borrow());
+    assert!(!*restart_rx.borrow());
 
     running.cleanup().await.unwrap();
 }

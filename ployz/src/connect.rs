@@ -11,8 +11,9 @@ use std::{
 use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
-    MachineFailure, MachineId, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload,
-    PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    FanoutOutcome, FanoutResponse, FramingError, MachineFailure, MachineId, MachineImages,
+    MachineName, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload, PartialResult,
+    RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -20,7 +21,12 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     process::{Child, ChildStdin, ChildStdout, Command},
 };
-use tonic::transport::{Channel, Endpoint};
+use tonic::{
+    codec::ProstCodec,
+    codegen::http::uri::PathAndQuery,
+    metadata::MetadataValue,
+    transport::{Channel, Endpoint},
+};
 
 use crate::context::{
     Config, ConfigError, Connection, ConnectionError, ConnectionSource, ContextError,
@@ -273,8 +279,15 @@ impl AsyncWrite for SshIo {
 #[derive(Clone)]
 pub struct Client {
     pub(crate) rpc: MachineRpcClient<Channel>,
+    channel: Channel,
     connection: Connection,
     connector: Arc<dyn Connector>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MachineImagesObservation {
+    pub machine_name: MachineName,
+    pub images: MachineImages,
 }
 
 impl Client {
@@ -411,6 +424,107 @@ impl Client {
         decode_rpc(response, RpcResponse::decode_volume_removed)
     }
 
+    pub async fn list_machines(
+        &mut self,
+    ) -> Result<Vec<ployz_core::MachineObservation>, ConnectError> {
+        self.rpc
+            .list_machines(RpcRequest::list_machines().encode()?)
+            .await?
+            .into_inner()
+            .decode_response()?
+            .decode_machine_list()
+            .map(<[_]>::to_vec)
+            .map_err(ConnectError::Codec)
+    }
+
+    pub async fn list_images(
+        &self,
+        reference: Option<String>,
+        targets: &[String],
+    ) -> Result<PartialResult<MachineImagesObservation, RpcError>, ConnectError> {
+        let mut request = tonic::Request::new(RpcRequest::list_images(reference).encode()?);
+        let all = ["*".to_owned()];
+        for target in if targets.is_empty() {
+            all.as_slice()
+        } else {
+            targets
+        } {
+            let value = MetadataValue::try_from(target.as_str())
+                .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+            request.metadata_mut().append("machines", value);
+        }
+        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
+        grpc.ready()
+            .await
+            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        let response = grpc
+            .server_streaming(
+                request,
+                PathAndQuery::from_static("/ployz.rpc.v1.MachineRpc/ListImages"),
+                ProstCodec::<OpaquePayload, FanoutResponse>::default(),
+            )
+            .await?;
+        let mut stream = response.into_inner();
+        let mut result = PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        };
+        while let Some(envelope) = stream.message().await? {
+            let machine_id = envelope.machine_id()?;
+            let machine_name = envelope.machine_name()?;
+            match envelope.outcome {
+                Some(FanoutOutcome::FramedPayload(frame)) => {
+                    let response = OpaquePayload::decode_grpc_frame(&frame)?.decode_response()?;
+                    let actual = response.kind().as_str().to_owned();
+                    match response.body {
+                        RpcResponseBody::MachineImages(images) => {
+                            result.successes.push(MachineSuccess {
+                                machine_id,
+                                value: MachineImagesObservation {
+                                    machine_name,
+                                    images,
+                                },
+                            });
+                        }
+                        RpcResponseBody::Error(error) => {
+                            result.failures.push(MachineFailure { machine_id, error });
+                        }
+                        RpcResponseBody::ContractDescription(_)
+                        | RpcResponseBody::MachineDetails(_)
+                        | RpcResponseBody::Initialized(_)
+                        | RpcResponseBody::Registered(_)
+                        | RpcResponseBody::JoinAccepted(_)
+                        | RpcResponseBody::MachineList(_)
+                        | RpcResponseBody::ContainerList(_)
+                        | RpcResponseBody::ContainerDetails(_)
+                        | RpcResponseBody::ContainerCreated(_)
+                        | RpcResponseBody::ContainerChanged(_)
+                        | RpcResponseBody::ResetAccepted(_)
+                        | RpcResponseBody::Unknown { .. } => {
+                            return Err(ConnectError::Codec(CodecError::UnexpectedResponse {
+                                expected: "machine_images",
+                                actual,
+                            }));
+                        }
+                    }
+                }
+                Some(FanoutOutcome::Failure(failure)) => {
+                    result.failures.push(MachineFailure {
+                        machine_id,
+                        error: RpcError {
+                            code: RpcErrorCode::Unavailable,
+                            message: failure.message,
+                            details: Default::default(),
+                        },
+                    });
+                }
+                None => result.omissions.push(machine_id),
+            }
+        }
+        Ok(result)
+    }
+
     pub async fn dial_proxy(
         &self,
         network: &str,
@@ -503,7 +617,8 @@ pub async fn connect_selected_with(
         match connector.connect(connection).await {
             Ok(channel) => {
                 return Ok(Client {
-                    rpc: MachineRpcClient::new(channel),
+                    rpc: MachineRpcClient::new(channel.clone()),
+                    channel,
                     connection: connection.clone(),
                     connector,
                 });
@@ -597,6 +712,10 @@ pub enum ConnectError {
     Remote(RpcError),
     #[error("Machine ID cannot be used as routing metadata")]
     InvalidMachineMetadata,
+    #[error("Machine RPC framing failed: {0}")]
+    Framing(#[from] FramingError),
+    #[error("Machine RPC identity failed: {0}")]
+    Value(#[from] ployz_core::ValueError),
 }
 
 impl From<tonic::Status> for ConnectError {

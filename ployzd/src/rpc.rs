@@ -9,12 +9,12 @@ use ployz_core::{
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
     INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
     INSPECT_VOLUME_CAPABILITY, JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
-    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LogMetadata, LogOrigin,
-    MACHINE_LOGS_CAPABILITY, Machine, MachineDetails, MachineId, MachineLogService,
-    MachineObservation, MachineRpc, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
-    REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
+    LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LocalMachinePhase,
+    LogMetadata, LogOrigin, MACHINE_LOGS_CAPABILITY, Machine, MachineDetails, MachineId,
+    MachineLogService, MachineObservation, MachineRpc, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
+    REMOVE_VOLUME_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -69,8 +69,8 @@ impl MachineService {
     }
 
     #[must_use]
-    pub fn with_containers(mut self, docker: LocalDocker, specs: MachineSpecStore) -> Self {
-        self.containers = Some(ContainerContext { docker, specs });
+    pub fn with_containers(mut self, docker: Option<LocalDocker>, specs: MachineSpecStore) -> Self {
+        self.containers = docker.map(|docker| ContainerContext { docker, specs });
         self
     }
 
@@ -123,6 +123,7 @@ impl MachineRpc for MachineService {
             REGISTER_MACHINE_CAPABILITY,
             JOIN_MACHINE_CAPABILITY,
             LIST_MACHINES_CAPABILITY,
+            LIST_IMAGES_CAPABILITY,
             RESET_MACHINE_CAPABILITY,
         ]
         .into_iter()
@@ -686,6 +687,25 @@ impl MachineRpc for MachineService {
             metadata,
             request.options.follow,
         )))
+    }
+
+    async fn list_images(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::ListImages(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected list_images request"));
+        };
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        let images = containers
+            .docker
+            .list_images(request.reference.as_deref())
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+        respond(RpcResponse::machine_images(images))
     }
 
     async fn reset(

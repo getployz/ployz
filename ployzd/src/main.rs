@@ -22,7 +22,7 @@ use ployzd::{
     docker::{ContainerObserver, LocalDocker, MachineSpecStore},
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
-    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkPlane},
+    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkPlane, machine_gateway},
     proxy::MachineProxy,
     rpc::MachineService,
 };
@@ -54,6 +54,8 @@ struct Args {
     dns_upstreams: Vec<SocketAddr>,
     #[arg(long, hide = true)]
     machine_api_address: Option<SocketAddr>,
+    #[arg(long)]
+    containerd_socket: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -103,14 +105,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
     let dns_upstreams = (!args.dns_upstreams.is_empty()).then(|| args.dns_upstreams.clone());
     let specs = MachineSpecStore::open(args.data_dir.join("machine.db")).await?;
-    let docker = LocalDocker::connect()?;
-    let observer = replicated_store.clone().map(|replicated| {
-        ContainerObserver::new(
-            docker.clone(),
-            specs.clone(),
-            replicated,
-            local_record.id.clone(),
-        )
+    let docker = match LocalDocker::connect() {
+        Ok(docker) => Some(docker),
+        Err(error) => {
+            eprintln!("WARNING: local Docker is unavailable: {error}");
+            None
+        }
+    };
+    let mut unregistry = if local_record.phase == LocalMachinePhase::Participating {
+        match (&docker, local_record.machine.as_ref()) {
+            (Some(docker), Some(machine)) => match docker
+                .start_unregistry(
+                    machine_gateway(machine.subnet)?.0,
+                    args.containerd_socket.as_deref(),
+                )
+                .await
+            {
+                Ok(running) => running,
+                Err(error) => {
+                    eprintln!("WARNING: unregistry disabled: {error}");
+                    None
+                }
+            },
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let observer = replicated_store.clone().and_then(|replicated| {
+        docker.clone().map(|docker| {
+            ContainerObserver::new(docker, specs.clone(), replicated, local_record.id.clone())
+        })
     });
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
@@ -119,7 +144,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (reset, mut reset_rx) = watch::channel(false);
     let service = MachineService::with_cluster(
         Arc::clone(&store),
-        reset,
+        reset.clone(),
         corrosion
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client())),
@@ -142,6 +167,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         replicated_store.clone(),
         Arc::clone(&store),
         participating,
+        reset.clone(),
         shutdown_rx.clone(),
     );
     let network_rpc = async {
@@ -257,6 +283,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .phase
         == LocalMachinePhase::Resetting;
     if let Some(running) = &mut corrosion {
+        if resetting {
+            running.cleanup().await?;
+        } else {
+            running.stop().await?;
+        }
+    }
+    if let Some(running) = &mut unregistry {
         if resetting {
             running.cleanup().await?;
         } else {

@@ -132,8 +132,8 @@ fn build() -> Command {
         .arg(switch("no-cache", None))
         .arg(many("profile", Some('p')))
         .arg(switch("pull", None))
-        .arg(switch("push", None))
-        .arg(switch("push-registry", None))
+        .arg(switch("push", None).conflicts_with("push-registry"))
+        .arg(switch("push-registry", None).conflicts_with("push"))
         .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
 }
 
@@ -205,7 +205,7 @@ fn image() -> Command {
         .subcommand(
             base("push", "Push an image")
                 .arg(many("machine", Some('m')))
-                .arg(value("platform", None))
+                .arg(value("platform", None).value_parser(["linux/amd64", "linux/arm64"]))
                 .arg(positional("image", true)),
         )
 }

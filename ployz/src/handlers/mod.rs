@@ -4,7 +4,9 @@ use thiserror::Error as ThisError;
 
 use crate::compose::{LoadOptions, load_project};
 
+mod build;
 mod context;
+mod image;
 mod operator;
 mod service;
 mod volume;
@@ -147,7 +149,7 @@ macro_rules! stub_handlers {
 }
 
 stub_handlers! {
-    build(root) { compose_not_implemented(root, "build", false) } => "build";
+    build(root) { build::run(root) } => "build";
     caddy_config => "caddy config";
     caddy_deploy => "caddy deploy";
     caddy_logs => "caddy logs";
@@ -168,9 +170,9 @@ stub_handlers! {
     dns_reserve => "dns reserve";
     dns_show => "dns show";
     exec(root) { operator::exec(root) } => "exec";
-    image_list => "image ls";
-    image_push => "image push";
-    images => "images";
+    image_list(root) { image::list(root) } => "image ls";
+    image_push(root) { image::push(root) } => "image push";
+    images(root) { image::list(root) } => "images";
     inspect(root) { service::inspect(root) } => "inspect";
     logs(root) {
         operator::service_logs(root)

@@ -1,3 +1,4 @@
+mod build;
 mod configs;
 mod convert;
 mod extensions;
@@ -9,6 +10,7 @@ mod planning;
 mod ports;
 mod secrets;
 
+pub use build::{BuildOptions, BuildPlan, BuildService, execute_build, plan_build};
 pub use convert::parse_normalized;
 pub use loader::{LoadOptions, load_project};
 pub use model::{BuildSpec, ComposeError, ComposeProject};

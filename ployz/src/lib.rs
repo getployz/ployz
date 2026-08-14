@@ -4,6 +4,7 @@ pub mod connect;
 pub mod context;
 pub mod deploy;
 pub mod handlers;
+pub mod image;
 pub mod operator;
 mod provisioning;
 pub mod service;

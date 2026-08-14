@@ -89,3 +89,188 @@ async fn failed_join_leaves_the_registered_ghost_until_teardown() {
     assert!(ids.contains(&first.id));
     assert!(ids.contains(&ghost));
 }
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
+    let plan = ClusterPlan::new(&format!("l3-056-{}", process::id()), 3).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    cluster.initialize_three().await.unwrap();
+    let image = format!("l3.invalid/unique-{}:v1", process::id());
+    for index in 0..2 {
+        cluster.docker(index, &["pull", "alpine:3.23.3"]).unwrap();
+        cluster
+            .docker(index, &["tag", "alpine:3.23.3", &image])
+            .unwrap();
+    }
+
+    let all = futures_for_three(&cluster, None).await;
+    assert!(all.iter().all(|images| images.containerd_store));
+    assert_eq!(
+        all.iter()
+            .filter(|images| images
+                .images
+                .iter()
+                .any(|entry| entry.repo_tags.contains(&image)))
+            .count(),
+        2
+    );
+    let filtered = futures_for_three(&cluster, Some(image.clone())).await;
+    assert_eq!(
+        filtered
+            .iter()
+            .filter(|images| images
+                .images
+                .iter()
+                .any(|entry| entry.repo_tags.contains(&image)))
+            .count(),
+        2
+    );
+    assert!(filtered.get(2).unwrap().images.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable() {
+    let plan = ClusterPlan::new(&format!("l3-unregistry-{}", process::id()), 2).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    let machines = cluster.initialize_two().await.unwrap();
+    let gateway =
+        std::net::Ipv4Addr::from(u32::from(machines.first().unwrap().subnet.0.network()) + 1);
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let ready = cluster
+                .shell(
+                    0,
+                    &format!(
+                        "docker inspect ployz-unregistry >/dev/null 2>&1 && curl --fail --silent http://{gateway}:51500/v2/ >/dev/null"
+                    ),
+                )
+                .is_ok();
+            if ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cluster.docker(0, &["pull", "alpine:3.23.3"]).unwrap();
+    cluster
+        .docker(
+            0,
+            &[
+                "run",
+                "--rm",
+                "--network",
+                "ployz",
+                "alpine:3.23.3",
+                "wget",
+                "-qO-",
+                &format!("http://{gateway}:51500/v2/"),
+            ],
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn multi_platform_direct_push_retains_success_beside_target_failure() {
+    let plan = ClusterPlan::new(&format!("l3-image-push-{}", process::id()), 2).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    let machines = cluster.initialize_two().await.unwrap();
+    let image = format!("l3.invalid/multi-{}:v1", process::id());
+    cluster
+        .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
+        .unwrap();
+    cluster
+        .docker(0, &["pull", "--platform", "linux/arm64", "busybox:1.37.0"])
+        .unwrap();
+    cluster
+        .docker(0, &["tag", "busybox:1.37.0", &image])
+        .unwrap();
+    cluster.docker(1, &["stop", "ployz-unregistry"]).unwrap();
+
+    let pushed = cluster.shell(
+        0,
+        &format!("ployz --connect root@127.0.0.1 image push --platform linux/arm64 {image}"),
+    );
+    assert!(
+        pushed.is_err(),
+        "one unavailable target must fail the command"
+    );
+    let retained = cluster.images(0, Some(image.clone())).await.unwrap();
+    let image = retained
+        .images
+        .iter()
+        .find(|entry| entry.repo_tags.contains(&image))
+        .expect("successful target retained the original image reference");
+    assert!(
+        image
+            .platforms
+            .iter()
+            .any(|platform| platform.starts_with("linux/arm64")),
+        "retained platforms: {:?}",
+        image.platforms
+    );
+    assert!(
+        cluster
+            .images(1, Some(image.repo_tags.first().unwrap().clone()))
+            .await
+            .unwrap()
+            .images
+            .is_empty()
+    );
+    assert_ne!(machines.first().unwrap().id, machines.get(1).unwrap().id);
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
+    let disabled = ClusterPlan::new(&format!("l3-unreg-store-{}", process::id()), 2)
+        .unwrap()
+        .with_machine_environment("PLOYZ_TESTKIT_CONTAINERD_STORE", "0");
+    let disabled = Cluster::create(disabled).unwrap();
+    disabled.initialize_two().await.unwrap();
+    assert!(!disabled.images(0, None).await.unwrap().containerd_store);
+    assert!(
+        disabled
+            .shell(0, "docker inspect ployz-unregistry")
+            .is_err()
+    );
+    assert!(
+        disabled
+            .logs(0)
+            .unwrap()
+            .contains("unregistry disabled: Docker is not using the containerd image store")
+    );
+    drop(disabled);
+
+    let missing = ClusterPlan::new(&format!("l3-unreg-socket-{}", process::id()), 2)
+        .unwrap()
+        .with_daemon_args([
+            "--containerd-socket".into(),
+            "/missing/containerd.sock".into(),
+        ]);
+    let missing = Cluster::create(missing).unwrap();
+    missing.initialize_two().await.unwrap();
+    assert!(missing.images(0, None).await.unwrap().containerd_store);
+    assert!(missing.shell(0, "docker inspect ployz-unregistry").is_err());
+    assert!(
+        missing
+            .logs(0)
+            .unwrap()
+            .contains("unregistry disabled: no containerd socket was detected")
+    );
+}
+
+async fn futures_for_three(
+    cluster: &Cluster,
+    reference: Option<String>,
+) -> Vec<ployz_core::MachineImages> {
+    let mut images = Vec::new();
+    for index in 0..3 {
+        images.push(cluster.images(index, reference.clone()).await.unwrap());
+    }
+    images
+}

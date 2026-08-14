@@ -201,7 +201,7 @@ fn project_working_dir(options: &LoadOptions) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn compose_command(
+pub(super) fn compose_command(
     docker: &Path,
     options: &LoadOptions,
     override_file: Option<&TemporaryComposeFile>,
@@ -311,12 +311,12 @@ fn parse_environment(bytes: &[u8]) -> BTreeMap<String, String> {
         .collect()
 }
 
-struct TemporaryComposeFile {
-    path: PathBuf,
+pub(super) struct TemporaryComposeFile {
+    pub(super) path: PathBuf,
 }
 
 impl TemporaryComposeFile {
-    fn new(content: &str) -> Result<Self, ComposeError> {
+    pub(super) fn new(content: &str) -> Result<Self, ComposeError> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         for _ in 0..100 {
             let path = std::env::temp_dir().join(format!(
