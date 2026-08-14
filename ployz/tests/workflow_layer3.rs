@@ -67,16 +67,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
     let machine_1 = machine_ids.get("machine-1").unwrap();
     let machine_2 = machine_ids.get("machine-2").unwrap();
     let initial_run = wait_for_services(&mut client, &["scaled-workflow"], 3).await;
-    let scaled = initial_run
-        .services
-        .iter()
-        .find(|service| {
-            service
-                .containers
-                .first()
-                .is_some_and(|container| container.service_name.as_str() == "scaled-workflow")
-        })
-        .unwrap();
+    let scaled = observed_service(&initial_run, "scaled-workflow");
     assert_eq!(scaled.containers.len(), 2);
     assert!(
         scaled
@@ -104,6 +95,54 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("message.txt"), "hello\n").unwrap();
+    fs::write(
+        root.join("basic.yaml"),
+        format!(
+            "services:\n  basic:\n    image: {SERVICE_CONTAINER_IMAGE}\n    command: [sleep, '60']\n    x-ports: [18081:8080/tcp@host]\n"
+        ),
+    )
+    .unwrap();
+    let basic = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "deploy",
+            "--file",
+            "basic.yaml",
+            "--no-build",
+            "--yes",
+        ])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_success(basic);
+    wait_for_ids(&mut client, &["basic"], None).await;
+
+    fs::write(
+        root.join("blocked.yaml"),
+        format!(
+            "services:\n  blocked:\n    image: {SERVICE_CONTAINER_IMAGE}\n    command: [sleep, '60']\n    x-pre_deploy: {{command: [sh, -c, 'exit 17']}}\n"
+        ),
+    )
+    .unwrap();
+    let blocked = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "deploy",
+            "--file",
+            "blocked.yaml",
+            "--no-build",
+            "--yes",
+        ])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(!blocked.status.success());
+    let blocked = wait_for_hook_only(&mut client, "blocked").await;
+    assert!(blocked.containers.is_empty());
+    assert!(!blocked.hook_containers.is_empty());
+
     fs::write(
         root.join("missing.yaml"),
         format!(
@@ -179,17 +218,13 @@ volumes:
     let recreated_ids = wait_for_ids(&mut client, &["api", "database"], Some(&first_ids)).await;
     assert_ne!(recreated_ids, first_ids);
 
-    let deployed = wait_for_services(&mut client, &["api", "database", "scaled-workflow"], 5).await;
-    let api = deployed
-        .services
-        .iter()
-        .find(|service| {
-            service
-                .containers
-                .first()
-                .is_some_and(|container| container.service_name.as_str() == "api")
-        })
-        .unwrap();
+    let deployed = wait_for_services(
+        &mut client,
+        &["api", "basic", "database", "scaled-workflow"],
+        6,
+    )
+    .await;
+    let api = observed_service(&deployed, "api");
     let api_container = api.containers.first().unwrap();
     assert_eq!(api.containers.len(), 1);
     assert_eq!(&api_container.machine_id, machine_2);
@@ -207,16 +242,7 @@ volumes:
         api_container.resolved_spec.ports.as_slice(),
         [PortPublication::Host { .. }]
     ));
-    let database = deployed
-        .services
-        .iter()
-        .find(|service| {
-            service
-                .containers
-                .first()
-                .is_some_and(|container| container.service_name.as_str() == "database")
-        })
-        .unwrap();
+    let database = observed_service(&deployed, "database");
     assert_eq!(&database.containers.first().unwrap().machine_id, machine_1);
     let current_machines = client.list_machines().await.unwrap();
     let volumes = client.list_volumes(&current_machines).await;
@@ -248,6 +274,22 @@ fn deploy(
     command.output().unwrap()
 }
 
+fn observed_service<'a, E>(
+    live: &'a ployz_core::LiveServices<E>,
+    name: &str,
+) -> &'a ployz_core::ServiceObservation {
+    live.services
+        .iter()
+        .find(|service| {
+            service
+                .containers
+                .iter()
+                .chain(&service.hook_containers)
+                .any(|container| container.service_name.as_str() == name)
+        })
+        .unwrap()
+}
+
 async fn wait_for_services(
     client: &mut ployz::connect::Client,
     names: &[&str],
@@ -270,6 +312,30 @@ async fn wait_for_services(
                 if names.iter().all(|name| observed.contains(name)) && count == regular_containers {
                     return live;
                 }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn wait_for_hook_only(
+    client: &mut ployz::connect::Client,
+    name: &str,
+) -> ployz_core::ServiceObservation {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(live) = client.live_services().await
+                && let Some(service) = live.services.into_iter().find(|service| {
+                    service.containers.is_empty()
+                        && service
+                            .hook_containers
+                            .first()
+                            .is_some_and(|container| container.service_name.as_str() == name)
+                })
+            {
+                return service;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

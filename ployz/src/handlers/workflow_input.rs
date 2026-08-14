@@ -273,7 +273,7 @@ fn optional_bytes(matches: &ArgMatches, name: &str) -> Result<Option<i64>, Error
         .transpose()
 }
 
-fn parse_u32(matches: &ArgMatches, name: &str) -> Result<u32, Error> {
+pub(super) fn parse_u32(matches: &ArgMatches, name: &str) -> Result<u32, Error> {
     required(matches, name)?
         .parse()
         .map_err(|_| format!("{name} must be a positive integer").into())

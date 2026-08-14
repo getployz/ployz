@@ -10,6 +10,7 @@ mod exec;
 mod planning;
 
 pub use comparison::compare_specs;
+pub(crate) use exec::execute_operations;
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
 pub use planning::plan_deploy;
 pub(crate) use planning::volume_eligible_machine_ids;
@@ -56,12 +57,6 @@ impl DeployPlan {
     #[must_use]
     pub fn operations(&self) -> &[DeployOperation] {
         self.operation.operations()
-    }
-
-    pub(super) fn flattened_operations(&self) -> Vec<DeployOperation> {
-        let mut operations = Vec::new();
-        self.operation.flatten_into(&mut operations);
-        operations
     }
 
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {

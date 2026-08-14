@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fs,
+};
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
@@ -65,7 +68,7 @@ impl WorkflowIo for Scripted {
         Ok(self.snapshot.clone())
     }
 
-    fn render(&mut self, _plan: &DeployPlan) {}
+    fn render(&mut self, _operations: &[DeployOperation]) {}
 
     fn confirmation_required(&self) -> bool {
         self.confirmation_required
@@ -79,11 +82,15 @@ impl WorkflowIo for Scripted {
         }
     }
 
-    async fn execute(&mut self, plan: &DeployPlan) -> DeployOutcome<ExecutionError> {
+    async fn execute(&mut self, operations: &[DeployOperation]) -> DeployOutcome<ExecutionError> {
         self.executions += 1;
         self.execution_outcome
             .take()
-            .unwrap_or_else(|| plan.success_outcome())
+            .unwrap_or_else(|| DeployOutcome {
+                completed: operations.to_vec(),
+                failed: None,
+                unexecuted: Vec::new(),
+            })
     }
 }
 
@@ -232,10 +239,29 @@ secrets: {token: {x-command: "printf resolved"}}
 
 #[tokio::test]
 async fn deploy_sequence_confirmation_and_empty_plan_are_exact() {
-    let project =
-        crate::compose::parse_normalized("name: scripted\nservices: {api: {image: api}}\n", ".")
-            .unwrap();
+    let root = std::env::temp_dir().join(format!("ployz-workflow-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("compose.yaml");
+    fs::write(
+        &file,
+        "name: scripted\nservices: {api: {image: api, build: .}}\n",
+    )
+    .unwrap();
+    let matches = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy", "--file", file.to_str().unwrap(), "--yes"])
+        .unwrap();
+    let mut preparation = Vec::new();
+    let (project, builds) = prepare_deploy(
+        super::leaf_matches(&matches),
+        |stage| preparation.push(stage),
+        |_, _, _| Ok(()),
+    )
+    .unwrap();
     let expected = [
+        WorkflowStage::Load,
+        WorkflowStage::Select,
+        WorkflowStage::Build,
         WorkflowStage::Push,
         WorkflowStage::ResolveSecrets,
         WorkflowStage::Snapshot,
@@ -248,11 +274,12 @@ async fn deploy_sequence_confirmation_and_empty_plan_are_exact() {
         machines: vec![machine()],
         ..Default::default()
     });
+    confirmed.events = preparation;
     confirmed.confirmation_required = true;
     deploy_connected(
         &mut confirmed,
         &mut project.clone(),
-        &[build("api")],
+        &builds,
         PlanOptions::default(),
     )
     .await
@@ -329,6 +356,7 @@ async fn deploy_sequence_confirmation_and_empty_plan_are_exact() {
         ]
     );
     assert_eq!(empty.executions, 0);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
@@ -359,6 +387,31 @@ async fn scale_rejects_global_noops_matching_and_uses_one_mixed_spec() {
         .await
         .unwrap();
     assert_eq!(unchanged.events, [WorkflowStage::Snapshot]);
+
+    let mut incomplete = Scripted::new(DeploySnapshot {
+        machines: vec![machine()],
+        containers: vec![observation(
+            &service_id,
+            ServiceMode::Replicated {
+                replicas: NonZeroU32::new(3).unwrap(),
+            },
+            "v1",
+            '1',
+        )],
+        ..Default::default()
+    });
+    scale_connected(&mut incomplete, "api", NonZeroU32::new(3).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        incomplete.events,
+        [
+            WorkflowStage::Snapshot,
+            WorkflowStage::Plan,
+            WorkflowStage::Render,
+            WorkflowStage::Execute,
+        ]
+    );
 
     let mut mixed = Scripted::new(DeploySnapshot {
         machines: vec![machine()],

@@ -14,6 +14,7 @@ pub use build::{BuildOptions, BuildService, execute_build, plan_build};
 pub use convert::parse_normalized;
 pub use loader::{LoadOptions, load_project};
 pub use model::{BuildSpec, ComposeError, ComposeProject};
+pub(crate) use planning::plan_resolved_compose_deploy;
 pub use planning::{ComposeDeployPlan, ComposePlanError, plan_compose_deploy};
 pub(crate) use ports::parse_extension_port;
 

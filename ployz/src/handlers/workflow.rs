@@ -6,18 +6,20 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, LoadOptions, execute_build, load_project, plan_build,
-        plan_compose_deploy,
+        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, execute_build,
+        load_project, plan_build, plan_resolved_compose_deploy,
     },
     connect::Client,
     deploy::{
-        DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError,
-        FailedOperation, ObservedDockerVolume, PlanOptions, execute_plan, plan_deploy,
+        DeployOperation, DeployOutcome, DeploySnapshot, ExecutionError, FailedOperation,
+        ObservedDockerVolume, PlanOptions, ReplacementOperation, execute_operations, plan_deploy,
     },
 };
 
 use super::{
-    Error, build::push_targets, connect_client, leaf_matches, runtime, string_values,
+    Error,
+    build::{push_targets, report_push},
+    connect_client, leaf_matches, runtime, string_values,
     volume::confirm,
 };
 
@@ -39,37 +41,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let load = LoadOptions {
-        command: "deploy".into(),
-        files: string_values(matches, "file")
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-        profiles: string_values(matches, "profile"),
-        ..Default::default()
-    };
-    let selected = string_values(matches, "service");
-    let mut project = load_project(&load).map_err(|error| error.to_string())?;
-    for warning in &project.warnings {
-        eprintln!("WARNING: {warning}");
-    }
-    let build_options = BuildOptions {
-        build_args: string_values(matches, "build-arg"),
-        deps: true,
-        no_cache: matches.get_flag("no-cache"),
-        pull: matches.get_flag("build-pull"),
-        services: selected.clone(),
-        ..Default::default()
-    };
-    let mut builds = plan_build(&project, &build_options).map_err(|error| error.to_string())?;
-    if matches.get_flag("no-build") {
-        builds.clear();
-    } else {
-        execute_build(&builds, &build_options, &load).map_err(|error| error.to_string())?;
-    }
-    project = project
-        .select_services(&selected)
-        .map_err(|error| error.to_string())?;
+    let (mut project, builds) = prepare_deploy(matches, |_| {}, execute_build)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -97,11 +69,51 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+fn prepare_deploy(
+    matches: &ArgMatches,
+    mut record: impl FnMut(WorkflowStage),
+    build: impl FnOnce(&[BuildService], &BuildOptions, &LoadOptions) -> Result<(), ComposeError>,
+) -> Result<(ComposeProject, Vec<BuildService>), Error> {
+    record(WorkflowStage::Load);
+    let load = LoadOptions {
+        command: "deploy".into(),
+        files: string_values(matches, "file")
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        profiles: string_values(matches, "profile"),
+        ..Default::default()
+    };
+    let selected = string_values(matches, "service");
+    let project = load_project(&load).map_err(|error| error.to_string())?;
+    for warning in &project.warnings {
+        eprintln!("WARNING: {warning}");
+    }
+    record(WorkflowStage::Select);
+    let build_options = BuildOptions {
+        build_args: string_values(matches, "build-arg"),
+        deps: true,
+        no_cache: matches.get_flag("no-cache"),
+        pull: matches.get_flag("build-pull"),
+        services: selected.clone(),
+        ..Default::default()
+    };
+    record(WorkflowStage::Build);
+    let mut builds = plan_build(&project, &build_options).map_err(|error| error.to_string())?;
+    if matches.get_flag("no-build") {
+        builds.clear();
+    } else {
+        build(&builds, &build_options, &load).map_err(|error| error.to_string())?;
+    }
+    let project = project
+        .select_services(&selected)
+        .map_err(|error| error.to_string())?;
+    Ok((project, builds))
+}
+
 pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let replicas = required(matches, "replicas")?
-        .parse::<u32>()
-        .map_err(|_| "replicas must be a positive integer".to_owned())?;
+    let replicas = parse_u32(matches, "replicas")?;
     // TODO(EO-012): reject zero before resolving configuration or connecting to a Machine.
     let replicas = NonZeroU32::new(replicas)
         .ok_or_else(|| Error::from("replicas must be greater than zero"))?;
@@ -124,6 +136,9 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorkflowStage {
+    Load,
+    Select,
+    Build,
     Snapshot,
     Push,
     ResolveSecrets,
@@ -145,10 +160,10 @@ trait WorkflowIo {
         &mut self,
         machines: Option<Vec<ployz_core::MachineObservation>>,
     ) -> Result<DeploySnapshot, Error>;
-    fn render(&mut self, plan: &DeployPlan);
+    fn render(&mut self, operations: &[DeployOperation]);
     fn confirmation_required(&self) -> bool;
     fn confirm(&mut self) -> Result<bool, Error>;
-    async fn execute(&mut self, plan: &DeployPlan) -> DeployOutcome<ExecutionError>;
+    async fn execute(&mut self, operations: &[DeployOperation]) -> DeployOutcome<ExecutionError>;
 }
 
 struct RemoteWorkflow<'a> {
@@ -179,25 +194,7 @@ impl WorkflowIo for RemoteWorkflow<'_> {
         )
         .await
         .map_err(|error| format!("{}: {error}", service.image))?;
-        for success in result.successes {
-            println!("Pushed {} to {}", service.image, success.machine_id);
-        }
-        let failures = result
-            .failures
-            .into_iter()
-            .map(|failure| {
-                format!(
-                    "{} on {}: {}",
-                    service.image, failure.machine_id, failure.error
-                )
-            })
-            .chain(
-                result
-                    .omissions
-                    .into_iter()
-                    .map(|machine| format!("{} on {machine}: no terminal response", service.image)),
-            )
-            .collect::<Vec<_>>();
+        let failures = report_push(&service.image, result);
         if failures.is_empty() {
             Ok(())
         } else {
@@ -212,8 +209,8 @@ impl WorkflowIo for RemoteWorkflow<'_> {
         snapshot(self.client, machines).await
     }
 
-    fn render(&mut self, plan: &DeployPlan) {
-        render(plan, self.client.connection());
+    fn render(&mut self, operations: &[DeployOperation]) {
+        render(operations, self.client.connection());
     }
 
     fn confirmation_required(&self) -> bool {
@@ -224,8 +221,8 @@ impl WorkflowIo for RemoteWorkflow<'_> {
         confirm()
     }
 
-    async fn execute(&mut self, plan: &DeployPlan) -> DeployOutcome<ExecutionError> {
-        execute_plan(plan, self.client, &CancellationToken::new()).await
+    async fn execute(&mut self, operations: &[DeployOperation]) -> DeployOutcome<ExecutionError> {
+        execute_operations(operations, self.client, &CancellationToken::new()).await
     }
 }
 
@@ -244,9 +241,9 @@ async fn run_connected(
     )
     .map_err(|error| error.to_string())?;
     io.record(WorkflowStage::Render);
-    io.render(&plan);
+    io.render(plan.operations());
     io.record(WorkflowStage::Execute);
-    Ok(io.execute(&plan).await)
+    Ok(io.execute(plan.operations()).await)
 }
 
 async fn deploy_connected(
@@ -273,25 +270,16 @@ async fn deploy_connected(
     io.record(WorkflowStage::Snapshot);
     let snapshot = io.snapshot(Some(machines)).await?;
     io.record(WorkflowStage::Plan);
-    let compose =
-        plan_compose_deploy(project, &snapshot, options).map_err(|error| error.to_string())?;
+    let compose = plan_resolved_compose_deploy(project, &snapshot, options)
+        .map_err(|error| error.to_string())?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    let Some(plan) = combined_plan(&compose) else {
+    let operations = combined_operations(&compose);
+    if operations.is_empty() {
         println!("No changes.");
         return Ok(None);
-    };
-    // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
-    io.record(WorkflowStage::Render);
-    io.render(&plan);
-    if io.confirmation_required() {
-        io.record(WorkflowStage::Confirm);
-        if !io.confirm()? {
-            println!("Cancelled. No changes were made.");
-            return Ok(None);
-        }
     }
-    io.record(WorkflowStage::Execute);
-    Ok(Some(io.execute(&plan).await))
+    // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
+    confirm_and_execute(io, &operations).await
 }
 
 async fn scale_connected(
@@ -303,19 +291,19 @@ async fn scale_connected(
     let snapshot = io.snapshot(None).await?;
     let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
     let service = select_service(&services, selector).map_err(|error| error.to_string())?;
-    let current = service
+    let observed_container = service
         .containers
         .first()
         .ok_or_else(|| Error::from("cannot scale a service without regular containers"))?;
-    let ServiceMode::Replicated { replicas: old } = current.resolved_spec.mode else {
+    let ServiceMode::Replicated { .. } = observed_container.resolved_spec.mode else {
         return Err("global services cannot be scaled".into());
     };
-    if old == replicas {
+    if usize::try_from(replicas.get()) == Ok(service.containers.len()) {
         println!("No changes.");
         return Ok(None);
     }
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
-    let mut requested = requested_from_resolved(&current.resolved_spec);
+    let mut requested = requested_from_resolved(&observed_container.resolved_spec);
     requested.mode = ServiceMode::Replicated { replicas };
     io.record(WorkflowStage::Plan);
     let plan = plan_deploy(
@@ -325,8 +313,15 @@ async fn scale_connected(
         plan_options(false, false),
     )
     .map_err(|error| error.to_string())?;
+    confirm_and_execute(io, plan.operations()).await
+}
+
+async fn confirm_and_execute(
+    io: &mut impl WorkflowIo,
+    operations: &[DeployOperation],
+) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
     io.record(WorkflowStage::Render);
-    io.render(&plan);
+    io.render(operations);
     if io.confirmation_required() {
         io.record(WorkflowStage::Confirm);
         if !io.confirm()? {
@@ -335,7 +330,7 @@ async fn scale_connected(
         }
     }
     io.record(WorkflowStage::Execute);
-    Ok(Some(io.execute(&plan).await))
+    Ok(Some(io.execute(operations).await))
 }
 
 async fn snapshot(
@@ -391,28 +386,13 @@ fn report_partial<T>(kind: &str, result: &ployz_core::PartialResult<T, ployz_cor
     }
 }
 
-fn combined_plan(compose: &crate::compose::ComposeDeployPlan) -> Option<DeployPlan> {
-    let operations = compose
-        .operations()
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    if operations.is_empty() {
-        return None;
-    }
-    Some(DeployPlan {
-        service_id: compose
-            .service_plans
-            .first()
-            .map_or_else(ServiceId::random, |plan| plan.service_id.clone()),
-        is_new_service: compose.service_plans.iter().all(|plan| plan.is_new_service),
-        operation: DeployOperation::Sequence { operations },
-    })
+fn combined_operations(compose: &crate::compose::ComposeDeployPlan) -> Vec<DeployOperation> {
+    compose.operations().into_iter().cloned().collect()
 }
 
-fn render(plan: &DeployPlan, connection: &crate::context::Connection) {
+fn render(operations: &[DeployOperation], connection: &crate::context::Connection) {
     println!("Plan for {connection}:");
-    for operation in plan.operations() {
+    for operation in operations {
         println!("  {}", operation_summary(operation));
     }
 }
@@ -433,10 +413,7 @@ fn operation_summary(operation: &DeployOperation) -> String {
             machine_id,
             container_id,
         } => format!("remove {container_id} on {machine_id}"),
-        DeployOperation::ReplaceContainer(operation) => format!(
-            "replace {} for {} on {}",
-            operation.old_container_id, operation.spec.name, operation.machine_id
-        ),
+        DeployOperation::ReplaceContainer(operation) => replacement_summary(operation),
         DeployOperation::StopHook {
             machine_id,
             container_id,
@@ -450,18 +427,47 @@ fn operation_summary(operation: &DeployOperation) -> String {
 
 fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Error> {
     println!("Completed {} operation(s).", outcome.completed.len());
-    let Some(failed) = outcome.failed else {
+    let Some(failed) = &outcome.failed else {
         return Ok(());
     };
-    let error = match failed {
-        FailedOperation::Operation { error, .. }
-        | FailedOperation::ReplacementHealth { error, .. } => error,
-    };
     Err(format!(
-        "deployment stopped: {error}; {} operation(s) were not executed",
-        outcome.unexecuted.len()
+        "Deploy stopped; completed: [{}]; failed: {}; unexecuted: [{}]",
+        operation_list(&outcome.completed),
+        failed_summary(failed),
+        operation_list(&outcome.unexecuted),
     )
     .into())
+}
+
+fn failed_summary(failed: &FailedOperation<ExecutionError>) -> String {
+    match failed {
+        FailedOperation::Operation { operation, error } => {
+            format!("{}: {error}", operation_summary(operation))
+        }
+        FailedOperation::ReplacementHealth {
+            operation,
+            error,
+            compensation,
+        } => format!(
+            "{}: {error}; compensation: {compensation:?}",
+            replacement_summary(operation),
+        ),
+    }
+}
+
+fn replacement_summary(operation: &ReplacementOperation) -> String {
+    format!(
+        "replace {} for {} on {}",
+        operation.old_container_id, operation.spec.name, operation.machine_id
+    )
+}
+
+fn operation_list(operations: &[DeployOperation]) -> String {
+    operations
+        .iter()
+        .map(operation_summary)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> crate::deploy::PlanOptions {
@@ -476,7 +482,7 @@ fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> crate::deplo
 
 #[path = "workflow_input.rs"]
 mod input;
-use input::{requested_from_resolved, required, run_spec};
+use input::{parse_u32, requested_from_resolved, required, run_spec};
 
 #[cfg(test)]
 #[path = "workflow_tests.rs"]

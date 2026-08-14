@@ -1,6 +1,6 @@
 use ployz_core::{
     ContainerResources, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceContainerSpec, ServiceMode, SpecChange,
+    ServiceContainerSpec, SpecChange,
 };
 
 #[must_use]
@@ -53,14 +53,7 @@ fn immutable_service_fields_changed(
     } = requested;
 
     current_name != requested_name
-        || !matches!(
-            (current_mode, requested_mode),
-            (ServiceMode::Global, ServiceMode::Global)
-                | (
-                    ServiceMode::Replicated { .. },
-                    ServiceMode::Replicated { .. }
-                )
-        )
+        || !current_mode.has_same_kind_as(requested_mode)
         || immutable_container_fields_changed(current_container, requested_container)
         || current_placement != requested_placement
         || !same_multiset(current_ports, requested_ports)

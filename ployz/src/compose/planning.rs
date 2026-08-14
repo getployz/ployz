@@ -50,10 +50,18 @@ pub fn plan_compose_deploy(
     snapshot: &DeploySnapshot,
     options: PlanOptions,
 ) -> Result<ComposeDeployPlan, ComposePlanError> {
-    let volume_uses = named_volume_uses(project);
-    reject_mixed_volume_modes(&volume_uses)?;
     let mut resolved = project.clone();
     resolved.resolve_secrets()?;
+    plan_resolved_compose_deploy(&resolved, snapshot, options)
+}
+
+pub(crate) fn plan_resolved_compose_deploy(
+    project: &ComposeProject,
+    snapshot: &DeploySnapshot,
+    options: PlanOptions,
+) -> Result<ComposeDeployPlan, ComposePlanError> {
+    let volume_uses = named_volume_uses(project);
+    reject_mixed_volume_modes(&volume_uses)?;
     let mut effective_snapshot = snapshot.clone();
     let mut volume_operations =
         prepare_shared_replicated_volumes(&volume_uses, &mut effective_snapshot, options)?;
@@ -61,7 +69,7 @@ pub fn plan_compose_deploy(
     for requested in project.dependency_order()? {
         let service = requested.name.to_string();
         let service_id = ServiceId::random();
-        let resolved_requested = resolved
+        let resolved_requested = project
             .services
             .get(&service)
             .ok_or_else(|| ComposeError::Invalid(format!("undefined service '{service}'")))?;

@@ -73,6 +73,14 @@ pub async fn execute_plan(
     execute_with(plan, client, cancellation).await
 }
 
+pub(crate) async fn execute_operations(
+    operations: &[DeployOperation],
+    client: &Client,
+    cancellation: &CancellationToken,
+) -> DeployOutcome<ExecutionError> {
+    execute_operation_sequence(operations, client, cancellation).await
+}
+
 trait MachineOperations {
     async fn create_volume(
         &self,
@@ -234,12 +242,23 @@ async fn execute_with<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    let operations = plan.flattened_operations();
-    for (index, operation) in operations.iter().enumerate() {
+    execute_operation_sequence(plan.operations(), client, cancellation).await
+}
+
+async fn execute_operation_sequence<C: MachineOperations>(
+    operations: &[DeployOperation],
+    client: &C,
+    cancellation: &CancellationToken,
+) -> DeployOutcome<ExecutionError> {
+    let mut flattened = Vec::new();
+    for operation in operations {
+        operation.flatten_into(&mut flattened);
+    }
+    for (index, operation) in flattened.iter().enumerate() {
         match execute_operation(operation, client, cancellation).await {
             Ok(()) => {}
             Err(OperationFailure::Ordinary(error)) => {
-                return DeployPlan::failure_outcome_from(&operations, index, error)
+                return DeployPlan::failure_outcome_from(&flattened, index, error)
                     .expect("the failed flattened operation belongs to this plan");
             }
             Err(OperationFailure::ReplacementHealth {
@@ -247,7 +266,7 @@ async fn execute_with<C: MachineOperations>(
                 compensation,
             }) => {
                 return DeployPlan::replacement_health_failure_outcome_from(
-                    &operations,
+                    &flattened,
                     index,
                     error,
                     *compensation,
@@ -257,7 +276,7 @@ async fn execute_with<C: MachineOperations>(
         }
     }
     DeployOutcome {
-        completed: operations,
+        completed: flattened,
         failed: None,
         unexecuted: Vec::new(),
     }

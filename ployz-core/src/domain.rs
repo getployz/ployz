@@ -265,6 +265,13 @@ pub enum ServiceMode {
     Global,
 }
 
+impl ServiceMode {
+    #[must_use]
+    pub fn has_same_kind_as(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HttpProtocol {
