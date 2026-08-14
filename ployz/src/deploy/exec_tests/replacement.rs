@@ -16,9 +16,12 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
             observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
         ];
         steps.push(if stop_succeeds {
-            ok(Call::Stop(machine.clone(), new))
+            ok(Call::StopWithGrace(machine.clone(), new, 0))
         } else {
-            failed(Call::Stop(machine.clone(), new), "stop new failed")
+            failed(
+                Call::StopWithGrace(machine.clone(), new, 0),
+                "stop new failed",
+            )
         });
         let client = Scripted::new(steps);
 
@@ -35,6 +38,38 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
         ));
         client.assert_done();
     }
+}
+
+#[tokio::test]
+async fn replacement_compensation_tolerates_a_missing_new_container() {
+    let machine = machine('1');
+    let old = container('a');
+    let new = container('b');
+    let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StartFirst)]);
+    let mut missing = error("not found");
+    missing.code = RpcErrorCode::NotFound;
+    let client = Scripted::new(vec![
+        created(
+            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+            &new,
+        ),
+        ok(Call::Start(machine.clone(), new.clone())),
+        observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
+        Step(Call::StopWithGrace(machine, new, 0), Reply::Error(missing)),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::ReplacementHealth {
+            compensation: ReplacementCompensation::StartFirst {
+                stop_new_container: Ok(()),
+            },
+            ..
+        })
+    ));
+    client.assert_done();
 }
 
 #[tokio::test]
@@ -87,9 +122,12 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
             observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
         ];
         steps.push(if stop_succeeds {
-            ok(Call::Stop(machine.clone(), new))
+            ok(Call::StopWithGrace(machine.clone(), new, 0))
         } else {
-            failed(Call::Stop(machine.clone(), new), "stop new failed")
+            failed(
+                Call::StopWithGrace(machine.clone(), new, 0),
+                "stop new failed",
+            )
         });
         steps.push(if restart_succeeds {
             ok(Call::Start(machine.clone(), old))
@@ -129,7 +167,7 @@ async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
         ),
         ok(Call::Start(machine.clone(), new.clone())),
         observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
-        ok(Call::Stop(machine, new)),
+        ok(Call::StopWithGrace(machine, new, 0)),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -166,7 +204,7 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
             ),
             ok(Call::Start(machine.clone(), new.clone())),
             observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
-            ok(Call::Stop(machine.clone(), new)),
+            ok(Call::StopWithGrace(machine.clone(), new, 0)),
             ok(Call::Start(machine, old)),
         ]);
 
