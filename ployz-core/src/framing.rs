@@ -60,6 +60,15 @@ impl FanoutResponse {
         }
     }
 
+    #[must_use]
+    pub fn omission(machine_id: &MachineId, machine_name: &MachineName) -> Self {
+        Self {
+            machine_id: machine_id.to_string(),
+            machine_name: machine_name.to_string(),
+            outcome: None,
+        }
+    }
+
     pub fn machine_id(&self) -> Result<MachineId, ValueError> {
         MachineId::parse(self.machine_id.clone())
     }
@@ -74,17 +83,19 @@ impl FanoutResponse {
     }
 
     pub fn decode_grpc_frame(frame: &[u8]) -> Result<Self, FramingError> {
-        require_one_frame(frame)?;
-        Self::decode(
-            frame
-                .get(GRPC_FRAME_HEADER_LEN..)
-                .expect("one complete gRPC frame was checked"),
-        )
-        .map_err(|error| FramingError::InvalidEnvelope(error.to_string()))
+        Self::decode(grpc_frame_payload(frame)?)
+            .map_err(|error| FramingError::InvalidEnvelope(error.to_string()))
     }
 }
 
 pub const GRPC_FRAME_HEADER_LEN: usize = 5;
+
+pub(crate) fn grpc_frame_payload(frame: &[u8]) -> Result<&[u8], FramingError> {
+    require_one_frame(frame)?;
+    Ok(frame
+        .get(GRPC_FRAME_HEADER_LEN..)
+        .expect("one complete gRPC frame was checked"))
+}
 
 #[must_use]
 pub fn encode_grpc_frame(payload: &[u8]) -> Vec<u8> {

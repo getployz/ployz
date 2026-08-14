@@ -15,7 +15,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
         client
             .list_images(reference, &targets)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| Error::from(error.to_string()))
     })?;
     println!("MACHINE\tCONTAINERD\tID\tREPOSITORY:TAG\tCREATED\tSIZE\tCONTAINERS\tPLATFORMS");
     for success in result.successes {
@@ -61,7 +61,7 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
                 leaf.get_one::<String>("context").map(String::as_str),
             )
             .await
-            .map_err(crate::image::PushError::Cluster)?;
+            .map_err(|error| crate::image::PushError::Cluster(error.to_string()))?;
             crate::image::push(
                 &mut client,
                 image,
@@ -83,6 +83,7 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
         Err(format!(
             "image push failed on {} target(s)",
             result.failures.len() + result.omissions.len()
-        ))
+        )
+        .into())
     }
 }

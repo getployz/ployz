@@ -13,13 +13,12 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
     DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineLogService,
     MachineName, MachineObservation, ResolvedServiceSpec, WireGuardPublicKey,
+    framing::{FramingError, grpc_frame_payload},
 };
 
 mod docker;
-mod fanout;
 
 pub use docker::*;
-pub use fanout::*;
 
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const DESCRIBE_CONTRACT_CAPABILITY: &str = "ployz.rpc.describe-contract.v1";
@@ -72,6 +71,11 @@ impl OpaquePayload {
 
     pub fn decode_json<T: DeserializeOwned>(&self) -> Result<T, CodecError> {
         serde_json::from_slice(&self.json).map_err(CodecError::DecodeJson)
+    }
+
+    pub fn decode_grpc_frame(frame: &[u8]) -> Result<Self, FramingError> {
+        Self::decode(grpc_frame_payload(frame)?)
+            .map_err(|error| FramingError::InvalidEnvelope(error.to_string()))
     }
 
     pub fn decode_request(&self) -> Result<RpcRequest, CodecError> {

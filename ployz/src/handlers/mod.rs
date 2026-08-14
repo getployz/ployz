@@ -118,10 +118,10 @@ fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, Error> {
-    tokio::runtime::Builder::new_current_thread()
+    Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?)
 }
 
 async fn connect_client(
@@ -133,13 +133,13 @@ async fn connect_client(
         .map(Path::new)
         .map(crate::context::expand_home)
         .ok_or_else(|| "Ployz config path is required".to_owned())?;
-    crate::connect::connect(
+    Ok(crate::connect::connect(
         &config,
         matches.get_one::<String>("connect").map(String::as_str),
         context,
     )
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?)
 }
 
 fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>

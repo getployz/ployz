@@ -75,7 +75,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(failures.join("; "))
+        Err(failures.join("; ").into())
     }
 }
 

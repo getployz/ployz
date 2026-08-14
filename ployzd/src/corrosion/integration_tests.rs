@@ -14,8 +14,8 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    ApiClient, CorrosionConfig, ReplicatedStore, Statement, run_machine_publisher_with_restart,
-    wait_for_catch_up,
+    ApiClient, CorrosionConfig, ReplicatedStore, Statement, run_machine_publisher,
+    run_machine_publisher_with_restart, wait_for_catch_up,
 };
 use crate::machine::{LocalMachineRecord, LocalMachineStore};
 
