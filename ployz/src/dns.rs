@@ -1,12 +1,11 @@
 use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerKind, DnsRecord, DnsRecordRequest, DnsRecordType, InspectRequest,
-    Machine, MachineId, MachineSelector, RpcErrorCode, RpcRequest,
+    CADDY_VERIFY_PATH, ContainerKind, DnsRecordRequest, DnsRecordType, InspectRequest, Machine,
+    MachineId, MachineSelector, RpcErrorCode, RpcRequest,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
-use tokio::task::JoinSet;
 
 use crate::{
     caddy::SERVICE_NAME,
@@ -19,10 +18,11 @@ const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum Error {
     #[error(transparent)]
     Connect(#[from] ConnectError),
-    #[error("inspect Caddy Machine {machine_id}: {message}")]
+    #[error("inspect Caddy Machine {machine_id}: {source}")]
     Inspect {
         machine_id: MachineId,
-        message: String,
+        #[source]
+        source: ConnectError,
     },
     #[error("build hosted-DNS reachability client: {0}")]
     Http(#[from] reqwest::Error),
@@ -62,27 +62,24 @@ impl Client {
     async fn create_domain_records(
         &mut self,
         records: Vec<DnsRecordRequest>,
-    ) -> Result<Vec<DnsRecord>, ConnectError> {
+    ) -> Result<(), ConnectError> {
         self.request(RpcRequest::create_domain_records(records), None)
             .await?
             .decode_domain_records()
+            .map(drop)
             .map_err(ConnectError::Codec)
     }
 }
 
-pub async fn update_records_if_reserved(
-    client: &mut Client,
-) -> Result<Option<Vec<DnsRecord>>, Error> {
+pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error> {
     match client.domain().await {
         Ok(_) => update_records_for_caddy(client).await,
-        Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => Ok(None),
+        Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
 
-pub async fn update_records_for_caddy(
-    client: &mut Client,
-) -> Result<Option<Vec<DnsRecord>>, Error> {
+pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> {
     let live = client.live_services().await?;
     let caddy_machines = live
         .containers
@@ -96,7 +93,7 @@ pub async fn update_records_for_caddy(
         .map(|container| container.machine_id.clone())
         .collect::<BTreeSet<_>>();
     if caddy_machines.is_empty() {
-        return Ok(None);
+        return Ok(());
     }
 
     let mut machines = Vec::new();
@@ -114,14 +111,15 @@ pub async fn update_records_for_caddy(
                     .cloned()
                     .map_err(ConnectError::Codec)
             })
-            .map_err(|error| Error::Inspect {
+            .map_err(|source| Error::Inspect {
                 machine_id: machine_id.clone(),
-                message: error.to_string(),
+                source,
             })?;
-        if let Some(machine) = details
-            .machine
-            .filter(|machine| machine.public_ip.is_some())
-        {
+        let machine = details.machine.ok_or_else(|| Error::Inspect {
+            machine_id,
+            source: ConnectError::Attempt("inspect response omitted Machine details".into()),
+        })?;
+        if machine.public_ip.is_some() {
             machines.push(machine);
         }
     }
@@ -132,30 +130,18 @@ pub async fn update_records_for_caddy(
         .timeout(REACHABILITY_TIMEOUT)
         .build()
         .map_err(Error::from)?;
-    let mut probes = JoinSet::new();
-    for (index, machine) in machines.into_iter().enumerate() {
-        let http = http.clone();
-        probes.spawn(async move {
-            let reachable = probe_machine(&http, &machine).await;
-            (index, reachable.then_some(machine))
-        });
-    }
-    let mut reachable = Vec::new();
-    while let Some(joined) = probes.join_next().await {
-        let result = joined.map_err(|error| ConnectError::Attempt(error.to_string()))?;
-        reachable.push(result);
-    }
-    reachable.sort_by_key(|(index, _)| *index);
-    let records = records_from_machines(
-        &reachable
-            .into_iter()
-            .filter_map(|(_, machine)| machine)
-            .collect::<Vec<_>>(),
-    )?;
+    let reachable = futures_util::future::join_all(machines.into_iter().map(|machine| {
+        let http = &http;
+        async move { probe_machine(http, &machine).await.then_some(machine) }
+    }))
+    .await
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let records = records_from_machines(&reachable)?;
     client
         .create_domain_records(records)
         .await
-        .map(Some)
         .map_err(Into::into)
 }
 

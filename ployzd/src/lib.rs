@@ -8,7 +8,7 @@ pub mod dns;
 pub mod docker;
 #[doc(hidden)]
 pub mod filesystem;
-pub mod hosted_dns;
+mod hosted_dns;
 pub mod logs;
 pub mod machine;
 pub mod metrics;

@@ -42,6 +42,7 @@ use crate::{
 pub struct MachineService {
     store: Arc<Mutex<LocalMachineStore>>,
     restart: watch::Sender<bool>,
+    hosted_dns: crate::hosted_dns::HostedDns,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerContext>,
     caddyfile: Option<PathBuf>,
@@ -74,6 +75,7 @@ impl MachineService {
         Self {
             store,
             restart,
+            hosted_dns: crate::hosted_dns::HostedDns::new(),
             cluster: cluster.map(|(replicated, admin)| ClusterContext { replicated, admin }),
             containers: None,
             caddyfile: None,
@@ -1032,30 +1034,14 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        if replicated
-            .domain_reservation()
+        match self
+            .hosted_dns
+            .reserve_domain(replicated, &request.endpoint)
             .await
-            .map_err(|error| Status::internal(error.to_string()))?
-            .is_some()
         {
-            return respond(RpcResponse::error(RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "Cluster domain is already reserved".into(),
-                details: Value::Null,
-            }));
+            Ok(name) => respond(RpcResponse::domain(name)),
+            Err(error) => respond(RpcResponse::error(hosted_dns_error(error))),
         }
-        let reservation = match crate::hosted_dns::HostedDnsClient::new()
-            .reserve(&request.endpoint)
-            .await
-        {
-            Ok(reservation) => reservation,
-            Err(error) => return respond(RpcResponse::error(hosted_dns_error(error))),
-        };
-        replicated
-            .publish_domain_reservation(&reservation)
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        respond(RpcResponse::domain(reservation.name))
     }
 
     async fn get_domain(
@@ -1069,13 +1055,9 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        let domain = replicated
-            .domain_reservation()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        match domain {
-            Some(domain) => respond(RpcResponse::domain(domain.name)),
-            None => respond(RpcResponse::error(domain_not_found())),
+        match self.hosted_dns.domain(replicated).await {
+            Ok(name) => respond(RpcResponse::domain(name)),
+            Err(error) => respond(RpcResponse::error(hosted_dns_error(error))),
         }
     }
 
@@ -1090,19 +1072,10 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        let Some(domain) = replicated
-            .domain_reservation()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?
-        else {
-            return respond(RpcResponse::error(domain_not_found()));
-        };
-        replicated
-            .remove_domain_reservation()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        // TODO(UT-142): implement and call the Uncloud DNS endpoint to release/delete the domain.
-        respond(RpcResponse::domain(domain.name))
+        match self.hosted_dns.release_domain(replicated).await {
+            Ok(name) => respond(RpcResponse::domain(name)),
+            Err(error) => respond(RpcResponse::error(hosted_dns_error(error))),
+        }
     }
 
     async fn create_domain_records(
@@ -1118,15 +1091,9 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        let Some(domain) = replicated
-            .domain_reservation()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?
-        else {
-            return respond(RpcResponse::error(domain_not_found()));
-        };
-        match crate::hosted_dns::HostedDnsClient::new()
-            .create_records(&domain, &request.records)
+        match self
+            .hosted_dns
+            .create_records(replicated, &request.records)
             .await
         {
             Ok(records) => respond(RpcResponse::domain_records(records)),
@@ -1211,22 +1178,17 @@ fn unavailable(message: &str) -> RpcError {
     }
 }
 
-fn domain_not_found() -> RpcError {
-    RpcError {
-        code: RpcErrorCode::NotFound,
-        message: "Cluster domain was not found".into(),
-        details: Value::Null,
-    }
-}
-
 fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {
     let (code, details) = match error {
+        crate::hosted_dns::Error::AlreadyReserved => (RpcErrorCode::Conflict, Value::Null),
+        crate::hosted_dns::Error::NotFound => (RpcErrorCode::NotFound, Value::Null),
         crate::hosted_dns::Error::AuthNoDomain => (
             RpcErrorCode::Unauthenticated,
             serde_json::json!({ "no_domain": true }),
         ),
         crate::hosted_dns::Error::Authentication => (RpcErrorCode::Unauthenticated, Value::Null),
-        crate::hosted_dns::Error::Http(_)
+        crate::hosted_dns::Error::Store(_)
+        | crate::hosted_dns::Error::Http(_)
         | crate::hosted_dns::Error::Json(_)
         | crate::hosted_dns::Error::InvalidEndpoint(_)
         | crate::hosted_dns::Error::Status(_) => (RpcErrorCode::Internal, Value::Null),

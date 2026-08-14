@@ -20,6 +20,27 @@ struct CapturedRequest {
     body: Vec<u8>,
 }
 
+#[derive(Clone, Default)]
+struct FakeHostedService {
+    state: Arc<Mutex<FakeHostedState>>,
+}
+
+#[derive(Default)]
+struct FakeHostedState {
+    requests: Vec<CapturedRequest>,
+    reject_record_type: Option<String>,
+}
+
+impl FakeHostedService {
+    fn requests(&self) -> Vec<CapturedRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+
+    fn reject_record_type(&self, record_type: &str) {
+        self.state.lock().unwrap().reject_record_type = Some(record_type.into());
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
 async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster_boundaries() {
@@ -27,6 +48,9 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_two().await.unwrap();
     let direct = cluster.api_address(0).unwrap();
+    for index in 0..machines.len() {
+        poison_production_dns(&cluster, index);
+    }
 
     let first_ip = outer_ipv4(&cluster, 0);
     let second_ip = outer_ipv4(&cluster, 1);
@@ -58,7 +82,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     wait_exact_caddy(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
     wait_exact_caddy(mapped_second, machines[1].id.as_str().as_bytes()).await;
 
-    let (port, captured) = fake_hosted_service().await;
+    let (port, hosted) = fake_hosted_service().await;
     let gateway = cluster
         .machine_shell(0, "ip route show default | awk '{print $3; exit}'")
         .unwrap();
@@ -77,7 +101,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     assert!(stored.contains("raw-token"), "stored reservation: {stored}");
     assert!(stored.contains("opaque.ployz.example"));
 
-    let initial = snapshot(&captured);
+    let initial = hosted.requests();
     assert_eq!(domain_requests(&initial), 1);
     let reservation_request = initial
         .iter()
@@ -116,7 +140,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     );
     assert!(!duplicate.status.success());
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already reserved"));
-    assert_eq!(domain_requests(&snapshot(&captured)), 1);
+    assert_eq!(domain_requests(&hosted.requests()), 1);
 
     cluster
         .update_machine(
@@ -130,7 +154,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         .await
         .unwrap();
     cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    let partial = snapshot(&captured);
+    let partial = hosted.requests();
     assert_eq!(record_requests(&partial).len(), 3);
     assert_record(record_request(&partial, 2), "A", &[first_ip.to_string()]);
 
@@ -145,11 +169,11 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         )
         .await
         .unwrap();
-    let before_empty = snapshot(&captured).len();
+    let before_empty = hosted.requests().len();
     let empty = run_cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
     assert!(!empty.status.success());
     assert!(String::from_utf8_lossy(&empty.stderr).contains("no publicly reachable"));
-    assert_eq!(snapshot(&captured).len(), before_empty);
+    assert_eq!(hosted.requests().len(), before_empty);
     assert_eq!(
         cli(&direct, &["dns", "show"]).trim(),
         "opaque.ployz.example"
@@ -162,6 +186,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     )
     .await
     .unwrap();
+    hosted.reject_record_type("AAAA");
     let error = client
         .request(
             RpcRequest::create_domain_records(vec![
@@ -181,7 +206,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         .await
         .unwrap_err();
     assert!(error.to_string().contains("HTTP 500"));
-    let after_rejection = snapshot(&captured);
+    let after_rejection = hosted.requests();
     assert_eq!(record_requests(&after_rejection).len(), 5);
     assert_record(
         record_request(&after_rejection, 3),
@@ -209,7 +234,16 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     let missing = run_cli(&direct, &["dns", "show"]);
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("was not found"));
-    assert_eq!(snapshot(&captured).len(), before_release);
+    assert_eq!(hosted.requests().len(), before_release);
+}
+
+fn poison_production_dns(cluster: &Cluster, index: usize) {
+    cluster
+        .machine_shell(
+            index,
+            "printf '127.0.0.1 dns.uncloud.run\\n::1 dns.uncloud.run\\n' >> /etc/hosts && test \"$(getent ahostsv4 dns.uncloud.run | awk 'NR == 1 { print $1 }')\" = 127.0.0.1 && test \"$(getent ahostsv6 dns.uncloud.run | awk 'NR == 1 { print $1 }')\" = ::1",
+        )
+        .unwrap();
 }
 
 fn outer_ipv4(cluster: &Cluster, index: usize) -> std::net::Ipv4Addr {
@@ -288,13 +322,12 @@ async fn wait_cli_success(direct: &str, args: &[&str]) -> String {
     .expect("CLI did not become ready")
 }
 
-async fn fake_hosted_service() -> (u16, Arc<Mutex<Vec<CapturedRequest>>>) {
+async fn fake_hosted_service() -> (u16, FakeHostedService) {
     let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let requests = Arc::clone(&captured);
+    let service = FakeHostedService::default();
+    let server = service.clone();
     tokio::spawn(async move {
-        let mut record_index = 0;
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_request(&mut stream).await;
@@ -312,11 +345,21 @@ async fn fake_hosted_service() -> (u16, Arc<Mutex<Vec<CapturedRequest>>>) {
                 )
             } else {
                 assert_eq!(path, "/domains/opaque.ployz.example/records");
-                record_index += 1;
-                if record_index == 5 {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                let reject = {
+                    let mut state = server.state.lock().unwrap();
+                    if state.reject_record_type.as_deref()
+                        == body.get("type").and_then(Value::as_str)
+                    {
+                        state.reject_record_type = None;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if reject {
                     (500, json!({"error":"rejected later record"}))
                 } else {
-                    let body: Value = serde_json::from_slice(&request.body).unwrap();
                     (
                         200,
                         json!({
@@ -328,7 +371,7 @@ async fn fake_hosted_service() -> (u16, Arc<Mutex<Vec<CapturedRequest>>>) {
                     )
                 }
             };
-            requests.lock().unwrap().push(request);
+            server.state.lock().unwrap().requests.push(request);
             let body = response.to_string();
             let reason = if status == 200 {
                 "OK"
@@ -347,7 +390,7 @@ async fn fake_hosted_service() -> (u16, Arc<Mutex<Vec<CapturedRequest>>>) {
                 .unwrap();
         }
     });
-    (port, captured)
+    (port, service)
 }
 
 async fn read_request(stream: &mut tokio::net::TcpStream) -> CapturedRequest {
@@ -383,10 +426,6 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> CapturedRequest {
             .unwrap()
             .to_vec(),
     }
-}
-
-fn snapshot(captured: &Arc<Mutex<Vec<CapturedRequest>>>) -> Vec<CapturedRequest> {
-    captured.lock().unwrap().clone()
 }
 
 fn domain_requests(requests: &[CapturedRequest]) -> usize {

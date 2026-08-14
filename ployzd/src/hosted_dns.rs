@@ -3,6 +3,8 @@ use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::corrosion::ReplicatedStore;
+
 // TODO: Replace dns.uncloud.run and Uncloud-branded domains with
 // Ployz-hosted DNS once that infrastructure exists.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -13,18 +15,57 @@ pub(crate) struct Reservation {
     pub(crate) token: String,
 }
 
-pub(crate) struct HostedDnsClient {
+#[derive(Clone)]
+pub(crate) struct HostedDns {
     client: Client,
 }
 
-impl HostedDnsClient {
+impl HostedDns {
     pub(crate) fn new() -> Self {
         Self {
             client: Client::new(),
         }
     }
 
-    pub(crate) async fn reserve(&self, endpoint: &str) -> Result<Reservation, Error> {
+    pub(crate) async fn reserve_domain(
+        &self,
+        store: &ReplicatedStore,
+        endpoint: &str,
+    ) -> Result<String, Error> {
+        if store.domain_reservation().await?.is_some() {
+            return Err(Error::AlreadyReserved);
+        }
+        let reservation = self.request_reservation(endpoint).await?;
+        let name = reservation.name.clone();
+        store.publish_domain_reservation(&reservation).await?;
+        Ok(name)
+    }
+
+    pub(crate) async fn domain(&self, store: &ReplicatedStore) -> Result<String, Error> {
+        store
+            .domain_reservation()
+            .await?
+            .map(|reservation| reservation.name)
+            .ok_or(Error::NotFound)
+    }
+
+    pub(crate) async fn release_domain(&self, store: &ReplicatedStore) -> Result<String, Error> {
+        let name = self.domain(store).await?;
+        store.remove_domain_reservation().await?;
+        // TODO(UT-142): implement and call the Uncloud DNS endpoint to release/delete the domain.
+        Ok(name)
+    }
+
+    pub(crate) async fn create_records(
+        &self,
+        store: &ReplicatedStore,
+        records: &[DnsRecordRequest],
+    ) -> Result<Vec<DnsRecord>, Error> {
+        let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
+        self.submit_records(&reservation, records).await
+    }
+
+    async fn request_reservation(&self, endpoint: &str) -> Result<Reservation, Error> {
         let response = self
             .client
             .post(endpoint_url(endpoint, &["domains"])?)
@@ -38,7 +79,7 @@ impl HostedDnsClient {
         })
     }
 
-    pub(crate) async fn create_records(
+    async fn submit_records(
         &self,
         reservation: &Reservation,
         records: &[DnsRecordRequest],
@@ -112,19 +153,26 @@ struct RecordResponse {
     fqdn: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct AuthError {
+    #[serde(default)]
     data: AuthErrorData,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct AuthErrorData {
-    #[serde(rename = "noDomain")]
+    #[serde(default, rename = "noDomain")]
     no_domain: bool,
 }
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
+    #[error("Cluster domain is already reserved")]
+    AlreadyReserved,
+    #[error("Cluster domain was not found")]
+    NotFound,
+    #[error("replicated hosted DNS state failed: {0}")]
+    Store(#[from] crate::corrosion::Error),
     #[error("hosted DNS request failed: {0}")]
     Http(#[from] reqwest::Error),
     #[error("hosted DNS response was invalid: {0}")]
@@ -149,7 +197,7 @@ mod tests {
         net::TcpListener,
     };
 
-    use super::{Error, HostedDnsClient};
+    use super::{Error, HostedDns};
 
     #[derive(Debug)]
     struct Request {
@@ -166,21 +214,21 @@ mod tests {
             ),
             (
                 200,
-                r#"{"name":"*","type":"A","values":["192.0.2.1"],"fqdn":"*.opaque.ployz.example"}"#,
+                r#"{"name":"*","type":"A","values":["203.0.113.9"],"fqdn":"*.opaque.ployz.example"}"#,
             ),
             (
                 200,
-                r#"{"name":"*","type":"AAAA","values":["2001:db8::1"],"fqdn":"*.opaque.ployz.example"}"#,
+                r#"{"name":"*","type":"AAAA","values":["2001:db8::99"],"fqdn":"*.opaque.ployz.example"}"#,
             ),
         ];
         let (endpoint, requests) = fake_server(responses).await;
-        let client = HostedDnsClient::new();
+        let client = HostedDns::new();
 
-        let reservation = client.reserve(&endpoint).await.unwrap();
+        let reservation = client.request_reservation(&endpoint).await.unwrap();
         assert_eq!(reservation.name, "opaque.ployz.example");
         assert_eq!(reservation.token, "raw-token");
         let records = client
-            .create_records(
+            .submit_records(
                 &reservation,
                 &[
                     DnsRecordRequest {
@@ -197,8 +245,21 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records.first().unwrap().name, "*.opaque.ployz.example");
+        assert_eq!(
+            records,
+            vec![
+                ployz_core::DnsRecord {
+                    name: "*.opaque.ployz.example".into(),
+                    record_type: DnsRecordType::A,
+                    values: vec!["203.0.113.9".into()],
+                },
+                ployz_core::DnsRecord {
+                    name: "*.opaque.ployz.example".into(),
+                    record_type: DnsRecordType::Aaaa,
+                    values: vec!["2001:db8::99".into()],
+                },
+            ]
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let requests = requests.lock().unwrap();
@@ -253,8 +314,8 @@ mod tests {
             token: "expired".into(),
         };
 
-        let error = HostedDnsClient::new()
-            .create_records(
+        let error = HostedDns::new()
+            .submit_records(
                 &reservation,
                 &[DnsRecordRequest {
                     name: "*".into(),
@@ -268,6 +329,18 @@ mod tests {
         assert!(matches!(error, Error::AuthNoDomain));
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn other_valid_unauthorized_bodies_are_generic_authentication_failures() {
+        let (endpoint, _) = fake_server([(401, r#"{"status":401}"#)]).await;
+
+        let error = HostedDns::new()
+            .request_reservation(&endpoint)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Authentication));
     }
 
     async fn fake_server<const N: usize>(
