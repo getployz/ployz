@@ -67,9 +67,10 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                     .map_err(|error| error.to_string())?
                 {
                     ExecResponseFrame::ExecId(_) => {}
-                    ExecResponseFrame::Stdout(bytes) => std::io::stdout()
-                        .write_all(&bytes)
-                        .map_err(|error| error.to_string())?,
+                    ExecResponseFrame::Stdout(bytes) => {
+                        write_stdout_frame(&mut std::io::stdout(), &bytes)
+                            .map_err(|error| error.to_string())?
+                    }
                     ExecResponseFrame::Stderr(bytes) => std::io::stderr()
                         .write_all(&bytes)
                         .map_err(|error| error.to_string())?,
@@ -349,6 +350,11 @@ fn timestamp(entry: &LogEntry, utc: bool) -> String {
 
 struct RawTerminal;
 
+fn write_stdout_frame(output: &mut dyn Write, bytes: &[u8]) -> std::io::Result<()> {
+    output.write_all(bytes)?;
+    output.flush()
+}
+
 impl RawTerminal {
     fn enable() -> Result<Self, String> {
         terminal::enable_raw_mode().map_err(|error| error.to_string())?;
@@ -380,15 +386,51 @@ async fn send_terminal_size(
 fn spawn_stdin(
     sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
 ) -> tokio::task::JoinHandle<()> {
+    let Ok(stdin) = std::fs::File::open("/dev/stdin") else {
+        return tokio::spawn(async {});
+    };
+    spawn_file_stdin(stdin, sender)
+}
+
+#[cfg(unix)]
+fn spawn_file_stdin(
+    stdin: std::fs::File,
+    sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
+) -> tokio::task::JoinHandle<()> {
+    let mut stdin = match tokio::io::unix::AsyncFd::try_new(stdin) {
+        Ok(stdin) => stdin,
+        Err(error) => {
+            let (mut stdin, _) = error.into_parts();
+            return tokio::task::spawn_blocking(move || {
+                use std::io::Read;
+
+                let mut buffer = [0_u8; 8192];
+                loop {
+                    let Ok(read) = stdin.read(&mut buffer) else {
+                        return;
+                    };
+                    if read == 0 {
+                        return;
+                    }
+                    let frame = ExecRequestFrame::Stdin(
+                        buffer
+                            .get(..read)
+                            .expect("read length fits buffer")
+                            .to_vec(),
+                    );
+                    let Ok(payload) = frame.encode() else {
+                        return;
+                    };
+                    if sender.blocking_send(payload).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    };
     tokio::spawn(async move {
         use std::io::Read;
 
-        let Ok(stdin) = std::fs::File::open("/dev/stdin") else {
-            return;
-        };
-        let Ok(mut stdin) = tokio::io::unix::AsyncFd::new(stdin) else {
-            return;
-        };
         let mut buffer = [0_u8; 8192];
         loop {
             let Ok(mut ready) = stdin.readable_mut().await else {
@@ -402,7 +444,12 @@ fn spawn_stdin(
             if read == 0 {
                 return;
             }
-            let frame = ExecRequestFrame::Stdin(buffer.get(..read).unwrap_or_default().to_vec());
+            let frame = ExecRequestFrame::Stdin(
+                buffer
+                    .get(..read)
+                    .expect("read length fits buffer")
+                    .to_vec(),
+            );
             let Ok(payload) = frame.encode() else {
                 return;
             };
@@ -468,4 +515,41 @@ fn spawn_resize(
     _sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async {})
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::BufWriter;
+
+    use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn redirected_regular_file_stdin_is_framed() {
+        let input = include_bytes!("../../Cargo.toml");
+        let file = std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+
+        let task = spawn_file_stdin(file, sender);
+        let mut actual = Vec::new();
+        while let Some(payload) = receiver.recv().await {
+            let ExecRequestFrame::Stdin(bytes) = ExecRequestFrame::decode(&payload).unwrap() else {
+                panic!("unexpected stdin frame")
+            };
+            actual.extend(bytes);
+        }
+        task.await.unwrap();
+
+        assert_eq!(actual, input.to_vec());
+    }
+
+    #[test]
+    fn streamed_stdout_frame_is_flushed() {
+        let mut output = BufWriter::new(Vec::new());
+
+        write_stdout_frame(&mut output, b"ready").unwrap();
+
+        assert!(output.buffer().is_empty());
+        assert_eq!(output.get_ref(), b"ready");
+    }
 }
