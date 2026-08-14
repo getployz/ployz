@@ -2,12 +2,13 @@ use std::{collections::HashMap, str::FromStr};
 
 use bollard::{
     models::{
-        ContainerCreateBody, HostConfig, Mount, MountBindOptions, MountTmpfsOptions, MountType,
-        MountVolumeOptions, MountVolumeOptionsDriverConfig,
+        ContainerCreateBody, DeviceMapping, DeviceRequest, HostConfig, Mount, MountBindOptions,
+        MountTmpfsOptions, MountType, MountVolumeOptions, MountVolumeOptionsDriverConfig,
+        ResourcesUlimits,
     },
     query_parameters::RemoveContainerOptionsBuilder,
 };
-use ployz_core::{ContainerId, ResolvedServiceSpec, VolumeSource};
+use ployz_core::{ContainerId, ContainerResources, ResolvedServiceSpec, VolumeSource};
 
 use super::{
     Error, LABEL_MANAGED, LABEL_SERVICE_ID, LABEL_SERVICE_NAME, LocalDocker, MachineSpecStore,
@@ -66,9 +67,8 @@ impl LocalDocker {
                 cap_drop: some_vec(spec.container.cap_drop.clone()),
                 pid_mode: spec.container.pid_mode.clone(),
                 privileged: spec.container.privileged.then_some(true),
-                shm_size: spec.container.resources.shared_memory_bytes,
                 sysctls: some_map(spec.container.sysctls.clone()),
-                ..Default::default()
+                ..docker_resources(&spec.container.resources)
             }),
             ..Default::default()
         };
@@ -101,6 +101,51 @@ impl LocalDocker {
                 .await;
         }
         result
+    }
+}
+
+pub(super) fn docker_resources(resources: &ContainerResources) -> HostConfig {
+    HostConfig {
+        nano_cpus: resources.cpu_nanos,
+        memory: resources.memory_bytes,
+        memory_reservation: resources.memory_reservation_bytes,
+        shm_size: resources.shared_memory_bytes,
+        devices: (!resources.devices.is_empty()).then(|| {
+            resources
+                .devices
+                .iter()
+                .map(|device| DeviceMapping {
+                    path_on_host: Some(device.machine_path.to_string()),
+                    path_in_container: Some(device.container_path.to_string()),
+                    cgroup_permissions: Some(device.cgroup_permissions.clone()),
+                })
+                .collect()
+        }),
+        device_requests: (!resources.device_reservations.is_empty()).then(|| {
+            resources
+                .device_reservations
+                .iter()
+                .map(|request| DeviceRequest {
+                    driver: request.driver.clone(),
+                    count: request.count,
+                    device_ids: some_vec(request.device_ids.clone()),
+                    capabilities: some_vec(request.capabilities.clone()),
+                    options: some_map(request.options.clone()),
+                })
+                .collect()
+        }),
+        ulimits: (!resources.ulimits.is_empty()).then(|| {
+            resources
+                .ulimits
+                .iter()
+                .map(|(name, limit)| ResourcesUlimits {
+                    name: Some(name.clone()),
+                    soft: Some(limit.soft),
+                    hard: Some(limit.hard),
+                })
+                .collect()
+        }),
+        ..Default::default()
     }
 }
 

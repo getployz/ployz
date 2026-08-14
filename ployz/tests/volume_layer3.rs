@@ -235,6 +235,21 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     };
     assert_eq!(failure.machine_id, second_machine.machine.id);
 
+    let partial_remove = ployz(address, ["volume", "rm", "reachable", "--yes"]);
+    assert!(!partial_remove.status.success());
+    let reachable = client
+        .list_volumes(std::slice::from_ref(first_machine))
+        .await;
+    let [success] = reachable.successes.as_slice() else {
+        panic!("expected reachable Machine after partial removal: {reachable:?}")
+    };
+    assert!(
+        !success
+            .value
+            .iter()
+            .any(|volume| volume.id.name.as_str() == "reachable")
+    );
+
     cluster.teardown().unwrap();
 }
 

@@ -710,6 +710,39 @@ volumes: {data: {name: demo_data}}
             ))
     );
 
+    let connected = parse_normalized(
+        r#"
+services:
+  a-peer: {image: app, x-machines: [one, two], volumes: [{type: volume, source: a, target: /a}]}
+  b-peer: {image: app, x-machines: two, volumes: [{type: volume, source: b, target: /b}]}
+  flexible:
+    image: app
+    x-machines: [one, two]
+    volumes:
+      - {type: volume, source: a, target: /a}
+      - {type: volume, source: b, target: /b}
+volumes: {a: {}, b: {}}
+"#,
+        ".",
+    )
+    .unwrap();
+    let connected_plan =
+        plan_compose_deploy(&connected, &snapshot, PlanOptions::default()).unwrap();
+    assert_eq!(connected_plan.volume_operations.len(), 2);
+    assert!(
+        connected_plan
+            .volume_operations
+            .iter()
+            .all(|operation| matches!(
+                operation,
+                DeployOperation::CreateVolume { machine_id, .. } if machine_id == anchor
+            ))
+    );
+    assert!(connected_plan.service_plans.iter().all(|service| matches!(
+        service.operations(),
+        [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
+    )));
+
     let constrained = parse_normalized(
         r#"
 services:

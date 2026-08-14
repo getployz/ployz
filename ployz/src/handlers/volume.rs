@@ -137,7 +137,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let (volumes, result) = discover(&mut client, &selectors).await?;
         let volumes = filter_volumes(&volumes, &names);
         if volumes.is_empty() {
-            return if result.failures.is_empty() {
+            return if result.all_targets_succeeded() {
                 Err("no matching Docker Volumes found".into())
             } else {
                 Err(failure_summary(&result))
@@ -159,10 +159,13 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         })
         .await;
         report_failures(&result);
-        if removal.all_targets_succeeded() {
-            Ok(())
-        } else {
-            Err(failure_summary(&removal))
+        match (
+            (!result.all_targets_succeeded()).then(|| failure_summary(&result)),
+            (!removal.all_targets_succeeded()).then(|| failure_summary(&removal)),
+        ) {
+            (None, None) => Ok(()),
+            (Some(failure), None) | (None, Some(failure)) => Err(failure),
+            (Some(discovery), Some(removal)) => Err(format!("{discovery}; {removal}")),
         }
     })
 }

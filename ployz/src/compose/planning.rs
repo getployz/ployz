@@ -149,48 +149,73 @@ fn prepare_shared_replicated_volumes(
     options: PlanOptions,
 ) -> Result<Vec<DeployOperation>, ComposePlanError> {
     let mut operations = Vec::new();
-    for (name, uses) in volume_uses
+    let mut remaining = volume_uses
         .iter()
         .filter(|(_, uses)| uses.len() > 1 && uses.iter().all(|volume_use| !volume_use.global))
-    {
-        let first_use = uses
-            .first()
-            .copied()
-            .expect("shared Volume has at least two uses");
-        let mut eligible = volume_eligible_machine_ids(first_use.service, snapshot, options)
-            .map_err(|source| ComposePlanError::Service {
-                service: first_use.service_name.into(),
-                source,
-            })?;
-        for volume_use in uses.iter().skip(1) {
-            let other_eligible = volume_eligible_machine_ids(volume_use.service, snapshot, options)
-                .map_err(|source| ComposePlanError::Service {
-                    service: volume_use.service_name.into(),
+        .collect::<Vec<_>>();
+    while !remaining.is_empty() {
+        let mut component = vec![remaining.remove(0)];
+        while let Some(index) = remaining.iter().position(|(_, candidate_uses)| {
+            candidate_uses.iter().any(|candidate| {
+                component.iter().any(|(_, component_uses)| {
+                    component_uses
+                        .iter()
+                        .any(|volume_use| volume_use.service_name == candidate.service_name)
+                })
+            })
+        }) {
+            component.push(remaining.remove(index));
+        }
+        let services = component
+            .iter()
+            .flat_map(|(_, uses)| uses.iter())
+            .map(|volume_use| (volume_use.service_name, volume_use.service))
+            .collect::<BTreeMap<_, _>>();
+        let mut services = services.into_iter();
+        let (first_service_name, first_service) = services
+            .next()
+            .expect("shared Volume component has at least two services");
+        let mut eligible =
+            volume_eligible_machine_ids(first_service, snapshot, options).map_err(|source| {
+                ComposePlanError::Service {
+                    service: first_service_name.into(),
                     source,
+                }
+            })?;
+        for (service_name, service) in services {
+            let other_eligible =
+                volume_eligible_machine_ids(service, snapshot, options).map_err(|source| {
+                    ComposePlanError::Service {
+                        service: service_name.into(),
+                        source,
+                    }
                 })?;
             eligible.retain(|machine_id| other_eligible.contains(machine_id));
         }
         if eligible.is_empty() {
             return Err(ComposePlanError::Service {
-                service: first_use.service_name.into(),
+                service: first_service_name.into(),
                 source: PlanError::NoEligibleMachines,
             });
         }
         let machine_id = eligible.remove(0);
-        snapshot
-            .volumes
-            .retain(|volume| volume.id.name != *name || volume.id.machine_id == machine_id);
-        if !snapshot
-            .volumes
-            .iter()
-            .any(|volume| volume.id.machine_id == machine_id && volume.id.name == *name)
-        {
-            let operation = DeployOperation::CreateVolume {
-                machine_id: machine_id.clone(),
-                volume: first_use.volume.clone(),
-            };
-            remember_volume(snapshot, &machine_id, first_use.volume);
-            operations.push(operation);
+        for (name, uses) in component {
+            snapshot
+                .volumes
+                .retain(|volume| volume.id.name != *name || volume.id.machine_id == machine_id);
+            if !snapshot
+                .volumes
+                .iter()
+                .any(|volume| volume.id.machine_id == machine_id && volume.id.name == *name)
+            {
+                let first_use = uses.first().expect("shared Volume has at least two uses");
+                let operation = DeployOperation::CreateVolume {
+                    machine_id: machine_id.clone(),
+                    volume: first_use.volume.clone(),
+                };
+                remember_volume(snapshot, &machine_id, first_use.volume);
+                operations.push(operation);
+            }
         }
     }
     Ok(operations)

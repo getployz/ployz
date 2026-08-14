@@ -30,7 +30,7 @@ use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
 
 #[cfg(test)]
-use service_container::docker_mounts;
+use service_container::{docker_mounts, docker_resources};
 
 pub const LABEL_MANAGED: &str = "ployz.managed";
 pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
@@ -726,6 +726,60 @@ mod tests {
             docker_mounts(&missing),
             Err(Error::UnknownVolumeReference(reference)) if reference.as_str() == "missing"
         ));
+    }
+
+    #[test]
+    fn container_resources_map_to_docker_without_dropping_limits() {
+        let resources = serde_json::from_value(serde_json::json!({
+            "cpu_nanos": 500_000_000,
+            "memory_bytes": 104_857_600,
+            "memory_reservation_bytes": 52_428_800,
+            "shared_memory_bytes": 26_214_400,
+            "devices": [{
+                "machine_path": "/dev/fuse",
+                "container_path": "/dev/fuse",
+                "cgroup_permissions": "rwm"
+            }],
+            "device_reservations": [{
+                "driver": "nvidia",
+                "count": -1,
+                "capabilities": [["gpu"]],
+                "options": {"virtualization": "false"}
+            }],
+            "ulimits": {"nofile": {"soft": 20_000, "hard": 40_000}}
+        }))
+        .unwrap();
+
+        let mapped = docker_resources(&resources);
+        assert_eq!(mapped.nano_cpus, Some(500_000_000));
+        assert_eq!(mapped.memory, Some(104_857_600));
+        assert_eq!(mapped.memory_reservation, Some(52_428_800));
+        assert_eq!(mapped.shm_size, Some(26_214_400));
+        let [device] = mapped.devices.as_deref().unwrap() else {
+            panic!("expected one Docker device: {mapped:?}")
+        };
+        assert_eq!(device.path_on_host.as_deref(), Some("/dev/fuse"));
+        assert_eq!(device.path_in_container.as_deref(), Some("/dev/fuse"));
+        assert_eq!(device.cgroup_permissions.as_deref(), Some("rwm"));
+        let [request] = mapped.device_requests.as_deref().unwrap() else {
+            panic!("expected one Docker device request: {mapped:?}")
+        };
+        assert_eq!(request.driver.as_deref(), Some("nvidia"));
+        assert_eq!(request.count, Some(-1));
+        assert_eq!(request.capabilities, Some(vec![vec!["gpu".into()]]));
+        assert_eq!(
+            request
+                .options
+                .as_ref()
+                .and_then(|options| options.get("virtualization"))
+                .map(String::as_str),
+            Some("false")
+        );
+        let [ulimit] = mapped.ulimits.as_deref().unwrap() else {
+            panic!("expected one Docker ulimit: {mapped:?}")
+        };
+        assert_eq!(ulimit.name.as_deref(), Some("nofile"));
+        assert_eq!((ulimit.soft, ulimit.hard), (Some(20_000), Some(40_000)));
     }
 
     #[test]
