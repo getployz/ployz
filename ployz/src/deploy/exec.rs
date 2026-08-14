@@ -285,10 +285,13 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             container_id,
         } => {
-            client
-                .stop_container(machine_id, container_id, None)
-                .await
-                .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
+            match client.stop_container(machine_id, container_id, None).await {
+                Ok(()) => {}
+                Err(error) if error.code == RpcErrorCode::NotFound => {}
+                Err(error) => {
+                    return Err(machine_error(MachineAction::StopContainer, error).into());
+                }
+            }
             client
                 .remove_container(machine_id, container_id)
                 .await
@@ -356,13 +359,18 @@ async fn replace_container<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
     let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
-    let old_was_running = if stop_first {
+    let old_was_active = if stop_first {
         let old = client
             .inspect_container(&operation.machine_id, &operation.old_container_id)
             .await
             .map_err(|error| machine_error(MachineAction::InspectContainer, error))?;
-        let running = matches!(old.runtime, ContainerRuntimeObservation::Running { .. });
-        if running {
+        let active = matches!(
+            old.runtime,
+            ContainerRuntimeObservation::Running { .. }
+                | ContainerRuntimeObservation::Paused
+                | ContainerRuntimeObservation::Restarting
+        );
+        if active {
             client
                 .stop_container(
                     &operation.machine_id,
@@ -372,7 +380,7 @@ async fn replace_container<C: MachineOperations>(
                 .await
                 .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
         }
-        running
+        active
     } else {
         false
     };
@@ -406,7 +414,7 @@ async fn replace_container<C: MachineOperations>(
         let compensation = if stop_first {
             ReplacementCompensation::StopFirst {
                 stop_new_container,
-                restart_old_container: if old_was_running {
+                restart_old_container: if old_was_active {
                     RestartAttempt::Attempted(
                         client
                             .start_container(&operation.machine_id, &operation.old_container_id)

@@ -309,6 +309,35 @@ async fn create_then_start_failure_keeps_the_container_without_cleanup() {
     client.assert_done();
 }
 
+#[tokio::test]
+async fn remove_tolerates_a_missing_preliminary_stop_target() {
+    let machine = machine('1');
+    let removed = container('a');
+    let suffix = container('b');
+    let mut missing = error("not found");
+    missing.code = RpcErrorCode::NotFound;
+    let plan = plan(vec![
+        DeployOperation::RemoveContainer {
+            machine_id: machine.clone(),
+            container_id: removed.clone(),
+        },
+        stop(&machine, &suffix),
+    ]);
+    let client = Scripted::new(vec![
+        Step(
+            Call::Stop(machine.clone(), removed.clone()),
+            Reply::Error(missing),
+        ),
+        ok(Call::Remove(machine.clone(), removed)),
+        ok(Call::Stop(machine, suffix)),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(outcome.failed.is_none());
+    client.assert_done();
+}
+
 #[tokio::test(start_paused = true)]
 async fn health_monitor_accepts_running_no_check_early_healthy_and_transient_unhealthy() {
     let machine = machine('1');
@@ -525,6 +554,45 @@ async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
         })
     ));
     client.assert_done();
+}
+
+#[tokio::test]
+async fn stop_first_stops_and_can_restart_active_old_container_states() {
+    for runtime in [
+        ContainerRuntimeObservation::Paused,
+        ContainerRuntimeObservation::Restarting,
+    ] {
+        let machine = machine('1');
+        let old = container('a');
+        let new = container('b');
+        let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
+        let client = Scripted::new(vec![
+            observed(Call::Inspect(machine.clone(), old.clone()), runtime),
+            ok(Call::Stop(machine.clone(), old.clone())),
+            created(
+                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+                &new,
+            ),
+            ok(Call::Start(machine.clone(), new.clone())),
+            observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
+            ok(Call::Stop(machine.clone(), new)),
+            ok(Call::Start(machine, old)),
+        ]);
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(matches!(
+            outcome.failed,
+            Some(FailedOperation::ReplacementHealth {
+                compensation: ReplacementCompensation::StopFirst {
+                    restart_old_container: RestartAttempt::Attempted(Ok(())),
+                    ..
+                },
+                ..
+            })
+        ));
+        client.assert_done();
+    }
 }
 
 #[tokio::test]
