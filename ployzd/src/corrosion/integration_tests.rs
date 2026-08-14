@@ -63,14 +63,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(machines.incomplete_ids.len(), 1);
     assert!(machines.observations.contains(&local));
     assert!(machines.observations.contains(&duplicate));
-    assert!(
-        store
-            .machine_publication()
-            .await
-            .remove(&incomplete_machine_id)
-            .await
-            .unwrap()
-    );
+    store.remove_machine(&incomplete_machine_id).await.unwrap();
     assert!(store.machines().await.unwrap().incomplete_ids.is_empty());
 
     let mut container_changes = store.subscribe_container_changes().await.unwrap();

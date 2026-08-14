@@ -271,7 +271,10 @@ pub struct UpdateMachineRequest {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveLocalMachineRequest {}
+pub struct RemoveLocalMachineRequest {
+    #[serde(default)]
+    pub restart_on_cleanup_failure: bool,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RemoveMachineRequest {

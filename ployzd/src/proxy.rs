@@ -10,7 +10,8 @@ use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full, StreamBody};
 use ployz_core::{
     FanoutFailure, FanoutResponse, FramingError, Machine, MachineId, MachineSelector,
-    ManagementAddress, grpc_frame_length, grpc_frames, resolve_machine_selectors,
+    ManagementAddress, NameMatches, grpc_frame_length, grpc_frames, resolve_machine_selector,
+    resolve_machine_selectors,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -51,8 +52,17 @@ pub fn resolve_route(
 ) -> Result<ProxyRoute, TargetResolutionError> {
     match request {
         RoutingRequest::Local => Ok(ProxyRoute::Local),
-        RoutingRequest::One(selector) => resolve_machine_selectors(visible, &[selector])
-            .map(|mut targets| ProxyRoute::One(Box::new(targets.remove(0)))),
+        RoutingRequest::One(selector) => match resolve_machine_selector(&selector, visible) {
+            NameMatches::One(machine) => Ok(ProxyRoute::One(Box::new(machine.clone()))),
+            NameMatches::None => Err(TargetResolutionError::NotFound(vec![selector])),
+            NameMatches::Ambiguous(matches) => Err(TargetResolutionError::Ambiguous {
+                selector,
+                matches: matches
+                    .into_iter()
+                    .map(|machine| machine.id.clone())
+                    .collect(),
+            }),
+        },
         RoutingRequest::Many(selectors) => {
             resolve_machine_selectors(visible, &selectors).map(ProxyRoute::Many)
         }

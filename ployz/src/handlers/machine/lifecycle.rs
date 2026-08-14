@@ -81,11 +81,13 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
         // TODO(UT-055): do not reroute away from the current entry before removal.
         // TODO(UT-056): there is no drain or unschedulable phase before cleanup.
-        let mut removed_by_target = false;
+        let mut shared_rows_removed_by_entry = false;
         if !no_reset {
             match client
                 .request(
-                    RpcRequest::remove_local_machine(RemoveLocalMachineRequest {}),
+                    RpcRequest::remove_local_machine(RemoveLocalMachineRequest {
+                        restart_on_cleanup_failure: selected.id != current,
+                    }),
                     Some(&selected_target),
                 )
                 .await
@@ -95,9 +97,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                         .decode_local_machine_removed()
                         .map_err(|error| error.to_string())?;
                     if let Some(warning) = &removed.reset_warning {
-                        eprintln!("WARNING: target reset failed: {warning}");
+                        eprintln!("WARNING: target cleanup/reset failed: {warning}");
+                    } else if selected.id == current {
+                        shared_rows_removed_by_entry = true;
                     }
-                    removed_by_target = true;
                 }
                 Err(error) if is_target_unreachable(&error) => {
                     eprintln!("WARNING: target is unreachable; removing shared rows: {error}");
@@ -105,7 +108,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 Err(error) => return Err(error.to_string().into()),
             }
         }
-        if !removed_by_target {
+        if !shared_rows_removed_by_entry {
             client
                 .request(
                     RpcRequest::remove_machine(RemoveMachineRequest {

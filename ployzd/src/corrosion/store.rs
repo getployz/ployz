@@ -36,8 +36,7 @@ impl MachinePublicationGuard<'_> {
         self.store.publish_local_machine_unlocked(machine).await
     }
 
-    pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<bool, Error> {
-        let existed = self.store.machine_row_exists(machine_id).await?;
+    pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
         self.store
             .api
             .execute([Statement::new(
@@ -45,17 +44,13 @@ impl MachinePublicationGuard<'_> {
                 [json!(machine_id)],
             )])
             .await?;
-        if !existed {
-            return Ok(false);
-        }
         self.store
             .api
             .execute([Statement::new(
                 "DELETE FROM machines WHERE id = ?",
                 [json!(machine_id)],
             )])
-            .await?;
-        Ok(true)
+            .await
     }
 
     pub(crate) async fn reconcile_local_containers(
@@ -89,6 +84,10 @@ impl ReplicatedStore {
 
     pub async fn publish_local_machine(&self, machine: &Machine) -> Result<(), Error> {
         self.machine_publication().await.publish(machine).await
+    }
+
+    pub async fn remove_machine(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.machine_publication().await.remove(machine_id).await
     }
 
     pub(crate) async fn machine_publication(&self) -> MachinePublicationGuard<'_> {
@@ -156,17 +155,6 @@ impl ReplicatedStore {
             return Ok(None);
         }
         Ok(Some(serde_json::from_str(info)?))
-    }
-
-    async fn machine_row_exists(&self, id: &MachineId) -> Result<bool, Error> {
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT id FROM machines WHERE id = ?",
-                [json!(id)],
-            ))
-            .await?;
-        Ok(!query.rows(["id"])?.is_empty())
     }
 
     pub async fn machines(&self) -> Result<ReplicatedObservations<Machine>, Error> {

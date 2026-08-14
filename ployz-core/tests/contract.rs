@@ -534,7 +534,7 @@ fn machine_administration_requests_round_trip_as_typed_payloads() {
             public_ip: PublicIpUpdate::Remove,
             advertised_endpoints: None,
         }),
-        RpcRequest::remove_local_machine(RemoveLocalMachineRequest {}),
+        RpcRequest::remove_local_machine(RemoveLocalMachineRequest::default()),
         RpcRequest::remove_machine(RemoveMachineRequest {
             machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         }),

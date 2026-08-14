@@ -212,6 +212,22 @@ mod tests {
     }
 
     #[test]
+    fn machine_add_rejects_a_wireguard_port_the_daemon_cannot_apply() {
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "machine",
+                    "add",
+                    "root@example.com",
+                    "--wg-port",
+                    "51821",
+                ])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn update_cli_rejects_an_empty_patch_and_maps_none_to_public_ip_removal() {
         let command = crate::cli::command();
         let empty = command

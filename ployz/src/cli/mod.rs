@@ -305,7 +305,7 @@ fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("wg-port", None)
                 .default_value("51820")
-                .value_parser(clap::value_parser!(u16).range(1..)),
+                .value_parser(clap::value_parser!(u16).range(51820..=51820)),
         )
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }

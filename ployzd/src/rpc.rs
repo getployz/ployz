@@ -788,14 +788,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(
-            request_body(request)?,
-            RpcRequestBody::RemoveLocalMachine(_)
-        ) {
+        let RpcRequestBody::RemoveLocalMachine(request) = request_body(request)? else {
             return Err(Status::invalid_argument(
                 "expected remove_local_machine request",
             ));
-        }
+        };
         let machine_id = self.local_record()?.id;
         let replicated = match self.replicated() {
             Ok(replicated) => replicated,
@@ -828,17 +825,20 @@ impl MachineRpc for MachineService {
                 store.begin_reset()
             }
         };
-        if let Err(error) = reset {
-            return respond(RpcResponse::error(store_error(error)));
-        }
-        publication
-            .remove(&machine_id)
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        self.restart.send_replace(true);
-        respond(RpcResponse::local_machine_removed(
-            LocalMachineRemoved::default(),
-        ))
+        let restart_on_warning = request.restart_on_cleanup_failure && reset.is_ok();
+        let reset_warning = match reset {
+            Ok(()) => publication
+                .remove(&machine_id)
+                .await
+                .err()
+                .map(|error| error.to_string()),
+            Err(error) => Some(error.to_string()),
+        };
+        respond(RpcResponse::local_machine_removed(local_removal_response(
+            &self.restart,
+            reset_warning,
+            restart_on_warning,
+        )))
     }
 
     async fn remove_machine(
@@ -852,20 +852,15 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        match replicated
-            .machine_publication()
+        replicated
+            .remove_machine(&request.machine_id)
             .await
-            .remove(&request.machine_id)
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?
-        {
-            true => respond(RpcResponse::machine_removed()),
-            false => respond(RpcResponse::error(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: format!("Machine {} is not visible", request.machine_id),
-                details: Value::Null,
-            })),
+            .map_err(|error| Status::internal(error.to_string()))?;
+        let local = self.local_record()?;
+        if local.id == request.machine_id && local.phase == LocalMachinePhase::Resetting {
+            self.restart.send_replace(true);
         }
+        respond(RpcResponse::machine_removed())
     }
 
     async fn inspect_wireguard(
@@ -985,6 +980,17 @@ fn unavailable(message: &str) -> RpcError {
     }
 }
 
+fn local_removal_response(
+    restart: &watch::Sender<bool>,
+    reset_warning: Option<String>,
+    restart_on_warning: bool,
+) -> LocalMachineRemoved {
+    if reset_warning.is_none() || restart_on_warning {
+        restart.send_replace(true);
+    }
+    LocalMachineRemoved { reset_warning }
+}
+
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
         StoreError::AlreadyResetting
@@ -1051,7 +1057,7 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::{store_error, unique_identities};
+    use super::{local_removal_response, store_error, unique_identities};
     use crate::machine::StoreError;
     use ployz_core::{MachineId, MachineIdentity, MachineName, RpcErrorCode};
 
@@ -1061,6 +1067,27 @@ mod tests {
             store_error(StoreError::NotParticipating).code,
             RpcErrorCode::Conflict
         );
+    }
+
+    #[test]
+    fn failed_local_removal_keeps_the_daemon_available_for_entry_fallback() {
+        let (restart, restart_rx) = tokio::sync::watch::channel(false);
+        let removed =
+            local_removal_response(&restart, Some("replicated delete failed".into()), false);
+
+        assert_eq!(
+            removed.reset_warning.as_deref(),
+            Some("replicated delete failed")
+        );
+        assert!(!*restart_rx.borrow());
+    }
+
+    #[test]
+    fn failed_remote_removal_restarts_after_delegating_entry_fallback() {
+        let (restart, restart_rx) = tokio::sync::watch::channel(false);
+        local_removal_response(&restart, Some("replicated delete failed".into()), true);
+
+        assert!(*restart_rx.borrow());
     }
 
     #[test]
