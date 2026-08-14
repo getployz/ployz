@@ -13,7 +13,6 @@ use ployz_core::{
     CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
     MachineFailure, MachineId, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload,
     PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
-    ServiceContainerCreated,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -410,26 +409,6 @@ impl Client {
             .into_inner()
             .decode_response()?;
         decode_rpc(response, RpcResponse::decode_volume_removed)
-    }
-
-    pub async fn create_service_container(
-        &mut self,
-        machine_id: &MachineId,
-        spec: ployz_core::ResolvedServiceSpec,
-    ) -> Result<ServiceContainerCreated, ConnectError> {
-        let request = targeted(
-            RpcRequest::create_service_container(spec).encode()?,
-            machine_id,
-        )?;
-        let response = self
-            .rpc
-            .create_service_container(request)
-            .await?
-            .into_inner()
-            .decode_response()?;
-        decode_rpc(response, |response| {
-            response.decode_service_container_created().cloned()
-        })
     }
 
     pub async fn dial_proxy(

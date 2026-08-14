@@ -312,8 +312,8 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     use std::collections::BTreeMap;
 
     use ployz_core::{
-        CreateServiceContainerRequest, CreateVolumeRequest, DockerVolume, DockerVolumeId,
-        DockerVolumeName, InspectVolumeRequest, ListVolumesRequest, RemoveVolumeRequest,
+        CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName, InspectVolumeRequest,
+        ListVolumesRequest, RemoveVolumeRequest,
     };
 
     assert!(DockerVolumeName::parse("").is_err());
@@ -399,15 +399,6 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     let response = RpcResponse::container_created(created.clone());
     assert_eq!(response.decode_container_created().unwrap(), &created);
     assert_eq!(CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1");
-    assert_eq!(
-        RpcRequest::create_service_container(spec.clone())
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap()
-            .body,
-        RpcRequestBody::CreateServiceContainer(Box::new(CreateServiceContainerRequest { spec }))
-    );
 }
 
 #[test]
@@ -638,13 +629,6 @@ impl MachineRpc for FixtureMachineRpc {
     }
 
     async fn remove_container(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn create_service_container(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {

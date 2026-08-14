@@ -1,13 +1,12 @@
 mod create;
 mod lifecycle;
-mod service_container;
 mod spec_store;
 mod volume;
 
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, io, net::Ipv4Addr, time::Duration, time::SystemTime};
+use std::{collections::HashMap, net::Ipv4Addr, time::Duration, time::SystemTime};
 
 use bollard::{
     Docker,
@@ -18,7 +17,7 @@ use futures_util::StreamExt;
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HealthObservation, MachineId, RpcErrorCode, ServiceId,
-    ServiceName, ServiceVolumeReference, ValueError,
+    ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -30,7 +29,7 @@ use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
 
 #[cfg(test)]
-use service_container::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
+use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
 
 pub const LABEL_MANAGED: &str = "ployz.managed";
 pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
@@ -39,7 +38,6 @@ pub const LABEL_HOOK: &str = "ployz.service.hook";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
-const MAX_HOST_BIND_ADDRESSES: usize = 4096;
 
 #[derive(Clone)]
 pub struct LocalDocker {
@@ -506,8 +504,6 @@ pub enum Error {
     Docker(#[from] bollard::errors::Error),
     #[error("Docker inspect JSON failed: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("container archive failed: {0}")]
-    Archive(#[from] io::Error),
     #[error(transparent)]
     Network(#[from] crate::network::NetworkError),
     #[error(transparent)]
@@ -524,10 +520,6 @@ pub enum Error {
         #[source]
         source: ValueError,
     },
-    #[error("mount references an undeclared Service Volume: {0}")]
-    UnknownVolumeReference(ServiceVolumeReference),
-    #[error("invalid Docker mount: {0}")]
-    InvalidMount(String),
     #[error("invalid container configuration: {0}")]
     InvalidContainerConfig(String),
     #[error("container is not managed by Ployz")]
@@ -548,8 +540,6 @@ pub enum Error {
     DurationOverflow,
     #[error("container size exceeds Docker's range")]
     SizeOverflow,
-    #[error("host bind prefix {0} expands beyond 4096 addresses")]
-    PortBindPrefixTooLarge(String),
     #[error("Docker event stream closed")]
     EventStreamClosed,
     #[error("observer shutdown channel closed")]
@@ -560,26 +550,32 @@ pub enum Error {
 
 impl Error {
     #[must_use]
-    pub const fn container_rpc_code(&self) -> RpcErrorCode {
+    pub const fn rpc_code(&self) -> RpcErrorCode {
         match self {
-            Self::ContainerNotFound(_) | Self::SpecNotFound(_) => RpcErrorCode::NotFound,
+            Self::ContainerNotFound(_)
+            | Self::SpecNotFound(_)
+            | Self::Docker(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }) => RpcErrorCode::NotFound,
+            Self::Docker(bollard::errors::Error::DockerResponseServerError {
+                status_code: 409,
+                ..
+            }) => RpcErrorCode::Conflict,
             Self::MissingPreDeployHook
             | Self::ConfigNotFound(_)
             | Self::VolumeNotFound(_)
             | Self::InvalidMountPropagation(_)
             | Self::DurationOverflow
             | Self::SizeOverflow
-            | Self::PortBindPrefixTooLarge(_)
-            | Self::UnknownVolumeReference(_)
-            | Self::InvalidMount(_)
             | Self::InvalidContainerConfig(_)
+            | Self::SpecStore(SpecStoreError::InvalidConfig(_))
             | Self::MissingField(_)
             | Self::MissingLabel(_)
             | Self::InvalidValue { .. }
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::Json(_)
-            | Self::Archive(_)
             | Self::Network(_)
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)
@@ -692,7 +688,7 @@ mod tests {
         }))
         .unwrap();
 
-        let mounts = docker_mounts(&spec).unwrap();
+        let mounts = docker_mounts(&spec.volumes, &spec.mounts).unwrap();
         let [bind_mount, named_mount, tmpfs_mount] = mounts.as_slice() else {
             panic!("expected three mounts: {mounts:?}")
         };
@@ -703,6 +699,38 @@ mod tests {
         assert!(bind.non_recursive.is_none());
         assert!(bind.read_only_non_recursive.is_none());
         assert!(bind.read_only_force_recursive.is_none());
+
+        for (recursive, expected) in [
+            ("disabled", (Some(true), None, None)),
+            ("writable", (None, Some(true), None)),
+            ("readonly", (None, None, Some(true))),
+        ] {
+            let mut recursive_spec = spec.clone();
+            let ployz_core::VolumeSource::Bind {
+                recursive: setting, ..
+            } = &mut recursive_spec
+                .volumes
+                .first_mut()
+                .expect("fixture has a bind volume")
+                .source
+            else {
+                panic!("expected bind volume")
+            };
+            *setting = Some(recursive.into());
+            let translated = docker_mounts(&recursive_spec.volumes, &recursive_spec.mounts)
+                .unwrap()
+                .remove(0)
+                .bind_options
+                .unwrap();
+            assert_eq!(
+                (
+                    translated.non_recursive,
+                    translated.read_only_non_recursive,
+                    translated.read_only_force_recursive,
+                ),
+                expected
+            );
+        }
         assert_eq!(named_mount.typ, Some(MountType::VOLUME));
         assert_eq!(named_mount.source.as_deref(), Some("database"));
         assert_eq!(named_mount.read_only, Some(true));
@@ -729,8 +757,8 @@ mod tests {
         missing.mounts.first_mut().unwrap().volume =
             ployz_core::ServiceVolumeReference::parse("missing").unwrap();
         assert!(matches!(
-            docker_mounts(&missing),
-            Err(Error::UnknownVolumeReference(reference)) if reference.as_str() == "missing"
+            docker_mounts(&missing.volumes, &missing.mounts),
+            Err(Error::VolumeNotFound(reference)) if reference == "missing"
         ));
     }
 
@@ -847,7 +875,7 @@ mod tests {
             "retries":5
         }))
         .unwrap();
-        let mapped = docker_healthcheck(Some(&healthcheck)).unwrap().unwrap();
+        let mapped = docker_healthcheck(&healthcheck).unwrap();
         assert_eq!(mapped.test.unwrap(), ["CMD", "true"]);
         assert_eq!(mapped.interval, Some(1_000_000_000));
         assert_eq!(mapped.timeout, Some(2_000_000_000));
@@ -860,11 +888,7 @@ mod tests {
             ..healthcheck
         };
         assert_eq!(
-            docker_healthcheck(Some(&disabled))
-                .unwrap()
-                .unwrap()
-                .test
-                .unwrap(),
+            docker_healthcheck(&disabled).unwrap().test.unwrap(),
             ["NONE"]
         );
     }

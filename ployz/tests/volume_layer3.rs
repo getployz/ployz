@@ -15,8 +15,8 @@ use ployz::{
     volume::{filter_volumes, machine_volumes},
 };
 use ployz_core::{
-    CreateVolumeRequest, DockerVolumeName, MachineObservation, NameMatches, RequestedServiceSpec,
-    ResolvedServiceSpec, ServiceId, ServiceMode, VolumeSource,
+    ContainerKind, CreateVolumeRequest, DockerVolumeName, MachineObservation, NameMatches,
+    RequestedServiceSpec, ResolvedServiceSpec, ServiceId, ServiceMode, VolumeSource,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use serde_json::json;
@@ -131,7 +131,11 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
             .write_volume_data(index, &shared, &format!("volume-{index}"))
             .unwrap();
         let created = client
-            .create_service_container(&machine.machine.id, mount_spec(index, &shared))
+            .create_container(
+                machine.machine.id.clone(),
+                ContainerKind::ServiceContainer,
+                mount_spec(index, &shared),
+            )
             .await
             .unwrap();
         cluster
@@ -180,7 +184,11 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     let missing = DockerVolumeName::parse("missing").unwrap();
     assert!(
         client
-            .create_service_container(&first_machine.machine.id, mount_spec(9, &missing))
+            .create_container(
+                first_machine.machine.id.clone(),
+                ContainerKind::ServiceContainer,
+                mount_spec(9, &missing),
+            )
             .await
             .is_err()
     );
@@ -543,7 +551,11 @@ async fn execute(client: &mut ployz::connect::Client, operations: Vec<&DeployOpe
                 machine_id, spec, ..
             } => {
                 client
-                    .create_service_container(machine_id, spec.clone())
+                    .create_container(
+                        machine_id.clone(),
+                        ContainerKind::ServiceContainer,
+                        spec.clone(),
+                    )
                     .await
                     .unwrap();
             }

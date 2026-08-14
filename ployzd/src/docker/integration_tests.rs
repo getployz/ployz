@@ -1,14 +1,22 @@
-use std::{collections::BTreeMap, fs, future::Future, io::Read, net::TcpListener, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    future::Future,
+    net::TcpListener,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::PathBuf,
+};
 
 use bollard::{
-    models::{ContainerCreateBody, MountType, NetworkCreateRequest},
+    exec::StartExecResults,
+    models::{ContainerCreateBody, ExecConfig, MountType, NetworkCreateRequest},
     query_parameters::{
-        CreateContainerOptionsBuilder, DownloadFromContainerOptionsBuilder,
-        RemoveContainerOptionsBuilder, RenameContainerOptionsBuilder,
+        CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder,
+        RenameContainerOptionsBuilder, StartContainerOptions,
     },
 };
 use futures_util::TryStreamExt;
-use ployz_core::{CreateVolumeRequest, DockerVolumeId, ResolvedServiceSpec};
+use ployz_core::{CreateVolumeRequest, DockerVolumeId, PullPolicy, ResolvedServiceSpec};
 
 use super::*;
 
@@ -78,6 +86,8 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     ));
     let orphan = ContainerId::parse("f".repeat(64)).unwrap();
     specs
+        .config_operation()
+        .await
         .put(&orphan, &fixture_spec(&service_id, &service_name))
         .await
         .unwrap();
@@ -165,6 +175,9 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     let docker = LocalDocker::connect().unwrap();
     let created_network = ensure_ployz_network(&docker.client).await;
     let machine_id = MachineId::random();
+    let metadata = fs::metadata(&root.0).unwrap();
+    let uid = metadata.uid();
+    let gid = metadata.gid();
     let spec: ResolvedServiceSpec = serde_json::from_value(json!({
         "service_id": "b".repeat(32),
         "name": "full-api",
@@ -189,6 +202,8 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
             "config_mounts": [{
                 "config_name": "settings",
                 "target": "/etc/settings.conf",
+                "uid": uid,
+                "gid": gid,
                 "mode": 288
             }]
         },
@@ -228,11 +243,20 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     assert_eq!(host.memory, Some(67_108_864));
     assert_eq!(host.memory_reservation, Some(33_554_432));
     assert!(host.port_bindings.unwrap().contains_key("8080/tcp"));
+    let mounts = host.mounts.unwrap();
+    assert_eq!(mounts.first().unwrap().target.as_deref(), Some("/scratch"));
     assert_eq!(
-        host.mounts.unwrap().first().unwrap().target.as_deref(),
-        Some("/scratch")
+        mounts
+            .iter()
+            .find(|mount| mount.target.as_deref() == Some("/etc/settings.conf"))
+            .unwrap()
+            .read_only,
+        Some(true)
     );
-    assert_eq!(specs.get(&created.container_id).await.unwrap(), Some(spec));
+    assert_eq!(
+        specs.get(&created.container_id).await.unwrap(),
+        Some(spec.clone())
+    );
 
     docker.start(&specs, &created.container_id).await.unwrap();
     docker.start(&specs, &created.container_id).await.unwrap();
@@ -245,6 +269,25 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
         .remove(&specs, &created.container_id, true, true)
         .await
         .unwrap();
+    let mut failed_spec = spec.clone();
+    failed_spec.container.image = format!("ployz-missing-{machine_id}");
+    failed_spec.container.pull_policy = PullPolicy::Never;
+    assert!(
+        docker
+            .create(
+                &machine_id,
+                &specs,
+                ContainerKind::ServiceContainer,
+                &failed_spec,
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_dir(root.0.join("configs")).unwrap().count(),
+        0,
+        "failed creation leaked a materialized config"
+    );
     cleanup_ployz_network(&docker.client, created_network).await;
 }
 
@@ -285,8 +328,7 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
     let docker = LocalDocker::connect().unwrap();
     let machine_id = MachineId::random();
     let name =
-        ployz_core::DockerVolumeName::parse(format!("ployz-volume-test-{}", MachineId::random()))
-            .unwrap();
+        ployz_core::DockerVolumeName::parse(format!("ployz-volume-test-{machine_id}")).unwrap();
     let labels = BTreeMap::from([("purpose".into(), "machine-local-test".into())]);
 
     let created = docker
@@ -343,8 +385,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     let published_port = unused_address().port();
     let machine_id = MachineId::random();
     let name =
-        ployz_core::DockerVolumeName::parse(format!("ployz-mount-test-{}", MachineId::random()))
-            .unwrap();
+        ployz_core::DockerVolumeName::parse(format!("ployz-mount-test-{machine_id}")).unwrap();
     docker
         .create_volume(
             &machine_id,
@@ -390,7 +431,11 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     }))
     .unwrap();
 
-    let (container_id, _) = docker.create_service_container(&specs, spec).await.unwrap();
+    let container_id = docker
+        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .await
+        .unwrap()
+        .container_id;
     let inspected = docker
         .client
         .inspect_container(container_id.as_str(), None)
@@ -440,27 +485,46 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
             .and_then(|settings| settings.networks.as_ref())
             .is_some_and(|networks| networks.contains_key(crate::network::DOCKER_NETWORK_NAME))
     );
-    let config_archive = docker
+    let config_mount = mounts
+        .iter()
+        .find(|mount| mount.target.as_deref() == Some("/etc/ployz/settings"))
+        .unwrap();
+    let config_path = config_mount.source.as_ref().unwrap();
+    let config = fs::read_to_string(config_path).unwrap();
+    let metadata = fs::metadata(config_path).unwrap();
+    docker
         .client
-        .download_from_container(
+        .start_container(container_id.as_str(), None::<StartContainerOptions>)
+        .await
+        .unwrap();
+    let write = docker
+        .client
+        .create_exec(
             container_id.as_str(),
-            Some(
-                DownloadFromContainerOptionsBuilder::default()
-                    .path("/etc/ployz/settings")
-                    .build(),
-            ),
+            ExecConfig {
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                cmd: Some(vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf changed >/etc/ployz/settings".into(),
+                ]),
+                ..Default::default()
+            },
         )
-        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    if let StartExecResults::Attached { output, .. } =
+        docker.client.start_exec(&write.id, None).await.unwrap()
+    {
+        output.try_collect::<Vec<_>>().await.unwrap();
+    }
+    let write_exit_code = docker
+        .client
+        .inspect_exec(&write.id)
         .await
         .unwrap()
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    let mut archive = tar::Archive::new(config_archive.as_slice());
-    let mut entry = archive.entries().unwrap().next().unwrap().unwrap();
-    let header = entry.header().clone();
-    let mut config = String::new();
-    entry.read_to_string(&mut config).unwrap();
+        .exit_code;
     docker
         .client
         .remove_container(
@@ -492,9 +556,11 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
             .any(|mount| mount.typ == Some(MountType::TMPFS))
     );
     assert_eq!(config, "port=8080");
-    assert_eq!(header.mode().unwrap(), 0o440);
-    assert_eq!(header.uid().unwrap(), 1000);
-    assert_eq!(header.gid().unwrap(), 1001);
+    assert_eq!(config_mount.read_only, Some(true));
+    assert_ne!(write_exit_code, Some(0));
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o440);
+    assert_eq!(metadata.uid(), 1000);
+    assert_eq!(metadata.gid(), 1001);
 }
 
 #[tokio::test]
@@ -558,8 +624,11 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     )
     .await;
     let spec = fixture_spec(&service_id, &service_name);
-    specs.put(&service, &spec).await.unwrap();
-    specs.put(&hook, &spec).await.unwrap();
+    {
+        let mut operation = specs.config_operation().await;
+        operation.put(&service, &spec).await.unwrap();
+        operation.put(&hook, &spec).await.unwrap();
+    }
 
     let observer = ContainerObserver::new(
         docker.clone(),
@@ -648,7 +717,12 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     })
     .await;
 
-    specs.put(&fallback, &spec).await.unwrap();
+    specs
+        .config_operation()
+        .await
+        .put(&fallback, &spec)
+        .await
+        .unwrap();
     wait_for(Duration::from_secs(5), || async {
         replicated.container(&fallback).await.unwrap().is_some()
     })

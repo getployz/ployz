@@ -309,8 +309,10 @@ fn existing_service_mode_cannot_change() {
 }
 
 #[test]
-fn incompatible_existing_volume_driver_leaves_no_eligible_machine() {
-    let mut requested = requested(ServiceMode::Global);
+fn incompatible_volume_excludes_only_its_machine() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
     add_named_volume(&mut requested, "data");
     let VolumeSource::Named { driver, .. } = &mut requested.volumes.first_mut().unwrap().source
     else {
@@ -321,35 +323,34 @@ fn incompatible_existing_volume_driver_leaves_no_eligible_machine() {
         options: Default::default(),
     });
 
-    assert_eq!(
-        plan_deploy(
-            &requested,
-            &DeploySnapshot {
-                machines: vec![machine('1', "first"), machine('2', "second")],
-                volumes: vec![
-                    ployz::deploy::ObservedDockerVolume {
-                        id: DockerVolumeId {
-                            machine_id: machine_id('1'),
-                            name: DockerVolumeName::parse("data").unwrap(),
-                        },
-                        driver: "local".into(),
-                        options: Default::default(),
-                    },
-                    ployz::deploy::ObservedDockerVolume {
-                        id: DockerVolumeId {
-                            machine_id: machine_id('2'),
-                            name: DockerVolumeName::parse("data").unwrap(),
-                        },
-                        driver: "nfs".into(),
-                        options: Default::default(),
-                    },
-                ],
-                ..Default::default()
-            },
-            service_id('a'),
-            PlanOptions::default(),
+    let plan = plan_deploy(
+        &requested,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            volumes: vec![ployz::deploy::ObservedDockerVolume {
+                id: DockerVolumeId {
+                    machine_id: machine_id('1'),
+                    name: DockerVolumeName::parse("data").unwrap(),
+                },
+                driver: "local".into(),
+                options: Default::default(),
+            }],
+            ..Default::default()
+        },
+        service_id('a'),
+        PlanOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            plan.operations(),
+            [
+                DeployOperation::CreateVolume { machine_id: volume_machine, .. },
+                DeployOperation::RunContainer { machine_id: container_machine, .. },
+            ] if volume_machine == &machine_id('2') && container_machine == &machine_id('2')
         ),
-        Err(PlanError::NoEligibleMachines)
+        "unexpected operations: {:?}",
+        plan.operations()
     );
 }
 

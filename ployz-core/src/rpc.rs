@@ -88,7 +88,6 @@ impl OpaquePayload {
                 | "list_volumes"
                 | "inspect_volume"
                 | "remove_volume"
-                | "create_service_container"
                 | "reset"
         ) {
             return Err(CodecError::UnsupportedCommand(header.command));
@@ -236,7 +235,6 @@ pub enum RpcRequestBody {
     ListVolumes(ListVolumesRequest),
     InspectVolume(InspectVolumeRequest),
     RemoveVolume(RemoveVolumeRequest),
-    CreateServiceContainer(Box<CreateServiceContainerRequest>),
     Reset(ResetRequest),
 }
 
@@ -384,16 +382,6 @@ impl RpcRequest {
         }
     }
 
-    #[must_use]
-    pub fn create_service_container(spec: ResolvedServiceSpec) -> Self {
-        Self {
-            protocol_major: PROTOCOL_MAJOR,
-            body: RpcRequestBody::CreateServiceContainer(Box::new(CreateServiceContainerRequest {
-                spec,
-            })),
-        }
-    }
-
     pub fn encode(&self) -> Result<OpaquePayload, CodecError> {
         OpaquePayload::from_json(self)
     }
@@ -420,7 +408,6 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     VolumeList => "volume_list",
     VolumeDetails => "volume_details",
     VolumeRemoved => "volume_removed",
-    ServiceContainerCreated => "service_container_created",
     ResetAccepted => "reset_accepted",
     Error => "error",
 });
@@ -499,7 +486,6 @@ pub enum RpcResponseBody {
     VolumeList(VolumeList),
     VolumeDetails(VolumeDetails),
     VolumeRemoved(VolumeRemoved),
-    ServiceContainerCreated(ServiceContainerCreated),
     ResetAccepted(ResetAccepted),
     Error(RpcError),
     Unknown { kind: String, payload: Value },
@@ -523,7 +509,6 @@ impl RpcResponseBody {
             Self::VolumeList(_) => ResponseKind::VolumeList,
             Self::VolumeDetails(_) => ResponseKind::VolumeDetails,
             Self::VolumeRemoved(_) => ResponseKind::VolumeRemoved,
-            Self::ServiceContainerCreated(_) => ResponseKind::ServiceContainerCreated,
             Self::ResetAccepted(_) => ResponseKind::ResetAccepted,
             Self::Error(_) => ResponseKind::Error,
             Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
@@ -667,17 +652,6 @@ impl RpcResponse {
     }
 
     #[must_use]
-    pub fn service_container_created(container_id: ContainerId, display_name: String) -> Self {
-        Self {
-            protocol_major: PROTOCOL_MAJOR,
-            body: RpcResponseBody::ServiceContainerCreated(ServiceContainerCreated {
-                container_id,
-                display_name,
-            }),
-        }
-    }
-
-    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
     }
@@ -808,15 +782,6 @@ impl RpcResponse {
         }
     }
 
-    pub fn decode_service_container_created(&self) -> Result<&ServiceContainerCreated, CodecError> {
-        validate_protocol_major(self.protocol_major)?;
-        if let RpcResponseBody::ServiceContainerCreated(created) = &self.body {
-            Ok(created)
-        } else {
-            Err(self.unexpected("service_container_created"))
-        }
-    }
-
     pub fn decode_reset_accepted(&self) -> Result<(), CodecError> {
         validate_protocol_major(self.protocol_major)?;
         if let RpcResponseBody::ResetAccepted(_) = &self.body {
@@ -894,9 +859,6 @@ impl Serialize for RpcResponse {
             RpcResponseBody::VolumeRemoved(removed) => {
                 serde_json::to_value(removed).map_err(serde::ser::Error::custom)?
             }
-            RpcResponseBody::ServiceContainerCreated(created) => {
-                serde_json::to_value(created).map_err(serde::ser::Error::custom)?
-            }
             RpcResponseBody::ResetAccepted(accepted) => {
                 serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
             }
@@ -961,9 +923,6 @@ impl<'de> Deserialize<'de> for RpcResponse {
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::VolumeRemoved => RpcResponseBody::VolumeRemoved(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::ServiceContainerCreated => RpcResponseBody::ServiceContainerCreated(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(

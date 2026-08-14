@@ -173,16 +173,16 @@ fn volume_constraints(
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
-    if mounted_volumes.iter().any(|volume| {
-        snapshot.volumes.iter().any(|observed| {
-            volume_has_same_name(observed, volume) && !volume_matches(observed, volume)
-        })
-    }) {
-        return Err(PlanError::NoEligibleMachines);
-    }
     let mut missing_volumes = Vec::new();
-    if matches!(requested.mode, ServiceMode::Replicated { .. }) {
-        for volume in &mounted_volumes {
+    for volume in &mounted_volumes {
+        machines.retain(|machine| {
+            !snapshot.volumes.iter().any(|observed| {
+                observed.id.machine_id == machine.machine.id
+                    && volume_has_same_name(observed, volume)
+                    && !volume_matches(observed, volume)
+            })
+        });
+        if matches!(requested.mode, ServiceMode::Replicated { .. }) {
             let locations = snapshot
                 .volumes
                 .iter()
