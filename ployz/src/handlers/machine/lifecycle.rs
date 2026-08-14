@@ -168,15 +168,15 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         crate::provisioning::provision(matches)?;
     }
 
-    let (assigned, caddy_image) = runtime()?.block_on(async {
+    let (assigned, caddy_settings) = runtime()?.block_on(async {
         let mut entry = options.connect().await?;
         let visible = machine_list(&mut entry).await?;
-        let caddy_image = if deploy_caddy {
+        let caddy_settings = if deploy_caddy {
             let live = entry
                 .live_services()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::caddy::newest_existing_image(
+            crate::caddy::newest_existing_settings(
                 &live
                     .containers
                     .successes
@@ -264,7 +264,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             .decode_join_accepted()
             .map_err(|error| error.to_string())?;
 
-        Ok::<_, Error>((assigned, caddy_image))
+        Ok::<_, Error>((assigned, caddy_settings))
     })?;
 
     connection = connection.with_machine_id(assigned.id.clone());
@@ -276,12 +276,12 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         .push(connection);
     config.save().map_err(|error| error.to_string())?;
 
-    if let Some(image) = caddy_image {
+    if let Some((image, caddy_config)) = caddy_settings {
         runtime()?.block_on(async {
             let mut entry = options.connect().await?;
             wait_machine_up(&mut entry, &assigned.id).await?;
             // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
-            let requested = crate::caddy::service_spec(image, Vec::new(), None)?;
+            let requested = crate::caddy::service_spec(image, Vec::new(), caddy_config);
             crate::handlers::workflow::deploy_requested(&mut entry, &requested).await
         })?;
     }
@@ -371,6 +371,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 RpcRequest::initialize(InitializeRequest {
                     name,
                     cluster_network,
+                    public_ip: token.public_ip,
                     advertised_endpoints: token.advertised_endpoints,
                     wireguard_mtu,
                 }),
@@ -397,7 +398,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         runtime()?.block_on(async {
             let mut ready = wait_direct_participating(&connection).await?;
             let image = crate::caddy::latest_image().await?;
-            let requested = crate::caddy::service_spec(image, Vec::new(), None)?;
+            let requested = crate::caddy::service_spec(image, Vec::new(), None);
             crate::handlers::workflow::deploy_requested(&mut ready, &requested).await
         })?;
     }

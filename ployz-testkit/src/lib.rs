@@ -340,6 +340,7 @@ impl Cluster {
                     RpcRequest::initialize(InitializeRequest {
                         name: MachineName::parse("machine-1")?,
                         cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
+                        public_ip: None,
                         advertised_endpoints: vec![self.endpoint(0)?],
                         wireguard_mtu: None,
                     })

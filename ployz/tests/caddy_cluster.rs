@@ -4,10 +4,11 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerAction, ContainerKind, Machine, MembershipObservation, RequestedServiceSpec,
-    ResolvedServiceSpec, ServiceId,
+    ContainerAction, ContainerKind, Machine, MachineSelector, MembershipObservation,
+    RequestedServiceSpec, ResolvedServiceSpec, ServiceId,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
+use semver::Version;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -34,7 +35,13 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     }
 
     let selected_image = ployz::caddy::latest_image().await.unwrap();
-    assert_exact_caddy_image(&selected_image);
+    let selected_tag = selected_image
+        .strip_prefix("caddy:")
+        .expect("Caddy image has the repository prefix");
+    let selected_version = Version::parse(selected_tag).expect("Caddy image has a semver tag");
+    assert_eq!(selected_version.major, 2);
+    assert!(selected_version.pre.is_empty() && selected_version.build.is_empty());
+    assert_eq!(selected_version.to_string(), selected_tag);
     for index in 0..machines.len() {
         cluster
             .machine_shell(index, &format!("docker tag caddy:2.10.2 {selected_image}"))
@@ -180,7 +187,10 @@ async fn assert_failed_load_retry(
     client: &mut ployz::connect::Client,
     machine: &Machine,
 ) {
-    let stable = client.get_caddy_config(Some(&machine.id)).await.unwrap();
+    let stable = client
+        .get_caddy_config(Some(MachineSelector::from(&machine.id)))
+        .await
+        .unwrap();
     let load_failure: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": ServiceId::random(),
         "name": "load-failure",
@@ -209,7 +219,10 @@ async fn assert_failed_load_retry(
     create_and_start(client, machine, tick).await;
     wait_log_count(cluster, "failed to update Caddy configuration", 2).await;
     assert_eq!(
-        client.get_caddy_config(Some(&machine.id)).await.unwrap(),
+        client
+            .get_caddy_config(Some(MachineSelector::from(&machine.id)))
+            .await
+            .unwrap(),
         stable
     );
     assert_eq!(
@@ -247,7 +260,7 @@ async fn assert_membership_blind(
     cluster.stop(2).unwrap();
     wait_down(cluster, &machines[2]).await;
     let retained = client
-        .get_caddy_config(Some(&machines[0].id))
+        .get_caddy_config(Some(MachineSelector::from(&machines[0].id)))
         .await
         .unwrap();
     assert!(retained.contains(&format!("{}:8080", retained_address.0)));
@@ -296,17 +309,6 @@ fn run_cli(direct: &str, args: &[&str]) -> process::Output {
         String::from_utf8_lossy(&output.stderr)
     );
     output
-}
-
-fn assert_exact_caddy_image(image: &str) {
-    let mut parts = image
-        .strip_prefix("caddy:")
-        .expect("Caddy image has the repository prefix")
-        .split('.');
-    assert_eq!(parts.next(), Some("2"));
-    assert!(parts.next().is_some_and(|part| part.parse::<u64>().is_ok()));
-    assert!(parts.next().is_some_and(|part| part.parse::<u64>().is_ok()));
-    assert_eq!(parts.next(), None);
 }
 
 async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: usize) -> ServiceId {
@@ -539,7 +541,10 @@ async fn wait_config(
 ) -> String {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        match client.get_caddy_config(Some(&machine.id)).await {
+        match client
+            .get_caddy_config(Some(MachineSelector::from(&machine.id)))
+            .await
+        {
             Ok(config) if expected(&config) => return config,
             Ok(config) if tokio::time::Instant::now() >= deadline => {
                 panic!("Caddyfile did not converge:\n{config}")

@@ -326,9 +326,8 @@ impl Client {
 
     pub async fn get_caddy_config(
         &mut self,
-        machine_id: Option<&MachineId>,
+        target: Option<MachineSelector>,
     ) -> Result<String, ConnectError> {
-        let target = machine_id.map(MachineSelector::from);
         self.request(RpcRequest::get_caddy_config(), target.as_ref())
             .await?
             .decode_caddy_config()

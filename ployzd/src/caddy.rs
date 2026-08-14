@@ -120,11 +120,6 @@ pub async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     prepare_directory(
-        config_file
-            .parent()
-            .ok_or_else(|| io::Error::other("Caddyfile has no parent"))?,
-    )?;
-    prepare_directory(
         admin_socket
             .parent()
             .ok_or_else(|| io::Error::other("Caddy admin socket has no parent"))?,
@@ -229,7 +224,13 @@ async fn generate_caddyfile(
     let healthy = healthy_containers(local_machine, observations);
     let eligible = eligible_containers(local_machine, observations);
     let mut skipped = Vec::new();
-    if let Some(container) = newest_service(&healthy, "caddy", Some(local_machine))
+    if let Some(container) = healthy
+        .iter()
+        .copied()
+        .filter(|container| {
+            container.service_name.as_str() == "caddy" && container.machine_id == *local_machine
+        })
+        .max_by_key(|container| creation_key(container))
         && let Some(config) = container.resolved_spec.caddy_config.as_deref()
     {
         match render_custom_config(config, &container.service_name, &eligible) {
@@ -340,21 +341,6 @@ fn creation_key(container: &ContainerObservation) -> (i64, &str) {
         container.created_at_unix_nanos,
         container.container_id.as_str(),
     )
-}
-
-fn newest_service<'a>(
-    observations: &'a [&ContainerObservation],
-    service: &str,
-    machine: Option<&MachineId>,
-) -> Option<&'a ContainerObservation> {
-    observations
-        .iter()
-        .copied()
-        .filter(|container| {
-            container.service_name.as_str() == service
-                && machine.is_none_or(|machine| container.machine_id == *machine)
-        })
-        .max_by_key(|container| creation_key(container))
 }
 
 fn render_custom_config(

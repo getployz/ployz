@@ -299,6 +299,7 @@ impl MachineRpc for MachineService {
             .initialize(
                 request.name,
                 request.cluster_network,
+                request.public_ip,
                 request.advertised_endpoints,
                 request.wireguard_mtu,
             );

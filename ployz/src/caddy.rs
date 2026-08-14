@@ -43,7 +43,9 @@ pub fn select_image(tags: &[String]) -> String {
 }
 
 #[must_use]
-pub fn newest_existing_image(observations: &[ContainerObservation]) -> Option<String> {
+pub fn newest_existing_settings(
+    observations: &[ContainerObservation],
+) -> Option<(String, Option<String>)> {
     observations
         .iter()
         .filter(|container| {
@@ -56,23 +58,26 @@ pub fn newest_existing_image(observations: &[ContainerObservation]) -> Option<St
                 container.container_id.as_str(),
             )
         })
-        .map(|container| container.resolved_spec.container.image.clone())
+        .map(|container| {
+            (
+                container.resolved_spec.container.image.clone(),
+                container.resolved_spec.caddy_config.clone(),
+            )
+        })
 }
 
+#[must_use]
 pub fn service_spec(
     image: String,
     machines: Vec<MachineSelector>,
     caddy_config: Option<String>,
-) -> Result<RequestedServiceSpec, String> {
-    let volume = ServiceVolumeReference::parse("caddy-data").map_err(|error| error.to_string())?;
-    let runtime =
-        ServiceVolumeReference::parse("caddy-runtime").map_err(|error| error.to_string())?;
-    let mount = |volume: &ServiceVolumeReference, target: &str| -> Result<ServiceMount, String> {
-        Ok(ServiceMount {
-            volume: volume.clone(),
-            target: ContainerPath::parse(target).map_err(|error| error.to_string())?,
-            read_only: false,
-        })
+) -> RequestedServiceSpec {
+    let volume = ServiceVolumeReference::parse("caddy-data").expect("static volume is valid");
+    let runtime = ServiceVolumeReference::parse("caddy-runtime").expect("static volume is valid");
+    let mount = |volume: &ServiceVolumeReference, target: &str| ServiceMount {
+        volume: volume.clone(),
+        target: ContainerPath::parse(target).expect("static mount path is valid"),
+        read_only: false,
     };
     let host_port = |port, protocol| PortPublication::Host {
         bind: HostBind::All,
@@ -80,7 +85,7 @@ pub fn service_spec(
         container_port: NonZeroU16::new(port).expect("Caddy ports are non-zero"),
         transport_protocol: protocol,
     };
-    Ok(RequestedServiceSpec {
+    RequestedServiceSpec {
         name: ServiceName::parse(SERVICE_NAME).expect("static Service Name is valid"),
         mode: ServiceMode::Global,
         container: ServiceContainerSpec {
@@ -123,8 +128,7 @@ pub fn service_spec(
             ServiceVolume {
                 reference: volume.clone(),
                 source: VolumeSource::Bind {
-                    machine_path: MachinePath::parse(DATA_PATH)
-                        .map_err(|error| error.to_string())?,
+                    machine_path: MachinePath::parse(DATA_PATH).expect("static data path is valid"),
                     create_machine_path: true,
                     propagation: None,
                     recursive: None,
@@ -134,7 +138,7 @@ pub fn service_spec(
                 reference: runtime.clone(),
                 source: VolumeSource::Bind {
                     machine_path: MachinePath::parse(RUNTIME_PATH)
-                        .map_err(|error| error.to_string())?,
+                        .expect("static runtime path is valid"),
                     create_machine_path: true,
                     propagation: None,
                     recursive: None,
@@ -142,15 +146,15 @@ pub fn service_spec(
             },
         ],
         mounts: vec![
-            mount(&volume, "/config")?,
-            mount(&volume, "/data")?,
-            mount(&runtime, "/run/caddy")?,
+            mount(&volume, "/config"),
+            mount(&volume, "/data"),
+            mount(&runtime, "/run/caddy"),
         ],
         configs: Vec::new(),
         pre_deploy: None,
         caddy_config,
         update: UpdateConfig::default(),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -176,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_add_reuses_the_newest_observed_caddy_image() {
+    fn machine_add_reuses_the_newest_observed_caddy_settings() {
         let mut older: ContainerObservation = serde_json::from_value(serde_json::json!({
             "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "display_name": "caddy-old",
@@ -198,17 +202,18 @@ mod tests {
         newer.container_id = ployz_core::ContainerId::parse("b".repeat(64)).unwrap();
         newer.created_at_unix_nanos = 2;
         newer.resolved_spec.container.image = "caddy:2.10.2".into();
+        newer.resolved_spec.caddy_config = Some("{ admin off }".into());
 
         assert_eq!(
-            newest_existing_image(&[newer, older]).as_deref(),
-            Some("caddy:2.10.2")
+            newest_existing_settings(&[newer, older]),
+            Some(("caddy:2.10.2".into(), Some("{ admin off }".into())))
         );
-        assert_eq!(newest_existing_image(&[]), None);
+        assert_eq!(newest_existing_settings(&[]), None);
     }
 
     #[test]
     fn service_spec_owns_caddy_ports_paths_and_admin_socket() {
-        let spec = service_spec("caddy:2.10.0".into(), Vec::new(), None).unwrap();
+        let spec = service_spec("caddy:2.10.0".into(), Vec::new(), None);
 
         assert_eq!(spec.mode, ServiceMode::Global);
         assert_eq!(

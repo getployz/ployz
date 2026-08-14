@@ -188,6 +188,8 @@ fn default_wireguard_port() -> u16 {
 pub struct InitializeRequest {
     pub name: MachineName,
     pub cluster_network: Ipv4Net,
+    #[serde(default)]
+    pub public_ip: Option<IpAddr>,
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
