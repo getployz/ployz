@@ -590,6 +590,18 @@ impl Cluster {
         .clone())
     }
 
+    pub async fn reset(&self, index: usize) -> Result<(), TestkitError> {
+        let mut client = self.client(index).await?;
+        response(
+            client
+                .reset(RpcRequest::reset().encode()?)
+                .await?
+                .into_inner(),
+        )?
+        .decode_reset_accepted()?;
+        Ok(())
+    }
+
     pub fn docker(&self, index: usize, args: &[&str]) -> Result<(), TestkitError> {
         let mut command = vec!["exec", self.machine(index)?.name.as_str(), "docker"];
         command.extend_from_slice(args);

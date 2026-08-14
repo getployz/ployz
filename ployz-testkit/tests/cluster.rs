@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, process, time::Duration};
 
-use ployz_core::{MembershipObservation, UNREGISTRY_PORT, WireGuardPublicKey};
+use ployz_core::{LocalMachinePhase, MembershipObservation, UNREGISTRY_PORT, WireGuardPublicKey};
 use ployz_testkit::{Cluster, ClusterPlan, join_request};
 
 #[tokio::test]
@@ -159,8 +159,18 @@ async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
 async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable() {
-    let plan = ClusterPlan::new(&format!("l3-unregistry-{}", process::id()), 2).unwrap();
+    let mut plan = ClusterPlan::new(&format!("l3-unregistry-{}", process::id()), 2).unwrap();
+    for machine in &mut plan.machines {
+        machine
+            .daemon_args
+            .extend(["--data-dir".into(), "/var/lib/ployz/data".into()]);
+    }
     let cluster = Cluster::create(plan).unwrap();
+    for index in 0..2 {
+        cluster
+            .shell(index, "ln -s data/corrosion /var/lib/ployz/corrosion")
+            .unwrap();
+    }
     let machines = cluster.initialize_two().await.unwrap();
     let gateway =
         std::net::Ipv4Addr::from(u32::from(machines.first().unwrap().subnet.0.network()) + 1);
@@ -183,6 +193,15 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
     .await
     .unwrap();
     cluster.docker(0, &["pull", "alpine:3.23.3"]).unwrap();
+    cluster
+        .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
+        .unwrap();
+    cluster
+        .shell(
+            0,
+            "ployz image push --machine machine-1 --platform linux/amd64 busybox:1.37.0",
+        )
+        .unwrap();
     cluster
         .docker(
             0,
@@ -226,6 +245,24 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
             .iter()
             .any(|image| image.repo_tags.contains(&pushed))
     );
+    cluster
+        .shell(0, "ln -s /bin/true /usr/local/bin/resolvconf")
+        .unwrap();
+    cluster.reset(0).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if cluster
+                .inspect(0, Vec::new())
+                .await
+                .is_ok_and(|details| details.phase == LocalMachinePhase::Uninitialized)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("reset did not complete:\n{}", cluster.logs(0).unwrap()));
 }
 
 #[tokio::test]

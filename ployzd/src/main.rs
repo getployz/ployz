@@ -262,9 +262,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         result = shutdown_signal() => result.err().map(|error| error.to_string()),
         changed = reset_rx.changed() => changed.err().map(|error| error.to_string()),
     };
-    shutdown.send_replace(true);
     notify(NotifyState::Stopping);
     let mut errors = trigger_error.into_iter().collect::<Vec<_>>();
+    let resetting = match store.lock() {
+        Ok(store) => store.record().phase == LocalMachinePhase::Resetting,
+        Err(_) => {
+            errors.push("local Machine record lock poisoned".into());
+            false
+        }
+    };
+    if resetting
+        && let Some(running) = &mut unregistry
+        && let Err(error) = running.cleanup().await
+    {
+        errors.push(error.to_string());
+    }
+    shutdown.send_replace(true);
     // TODO(UT-098): preserve the baseline's unbounded graceful shutdown until a timeout is explicitly chosen.
     let server_result = match completed_servers {
         Some(result) => result,
@@ -274,13 +287,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         errors.push(error.to_string());
     }
 
-    let resetting = match store.lock() {
-        Ok(store) => store.record().phase == LocalMachinePhase::Resetting,
-        Err(_) => {
-            errors.push("local Machine record lock poisoned".into());
-            false
-        }
-    };
     if let Some(running) = &mut corrosion {
         let result = if resetting {
             running.cleanup().await
@@ -291,15 +297,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             errors.push(error.to_string());
         }
     }
-    if let Some(running) = &mut unregistry {
-        let result = if resetting {
-            running.cleanup().await
-        } else {
-            running.stop().await
-        };
-        if let Err(error) = result {
-            errors.push(error.to_string());
-        }
+    if !resetting
+        && let Some(running) = &mut unregistry
+        && let Err(error) = running.stop().await
+    {
+        errors.push(error.to_string());
     }
     if resetting {
         match store.lock() {

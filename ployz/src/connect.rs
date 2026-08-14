@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
 use tonic::{
@@ -92,14 +93,18 @@ impl Connector for SystemConnector {
         network: &str,
         address: &str,
     ) -> Result<BoxProxyStream, ConnectError> {
+        if network != "tcp" {
+            return Err(ConnectError::UnsupportedNetwork(network.into()));
+        }
         match connection.transport() {
-            Transport::Tcp(_) | Transport::Unix(_) => {
-                Err(ConnectError::ProxyUnsupported(connection.to_string()))
-            }
+            Transport::Tcp(_) | Transport::Unix(_) => TcpStream::connect(address)
+                .await
+                .map(|stream| Box::new(stream) as BoxProxyStream)
+                .map_err(|error| ConnectError::Attempt(error.to_string())),
             Transport::Ssh {
                 destination,
                 key_file,
-            } if network == "tcp" => {
+            } => {
                 let mut args =
                     ssh_base_args(destination, key_file.as_deref(), control_path().as_deref());
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
@@ -107,7 +112,6 @@ impl Connector for SystemConnector {
                     .map(|stream| Box::new(stream) as BoxProxyStream)
                     .map_err(|error| ConnectError::Attempt(error.to_string()))
             }
-            Transport::Ssh { .. } => Err(ConnectError::UnsupportedNetwork(network.into())),
         }
     }
 }
@@ -593,7 +597,6 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             },
         },
         error @ (ConnectError::Attempt(_)
-        | ConnectError::ProxyUnsupported(_)
         | ConnectError::UnsupportedNetwork(_)
         | ConnectError::Config(_)
         | ConnectError::Connection(_)
@@ -601,6 +604,8 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::Path { .. }
         | ConnectError::AllFailed { .. }
         | ConnectError::Codec(_)
+        | ConnectError::Framing(_)
+        | ConnectError::Value(_)
         | ConnectError::InvalidMachineMetadata) => RpcError {
             code: RpcErrorCode::Internal,
             message: error.to_string(),
@@ -712,8 +717,6 @@ pub async fn connect(
 pub enum ConnectError {
     #[error("connection attempt failed: {0}")]
     Attempt(String),
-    #[error("proxy dialing is unsupported over {0}")]
-    ProxyUnsupported(String),
     #[error("proxy dialing does not support network {0:?}")]
     UnsupportedNetwork(String),
     #[error(transparent)]
