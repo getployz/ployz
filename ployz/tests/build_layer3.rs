@@ -63,23 +63,23 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
         ..Default::default()
     };
     let plan = plan_build(&project, &options).unwrap();
-    assert_eq!(plan.service_names(), ["service-first", "service-second"]);
     assert_eq!(
-        plan.services.get(1).unwrap().image,
+        plan.iter()
+            .map(|service| service.name.as_str())
+            .collect::<Vec<_>>(),
+        ["service-first", "service-second"]
+    );
+    assert_eq!(
+        plan.get(1).unwrap().image,
         format!("127.0.0.1:{port}/service-second:version2")
     );
     assert!(
-        plan.services
-            .first()
+        plan.first()
             .unwrap()
             .image
             .starts_with(&format!("127.0.0.1:{port}/service-first:"))
     );
-    cleanup.images = plan
-        .services
-        .iter()
-        .map(|service| service.image.clone())
-        .collect();
+    cleanup.images = plan.iter().map(|service| service.image.clone()).collect();
 
     execute_build(&plan, &options, &load).unwrap();
     for image in &cleanup.images {

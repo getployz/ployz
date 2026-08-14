@@ -109,7 +109,7 @@ pub fn resolve_machine_selectors(
             .iter()
             .filter(|machine| machine_matches_selector(machine, selector))
             .collect::<Vec<_>>();
-        if selector.as_str() != "*" && matches.len() > 1 {
+        if !matches!(selector.as_str(), "*" | "all") && matches.len() > 1 {
             return Err(MachineSelectorError::Ambiguous {
                 selector: selector.clone(),
                 matches: matches
@@ -144,7 +144,7 @@ pub enum MachineSelectorError {
     NoVisibleMachines,
     #[error("Machine selectors were not found: {0:?}")]
     NotFound(Vec<MachineSelector>),
-    #[error("Machine selector {selector:?} is ambiguous: {matches:?}")]
+    #[error("Machine selector {selector:?} is ambiguous across IDs {matches:?}")]
     Ambiguous {
         selector: MachineSelector,
         matches: Vec<MachineId>,

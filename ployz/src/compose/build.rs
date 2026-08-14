@@ -28,33 +28,16 @@ pub struct BuildService {
     pub machines: Vec<MachineSelector>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct BuildPlan {
-    pub services: Vec<BuildService>,
-}
-
-impl BuildPlan {
-    #[must_use]
-    pub fn service_names(&self) -> Vec<&str> {
-        self.services
-            .iter()
-            .map(|service| service.name.as_str())
-            .collect()
-    }
-}
-
 pub fn plan_build(
     project: &ComposeProject,
     options: &BuildOptions,
-) -> Result<BuildPlan, ComposeError> {
+) -> Result<Vec<BuildService>, ComposeError> {
     if options.services.is_empty() {
-        return Ok(BuildPlan {
-            services: project
-                .builds
-                .keys()
-                .map(|name| build_service(project, name))
-                .collect::<Result<_, _>>()?,
-        });
+        return project
+            .builds
+            .keys()
+            .map(|name| build_service(project, name))
+            .collect();
     }
 
     let mut selected = Vec::new();
@@ -70,21 +53,19 @@ pub fn plan_build(
             &mut selected,
         )?;
     }
-    Ok(BuildPlan {
-        services: selected
-            .into_iter()
-            .filter(|name| project.builds.contains_key(*name))
-            .map(|name| build_service(project, name))
-            .collect::<Result<_, _>>()?,
-    })
+    selected
+        .into_iter()
+        .filter(|name| project.builds.contains_key(*name))
+        .map(|name| build_service(project, name))
+        .collect()
 }
 
 pub fn execute_build(
-    plan: &BuildPlan,
+    plan: &[BuildService],
     options: &BuildOptions,
     load: &LoadOptions,
 ) -> Result<(), ComposeError> {
-    if plan.services.is_empty() {
+    if plan.is_empty() {
         return Ok(());
     }
     let override_file = TemporaryComposeFile::new(&build_override(plan)?)?;
@@ -107,18 +88,15 @@ pub fn execute_build(
             command.arg(flag);
         }
     }
-    command.args(plan.service_names());
-    let output = command
-        .output()
+    command.args(plan.iter().map(|service| service.name.as_str()));
+    let status = command
+        .status()
         .map_err(|error| ComposeError::Io(format!("run Docker Compose build: {error}")))?;
-    print!("{}", String::from_utf8_lossy(&output.stdout));
-    eprint!("{}", String::from_utf8_lossy(&output.stderr));
-    if output.status.success() {
+    if status.success() {
         Ok(())
     } else {
         Err(ComposeError::Compose(format!(
-            "Docker Compose build exited with {}",
-            output.status
+            "Docker Compose build exited with {status}"
         )))
     }
 }
@@ -134,9 +112,8 @@ struct BuildOverride<'a> {
     services: std::collections::BTreeMap<&'a str, BuildServiceOverride<'a>>,
 }
 
-fn build_override(plan: &BuildPlan) -> Result<String, ComposeError> {
+fn build_override(plan: &[BuildService]) -> Result<String, ComposeError> {
     let services = plan
-        .services
         .iter()
         .map(|service| {
             (

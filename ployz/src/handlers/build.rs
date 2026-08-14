@@ -29,7 +29,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         eprintln!("WARNING: {warning}");
     }
     let plan = plan_build(&project, &options).map_err(|error| error.to_string())?;
-    if plan.services.is_empty() {
+    if plan.is_empty() {
         println!("No buildable services selected.");
         return Ok(());
     }
@@ -47,7 +47,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let failures = runtime.block_on(async {
         let mut client = image::connect_client(matches, context).await?;
         let mut failures = Vec::new();
-        for service in &plan.services {
+        for service in &plan {
             let targets = push_targets(&explicit, &service.machines);
             match crate::image::push(&mut client, &service.image, None, &targets).await {
                 Ok(result) => {

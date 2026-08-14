@@ -249,45 +249,69 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::pin!(servers);
 
     notify(NotifyState::Ready);
-    tokio::select! {
-        result = &mut servers => result?,
-        result = shutdown_signal() => result?,
-        changed = reset_rx.changed() => {
-            changed?;
-        }
-    }
+    let mut completed_servers = None;
+    let trigger_error = tokio::select! {
+        result = &mut servers => {
+            completed_servers = Some(result);
+            None
+        },
+        result = shutdown_signal() => result.err().map(|error| error.to_string()),
+        changed = reset_rx.changed() => changed.err().map(|error| error.to_string()),
+    };
     shutdown.send_replace(true);
     notify(NotifyState::Stopping);
+    let mut errors = trigger_error.into_iter().collect::<Vec<_>>();
     // TODO(UT-098): preserve the baseline's unbounded graceful shutdown until a timeout is explicitly chosen.
-    servers.await?;
+    let server_result = match completed_servers {
+        Some(result) => result,
+        None => servers.await,
+    };
+    if let Err(error) = server_result {
+        errors.push(error.to_string());
+    }
 
-    let resetting = store
-        .lock()
-        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
-        .record()
-        .phase
-        == LocalMachinePhase::Resetting;
+    let resetting = match store.lock() {
+        Ok(store) => store.record().phase == LocalMachinePhase::Resetting,
+        Err(_) => {
+            errors.push("local Machine record lock poisoned".into());
+            false
+        }
+    };
     if let Some(running) = &mut corrosion {
-        if resetting {
-            running.cleanup().await?;
+        let result = if resetting {
+            running.cleanup().await
         } else {
-            running.stop().await?;
+            running.stop().await
+        };
+        if let Err(error) = result {
+            errors.push(error.to_string());
         }
     }
     if let Some(running) = &mut unregistry {
-        if resetting {
-            running.cleanup().await?;
+        let result = if resetting {
+            running.cleanup().await
         } else {
-            running.stop().await?;
+            running.stop().await
+        };
+        if let Err(error) = result {
+            errors.push(error.to_string());
         }
     }
     if resetting {
-        let store = store
-            .lock()
-            .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-        store.complete_reset()?;
+        match store.lock() {
+            Ok(store) => {
+                if let Err(error) = store.complete_reset() {
+                    errors.push(error.to_string());
+                }
+            }
+            Err(_) => errors.push("local Machine record lock poisoned".into()),
+        }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::other(errors.join("; ")).into())
+    }
 }
 
 async fn serve_machine_api(

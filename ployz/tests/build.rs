@@ -38,13 +38,16 @@ services:
         },
     )
     .unwrap();
-    assert_eq!(direct.service_names(), ["api", "base"]);
     assert_eq!(
-        direct.services.first().unwrap().image,
-        "example.test/api:version2"
+        direct
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<Vec<_>>(),
+        ["api", "base"]
     );
+    assert_eq!(direct.first().unwrap().image, "example.test/api:version2");
     assert_eq!(
-        direct.services.get(1).unwrap().image,
+        direct.get(1).unwrap().image,
         project.services.get("base").unwrap().container.image
     );
 
@@ -58,11 +61,14 @@ services:
     )
     .unwrap();
     assert_eq!(
-        with_deps.service_names(),
+        with_deps
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<Vec<_>>(),
         ["api", "base", "database", "frontend"]
     );
     assert_eq!(
-        with_deps.services.get(3).unwrap().image,
+        with_deps.get(3).unwrap().image,
         "example.test/frontend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
 
@@ -74,7 +80,7 @@ services:
         },
     )
     .unwrap();
-    assert!(none.services.is_empty());
+    assert!(none.is_empty());
 
     let cycle = parse_normalized(
         "name: cycle\nservices:\n  a: {build: {context: ., additional_contexts: {b: service:b}}}\n  b: {build: {context: ., additional_contexts: {a: service:a}}}\n",
