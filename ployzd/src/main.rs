@@ -141,7 +141,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let observer = replicated_store.clone().and_then(|replicated| {
         docker.clone().map(|docker| {
-            ContainerObserver::new(docker, specs.clone(), replicated, local_record.id.clone())
+            ContainerObserver::new(
+                docker,
+                specs.clone(),
+                replicated,
+                Arc::clone(&store),
+                local_record.id.clone(),
+            )
         })
     });
     let (shutdown, shutdown_rx) = watch::channel(false);

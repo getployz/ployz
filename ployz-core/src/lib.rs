@@ -3,6 +3,7 @@
 pub mod domain;
 pub mod framing;
 pub mod rpc;
+mod rpc_catalog;
 pub mod service;
 pub mod stream;
 pub mod value;

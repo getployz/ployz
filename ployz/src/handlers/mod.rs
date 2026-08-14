@@ -13,6 +13,7 @@ mod build;
 mod caddy;
 mod context;
 mod image;
+mod machine;
 mod operator;
 mod service;
 mod volume;
@@ -235,7 +236,7 @@ stub_handlers! {
         operator::service_logs(root)
     } => "logs";
     list(root) { service::list(root) } => "ls";
-    machine_add(root) { provision_then_continue(leaf_matches(root), "machine add") } => "machine add";
+    machine_add(root) { machine::add(root) } => "machine add";
     machine_init(root) {
         let matches = leaf_matches(root);
         if matches.get_one::<String>("destination").is_none() {
@@ -245,11 +246,11 @@ stub_handlers! {
         }
     } => "machine init";
     machine_logs(root) { operator::machine_logs(root) } => "machine logs";
-    machine_list => "machine ls";
-    machine_rename => "machine rename";
-    machine_remove => "machine rm";
-    machine_rtt => "machine rtt";
-    machine_update => "machine update";
+    machine_list(root) { machine::list(root) } => "machine ls";
+    machine_rename(root) { machine::rename(root) } => "machine rename";
+    machine_remove(root) { machine::remove(root) } => "machine rm";
+    machine_rtt(root) { machine::rtt(root) } => "machine rtt";
+    machine_update(root) { machine::update(root) } => "machine update";
     proxy(root) { operator::proxy(root) } => "proxy";
     process_list(root) { service::processes(root) } => "ps";
     remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "rm";
@@ -279,7 +280,7 @@ stub_handlers! {
     volume_inspect(root) { volume::inspect(root) } => "volume inspect";
     volume_list(root) { volume::list(root) } => "volume ls";
     volume_remove(root) { volume::remove(root) } => "volume rm";
-    wireguard_show => "wg show";
+    wireguard_show(root) { machine::wireguard_show(root) } => "wg show";
 }
 
 #[cfg(test)]

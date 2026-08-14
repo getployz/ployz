@@ -38,13 +38,13 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
     let resolved = resolve_route(
         RoutingRequest::Many(vec![
             selector("local"),
-            selector(second.id.as_str()),
+            selector(first.id.as_str()),
             selector("local"),
         ]),
         &visible,
     )
     .unwrap();
-    assert_eq!(resolved, ProxyRoute::Many(vec![local, second.clone()]));
+    assert_eq!(resolved, ProxyRoute::Many(vec![local, first.clone()]));
 
     assert_eq!(
         resolve_route(RoutingRequest::Many(vec![selector("*")]), &visible).unwrap(),
@@ -65,17 +65,29 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
             matches: vec![first.id.clone(), second.id.clone()],
         })
     );
-    assert_eq!(
-        resolve_route(RoutingRequest::One(selector(first.id.as_str())), &visible),
-        Err(TargetResolutionError::Ambiguous {
-            selector: selector(first.id.as_str()),
-            matches: vec![first.id.clone(), collision.id],
-        })
-    );
+
+    let ProxyRoute::One(shared_namespace) =
+        resolve_route(RoutingRequest::One(selector(first.id.as_str())), &visible).unwrap()
+    else {
+        panic!("expected the exact Machine ID")
+    };
+    assert_eq!(*shared_namespace, first);
 
     assert_eq!(
         resolve_route(RoutingRequest::One(selector("missing")), &visible),
         Err(TargetResolutionError::NotFound(vec![selector("missing")]))
+    );
+    assert_eq!(
+        resolve_route(RoutingRequest::One(selector("*")), &visible),
+        Err(TargetResolutionError::NotFound(vec![selector("*")]))
+    );
+
+    let star = machine('5', "*", 5);
+    let mut visible_with_star = visible;
+    visible_with_star.push(star.clone());
+    assert_eq!(
+        resolve_route(RoutingRequest::One(selector("*")), &visible_with_star),
+        Ok(ProxyRoute::One(Box::new(star)))
     );
 }
 
@@ -249,6 +261,8 @@ fn machine(id: char, name: &str, subnet: u8) -> Machine {
             0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, subnet,
         ])),
         public_key: WireGuardPublicKey([subnet; 32]),
+        public_ip: None,
         advertised_endpoints: Vec::new(),
+        runtime: Default::default(),
     }
 }

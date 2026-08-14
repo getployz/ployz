@@ -5,6 +5,7 @@ use std::{
     net::TcpListener,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
+    sync::{Arc, Mutex},
 };
 
 use bollard::{
@@ -19,7 +20,8 @@ use bollard::{
 };
 use futures_util::TryStreamExt;
 use ployz_core::{
-    CreateVolumeRequest, DockerVolumeId, MachineGateway, PullPolicy, ResolvedServiceSpec,
+    AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, MachineGateway, MachineName,
+    PullPolicy, ResolvedServiceSpec,
 };
 
 use super::*;
@@ -617,7 +619,17 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         .await
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
-    let machine_id = MachineId::random();
+    let mut local = crate::machine::LocalMachineStore::open(root.0.join("machine")).unwrap();
+    let machine_id = local
+        .initialize(
+            MachineName::parse("observer").unwrap(),
+            "10.210.0.0/16".parse().unwrap(),
+            vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
+            None,
+        )
+        .unwrap()
+        .id;
+    let local = Arc::new(Mutex::new(local));
     let foreign_machine_id = MachineId::random();
     let service_id = ServiceId::parse("a".repeat(32)).unwrap();
     let service_name = ServiceName::parse("api").unwrap();
@@ -669,6 +681,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         docker.clone(),
         specs.clone(),
         replicated.clone(),
+        Arc::clone(&local),
         machine_id.clone(),
     )
     .with_rescan_interval(Duration::from_secs(3));
@@ -806,7 +819,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     fs::write(&invalid_socket, []).unwrap();
     let failed_docker = LocalDocker::connect_socket(invalid_socket.to_str().unwrap()).unwrap();
     let failed_observer =
-        ContainerObserver::new(failed_docker, specs, replicated.clone(), machine_id);
+        ContainerObserver::new(failed_docker, specs, replicated.clone(), local, machine_id);
     assert!(failed_observer.sync_once().await.is_err());
     assert_eq!(
         replicated.raw_container(&service).await.unwrap(),

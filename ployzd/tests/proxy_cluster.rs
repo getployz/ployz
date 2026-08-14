@@ -106,31 +106,33 @@ async fn replicated_entry_routes_and_returns_partial_fanout() {
         opaque
     );
 
-    for ambiguous in ["duplicate", remote.id.as_str()] {
-        let response = Service::<http::Request<Body>>::call(
-            &mut entry,
-            request("machine", ambiguous, opaque.clone()),
-        )
-        .await
-        .unwrap();
-        let responder = response
+    let response = Service::<http::Request<Body>>::call(
+        &mut entry,
+        request("machine", "duplicate", opaque.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.headers().get("grpc-status").unwrap(), "3");
+
+    let response = Service::<http::Request<Body>>::call(
+        &mut entry,
+        request("machine", remote.id.as_str(), opaque.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        response
             .headers()
             .get("test-machine-id")
             .unwrap()
             .to_str()
-            .unwrap()
-            .to_owned();
-        assert_eq!(
-            response.into_body().collect().await.unwrap().to_bytes(),
-            opaque
-        );
-        let allowed = if ambiguous == "duplicate" {
-            [&duplicate_a.id, &duplicate_b.id]
-        } else {
-            [&remote.id, &id_collision.id]
-        };
-        assert!(allowed.iter().any(|id| id.as_str() == responder));
-    }
+            .unwrap(),
+        remote.id.as_str()
+    );
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        opaque
+    );
 
     let mut fanout = request("machines", local.name.as_str(), opaque.clone());
     fanout
@@ -267,7 +269,9 @@ fn machine(id: char, name: &str, address: &str) -> Machine {
         ),
         management_address: ManagementAddress(address.parse().unwrap()),
         public_key: WireGuardPublicKey([id as u8; 32]),
+        public_ip: None,
         advertised_endpoints: Vec::new(),
+        runtime: Default::default(),
     }
 }
 

@@ -4,6 +4,7 @@ use std::{
     str::FromStr,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -173,6 +174,7 @@ validated_string_newtype!(
     "a non-empty string",
     |value| !value.is_empty()
 );
+
 validated_string_newtype!(
     ServiceVolumeReference,
     "Service Volume Reference",
@@ -198,6 +200,12 @@ validated_string_newtype!(
     "a non-empty Machine Name or Machine ID",
     |value| !value.is_empty()
 );
+
+impl From<&MachineId> for MachineSelector {
+    fn from(value: &MachineId) -> Self {
+        Self(value.to_string())
+    }
+}
 
 /// A machine-local Docker Volume identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -228,7 +236,7 @@ validated_string_newtype!(
 #[serde(transparent)]
 pub struct MachineSubnet(pub Ipv4Net);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ManagementAddress(pub Ipv6Addr);
 
@@ -251,6 +259,12 @@ pub struct SelectedEndpoint(pub SocketAddr);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct WireGuardPublicKey(pub [u8; 32]);
+
+impl fmt::Display for WireGuardPublicKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&STANDARD.encode(self.0))
+    }
+}
 
 validated_string_newtype!(
     /// An open wire capability name using a stable namespace.

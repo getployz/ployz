@@ -1,33 +1,20 @@
+include!("src/rpc_catalog.rs");
+
 fn main() {
-    let describe_contract = tonic_build::manual::Method::builder()
-        .name("describe_contract")
-        .route_name("DescribeContract")
-        .input_type("crate::rpc::OpaquePayload")
-        .output_type("crate::rpc::OpaquePayload")
-        .codec_path("tonic::codec::ProstCodec")
-        .build();
-    let reset = tonic_build::manual::Method::builder()
-        .name("reset")
-        .route_name("Reset")
-        .input_type("crate::rpc::OpaquePayload")
-        .output_type("crate::rpc::OpaquePayload")
-        .codec_path("tonic::codec::ProstCodec")
-        .build();
-    let inspect = method("inspect", "Inspect");
-    let initialize = method("initialize", "Initialize");
-    let register = method("register", "Register");
-    let join = method("join", "Join");
-    let list_machines = method("list_machines", "ListMachines");
-    let list_containers = method("list_containers", "ListContainers");
-    let inspect_container = method("inspect_container", "InspectContainer");
-    let create_container = method("create_container", "CreateContainer");
-    let start_container = method("start_container", "StartContainer");
-    let stop_container = method("stop_container", "StopContainer");
-    let remove_container = method("remove_container", "RemoveContainer");
-    let create_volume = method("create_volume", "CreateVolume");
-    let list_volumes = method("list_volumes", "ListVolumes");
-    let inspect_volume = method("inspect_volume", "InspectVolume");
-    let remove_volume = method("remove_volume", "RemoveVolume");
+    macro_rules! build_service {
+        (
+            unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal),)+ }
+            server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
+        ) => {{
+            let mut service = tonic_build::manual::Service::builder()
+                .name("MachineRpc")
+                .package("ployz.rpc.v1")
+                .comment("Machine control RPCs with schema-blind protobuf envelopes.");
+            $(service = service.method(method(stringify!($unary_name), $unary_route));)+
+            $(service = service.method(streaming_method(stringify!($stream_name), $stream_route));)+
+            service
+        }};
+    }
     let exec = tonic_build::manual::Method::builder()
         .name("exec")
         .route_name("Exec")
@@ -37,37 +24,7 @@ fn main() {
         .client_streaming()
         .server_streaming()
         .build();
-    let container_logs = streaming_method("container_logs", "ContainerLogs");
-    let machine_logs = streaming_method("machine_logs", "MachineLogs");
-    let list_images = method("list_images", "ListImages");
-    let get_caddy_config = method("get_caddy_config", "GetCaddyConfig");
-    let machine_rpc = tonic_build::manual::Service::builder()
-        .name("MachineRpc")
-        .package("ployz.rpc.v1")
-        .comment("Machine control RPCs with schema-blind protobuf envelopes.")
-        .method(describe_contract)
-        .method(inspect)
-        .method(initialize)
-        .method(register)
-        .method(join)
-        .method(list_machines)
-        .method(list_containers)
-        .method(inspect_container)
-        .method(create_container)
-        .method(start_container)
-        .method(stop_container)
-        .method(remove_container)
-        .method(create_volume)
-        .method(list_volumes)
-        .method(inspect_volume)
-        .method(remove_volume)
-        .method(exec)
-        .method(container_logs)
-        .method(machine_logs)
-        .method(list_images)
-        .method(get_caddy_config)
-        .method(reset)
-        .build();
+    let machine_rpc = rpc_catalog!(build_service).method(exec).build();
     tonic_build::manual::Builder::new().compile(&[machine_rpc]);
 }
 

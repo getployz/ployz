@@ -17,7 +17,10 @@ use defguard_wireguard_rs::{
     net::IpAddrMask,
 };
 use ipnet::IpNet;
-use ployz_core::{LocalMachinePhase, Machine, MachineId, SelectedEndpoint};
+use ployz_core::{
+    LocalMachinePhase, Machine, MachineId, SelectedEndpoint, WireGuardDevice, WireGuardPeer,
+    WireGuardPublicKey,
+};
 use tokio::sync::watch;
 
 use super::{
@@ -32,6 +35,48 @@ use crate::{
 };
 
 const NETWORK_MTU: u32 = 1420;
+
+pub fn inspect_wireguard_device() -> Result<WireGuardDevice, NetworkError> {
+    let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
+    let host = wireguard.read_interface_data()?;
+    let public_key = host
+        .private_key
+        .as_ref()
+        .map(|key| WireGuardPublicKey(key.public_key().as_array()))
+        .ok_or(NetworkError::MissingPrivateKey)?;
+    let peers = host
+        .peers
+        .into_values()
+        .map(|peer| {
+            let allowed_ips = peer
+                .allowed_ips
+                .into_iter()
+                .map(|address| IpNet::new(address.ip, address.cidr))
+                .collect::<Result<_, _>>()
+                .map_err(|error| NetworkError::Io(io::Error::other(error)))?;
+            Ok(WireGuardPeer {
+                public_key: WireGuardPublicKey(peer.public_key.as_array()),
+                endpoint: peer.endpoint,
+                last_handshake_unix_seconds: peer.last_handshake.and_then(|time| {
+                    time.duration_since(SystemTime::UNIX_EPOCH)
+                        .ok()
+                        .map(|duration| duration.as_secs())
+                }),
+                received_bytes: peer.rx_bytes,
+                sent_bytes: peer.tx_bytes,
+                allowed_ips,
+                machine: None,
+                rtt: None,
+            })
+        })
+        .collect::<Result<Vec<_>, NetworkError>>()?;
+    Ok(WireGuardDevice {
+        interface_name: WIREGUARD_INTERFACE_NAME.into(),
+        public_key,
+        listen_port: host.listen_port,
+        peers,
+    })
+}
 
 pub struct NetworkPlane {
     machine: Machine,

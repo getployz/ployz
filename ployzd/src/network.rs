@@ -17,10 +17,10 @@ mod endpoints;
 mod firewall;
 mod linux;
 
-pub use endpoints::discover_endpoints;
 pub(crate) use endpoints::interface_addresses;
+pub use endpoints::{DiscoveredNetwork, discover_network};
 pub use firewall::apply_firewall_rules;
-pub use linux::NetworkPlane;
+pub use linux::{NetworkPlane, inspect_wireguard_device};
 
 pub const DOCKER_NETWORK_NAME: &str = "ployz";
 pub const WIREGUARD_INTERFACE_NAME: &str = "ployz-wg";

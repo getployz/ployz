@@ -797,7 +797,9 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
             subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
             management_address: ManagementAddress("fdcc::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
+            public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
+            runtime: Default::default(),
         };
         let admin = FakeAdmin {
             fail_load: true,

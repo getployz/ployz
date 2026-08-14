@@ -12,7 +12,8 @@ use thiserror::Error;
 use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
     DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineLogService,
-    MachineName, MachineObservation, ResolvedServiceSpec, WireGuardPublicKey,
+    MachineName, MachineObservation, MachineRuntime, MachineToken, MachineUpdate,
+    PublicIpDiscovery, ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -24,6 +25,7 @@ pub const PROTOCOL_MAJOR: u32 = 1;
 pub const DESCRIBE_CONTRACT_CAPABILITY: &str = "ployz.rpc.describe-contract.v1";
 pub const RESET_MACHINE_CAPABILITY: &str = "ployz.machine.reset.v1";
 pub const INSPECT_MACHINE_CAPABILITY: &str = "ployz.machine.inspect.v1";
+pub const MACHINE_TOKEN_CAPABILITY: &str = "ployz.machine.token.v1";
 pub const INITIALIZE_MACHINE_CAPABILITY: &str = "ployz.machine.initialize.v1";
 pub const REGISTER_MACHINE_CAPABILITY: &str = "ployz.machine.register.v1";
 pub const JOIN_MACHINE_CAPABILITY: &str = "ployz.machine.join.v1";
@@ -37,6 +39,10 @@ pub const REMOVE_CONTAINER_CAPABILITY: &str = "ployz.container.remove.v1";
 pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
 pub const CONTAINER_LOGS_CAPABILITY: &str = "ployz.container.logs.v1";
 pub const MACHINE_LOGS_CAPABILITY: &str = "ployz.machine.logs.v1";
+pub const UPDATE_MACHINE_CAPABILITY: &str = "ployz.machine.update.v1";
+pub const REMOVE_LOCAL_MACHINE_CAPABILITY: &str = "ployz.machine.remove-local.v1";
+pub const REMOVE_MACHINE_CAPABILITY: &str = "ployz.machine.remove.v1";
+pub const INSPECT_WIREGUARD_CAPABILITY: &str = "ployz.wireguard.inspect.v1";
 pub const LIST_IMAGES_CAPABILITY: &str = "ployz.image.list.v1";
 pub const GET_CADDY_CONFIG_CAPABILITY: &str = "ployz.caddy.config.v1";
 pub const UNREGISTRY_PORT: u16 = 51500;
@@ -82,30 +88,7 @@ impl OpaquePayload {
     pub fn decode_request(&self) -> Result<RpcRequest, CodecError> {
         let header: RequestHeader = self.decode_json()?;
         validate_protocol_major(header.protocol_major)?;
-        if !matches!(
-            header.command.as_str(),
-            "describe_contract"
-                | "inspect"
-                | "initialize"
-                | "register"
-                | "join"
-                | "list_machines"
-                | "list_containers"
-                | "inspect_container"
-                | "create_container"
-                | "start_container"
-                | "stop_container"
-                | "remove_container"
-                | "create_volume"
-                | "list_volumes"
-                | "inspect_volume"
-                | "remove_volume"
-                | "container_logs"
-                | "machine_logs"
-                | "list_images"
-                | "get_caddy_config"
-                | "reset"
-        ) {
+        if !RPC_COMMANDS.contains(&header.command.as_str()) {
             return Err(CodecError::UnsupportedCommand(header.command));
         }
         self.decode_json()
@@ -154,7 +137,7 @@ pub struct DescribeContractRequest {}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResetRequest {}
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InspectRequest {
     #[serde(default)]
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
@@ -162,6 +145,39 @@ pub struct InspectRequest {
     pub public_ip_override: Option<IpAddr>,
     #[serde(default = "default_wireguard_port")]
     pub wireguard_port: u16,
+    #[serde(default)]
+    pub include_rtts: bool,
+}
+
+impl Default for InspectRequest {
+    fn default() -> Self {
+        Self {
+            advertised_endpoints: Vec::new(),
+            public_ip_override: None,
+            wireguard_port: default_wireguard_port(),
+            include_rtts: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineTokenRequest {
+    #[serde(default)]
+    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
+    #[serde(default)]
+    pub public_ip: PublicIpDiscovery,
+    #[serde(default = "default_wireguard_port")]
+    pub wireguard_port: u16,
+}
+
+impl Default for MachineTokenRequest {
+    fn default() -> Self {
+        Self {
+            advertised_endpoints: Vec::new(),
+            public_ip: PublicIpDiscovery::Auto,
+            wireguard_port: default_wireguard_port(),
+        }
+    }
 }
 
 fn default_wireguard_port() -> u16 {
@@ -181,7 +197,11 @@ pub struct InitializeRequest {
 pub struct RegisterRequest {
     pub name: MachineName,
     pub public_key: WireGuardPublicKey,
+    #[serde(default)]
+    pub public_ip: Option<IpAddr>,
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
+    #[serde(default)]
+    pub runtime: MachineRuntime,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -264,30 +284,42 @@ pub struct GetCaddyConfigRequest {}
 
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "command", content = "payload")]
-pub enum RpcRequestBody {
-    DescribeContract(DescribeContractRequest),
-    Inspect(InspectRequest),
-    Initialize(InitializeRequest),
-    Register(RegisterRequest),
-    Join(JoinRequest),
-    ListMachines(ListMachinesRequest),
-    ListContainers(ListContainersRequest),
-    InspectContainer(InspectContainerRequest),
-    CreateContainer(Box<CreateContainerRequest>),
-    StartContainer(StartContainerRequest),
-    StopContainer(StopContainerRequest),
-    RemoveContainer(RemoveContainerRequest),
-    CreateVolume(CreateVolumeRequest),
-    ListVolumes(ListVolumesRequest),
-    InspectVolume(InspectVolumeRequest),
-    RemoveVolume(RemoveVolumeRequest),
-    ContainerLogs(ContainerLogsRequest),
-    MachineLogs(MachineLogsRequest),
-    ListImages(ListImagesRequest),
-    GetCaddyConfig(GetCaddyConfigRequest),
-    Reset(ResetRequest),
+pub struct UpdateMachineRequest {
+    pub update: MachineUpdate,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoveLocalMachineRequest {
+    #[serde(default)]
+    pub restart_on_cleanup_failure: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoveMachineRequest {
+    pub machine_id: MachineId,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InspectWireGuardRequest {}
+
+macro_rules! define_request_body {
+    (
+        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
+    ) => {
+        /// Commands are closed and own their typed payloads.
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
+        pub enum RpcRequestBody {
+            $($unary_variant($unary_request),)+
+            $($stream_variant($stream_request),)+
+        }
+
+        const RPC_COMMANDS: &[&str] = &[$($unary_command,)+ $($stream_command,)+];
+    };
+}
+
+crate::rpc_catalog!(define_request_body);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RpcRequest {
@@ -318,6 +350,14 @@ impl RpcRequest {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcRequestBody::Inspect(request),
+        }
+    }
+
+    #[must_use]
+    pub fn machine_token(request: MachineTokenRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::MachineToken(request),
         }
     }
 
@@ -370,6 +410,14 @@ impl RpcRequest {
     }
 
     #[must_use]
+    pub fn update_machine(update: MachineUpdate) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::UpdateMachine(UpdateMachineRequest { update }),
+        }
+    }
+
+    #[must_use]
     pub fn inspect_container(request: InspectContainerRequest) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -382,6 +430,14 @@ impl RpcRequest {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcRequestBody::ListVolumes(ListVolumesRequest {}),
+        }
+    }
+
+    #[must_use]
+    pub fn remove_local_machine(request: RemoveLocalMachineRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::RemoveLocalMachine(request),
         }
     }
 
@@ -402,18 +458,18 @@ impl RpcRequest {
     }
 
     #[must_use]
-    pub fn start_container(request: StartContainerRequest) -> Self {
+    pub fn remove_machine(request: RemoveMachineRequest) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
-            body: RpcRequestBody::StartContainer(request),
+            body: RpcRequestBody::RemoveMachine(request),
         }
     }
 
     #[must_use]
-    pub fn remove_volume(name: DockerVolumeName, force: bool) -> Self {
+    pub fn start_container(request: StartContainerRequest) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
-            body: RpcRequestBody::RemoveVolume(RemoveVolumeRequest { name, force }),
+            body: RpcRequestBody::StartContainer(request),
         }
     }
 
@@ -442,6 +498,14 @@ impl RpcRequest {
     }
 
     #[must_use]
+    pub fn remove_volume(name: DockerVolumeName, force: bool) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::RemoveVolume(RemoveVolumeRequest { name, force }),
+        }
+    }
+
+    #[must_use]
     pub fn machine_logs(request: MachineLogsRequest) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -465,6 +529,14 @@ impl RpcRequest {
         }
     }
 
+    #[must_use]
+    pub fn inspect_wireguard() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::InspectWireguard(InspectWireGuardRequest {}),
+        }
+    }
+
     pub fn encode(&self) -> Result<OpaquePayload, CodecError> {
         OpaquePayload::from_json(self)
     }
@@ -479,6 +551,7 @@ struct RequestHeader {
 crate::value::open_string_enum!(ResponseKind, Unknown {
     ContractDescription => "contract_description",
     MachineDetails => "machine_details",
+    MachineToken => "machine_token",
     Initialized => "initialized",
     Registered => "registered",
     JoinAccepted => "join_accepted",
@@ -493,6 +566,10 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     VolumeRemoved => "volume_removed",
     MachineImages => "machine_images",
     CaddyConfig => "caddy_config",
+    MachineUpdated => "machine_updated",
+    LocalMachineRemoved => "local_machine_removed",
+    MachineRemoved => "machine_removed",
+    WireGuardInspected => "wireguard_inspected",
     ResetAccepted => "reset_accepted",
     Error => "error",
 });
@@ -511,6 +588,8 @@ pub struct MachineDetails {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub store_version: BTreeMap<String, i64>,
+    #[serde(default)]
+    pub rtts: Vec<RttObservation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -575,55 +654,84 @@ pub struct CaddyConfig {
     pub caddyfile: String,
 }
 
-/// Known responses own typed payloads; future responses retain their raw value.
-#[derive(Clone, Debug, PartialEq)]
-pub enum RpcResponseBody {
-    ContractDescription(ContractDescription),
-    MachineDetails(MachineDetails),
-    Initialized(Initialized),
-    Registered(Registered),
-    JoinAccepted(JoinAccepted),
-    MachineList(MachineList),
-    ContainerList(ContainerList),
-    ContainerDetails(Box<ContainerDetails>),
-    ContainerCreated(ContainerCreated),
-    ContainerChanged(ContainerChanged),
-    VolumeCreated(VolumeCreated),
-    VolumeList(VolumeList),
-    VolumeDetails(VolumeDetails),
-    VolumeRemoved(VolumeRemoved),
-    MachineImages(MachineImages),
-    CaddyConfig(CaddyConfig),
-    ResetAccepted(ResetAccepted),
-    Error(RpcError),
-    Unknown { kind: String, payload: Value },
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineUpdated {
+    pub machine: Machine,
 }
 
-impl RpcResponseBody {
-    #[must_use]
-    pub fn kind(&self) -> ResponseKind {
-        match self {
-            Self::ContractDescription(_) => ResponseKind::ContractDescription,
-            Self::MachineDetails(_) => ResponseKind::MachineDetails,
-            Self::Initialized(_) => ResponseKind::Initialized,
-            Self::Registered(_) => ResponseKind::Registered,
-            Self::JoinAccepted(_) => ResponseKind::JoinAccepted,
-            Self::MachineList(_) => ResponseKind::MachineList,
-            Self::ContainerList(_) => ResponseKind::ContainerList,
-            Self::ContainerDetails(_) => ResponseKind::ContainerDetails,
-            Self::ContainerCreated(_) => ResponseKind::ContainerCreated,
-            Self::ContainerChanged(_) => ResponseKind::ContainerChanged,
-            Self::VolumeCreated(_) => ResponseKind::VolumeCreated,
-            Self::VolumeList(_) => ResponseKind::VolumeList,
-            Self::VolumeDetails(_) => ResponseKind::VolumeDetails,
-            Self::VolumeRemoved(_) => ResponseKind::VolumeRemoved,
-            Self::MachineImages(_) => ResponseKind::MachineImages,
-            Self::CaddyConfig(_) => ResponseKind::CaddyConfig,
-            Self::ResetAccepted(_) => ResponseKind::ResetAccepted,
-            Self::Error(_) => ResponseKind::Error,
-            Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalMachineRemoved {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_warning: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineRemoved {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WireGuardInspected {
+    pub device: WireGuardDevice,
+}
+
+macro_rules! define_response_body {
+    ($($variant:ident($payload:ty) => $kind:ident,)+) => {
+        /// Known responses own typed payloads; future responses retain their raw value.
+        #[derive(Clone, Debug, PartialEq)]
+        pub enum RpcResponseBody {
+            $($variant($payload),)+
+            Unknown { kind: String, payload: Value },
         }
-    }
+
+        impl RpcResponseBody {
+            #[must_use]
+            pub fn kind(&self) -> ResponseKind {
+                match self {
+                    $(Self::$variant(_) => ResponseKind::$kind,)+
+                    Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
+                }
+            }
+
+            fn encode_payload(&self) -> Result<Value, serde_json::Error> {
+                match self {
+                    $(Self::$variant(payload) => serde_json::to_value(payload),)+
+                    Self::Unknown { payload, .. } => Ok(payload.clone()),
+                }
+            }
+
+            fn decode_payload(kind: ResponseKind, payload: Value) -> Result<Self, serde_json::Error> {
+                match kind {
+                    $(ResponseKind::$kind => serde_json::from_value(payload).map(Self::$variant),)+
+                    ResponseKind::Unknown(kind) => Ok(Self::Unknown { kind, payload }),
+                }
+            }
+        }
+    };
+}
+
+define_response_body! {
+    ContractDescription(ContractDescription) => ContractDescription,
+    MachineDetails(Box<MachineDetails>) => MachineDetails,
+    MachineToken(MachineToken) => MachineToken,
+    Initialized(Initialized) => Initialized,
+    Registered(Registered) => Registered,
+    JoinAccepted(JoinAccepted) => JoinAccepted,
+    MachineList(MachineList) => MachineList,
+    ContainerList(ContainerList) => ContainerList,
+    ContainerDetails(Box<ContainerDetails>) => ContainerDetails,
+    ContainerCreated(ContainerCreated) => ContainerCreated,
+    ContainerChanged(ContainerChanged) => ContainerChanged,
+    VolumeCreated(VolumeCreated) => VolumeCreated,
+    VolumeList(VolumeList) => VolumeList,
+    VolumeDetails(VolumeDetails) => VolumeDetails,
+    VolumeRemoved(VolumeRemoved) => VolumeRemoved,
+    MachineImages(MachineImages) => MachineImages,
+    CaddyConfig(CaddyConfig) => CaddyConfig,
+    MachineUpdated(MachineUpdated) => MachineUpdated,
+    LocalMachineRemoved(LocalMachineRemoved) => LocalMachineRemoved,
+    MachineRemoved(MachineRemoved) => MachineRemoved,
+    WireGuardInspected(WireGuardInspected) => WireGuardInspected,
+    ResetAccepted(ResetAccepted) => ResetAccepted,
+    Error(RpcError) => Error,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -661,7 +769,15 @@ impl RpcResponse {
     pub fn machine_details(details: MachineDetails) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
-            body: RpcResponseBody::MachineDetails(details),
+            body: RpcResponseBody::MachineDetails(Box::new(details)),
+        }
+    }
+
+    #[must_use]
+    pub fn machine_token(token: MachineToken) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::MachineToken(token),
         }
     }
 
@@ -714,6 +830,14 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn machine_updated(machine: Machine) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::MachineUpdated(MachineUpdated { machine }),
+        }
+    }
+
+    #[must_use]
     pub fn container_details(container: ContainerObservation) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -730,6 +854,14 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn local_machine_removed(removed: LocalMachineRemoved) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::LocalMachineRemoved(removed),
+        }
+    }
+
+    #[must_use]
     pub fn container_created(created: ContainerCreated) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -742,6 +874,14 @@ impl RpcResponse {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcResponseBody::VolumeDetails(VolumeDetails { volume }),
+        }
+    }
+
+    #[must_use]
+    pub fn machine_removed() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::MachineRemoved(MachineRemoved {}),
         }
     }
 
@@ -778,6 +918,14 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn wireguard_inspected(device: WireGuardDevice) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::WireGuardInspected(WireGuardInspected { device }),
+        }
+    }
+
+    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
     }
@@ -797,6 +945,15 @@ impl RpcResponse {
             Ok(details)
         } else {
             Err(self.unexpected("machine_details"))
+        }
+    }
+
+    pub fn decode_machine_token(&self) -> Result<&MachineToken, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::MachineToken(token) = &self.body {
+            Ok(token)
+        } else {
+            Err(self.unexpected("machine_token"))
         }
     }
 
@@ -926,6 +1083,42 @@ impl RpcResponse {
         }
     }
 
+    pub fn decode_machine_updated(&self) -> Result<&Machine, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::MachineUpdated(updated) = &self.body {
+            Ok(&updated.machine)
+        } else {
+            Err(self.unexpected("machine_updated"))
+        }
+    }
+
+    pub fn decode_local_machine_removed(&self) -> Result<&LocalMachineRemoved, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::LocalMachineRemoved(removed) = &self.body {
+            Ok(removed)
+        } else {
+            Err(self.unexpected("local_machine_removed"))
+        }
+    }
+
+    pub fn decode_machine_removed(&self) -> Result<(), CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::MachineRemoved(_) = &self.body {
+            Ok(())
+        } else {
+            Err(self.unexpected("machine_removed"))
+        }
+    }
+
+    pub fn decode_wireguard_inspected(&self) -> Result<&WireGuardDevice, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::WireGuardInspected(inspected) = &self.body {
+            Ok(&inspected.device)
+        } else {
+            Err(self.unexpected("wireguard_inspected"))
+        }
+    }
+
     pub fn decode_reset_accepted(&self) -> Result<(), CodecError> {
         validate_protocol_major(self.protocol_major)?;
         if let RpcResponseBody::ResetAccepted(_) = &self.body {
@@ -960,63 +1153,10 @@ impl Serialize for RpcResponse {
     where
         S: Serializer,
     {
-        let payload = match &self.body {
-            RpcResponseBody::ContractDescription(description) => {
-                serde_json::to_value(description).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::MachineDetails(details) => {
-                serde_json::to_value(details).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::Initialized(initialized) => {
-                serde_json::to_value(initialized).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::Registered(registered) => {
-                serde_json::to_value(registered).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::JoinAccepted(accepted) => {
-                serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::MachineList(list) => {
-                serde_json::to_value(list).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::ContainerList(list) => {
-                serde_json::to_value(list).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::ContainerDetails(details) => {
-                serde_json::to_value(details).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::ContainerCreated(created) => {
-                serde_json::to_value(created).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::ContainerChanged(changed) => {
-                serde_json::to_value(changed).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::VolumeCreated(created) => {
-                serde_json::to_value(created).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::VolumeList(list) => {
-                serde_json::to_value(list).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::VolumeDetails(details) => {
-                serde_json::to_value(details).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::VolumeRemoved(removed) => {
-                serde_json::to_value(removed).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::MachineImages(images) => {
-                serde_json::to_value(images).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::CaddyConfig(config) => {
-                serde_json::to_value(config).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::ResetAccepted(accepted) => {
-                serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::Error(error) => {
-                serde_json::to_value(error).map_err(serde::ser::Error::custom)?
-            }
-            RpcResponseBody::Unknown { payload, .. } => payload.clone(),
-        };
+        let payload = self
+            .body
+            .encode_payload()
+            .map_err(serde::ser::Error::custom)?;
         WireResponse {
             protocol_major: self.protocol_major,
             kind: self.kind(),
@@ -1032,66 +1172,8 @@ impl<'de> Deserialize<'de> for RpcResponse {
         D: Deserializer<'de>,
     {
         let wire = WireResponse::deserialize(deserializer)?;
-        let body = match wire.kind {
-            ResponseKind::ContractDescription => RpcResponseBody::ContractDescription(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::MachineDetails => RpcResponseBody::MachineDetails(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::Initialized => RpcResponseBody::Initialized(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::Registered => RpcResponseBody::Registered(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::JoinAccepted => RpcResponseBody::JoinAccepted(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::MachineList => RpcResponseBody::MachineList(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::ContainerList => RpcResponseBody::ContainerList(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::ContainerDetails => RpcResponseBody::ContainerDetails(Box::new(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            )),
-            ResponseKind::ContainerCreated => RpcResponseBody::ContainerCreated(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::ContainerChanged => RpcResponseBody::ContainerChanged(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::VolumeCreated => RpcResponseBody::VolumeCreated(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::VolumeList => RpcResponseBody::VolumeList(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::VolumeDetails => RpcResponseBody::VolumeDetails(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::VolumeRemoved => RpcResponseBody::VolumeRemoved(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::MachineImages => RpcResponseBody::MachineImages(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::CaddyConfig => RpcResponseBody::CaddyConfig(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::Error => RpcResponseBody::Error(
-                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
-            ),
-            ResponseKind::Unknown(kind) => RpcResponseBody::Unknown {
-                kind,
-                payload: wire.payload,
-            },
-        };
+        let body = RpcResponseBody::decode_payload(wire.kind, wire.payload)
+            .map_err(serde::de::Error::custom)?;
         Ok(Self {
             protocol_major: wire.protocol_major,
             body,
