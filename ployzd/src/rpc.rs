@@ -812,6 +812,21 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(RpcResponse::error(error)),
         };
+        let publication = replicated.machine_publication().await;
+        let prepared_reset = {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| Status::internal("local Machine record lock poisoned"))?;
+            if store.record().phase == LocalMachinePhase::Resetting {
+                None
+            } else {
+                match store.prepare_reset() {
+                    Ok(prepared) => Some(prepared),
+                    Err(error) => return respond(RpcResponse::error(store_error(error))),
+                }
+            }
+        };
         if let Err(error) = containers
             .docker
             .remove_all_managed(&containers.specs)
@@ -823,20 +838,14 @@ impl MachineRpc for MachineService {
                 details: Value::Null,
             }));
         }
-        let publication = replicated.machine_publication().await;
-        let reset = {
+        if let Some(prepared_reset) = prepared_reset {
             let mut store = self
                 .store
                 .lock()
                 .map_err(|_| Status::internal("local Machine record lock poisoned"))?;
-            if store.record().phase == LocalMachinePhase::Resetting {
-                Ok(())
-            } else {
-                store.begin_reset()
+            if let Err(error) = prepared_reset.commit(&mut store) {
+                return respond(RpcResponse::error(store_error(error)));
             }
-        };
-        if let Err(error) = reset {
-            return respond(RpcResponse::error(store_error(error)));
         }
         let reset_warning = publication
             .remove(&machine_id)
@@ -1044,7 +1053,8 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::AlreadyRunning(_)
         | StoreError::UnsafeDataDirectory(_)
         | StoreError::UnownedDataDirectory(_)
-        | StoreError::OwnershipLost(_) => RpcErrorCode::Internal,
+        | StoreError::OwnershipLost(_)
+        | StoreError::ResetPreparationLost(_) => RpcErrorCode::Internal,
     };
     RpcError {
         code,

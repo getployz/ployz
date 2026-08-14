@@ -1,10 +1,12 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use ipnet::Ipv4Net;
@@ -21,7 +23,9 @@ use crate::network::{allocate_machine_subnet, management_address};
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
+const PENDING_RESET_FILE_NAME: &str = ".machine.reset.pending";
 const LOCK_FILE_NAME: &str = ".ployzd.lock";
+const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LocalMachineRecord {
@@ -47,6 +51,35 @@ pub struct LocalMachineStore {
     data_dir: PathBuf,
     record: LocalMachineRecord,
     _lock: File,
+}
+
+pub(crate) struct PreparedReset {
+    data_dir: PathBuf,
+    original: LocalMachineRecord,
+    resetting: LocalMachineRecord,
+}
+
+impl PreparedReset {
+    pub(crate) fn commit(self, store: &mut LocalMachineStore) -> Result<(), StoreError> {
+        if store.data_dir != self.data_dir || store.record != self.original {
+            return Err(StoreError::ResetPreparationLost(store.data_dir.clone()));
+        }
+        fs::rename(
+            self.data_dir.join(PENDING_RESET_FILE_NAME),
+            self.data_dir.join(STATE_FILE_NAME),
+        )?;
+        store.record = self.resetting.clone();
+        if let Err(error) = File::open(&self.data_dir).and_then(|directory| directory.sync_all()) {
+            eprintln!("failed to sync committed local Machine reset: {error}");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PreparedReset {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(self.data_dir.join(PENDING_RESET_FILE_NAME));
+    }
 }
 
 impl Drop for LocalMachineStore {
@@ -153,14 +186,23 @@ impl LocalMachineStore {
     }
 
     pub fn begin_reset(&mut self) -> Result<(), StoreError> {
+        let prepared = self.prepare_reset()?;
+        prepared.commit(self)
+    }
+
+    pub(crate) fn prepare_reset(&self) -> Result<PreparedReset, StoreError> {
         if self.record.phase == LocalMachinePhase::Resetting {
             return Err(StoreError::AlreadyResetting);
         }
         let mut resetting = self.record.clone();
         resetting.phase = LocalMachinePhase::Resetting;
-        save(&self.data_dir, &resetting)?;
-        self.record = resetting;
-        Ok(())
+        write_record(&self.data_dir.join(PENDING_RESET_FILE_NAME), &resetting)?;
+        File::open(&self.data_dir)?.sync_all()?;
+        Ok(PreparedReset {
+            data_dir: self.data_dir.clone(),
+            original: self.record.clone(),
+            resetting,
+        })
     }
 
     pub fn initialize(
@@ -303,14 +345,7 @@ impl LocalMachineStore {
 pub fn local_runtime() -> MachineRuntime {
     MachineRuntime {
         daemon_version: env!("CARGO_PKG_VERSION").into(),
-        docker_version: Command::new("docker")
-            .args(["version", "--format", "{{.Server.Version}}"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|version| version.trim().to_owned())
-            .unwrap_or_default(),
+        docker_version: docker_version(Path::new("docker"), DOCKER_VERSION_TIMEOUT),
         hostname: read_trimmed("/etc/hostname"),
         architecture: std::env::consts::ARCH.into(),
         os_pretty_name: fs::read_to_string("/etc/os-release")
@@ -324,6 +359,56 @@ pub fn local_runtime() -> MachineRuntime {
             .unwrap_or_default(),
         kernel_version: read_trimmed("/proc/sys/kernel/osrelease"),
     }
+}
+
+fn docker_version(program: &Path, timeout: Duration) -> String {
+    let output_path =
+        std::env::temp_dir().join(format!(".ployzd-docker-version-{}", MachineId::random()));
+    let Ok(mut output) = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(&output_path)
+    else {
+        return String::new();
+    };
+
+    let version = (|| {
+        let stdout = output.try_clone().ok()?;
+        let mut child = Command::new(program)
+            .args(["version", "--format", "{{.Server.Version}}"])
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) | Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        };
+        if !status.success() {
+            return None;
+        }
+        output.seek(SeekFrom::Start(0)).ok()?;
+        let mut version = String::new();
+        output.read_to_string(&mut version).ok()?;
+        Some(version.trim().to_owned())
+    })()
+    .unwrap_or_default();
+
+    drop(output);
+    let _ = fs::remove_file(output_path);
+    version
 }
 
 fn read_trimmed(path: &str) -> String {
@@ -370,18 +455,23 @@ fn save(data_dir: &Path, record: &LocalMachineRecord) -> Result<(), StoreError> 
 
     let path = data_dir.join(STATE_FILE_NAME);
     let temporary = data_dir.join(TEMPORARY_FILE_NAME);
+    write_record(&temporary, record)?;
+    fs::rename(temporary, path)?;
+    File::open(data_dir)?.sync_all()?;
+    Ok(())
+}
+
+fn write_record(path: &Path, record: &LocalMachineRecord) -> Result<(), StoreError> {
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .mode(0o600)
-        .open(&temporary)?;
+        .open(path)?;
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     serde_json::to_writer_pretty(&mut file, record)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
-    fs::rename(temporary, path)?;
-    File::open(data_dir)?.sync_all()?;
     Ok(())
 }
 
@@ -425,4 +515,56 @@ pub enum StoreError {
     UnownedDataDirectory(PathBuf),
     #[error("local Machine record changed before clearing data directory {0:?}")]
     OwnershipLost(PathBuf),
+    #[error("local Machine record changed before prepared reset was committed in {0:?}")]
+    ResetPreparationLost(PathBuf),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_reset_does_not_change_phase_until_commit() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "ployzd-prepared-reset-{}",
+            ployz_core::MachineId::random()
+        ));
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        let prepared = store.prepare_reset().unwrap();
+
+        assert_eq!(store.record().phase, LocalMachinePhase::Uninitialized);
+        assert!(data_dir.join(PENDING_RESET_FILE_NAME).exists());
+        drop(prepared);
+        assert!(!data_dir.join(PENDING_RESET_FILE_NAME).exists());
+
+        let missing = store.prepare_reset().unwrap();
+        fs::remove_file(data_dir.join(PENDING_RESET_FILE_NAME)).unwrap();
+        assert!(missing.commit(&mut store).is_err());
+        assert_eq!(store.record().phase, LocalMachinePhase::Uninitialized);
+
+        store.prepare_reset().unwrap().commit(&mut store).unwrap();
+        assert_eq!(store.record().phase, LocalMachinePhase::Resetting);
+        drop(store);
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn docker_runtime_probe_is_bounded() {
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-docker-version-{}",
+            ployz_core::MachineId::random()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let program = root.join("docker");
+        fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let started = Instant::now();
+        let version = docker_version(&program, Duration::from_millis(25));
+        let elapsed = started.elapsed();
+        fs::remove_dir_all(root).unwrap();
+
+        assert!(version.is_empty());
+        assert!(elapsed < Duration::from_secs(1), "probe took {elapsed:?}");
+    }
 }
