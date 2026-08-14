@@ -59,6 +59,9 @@ impl Projection {
         let mut service_ids = HashMap::<String, Vec<Ipv4Addr>>::new();
         let mut names = HashMap::<String, Vec<Ipv4Addr>>::new();
         for observation in observations {
+            let service_addresses = service_ids
+                .entry(observation.service_id.to_string())
+                .or_default();
             let healthy = matches!(
                 &observation.runtime,
                 ContainerRuntimeObservation::Running {
@@ -71,10 +74,7 @@ impl Projection {
             else {
                 continue;
             };
-            service_ids
-                .entry(observation.service_id.to_string())
-                .or_default()
-                .push(address.0);
+            service_addresses.push(address.0);
             for selector in [
                 observation.service_name.to_string(),
                 format!("{}.m.{}", observation.machine_id, observation.service_name),
@@ -581,6 +581,46 @@ mod tests {
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2)]
         );
+    }
+
+    #[test]
+    fn empty_service_id_selector_does_not_fall_back_to_a_colliding_name() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let selected_id = ServiceId::parse("b".repeat(32)).unwrap();
+        let other_id = ServiceId::parse("c".repeat(32)).unwrap();
+        let colliding_name = ServiceName::parse(selected_id.to_string()).unwrap();
+        let projection = Projection::from_observations(&[
+            observation(
+                1,
+                &machine,
+                &selected_id,
+                &ServiceName::parse("selected").unwrap(),
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Unhealthy),
+                Some([10, 210, 1, 2]),
+            ),
+            observation(
+                2,
+                &machine,
+                &other_id,
+                &colliding_name,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 3]),
+            ),
+        ]);
+
+        assert!(matches!(
+            projection.plan(
+                &Name::from_ascii(format!("{selected_id}.internal.")).unwrap(),
+                RecordType::A,
+                "10.210.1.0/24".parse().unwrap(),
+            ),
+            ResponsePlan::Internal {
+                code: ResponseCode::NXDomain,
+                answers,
+            } if answers.is_empty()
+        ));
     }
 
     #[test]
