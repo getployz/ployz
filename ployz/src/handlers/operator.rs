@@ -400,32 +400,9 @@ fn spawn_file_stdin(
     let mut stdin = match tokio::io::unix::AsyncFd::try_new(stdin) {
         Ok(stdin) => stdin,
         Err(error) => {
-            let (mut stdin, _) = error.into_parts();
-            return tokio::task::spawn_blocking(move || {
-                use std::io::Read;
-
-                let mut buffer = [0_u8; 8192];
-                loop {
-                    let Ok(read) = stdin.read(&mut buffer) else {
-                        return;
-                    };
-                    if read == 0 {
-                        return;
-                    }
-                    let frame = ExecRequestFrame::Stdin(
-                        buffer
-                            .get(..read)
-                            .expect("read length fits buffer")
-                            .to_vec(),
-                    );
-                    let Ok(payload) = frame.encode() else {
-                        return;
-                    };
-                    if sender.blocking_send(payload).is_err() {
-                        return;
-                    }
-                }
-            });
+            let (stdin, _) = error.into_parts();
+            spawn_fallback_stdin(stdin, sender);
+            return tokio::spawn(async {});
         }
     };
     tokio::spawn(async move {
@@ -444,12 +421,7 @@ fn spawn_file_stdin(
             if read == 0 {
                 return;
             }
-            let frame = ExecRequestFrame::Stdin(
-                buffer
-                    .get(..read)
-                    .expect("read length fits buffer")
-                    .to_vec(),
-            );
+            let frame = ExecRequestFrame::Stdin(buffer.split_at(read).0.to_vec());
             let Ok(payload) = frame.encode() else {
                 return;
             };
@@ -458,6 +430,29 @@ fn spawn_file_stdin(
             }
         }
     })
+}
+
+#[cfg(unix)]
+fn spawn_fallback_stdin(
+    mut stdin: impl std::io::Read + Send + 'static,
+    sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
+) {
+    // ponytail: a stalled fallback reader can linger until CLI exit; keep cancellable descriptors on AsyncFd.
+    drop(std::thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        while let Ok(read) = stdin.read(&mut buffer) {
+            if read == 0 {
+                return;
+            }
+            let frame = ExecRequestFrame::Stdin(buffer.split_at(read).0.to_vec());
+            let Ok(payload) = frame.encode() else {
+                return;
+            };
+            if sender.blocking_send(payload).is_err() {
+                return;
+            }
+        }
+    }));
 }
 
 #[cfg(not(unix))]
@@ -519,7 +514,11 @@ fn spawn_resize(
 
 #[cfg(test)]
 mod tests {
-    use std::io::BufWriter;
+    use std::{
+        io::{BufWriter, Read},
+        sync::mpsc,
+        time::Duration,
+    };
 
     use super::*;
 
@@ -551,5 +550,53 @@ mod tests {
 
         assert!(output.buffer().is_empty());
         assert_eq!(output.get_ref(), b"ready");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stalled_fallback_stdin_does_not_block_runtime_shutdown() {
+        struct StalledRead {
+            started: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+        }
+
+        impl Read for StalledRead {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.started.send(()).unwrap();
+                self.release.recv().unwrap();
+                Ok(0)
+            }
+        }
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+                spawn_fallback_stdin(
+                    StalledRead {
+                        started: started_tx,
+                        release: release_rx,
+                    },
+                    sender,
+                );
+            });
+            drop(runtime);
+            finished_tx.send(()).unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let shutdown = finished_rx.recv_timeout(Duration::from_millis(50));
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+
+        assert!(
+            shutdown.is_ok(),
+            "runtime waited for the stalled stdin read"
+        );
     }
 }
