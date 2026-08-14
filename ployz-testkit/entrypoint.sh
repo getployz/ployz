@@ -2,7 +2,7 @@
 set -eu
 
 rm -f /var/run/docker.pid /var/run/docker.sock
-# ponytail: Corrosion uses host networking; enable a bridge when workload tests need one.
+# ponytail: Corrosion uses host networking; enable a bridge when Service Container tests need one.
 dockerd --bridge=none --iptables=false --ip6tables=false >/var/log/dockerd.log 2>&1 &
 deadline=60
 until docker info >/dev/null 2>&1; do
@@ -21,7 +21,7 @@ if [ -n "${PLOYZ_TESTKIT_HOST_API_PORT:-}" ]; then
   socat TCP-LISTEN:"$PLOYZ_TESTKIT_HOST_API_PORT",bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/run/ployz/ployz.sock &
 fi
 while :; do
-  ployzd "$@" &
+  ployzd --machine-api-address '[::]:51000' "$@" &
   ployzd_pid=$!
   echo "$ployzd_pid" >/run/ployzd.pid
   wait "$ployzd_pid" || exit $?

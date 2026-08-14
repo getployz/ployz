@@ -11,9 +11,13 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
-    LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, ResolvedServiceSpec,
-    ValueError, WireGuardPublicKey,
+    DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineName,
+    MachineObservation, ResolvedServiceSpec, ValueError, WireGuardPublicKey,
 };
+
+mod docker;
+
+pub use docker::*;
 
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const DESCRIBE_CONTRACT_CAPABILITY: &str = "ployz.rpc.describe-contract.v1";
@@ -80,6 +84,11 @@ impl OpaquePayload {
                 | "start_container"
                 | "stop_container"
                 | "remove_container"
+                | "create_volume"
+                | "list_volumes"
+                | "inspect_volume"
+                | "remove_volume"
+                | "create_service_container"
                 | "reset"
         ) {
             return Err(CodecError::UnsupportedCommand(header.command));
@@ -223,6 +232,11 @@ pub enum RpcRequestBody {
     StartContainer(StartContainerRequest),
     StopContainer(StopContainerRequest),
     RemoveContainer(RemoveContainerRequest),
+    CreateVolume(CreateVolumeRequest),
+    ListVolumes(ListVolumesRequest),
+    InspectVolume(InspectVolumeRequest),
+    RemoveVolume(RemoveVolumeRequest),
+    CreateServiceContainer(Box<CreateServiceContainerRequest>),
     Reset(ResetRequest),
 }
 
@@ -299,10 +313,26 @@ impl RpcRequest {
     }
 
     #[must_use]
+    pub fn create_volume(request: CreateVolumeRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::CreateVolume(request),
+        }
+    }
+
+    #[must_use]
     pub fn inspect_container(request: InspectContainerRequest) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcRequestBody::InspectContainer(request),
+        }
+    }
+
+    #[must_use]
+    pub fn list_volumes() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::ListVolumes(ListVolumesRequest {}),
         }
     }
 
@@ -315,10 +345,26 @@ impl RpcRequest {
     }
 
     #[must_use]
+    pub fn inspect_volume(name: DockerVolumeName) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::InspectVolume(InspectVolumeRequest { name }),
+        }
+    }
+
+    #[must_use]
     pub fn start_container(request: StartContainerRequest) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcRequestBody::StartContainer(request),
+        }
+    }
+
+    #[must_use]
+    pub fn remove_volume(name: DockerVolumeName, force: bool) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::RemoveVolume(RemoveVolumeRequest { name, force }),
         }
     }
 
@@ -335,6 +381,16 @@ impl RpcRequest {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcRequestBody::RemoveContainer(request),
+        }
+    }
+
+    #[must_use]
+    pub fn create_service_container(spec: ResolvedServiceSpec) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::CreateServiceContainer(Box::new(CreateServiceContainerRequest {
+                spec,
+            })),
         }
     }
 
@@ -360,6 +416,11 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     ContainerDetails => "container_details",
     ContainerCreated => "container_created",
     ContainerChanged => "container_changed",
+    VolumeCreated => "volume_created",
+    VolumeList => "volume_list",
+    VolumeDetails => "volume_details",
+    VolumeRemoved => "volume_removed",
+    ServiceContainerCreated => "service_container_created",
     ResetAccepted => "reset_accepted",
     Error => "error",
 });
@@ -434,6 +495,11 @@ pub enum RpcResponseBody {
     ContainerDetails(Box<ContainerDetails>),
     ContainerCreated(ContainerCreated),
     ContainerChanged(ContainerChanged),
+    VolumeCreated(VolumeCreated),
+    VolumeList(VolumeList),
+    VolumeDetails(VolumeDetails),
+    VolumeRemoved(VolumeRemoved),
+    ServiceContainerCreated(ServiceContainerCreated),
     ResetAccepted(ResetAccepted),
     Error(RpcError),
     Unknown { kind: String, payload: Value },
@@ -453,6 +519,11 @@ impl RpcResponseBody {
             Self::ContainerDetails(_) => ResponseKind::ContainerDetails,
             Self::ContainerCreated(_) => ResponseKind::ContainerCreated,
             Self::ContainerChanged(_) => ResponseKind::ContainerChanged,
+            Self::VolumeCreated(_) => ResponseKind::VolumeCreated,
+            Self::VolumeList(_) => ResponseKind::VolumeList,
+            Self::VolumeDetails(_) => ResponseKind::VolumeDetails,
+            Self::VolumeRemoved(_) => ResponseKind::VolumeRemoved,
+            Self::ServiceContainerCreated(_) => ResponseKind::ServiceContainerCreated,
             Self::ResetAccepted(_) => ResponseKind::ResetAccepted,
             Self::Error(_) => ResponseKind::Error,
             Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
@@ -540,10 +611,26 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn volume_created(volume: DockerVolume) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::VolumeCreated(VolumeCreated { volume }),
+        }
+    }
+
+    #[must_use]
     pub fn container_details(container: ContainerObservation) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcResponseBody::ContainerDetails(Box::new(ContainerDetails { container })),
+        }
+    }
+
+    #[must_use]
+    pub fn volume_list(volumes: Vec<DockerVolume>) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::VolumeList(VolumeList { volumes }),
         }
     }
 
@@ -556,10 +643,37 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn volume_details(volume: DockerVolume) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::VolumeDetails(VolumeDetails { volume }),
+        }
+    }
+
+    #[must_use]
     pub fn container_changed(container_id: ContainerId) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcResponseBody::ContainerChanged(ContainerChanged { container_id }),
+        }
+    }
+
+    #[must_use]
+    pub fn volume_removed() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::VolumeRemoved(VolumeRemoved {}),
+        }
+    }
+
+    #[must_use]
+    pub fn service_container_created(container_id: ContainerId, display_name: String) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::ServiceContainerCreated(ServiceContainerCreated {
+                container_id,
+                display_name,
+            }),
         }
     }
 
@@ -658,6 +772,51 @@ impl RpcResponse {
         }
     }
 
+    pub fn decode_volume_created(&self) -> Result<&DockerVolume, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::VolumeCreated(created) = &self.body {
+            Ok(&created.volume)
+        } else {
+            Err(self.unexpected("volume_created"))
+        }
+    }
+
+    pub fn decode_volume_list(&self) -> Result<&[DockerVolume], CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::VolumeList(list) = &self.body {
+            Ok(&list.volumes)
+        } else {
+            Err(self.unexpected("volume_list"))
+        }
+    }
+
+    pub fn decode_volume_details(&self) -> Result<&DockerVolume, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::VolumeDetails(details) = &self.body {
+            Ok(&details.volume)
+        } else {
+            Err(self.unexpected("volume_details"))
+        }
+    }
+
+    pub fn decode_volume_removed(&self) -> Result<(), CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::VolumeRemoved(_) = &self.body {
+            Ok(())
+        } else {
+            Err(self.unexpected("volume_removed"))
+        }
+    }
+
+    pub fn decode_service_container_created(&self) -> Result<&ServiceContainerCreated, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::ServiceContainerCreated(created) = &self.body {
+            Ok(created)
+        } else {
+            Err(self.unexpected("service_container_created"))
+        }
+    }
+
     pub fn decode_reset_accepted(&self) -> Result<(), CodecError> {
         validate_protocol_major(self.protocol_major)?;
         if let RpcResponseBody::ResetAccepted(_) = &self.body {
@@ -723,6 +882,21 @@ impl Serialize for RpcResponse {
             RpcResponseBody::ContainerChanged(changed) => {
                 serde_json::to_value(changed).map_err(serde::ser::Error::custom)?
             }
+            RpcResponseBody::VolumeCreated(created) => {
+                serde_json::to_value(created).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::VolumeList(list) => {
+                serde_json::to_value(list).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::VolumeDetails(details) => {
+                serde_json::to_value(details).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::VolumeRemoved(removed) => {
+                serde_json::to_value(removed).map_err(serde::ser::Error::custom)?
+            }
+            RpcResponseBody::ServiceContainerCreated(created) => {
+                serde_json::to_value(created).map_err(serde::ser::Error::custom)?
+            }
             RpcResponseBody::ResetAccepted(accepted) => {
                 serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
             }
@@ -775,6 +949,21 @@ impl<'de> Deserialize<'de> for RpcResponse {
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::ContainerChanged => RpcResponseBody::ContainerChanged(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::VolumeCreated => RpcResponseBody::VolumeCreated(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::VolumeList => RpcResponseBody::VolumeList(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::VolumeDetails => RpcResponseBody::VolumeDetails(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::VolumeRemoved => RpcResponseBody::VolumeRemoved(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::ServiceContainerCreated => RpcResponseBody::ServiceContainerCreated(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(

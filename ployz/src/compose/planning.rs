@@ -1,9 +1,14 @@
-use ployz_core::{DockerVolumeId, ServiceId, VolumeSource};
+use std::collections::BTreeMap;
+
+use ployz_core::{
+    DockerVolumeId, DockerVolumeName, RequestedServiceSpec, ServiceId, ServiceMode, ServiceVolume,
+    VolumeSource,
+};
 use thiserror::Error;
 
 use crate::deploy::{
     DeployOperation, DeployPlan, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
-    plan_deploy, plan_volume_operations,
+    plan_deploy, volume_eligible_machine_ids,
 };
 
 use super::{ComposeError, ComposeProject};
@@ -30,6 +35,14 @@ pub enum ComposePlanError {
     Compose(#[from] ComposeError),
     #[error("plan service '{service}': {source}")]
     Service { service: String, source: PlanError },
+    #[error(
+        "Docker Volume {name} cannot be shared by global service '{global}' and replicated service '{replicated}'"
+    )]
+    MixedVolumeModes {
+        name: DockerVolumeName,
+        global: String,
+        replicated: String,
+    },
 }
 
 pub fn plan_compose_deploy(
@@ -37,26 +50,17 @@ pub fn plan_compose_deploy(
     snapshot: &DeploySnapshot,
     options: PlanOptions,
 ) -> Result<ComposeDeployPlan, ComposePlanError> {
+    let volume_uses = named_volume_uses(project);
+    reject_mixed_volume_modes(&volume_uses)?;
     let mut resolved = project.clone();
     resolved.resolve_secrets()?;
     let mut effective_snapshot = snapshot.clone();
-    let mut volume_operations = Vec::new();
+    let mut volume_operations =
+        prepare_shared_replicated_volumes(&volume_uses, &mut effective_snapshot, options)?;
     let mut service_plans = Vec::new();
     for requested in project.dependency_order()? {
         let service = requested.name.to_string();
         let service_id = ServiceId::random();
-        // TODO(UT-089): volume scheduling intentionally uses unresolved Requested Service Specs.
-        let planned_volumes = plan_volume_operations(requested, &effective_snapshot, options)
-            .map_err(|source| ComposePlanError::Service {
-                service: service.clone(),
-                source,
-            })?;
-        for operation in &planned_volumes {
-            if let DeployOperation::CreateVolume { machine_id, volume } = operation {
-                remember_volume(&mut effective_snapshot, machine_id, volume);
-                volume_operations.push(operation.clone());
-            }
-        }
         let resolved_requested = resolved
             .services
             .get(&service)
@@ -66,13 +70,146 @@ pub fn plan_compose_deploy(
                 service: service.clone(),
                 source,
             })?;
+        let DeployPlan {
+            service_id,
+            is_new_service,
+            operation,
+        } = plan;
+        let DeployOperation::Sequence { operations } = operation else {
+            unreachable!("plan_deploy always returns a sequence")
+        };
+        let mut service_operations = Vec::new();
+        for operation in operations {
+            if let DeployOperation::CreateVolume { machine_id, volume } = &operation {
+                remember_volume(&mut effective_snapshot, machine_id, volume);
+                volume_operations.push(operation);
+            } else {
+                service_operations.push(operation);
+            }
+        }
         // TODO(UT-088): depends_on conditions are not represented as first operations.
-        service_plans.push(plan);
+        service_plans.push(DeployPlan {
+            service_id,
+            is_new_service,
+            operation: DeployOperation::Sequence {
+                operations: service_operations,
+            },
+        });
     }
     Ok(ComposeDeployPlan {
         volume_operations,
         service_plans,
     })
+}
+
+#[derive(Clone, Copy)]
+struct NamedVolumeUse<'a> {
+    service_name: &'a str,
+    service: &'a RequestedServiceSpec,
+    volume: &'a ServiceVolume,
+    global: bool,
+}
+
+fn named_volume_uses(
+    project: &ComposeProject,
+) -> BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>> {
+    let mut uses = BTreeMap::<DockerVolumeName, Vec<NamedVolumeUse<'_>>>::new();
+    for (service_name, service) in &project.services {
+        for mount in &service.mounts {
+            let Some(volume) = service
+                .volumes
+                .iter()
+                .find(|volume| volume.reference == mount.volume)
+            else {
+                continue;
+            };
+            let VolumeSource::Named { name, .. } = &volume.source else {
+                continue;
+            };
+            let uses = uses.entry(name.clone()).or_default();
+            if !uses
+                .iter()
+                .any(|volume_use| volume_use.service_name == service_name)
+            {
+                uses.push(NamedVolumeUse {
+                    service_name,
+                    service,
+                    volume,
+                    global: matches!(service.mode, ServiceMode::Global),
+                });
+            }
+        }
+    }
+    uses
+}
+
+fn prepare_shared_replicated_volumes(
+    volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
+    snapshot: &mut DeploySnapshot,
+    options: PlanOptions,
+) -> Result<Vec<DeployOperation>, ComposePlanError> {
+    let mut operations = Vec::new();
+    for (name, uses) in volume_uses
+        .iter()
+        .filter(|(_, uses)| uses.len() > 1 && uses.iter().all(|volume_use| !volume_use.global))
+    {
+        if snapshot
+            .volumes
+            .iter()
+            .any(|volume| volume.id.name == *name)
+        {
+            continue;
+        }
+        let first_use = uses
+            .first()
+            .copied()
+            .expect("shared Volume has at least two uses");
+        let mut eligible = volume_eligible_machine_ids(first_use.service, snapshot, options)
+            .map_err(|source| ComposePlanError::Service {
+                service: first_use.service_name.into(),
+                source,
+            })?;
+        for volume_use in uses.iter().skip(1) {
+            let other_eligible = volume_eligible_machine_ids(volume_use.service, snapshot, options)
+                .map_err(|source| ComposePlanError::Service {
+                    service: volume_use.service_name.into(),
+                    source,
+                })?;
+            eligible.retain(|machine_id| other_eligible.contains(machine_id));
+        }
+        if eligible.is_empty() {
+            return Err(ComposePlanError::Service {
+                service: first_use.service_name.into(),
+                source: PlanError::NoEligibleMachines,
+            });
+        }
+        let machine_id = eligible.remove(0);
+        let operation = DeployOperation::CreateVolume {
+            machine_id: machine_id.clone(),
+            volume: first_use.volume.clone(),
+        };
+        remember_volume(snapshot, &machine_id, first_use.volume);
+        operations.push(operation);
+    }
+    Ok(operations)
+}
+
+fn reject_mixed_volume_modes(
+    volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
+) -> Result<(), ComposePlanError> {
+    for (name, uses) in volume_uses {
+        if let (Some(global), Some(replicated)) = (
+            uses.iter().find(|volume_use| volume_use.global),
+            uses.iter().find(|volume_use| !volume_use.global),
+        ) {
+            return Err(ComposePlanError::MixedVolumeModes {
+                name: name.clone(),
+                global: global.service_name.into(),
+                replicated: replicated.service_name.into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn remember_volume(

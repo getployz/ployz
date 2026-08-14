@@ -81,6 +81,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "no-nightly-daemon-channel".to_owned(),
             "plain-caddy-config".to_owned(),
             "product-identity".to_owned(),
+            "volume-remove-auto-confirm-env".to_owned(),
         ])
     );
 }
@@ -135,6 +136,9 @@ fn reference_shape(
     finish_flag(&mut flags, current);
     if command_path == "ployz caddy config" && deviations.contains("plain-caddy-config") {
         flags.remove("no-color");
+    }
+    if command_path == "ployz volume rm" && deviations.contains("volume-remove-auto-confirm-env") {
+        flags.get_mut("yes").expect("volume rm has --yes").env = Some("PLOYZ_AUTO_CONFIRM".into());
     }
     let positionals = reference_positionals(markdown, &command_path, deviations);
     (command_path, flags, positionals)

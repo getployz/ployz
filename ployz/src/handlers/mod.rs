@@ -5,6 +5,7 @@ use crate::compose::{LoadOptions, load_project};
 
 mod context;
 mod service;
+mod volume;
 
 pub type Error = String;
 
@@ -202,10 +203,10 @@ stub_handlers! {
         }
         Ok(())
     } => "version";
-    volume_create => "volume create";
-    volume_inspect => "volume inspect";
-    volume_list => "volume ls";
-    volume_remove => "volume rm";
+    volume_create(root) { volume::create(root) } => "volume create";
+    volume_inspect(root) { volume::inspect(root) } => "volume inspect";
+    volume_list(root) { volume::list(root) } => "volume ls";
+    volume_remove(root) { volume::remove(root) } => "volume rm";
     wireguard_show => "wg show";
 }
 
@@ -238,6 +239,28 @@ mod tests {
         assert_eq!(
             dispatch(&matches, &mut command),
             Err("ployz caddy config is not implemented yet".into())
+        );
+    }
+
+    #[test]
+    fn malformed_volume_assignments_fail_before_connecting() {
+        let mut command = crate::cli::command();
+        let matches = command
+            .clone()
+            .try_get_matches_from([
+                "ployz",
+                "volume",
+                "create",
+                "data",
+                "--opt",
+                "missing-delimiter",
+                "--connect",
+                "tcp://127.0.0.1:1",
+            ])
+            .unwrap();
+        assert_eq!(
+            dispatch(&matches, &mut command),
+            Err("expected KEY=VALUE, got \"missing-delimiter\"".into())
         );
     }
 

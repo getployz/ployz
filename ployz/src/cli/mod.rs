@@ -439,7 +439,7 @@ fn volume() -> Command {
                 .visible_aliases(["remove", "delete"])
                 .arg(switch("force", Some('f')))
                 .arg(many("machine", Some('m')))
-                .arg(switch("yes", Some('y')))
+                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
                 .arg(
                     Arg::new("volume-name")
                         .required(true)

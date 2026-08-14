@@ -1,12 +1,12 @@
 use std::{collections::BTreeMap, fs, future::Future, net::TcpListener, path::PathBuf};
 
 use bollard::{
-    models::{ContainerCreateBody, NetworkCreateRequest},
+    models::{ContainerCreateBody, MountType, NetworkCreateRequest},
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, RenameContainerOptionsBuilder,
     },
 };
-use ployz_core::ResolvedServiceSpec;
+use ployz_core::{CreateVolumeRequest, DockerVolumeId, ResolvedServiceSpec};
 
 use super::*;
 
@@ -275,6 +275,117 @@ async fn cleanup_ployz_network(docker: &Docker, created: bool) {
             .await
             .unwrap();
     }
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
+    let docker = LocalDocker::connect().unwrap();
+    let machine_id = MachineId::random();
+    let name =
+        ployz_core::DockerVolumeName::parse(format!("ployz-volume-test-{}", MachineId::random()))
+            .unwrap();
+    let labels = BTreeMap::from([("purpose".into(), "machine-local-test".into())]);
+
+    let created = docker
+        .create_volume(
+            &machine_id,
+            CreateVolumeRequest {
+                name: name.clone(),
+                driver: "local".into(),
+                options: BTreeMap::new(),
+                labels: labels.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let listed = docker.list_volumes(&machine_id).await.unwrap();
+    let inspected = docker.inspect_volume(&machine_id, &name).await.unwrap();
+    docker.remove_volume(&name, false).await.unwrap();
+
+    assert_eq!(created.id, DockerVolumeId { machine_id, name });
+    assert_eq!(created.driver, "local");
+    assert_eq!(created.labels, labels);
+    assert!(listed.contains(&created));
+    assert_eq!(inspected, created);
+}
+
+#[tokio::test]
+#[ignore = "requires Docker and alpine:3.23.3"]
+async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
+    let root = TestRoot::new();
+    fs::create_dir_all(root.0.join("bind")).unwrap();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    let docker = LocalDocker::connect().unwrap();
+    let machine_id = MachineId::random();
+    let name =
+        ployz_core::DockerVolumeName::parse(format!("ployz-mount-test-{}", MachineId::random()))
+            .unwrap();
+    docker
+        .create_volume(
+            &machine_id,
+            CreateVolumeRequest {
+                name: name.clone(),
+                driver: "local".into(),
+                options: BTreeMap::new(),
+                labels: BTreeMap::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+        "service_id": ServiceId::random(),
+        "name": "mount-test",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "alpine:3.23.3", "command": ["sleep", "60"], "pull_policy": "missing" },
+        "volumes": [
+            {"reference":"host","source":{"kind":"bind","machine_path":root.0.join("bind")}},
+            {"reference":"data","source":{"kind":"named","name":name}},
+            {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
+        ],
+        "mounts": [
+            {"volume":"host","target":"/host"},
+            {"volume":"data","target":"/data","read_only":true},
+            {"volume":"memory","target":"/run/cache"}
+        ]
+    }))
+    .unwrap();
+
+    let (container_id, _) = docker.create_service_container(&specs, spec).await.unwrap();
+    let mounts = docker
+        .client
+        .inspect_container(container_id.as_str(), None)
+        .await
+        .unwrap()
+        .host_config
+        .unwrap()
+        .mounts
+        .unwrap();
+    docker
+        .client
+        .remove_container(
+            container_id.as_str(),
+            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+        )
+        .await
+        .unwrap();
+    docker.remove_volume(&name, false).await.unwrap();
+
+    assert!(
+        mounts
+            .iter()
+            .any(|mount| mount.typ == Some(MountType::BIND))
+    );
+    assert!(mounts.iter().any(|mount| {
+        mount.typ == Some(MountType::VOLUME) && mount.source.as_deref() == Some(name.as_str())
+    }));
+    assert!(
+        mounts
+            .iter()
+            .any(|mount| mount.typ == Some(MountType::TMPFS))
+    );
 }
 
 #[tokio::test]

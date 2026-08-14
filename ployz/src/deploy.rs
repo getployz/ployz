@@ -9,7 +9,7 @@ mod planning;
 
 pub use comparison::compare_specs;
 pub use planning::plan_deploy;
-pub(crate) use planning::plan_volume_operations;
+pub(crate) use planning::volume_eligible_machine_ids;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {

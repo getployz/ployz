@@ -9,9 +9,9 @@ use ployz_core::{
     MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, NameMatches,
     OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PreDeployHook, PullPolicy,
     RESET_MACHINE_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, ResponseKind, RpcError,
-    RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
-    UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames,
+    RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec,
+    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
+    UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -252,7 +252,7 @@ fn fanout_frames_preserve_opaque_messages_and_type_target_failures() {
     assert_eq!(decoded.machine_name().unwrap(), machine_name);
     assert!(matches!(
         decoded.outcome,
-        Some(FanoutOutcome::FramedPayload(payload)) if payload == original
+        Some(FanoutOutcome::FramedPayload(ref payload)) if payload == &original
     ));
 
     let failure = FanoutFailure {
@@ -308,7 +308,77 @@ fn reset_command_and_acknowledgement_have_a_stable_capability() {
 }
 
 #[test]
-fn direct_container_commands_round_trip_through_the_typed_opaque_contract() {
+fn volume_and_container_commands_keep_machine_local_inputs_exact() {
+    use std::collections::BTreeMap;
+
+    use ployz_core::{
+        CreateServiceContainerRequest, CreateVolumeRequest, DockerVolume, DockerVolumeId,
+        DockerVolumeName, InspectVolumeRequest, ListVolumesRequest, RemoveVolumeRequest,
+    };
+
+    assert!(DockerVolumeName::parse("").is_err());
+    let name = DockerVolumeName::parse("data").unwrap();
+    let create = CreateVolumeRequest {
+        name: name.clone(),
+        driver: "local".into(),
+        options: BTreeMap::from([("type".into(), "none".into())]),
+        labels: BTreeMap::from([("purpose".into(), "database".into())]),
+    };
+    assert_eq!(
+        RpcRequest::create_volume(create.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::CreateVolume(create)
+    );
+    assert_eq!(
+        RpcRequest::list_volumes()
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::ListVolumes(ListVolumesRequest {})
+    );
+    assert_eq!(
+        RpcRequest::inspect_volume(name.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::InspectVolume(InspectVolumeRequest { name: name.clone() })
+    );
+    assert_eq!(
+        RpcRequest::remove_volume(name.clone(), true)
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::RemoveVolume(RemoveVolumeRequest {
+            name: name.clone(),
+            force: true,
+        })
+    );
+
+    let volume = DockerVolume {
+        id: DockerVolumeId {
+            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+            name,
+        },
+        driver: "local".into(),
+        options: BTreeMap::from([("type".into(), "none".into())]),
+        labels: BTreeMap::from([("purpose".into(), "database".into())]),
+    };
+    assert_eq!(
+        RpcResponse::volume_list(vec![volume.clone()])
+            .decode_volume_list()
+            .unwrap(),
+        &[volume]
+    );
     let spec: ResolvedServiceSpec = serde_json::from_value(json!({
         "service_id": "11111111111111111111111111111111",
         "name": "api",
@@ -318,7 +388,7 @@ fn direct_container_commands_round_trip_through_the_typed_opaque_contract() {
     .unwrap();
     let request = RpcRequest::create_container(CreateContainerRequest {
         kind: ContainerKind::ServiceContainer,
-        resolved_spec: spec,
+        resolved_spec: spec.clone(),
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 
@@ -329,6 +399,15 @@ fn direct_container_commands_round_trip_through_the_typed_opaque_contract() {
     let response = RpcResponse::container_created(created.clone());
     assert_eq!(response.decode_container_created().unwrap(), &created);
     assert_eq!(CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1");
+    assert_eq!(
+        RpcRequest::create_service_container(spec.clone())
+            .encode()
+            .unwrap()
+            .decode_request()
+            .unwrap()
+            .body,
+        RpcRequestBody::CreateServiceContainer(Box::new(CreateServiceContainerRequest { spec }))
+    );
 }
 
 #[test]
@@ -502,7 +581,21 @@ impl MachineRpc for FixtureMachineRpc {
         unreachable!("compile-time service fixture")
     }
 
+    async fn create_volume(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
     async fn inspect_container(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn list_volumes(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
@@ -516,7 +609,21 @@ impl MachineRpc for FixtureMachineRpc {
         unreachable!("compile-time service fixture")
     }
 
+    async fn inspect_volume(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
     async fn start_container(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn remove_volume(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
@@ -531,6 +638,13 @@ impl MachineRpc for FixtureMachineRpc {
     }
 
     async fn remove_container(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn create_service_container(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {

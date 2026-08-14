@@ -5,12 +5,14 @@ use std::{
 };
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
+    CREATE_CONTAINER_CAPABILITY, CREATE_SERVICE_CONTAINER_CAPABILITY, CREATE_VOLUME_CAPABILITY,
+    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
     INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_MACHINES_CAPABILITY,
-    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineObservation, MachineRpc,
-    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, REGISTER_MACHINE_CAPABILITY,
-    REMOVE_CONTAINER_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode,
+    INSPECT_VOLUME_CAPABILITY, JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
+    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LocalMachinePhase, Machine, MachineDetails,
+    MachineId, MachineObservation, MachineRpc, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
+    REMOVE_VOLUME_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode,
     RpcRequestBody, RpcResponse, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
 };
 use serde_json::Value;
@@ -129,6 +131,11 @@ impl MachineRpc for MachineService {
                     START_CONTAINER_CAPABILITY,
                     STOP_CONTAINER_CAPABILITY,
                     REMOVE_CONTAINER_CAPABILITY,
+                    CREATE_VOLUME_CAPABILITY,
+                    LIST_VOLUMES_CAPABILITY,
+                    INSPECT_VOLUME_CAPABILITY,
+                    REMOVE_VOLUME_CAPABILITY,
+                    CREATE_SERVICE_CONTAINER_CAPABILITY,
                 ]
                 .into_iter()
                 .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
@@ -501,6 +508,131 @@ impl MachineRpc for MachineService {
         }
     }
 
+    async fn create_volume(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(invalid_request)?;
+        let RpcRequestBody::CreateVolume(request) = request.body else {
+            return Err(Status::invalid_argument("expected create_volume request"));
+        };
+        let machine_id = self.local_record()?.id;
+        let docker = match self.containers() {
+            Ok(docker) => docker,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match docker.docker.create_volume(&machine_id, request).await {
+            Ok(volume) => respond(RpcResponse::volume_created(volume)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn list_volumes(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(invalid_request)?;
+        if !matches!(request.body, RpcRequestBody::ListVolumes(_)) {
+            return Err(Status::invalid_argument("expected list_volumes request"));
+        }
+        let machine_id = self.local_record()?.id;
+        let docker = match self.containers() {
+            Ok(docker) => docker,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match docker.docker.list_volumes(&machine_id).await {
+            Ok(volumes) => respond(RpcResponse::volume_list(volumes)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn inspect_volume(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(invalid_request)?;
+        let RpcRequestBody::InspectVolume(request) = request.body else {
+            return Err(Status::invalid_argument("expected inspect_volume request"));
+        };
+        let machine_id = self.local_record()?.id;
+        let docker = match self.containers() {
+            Ok(docker) => docker,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match docker
+            .docker
+            .inspect_volume(&machine_id, &request.name)
+            .await
+        {
+            Ok(volume) => respond(RpcResponse::volume_details(volume)),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn remove_volume(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(invalid_request)?;
+        let RpcRequestBody::RemoveVolume(request) = request.body else {
+            return Err(Status::invalid_argument("expected remove_volume request"));
+        };
+        let docker = match self.containers() {
+            Ok(docker) => docker,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match docker
+            .docker
+            .remove_volume(&request.name, request.force)
+            .await
+        {
+            Ok(()) => respond(RpcResponse::volume_removed()),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
+    async fn create_service_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(invalid_request)?;
+        let RpcRequestBody::CreateServiceContainer(request) = request.body else {
+            return Err(Status::invalid_argument(
+                "expected create_service_container request",
+            ));
+        };
+        let docker = match self.containers() {
+            Ok(docker) => docker,
+            Err(error) => return respond(RpcResponse::error(error)),
+        };
+        match docker
+            .docker
+            .create_service_container(&docker.specs, request.spec)
+            .await
+        {
+            Ok((container_id, display_name)) => respond(RpcResponse::service_container_created(
+                container_id,
+                display_name,
+            )),
+            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+        }
+    }
+
     async fn reset(
         &self,
         request: Request<OpaquePayload>,
@@ -581,8 +713,19 @@ fn store_error(error: StoreError) -> RpcError {
 }
 
 fn docker_rpc_error(error: DockerError) -> RpcError {
+    let code = match &error {
+        DockerError::Docker(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404,
+            ..
+        }) => RpcErrorCode::NotFound,
+        DockerError::Docker(bollard::errors::Error::DockerResponseServerError {
+            status_code: 409,
+            ..
+        }) => RpcErrorCode::Conflict,
+        _ => error.container_rpc_code(),
+    };
     RpcError {
-        code: error.container_rpc_code(),
+        code,
         message: error.to_string(),
         details: Value::Null,
     }

@@ -1,6 +1,8 @@
 mod create;
 mod lifecycle;
+mod service_container;
 mod spec_store;
+mod volume;
 
 #[cfg(test)]
 mod integration_tests;
@@ -16,7 +18,7 @@ use futures_util::StreamExt;
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HealthObservation, MachineId, RpcErrorCode, ServiceId,
-    ServiceName, ValueError,
+    ServiceName, ServiceVolumeReference, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -26,6 +28,9 @@ use tokio::sync::watch;
 use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
 
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
+
+#[cfg(test)]
+use service_container::docker_mounts;
 
 pub const LABEL_MANAGED: &str = "ployz.managed";
 pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
@@ -163,6 +168,14 @@ fn malformed_container(error: &Error) -> bool {
             | Error::SpecNotFound(_)
             | Error::ContainerNotFound(_)
     )
+}
+
+fn some_map<K, V>(values: impl IntoIterator<Item = (K, V)>) -> Option<HashMap<K, V>>
+where
+    K: Eq + std::hash::Hash,
+{
+    let values = values.into_iter().collect::<HashMap<_, _>>();
+    (!values.is_empty()).then_some(values)
 }
 
 fn display_name(name: Option<&str>) -> String {
@@ -509,6 +522,10 @@ pub enum Error {
         #[source]
         source: ValueError,
     },
+    #[error("mount references an undeclared Service Volume: {0}")]
+    UnknownVolumeReference(ServiceVolumeReference),
+    #[error("invalid Docker mount: {0}")]
+    InvalidMount(String),
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -549,6 +566,8 @@ impl Error {
             | Self::DurationOverflow
             | Self::SizeOverflow
             | Self::PortBindPrefixTooLarge(_)
+            | Self::UnknownVolumeReference(_)
+            | Self::InvalidMount(_)
             | Self::MissingField(_)
             | Self::MissingLabel(_)
             | Self::InvalidValue { .. }
@@ -642,6 +661,71 @@ mod tests {
             hook_host.restart_policy.unwrap().name,
             Some(bollard::models::RestartPolicyNameEnum::NO)
         );
+    }
+
+    #[test]
+    fn resolved_mounts_map_bind_named_alias_and_tmpfs_without_inventing_defaults() {
+        use bollard::models::MountType;
+        use ployz_core::ResolvedServiceSpec;
+
+        let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+            "service_id": "11111111111111111111111111111111",
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
+            "volumes": [
+                {"reference":"host","source":{"kind":"bind","machine_path":"/srv/api"}},
+                {"reference":"alias","source":{"kind":"named","name":"database","driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
+                {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
+            ],
+            "mounts": [
+                {"volume":"host","target":"/host"},
+                {"volume":"alias","target":"/data","read_only":true},
+                {"volume":"memory","target":"/run/cache"}
+            ]
+        }))
+        .unwrap();
+
+        let mounts = docker_mounts(&spec).unwrap();
+        let [bind_mount, named_mount, tmpfs_mount] = mounts.as_slice() else {
+            panic!("expected three mounts: {mounts:?}")
+        };
+        assert_eq!(bind_mount.typ, Some(MountType::BIND));
+        assert_eq!(bind_mount.source.as_deref(), Some("/srv/api"));
+        let bind = bind_mount.bind_options.as_ref().unwrap();
+        assert!(bind.propagation.is_none());
+        assert!(bind.non_recursive.is_none());
+        assert!(bind.read_only_non_recursive.is_none());
+        assert!(bind.read_only_force_recursive.is_none());
+        assert_eq!(named_mount.typ, Some(MountType::VOLUME));
+        assert_eq!(named_mount.source.as_deref(), Some("database"));
+        assert_eq!(named_mount.read_only, Some(true));
+        assert_eq!(
+            named_mount
+                .volume_options
+                .as_ref()
+                .unwrap()
+                .driver_config
+                .as_ref()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("local")
+        );
+        assert_eq!(tmpfs_mount.typ, Some(MountType::TMPFS));
+        assert!(tmpfs_mount.source.is_none());
+        assert_eq!(
+            tmpfs_mount.tmpfs_options.as_ref().unwrap().size_bytes,
+            Some(4096)
+        );
+
+        let mut missing = spec;
+        missing.mounts.first_mut().unwrap().volume =
+            ployz_core::ServiceVolumeReference::parse("missing").unwrap();
+        assert!(matches!(
+            docker_mounts(&missing),
+            Err(Error::UnknownVolumeReference(reference)) if reference.as_str() == "missing"
+        ));
     }
 
     #[test]
