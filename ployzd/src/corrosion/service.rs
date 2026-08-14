@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{Read, Write},
     net::SocketAddr,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -17,7 +17,7 @@ use bollard::{
 };
 use serde::Serialize;
 
-use crate::docker::ManagedService;
+use crate::{docker::ManagedService, filesystem::atomic_write};
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
@@ -257,22 +257,6 @@ async fn wait_ready(api: &ApiClient) -> Result<(), Error> {
     })
     .await
     .map_err(|_| Error::Api("service did not become ready within 15 seconds".into()))?;
-    Ok(())
-}
-
-fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> Result<(), Error> {
-    let temporary = path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(mode)
-        .open(&temporary)?;
-    file.set_permissions(fs::Permissions::from_mode(mode))?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    fs::rename(temporary, path)?;
-    File::open(path.parent().expect("installed file has a parent"))?.sync_all()?;
     Ok(())
 }
 

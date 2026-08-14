@@ -331,6 +331,7 @@ fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservatio
     ContainerObservation {
         container_id: ContainerId::parse(id).unwrap(),
         display_name: name.into(),
+        created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
         service_id: service_id.clone(),
         service_name: ServiceName::parse("api").unwrap(),

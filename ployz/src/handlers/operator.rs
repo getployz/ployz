@@ -97,6 +97,15 @@ pub fn service_logs(root: &ArgMatches) -> Result<(), Error> {
         .get_many::<String>("service-or-container")
         .map(|values| values.cloned().collect::<Vec<_>>())
         .unwrap_or_default();
+    service_logs_with(root, explicit)
+}
+
+pub(super) fn caddy_logs(root: &ArgMatches) -> Result<(), Error> {
+    service_logs_with(root, vec![crate::caddy::SERVICE_NAME.into()])
+}
+
+fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {
+    let leaf = leaf_matches(root);
     let (args, context, compose_selection) = if service_logs_use_compose(&explicit) {
         let project = load_project(&LoadOptions {
             command: "logs".into(),

@@ -248,6 +248,22 @@ async fn run_connected(
     Ok(io.execute(plan.operations()).await)
 }
 
+pub(super) async fn deploy_requested(
+    client: &mut Client,
+    requested: &RequestedServiceSpec,
+) -> Result<(), Error> {
+    finish(
+        run_connected(
+            &mut RemoteWorkflow {
+                client,
+                auto_confirm: true,
+            },
+            requested,
+        )
+        .await?,
+    )
+}
+
 async fn deploy_connected(
     io: &mut impl WorkflowIo,
     project: &mut crate::compose::ComposeProject,

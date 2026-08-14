@@ -271,6 +271,7 @@ fn observation(
     ContainerObservation {
         container_id: container_id.clone(),
         display_name: container_id.to_string(),
+        created_at_unix_nanos: 0,
         machine_id: machine_id.clone(),
         service_id: spec.service_id.clone(),
         service_name: spec.name.clone(),

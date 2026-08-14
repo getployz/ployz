@@ -20,7 +20,7 @@ mod inspect;
 mod lifecycle;
 
 pub(super) use inspect::{list, rtt, wireguard_show};
-pub(super) use lifecycle::{add, remove};
+pub(super) use lifecycle::{add, init, remove};
 
 const DEFAULT_WIREGUARD_PORT: u16 = 51820;
 
@@ -75,6 +75,10 @@ impl ConnectionOptions {
 
     pub(super) fn load_config(&self) -> Result<Config, Error> {
         Config::load(&self.config_path).map_err(|error| error.to_string().into())
+    }
+
+    pub(super) fn load_or_empty_config(&self) -> Result<Config, Error> {
+        Config::load_or_empty(&self.config_path).map_err(|error| error.to_string().into())
     }
 }
 

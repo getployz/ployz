@@ -2,9 +2,12 @@
 
 mod docker_image;
 
+pub mod caddy;
 pub mod corrosion;
 pub mod dns;
 pub mod docker;
+#[doc(hidden)]
+pub mod filesystem;
 pub mod logs;
 pub mod machine;
 pub mod metrics;

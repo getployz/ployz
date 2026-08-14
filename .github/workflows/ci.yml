@@ -130,3 +130,4 @@ jobs:
           done
           retry_once cargo test --package ployz --test service_cluster --locked -- --ignored
           retry_once cargo test --package ployz --test internal_dns_cluster --locked -- --ignored
+          retry_once cargo test --package ployz --test caddy_cluster --locked -- --ignored

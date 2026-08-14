@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
+    net::IpAddr,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
@@ -213,6 +214,7 @@ impl LocalMachineStore {
         &mut self,
         name: ployz_core::MachineName,
         cluster_network: Ipv4Net,
+        public_ip: Option<IpAddr>,
         advertised_endpoints: Vec<ployz_core::AdvertisedEndpoint>,
         wireguard_mtu: Option<u32>,
     ) -> Result<Machine, StoreError> {
@@ -233,7 +235,7 @@ impl LocalMachineStore {
                 .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
             management_address: management_address(public_key),
             public_key,
-            public_ip: None,
+            public_ip,
             advertised_endpoints,
             runtime: local_runtime(),
         };

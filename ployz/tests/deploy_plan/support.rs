@@ -126,6 +126,7 @@ pub(super) fn container(
     ContainerObservation {
         container_id: container_id(hex),
         display_name: format!("{}-{hex}", requested.name),
+        created_at_unix_nanos: 0,
         machine_id: machine_id(machine_hex),
         service_id: service_id.clone(),
         service_name: requested.name.clone(),

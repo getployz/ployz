@@ -6,15 +6,16 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, MachineSelector,
-    MachineTokenRequest, NameMatches, PublicIpDiscovery, RegisterRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RpcRequest, resolve_machine_selector,
+    InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineId,
+    MachineName, MachineSelector, MachineToken, MachineTokenRequest, MembershipObservation,
+    NameMatches, PublicIpDiscovery, RegisterRequest, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RpcRequest, resolve_machine_selector,
 };
 
 use super::{ConnectionOptions, machine_list, parse_endpoints, runtime, target};
 use crate::{
     connect::{Client, ConnectError, SystemConnector, connect_selected_with},
-    context::{Connection, ConnectionSource, SelectedConnections, Transport},
+    context::{Connection, ConnectionSource, Context, SelectedConnections, Transport},
     handlers::{Error, leaf_matches, string_values},
 };
 
@@ -145,9 +146,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    if !matches.get_flag("no-caddy") {
-        return Err("machine add currently requires --no-caddy".into());
-    }
+    let deploy_caddy = !matches.get_flag("no-caddy");
     let options = ConnectionOptions::from_matches(root)?;
     let (mut config, context_name) = options.active_config()?;
     let destination = target(matches, "destination")?;
@@ -158,42 +157,37 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         connection,
         matches.get_one::<String>("ssh-key").map(String::as_str),
     )?;
-    let name = matches
+    let requested_name = matches
         .get_one::<String>("name")
         .map(|name| MachineName::parse(name).map_err(|error| error.to_string()))
         .transpose()?;
-    let public_ip = matches
-        .get_one::<String>("public-ip")
-        .map(String::as_str)
-        .unwrap_or("auto");
-    let public_ip = match public_ip {
-        "auto" => PublicIpDiscovery::Auto,
-        "" | "none" => PublicIpDiscovery::Disabled,
-        value => PublicIpDiscovery::Override(
-            value
-                .parse()
-                .map_err(|_| format!("invalid public IP {value:?}"))?,
-        ),
-    };
-    let port = *matches
-        .get_one::<u16>("wg-port")
-        .expect("WireGuard port has a default");
-    let endpoints = parse_endpoints(&string_values(matches, "wg-endpoint"), port)?;
+    let token_request = token_request(matches)?;
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     if !matches.get_flag("no-install") {
         crate::provisioning::provision(matches)?;
     }
 
-    let assigned = runtime()?.block_on(async {
+    let (assigned, caddy_settings) = runtime()?.block_on(async {
         let mut entry = options.connect().await?;
         let visible = machine_list(&mut entry).await?;
-        let mut target_client = connect_direct(&connection).await?;
-        let token_request = MachineTokenRequest {
-            advertised_endpoints: endpoints,
-            public_ip,
-            wireguard_port: port,
+        let caddy_settings = if deploy_caddy {
+            let live = entry
+                .live_services()
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::caddy::newest_existing_settings(
+                &live
+                    .containers
+                    .successes
+                    .into_iter()
+                    .flat_map(|success| success.value)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
         };
+        let mut target_client = connect_direct(&connection).await?;
         let mut token = target_client
             .request(RpcRequest::machine_token(token_request.clone()), None)
             .await
@@ -237,14 +231,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .cloned()
                 .map_err(|error| error.to_string())?;
         }
-        let name = match name {
-            Some(name) => name,
-            None if token.runtime.hostname.is_empty() => {
-                return Err("Machine name is required because the remote hostname is empty".into());
-            }
-            None => MachineName::parse(token.runtime.hostname.clone())
-                .map_err(|error| error.to_string())?,
-        };
+        let name = machine_name(requested_name, &token)?;
 
         // TODO(UT-140): registration is intentionally unfenced and may succeed on a minority.
         let registration = entry
@@ -276,7 +263,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             .map_err(|error| error.to_string())?
             .decode_join_accepted()
             .map_err(|error| error.to_string())?;
-        Ok::<_, Error>(assigned)
+
+        Ok::<_, Error>((assigned, caddy_settings))
     })?;
 
     connection = connection.with_machine_id(assigned.id.clone());
@@ -287,8 +275,214 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         .connections
         .push(connection);
     config.save().map_err(|error| error.to_string())?;
+
+    if let Some((image, machines, caddy_config)) = caddy_settings {
+        runtime()?.block_on(async {
+            let mut entry = options.connect().await?;
+            wait_machine_up(&mut entry, &assigned.id).await?;
+            // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
+            let requested = crate::caddy::service_spec(image, machines, caddy_config);
+            crate::handlers::workflow::deploy_requested(&mut entry, &requested).await
+        })?;
+    }
     println!("Added Machine {} ({})", assigned.name, assigned.id);
     Ok(())
+}
+
+pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let Some(destination) = matches.get_one::<String>("destination") else {
+        // TODO(UT-049): local Machine initialization remains outside the remote lifecycle path.
+        return Err(
+            "local machine initialisation is not implemented; specify a remote machine".into(),
+        );
+    };
+    if matches.get_one::<String>("connect").is_some() {
+        return Err("machine init creates a new context; do not use --connect".into());
+    }
+    let options = ConnectionOptions::from_matches(root)?;
+    let mut config = options.load_or_empty_config()?;
+    let context_name = matches
+        .get_one::<String>("context")
+        .cloned()
+        .unwrap_or_else(|| "default".into());
+    if config.contexts.contains_key(&context_name) {
+        return Err(format!("context {context_name:?} already exists").into());
+    }
+    let connection = destination
+        .parse::<Connection>()
+        .map_err(|error| error.to_string())?;
+    let connection = configure_ssh_key(
+        connection,
+        matches.get_one::<String>("ssh-key").map(String::as_str),
+    )?;
+    let requested_name = matches
+        .get_one::<String>("name")
+        .map(|name| MachineName::parse(name).map_err(|error| error.to_string()))
+        .transpose()?;
+    let token_request = token_request(matches)?;
+    let cluster_network = matches
+        .get_one::<String>("network")
+        .expect("Cluster network has a default")
+        .parse()
+        .map_err(|error| format!("invalid Cluster network: {error}"))?;
+    let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
+    let yes = matches.get_flag("yes");
+    if !matches.get_flag("no-install") {
+        crate::provisioning::provision(matches)?;
+    }
+
+    let (machine, connection) = runtime()?.block_on(async {
+        let mut target = connect_direct(&connection).await?;
+        let mut token = target
+            .request(RpcRequest::machine_token(token_request.clone()), None)
+            .await
+            .map_err(|error| error.to_string())?
+            .decode_machine_token()
+            .cloned()
+            .map_err(|error| error.to_string())?;
+        let details = target
+            .request(RpcRequest::inspect(InspectRequest::default()), None)
+            .await
+            .map_err(|error| error.to_string())?
+            .decode_machine_details()
+            .cloned()
+            .map_err(|error| error.to_string())?;
+        if details.phase != LocalMachinePhase::Uninitialized {
+            confirm(yes, "Reset the Machine before initialising a new Cluster?")?;
+            target
+                .request(RpcRequest::reset(), None)
+                .await
+                .map_err(|error| error.to_string())?
+                .decode_reset_accepted()
+                .map_err(|error| error.to_string())?;
+            target = reconnect_direct(&connection).await?;
+            token = target
+                .request(RpcRequest::machine_token(token_request), None)
+                .await
+                .map_err(|error| error.to_string())?
+                .decode_machine_token()
+                .cloned()
+                .map_err(|error| error.to_string())?;
+        }
+        let name = machine_name(requested_name, &token)?;
+        let machine = target
+            .request(
+                RpcRequest::initialize(InitializeRequest {
+                    name,
+                    cluster_network,
+                    public_ip: token.public_ip,
+                    advertised_endpoints: token.advertised_endpoints,
+                    wireguard_mtu,
+                }),
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .decode_initialized()
+            .cloned()
+            .map_err(|error| error.to_string())?;
+        let connection = connection.with_machine_id(machine.id.clone());
+        Ok::<_, Error>((machine, connection))
+    })?;
+
+    config.current_context = context_name.clone();
+    config.contexts.insert(
+        context_name,
+        Context {
+            connections: vec![connection.clone()],
+        },
+    );
+    config.save().map_err(|error| error.to_string())?;
+    if !matches.get_flag("no-caddy") {
+        runtime()?.block_on(async {
+            let mut ready = wait_direct_participating(&connection).await?;
+            let image = crate::caddy::latest_image().await?;
+            let requested = crate::caddy::service_spec(image, Vec::new(), None);
+            crate::handlers::workflow::deploy_requested(&mut ready, &requested).await
+        })?;
+    }
+    if !matches.get_flag("no-dns") {
+        eprintln!("WARNING: hosted DNS reservation is not implemented");
+    }
+    println!("Initialised Machine {} ({})", machine.name, machine.id);
+    Ok(())
+}
+
+fn token_request(matches: &ArgMatches) -> Result<MachineTokenRequest, Error> {
+    let port = *matches
+        .get_one::<u16>("wg-port")
+        .expect("WireGuard port has a default");
+    let public_ip = match matches
+        .get_one::<String>("public-ip")
+        .map(String::as_str)
+        .unwrap_or("auto")
+    {
+        "auto" => PublicIpDiscovery::Auto,
+        "" | "none" => PublicIpDiscovery::Disabled,
+        value => PublicIpDiscovery::Override(
+            value
+                .parse()
+                .map_err(|_| format!("invalid public IP {value:?}"))?,
+        ),
+    };
+    Ok(MachineTokenRequest {
+        advertised_endpoints: parse_endpoints(&string_values(matches, "wg-endpoint"), port)?,
+        public_ip,
+        wireguard_port: port,
+    })
+}
+
+fn machine_name(
+    requested: Option<MachineName>,
+    token: &MachineToken,
+) -> Result<MachineName, Error> {
+    match requested {
+        Some(name) => Ok(name),
+        None if token.runtime.hostname.is_empty() => {
+            Err("Machine name is required because the remote hostname is empty".into())
+        }
+        None => MachineName::parse(token.runtime.hostname.clone())
+            .map_err(|error| error.to_string().into()),
+    }
+}
+
+async fn wait_machine_up(entry: &mut Client, machine_id: &MachineId) -> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if machine_list(entry).await.is_ok_and(|machines| {
+                machines.iter().any(|observation| {
+                    observation.machine.id == *machine_id
+                        && observation.membership == MembershipObservation::Up
+                })
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| Error::from("new Machine did not become available for Caddy deployment"))
+}
+
+async fn wait_direct_participating(connection: &Connection) -> Result<Client, Error> {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Ok(mut client) = connect_direct(connection).await
+                && client
+                    .request(RpcRequest::inspect(InspectRequest::default()), None)
+                    .await
+                    .ok()
+                    .and_then(|response| response.decode_machine_details().ok().cloned())
+                    .is_some_and(|details| details.phase == LocalMachinePhase::Participating)
+            {
+                return client;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| Error::from("initial Machine did not become ready"))
 }
 
 fn configure_ssh_key(mut connection: Connection, key: Option<&str>) -> Result<Connection, Error> {

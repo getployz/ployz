@@ -44,6 +44,7 @@ pub const REMOVE_LOCAL_MACHINE_CAPABILITY: &str = "ployz.machine.remove-local.v1
 pub const REMOVE_MACHINE_CAPABILITY: &str = "ployz.machine.remove.v1";
 pub const INSPECT_WIREGUARD_CAPABILITY: &str = "ployz.wireguard.inspect.v1";
 pub const LIST_IMAGES_CAPABILITY: &str = "ployz.image.list.v1";
+pub const GET_CADDY_CONFIG_CAPABILITY: &str = "ployz.caddy.config.v1";
 pub const UNREGISTRY_PORT: u16 = 51500;
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
@@ -187,6 +188,8 @@ fn default_wireguard_port() -> u16 {
 pub struct InitializeRequest {
     pub name: MachineName,
     pub cluster_network: Ipv4Net,
+    #[serde(default)]
+    pub public_ip: Option<IpAddr>,
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
@@ -277,6 +280,9 @@ pub struct ListImagesRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetCaddyConfigRequest {}
 
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -518,6 +524,14 @@ impl RpcRequest {
     }
 
     #[must_use]
+    pub fn get_caddy_config() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::GetCaddyConfig(GetCaddyConfigRequest {}),
+        }
+    }
+
+    #[must_use]
     pub fn inspect_wireguard() -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -553,6 +567,7 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     VolumeDetails => "volume_details",
     VolumeRemoved => "volume_removed",
     MachineImages => "machine_images",
+    CaddyConfig => "caddy_config",
     MachineUpdated => "machine_updated",
     LocalMachineRemoved => "local_machine_removed",
     MachineRemoved => "machine_removed",
@@ -637,6 +652,11 @@ pub struct MachineImages {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CaddyConfig {
+    pub caddyfile: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineUpdated {
     pub machine: Machine,
 }
@@ -707,6 +727,7 @@ define_response_body! {
     VolumeDetails(VolumeDetails) => VolumeDetails,
     VolumeRemoved(VolumeRemoved) => VolumeRemoved,
     MachineImages(MachineImages) => MachineImages,
+    CaddyConfig(CaddyConfig) => CaddyConfig,
     MachineUpdated(MachineUpdated) => MachineUpdated,
     LocalMachineRemoved(LocalMachineRemoved) => LocalMachineRemoved,
     MachineRemoved(MachineRemoved) => MachineRemoved,
@@ -891,6 +912,14 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn caddy_config(caddyfile: String) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::CaddyConfig(CaddyConfig { caddyfile }),
+        }
+    }
+
+    #[must_use]
     pub fn wireguard_inspected(device: WireGuardDevice) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -1044,6 +1073,15 @@ impl RpcResponse {
             Ok(images)
         } else {
             Err(self.unexpected("machine_images"))
+        }
+    }
+
+    pub fn decode_caddy_config(&self) -> Result<&str, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::CaddyConfig(config) = &self.body {
+            Ok(&config.caddyfile)
+        } else {
+            Err(self.unexpected("caddy_config"))
         }
     }
 

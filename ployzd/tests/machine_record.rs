@@ -56,12 +56,14 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         .initialize(
             MachineName::parse("first").unwrap(),
             "10.210.0.0/16".parse().unwrap(),
+            Some("203.0.113.1".parse().unwrap()),
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             Some(1400),
         )
         .unwrap();
     assert_eq!(first.record().phase, LocalMachinePhase::Participating);
     assert_eq!(first.record().machine.as_ref(), Some(&initialized));
+    assert_eq!(initialized.public_ip, Some("203.0.113.1".parse().unwrap()));
     assert_eq!(
         first.record().cluster_network.unwrap().to_string(),
         "10.210.0.0/16"
@@ -71,6 +73,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
             .initialize(
                 MachineName::parse("again").unwrap(),
                 "10.210.0.0/16".parse().unwrap(),
+                None,
                 vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
                 None,
             )
@@ -117,6 +120,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         .initialize(
             MachineName::parse("machine").unwrap(),
             "10.210.0.0/16".parse().unwrap(),
+            None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             None,
         )
@@ -153,6 +157,7 @@ fn machine_update_is_atomic_and_durable() {
         .initialize(
             MachineName::parse("before").unwrap(),
             "10.210.0.0/16".parse().unwrap(),
+            None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             None,
         )

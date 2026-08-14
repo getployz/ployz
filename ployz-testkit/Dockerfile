@@ -29,6 +29,7 @@ COPY --from=docker-bin /usr/local/bin/containerd /usr/local/bin/containerd-shim-
 RUN mkdir -p /opt/ployz/images \
  && skopeo copy docker://ghcr.io/unlabs-dev/corrosion:2026.6.15 docker-archive:/opt/ployz/images/corrosion.tar:ghcr.io/unlabs-dev/corrosion:2026.6.15 \
  && skopeo copy docker://docker.io/library/alpine:3.23.3 docker-archive:/opt/ployz/images/alpine.tar:alpine:3.23.3 \
+ && skopeo copy docker://docker.io/library/caddy:2.10.2 docker-archive:/opt/ployz/images/caddy.tar:caddy:2.10.2 \
  && skopeo copy docker://ghcr.io/psviderski/unregistry:0.4.1 docker-archive:/opt/ployz/images/unregistry.tar:ghcr.io/psviderski/unregistry:0.4.1
 COPY --from=build /ployzd /usr/local/bin/ployzd
 COPY --from=build /ployz /usr/local/bin/ployz

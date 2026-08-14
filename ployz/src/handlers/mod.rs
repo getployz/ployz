@@ -10,6 +10,7 @@ use clap_complete::{Shell, generate};
 use thiserror::Error as ThisError;
 
 mod build;
+mod caddy;
 mod context;
 mod image;
 mod machine;
@@ -172,13 +173,6 @@ where
     })
 }
 
-fn provision_then_continue(matches: &ArgMatches, command: &str) -> Result<(), Error> {
-    if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches)?;
-    }
-    not_implemented(command)
-}
-
 type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
 macro_rules! declare_handler {
@@ -207,9 +201,9 @@ macro_rules! stub_handlers {
 
 stub_handlers! {
     build(root) { build::run(root) } => "build";
-    caddy_config => "caddy config";
-    caddy_deploy => "caddy deploy";
-    caddy_logs => "caddy logs";
+    caddy_config(root) { caddy::config(root) } => "caddy config";
+    caddy_deploy(root) { caddy::deploy(root) } => "caddy deploy";
+    caddy_logs(root) { operator::caddy_logs(root) } => "caddy logs";
     context(root) { context::select(root, None) } => "ctx";
     context_connection(root) { context::select_connection(root) } => "ctx connection";
     context_list(root) { context::list(root) } => "ctx ls";
@@ -236,14 +230,7 @@ stub_handlers! {
     } => "logs";
     list(root) { service::list(root) } => "ls";
     machine_add(root) { machine::add(root) } => "machine add";
-    machine_init(root) {
-        let matches = leaf_matches(root);
-        if matches.get_one::<String>("destination").is_none() {
-            Err("local machine initialisation is not implemented; specify a remote machine".into())
-        } else {
-            provision_then_continue(matches, "machine init")
-        }
-    } => "machine init";
+    machine_init(root) { machine::init(root) } => "machine init";
     machine_logs(root) { operator::machine_logs(root) } => "machine logs";
     machine_list(root) { machine::list(root) } => "machine ls";
     machine_rename(root) { machine::rename(root) } => "machine rename";
@@ -306,11 +293,11 @@ mod tests {
         let mut command = crate::cli::command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "caddy", "config"])
+            .try_get_matches_from(["ployz", "dns", "show"])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("ployz caddy config is not implemented yet".into())
+            Err("ployz dns show is not implemented yet".into())
         );
     }
 

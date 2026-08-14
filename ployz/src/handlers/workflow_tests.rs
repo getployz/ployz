@@ -524,7 +524,9 @@ fn machine() -> ployz_core::MachineObservation {
             subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
             management_address: ManagementAddress("::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
+            public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
+            runtime: Default::default(),
         },
         membership: MembershipObservation::Up,
         selected_endpoint: None,
@@ -567,6 +569,7 @@ fn observation(
     ContainerObservation {
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("api-{id}"),
+        created_at_unix_nanos: 0,
         machine_id: machine().machine.id,
         service_id: service_id.clone(),
         service_name: requested.name,

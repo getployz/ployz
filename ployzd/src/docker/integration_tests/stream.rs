@@ -26,6 +26,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         .initialize(
             MachineName::parse("stream-test").unwrap(),
             "10.210.0.0/16".parse().unwrap(),
+            None,
             vec![ployz_core::AdvertisedEndpoint(address)],
             None,
         )

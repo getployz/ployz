@@ -324,6 +324,17 @@ impl Client {
             .map_err(ConnectError::Codec)
     }
 
+    pub async fn get_caddy_config(
+        &mut self,
+        target: Option<MachineSelector>,
+    ) -> Result<String, ConnectError> {
+        self.request(RpcRequest::get_caddy_config(), target.as_ref())
+            .await?
+            .decode_caddy_config()
+            .map(ToOwned::to_owned)
+            .map_err(ConnectError::Codec)
+    }
+
     pub async fn create_volume(
         &mut self,
         machine_id: &MachineId,
@@ -477,6 +488,7 @@ impl Client {
                         | RpcResponseBody::VolumeList(_)
                         | RpcResponseBody::VolumeDetails(_)
                         | RpcResponseBody::VolumeRemoved(_)
+                        | RpcResponseBody::CaddyConfig(_)
                         | RpcResponseBody::MachineUpdated(_)
                         | RpcResponseBody::LocalMachineRemoved(_)
                         | RpcResponseBody::MachineRemoved(_)

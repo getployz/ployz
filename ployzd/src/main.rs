@@ -6,7 +6,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     net::{IpAddr, SocketAddr},
-    os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, chown},
+    os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -14,12 +14,14 @@ use std::{
 use clap::{Parser, Subcommand};
 use ployz_core::{LocalMachinePhase, MachineRpcServer};
 use ployzd::{
+    caddy,
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, RunningCorrosion,
         run_machine_publisher_with_restart,
     },
     dns,
     docker::{ContainerObserver, LocalDocker, MachineSpecStore},
+    filesystem::set_ployz_group,
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkPlane, machine_gateway},
@@ -152,6 +154,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (participating, participating_rx) =
         watch::channel(local_record.phase == LocalMachinePhase::Participating);
     let (reset, mut reset_rx) = watch::channel(false);
+    let caddyfile = caddy::caddyfile_path(&args.data_dir);
+    let caddy_admin_socket = args
+        .socket
+        .parent()
+        .unwrap_or_else(|| Path::new("/run/ployz"))
+        .join("caddy/admin.sock");
     let service = MachineService::with_cluster(
         Arc::clone(&store),
         reset.clone(),
@@ -159,7 +167,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client())),
     )
-    .with_optional_containers(docker, specs);
+    .with_optional_containers(docker, specs)
+    .with_caddyfile(caddyfile.clone());
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
         local_record.id.clone(),
@@ -223,12 +232,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     let dns = async {
-        if !wait_for_participation(participating_rx, shutdown_rx.clone()).await? {
+        if !wait_for_participation(participating_rx.clone(), shutdown_rx.clone()).await? {
             return Ok(());
         }
         match (local_record.machine.clone(), replicated_store.clone()) {
             (Some(machine), Some(replicated)) => {
                 dns::run(machine, replicated, dns_upstreams, shutdown_rx.clone()).await
+            }
+            _ => {
+                wait_for_shutdown(shutdown_rx.clone()).await;
+                Ok(())
+            }
+        }
+    };
+    let caddy = async {
+        if !wait_for_participation(participating_rx.clone(), shutdown_rx.clone()).await? {
+            return Ok(());
+        }
+        match (local_record.machine.clone(), replicated_store.clone()) {
+            (Some(machine), Some(replicated)) => {
+                caddy::run(
+                    machine,
+                    replicated,
+                    caddyfile,
+                    caddy_admin_socket,
+                    shutdown_rx.clone(),
+                )
+                .await
             }
             _ => {
                 wait_for_shutdown(shutdown_rx.clone()).await;
@@ -245,6 +275,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             network_runner,
             observer,
             dns,
+            caddy,
         )
         .map(|_| ())
     };
@@ -445,7 +476,7 @@ fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
     fs::create_dir_all(parent)?;
     if parent_created {
         fs::set_permissions(parent, fs::Permissions::from_mode(0o750))?;
-        set_socket_group(parent)?;
+        set_ployz_group(parent)?;
     }
 
     let mut lock_path = path.as_os_str().to_owned();
@@ -480,30 +511,8 @@ fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
     }
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
-    set_socket_group(path)?;
+    set_ployz_group(path)?;
     Ok((listener, lock))
-}
-
-fn set_socket_group(path: &Path) -> io::Result<()> {
-    let metadata = fs::metadata(path)?;
-    let gid = if fs::metadata("/proc/self")?.uid() == 0 {
-        group_gid("ployz").unwrap_or(0)
-    } else {
-        metadata.gid()
-    };
-    chown(path, None, Some(gid))
-}
-
-fn group_gid(name: &str) -> Option<u32> {
-    fs::read_to_string("/etc/group")
-        .ok()?
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split(':');
-            (fields.next()? == name)
-                .then(|| fields.nth(1)?.parse().ok())
-                .flatten()
-        })
 }
 
 fn notify(state: NotifyState<'_>) {
