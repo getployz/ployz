@@ -41,7 +41,8 @@ jobs:
         with:
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
-          args: release --snapshot --clean --skip=publish
+          # The OCI/AWS-LC graph exceeds the macOS runner's linker budget when targets build together.
+          args: release --snapshot --clean --skip=publish --parallelism=1 --timeout=60m
       - run: bash scripts/test-release-contracts.sh && bash scripts/test-cli-installer.sh
       - run: softwareupdate --install-rosetta --agree-to-license
       - run: scripts/verify-release.sh macos
