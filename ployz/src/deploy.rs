@@ -65,7 +65,14 @@ impl DeployPlan {
     }
 
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
-        let operations = self.flattened_operations();
+        Self::failure_outcome_from(self.operations(), completed_count, error)
+    }
+
+    pub(super) fn failure_outcome_from<E>(
+        operations: &[DeployOperation],
+        completed_count: usize,
+        error: E,
+    ) -> Option<DeployOutcome<E>> {
         let completed = operations.get(..completed_count)?;
         let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
         Some(DeployOutcome {
@@ -84,7 +91,20 @@ impl DeployPlan {
         error: E,
         compensation: ReplacementCompensation<E>,
     ) -> Option<DeployOutcome<E>> {
-        let operations = self.flattened_operations();
+        Self::replacement_health_failure_outcome_from(
+            self.operations(),
+            completed_count,
+            error,
+            compensation,
+        )
+    }
+
+    pub(super) fn replacement_health_failure_outcome_from<E>(
+        operations: &[DeployOperation],
+        completed_count: usize,
+        error: E,
+        compensation: ReplacementCompensation<E>,
+    ) -> Option<DeployOutcome<E>> {
         let completed = operations.get(..completed_count)?;
         let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
         let DeployOperation::ReplaceContainer(operation) = failed else {
@@ -104,7 +124,7 @@ impl DeployPlan {
     #[must_use]
     pub fn success_outcome<E>(&self) -> DeployOutcome<E> {
         DeployOutcome {
-            completed: self.flattened_operations(),
+            completed: self.operations().to_vec(),
             failed: None,
             unexecuted: Vec::new(),
         }

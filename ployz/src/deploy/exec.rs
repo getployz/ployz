@@ -239,21 +239,28 @@ async fn execute_with<C: MachineOperations>(
         match execute_operation(operation, client, cancellation).await {
             Ok(()) => {}
             Err(OperationFailure::Ordinary(error)) => {
-                return plan
-                    .failure_outcome(index, error)
+                return DeployPlan::failure_outcome_from(&operations, index, error)
                     .expect("the failed flattened operation belongs to this plan");
             }
             Err(OperationFailure::ReplacementHealth {
                 error,
                 compensation,
             }) => {
-                return plan
-                    .replacement_health_failure_outcome(index, error, *compensation)
-                    .expect("replacement health failure belongs to the replacement operation");
+                return DeployPlan::replacement_health_failure_outcome_from(
+                    &operations,
+                    index,
+                    error,
+                    *compensation,
+                )
+                .expect("replacement health failure belongs to the replacement operation");
             }
         }
     }
-    plan.success_outcome()
+    DeployOutcome {
+        completed: operations,
+        failed: None,
+        unexecuted: Vec::new(),
+    }
 }
 
 async fn execute_operation<C: MachineOperations>(
@@ -277,9 +284,7 @@ async fn execute_operation<C: MachineOperations>(
         DeployOperation::StopContainer {
             machine_id,
             container_id,
-        } => client
-            .stop_container(machine_id, container_id, None)
-            .await
+        } => ignore_not_found(client.stop_container(machine_id, container_id, None).await)
             .map_err(|error| machine_error(MachineAction::StopContainer, error).into()),
         DeployOperation::RemoveContainer {
             machine_id,
@@ -365,11 +370,7 @@ async fn replace_container<C: MachineOperations>(
         let active = old.is_some_and(|old| super::is_active_runtime(&old.runtime));
         if active {
             client
-                .stop_container(
-                    &operation.machine_id,
-                    &operation.old_container_id,
-                    stop_grace_period(&operation.spec),
-                )
+                .stop_container(&operation.machine_id, &operation.old_container_id, None)
                 .await
                 .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
         }
@@ -396,6 +397,9 @@ async fn replace_container<C: MachineOperations>(
         )
         .await
     {
+        if !matches!(&error, ExecutionError::Health { .. }) {
+            return Err(error.into());
+        }
         let stop_new_container = client
             .stop_container(
                 &operation.machine_id,
@@ -432,11 +436,7 @@ async fn replace_container<C: MachineOperations>(
         // single replica here can still cause a brief interruption.
         ignore_not_found(
             client
-                .stop_container(
-                    &operation.machine_id,
-                    &operation.old_container_id,
-                    stop_grace_period(&operation.spec),
-                )
+                .stop_container(&operation.machine_id, &operation.old_container_id, None)
                 .await,
         )
         .map_err(|error| machine_error(MachineAction::StopContainer, error))?;

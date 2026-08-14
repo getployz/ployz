@@ -394,12 +394,12 @@ fn plan_global(
         if let Some((replaced_index, container)) = on_machine
             .iter()
             .copied()
-            .find(|(_, container)| is_running(container))
+            .find(|(_, container)| super::is_active_runtime(&container.runtime))
         {
             used.insert(replaced_index);
             for (index, other) in on_machine.iter().copied() {
                 if index != replaced_index
-                    && is_running(other)
+                    && super::is_active_runtime(&other.runtime)
                     && other.resolved_spec.ports.iter().any(|old| {
                         requested
                             .ports

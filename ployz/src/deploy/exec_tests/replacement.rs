@@ -38,6 +38,36 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
 }
 
 #[tokio::test]
+async fn replacement_inspect_failure_runs_no_health_compensation() {
+    let machine = machine('1');
+    let old = container('a');
+    let new = container('b');
+    let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StartFirst)]);
+    let client = Scripted::new(vec![
+        created(
+            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+            &new,
+        ),
+        ok(Call::Start(machine.clone(), new.clone())),
+        failed(Call::Inspect(machine, new), "inspect failed"),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::Operation {
+            error: ExecutionError::Machine {
+                action: MachineAction::InspectContainer,
+                ..
+            },
+            ..
+        })
+    ));
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn stop_first_health_failure_records_both_compensation_attempts() {
     for (stop_succeeds, restart_succeeds) in
         [(true, true), (true, false), (false, true), (false, false)]
@@ -195,6 +225,49 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
         assert!(outcome.failed.is_none());
+        client.assert_done();
+    }
+}
+
+#[tokio::test]
+async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
+    for order in [UpdateOrder::StartFirst, UpdateOrder::StopFirst] {
+        let machine = machine('1');
+        let old = container('a');
+        let new = container('b');
+        let mut operation = replacement(&machine, &old, order);
+        let DeployOperation::ReplaceContainer(replacement) = &mut operation else {
+            unreachable!()
+        };
+        replacement.spec.container.stop_grace_period_millis = Some(30_000);
+        let plan = plan(vec![operation]);
+        let mut steps = Vec::new();
+        if order == UpdateOrder::StopFirst {
+            steps.extend([
+                observed(Call::Inspect(machine.clone(), old.clone()), running()),
+                ok(Call::Stop(machine.clone(), old.clone())),
+            ]);
+        }
+        steps.extend([
+            created(
+                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+                &new,
+            ),
+            ok(Call::Start(machine.clone(), new.clone())),
+            observed(Call::Inspect(machine.clone(), new), healthy()),
+        ]);
+        if order == UpdateOrder::StartFirst {
+            steps.push(ok(Call::Stop(machine.clone(), old.clone())));
+        }
+        steps.push(ok(Call::Remove(machine, old)));
+        let client = Scripted::new(steps);
+
+        assert!(
+            execute_with(&plan, &client, &CancellationToken::new())
+                .await
+                .failed
+                .is_none()
+        );
         client.assert_done();
     }
 }

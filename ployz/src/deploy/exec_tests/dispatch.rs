@@ -175,13 +175,18 @@ async fn create_then_start_failure_keeps_the_container_without_cleanup() {
 }
 
 #[tokio::test]
-async fn remove_tolerates_a_missing_preliminary_stop_target() {
+async fn standalone_stop_and_remove_tolerate_missing_targets() {
     let machine = machine('1');
+    let stopped = container('9');
     let removed = container('a');
     let suffix = container('b');
     let mut missing = error("not found");
     missing.code = RpcErrorCode::NotFound;
     let plan = plan(vec![
+        DeployOperation::StopContainer {
+            machine_id: machine.clone(),
+            container_id: stopped.clone(),
+        },
         DeployOperation::RemoveContainer {
             machine_id: machine.clone(),
             container_id: removed.clone(),
@@ -189,6 +194,10 @@ async fn remove_tolerates_a_missing_preliminary_stop_target() {
         stop(&machine, &suffix),
     ]);
     let client = Scripted::new(vec![
+        Step(
+            Call::Stop(machine.clone(), stopped),
+            Reply::Error(missing.clone()),
+        ),
         Step(
             Call::Stop(machine.clone(), removed.clone()),
             Reply::Error(missing),

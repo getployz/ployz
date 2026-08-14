@@ -16,6 +16,7 @@ enum Call {
     Start(MachineId, ContainerId),
     Inspect(MachineId, ContainerId),
     Stop(MachineId, ContainerId),
+    StopWithGrace(MachineId, ContainerId, i32),
     Remove(MachineId, ContainerId),
 }
 
@@ -111,9 +112,13 @@ impl MachineOperations for Scripted {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
-        _grace_period_seconds: Option<i32>,
+        grace_period_seconds: Option<i32>,
     ) -> Result<(), RpcError> {
-        unit(self.next(Call::Stop(machine_id.clone(), container_id.clone())))
+        let call = grace_period_seconds.map_or_else(
+            || Call::Stop(machine_id.clone(), container_id.clone()),
+            |grace| Call::StopWithGrace(machine_id.clone(), container_id.clone(), grace),
+        );
+        unit(self.next(call))
     }
 
     async fn remove_container(

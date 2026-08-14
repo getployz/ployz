@@ -64,7 +64,7 @@ async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
             Call::Inspect(machine.clone(), hook_id.clone()),
             Reply::Pending,
         ),
-        ok(Call::Stop(machine.clone(), hook_id.clone())),
+        ok(Call::StopWithGrace(machine.clone(), hook_id.clone(), 0)),
     ]);
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
     assert!(matches!(
@@ -90,7 +90,7 @@ async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
             Call::Inspect(machine.clone(), hook_id.clone()),
             Reply::Pending,
         ),
-        failed(Call::Stop(machine, hook_id), "stop failed"),
+        failed(Call::StopWithGrace(machine, hook_id, 0), "stop failed"),
     ]);
     let cancel = cancellation.clone();
     tokio::spawn(async move {

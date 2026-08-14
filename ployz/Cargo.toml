@@ -32,7 +32,6 @@ tower = { version = "0.5.3", features = ["util"] }
 ployz-testkit.workspace = true
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio = { version = "1.53.1", features = ["test-util"] }
-tokio = { version = "1.53.1", features = ["test-util"] }
 
 [lints]
 workspace = true

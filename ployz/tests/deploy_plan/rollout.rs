@@ -86,6 +86,43 @@ fn sequence_failure_keeps_completed_failed_and_unexecuted_operations_exact() {
 }
 
 #[test]
+fn public_outcome_counts_follow_the_shallow_operations_view() {
+    let machine_id = machine_id('1');
+    let nested = DeployOperation::Sequence {
+        operations: vec![
+            DeployOperation::StopContainer {
+                machine_id: machine_id.clone(),
+                container_id: container_id('a'),
+            },
+            DeployOperation::StopContainer {
+                machine_id: machine_id.clone(),
+                container_id: container_id('b'),
+            },
+        ],
+    };
+    let tail = DeployOperation::StopContainer {
+        machine_id,
+        container_id: container_id('c'),
+    };
+    let plan = DeployPlan {
+        service_id: service_id('a'),
+        is_new_service: false,
+        operation: DeployOperation::Sequence {
+            operations: vec![nested.clone(), tail.clone()],
+        },
+    };
+
+    let outcome = plan.failure_outcome(1, "failed").unwrap();
+
+    assert_eq!(outcome.completed, vec![nested]);
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::Operation { operation, error: "failed" }) if operation == tail
+    ));
+    assert!(outcome.unexecuted.is_empty());
+}
+
+#[test]
 fn duplicate_service_names_are_reported_without_selecting_a_winner() {
     let requested = requested(ServiceMode::Global);
     let snapshot = DeploySnapshot {
