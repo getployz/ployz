@@ -1,5 +1,6 @@
 mod create;
 mod lifecycle;
+mod managed_service;
 mod spec_store;
 mod stream;
 mod volume;
@@ -30,6 +31,7 @@ use tokio::sync::watch;
 
 use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
 
+pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
 pub use unregistry::RunningUnregistry;
 

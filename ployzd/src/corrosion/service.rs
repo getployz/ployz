@@ -14,12 +14,10 @@ use bollard::{
         ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, RestartPolicy,
         RestartPolicyNameEnum,
     },
-    query_parameters::{CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder},
 };
-use ployz_core::PullPolicy;
 use serde::Serialize;
 
-use crate::docker_image::{is_not_found, prepare_image};
+use crate::docker::ManagedService;
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
@@ -86,8 +84,7 @@ impl CorrosionConfig {
         let admin = AdminClient::new(self.run_dir.join("admin.sock"));
         let docker = Docker::connect_with_socket_defaults()?;
         let service = DockerService {
-            docker,
-            name: self.container_name.clone(),
+            service: ManagedService::new(docker, self.container_name.clone(), IMAGE),
             data_dir: self.data_dir.clone(),
             run_dir: self.run_dir.clone(),
         };
@@ -171,37 +168,13 @@ impl RunningCorrosion {
 }
 
 struct DockerService {
-    docker: Docker,
-    name: String,
+    service: ManagedService,
     data_dir: PathBuf,
     run_dir: PathBuf,
 }
 
 impl DockerService {
     async fn start(&self) -> Result<(), Error> {
-        match self.docker.inspect_container(&self.name, None).await {
-            Ok(container) => {
-                let configured_image = container.config.and_then(|config| config.image);
-                if configured_image.as_deref() != Some(IMAGE) {
-                    self.cleanup().await?;
-                    self.create().await?;
-                } else if !container
-                    .state
-                    .and_then(|state| state.running)
-                    .unwrap_or(false)
-                {
-                    self.docker.start_container(&self.name, None).await?;
-                }
-            }
-            Err(error) if is_not_found(&error) => self.create().await?,
-            Err(error) => return Err(error.into()),
-        }
-        Ok(())
-    }
-
-    async fn create(&self) -> Result<(), Error> {
-        prepare_image(&self.docker, IMAGE, PullPolicy::Missing).await?;
-
         let mounts = [&self.data_dir, &self.run_dir]
             .into_iter()
             .map(|path| Mount {
@@ -240,42 +213,24 @@ impl DockerService {
             }),
             ..Default::default()
         };
-        self.docker
-            .create_container(
-                Some(
-                    CreateContainerOptionsBuilder::default()
-                        .name(&self.name)
-                        .build(),
-                ),
-                config,
-            )
-            .await?;
-        self.docker.start_container(&self.name, None).await?;
-        Ok(())
+        self.service
+            .ensure(config, |container| {
+                container
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.image.as_deref())
+                    == Some(IMAGE)
+            })
+            .await
+            .map_err(Into::into)
     }
 
     async fn stop(&self) -> Result<(), Error> {
-        match self.docker.stop_container(&self.name, None).await {
-            Ok(()) => Ok(()),
-            Err(error) if is_not_found(&error) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        self.service.stop().await.map_err(Into::into)
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
-        self.stop().await?;
-        match self
-            .docker
-            .remove_container(
-                &self.name,
-                Some(RemoveContainerOptionsBuilder::default().v(true).build()),
-            )
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(error) if is_not_found(&error) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        self.service.remove().await.map_err(Into::into)
     }
 }
 

@@ -7,13 +7,13 @@ use std::{
 };
 
 use tokio::{
-    io::{AsyncRead, AsyncWrite, copy_bidirectional},
+    io::copy_bidirectional,
     net::{TcpListener, UnixListener},
     process::Command,
     task::JoinSet,
 };
 
-use crate::connect::Client;
+use crate::connect::{BoxProxyStream, Client};
 
 use super::{PushError, command_error, docker_output, not_found};
 
@@ -97,7 +97,7 @@ impl ImageProxy {
                 let destination =
                     format!("TCP-CONNECT:host.docker.internal:{}", self.listener.port());
                 self.helper = Some(start_helper(&destination, None).await?);
-                self.helper.as_ref().expect("helper was stored").port
+                self.helper_port().await?
             }
             ProxyMode::Rootless => {
                 let socket = self
@@ -107,7 +107,7 @@ impl ImageProxy {
                 let destination = format!("UNIX-CONNECT:{}", socket.display());
                 let bind = format!("{}:{}", socket.display(), socket.display());
                 self.helper = Some(start_helper(&destination, Some(bind)).await?);
-                self.helper.as_ref().expect("helper was stored").port
+                self.helper_port().await?
             }
         };
         Ok(())
@@ -115,6 +115,13 @@ impl ImageProxy {
 
     pub(super) fn push_port(&self) -> u16 {
         self.push_port
+    }
+
+    async fn helper_port(&self) -> Result<u16, PushError> {
+        let id = &self.helper.as_ref().expect("helper was stored").id;
+        let port = helper_port(id).await?;
+        wait_for_port(port).await?;
+        Ok(port)
     }
 
     pub(super) async fn serve(&mut self, client: Client, remote: String) -> Result<(), PushError> {
@@ -216,12 +223,12 @@ impl Listener {
         }
     }
 
-    async fn accept(&self) -> Result<Box<dyn AsyncReadWrite>, PushError> {
+    async fn accept(&self) -> Result<BoxProxyStream, PushError> {
         match self {
             Self::Tcp(listener) => listener
                 .accept()
                 .await
-                .map(|(stream, _)| Box::new(stream) as Box<dyn AsyncReadWrite>)
+                .map(|(stream, _)| Box::new(stream) as BoxProxyStream)
                 .map_err(|error| PushError::Proxy {
                     action: "accept TCP connection",
                     diagnostic: error.to_string(),
@@ -229,7 +236,7 @@ impl Listener {
             Self::Unix { listener, .. } => listener
                 .accept()
                 .await
-                .map(|(stream, _)| Box::new(stream) as Box<dyn AsyncReadWrite>)
+                .map(|(stream, _)| Box::new(stream) as BoxProxyStream)
                 .map_err(|error| PushError::Proxy {
                     action: "accept Unix connection",
                     diagnostic: error.to_string(),
@@ -238,36 +245,12 @@ impl Listener {
     }
 }
 
-trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Unpin {}
-impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
-
 struct Helper {
     id: String,
-    port: u16,
 }
 
 async fn start_helper(destination: &str, bind: Option<String>) -> Result<Helper, PushError> {
     // TODO(UT-025): the helper image is intentionally fixed rather than configurable.
-    let inspected = docker_output(["image", "inspect", HELPER_IMAGE]).await?;
-    if !inspected.status.success() {
-        if !not_found(&inspected) {
-            return Err(command_error("inspect proxy helper image", &inspected));
-        }
-        let status = Command::new("docker")
-            .args(["pull", HELPER_IMAGE])
-            .status()
-            .await
-            .map_err(|error| PushError::Docker {
-                action: "pull proxy helper image",
-                diagnostic: error.to_string(),
-            })?;
-        if !status.success() {
-            return Err(PushError::Docker {
-                action: "pull proxy helper image",
-                diagnostic: format!("exited with {status}"),
-            });
-        }
-    }
     let name = format!(
         "ployz-push-proxy-{}-{}",
         std::process::id(),
@@ -308,22 +291,7 @@ async fn start_helper(destination: &str, bind: Option<String>) -> Result<Helper,
     if !created.status.success() {
         return Err(command_error("run proxy helper", &created));
     }
-    let id = String::from_utf8_lossy(&created.stdout).trim().to_owned();
-    let host_port = match helper_port(&id).await {
-        Ok(port) => port,
-        Err(error) => {
-            let _ = remove_helper(&id).await;
-            return Err(error);
-        }
-    };
-    if let Err(error) = wait_for_port(host_port).await {
-        let _ = remove_helper(&id).await;
-        return Err(error);
-    }
-    Ok(Helper {
-        id,
-        port: host_port,
-    })
+    Ok(Helper { id: name })
 }
 
 async fn helper_port(id: &str) -> Result<u16, PushError> {

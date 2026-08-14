@@ -5,21 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use bollard::{
-    errors::Error as DockerError,
-    models::{
-        ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, PortBinding,
-        RestartPolicy, RestartPolicyNameEnum,
-    },
-    query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
-    },
+use bollard::models::{
+    ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, PortBinding,
+    RestartPolicy, RestartPolicyNameEnum,
 };
-use futures_util::TryStreamExt;
 
 use crate::network::{DOCKER_NETWORK_NAME, UNREGISTRY_PORT};
 
-use super::{Error, LocalDocker};
+use super::{Error, LocalDocker, ManagedService};
 
 pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
@@ -49,7 +42,7 @@ impl LocalDocker {
             return Ok(None);
         };
         let service = RunningUnregistry {
-            docker: self.clone(),
+            service: ManagedService::new(self.client.clone(), NAME, IMAGE),
             socket,
             gateway,
         };
@@ -59,31 +52,17 @@ impl LocalDocker {
 }
 
 pub struct RunningUnregistry {
-    docker: LocalDocker,
+    service: ManagedService,
     socket: PathBuf,
     gateway: Ipv4Addr,
 }
 
 impl RunningUnregistry {
     async fn start(&self) -> Result<(), Error> {
-        match self.docker.client.inspect_container(NAME, None).await {
-            Ok(container) if self.matches(&container) => {
-                if !container
-                    .state
-                    .and_then(|state| state.running)
-                    .unwrap_or(false)
-                {
-                    self.docker.client.start_container(NAME, None).await?;
-                }
-            }
-            Ok(_) => {
-                self.cleanup().await?;
-                self.create().await?;
-            }
-            Err(error) if is_not_found(&error) => self.create().await?,
-            Err(error) => return Err(error.into()),
-        }
-        Ok(())
+        self.service
+            .ensure(self.config(), |container| self.matches(container))
+            .await
+            .map_err(Into::into)
     }
 
     fn matches(&self, container: &bollard::models::ContainerInspectResponse) -> bool {
@@ -112,25 +91,7 @@ impl RunningUnregistry {
                 == Some(CONFIG_VERSION)
     }
 
-    async fn create(&self) -> Result<(), Error> {
-        if let Err(error) = self.docker.client.inspect_image(IMAGE).await {
-            if !is_not_found(&error) {
-                return Err(error.into());
-            }
-            self.docker
-                .client
-                .create_image(
-                    Some(
-                        CreateImageOptionsBuilder::default()
-                            .from_image(IMAGE)
-                            .build(),
-                    ),
-                    None,
-                    None,
-                )
-                .try_collect::<Vec<_>>()
-                .await?;
-        }
+    fn config(&self) -> ContainerCreateBody {
         let port_bindings = HashMap::from([(
             "5000/tcp".into(),
             Some(vec![PortBinding {
@@ -138,7 +99,7 @@ impl RunningUnregistry {
                 host_port: Some(UNREGISTRY_PORT.to_string()),
             }]),
         )]);
-        let config = ContainerCreateBody {
+        ContainerCreateBody {
             image: Some(IMAGE.into()),
             env: Some(vec![
                 "UNREGISTRY_ADDR=:5000".into(),
@@ -179,41 +140,15 @@ impl RunningUnregistry {
                 ..Default::default()
             }),
             ..Default::default()
-        };
-        self.docker
-            .client
-            .create_container(
-                Some(CreateContainerOptionsBuilder::default().name(NAME).build()),
-                config,
-            )
-            .await?;
-        self.docker.client.start_container(NAME, None).await?;
-        Ok(())
+        }
     }
 
     pub async fn stop(&self) -> Result<(), Error> {
-        match self.docker.client.stop_container(NAME, None).await {
-            Ok(()) => Ok(()),
-            Err(error) if is_not_found(&error) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        self.service.stop().await.map_err(Into::into)
     }
 
     pub async fn cleanup(&self) -> Result<(), Error> {
-        self.stop().await?;
-        match self
-            .docker
-            .client
-            .remove_container(
-                NAME,
-                Some(RemoveContainerOptionsBuilder::default().v(true).build()),
-            )
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(error) if is_not_found(&error) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        self.service.remove().await.map_err(Into::into)
     }
 }
 
@@ -230,16 +165,6 @@ fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
 
 fn is_socket(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
-}
-
-fn is_not_found(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
 }
 
 #[cfg(test)]

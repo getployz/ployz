@@ -24,6 +24,8 @@ pub enum PushError {
     InvalidReference { reference: String, message: String },
     #[error("direct image push requires a tagged local reference")]
     DigestReference,
+    #[error("direct image push cannot preserve registry-with-port reference '{0}'")]
+    RegistryPortReference(String),
     #[error("unsupported platform '{0}'")]
     UnsupportedPlatform(String),
     #[error("image '{0}' not found locally")]
@@ -134,7 +136,7 @@ async fn push_to_machine(
     client: &Client,
     image: &str,
     platform: Option<&str>,
-    reference: &(String, String),
+    reference: &Reference,
     machine: &Machine,
     mode: ProxyMode,
 ) -> Result<(), PushError> {
@@ -179,7 +181,7 @@ impl PushSession {
         mode: ProxyMode,
         image: &str,
         platform: Option<&str>,
-        reference: &(String, String),
+        reference: &Reference,
     ) -> Result<(), PushError> {
         let mut session = Self {
             proxy: ImageProxy::open(mode).await?,
@@ -205,7 +207,7 @@ impl PushSession {
         remote: String,
         image: &str,
         platform: Option<&str>,
-        reference: &(String, String),
+        reference: &Reference,
     ) -> Result<(), PushError> {
         let temporary = temporary_reference(self.proxy.push_port(), reference);
         let tagged = docker_output(["tag", image, &temporary]).await?;
@@ -258,7 +260,7 @@ impl PushSession {
     }
 }
 
-fn tagged_reference(image: &str) -> Result<(String, String), PushError> {
+fn tagged_reference(image: &str) -> Result<Reference, PushError> {
     let reference = image
         .parse::<Reference>()
         .map_err(|error| PushError::InvalidReference {
@@ -268,16 +270,19 @@ fn tagged_reference(image: &str) -> Result<(String, String), PushError> {
     if reference.digest().is_some() {
         return Err(PushError::DigestReference);
     }
-    let tag = reference.tag().expect("parsed references have a tag");
-    let suffix = format!(":{tag}");
-    Ok((
-        image.strip_suffix(&suffix).unwrap_or(image).to_owned(),
-        tag.to_owned(),
-    ))
+    if reference.registry().contains(':') {
+        return Err(PushError::RegistryPortReference(image.into()));
+    }
+    Ok(reference)
 }
 
-fn temporary_reference(port: u16, (name, tag): &(String, String)) -> String {
-    format!("127.0.0.1:{port}/{name}:{tag}")
+fn temporary_reference(port: u16, reference: &Reference) -> String {
+    format!(
+        "127.0.0.1:{port}/{}/{}:{}",
+        reference.registry(),
+        reference.repository(),
+        reference.tag().expect("digest references were rejected")
+    )
 }
 
 fn validated_platform(platform: &str) -> Result<&str, PushError> {
@@ -373,6 +378,10 @@ mod tests {
             &tagged_reference("registry.test/team/api:v1").unwrap(),
         );
         assert_eq!(reference, "127.0.0.1:5000/registry.test/team/api:v1");
+        assert!(matches!(
+            tagged_reference("localhost:5000/team/api:v1"),
+            Err(PushError::RegistryPortReference(_))
+        ));
         assert!(tagged_reference("registry.test/team/api@sha256:abc").is_err());
         assert!(validated_platform("linux/riscv64").is_err());
     }
