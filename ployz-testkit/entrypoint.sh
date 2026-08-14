@@ -28,6 +28,7 @@ fi
 
 docker load --input /opt/ployz/images/corrosion.tar >/dev/null
 docker load --input /opt/ployz/images/alpine.tar >/dev/null
+docker load --input /opt/ployz/images/caddy.tar >/dev/null
 if [ -n "${PLOYZ_TESTKIT_HOST_API_PORT:-}" ]; then
   socat TCP-LISTEN:"$PLOYZ_TESTKIT_HOST_API_PORT",bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/run/ployz/ployz.sock &
 fi

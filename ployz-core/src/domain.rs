@@ -645,6 +645,9 @@ pub struct ContainerObservation {
     pub container_id: ContainerId,
     /// Generated Docker name for display, never identity or selection.
     pub display_name: String,
+    /// Docker creation time, used only to select the newest observed Service spec.
+    #[serde(default)]
+    pub created_at_unix_nanos: i64,
     pub machine_id: MachineId,
     pub service_id: ServiceId,
     pub service_name: ServiceName,

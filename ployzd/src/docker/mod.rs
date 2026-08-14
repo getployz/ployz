@@ -169,6 +169,12 @@ impl LocalDocker {
         Ok(ContainerObservation {
             container_id: container_id.clone(),
             display_name: display_name(inspected.name.as_deref()),
+            created_at_unix_nanos: inspected
+                .created
+                .as_deref()
+                .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
+                .and_then(|created| created.timestamp_nanos_opt())
+                .unwrap_or_default(),
             machine_id: machine_id.clone(),
             service_id: managed.service_id,
             service_name: managed.service_name,
@@ -262,6 +268,7 @@ fn display_name(name: Option<&str>) -> String {
 #[serde(rename_all = "PascalCase")]
 struct RawContainerInspect {
     name: Option<String>,
+    created: Option<String>,
     config: Option<RawContainerConfig>,
     state: Option<serde_json::Value>,
     network_settings: Option<RawNetworkSettings>,
@@ -271,6 +278,7 @@ impl RawContainerInspect {
     fn from_typed(inspected: &ContainerInspectResponse) -> Result<Self, serde_json::Error> {
         Ok(Self {
             name: inspected.name.clone(),
+            created: inspected.created.clone(),
             config: inspected.config.as_ref().map(|config| RawContainerConfig {
                 labels: config.labels.clone(),
                 healthcheck: config.healthcheck.clone(),

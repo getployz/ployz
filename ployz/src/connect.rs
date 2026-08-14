@@ -325,6 +325,26 @@ impl Client {
         })
     }
 
+    pub async fn get_caddy_config(
+        &mut self,
+        machine_id: Option<&MachineId>,
+    ) -> Result<String, ConnectError> {
+        let payload = RpcRequest::get_caddy_config().encode()?;
+        let request = match machine_id {
+            Some(machine_id) => targeted(payload, machine_id)?,
+            None => tonic::Request::new(payload),
+        };
+        let response = self
+            .rpc
+            .get_caddy_config(request)
+            .await?
+            .into_inner()
+            .decode_response()?;
+        decode_rpc(response, |response| {
+            response.decode_caddy_config().map(ToOwned::to_owned)
+        })
+    }
+
     pub async fn create_volume(
         &mut self,
         machine_id: &MachineId,
@@ -496,6 +516,7 @@ impl Client {
                         | RpcResponseBody::VolumeList(_)
                         | RpcResponseBody::VolumeDetails(_)
                         | RpcResponseBody::VolumeRemoved(_)
+                        | RpcResponseBody::CaddyConfig(_)
                         | RpcResponseBody::ResetAccepted(_)
                         | RpcResponseBody::Unknown { .. } => {
                             return Err(ConnectError::Codec(CodecError::UnexpectedResponse {

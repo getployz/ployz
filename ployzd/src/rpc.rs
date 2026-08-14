@@ -1,20 +1,22 @@
 use std::{
     collections::BTreeSet,
     net::IpAddr,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use ployz_core::{
     CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CREATE_VOLUME_CAPABILITY,
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
-    INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_VOLUME_CAPABILITY, JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
-    LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LocalMachinePhase,
-    LogMetadata, LogOrigin, MACHINE_LOGS_CAPABILITY, Machine, MachineDetails, MachineId,
-    MachineLogService, MachineObservation, MachineRpc, MembershipObservation, OpaquePayload,
-    PROTOCOL_MAJOR, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
+    GET_CADDY_CONFIG_CAPABILITY, INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY,
+    INSPECT_MACHINE_CAPABILITY, INSPECT_VOLUME_CAPABILITY, JOIN_MACHINE_CAPABILITY,
+    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
+    LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LogMetadata, LogOrigin, MACHINE_LOGS_CAPABILITY,
+    Machine, MachineDetails, MachineId, MachineLogService, MachineObservation, MachineRpc,
+    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, REGISTER_MACHINE_CAPABILITY,
+    REMOVE_CONTAINER_CAPABILITY, REMOVE_VOLUME_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, START_CONTAINER_CAPABILITY,
+    STOP_CONTAINER_CAPABILITY,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -34,6 +36,7 @@ pub struct MachineService {
     restart: watch::Sender<bool>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerContext>,
+    caddyfile: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -65,6 +68,7 @@ impl MachineService {
             restart,
             cluster: cluster.map(|(replicated, admin)| ClusterContext { replicated, admin }),
             containers: None,
+            caddyfile: None,
         }
     }
 
@@ -80,6 +84,12 @@ impl MachineService {
         specs: MachineSpecStore,
     ) -> Self {
         self.containers = docker.map(|docker| ContainerContext { docker, specs });
+        self
+    }
+
+    #[must_use]
+    pub fn with_caddyfile(mut self, path: PathBuf) -> Self {
+        self.caddyfile = Some(path);
         self
     }
 
@@ -157,6 +167,12 @@ impl MachineRpc for MachineService {
                 ]
                 .into_iter()
                 .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
+            );
+        }
+        if self.caddyfile.is_some() {
+            capabilities.insert(
+                CapabilityName::parse(GET_CADDY_CONFIG_CAPABILITY)
+                    .expect("static capability name is valid"),
             );
         }
         respond(RpcResponse::contract_description(ContractDescription {
@@ -715,6 +731,36 @@ impl MachineRpc for MachineService {
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
         respond(RpcResponse::machine_images(images))
+    }
+
+    async fn get_caddy_config(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if !matches!(request_body(request)?, RpcRequestBody::GetCaddyConfig(_)) {
+            return Err(Status::invalid_argument(
+                "expected get_caddy_config request",
+            ));
+        }
+        let Some(path) = &self.caddyfile else {
+            return respond(RpcResponse::error(unavailable(
+                "Caddy configuration is not available",
+            )));
+        };
+        match std::fs::read_to_string(path) {
+            Ok(caddyfile) => respond(RpcResponse::caddy_config(caddyfile)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                respond(RpcResponse::error(RpcError {
+                    code: RpcErrorCode::NotFound,
+                    message: format!("Caddyfile {} does not exist", path.display()),
+                    details: Value::Null,
+                }))
+            }
+            Err(error) => Err(Status::internal(format!(
+                "read Caddyfile {}: {error}",
+                path.display()
+            ))),
+        }
     }
 
     async fn reset(

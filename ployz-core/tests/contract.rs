@@ -5,14 +5,14 @@ use ployz_core::{
     ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     DESCRIBE_CONTRACT_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
-    HealthObservation, ImageSummary, LIST_IMAGES_CAPABILITY, MachineFailure, MachineId,
-    MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer,
-    MachineSelector, MachineSuccess, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
-    Placement, PreDeployHook, PullPolicy, RESET_MACHINE_CAPABILITY, RequestedServiceSpec,
-    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcRequestBody,
-    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
-    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource,
-    encode_grpc_frame, grpc_frames,
+    GET_CADDY_CONFIG_CAPABILITY, HealthObservation, ImageSummary, LIST_IMAGES_CAPABILITY,
+    MachineFailure, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
+    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, NameMatches,
+    OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PreDeployHook, PullPolicy,
+    RESET_MACHINE_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, ResponseKind, RpcError,
+    RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec,
+    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
+    UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -265,6 +265,25 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
         &images
     );
     assert_eq!(LIST_IMAGES_CAPABILITY, "ployz.image.list.v1");
+}
+
+#[test]
+fn caddy_config_contract_returns_the_owned_plain_file() {
+    let request = RpcRequest::get_caddy_config();
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+
+    let response = RpcResponse::caddy_config("example.test { respond ok }\n".into());
+    assert_eq!(
+        response
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode_caddy_config()
+            .unwrap(),
+        "example.test { respond ok }\n"
+    );
+    assert_eq!(GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1");
 }
 
 #[test]
@@ -814,6 +833,13 @@ impl MachineRpc for FixtureMachineRpc {
     }
 
     async fn list_images(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn get_caddy_config(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {

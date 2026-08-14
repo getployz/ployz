@@ -891,6 +891,7 @@ fn fixture_observation(
 ) -> ContainerObservation {
     ContainerObservation {
         display_name: format!("{service_name}-stale"),
+        created_at_unix_nanos: 0,
         machine_id,
         service_id: service_id.clone(),
         service_name: service_name.clone(),

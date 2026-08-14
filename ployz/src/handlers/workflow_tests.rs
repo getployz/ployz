@@ -567,6 +567,7 @@ fn observation(
     ContainerObservation {
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("api-{id}"),
+        created_at_unix_nanos: 0,
         machine_id: machine().machine.id,
         service_id: service_id.clone(),
         service_name: requested.name,

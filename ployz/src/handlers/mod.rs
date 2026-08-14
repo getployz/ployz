@@ -10,6 +10,7 @@ use clap_complete::{Shell, generate};
 use thiserror::Error as ThisError;
 
 mod build;
+mod caddy;
 mod context;
 mod image;
 mod operator;
@@ -206,9 +207,9 @@ macro_rules! stub_handlers {
 
 stub_handlers! {
     build(root) { build::run(root) } => "build";
-    caddy_config => "caddy config";
-    caddy_deploy => "caddy deploy";
-    caddy_logs => "caddy logs";
+    caddy_config(root) { caddy::config(root) } => "caddy config";
+    caddy_deploy(root) { caddy::deploy(root) } => "caddy deploy";
+    caddy_logs(root) { caddy::logs(root) } => "caddy logs";
     context(root) { context::select(root, None) } => "ctx";
     context_connection(root) { context::select_connection(root) } => "ctx connection";
     context_list(root) { context::list(root) } => "ctx ls";
@@ -305,11 +306,11 @@ mod tests {
         let mut command = crate::cli::command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "caddy", "config"])
+            .try_get_matches_from(["ployz", "dns", "show"])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("ployz caddy config is not implemented yet".into())
+            Err("ployz dns show is not implemented yet".into())
         );
     }
 

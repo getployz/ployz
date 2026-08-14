@@ -376,6 +376,7 @@ mod tests {
         ContainerObservation {
             container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: format!("{name}-{id}"),
+            created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
             service_id: service_id.clone(),
             service_name,

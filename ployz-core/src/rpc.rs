@@ -38,6 +38,7 @@ pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
 pub const CONTAINER_LOGS_CAPABILITY: &str = "ployz.container.logs.v1";
 pub const MACHINE_LOGS_CAPABILITY: &str = "ployz.machine.logs.v1";
 pub const LIST_IMAGES_CAPABILITY: &str = "ployz.image.list.v1";
+pub const GET_CADDY_CONFIG_CAPABILITY: &str = "ployz.caddy.config.v1";
 pub const UNREGISTRY_PORT: u16 = 51500;
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
@@ -102,6 +103,7 @@ impl OpaquePayload {
                 | "container_logs"
                 | "machine_logs"
                 | "list_images"
+                | "get_caddy_config"
                 | "reset"
         ) {
             return Err(CodecError::UnsupportedCommand(header.command));
@@ -257,6 +259,9 @@ pub struct ListImagesRequest {
     pub reference: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetCaddyConfigRequest {}
+
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
@@ -280,6 +285,7 @@ pub enum RpcRequestBody {
     ContainerLogs(ContainerLogsRequest),
     MachineLogs(MachineLogsRequest),
     ListImages(ListImagesRequest),
+    GetCaddyConfig(GetCaddyConfigRequest),
     Reset(ResetRequest),
 }
 
@@ -451,6 +457,14 @@ impl RpcRequest {
         }
     }
 
+    #[must_use]
+    pub fn get_caddy_config() -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::GetCaddyConfig(GetCaddyConfigRequest {}),
+        }
+    }
+
     pub fn encode(&self) -> Result<OpaquePayload, CodecError> {
         OpaquePayload::from_json(self)
     }
@@ -478,6 +492,7 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     VolumeDetails => "volume_details",
     VolumeRemoved => "volume_removed",
     MachineImages => "machine_images",
+    CaddyConfig => "caddy_config",
     ResetAccepted => "reset_accepted",
     Error => "error",
 });
@@ -555,6 +570,11 @@ pub struct MachineImages {
     pub images: Vec<ImageSummary>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CaddyConfig {
+    pub caddyfile: String,
+}
+
 /// Known responses own typed payloads; future responses retain their raw value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RpcResponseBody {
@@ -573,6 +593,7 @@ pub enum RpcResponseBody {
     VolumeDetails(VolumeDetails),
     VolumeRemoved(VolumeRemoved),
     MachineImages(MachineImages),
+    CaddyConfig(CaddyConfig),
     ResetAccepted(ResetAccepted),
     Error(RpcError),
     Unknown { kind: String, payload: Value },
@@ -597,6 +618,7 @@ impl RpcResponseBody {
             Self::VolumeDetails(_) => ResponseKind::VolumeDetails,
             Self::VolumeRemoved(_) => ResponseKind::VolumeRemoved,
             Self::MachineImages(_) => ResponseKind::MachineImages,
+            Self::CaddyConfig(_) => ResponseKind::CaddyConfig,
             Self::ResetAccepted(_) => ResponseKind::ResetAccepted,
             Self::Error(_) => ResponseKind::Error,
             Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
@@ -748,6 +770,14 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn caddy_config(caddyfile: String) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::CaddyConfig(CaddyConfig { caddyfile }),
+        }
+    }
+
+    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
     }
@@ -887,6 +917,15 @@ impl RpcResponse {
         }
     }
 
+    pub fn decode_caddy_config(&self) -> Result<&str, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::CaddyConfig(config) = &self.body {
+            Ok(&config.caddyfile)
+        } else {
+            Err(self.unexpected("caddy_config"))
+        }
+    }
+
     pub fn decode_reset_accepted(&self) -> Result<(), CodecError> {
         validate_protocol_major(self.protocol_major)?;
         if let RpcResponseBody::ResetAccepted(_) = &self.body {
@@ -967,6 +1006,9 @@ impl Serialize for RpcResponse {
             RpcResponseBody::MachineImages(images) => {
                 serde_json::to_value(images).map_err(serde::ser::Error::custom)?
             }
+            RpcResponseBody::CaddyConfig(config) => {
+                serde_json::to_value(config).map_err(serde::ser::Error::custom)?
+            }
             RpcResponseBody::ResetAccepted(accepted) => {
                 serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
             }
@@ -1034,6 +1076,9 @@ impl<'de> Deserialize<'de> for RpcResponse {
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::MachineImages => RpcResponseBody::MachineImages(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::CaddyConfig => RpcResponseBody::CaddyConfig(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(

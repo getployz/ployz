@@ -40,6 +40,7 @@ fn main() {
     let container_logs = streaming_method("container_logs", "ContainerLogs");
     let machine_logs = streaming_method("machine_logs", "MachineLogs");
     let list_images = method("list_images", "ListImages");
+    let get_caddy_config = method("get_caddy_config", "GetCaddyConfig");
     let machine_rpc = tonic_build::manual::Service::builder()
         .name("MachineRpc")
         .package("ployz.rpc.v1")
@@ -64,6 +65,7 @@ fn main() {
         .method(container_logs)
         .method(machine_logs)
         .method(list_images)
+        .method(get_caddy_config)
         .method(reset)
         .build();
     tonic_build::manual::Builder::new().compile(&[machine_rpc]);
