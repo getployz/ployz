@@ -15,7 +15,7 @@ use serde_json::json;
 
 use super::{
     ApiClient, CorrosionConfig, ReplicatedStore, Statement, run_machine_publisher,
-    wait_for_catch_up,
+    run_machine_publisher_with_restart, wait_for_catch_up,
 };
 use crate::machine::{LocalMachineRecord, LocalMachineStore};
 
@@ -166,10 +166,12 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
-    let publisher = tokio::spawn(run_machine_publisher(
+    let (restart, restart_rx) = tokio::sync::watch::channel(false);
+    let publisher = tokio::spawn(run_machine_publisher_with_restart(
         Some(store.clone()),
         Arc::clone(&local),
         participating,
+        restart,
         shutdown_rx,
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -189,6 +191,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(persisted.phase, LocalMachinePhase::Participating);
     assert!(persisted.min_store_version.is_empty());
     assert!(*participating_rx.borrow());
+    assert!(*restart_rx.borrow());
 
     let interrupted_dir = root.0.join("interrupted-machine");
     let target = BTreeMap::from([("unreachable-actor".to_owned(), 1)]);

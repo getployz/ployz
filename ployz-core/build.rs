@@ -39,6 +39,7 @@ fn main() {
         .build();
     let container_logs = streaming_method("container_logs", "ContainerLogs");
     let machine_logs = streaming_method("machine_logs", "MachineLogs");
+    let list_images = method("list_images", "ListImages");
     let machine_rpc = tonic_build::manual::Service::builder()
         .name("MachineRpc")
         .package("ployz.rpc.v1")
@@ -62,6 +63,7 @@ fn main() {
         .method(exec)
         .method(container_logs)
         .method(machine_logs)
+        .method(list_images)
         .method(reset)
         .build();
     tonic_build::manual::Builder::new().compile(&[machine_rpc]);

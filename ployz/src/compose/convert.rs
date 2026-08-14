@@ -286,6 +286,11 @@ fn build_spec(value: &Value) -> BuildSpec {
         Value::Mapping(map) => BuildSpec {
             context: mapping_string(map, "context"),
             dockerfile: mapping_string(map, "dockerfile"),
+            additional_services: map
+                .get(Value::String("additional_contexts".into()))
+                .into_iter()
+                .flat_map(additional_contexts)
+                .collect(),
             raw: value.clone(),
         },
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::Sequence(_) | Value::Tagged(_) => {
@@ -295,6 +300,25 @@ fn build_spec(value: &Value) -> BuildSpec {
             }
         }
     }
+}
+
+fn additional_contexts(value: &Value) -> Vec<String> {
+    let values = match value {
+        Value::Mapping(map) => map.values().filter_map(Value::as_str).collect(),
+        Value::Sequence(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .filter_map(|value| value.split_once('=').map(|(_, context)| context))
+            .collect(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {
+            Vec::new()
+        }
+    };
+    values
+        .into_iter()
+        .filter_map(|context| context.strip_prefix("service:"))
+        .map(str::to_owned)
+        .collect()
 }
 
 fn resources(raw: &RawService) -> Result<ContainerResources, ComposeError> {

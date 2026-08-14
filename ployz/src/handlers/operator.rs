@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-use super::{Error, leaf_matches, service::with_client_context, string_values};
+use super::{Error, leaf_matches, string_values, with_client_context};
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);

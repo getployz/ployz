@@ -303,14 +303,17 @@ secrets:
         "include: [extra.yaml]\nx-context: ${PLOYZ_TEST_CONTEXT:-fallback}\nservices: {api: {image: busybox}}\n",
     )
     .unwrap();
+    let nested = root.join("nested");
+    fs::create_dir(&nested).unwrap();
     let discovered = load_project(&LoadOptions {
         command: "build".into(),
         all_profiles: true,
-        working_dir: Some(root.clone()),
+        working_dir: Some(nested),
         docker: Some(docker),
         ..Default::default()
     })
     .unwrap();
+    assert_eq!(discovered.working_dir, root);
     assert_eq!(discovered.context.as_deref(), Some("production"));
     assert_eq!(
         discovered

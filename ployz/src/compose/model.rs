@@ -9,6 +9,7 @@ use thiserror::Error;
 pub struct BuildSpec {
     pub context: Option<String>,
     pub dockerfile: Option<String>,
+    pub additional_services: Vec<String>,
     pub raw: Value,
 }
 

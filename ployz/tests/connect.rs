@@ -31,20 +31,26 @@ struct FakeConnector {
 }
 
 #[tokio::test]
-async fn tcp_and_unix_proxy_dialing_is_unsupported_without_connecting() {
+async fn unix_proxy_dialing_is_direct_and_tcp_is_explicitly_unsupported() {
     let connector = SystemConnector::default();
-    for connection in [
-        Connection::tcp("127.0.0.1:1".parse().unwrap()),
-        Connection::unix("/path/that/does/not/exist.sock").unwrap(),
-    ] {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            connector.dial_proxy(&connection, "tcp", "127.0.0.1:80"),
-        )
+    let unix = Connection::unix("/path/that/does/not/exist.sock").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stream = connector
+        .dial_proxy(&unix, "tcp", &listener.local_addr().unwrap().to_string())
         .await
-        .expect("unsupported result is immediate");
-        assert!(matches!(result, Err(ConnectError::ProxyUnsupported(_))));
-    }
+        .unwrap();
+    let (accepted, _) = listener.accept().await.unwrap();
+    drop((stream, accepted));
+
+    let tcp = Connection::tcp("127.0.0.1:1".parse().unwrap());
+    assert!(matches!(
+        connector.dial_proxy(&tcp, "tcp", "10.210.0.1:51500").await,
+        Err(ConnectError::ProxyUnsupported(_))
+    ));
+    assert!(matches!(
+        connector.dial_proxy(&unix, "udp", "127.0.0.1:1").await,
+        Err(ConnectError::UnsupportedNetwork(_))
+    ));
 }
 
 #[tonic::async_trait]
@@ -295,6 +301,13 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::MachineLogsStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn list_images(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
 

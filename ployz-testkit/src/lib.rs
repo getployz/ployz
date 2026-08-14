@@ -20,6 +20,7 @@ use thiserror::Error;
 pub const IMAGE: &str = "ghcr.io/getployz/ployz2-testkit:main";
 pub const CORROSION_IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
+pub const UNREGISTRY_IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
 pub const MACHINE_API_PORT: u16 = 51000;
@@ -30,7 +31,7 @@ static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageTarget {
     pub platform: &'static str,
-    pub requires: [&'static str; 5],
+    pub requires: [&'static str; 6],
 }
 
 #[must_use]
@@ -41,6 +42,7 @@ pub fn image_targets() -> [ImageTarget; 2] {
         "wg",
         CORROSION_IMAGE,
         SERVICE_CONTAINER_IMAGE,
+        UNREGISTRY_IMAGE,
     ];
     [
         ImageTarget {
@@ -60,6 +62,8 @@ pub struct MachinePlan {
     pub api_port: u16,
     pub privileged: bool,
     pub labels: BTreeMap<String, String>,
+    pub environment: BTreeMap<String, String>,
+    pub daemon_args: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,6 +91,8 @@ impl ClusterPlan {
                     api_port: reserve_loopback_port()?,
                     privileged: true,
                     labels: labels.clone(),
+                    environment: BTreeMap::new(),
+                    daemon_args: Vec::new(),
                 })
             })
             .collect::<Result<_, io::Error>>()
@@ -110,9 +116,13 @@ impl ClusterPlan {
 
 #[must_use]
 pub fn join_request(first: &Machine, registration: &Registered) -> JoinRequest {
+    let mut visible_peers = registration.visible_peers.clone();
+    if !visible_peers.iter().any(|machine| machine.id == first.id) {
+        visible_peers.push(first.clone());
+    }
     JoinRequest {
         registration: Registered {
-            visible_peers: vec![first.clone()],
+            visible_peers,
             ..registration.clone()
         },
         wireguard_mtu: None,
@@ -169,6 +179,9 @@ impl Cluster {
             for (key, value) in &machine.labels {
                 args.extend(["--label".to_owned(), format!("{key}={value}")]);
             }
+            for (key, value) in &machine.environment {
+                args.extend(["--env".to_owned(), format!("{key}={value}")]);
+            }
             args.extend([
                 "--env".to_owned(),
                 format!("PLOYZ_TESTKIT_HOST_API_PORT={HOST_ENTRY_API_PORT}"),
@@ -176,6 +189,7 @@ impl Cluster {
                 format!("127.0.0.1:{}:{HOST_ENTRY_API_PORT}", machine.api_port),
                 image.clone(),
             ]);
+            args.extend(machine.daemon_args.clone());
             if let Err(error) = docker(args) {
                 let _ = cluster.teardown();
                 return Err(error);
@@ -560,6 +574,55 @@ impl Cluster {
         }
     }
 
+    pub async fn images(
+        &self,
+        index: usize,
+        reference: Option<String>,
+    ) -> Result<ployz_core::MachineImages, TestkitError> {
+        let mut client = self.client(index).await?;
+        Ok(response(
+            client
+                .list_images(RpcRequest::list_images(reference).encode()?)
+                .await?
+                .into_inner(),
+        )?
+        .decode_machine_images()?
+        .clone())
+    }
+
+    pub async fn reset(&self, index: usize) -> Result<(), TestkitError> {
+        let mut client = self.client(index).await?;
+        response(
+            client
+                .reset(RpcRequest::reset().encode()?)
+                .await?
+                .into_inner(),
+        )?
+        .decode_reset_accepted()?;
+        Ok(())
+    }
+
+    pub fn docker(&self, index: usize, args: &[&str]) -> Result<(), TestkitError> {
+        let mut command = vec!["exec", self.machine(index)?.name.as_str(), "docker"];
+        command.extend_from_slice(args);
+        docker(command)
+    }
+
+    pub fn shell(&self, index: usize, script: &str) -> Result<Output, TestkitError> {
+        let output = docker_output([
+            "exec",
+            self.machine(index)?.name.as_str(),
+            "sh",
+            "-c",
+            script,
+        ])?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            Err(command_error(output))
+        }
+    }
+
     pub fn container_mounts(
         &self,
         index: usize,
@@ -594,6 +657,15 @@ impl Cluster {
             "--force",
             container_id.as_str(),
         ])
+    }
+
+    pub fn logs(&self, index: usize) -> Result<String, TestkitError> {
+        let output = docker_output(["logs", self.machine(index)?.name.as_str()])?;
+        Ok(format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 
     pub fn restart(&self, index: usize) -> Result<(), TestkitError> {
@@ -949,6 +1021,7 @@ mod tests {
                     "wg",
                     CORROSION_IMAGE,
                     SERVICE_CONTAINER_IMAGE,
+                    UNREGISTRY_IMAGE,
                 ]
         }));
     }

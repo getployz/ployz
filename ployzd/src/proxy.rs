@@ -223,6 +223,7 @@ async fn stream_target(
     }
     let mut body = std::pin::pin!(body);
     let mut buffered = BytesMut::new();
+    let mut sent_payload = false;
     while let Some(frame) = body.frame().await {
         let frame = match frame {
             Ok(frame) => frame,
@@ -237,6 +238,7 @@ async fn stream_target(
                 loop {
                     match take_grpc_frame(&mut buffered) {
                         Ok(Some(frame)) => {
+                            sent_payload = true;
                             let envelope =
                                 FanoutResponse::success(&target.id, &target.name, frame.to_vec())
                                     .expect("the extracted bytes are one complete gRPC frame");
@@ -271,6 +273,12 @@ async fn stream_target(
     if !buffered.is_empty() {
         let error = grpc_frames(&buffered).expect_err("an incomplete buffered frame must fail");
         send_failure(&sender, &target, Status::internal(error.to_string())).await;
+    } else if !sent_payload {
+        let _ = sender
+            .send(Bytes::from(
+                FanoutResponse::omission(&target.id, &target.name).encode_grpc_frame(),
+            ))
+            .await;
     }
 }
 

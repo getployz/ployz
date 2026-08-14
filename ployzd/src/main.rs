@@ -16,13 +16,13 @@ use ployz_core::{LocalMachinePhase, MachineRpcServer};
 use ployzd::{
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, RunningCorrosion,
-        run_machine_publisher,
+        run_machine_publisher_with_restart,
     },
     dns,
     docker::{ContainerObserver, LocalDocker, MachineSpecStore},
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
-    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkPlane},
+    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkPlane, machine_gateway},
     proxy::MachineProxy,
     rpc::MachineService,
 };
@@ -54,6 +54,8 @@ struct Args {
     dns_upstreams: Vec<SocketAddr>,
     #[arg(long, hide = true)]
     machine_api_address: Option<SocketAddr>,
+    #[arg(long)]
+    containerd_socket: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -99,32 +101,59 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some(address) => Some(TcpListener::bind(address).await?),
         None => None,
     };
-    let mut corrosion = start_corrosion(&args, &store).await?;
-    let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
     let dns_upstreams = (!args.dns_upstreams.is_empty()).then(|| args.dns_upstreams.clone());
     let specs = MachineSpecStore::open(args.data_dir.join("machine.db")).await?;
-    let docker = LocalDocker::connect()?;
-    let observer = replicated_store.clone().map(|replicated| {
-        ContainerObserver::new(
-            docker.clone(),
-            specs.clone(),
-            replicated,
-            local_record.id.clone(),
-        )
-    });
+    let docker = match LocalDocker::connect() {
+        Ok(docker) => Some(docker),
+        Err(error) => {
+            eprintln!("WARNING: local Docker is unavailable: {error}");
+            None
+        }
+    };
+    let unregistry_gateway = if local_record.phase == LocalMachinePhase::Participating {
+        local_record
+            .machine
+            .as_ref()
+            .map(|machine| machine_gateway(machine.subnet).map(|gateway| gateway.0))
+            .transpose()?
+    } else {
+        None
+    };
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
+    let mut corrosion = start_corrosion(&args, &store).await?;
+    let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
+    let mut unregistry = match (&docker, unregistry_gateway) {
+        (Some(docker), Some(gateway)) => {
+            match docker
+                .start_unregistry(gateway, args.containerd_socket.as_deref())
+                .await
+            {
+                Ok(running) => running,
+                Err(error) => {
+                    eprintln!("WARNING: unregistry disabled: {error}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let observer = replicated_store.clone().and_then(|replicated| {
+        docker.clone().map(|docker| {
+            ContainerObserver::new(docker, specs.clone(), replicated, local_record.id.clone())
+        })
+    });
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (participating, participating_rx) =
         watch::channel(local_record.phase == LocalMachinePhase::Participating);
     let (reset, mut reset_rx) = watch::channel(false);
     let service = MachineService::with_cluster(
         Arc::clone(&store),
-        reset,
+        reset.clone(),
         corrosion
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client())),
     )
-    .with_containers(docker, specs);
+    .with_optional_containers(docker, specs);
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
         local_record.id.clone(),
@@ -138,50 +167,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         wait_for_shutdown(shutdown_rx.clone()),
     );
     let metrics = metrics::serve(metrics_listener, registry, shutdown_rx.clone());
-    let publisher = run_machine_publisher(
+    let publisher = run_machine_publisher_with_restart(
         replicated_store.clone(),
         Arc::clone(&store),
         participating,
+        reset.clone(),
         shutdown_rx.clone(),
     );
+    let (management_listener, gateway_listener) = machine_api_listeners
+        .map_or((None, None), |(management, gateway)| {
+            (Some(management), Some(gateway))
+        });
     let network_rpc = async {
-        let explicit = async {
-            match explicit_machine_api_listener {
-                Some(listener) => Server::builder()
-                    .serve_with_incoming_shutdown(
-                        proxy.clone(),
-                        TcpListenerStream::new(listener),
-                        wait_for_shutdown(shutdown_rx.clone()),
-                    )
-                    .await
-                    .map_err(io::Error::other),
-                None => {
-                    wait_for_shutdown(shutdown_rx.clone()).await;
-                    Ok(())
-                }
-            }
-        };
-        let mesh = async {
-            if let Some((management, gateway)) = machine_api_listeners {
-                let management = Server::builder().serve_with_incoming_shutdown(
-                    proxy.clone(),
-                    TcpListenerStream::new(management),
-                    wait_for_shutdown(shutdown_rx.clone()),
-                );
-                let gateway = Server::builder().serve_with_incoming_shutdown(
-                    proxy.clone(),
-                    TcpListenerStream::new(gateway),
-                    wait_for_shutdown(shutdown_rx.clone()),
-                );
-                tokio::try_join!(management, gateway)
-                    .map(|_| ())
-                    .map_err(io::Error::other)
-            } else {
-                wait_for_shutdown(shutdown_rx.clone()).await;
-                Ok(())
-            }
-        };
-        tokio::try_join!(explicit, mesh).map(|_| ())
+        tokio::try_join!(
+            serve_machine_api(
+                explicit_machine_api_listener,
+                proxy.clone(),
+                shutdown_rx.clone()
+            ),
+            serve_machine_api(management_listener, proxy.clone(), shutdown_rx.clone()),
+            serve_machine_api(gateway_listener, proxy.clone(), shutdown_rx.clone()),
+        )
+        .map(|_| ())
     };
     let network_runner = async {
         if let Some(network) = &mut network {
@@ -238,38 +245,92 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::pin!(servers);
 
     notify(NotifyState::Ready);
-    tokio::select! {
-        result = &mut servers => result?,
-        result = shutdown_signal() => result?,
-        changed = reset_rx.changed() => {
-            changed?;
+    let mut completed_servers = None;
+    let trigger_error = tokio::select! {
+        result = &mut servers => {
+            completed_servers = Some(result);
+            None
+        },
+        result = shutdown_signal() => result.err().map(|error| error.to_string()),
+        changed = reset_rx.changed() => changed.err().map(|error| error.to_string()),
+    };
+    notify(NotifyState::Stopping);
+    let mut errors = trigger_error.into_iter().collect::<Vec<_>>();
+    let resetting = match store.lock() {
+        Ok(store) => store.record().phase == LocalMachinePhase::Resetting,
+        Err(_) => {
+            errors.push("local Machine record lock poisoned".into());
+            false
         }
+    };
+    if resetting
+        && let Some(running) = &mut unregistry
+        && let Err(error) = running.cleanup().await
+    {
+        errors.push(error.to_string());
     }
     shutdown.send_replace(true);
-    notify(NotifyState::Stopping);
     // TODO(UT-098): preserve the baseline's unbounded graceful shutdown until a timeout is explicitly chosen.
-    servers.await?;
+    let server_result = match completed_servers {
+        Some(result) => result,
+        None => servers.await,
+    };
+    if let Err(error) = server_result {
+        errors.push(error.to_string());
+    }
 
-    let resetting = store
-        .lock()
-        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
-        .record()
-        .phase
-        == LocalMachinePhase::Resetting;
     if let Some(running) = &mut corrosion {
-        if resetting {
-            running.cleanup().await?;
+        let result = if resetting {
+            running.cleanup().await
         } else {
-            running.stop().await?;
+            running.stop().await
+        };
+        if let Err(error) = result {
+            errors.push(error.to_string());
         }
     }
-    if resetting {
-        let store = store
-            .lock()
-            .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-        store.complete_reset()?;
+    if !resetting
+        && let Some(running) = &mut unregistry
+        && let Err(error) = running.stop().await
+    {
+        errors.push(error.to_string());
     }
-    Ok(())
+    if resetting {
+        match store.lock() {
+            Ok(store) => {
+                if let Err(error) = store.complete_reset() {
+                    errors.push(error.to_string());
+                }
+            }
+            Err(_) => errors.push("local Machine record lock poisoned".into()),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::other(errors.join("; ")).into())
+    }
+}
+
+async fn serve_machine_api(
+    listener: Option<TcpListener>,
+    proxy: MachineProxy,
+    shutdown: watch::Receiver<bool>,
+) -> io::Result<()> {
+    match listener {
+        Some(listener) => Server::builder()
+            .serve_with_incoming_shutdown(
+                proxy,
+                TcpListenerStream::new(listener),
+                wait_for_shutdown(shutdown),
+            )
+            .await
+            .map_err(io::Error::other),
+        None => {
+            wait_for_shutdown(shutdown).await;
+            Ok(())
+        }
+    }
 }
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {

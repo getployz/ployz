@@ -1,7 +1,9 @@
 mod create;
 mod lifecycle;
+mod managed_service;
 mod spec_store;
 mod stream;
+mod unregistry;
 mod volume;
 
 #[cfg(test)]
@@ -11,14 +13,16 @@ use std::{collections::HashMap, net::Ipv4Addr, time::Duration, time::SystemTime}
 
 use bollard::{
     Docker,
-    models::{ContainerInspectResponse, HealthConfig},
-    query_parameters::{EventsOptionsBuilder, ListContainersOptionsBuilder},
+    models::{ContainerInspectResponse, HealthConfig, ImageManifestSummaryKindEnum},
+    query_parameters::{
+        EventsOptionsBuilder, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
+    },
 };
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, HealthcheckSpec, MachineId, RpcErrorCode,
-    ServiceId, ServiceName, ValueError,
+    ContainerRuntimeObservation, HealthObservation, HealthcheckSpec, ImageSummary, MachineId,
+    MachineImages, RpcErrorCode, ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -27,7 +31,9 @@ use tokio::sync::watch;
 
 use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
 
+pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
+pub use unregistry::RunningUnregistry;
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
@@ -58,6 +64,39 @@ impl LocalDocker {
         Ok(Self {
             client: Docker::connect_with_socket(socket, 120, bollard::API_DEFAULT_VERSION)?,
         })
+    }
+
+    pub async fn list_images(&self, reference: Option<&str>) -> Result<MachineImages, Error> {
+        let filters = reference
+            .map(|reference| HashMap::from([("reference", vec![reference])]))
+            .unwrap_or_default();
+        let options = ListImagesOptionsBuilder::default()
+            .all(true)
+            .filters(&filters)
+            .manifests(true)
+            .build();
+        let images = self
+            .client
+            .list_images(Some(options))
+            .await?
+            .into_iter()
+            .map(project_image)
+            .collect();
+        let info = self.client.info().await?;
+        Ok(MachineImages {
+            containerd_store: info.driver_status.as_deref().is_some_and(containerd_store),
+            images,
+        })
+    }
+
+    pub async fn uses_containerd_store(&self) -> Result<bool, Error> {
+        Ok(self
+            .client
+            .info()
+            .await?
+            .driver_status
+            .as_deref()
+            .is_some_and(containerd_store))
     }
 
     async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
@@ -176,6 +215,43 @@ where
 {
     let values = values.into_iter().collect::<HashMap<_, _>>();
     (!values.is_empty()).then_some(values)
+}
+
+fn project_image(image: bollard::models::ImageSummary) -> ImageSummary {
+    let mut platforms = image
+        .manifests
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|manifest| {
+            manifest.available && manifest.kind == Some(ImageManifestSummaryKindEnum::IMAGE)
+        })
+        .filter_map(|manifest| {
+            let platform = manifest.image_data?.platform;
+            let mut value = format!("{}/{}", platform.os?, platform.architecture?);
+            if let Some(variant) = platform.variant {
+                value.push('/');
+                value.push_str(&variant);
+            }
+            Some(value)
+        })
+        .collect::<Vec<_>>();
+    platforms.sort();
+    platforms.dedup();
+    ImageSummary {
+        id: image.id,
+        repo_tags: image.repo_tags,
+        created: image.created,
+        size: image.size,
+        containers: image.containers,
+        platforms,
+    }
+}
+
+fn containerd_store(status: &[Vec<String>]) -> bool {
+    status.iter().flatten().any(|value| {
+        value.eq_ignore_ascii_case("io.containerd.snapshotter.v1")
+            || value.to_ascii_lowercase().contains("containerd")
+    })
 }
 
 fn display_name(name: Option<&str>) -> String {
@@ -619,6 +695,55 @@ mod tests {
     use ployz_core::{MachineGateway, ResolvedServiceSpec};
 
     use super::*;
+    use bollard::models::{
+        ImageManifestSummary, ImageManifestSummaryImageData, ImageManifestSummaryKindEnum,
+        OciPlatform,
+    };
+
+    #[test]
+    fn image_projection_keeps_only_available_runnable_platforms_sorted() {
+        let manifest = |available, kind, os: &str, architecture: &str| ImageManifestSummary {
+            available,
+            kind: Some(kind),
+            image_data: Some(ImageManifestSummaryImageData {
+                platform: OciPlatform {
+                    os: Some(os.into()),
+                    architecture: Some(architecture.into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let image = bollard::models::ImageSummary {
+            id: "sha256:abc".into(),
+            repo_tags: vec!["example.test/api:1".into()],
+            created: 1,
+            size: 2,
+            containers: 3,
+            manifests: Some(vec![
+                manifest(true, ImageManifestSummaryKindEnum::IMAGE, "linux", "arm64"),
+                manifest(
+                    true,
+                    ImageManifestSummaryKindEnum::ATTESTATION,
+                    "linux",
+                    "amd64",
+                ),
+                manifest(false, ImageManifestSummaryKindEnum::IMAGE, "linux", "386"),
+                manifest(true, ImageManifestSummaryKindEnum::IMAGE, "linux", "amd64"),
+            ]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            project_image(image).platforms,
+            ["linux/amd64", "linux/arm64"]
+        );
+        assert!(containerd_store(&[vec![
+            "driver-type".into(),
+            "io.containerd.snapshotter.v1".into()
+        ]]));
+    }
 
     #[test]
     fn create_body_translates_runtime_fields_and_hook_overrides() {

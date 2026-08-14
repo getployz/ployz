@@ -13,6 +13,7 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
     DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineLogService,
     MachineName, MachineObservation, ResolvedServiceSpec, WireGuardPublicKey,
+    framing::{FramingError, grpc_frame_payload},
 };
 
 mod docker;
@@ -36,6 +37,8 @@ pub const REMOVE_CONTAINER_CAPABILITY: &str = "ployz.container.remove.v1";
 pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
 pub const CONTAINER_LOGS_CAPABILITY: &str = "ployz.container.logs.v1";
 pub const MACHINE_LOGS_CAPABILITY: &str = "ployz.machine.logs.v1";
+pub const LIST_IMAGES_CAPABILITY: &str = "ployz.image.list.v1";
+pub const UNREGISTRY_PORT: u16 = 51500;
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
 #[derive(Clone, PartialEq, Message)]
@@ -70,6 +73,11 @@ impl OpaquePayload {
         serde_json::from_slice(&self.json).map_err(CodecError::DecodeJson)
     }
 
+    pub fn decode_grpc_frame(frame: &[u8]) -> Result<Self, FramingError> {
+        Self::decode(grpc_frame_payload(frame)?)
+            .map_err(|error| FramingError::InvalidEnvelope(error.to_string()))
+    }
+
     pub fn decode_request(&self) -> Result<RpcRequest, CodecError> {
         let header: RequestHeader = self.decode_json()?;
         validate_protocol_major(header.protocol_major)?;
@@ -93,6 +101,7 @@ impl OpaquePayload {
                 | "remove_volume"
                 | "container_logs"
                 | "machine_logs"
+                | "list_images"
                 | "reset"
         ) {
             return Err(CodecError::UnsupportedCommand(header.command));
@@ -242,6 +251,12 @@ pub struct MachineLogsRequest {
     pub options: LogsOptions,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ListImagesRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
@@ -264,6 +279,7 @@ pub enum RpcRequestBody {
     RemoveVolume(RemoveVolumeRequest),
     ContainerLogs(ContainerLogsRequest),
     MachineLogs(MachineLogsRequest),
+    ListImages(ListImagesRequest),
     Reset(ResetRequest),
 }
 
@@ -427,6 +443,14 @@ impl RpcRequest {
         }
     }
 
+    #[must_use]
+    pub fn list_images(reference: Option<String>) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::ListImages(ListImagesRequest { reference }),
+        }
+    }
+
     pub fn encode(&self) -> Result<OpaquePayload, CodecError> {
         OpaquePayload::from_json(self)
     }
@@ -453,6 +477,7 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     VolumeList => "volume_list",
     VolumeDetails => "volume_details",
     VolumeRemoved => "volume_removed",
+    MachineImages => "machine_images",
     ResetAccepted => "reset_accepted",
     Error => "error",
 });
@@ -514,6 +539,22 @@ pub struct ContainerChanged {
     pub container_id: ContainerId,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageSummary {
+    pub id: String,
+    pub repo_tags: Vec<String>,
+    pub created: i64,
+    pub size: i64,
+    pub containers: i64,
+    pub platforms: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineImages {
+    pub containerd_store: bool,
+    pub images: Vec<ImageSummary>,
+}
+
 /// Known responses own typed payloads; future responses retain their raw value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RpcResponseBody {
@@ -531,6 +572,7 @@ pub enum RpcResponseBody {
     VolumeList(VolumeList),
     VolumeDetails(VolumeDetails),
     VolumeRemoved(VolumeRemoved),
+    MachineImages(MachineImages),
     ResetAccepted(ResetAccepted),
     Error(RpcError),
     Unknown { kind: String, payload: Value },
@@ -554,6 +596,7 @@ impl RpcResponseBody {
             Self::VolumeList(_) => ResponseKind::VolumeList,
             Self::VolumeDetails(_) => ResponseKind::VolumeDetails,
             Self::VolumeRemoved(_) => ResponseKind::VolumeRemoved,
+            Self::MachineImages(_) => ResponseKind::MachineImages,
             Self::ResetAccepted(_) => ResponseKind::ResetAccepted,
             Self::Error(_) => ResponseKind::Error,
             Self::Unknown { kind, .. } => ResponseKind::Unknown(kind.clone()),
@@ -697,6 +740,14 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn machine_images(images: MachineImages) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::MachineImages(images),
+        }
+    }
+
+    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
     }
@@ -827,6 +878,15 @@ impl RpcResponse {
         }
     }
 
+    pub fn decode_machine_images(&self) -> Result<&MachineImages, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::MachineImages(images) = &self.body {
+            Ok(images)
+        } else {
+            Err(self.unexpected("machine_images"))
+        }
+    }
+
     pub fn decode_reset_accepted(&self) -> Result<(), CodecError> {
         validate_protocol_major(self.protocol_major)?;
         if let RpcResponseBody::ResetAccepted(_) = &self.body {
@@ -904,6 +964,9 @@ impl Serialize for RpcResponse {
             RpcResponseBody::VolumeRemoved(removed) => {
                 serde_json::to_value(removed).map_err(serde::ser::Error::custom)?
             }
+            RpcResponseBody::MachineImages(images) => {
+                serde_json::to_value(images).map_err(serde::ser::Error::custom)?
+            }
             RpcResponseBody::ResetAccepted(accepted) => {
                 serde_json::to_value(accepted).map_err(serde::ser::Error::custom)?
             }
@@ -968,6 +1031,9 @@ impl<'de> Deserialize<'de> for RpcResponse {
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::VolumeRemoved => RpcResponseBody::VolumeRemoved(
+                serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
+            ),
+            ResponseKind::MachineImages => RpcResponseBody::MachineImages(
                 serde_json::from_value(wire.payload).map_err(serde::de::Error::custom)?,
             ),
             ResponseKind::ResetAccepted => RpcResponseBody::ResetAccepted(

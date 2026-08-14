@@ -1,10 +1,14 @@
+use std::{future::Future, path::Path, pin::Pin};
+
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
 use thiserror::Error as ThisError;
 
 use crate::compose::{LoadOptions, load_project};
 
+mod build;
 mod context;
+mod image;
 mod operator;
 mod service;
 mod volume;
@@ -113,6 +117,59 @@ fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn runtime() -> Result<tokio::runtime::Runtime, Error> {
+    Ok(tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?)
+}
+
+async fn connect_client(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<crate::connect::Client, Error> {
+    let config = matches
+        .get_one::<String>("ployz-config")
+        .map(Path::new)
+        .map(crate::context::expand_home)
+        .ok_or_else(|| "Ployz config path is required".to_owned())?;
+    Ok(crate::connect::connect(
+        &config,
+        matches.get_one::<String>("connect").map(String::as_str),
+        context,
+    )
+    .await
+    .map_err(|error| error.to_string())?)
+}
+
+fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
+    with_client_context(root, None, work)
+}
+
+fn with_client_context<F>(
+    root: &ArgMatches,
+    context_override: Option<&str>,
+    work: F,
+) -> Result<(), Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
+    let leaf = leaf_matches(root);
+    let context =
+        context_override.or_else(|| leaf.get_one::<String>("context").map(String::as_str));
+    runtime()?.block_on(async {
+        let mut client = connect_client(leaf, context).await?;
+        work(&mut client).await
+    })
+}
+
 fn provision_then_continue(matches: &ArgMatches, command: &str) -> Result<(), Error> {
     if !matches.get_flag("no-install") {
         crate::provisioning::provision(matches)?;
@@ -147,7 +204,7 @@ macro_rules! stub_handlers {
 }
 
 stub_handlers! {
-    build(root) { compose_not_implemented(root, "build", false) } => "build";
+    build(root) { build::run(root) } => "build";
     caddy_config => "caddy config";
     caddy_deploy => "caddy deploy";
     caddy_logs => "caddy logs";
@@ -168,9 +225,9 @@ stub_handlers! {
     dns_reserve => "dns reserve";
     dns_show => "dns show";
     exec(root) { operator::exec(root) } => "exec";
-    image_list => "image ls";
-    image_push => "image push";
-    images => "images";
+    image_list(root) { image::list(root) } => "image ls";
+    image_push(root) { image::push(root) } => "image push";
+    images(root) { image::list(root) } => "images";
     inspect(root) { service::inspect(root) } => "inspect";
     logs(root) {
         operator::service_logs(root)

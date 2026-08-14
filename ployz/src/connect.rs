@@ -11,16 +11,23 @@ use std::{
 use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
-    MachineFailure, MachineId, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload,
-    PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    FanoutFailure, FanoutOutcome, FanoutResponse, FramingError, MachineFailure, MachineId,
+    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
+    OpaquePayload, PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
-use tonic::transport::{Channel, Endpoint};
+use tonic::{
+    codec::ProstCodec,
+    codegen::http::uri::PathAndQuery,
+    metadata::MetadataValue,
+    transport::{Channel, Endpoint},
+};
 
 use crate::context::{
     Config, ConfigError, Connection, ConnectionError, ConnectionSource, ContextError,
@@ -86,14 +93,19 @@ impl Connector for SystemConnector {
         network: &str,
         address: &str,
     ) -> Result<BoxProxyStream, ConnectError> {
+        if network != "tcp" {
+            return Err(ConnectError::UnsupportedNetwork(network.into()));
+        }
         match connection.transport() {
-            Transport::Tcp(_) | Transport::Unix(_) => {
-                Err(ConnectError::ProxyUnsupported(connection.to_string()))
-            }
+            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.to_string())),
+            Transport::Unix(_) => TcpStream::connect(address)
+                .await
+                .map(|stream| Box::new(stream) as BoxProxyStream)
+                .map_err(|error| ConnectError::Attempt(error.to_string())),
             Transport::Ssh {
                 destination,
                 key_file,
-            } if network == "tcp" => {
+            } => {
                 let mut args =
                     ssh_base_args(destination, key_file.as_deref(), control_path().as_deref());
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
@@ -101,7 +113,6 @@ impl Connector for SystemConnector {
                     .map(|stream| Box::new(stream) as BoxProxyStream)
                     .map_err(|error| ConnectError::Attempt(error.to_string()))
             }
-            Transport::Ssh { .. } => Err(ConnectError::UnsupportedNetwork(network.into())),
         }
     }
 }
@@ -273,8 +284,15 @@ impl AsyncWrite for SshIo {
 #[derive(Clone)]
 pub struct Client {
     pub(crate) rpc: MachineRpcClient<Channel>,
+    channel: Channel,
     connection: Connection,
     connector: Arc<dyn Connector>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MachineImagesObservation {
+    pub machine_name: MachineName,
+    pub images: MachineImages,
 }
 
 impl Client {
@@ -411,6 +429,94 @@ impl Client {
         decode_rpc(response, RpcResponse::decode_volume_removed)
     }
 
+    pub async fn list_images(
+        &self,
+        reference: Option<String>,
+        targets: &[String],
+    ) -> Result<PartialResult<MachineImagesObservation, RpcError>, ConnectError> {
+        let mut request = tonic::Request::new(RpcRequest::list_images(reference).encode()?);
+        let all = ["*".to_owned()];
+        for target in if targets.is_empty() {
+            all.as_slice()
+        } else {
+            targets
+        } {
+            let value = MetadataValue::try_from(target.as_str())
+                .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+            request.metadata_mut().append("machines", value);
+        }
+        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
+        grpc.ready()
+            .await
+            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        let response = grpc
+            .server_streaming(
+                request,
+                PathAndQuery::from_static("/ployz.rpc.v1.MachineRpc/ListImages"),
+                ProstCodec::<OpaquePayload, FanoutResponse>::default(),
+            )
+            .await?;
+        let mut stream = response.into_inner();
+        let mut result = PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        };
+        while let Some(envelope) = stream.message().await? {
+            let machine_id = envelope.machine_id()?;
+            let machine_name = envelope.machine_name()?;
+            match envelope.outcome {
+                Some(FanoutOutcome::FramedPayload(frame)) => {
+                    let response = OpaquePayload::decode_grpc_frame(&frame)?.decode_response()?;
+                    let actual = response.kind().as_str().to_owned();
+                    match response.body {
+                        RpcResponseBody::MachineImages(images) => {
+                            result.successes.push(MachineSuccess {
+                                machine_id,
+                                value: MachineImagesObservation {
+                                    machine_name,
+                                    images,
+                                },
+                            });
+                        }
+                        RpcResponseBody::Error(error) => {
+                            result.failures.push(MachineFailure { machine_id, error });
+                        }
+                        RpcResponseBody::ContractDescription(_)
+                        | RpcResponseBody::MachineDetails(_)
+                        | RpcResponseBody::Initialized(_)
+                        | RpcResponseBody::Registered(_)
+                        | RpcResponseBody::JoinAccepted(_)
+                        | RpcResponseBody::MachineList(_)
+                        | RpcResponseBody::ContainerList(_)
+                        | RpcResponseBody::ContainerDetails(_)
+                        | RpcResponseBody::ContainerCreated(_)
+                        | RpcResponseBody::ContainerChanged(_)
+                        | RpcResponseBody::VolumeCreated(_)
+                        | RpcResponseBody::VolumeList(_)
+                        | RpcResponseBody::VolumeDetails(_)
+                        | RpcResponseBody::VolumeRemoved(_)
+                        | RpcResponseBody::ResetAccepted(_)
+                        | RpcResponseBody::Unknown { .. } => {
+                            return Err(ConnectError::Codec(CodecError::UnexpectedResponse {
+                                expected: "machine_images",
+                                actual,
+                            }));
+                        }
+                    }
+                }
+                Some(FanoutOutcome::Failure(failure)) => {
+                    result.failures.push(MachineFailure {
+                        machine_id,
+                        error: decode_fanout_failure(failure),
+                    });
+                }
+                None => result.omissions.push(machine_id),
+            }
+        }
+        Ok(result)
+    }
+
     pub async fn dial_proxy(
         &self,
         network: &str,
@@ -486,11 +592,39 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::Path { .. }
         | ConnectError::AllFailed { .. }
         | ConnectError::Codec(_)
+        | ConnectError::Framing(_)
+        | ConnectError::Value(_)
         | ConnectError::InvalidMachineMetadata) => RpcError {
             code: RpcErrorCode::Internal,
             message: error.to_string(),
             details: Value::Null,
         },
+    }
+}
+
+fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
+    let code = match tonic::Code::from_i32(i32::try_from(failure.code).unwrap_or(i32::MAX)) {
+        tonic::Code::InvalidArgument | tonic::Code::OutOfRange => RpcErrorCode::InvalidArgument,
+        tonic::Code::NotFound => RpcErrorCode::NotFound,
+        tonic::Code::AlreadyExists | tonic::Code::Aborted | tonic::Code::FailedPrecondition => {
+            RpcErrorCode::Conflict
+        }
+        tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
+        tonic::Code::DeadlineExceeded
+        | tonic::Code::ResourceExhausted
+        | tonic::Code::Unavailable => RpcErrorCode::Unavailable,
+        tonic::Code::Internal | tonic::Code::DataLoss | tonic::Code::Unknown => {
+            RpcErrorCode::Internal
+        }
+        tonic::Code::Ok
+        | tonic::Code::Cancelled
+        | tonic::Code::PermissionDenied
+        | tonic::Code::Unauthenticated => RpcErrorCode::Unknown(format!("grpc_{}", failure.code)),
+    };
+    RpcError {
+        code,
+        message: failure.message,
+        details: failure.details.into(),
     }
 }
 
@@ -503,7 +637,8 @@ pub async fn connect_selected_with(
         match connector.connect(connection).await {
             Ok(channel) => {
                 return Ok(Client {
-                    rpc: MachineRpcClient::new(channel),
+                    rpc: MachineRpcClient::new(channel.clone()),
+                    channel,
                     connection: connection.clone(),
                     connector,
                 });
@@ -597,6 +732,10 @@ pub enum ConnectError {
     Remote(RpcError),
     #[error("Machine ID cannot be used as routing metadata")]
     InvalidMachineMetadata,
+    #[error("Machine RPC framing failed: {0}")]
+    Framing(#[from] FramingError),
+    #[error("Machine RPC identity failed: {0}")]
+    Value(#[from] ployz_core::ValueError),
 }
 
 impl From<tonic::Status> for ConnectError {
@@ -637,6 +776,19 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg.contains("id_*")));
         assert!(!args.iter().any(|arg| arg.contains("BatchMode")));
+    }
+
+    #[test]
+    fn fanout_failures_preserve_status_code_and_details() {
+        let error = decode_fanout_failure(FanoutFailure {
+            code: tonic::Code::Internal as u32,
+            message: "Docker failed".into(),
+            details: vec![1, 2, 3],
+        });
+
+        assert_eq!(error.code, RpcErrorCode::Internal);
+        assert_eq!(error.message, "Docker failed");
+        assert_eq!(error.details, serde_json::json!([1, 2, 3]));
     }
 
     #[tokio::test]
