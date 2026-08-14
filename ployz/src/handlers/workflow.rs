@@ -19,8 +19,7 @@ use crate::{
 use super::{
     Error,
     build::{push_targets, report_push},
-    connect_client, leaf_matches, runtime, string_values,
-    volume::confirm,
+    confirm, connect_client, leaf_matches, required, runtime, string_values,
 };
 
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
@@ -482,7 +481,7 @@ fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> crate::deplo
 
 #[path = "workflow_input.rs"]
 mod input;
-use input::{parse_u32, requested_from_resolved, required, run_spec};
+use input::{parse_u32, requested_from_resolved, run_spec};
 
 #[cfg(test)]
 #[path = "workflow_tests.rs"]

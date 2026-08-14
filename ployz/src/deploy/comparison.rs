@@ -3,6 +3,8 @@ use ployz_core::{
     ServiceContainerSpec, SpecChange,
 };
 
+use super::same_service_mode_kind;
+
 #[must_use]
 pub fn compare_specs(
     current: &ResolvedServiceSpec,
@@ -53,7 +55,7 @@ fn immutable_service_fields_changed(
     } = requested;
 
     current_name != requested_name
-        || std::mem::discriminant(current_mode) != std::mem::discriminant(requested_mode)
+        || !same_service_mode_kind(current_mode, requested_mode)
         || immutable_container_fields_changed(current_container, requested_container)
         || current_placement != requested_placement
         || !same_multiset(current_ports, requested_ports)

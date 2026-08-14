@@ -10,7 +10,7 @@ use ployz_core::{
 
 use crate::compose::{parse_bytes, parse_extension_port};
 
-use super::{Error, string_values};
+use super::{Error, required, string_values};
 
 pub(super) fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -277,11 +277,4 @@ pub(super) fn parse_u32(matches: &ArgMatches, name: &str) -> Result<u32, Error> 
     required(matches, name)?
         .parse()
         .map_err(|_| format!("{name} must be a positive integer").into())
-}
-
-pub(super) fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
-    matches
-        .get_one::<String>(name)
-        .cloned()
-        .ok_or_else(|| format!("{name} is required").into())
 }

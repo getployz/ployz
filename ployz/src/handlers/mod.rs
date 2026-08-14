@@ -1,4 +1,9 @@
-use std::{future::Future, path::Path, pin::Pin};
+use std::{
+    future::Future,
+    io::{self, IsTerminal, Write},
+    path::Path,
+    pin::Pin,
+};
 
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
@@ -91,6 +96,26 @@ fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
         .flatten()
         .map(|values| values.cloned().collect())
         .unwrap_or_default()
+}
+
+fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
+    matches
+        .get_one::<String>(name)
+        .cloned()
+        .ok_or_else(|| format!("{name} is required").into())
+}
+
+fn confirm() -> Result<bool, Error> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err("confirmation requires a terminal; pass --yes to continue".into());
+    }
+    print!("Continue? [y/N] ");
+    io::stdout().flush().map_err(|error| error.to_string())?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| error.to_string())?;
+    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, Error> {
