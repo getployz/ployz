@@ -9,9 +9,9 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, LocalMachinePhase, Machine, MachineId, MachineName, MachineRpc,
-    MachineSubnet, MachineUpdate, PublicIpUpdate, RpcErrorCode, RpcRequest, RpcResponseBody,
-    SelectedEndpoint,
+    AdvertisedEndpoint, InspectRequest, LocalMachinePhase, Machine, MachineId, MachineName,
+    MachineRpc, MachineSubnet, MachineUpdate, PublicIpUpdate, RpcErrorCode, RpcRequest,
+    RpcResponseBody, SelectedEndpoint,
 };
 use ployzd::{
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
@@ -187,6 +187,42 @@ async fn repeated_reset_returns_a_typed_conflict() {
         response.body,
         RpcResponseBody::Error(error) if error.code == RpcErrorCode::Conflict
     ));
+}
+
+#[tokio::test]
+async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
+    let dir = TestDir::new("ployzd-state");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let public_key = store
+        .record()
+        .wireguard_private_key
+        .as_ref()
+        .unwrap()
+        .public_key();
+    let endpoint = AdvertisedEndpoint("192.0.2.8:51820".parse().unwrap());
+    let (reset, _) = tokio::sync::watch::channel(false);
+    let service = MachineService::new(Arc::new(Mutex::new(store)), reset);
+
+    let details = service
+        .inspect(tonic::Request::new(
+            RpcRequest::inspect(InspectRequest {
+                advertised_endpoints: vec![endpoint],
+                ..Default::default()
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode_machine_details()
+        .unwrap()
+        .clone();
+
+    assert_eq!(details.public_key, public_key);
+    assert_eq!(details.advertised_endpoints, [endpoint]);
 }
 
 #[test]

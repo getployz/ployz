@@ -44,9 +44,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "machine")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     let yes = matches.get_flag("yes");
-    let (mut config, context_name) = options.active_config()?;
     runtime()?.block_on(async {
         let mut client = options.connect().await?;
+        let context_name = match client.connection_source() {
+            ConnectionSource::Context(name) => Some(name.clone()),
+            ConnectionSource::Direct | ConnectionSource::LocalSocket => None,
+        };
         let machines = machine_list(&mut client).await?;
         let selected = select_machine(&machines, &selector)?;
         let selected_target = MachineSelector::from(&selected.id);
@@ -113,18 +116,21 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
 
         // TODO(UT-057): removal does not update hosted DNS or Caddy projections.
-        let context = config
-            .contexts
-            .get_mut(&context_name)
-            .expect("active context was validated");
-        if let Some(index) = context
-            .connections
-            .iter()
-            .position(|connection| connection.machine_id() == Some(&selected.id))
-        {
-            context.connections.remove(index);
+        if let Some(context_name) = context_name {
+            let mut config = options.load_config()?;
+            let context = config
+                .contexts
+                .get_mut(&context_name)
+                .ok_or_else(|| format!("context {context_name:?} not found"))?;
+            if let Some(index) = context
+                .connections
+                .iter()
+                .position(|connection| connection.machine_id() == Some(&selected.id))
+            {
+                context.connections.remove(index);
+            }
+            config.save().map_err(|error| error.to_string())?;
         }
-        config.save().map_err(|error| error.to_string())?;
         println!("Removed Machine {} ({})", selected.name, selected.id);
         Ok::<_, Error>(())
     })
@@ -163,22 +169,11 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .map_err(|_| format!("invalid public IP {value:?}"))?,
         ),
     };
-    let port = target(matches, "wg-port")?
-        .parse::<u16>()
-        .ok()
-        .filter(|port| *port != 0)
-        .ok_or_else(|| "WireGuard port must be between 1 and 65535".to_owned())?;
+    let port = *matches
+        .get_one::<u16>("wg-port")
+        .expect("WireGuard port has a default");
     let endpoints = parse_endpoints(&string_values(matches, "wg-endpoint"), port)?;
-    let wireguard_mtu = matches
-        .get_one::<String>("wg-mtu")
-        .map(|value| {
-            value
-                .parse::<u32>()
-                .ok()
-                .filter(|mtu| *mtu != 0)
-                .ok_or_else(|| "WireGuard MTU must be positive".to_owned())
-        })
-        .transpose()?;
+    let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     if !matches.get_flag("no-install") {
         crate::provisioning::provision(matches)?;
@@ -201,7 +196,13 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             .cloned()
             .map_err(|error| error.to_string())?;
         let details = target_client
-            .request(RpcRequest::inspect(InspectRequest::default()), None)
+            .request(
+                RpcRequest::inspect(InspectRequest {
+                    advertised_endpoints: token.advertised_endpoints.clone(),
+                    ..Default::default()
+                }),
+                None,
+            )
             .await
             .map_err(|error| error.to_string())?
             .decode_machine_details()

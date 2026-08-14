@@ -301,8 +301,12 @@ fn provisioning_flags(command: Command) -> Command {
                 .value_parser(daemon_version),
         )
         .arg(many("wg-endpoint", None))
-        .arg(value("wg-mtu", None))
-        .arg(value("wg-port", None).default_value("51820"))
+        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
+        .arg(
+            value("wg-port", None)
+                .default_value("51820")
+                .value_parser(clap::value_parser!(u16).range(1..)),
+        )
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 

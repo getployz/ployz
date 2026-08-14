@@ -87,6 +87,10 @@ async fn ordered_connections_stop_after_the_first_success() {
 
     assert_eq!(client.connection().to_string(), "tcp://127.0.0.1:51001");
     assert_eq!(
+        client.connection_source(),
+        &ConnectionSource::Context("prod".into())
+    );
+    assert_eq!(
         *connector.attempts.lock().unwrap(),
         ["tcp://127.0.0.1:51000", "tcp://127.0.0.1:51001"]
     );

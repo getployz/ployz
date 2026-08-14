@@ -89,7 +89,10 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
         for observed in machines {
             let id = observed.machine.id;
             let selector = MachineSelector::from(&id);
-            let request = InspectRequest { include_rtts: true };
+            let request = InspectRequest {
+                include_rtts: true,
+                ..Default::default()
+            };
             match client
                 .request(RpcRequest::inspect(request), Some(&selector))
                 .await

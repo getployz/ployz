@@ -185,7 +185,7 @@ fn wireguard_projection_keeps_unknown_peers_and_optional_live_fields() {
     };
 
     let projected = associate_wireguard_peers(
-        device,
+        device.clone(),
         std::slice::from_ref(&known),
         &BTreeMap::from([(known.id.clone(), known_rtt.clone())]),
     );
@@ -196,14 +196,21 @@ fn wireguard_projection_keeps_unknown_peers_and_optional_live_fields() {
     assert_eq!(
         known_peer.machine,
         Some(MachineIdentity {
-            id: known.id,
-            name: known.name,
+            id: known.id.clone(),
+            name: known.name.clone(),
         })
     );
     assert_eq!(known_peer.rtt, Some(known_rtt));
     assert_eq!(unknown_peer.public_key, unknown_key);
     assert_eq!(unknown_peer.machine, None);
     assert_eq!(unknown_peer.endpoint, None);
+
+    let mut duplicate = machine('3', "duplicate-key", 3);
+    duplicate.public_key = known_key;
+    let ambiguous = associate_wireguard_peers(device, &[known, duplicate], &BTreeMap::new());
+    let ambiguous_peer = ambiguous.peers.first().unwrap();
+    assert_eq!(ambiguous_peer.machine, None);
+    assert_eq!(ambiguous_peer.rtt, None);
 }
 
 fn machine(id: char, name: &str, seed: u8) -> Machine {

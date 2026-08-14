@@ -55,7 +55,7 @@ impl ConnectionOptions {
     }
 
     pub(super) fn active_config(&self) -> Result<(Config, String), Error> {
-        let config = Config::load(&self.config_path).map_err(|error| error.to_string())?;
+        let config = self.load_config()?;
         let name = self
             .context
             .clone()
@@ -70,6 +70,10 @@ impl ConnectionOptions {
             return Err(format!("context {name:?} not found"));
         }
         Ok((config, name))
+    }
+
+    pub(super) fn load_config(&self) -> Result<Config, Error> {
+        Config::load(&self.config_path).map_err(|error| error.to_string())
     }
 }
 

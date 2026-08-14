@@ -404,12 +404,15 @@ pub fn associate_wireguard_peers(
     rtts: &BTreeMap<MachineId, RttStatistics>,
 ) -> WireGuardDevice {
     for peer in &mut device.peers {
-        let Some(machine) = machines
+        let mut matches = machines
             .iter()
-            .find(|machine| machine.public_key == peer.public_key)
-        else {
+            .filter(|machine| machine.public_key == peer.public_key);
+        let Some(machine) = matches.next() else {
             continue;
         };
+        if matches.next().is_some() {
+            continue;
+        }
         peer.machine = Some(MachineIdentity {
             id: machine.id.clone(),
             name: machine.name.clone(),

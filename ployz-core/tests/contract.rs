@@ -524,58 +524,28 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
 
 #[test]
 fn machine_administration_requests_round_trip_as_typed_payloads() {
-    let token = MachineTokenRequest {
-        public_ip: PublicIpDiscovery::Override("203.0.113.7".parse().unwrap()),
-        ..Default::default()
-    };
-    assert_eq!(
-        RpcRequest::machine_token(token.clone())
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap(),
-        RpcRequest::machine_token(token)
-    );
-    let update = MachineUpdate {
-        name: Some(MachineName::parse("renamed").unwrap()),
-        public_ip: PublicIpUpdate::Remove,
-        advertised_endpoints: None,
-    };
-    assert_eq!(
-        RpcRequest::update_machine(update.clone())
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap(),
-        RpcRequest::update_machine(update)
-    );
-    assert_eq!(
-        RpcRequest::remove_local_machine(RemoveLocalMachineRequest {})
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap(),
-        RpcRequest::remove_local_machine(RemoveLocalMachineRequest {})
-    );
-    let remove = RemoveMachineRequest {
-        machine_id: MachineId::parse(MACHINE_ID).unwrap(),
-    };
-    assert_eq!(
-        RpcRequest::remove_machine(remove.clone())
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap(),
-        RpcRequest::remove_machine(remove)
-    );
-    assert_eq!(
-        RpcRequest::inspect_wireguard()
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap(),
-        RpcRequest::inspect_wireguard()
-    );
+    let requests = [
+        RpcRequest::machine_token(MachineTokenRequest {
+            public_ip: PublicIpDiscovery::Override("203.0.113.7".parse().unwrap()),
+            ..Default::default()
+        }),
+        RpcRequest::update_machine(MachineUpdate {
+            name: Some(MachineName::parse("renamed").unwrap()),
+            public_ip: PublicIpUpdate::Remove,
+            advertised_endpoints: None,
+        }),
+        RpcRequest::remove_local_machine(RemoveLocalMachineRequest {}),
+        RpcRequest::remove_machine(RemoveMachineRequest {
+            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+        }),
+        RpcRequest::inspect_wireguard(),
+    ];
+    for request in requests {
+        assert_eq!(
+            request.clone().encode().unwrap().decode_request().unwrap(),
+            request
+        );
+    }
 }
 
 #[test]

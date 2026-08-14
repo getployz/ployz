@@ -8,19 +8,12 @@ use tokio::net::UnixStream;
 use tokio_util::codec::LengthDelimitedCodec;
 
 use super::Error;
-use ployz_core::{MembershipObservation, RttStatistics, rtt_statistics};
+use ployz_core::{MembershipObservation, RttObservation, rtt_statistics};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MembershipState {
     pub address: SocketAddr,
     pub membership: MembershipObservation,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MemberRtt {
-    pub peer_id: String,
-    pub address: SocketAddr,
-    pub statistics: RttStatistics,
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +63,7 @@ impl AdminClient {
             .collect()
     }
 
-    pub async fn member_rtts(&self) -> Result<Vec<MemberRtt>, Error> {
+    pub async fn member_rtts(&self) -> Result<Vec<RttObservation>, Error> {
         self.command(&serde_json::json!({"Cluster": "Members"}))
             .await?
             .into_iter()
@@ -80,7 +73,7 @@ impl AdminClient {
     }
 }
 
-fn decode_member_rtt(value: Value) -> Result<Option<MemberRtt>, Error> {
+fn decode_member_rtt(value: Value) -> Result<Option<RttObservation>, Error> {
     #[derive(Deserialize)]
     struct RawMemberRtt {
         id: String,
@@ -98,9 +91,10 @@ fn decode_member_rtt(value: Value) -> Result<Option<MemberRtt>, Error> {
     let Some(samples) = raw.rtts else {
         return Ok(None);
     };
-    Ok(rtt_statistics(&samples).map(|statistics| MemberRtt {
+    Ok(rtt_statistics(&samples).map(|statistics| RttObservation {
         peer_id: raw.id,
         address: raw.state.addr,
+        machine: None,
         statistics,
     }))
 }

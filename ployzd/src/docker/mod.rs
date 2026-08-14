@@ -111,12 +111,20 @@ impl LocalDocker {
                 }) => {}
                 Err(error) => return Err(error.into()),
             }
-            self.client
+            match self
+                .client
                 .remove_container(
                     id.as_str(),
                     Some(RemoveContainerOptionsBuilder::default().v(true).build()),
                 )
-                .await?;
+                .await
+            {
+                Ok(()) => {}
+                Err(DockerError::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(())
     }

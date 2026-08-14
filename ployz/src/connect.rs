@@ -275,6 +275,7 @@ impl AsyncWrite for SshIo {
 pub struct Client {
     pub(crate) rpc: MachineRpcClient<Channel>,
     connection: Connection,
+    source: ConnectionSource,
     connector: Arc<dyn Connector>,
 }
 
@@ -282,6 +283,11 @@ impl Client {
     #[must_use]
     pub fn connection(&self) -> &Connection {
         &self.connection
+    }
+
+    #[must_use]
+    pub fn connection_source(&self) -> &ConnectionSource {
+        &self.source
     }
 
     pub async fn describe_contract(&mut self) -> Result<ContractDescription, ConnectError> {
@@ -552,6 +558,7 @@ pub async fn connect_selected_with(
                 return Ok(Client {
                     rpc: MachineRpcClient::new(channel),
                     connection: connection.clone(),
+                    source: selected.source.clone(),
                     connector,
                 });
             }
@@ -658,6 +665,23 @@ mod tests {
 
     use super::*;
     use crate::context::SshDestination;
+
+    #[test]
+    fn non_ascii_machine_targets_use_binary_metadata() {
+        let target = MachineSelector::parse("München edge").unwrap();
+        let request = target_request(ployz_core::OpaquePayload::new(Vec::new()), Some(&target));
+
+        assert!(request.metadata().get("machine").is_none());
+        assert_eq!(
+            request
+                .metadata()
+                .get_bin("machine-bin")
+                .unwrap()
+                .to_bytes()
+                .unwrap(),
+            target.as_str()
+        );
+    }
 
     #[test]
     fn system_ssh_command_delegates_identity_and_passphrase_handling() {

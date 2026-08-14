@@ -126,7 +126,13 @@ impl Cluster {
         let mut client = self.client(index).await?;
         Ok(response(
             client
-                .inspect(RpcRequest::inspect(InspectRequest { include_rtts: true }).encode()?)
+                .inspect(
+                    RpcRequest::inspect(InspectRequest {
+                        include_rtts: true,
+                        ..Default::default()
+                    })
+                    .encode()?,
+                )
                 .await?
                 .into_inner(),
         )?

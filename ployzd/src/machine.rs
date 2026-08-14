@@ -49,6 +49,13 @@ pub struct LocalMachineStore {
     _lock: File,
 }
 
+impl Drop for LocalMachineStore {
+    fn drop(&mut self) {
+        // A concurrently forked child can briefly inherit the flock before exec closes the fd.
+        let _ = fs2::FileExt::unlock(&self._lock);
+    }
+}
+
 impl LocalMachineStore {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self, StoreError> {
         let data_dir = data_dir.as_ref().to_owned();
