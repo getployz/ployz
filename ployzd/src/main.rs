@@ -84,17 +84,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .record()
         .clone();
     let mut network = NetworkPlane::start(&local_record).await?;
-    let machine_api_listeners = if let Some(network) = &network {
+    let (management_listener, gateway_listener) = if let Some(network) = &network {
         let [management, gateway] = network.machine_api_addresses()?;
-        Some((
-            TcpListener::bind(management).await?,
+        (
+            match args.machine_api_address {
+                Some(explicit) if listener_covers(explicit, management) => None,
+                _ => Some(TcpListener::bind(management).await?),
+            },
             match args.machine_api_address {
                 Some(_) => None,
                 None => Some(TcpListener::bind(gateway).await?),
             },
-        ))
+        )
     } else {
-        None
+        (None, None)
     };
     let explicit_machine_api_listener = match args.machine_api_address {
         Some(address) => Some(TcpListener::bind(address).await?),
@@ -145,9 +148,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         participating,
         shutdown_rx.clone(),
     );
-    let (management_listener, gateway_listener) = machine_api_listeners
-        .map(|(management, gateway)| (Some(management), gateway))
-        .unwrap_or_default();
     let network_rpc = async {
         tokio::try_join!(
             serve_machine_api(
@@ -358,6 +358,12 @@ async fn serve_machine_api(
     }
 }
 
+fn listener_covers(listener: SocketAddr, address: SocketAddr) -> bool {
+    listener.port() == address.port()
+        && (listener.ip() == address.ip()
+            || listener.ip().is_unspecified() && listener.is_ipv4() == address.is_ipv4())
+}
+
 async fn shutdown_signal() -> io::Result<()> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -470,5 +476,18 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn wildcard_or_exact_listener_covers_only_its_family_and_port() {
+        let management: SocketAddr = "[fdcc::2]:51000".parse().unwrap();
+
+        assert!(listener_covers(management, management));
+        assert!(listener_covers("[::]:51000".parse().unwrap(), management));
+        assert!(!listener_covers("[::]:51001".parse().unwrap(), management));
+        assert!(!listener_covers(
+            "0.0.0.0:51000".parse().unwrap(),
+            management
+        ));
     }
 }
