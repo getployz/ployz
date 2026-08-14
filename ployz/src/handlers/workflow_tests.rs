@@ -17,6 +17,7 @@ struct Scripted {
     confirmed: bool,
     confirmation_error: bool,
     executions: usize,
+    execution_outcome: Option<DeployOutcome<ExecutionError>>,
 }
 
 impl Scripted {
@@ -30,6 +31,7 @@ impl Scripted {
             confirmed: true,
             confirmation_error: false,
             executions: 0,
+            execution_outcome: None,
         }
     }
 }
@@ -77,9 +79,11 @@ impl WorkflowIo for Scripted {
         }
     }
 
-    async fn execute(&mut self, _plan: &DeployPlan) -> Result<(), Error> {
+    async fn execute(&mut self, plan: &DeployPlan) -> DeployOutcome<ExecutionError> {
         self.executions += 1;
-        Ok(())
+        self.execution_outcome
+            .take()
+            .unwrap_or_else(|| plan.success_outcome())
     }
 }
 
@@ -106,9 +110,15 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
     let spec = run_spec(super::leaf_matches(&matches)).unwrap();
     assert_eq!(spec.name.as_str(), "api");
     assert_eq!(spec.container.command, ["echo", "hello"]);
-    assert_eq!(spec.container.environment["A"], "b");
-    assert!(matches!(spec.ports[0], PortPublication::Host { .. }));
-    assert!(spec.mounts[0].read_only);
+    assert_eq!(
+        spec.container.environment.get("A").map(String::as_str),
+        Some("b")
+    );
+    assert!(matches!(
+        spec.ports.first(),
+        Some(PortPublication::Host { .. })
+    ));
+    assert!(spec.mounts.first().is_some_and(|mount| mount.read_only));
 
     let matches = crate::cli::command()
         .try_get_matches_from(["ployz", "run", "--publish", "8080:80", "alpine"])
@@ -210,8 +220,12 @@ secrets: {token: {x-command: "printf resolved"}}
     );
     assert_eq!(io.pushed, ["first", "third"]);
     assert_eq!(
-        project.services["api"].container.environment["TOKEN"],
-        "secret://token"
+        project
+            .services
+            .get("api")
+            .and_then(|service| service.container.environment.get("TOKEN"))
+            .map(String::as_str),
+        Some("secret://token")
     );
     assert_eq!(io.executions, 0);
 }
@@ -285,16 +299,20 @@ async fn deploy_sequence_confirmation_and_empty_plan_are_exact() {
         machines: vec![machine()],
         ..Default::default()
     });
-    deploy_connected(
+    let outcome = deploy_connected(
         &mut automatic,
         &mut project.clone(),
         &[],
         PlanOptions::default(),
     )
     .await
+    .unwrap()
     .unwrap();
     assert!(!automatic.events.contains(&WorkflowStage::Confirm));
     assert_eq!(automatic.executions, 1);
+    assert!(!outcome.completed.is_empty());
+    assert!(outcome.failed.is_none());
+    assert!(outcome.unexecuted.is_empty());
 
     let mut empty = Scripted::new(DeploySnapshot::default());
     let mut empty_project =
@@ -365,6 +383,40 @@ async fn scale_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     assert_eq!(mixed.executions, 1);
 }
 
+#[tokio::test]
+async fn deploy_preserves_the_exact_execution_outcome() {
+    let mut project =
+        crate::compose::parse_normalized("name: scripted\nservices: {api: {image: api}}\n", ".")
+            .unwrap();
+    let expected = DeployOutcome {
+        completed: vec![stop_operation('1')],
+        failed: Some(FailedOperation::Operation {
+            operation: stop_operation('2'),
+            error: ExecutionError::Machine {
+                action: crate::deploy::MachineAction::StopContainer,
+                error: ployz_core::RpcError {
+                    code: ployz_core::RpcErrorCode::Unavailable,
+                    message: "offline".into(),
+                    details: serde_json::Value::Null,
+                },
+            },
+        }),
+        unexecuted: vec![stop_operation('3')],
+    };
+    let mut io = Scripted::new(DeploySnapshot {
+        machines: vec![machine()],
+        ..Default::default()
+    });
+    io.execution_outcome = Some(expected.clone());
+
+    let actual = deploy_connected(&mut io, &mut project, &[], PlanOptions::default())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(actual, expected);
+}
+
 fn build(name: &str) -> BuildService {
     BuildService {
         name: name.into(),
@@ -386,6 +438,13 @@ fn machine() -> ployz_core::MachineObservation {
         },
         membership: MembershipObservation::Up,
         selected_endpoint: None,
+    }
+}
+
+fn stop_operation(id: char) -> DeployOperation {
+    DeployOperation::StopContainer {
+        machine_id: machine().machine.id,
+        container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
     }
 }
 

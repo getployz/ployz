@@ -129,7 +129,7 @@ pub(crate) async fn push_using_machines(
             command_error("inspect local image", &inspected)
         });
     }
-    let targets = select_targets(&machines, selectors)?;
+    let targets = select_targets(machines, selectors)?;
     let mode = cancellation.race(detect_mode()).await??;
     let mut result = PartialResult {
         successes: Vec::new(),

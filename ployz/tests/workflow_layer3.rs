@@ -64,6 +64,8 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         .iter()
         .map(|machine| (machine.machine.name.to_string(), machine.machine.id.clone()))
         .collect::<BTreeMap<_, _>>();
+    let machine_1 = machine_ids.get("machine-1").unwrap();
+    let machine_2 = machine_ids.get("machine-2").unwrap();
     let initial_run = wait_for_services(&mut client, &["scaled-workflow"], 3).await;
     let scaled = initial_run
         .services
@@ -80,7 +82,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         scaled
             .containers
             .iter()
-            .all(|container| container.machine_id == machine_ids["machine-1"])
+            .all(|container| &container.machine_id == machine_1)
     );
     let generated_global = initial_run
         .services
@@ -94,8 +96,8 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         .unwrap();
     assert_eq!(generated_global.containers.len(), 1);
     assert_eq!(
-        generated_global.containers[0].machine_id,
-        machine_ids["machine-1"]
+        &generated_global.containers.first().unwrap().machine_id,
+        machine_1
     );
 
     let root = std::env::temp_dir().join(format!("ployz-l3-workflows-{}", std::process::id()));
@@ -165,7 +167,7 @@ volumes:
             .successes
             .iter()
             .flat_map(|success| &success.value)
-            .all(|volume| volume.id.name.as_str() != "workflow_data")
+            .all(|volume| volume.id.name.as_str() != "data")
     );
 
     assert_success(deploy(address, &root, true, false));
@@ -188,8 +190,9 @@ volumes:
                 .is_some_and(|container| container.service_name.as_str() == "api")
         })
         .unwrap();
+    let api_container = api.containers.first().unwrap();
     assert_eq!(api.containers.len(), 1);
-    assert_eq!(api.containers[0].machine_id, machine_ids["machine-2"]);
+    assert_eq!(&api_container.machine_id, machine_2);
     assert!(!api.hook_containers.is_empty());
     assert!(
         api.hook_containers
@@ -197,11 +200,11 @@ volumes:
             .all(|container| container.kind == ContainerKind::PreDeployHook)
     );
     assert_eq!(
-        api.containers[0].resolved_spec.configs[0].content,
+        api_container.resolved_spec.configs.first().unwrap().content,
         b"hello\n"
     );
     assert!(matches!(
-        api.containers[0].resolved_spec.ports.as_slice(),
+        api_container.resolved_spec.ports.as_slice(),
         [PortPublication::Host { .. }]
     ));
     let database = deployed
@@ -214,16 +217,16 @@ volumes:
                 .is_some_and(|container| container.service_name.as_str() == "database")
         })
         .unwrap();
-    assert_eq!(database.containers[0].machine_id, machine_ids["machine-1"]);
+    assert_eq!(&database.containers.first().unwrap().machine_id, machine_1);
     let current_machines = client.list_machines().await.unwrap();
+    let volumes = client.list_volumes(&current_machines).await;
     assert!(
-        client
-            .list_volumes(&current_machines)
-            .await
+        volumes
             .successes
             .iter()
             .flat_map(|success| &success.value)
-            .any(|volume| volume.id.name.as_str() == "workflow_data")
+            .any(|volume| volume.id.name.as_str() == "data"),
+        "{volumes:?}"
     );
     fs::remove_dir_all(root).unwrap();
 }

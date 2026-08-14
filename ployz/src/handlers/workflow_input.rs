@@ -150,10 +150,11 @@ fn generated_name(image: &str) -> String {
         .chars()
         .map(|character| {
             let character = character.to_ascii_lowercase();
-            character
-                .is_ascii_alphanumeric()
-                .then_some(character)
-                .unwrap_or('-')
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
         })
         .collect::<String>();
     base = base.trim_matches('-').chars().take(54).collect();

@@ -11,8 +11,8 @@ use crate::{
     },
     connect::Client,
     deploy::{
-        DeployOperation, DeployPlan, DeploySnapshot, FailedOperation, ObservedDockerVolume,
-        PlanOptions, execute_plan, plan_deploy,
+        DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError,
+        FailedOperation, ObservedDockerVolume, PlanOptions, execute_plan, plan_deploy,
     },
 };
 
@@ -25,14 +25,15 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let requested = run_spec(leaf_matches(root))?;
     runtime()?.block_on(async {
         let mut client = connect_client(root, None).await?;
-        run_connected(
+        let outcome = run_connected(
             &mut RemoteWorkflow {
                 client: &mut client,
                 auto_confirm: true,
             },
             &requested,
         )
-        .await
+        .await?;
+        finish(outcome)
     })
 }
 
@@ -82,7 +83,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     );
     runtime()?.block_on(async {
         let mut client = connect_client(root, context.as_deref()).await?;
-        deploy_connected(
+        let outcome = deploy_connected(
             &mut RemoteWorkflow {
                 client: &mut client,
                 auto_confirm: yes,
@@ -91,7 +92,8 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             &builds,
             options,
         )
-        .await
+        .await?;
+        outcome.map_or(Ok(()), finish)
     })
 }
 
@@ -107,7 +109,7 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let yes = matches.get_flag("yes");
     runtime()?.block_on(async {
         let mut client = connect_client(root, None).await?;
-        scale_connected(
+        let outcome = scale_connected(
             &mut RemoteWorkflow {
                 client: &mut client,
                 auto_confirm: yes,
@@ -115,7 +117,8 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
             &selector,
             replicas,
         )
-        .await
+        .await?;
+        outcome.map_or(Ok(()), finish)
     })
 }
 
@@ -145,7 +148,7 @@ trait WorkflowIo {
     fn render(&mut self, plan: &DeployPlan);
     fn confirmation_required(&self) -> bool;
     fn confirm(&mut self) -> Result<bool, Error>;
-    async fn execute(&mut self, plan: &DeployPlan) -> Result<(), Error>;
+    async fn execute(&mut self, plan: &DeployPlan) -> DeployOutcome<ExecutionError>;
 }
 
 struct RemoteWorkflow<'a> {
@@ -221,15 +224,15 @@ impl WorkflowIo for RemoteWorkflow<'_> {
         confirm()
     }
 
-    async fn execute(&mut self, plan: &DeployPlan) -> Result<(), Error> {
-        execute(plan, self.client).await
+    async fn execute(&mut self, plan: &DeployPlan) -> DeployOutcome<ExecutionError> {
+        execute_plan(plan, self.client, &CancellationToken::new()).await
     }
 }
 
 async fn run_connected(
     io: &mut impl WorkflowIo,
     requested: &RequestedServiceSpec,
-) -> Result<(), Error> {
+) -> Result<DeployOutcome<ExecutionError>, Error> {
     io.record(WorkflowStage::Snapshot);
     let snapshot = io.snapshot(None).await?;
     io.record(WorkflowStage::Plan);
@@ -243,7 +246,7 @@ async fn run_connected(
     io.record(WorkflowStage::Render);
     io.render(&plan);
     io.record(WorkflowStage::Execute);
-    io.execute(&plan).await
+    Ok(io.execute(&plan).await)
 }
 
 async fn deploy_connected(
@@ -251,7 +254,7 @@ async fn deploy_connected(
     project: &mut crate::compose::ComposeProject,
     builds: &[BuildService],
     options: PlanOptions,
-) -> Result<(), Error> {
+) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
     let machines = io.machines().await?;
     let mut failures = Vec::new();
     for service in builds {
@@ -275,7 +278,7 @@ async fn deploy_connected(
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
     let Some(plan) = combined_plan(&compose) else {
         println!("No changes.");
-        return Ok(());
+        return Ok(None);
     };
     // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
     io.record(WorkflowStage::Render);
@@ -284,18 +287,18 @@ async fn deploy_connected(
         io.record(WorkflowStage::Confirm);
         if !io.confirm()? {
             println!("Cancelled. No changes were made.");
-            return Ok(());
+            return Ok(None);
         }
     }
     io.record(WorkflowStage::Execute);
-    io.execute(&plan).await
+    Ok(Some(io.execute(&plan).await))
 }
 
 async fn scale_connected(
     io: &mut impl WorkflowIo,
     selector: &str,
     replicas: NonZeroU32,
-) -> Result<(), Error> {
+) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
     io.record(WorkflowStage::Snapshot);
     let snapshot = io.snapshot(None).await?;
     let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
@@ -309,7 +312,7 @@ async fn scale_connected(
     };
     if old == replicas {
         println!("No changes.");
-        return Ok(());
+        return Ok(None);
     }
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
     let mut requested = requested_from_resolved(&current.resolved_spec);
@@ -328,11 +331,11 @@ async fn scale_connected(
         io.record(WorkflowStage::Confirm);
         if !io.confirm()? {
             println!("Cancelled. No changes were made.");
-            return Ok(());
+            return Ok(None);
         }
     }
     io.record(WorkflowStage::Execute);
-    io.execute(&plan).await
+    Ok(Some(io.execute(&plan).await))
 }
 
 async fn snapshot(
@@ -445,8 +448,7 @@ fn operation_summary(operation: &DeployOperation) -> String {
     }
 }
 
-async fn execute(plan: &DeployPlan, client: &Client) -> Result<(), Error> {
-    let outcome = execute_plan(plan, client, &CancellationToken::new()).await;
+fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Error> {
     println!("Completed {} operation(s).", outcome.completed.len());
     let Some(failed) = outcome.failed else {
         return Ok(());
