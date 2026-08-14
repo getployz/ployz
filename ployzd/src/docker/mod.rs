@@ -9,7 +9,13 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, net::Ipv4Addr, time::Duration, time::SystemTime};
+use std::{
+    collections::HashMap,
+    net::Ipv4Addr,
+    sync::{Arc, Mutex},
+    time::Duration,
+    time::SystemTime,
+};
 
 use bollard::{
     Docker,
@@ -30,6 +36,7 @@ use thiserror::Error;
 use tokio::sync::watch;
 
 use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
+use crate::machine::LocalMachineStore;
 
 pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -326,6 +333,7 @@ pub struct ContainerObserver {
     docker: LocalDocker,
     specs: MachineSpecStore,
     replicated: ReplicatedStore,
+    local: Arc<Mutex<LocalMachineStore>>,
     machine_id: MachineId,
     rescan_interval: Duration,
 }
@@ -336,12 +344,14 @@ impl ContainerObserver {
         docker: LocalDocker,
         specs: MachineSpecStore,
         replicated: ReplicatedStore,
+        local: Arc<Mutex<LocalMachineStore>>,
         machine_id: MachineId,
     ) -> Self {
         Self {
             docker,
             specs,
             replicated,
+            local,
             machine_id,
             rescan_interval: RESCAN_INTERVAL,
         }
@@ -453,8 +463,15 @@ impl ContainerObserver {
                 }
             }
         }
-        self.replicated
-            .reconcile_local_containers(&self.machine_id, &snapshot)
+        let publication = self.replicated.machine_publication().await;
+        let local = self
+            .local
+            .lock()
+            .map_err(|_| Error::LocalStorePoisoned)?
+            .record()
+            .clone();
+        publication
+            .reconcile_local_containers(&local, &self.machine_id, &snapshot)
             .await
             .map_err(Error::from)
     }
@@ -648,6 +665,8 @@ pub enum Error {
     EventStreamClosed,
     #[error("observer shutdown channel closed")]
     ShutdownClosed,
+    #[error("local Machine record lock poisoned")]
+    LocalStorePoisoned,
     #[error("system clock cannot be represented for Docker event replay: {0}")]
     Clock(String),
 }
@@ -685,6 +704,7 @@ impl Error {
             | Self::ReplicatedStore(_)
             | Self::EventStreamClosed
             | Self::ShutdownClosed
+            | Self::LocalStorePoisoned
             | Self::Clock(_) => RpcErrorCode::Internal,
         }
     }

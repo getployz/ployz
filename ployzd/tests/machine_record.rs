@@ -9,8 +9,9 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, LocalMachinePhase, Machine, MachineId, MachineName, MachineRpc,
-    MachineSubnet, RpcErrorCode, RpcRequest, RpcResponseBody, SelectedEndpoint,
+    AdvertisedEndpoint, InspectRequest, LocalMachinePhase, Machine, MachineId, MachineName,
+    MachineRpc, MachineRuntime, MachineSubnet, MachineUpdate, PublicIpUpdate, RpcErrorCode,
+    RpcRequest, RpcResponseBody, SelectedEndpoint,
 };
 use ployzd::{
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
@@ -90,7 +91,9 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
         management_address: ployzd::network::management_address(public_key),
         public_key,
+        public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+        runtime: Default::default(),
     };
     second
         .join(
@@ -104,6 +107,88 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     assert_eq!(second.record().phase, LocalMachinePhase::Joining);
     assert_eq!(second.record().bootstrap_machines, vec![initialized]);
     assert_eq!(second.record().min_store_version.get("actor"), Some(&4));
+}
+
+#[test]
+fn reopening_a_participating_machine_refreshes_runtime_metadata() {
+    let dir = TestDir::new("ployzd-runtime-refresh");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    store
+        .initialize(
+            MachineName::parse("machine").unwrap(),
+            "10.210.0.0/16".parse().unwrap(),
+            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    let path = dir.0.join("machine.json");
+    let mut stale: LocalMachineRecord = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    stale.machine.as_mut().unwrap().runtime = MachineRuntime {
+        daemon_version: "stale".into(),
+        docker_version: "stale".into(),
+        hostname: "stale".into(),
+        architecture: "stale".into(),
+        os_pretty_name: "stale".into(),
+        kernel_version: "stale".into(),
+    };
+    fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
+
+    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    let expected = ployzd::machine::local_runtime();
+    assert_eq!(
+        reopened.record().machine.as_ref().unwrap().runtime,
+        expected
+    );
+    let persisted: LocalMachineRecord = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(persisted.machine.unwrap().runtime, expected);
+}
+
+#[test]
+fn machine_update_is_atomic_and_durable() {
+    let dir = TestDir::new("ployzd-update");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    let original = store
+        .initialize(
+            MachineName::parse("before").unwrap(),
+            "10.210.0.0/16".parse().unwrap(),
+            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            None,
+        )
+        .unwrap();
+    let endpoints = vec![AdvertisedEndpoint("198.51.100.2:6000".parse().unwrap())];
+    let updated = store
+        .update(
+            MachineUpdate {
+                name: Some(MachineName::parse("after").unwrap()),
+                public_ip: PublicIpUpdate::Set("203.0.113.7".parse().unwrap()),
+                advertised_endpoints: Some(endpoints.clone()),
+            },
+            std::slice::from_ref(&original),
+        )
+        .unwrap();
+
+    assert_eq!(updated.id, original.id);
+    assert_eq!(updated.subnet, original.subnet);
+    assert_eq!(updated.management_address, original.management_address);
+    assert_eq!(updated.public_key, original.public_key);
+    assert_eq!(updated.advertised_endpoints, endpoints);
+    drop(store);
+
+    let mut reopened = LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(reopened.record().machine.as_ref(), Some(&updated));
+    reopened.begin_reset().unwrap();
+    assert!(matches!(
+        reopened.update(
+            MachineUpdate {
+                name: Some(MachineName::parse("too-late").unwrap()),
+                ..Default::default()
+            },
+            &[updated],
+        ),
+        Err(StoreError::NotParticipating)
+    ));
 }
 
 #[test]
@@ -149,6 +234,42 @@ async fn repeated_reset_returns_a_typed_conflict() {
         response.body,
         RpcResponseBody::Error(error) if error.code == RpcErrorCode::Conflict
     ));
+}
+
+#[tokio::test]
+async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
+    let dir = TestDir::new("ployzd-state");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let public_key = store
+        .record()
+        .wireguard_private_key
+        .as_ref()
+        .unwrap()
+        .public_key();
+    let endpoint = AdvertisedEndpoint("192.0.2.8:51820".parse().unwrap());
+    let (reset, _) = tokio::sync::watch::channel(false);
+    let service = MachineService::new(Arc::new(Mutex::new(store)), reset);
+
+    let details = service
+        .inspect(tonic::Request::new(
+            RpcRequest::inspect(InspectRequest {
+                advertised_endpoints: vec![endpoint],
+                ..Default::default()
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode_machine_details()
+        .unwrap()
+        .clone();
+
+    assert_eq!(details.public_key, public_key);
+    assert_eq!(details.advertised_endpoints, [endpoint]);
 }
 
 #[test]

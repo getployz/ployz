@@ -1,5 +1,6 @@
 use bollard::{
     Docker,
+    errors::Error as DockerError,
     models::{Mount, MountType},
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -164,6 +165,18 @@ impl LocalDocker {
     pub async fn remove_all_managed(&self, specs: &MachineSpecStore) -> Result<(), Error> {
         let mut config_operation = specs.config_operation().await;
         for container_id in self.managed_container_ids().await? {
+            match self
+                .client
+                .stop_container(container_id.as_str(), None)
+                .await
+            {
+                Ok(())
+                | Err(DockerError::DockerResponseServerError {
+                    status_code: 304 | 404,
+                    ..
+                }) => {}
+                Err(error) => return Err(error.into()),
+            }
             self.force_remove_container(&container_id).await?;
             config_operation.remove(&container_id).await?;
         }

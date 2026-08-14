@@ -47,12 +47,13 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
 
     let duplicate = machine("duplicate", 2);
     store.publish_local_machine(&duplicate).await.unwrap();
+    let incomplete_machine_id = MachineId::random();
     running
         .store()
         .api()
         .execute([Statement::new(
             "INSERT INTO machines (id) VALUES (?)",
-            [json!(MachineId::random())],
+            [json!(&incomplete_machine_id)],
         )])
         .await
         .unwrap();
@@ -62,6 +63,8 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(machines.incomplete_ids.len(), 1);
     assert!(machines.observations.contains(&local));
     assert!(machines.observations.contains(&duplicate));
+    store.remove_machine(&incomplete_machine_id).await.unwrap();
+    assert!(store.machines().await.unwrap().incomplete_ids.is_empty());
 
     let mut container_changes = store.subscribe_container_changes().await.unwrap();
     let observation = container(&local.id, "a");
@@ -284,9 +287,11 @@ fn machine(name: &str, seed: u8) -> Machine {
         subnet: MachineSubnet(format!("10.210.{seed}.0/24").parse().unwrap()),
         management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
         public_key: WireGuardPublicKey([seed; 32]),
+        public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(
             format!("192.0.2.{seed}:51000").parse().unwrap(),
         )],
+        runtime: Default::default(),
     }
 }
 

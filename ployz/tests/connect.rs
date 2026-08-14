@@ -93,6 +93,10 @@ async fn ordered_connections_stop_after_the_first_success() {
 
     assert_eq!(client.connection().to_string(), "tcp://127.0.0.1:51001");
     assert_eq!(
+        client.connection_source(),
+        &ConnectionSource::Context("prod".into())
+    );
+    assert_eq!(
         *connector.attempts.lock().unwrap(),
         ["tcp://127.0.0.1:51000", "tcp://127.0.0.1:51001"]
     );
@@ -158,6 +162,13 @@ impl MachineRpc for DiscoveryService {
     }
 
     async fn inspect(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn machine_token(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -317,6 +328,34 @@ impl MachineRpc for DiscoveryService {
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
+
+    async fn update_machine(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn remove_local_machine(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn remove_machine(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn inspect_wireguard(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
 }
 
 #[tokio::test]
@@ -375,7 +414,9 @@ fn machine(hex: char, name: &str) -> MachineObservation {
             ),
             management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
+            public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
+            runtime: Default::default(),
         },
         membership: MembershipObservation::Up,
         selected_endpoint: None,
