@@ -237,7 +237,7 @@ pub(super) fn compose_command(
     Ok(command)
 }
 
-fn first_compose_file_from_environment() -> Option<PathBuf> {
+pub(super) fn first_compose_file_from_environment() -> Option<PathBuf> {
     let files = std::env::var_os("COMPOSE_FILE")?;
     files
         .to_string_lossy()

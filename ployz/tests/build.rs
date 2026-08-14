@@ -146,7 +146,8 @@ fn compose_build_receives_resolved_images_and_builder_flags() {
     )
     .unwrap();
     let call = fs::read_to_string(calls).unwrap();
-    assert!(call.starts_with("compose --all-resources --file compose.yaml --profile test --file "));
+    assert!(call.starts_with("compose --all-resources --file compose.yaml --file "));
+    assert!(call.contains(" --profile test build "));
     assert!(
         call.ends_with(" build --build-arg MODE=release --check --no-cache --pull --push api\n")
     );

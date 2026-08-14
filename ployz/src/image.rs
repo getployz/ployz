@@ -365,9 +365,20 @@ async fn stop_command(command: &mut Child) -> std::io::Result<()> {
 }
 
 fn validated_platform(platform: &str) -> Result<&str, PushError> {
-    match platform {
-        "linux/amd64" | "linux/arm64" => Ok(platform),
-        _ => Err(PushError::UnsupportedPlatform(platform.into())),
+    let components = platform.split('/').collect::<Vec<_>>();
+    if matches!(components.len(), 2 | 3)
+        && components.iter().all(|component| {
+            !component.is_empty()
+                && component.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'.' | b'_' | b'-')
+                })
+        })
+    {
+        Ok(platform)
+    } else {
+        Err(PushError::UnsupportedPlatform(platform.into()))
     }
 }
 
@@ -470,7 +481,10 @@ mod tests {
             Err(PushError::RegistryPortReference(_))
         ));
         assert!(validate_push_reference("registry.test/team/api@sha256:abc").is_err());
-        assert!(validated_platform("linux/riscv64").is_err());
+        assert_eq!(validated_platform("linux/386").unwrap(), "linux/386");
+        assert_eq!(validated_platform("linux/arm/v7").unwrap(), "linux/arm/v7");
+        assert!(validated_platform("linux").is_err());
+        assert!(validated_platform("linux//v7").is_err());
         assert!(
             PushError::CleanupAfter {
                 primary: Box::new(PushError::Cancelled),

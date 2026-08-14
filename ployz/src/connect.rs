@@ -11,9 +11,9 @@ use std::{
 use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
-    FanoutOutcome, FanoutResponse, FramingError, MachineFailure, MachineId, MachineImages,
-    MachineName, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload, PartialResult,
-    RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    FanoutFailure, FanoutOutcome, FanoutResponse, FramingError, MachineFailure, MachineId,
+    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess, OpaquePayload,
+    PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -517,11 +517,7 @@ impl Client {
                 Some(FanoutOutcome::Failure(failure)) => {
                     result.failures.push(MachineFailure {
                         machine_id,
-                        error: RpcError {
-                            code: RpcErrorCode::Unavailable,
-                            message: failure.message,
-                            details: Default::default(),
-                        },
+                        error: decode_fanout_failure(failure),
                     });
                 }
                 None => result.omissions.push(machine_id),
@@ -610,6 +606,32 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             message: error.to_string(),
             details: Value::Null,
         },
+    }
+}
+
+fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
+    let code = match tonic::Code::from_i32(i32::try_from(failure.code).unwrap_or(i32::MAX)) {
+        tonic::Code::InvalidArgument | tonic::Code::OutOfRange => RpcErrorCode::InvalidArgument,
+        tonic::Code::NotFound => RpcErrorCode::NotFound,
+        tonic::Code::AlreadyExists | tonic::Code::Aborted | tonic::Code::FailedPrecondition => {
+            RpcErrorCode::Conflict
+        }
+        tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
+        tonic::Code::DeadlineExceeded
+        | tonic::Code::ResourceExhausted
+        | tonic::Code::Unavailable => RpcErrorCode::Unavailable,
+        tonic::Code::Internal | tonic::Code::DataLoss | tonic::Code::Unknown => {
+            RpcErrorCode::Internal
+        }
+        tonic::Code::Ok
+        | tonic::Code::Cancelled
+        | tonic::Code::PermissionDenied
+        | tonic::Code::Unauthenticated => RpcErrorCode::Unknown(format!("grpc_{}", failure.code)),
+    };
+    RpcError {
+        code,
+        message: failure.message,
+        details: failure.details.into(),
     }
 }
 
@@ -761,6 +783,19 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg.contains("id_*")));
         assert!(!args.iter().any(|arg| arg.contains("BatchMode")));
+    }
+
+    #[test]
+    fn fanout_failures_preserve_status_code_and_details() {
+        let error = decode_fanout_failure(FanoutFailure {
+            code: tonic::Code::Internal as u32,
+            message: "Docker failed".into(),
+            details: vec![1, 2, 3],
+        });
+
+        assert_eq!(error.code, RpcErrorCode::Internal);
+        assert_eq!(error.message, "Docker failed");
+        assert_eq!(error.details, serde_json::json!([1, 2, 3]));
     }
 
     #[tokio::test]

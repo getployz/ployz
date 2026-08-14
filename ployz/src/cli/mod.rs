@@ -205,7 +205,7 @@ fn image() -> Command {
         .subcommand(
             base("push", "Push an image")
                 .arg(many("machine", Some('m')))
-                .arg(value("platform", None).value_parser(["linux/amd64", "linux/arm64"]))
+                .arg(value("platform", None))
                 .arg(positional("image", true)),
         )
 }

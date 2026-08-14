@@ -6,7 +6,7 @@ use serde_norway::Value;
 
 use super::{
     ComposeError, ComposeProject, LoadOptions,
-    loader::{TemporaryComposeFile, compose_command},
+    loader::{TemporaryComposeFile, compose_command, first_compose_file_from_environment},
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -68,13 +68,17 @@ pub fn execute_build(
     if plan.is_empty() {
         return Ok(());
     }
+    let mut load = load.clone();
+    if load.files.is_empty() && first_compose_file_from_environment().is_none() {
+        load.files.push("compose.yaml".into());
+    }
     let override_file = TemporaryComposeFile::new(&build_override(plan)?)?;
     let docker = load
         .docker
         .as_deref()
         .unwrap_or_else(|| std::path::Path::new("docker"));
-    let mut command = compose_command(docker, load, None)?;
-    command.arg("--file").arg(&override_file.path).arg("build");
+    let mut command = compose_command(docker, &load, Some(&override_file))?;
+    command.arg("build");
     for argument in &options.build_args {
         command.arg("--build-arg").arg(argument);
     }
