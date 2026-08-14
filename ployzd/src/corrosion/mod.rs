@@ -15,7 +15,8 @@ pub use service::{
 };
 pub(crate) use store::LocalContainerSnapshot;
 pub use store::{
-    ReplicatedObservations, ReplicatedStore, run_machine_publisher, wait_for_catch_up,
+    ReplicatedObservations, ReplicatedStore, run_machine_publisher,
+    run_machine_publisher_with_restart, wait_for_catch_up,
 };
 
 use thiserror::Error;
@@ -34,6 +35,11 @@ pub enum Error {
     Toml(#[from] toml::ser::Error),
     #[error("Docker operation for Corrosion failed: {0}")]
     Docker(#[from] bollard::errors::Error),
+    #[error("{primary}; cleanup: {cleanup}")]
+    CleanupAfter {
+        primary: Box<Error>,
+        cleanup: Box<Error>,
+    },
     #[error("Corrosion API error: {0}")]
     Api(String),
     #[error("invalid Corrosion protocol response: {0}")]

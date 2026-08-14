@@ -1,4 +1,4 @@
-use std::{collections::HashSet, future::Future, path::Path, pin::Pin};
+use std::collections::HashSet;
 
 use clap::ArgMatches;
 use ployz_core::{
@@ -6,7 +6,7 @@ use ployz_core::{
     HealthObservation, LiveServices, RpcError, select_service,
 };
 
-use super::{Error, leaf_matches};
+use super::{Error, leaf_matches, with_client};
 
 pub fn list(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
@@ -212,45 +212,6 @@ fn stop_options(
         .map(|value| value.parse::<i32>().map_err(|error| error.to_string()))
         .transpose()?;
     Ok((signal, timeout))
-}
-
-pub(super) fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
-where
-    F: for<'a> FnOnce(
-        &'a mut crate::connect::Client,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
-{
-    with_client_context(root, None, work)
-}
-
-pub(super) fn with_client_context<F>(
-    root: &ArgMatches,
-    context_override: Option<&str>,
-    work: F,
-) -> Result<(), Error>
-where
-    F: for<'a> FnOnce(
-        &'a mut crate::connect::Client,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
-{
-    let leaf = leaf_matches(root);
-    let config = leaf
-        .get_one::<String>("ployz-config")
-        .ok_or_else(|| "Ployz config path is required".to_owned())?;
-    let config = crate::context::expand_home(Path::new(config));
-    let direct = leaf.get_one::<String>("connect").map(String::as_str);
-    let context =
-        context_override.or_else(|| leaf.get_one::<String>("context").map(String::as_str));
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?
-        .block_on(async {
-            let mut client = crate::connect::connect(&config, direct, context)
-                .await
-                .map_err(|error| error.to_string())?;
-            work(&mut client).await
-        })
 }
 
 fn print_observation_warning(live: &LiveServices<RpcError>) {

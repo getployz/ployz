@@ -4,15 +4,14 @@ use std::{
     num::{NonZeroU16, NonZeroU32},
 };
 
-use ipnet::IpNet;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use serde_json::{Map, Value};
-
 use crate::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerPath, DockerVolumeName, MachineId,
     MachineName, MachinePath, MachineSelector, MachineSubnet, ManagementAddress, SelectedEndpoint,
     ServiceId, ServiceName, ServiceVolumeReference, WireGuardPublicKey,
 };
+use ipnet::IpNet;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde_json::{Map, Value};
 
 /// A name lookup result. Duplicate names are a normal observable state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -221,7 +220,7 @@ pub struct MachineObservation {
 
 #[must_use]
 pub fn machine_matches_selector(machine: &Machine, selector: &MachineSelector) -> bool {
-    selector.as_str() == "*"
+    matches!(selector.as_str(), "*" | "all")
         || machine.id.as_str() == selector.as_str()
         || machine.name.as_str() == selector.as_str()
 }
@@ -237,7 +236,7 @@ pub fn resolve_machine_selectors(
     let mut seen = BTreeSet::new();
     let mut missing = Vec::new();
     for selector in selectors {
-        if selector.as_str() == "*" {
+        if matches!(selector.as_str(), "*" | "all") {
             for machine in visible {
                 if seen.insert(machine.id.clone()) {
                     targets.push(machine.clone());
@@ -279,7 +278,7 @@ pub enum MachineSelectorError {
     NoVisibleMachines,
     #[error("Machine selectors were not found: {0:?}")]
     NotFound(Vec<MachineSelector>),
-    #[error("Machine selector {selector:?} is ambiguous: {matches:?}")]
+    #[error("Machine selector {selector:?} is ambiguous across IDs {matches:?}")]
     Ambiguous {
         selector: MachineSelector,
         matches: Vec<MachineId>,

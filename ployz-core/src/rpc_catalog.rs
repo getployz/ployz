@@ -24,6 +24,7 @@ macro_rules! rpc_catalog {
                 ListVolumes: (list_volumes, "ListVolumes", ListVolumesRequest, "list_volumes"),
                 InspectVolume: (inspect_volume, "InspectVolume", InspectVolumeRequest, "inspect_volume"),
                 RemoveVolume: (remove_volume, "RemoveVolume", RemoveVolumeRequest, "remove_volume"),
+                ListImages: (list_images, "ListImages", ListImagesRequest, "list_images"),
                 Reset: (reset, "Reset", ResetRequest, "reset"),
             }
             server_streaming {

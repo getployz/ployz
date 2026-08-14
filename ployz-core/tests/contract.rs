@@ -5,15 +5,15 @@ use ployz_core::{
     ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     DESCRIBE_CONTRACT_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
-    HealthObservation, MachineFailure, MachineId, MachineName, MachinePath, MachineRpc,
-    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, MachineTokenRequest,
-    MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement,
-    PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ResolvedServiceSpec,
-    ResponseKind, RpcError, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse, RpcResponseBody,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame,
-    grpc_frames,
+    HealthObservation, ImageSummary, LIST_IMAGES_CAPABILITY, MachineFailure, MachineId,
+    MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer,
+    MachineSelector, MachineSuccess, MachineTokenRequest, MachineUpdate, NameMatches,
+    OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PreDeployHook, PublicIpDiscovery,
+    PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RequestedServiceSpec, ResolvedServiceSpec, ResponseKind, RpcError,
+    RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec,
+    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
+    UpdateConfig, UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -235,6 +235,36 @@ fn json_payload_round_trips_through_the_opaque_prost_envelope() {
         response_payload.decode_json::<RpcResponse>().unwrap(),
         response
     );
+}
+
+#[test]
+fn image_list_contract_keeps_machine_local_store_and_platforms() {
+    let request = RpcRequest::list_images(Some("example.test/api:1.*".into()));
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+
+    let images = MachineImages {
+        containerd_store: true,
+        images: vec![ImageSummary {
+            id: "sha256:abcdef".into(),
+            repo_tags: vec!["example.test/api:1.2".into()],
+            created: 17,
+            size: 42,
+            containers: 1,
+            platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
+        }],
+    };
+    let response = RpcResponse::machine_images(images.clone());
+    assert_eq!(
+        response
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode_machine_images()
+            .unwrap(),
+        &images
+    );
+    assert_eq!(LIST_IMAGES_CAPABILITY, "ployz.image.list.v1");
 }
 
 #[test]
@@ -845,6 +875,13 @@ impl MachineRpc for FixtureMachineRpc {
     }
 
     async fn inspect_wireguard(
+        &self,
+        _request: tonic::Request<OpaquePayload>,
+    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+        unreachable!("compile-time service fixture")
+    }
+
+    async fn list_images(
         &self,
         _request: tonic::Request<OpaquePayload>,
     ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {

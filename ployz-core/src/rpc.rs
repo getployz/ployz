@@ -14,6 +14,7 @@ use crate::{
     DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineLogService,
     MachineName, MachineObservation, MachineRuntime, MachineToken, MachineUpdate,
     PublicIpDiscovery, ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
+    framing::{FramingError, grpc_frame_payload},
 };
 
 mod docker;
@@ -42,6 +43,8 @@ pub const UPDATE_MACHINE_CAPABILITY: &str = "ployz.machine.update.v1";
 pub const REMOVE_LOCAL_MACHINE_CAPABILITY: &str = "ployz.machine.remove-local.v1";
 pub const REMOVE_MACHINE_CAPABILITY: &str = "ployz.machine.remove.v1";
 pub const INSPECT_WIREGUARD_CAPABILITY: &str = "ployz.wireguard.inspect.v1";
+pub const LIST_IMAGES_CAPABILITY: &str = "ployz.image.list.v1";
+pub const UNREGISTRY_PORT: u16 = 51500;
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
 #[derive(Clone, PartialEq, Message)]
@@ -74,6 +77,11 @@ impl OpaquePayload {
 
     pub fn decode_json<T: DeserializeOwned>(&self) -> Result<T, CodecError> {
         serde_json::from_slice(&self.json).map_err(CodecError::DecodeJson)
+    }
+
+    pub fn decode_grpc_frame(frame: &[u8]) -> Result<Self, FramingError> {
+        Self::decode(grpc_frame_payload(frame)?)
+            .map_err(|error| FramingError::InvalidEnvelope(error.to_string()))
     }
 
     pub fn decode_request(&self) -> Result<RpcRequest, CodecError> {
@@ -262,6 +270,12 @@ pub struct ContainerLogsRequest {
 pub struct MachineLogsRequest {
     pub service: MachineLogService,
     pub options: LogsOptions,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ListImagesRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// Commands are closed and own their typed payloads.
@@ -496,6 +510,14 @@ impl RpcRequest {
     }
 
     #[must_use]
+    pub fn list_images(reference: Option<String>) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::ListImages(ListImagesRequest { reference }),
+        }
+    }
+
+    #[must_use]
     pub fn inspect_wireguard() -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -530,6 +552,7 @@ crate::value::open_string_enum!(ResponseKind, Unknown {
     VolumeList => "volume_list",
     VolumeDetails => "volume_details",
     VolumeRemoved => "volume_removed",
+    MachineImages => "machine_images",
     MachineUpdated => "machine_updated",
     LocalMachineRemoved => "local_machine_removed",
     MachineRemoved => "machine_removed",
@@ -595,6 +618,22 @@ pub struct ContainerCreated {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContainerChanged {
     pub container_id: ContainerId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageSummary {
+    pub id: String,
+    pub repo_tags: Vec<String>,
+    pub created: i64,
+    pub size: i64,
+    pub containers: i64,
+    pub platforms: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineImages {
+    pub containerd_store: bool,
+    pub images: Vec<ImageSummary>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -667,6 +706,7 @@ define_response_body! {
     VolumeList(VolumeList) => VolumeList,
     VolumeDetails(VolumeDetails) => VolumeDetails,
     VolumeRemoved(VolumeRemoved) => VolumeRemoved,
+    MachineImages(MachineImages) => MachineImages,
     MachineUpdated(MachineUpdated) => MachineUpdated,
     LocalMachineRemoved(LocalMachineRemoved) => LocalMachineRemoved,
     MachineRemoved(MachineRemoved) => MachineRemoved,
@@ -843,6 +883,14 @@ impl RpcResponse {
     }
 
     #[must_use]
+    pub fn machine_images(images: MachineImages) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcResponseBody::MachineImages(images),
+        }
+    }
+
+    #[must_use]
     pub fn wireguard_inspected(device: WireGuardDevice) -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -987,6 +1035,15 @@ impl RpcResponse {
             Ok(())
         } else {
             Err(self.unexpected("volume_removed"))
+        }
+    }
+
+    pub fn decode_machine_images(&self) -> Result<&MachineImages, CodecError> {
+        validate_protocol_major(self.protocol_major)?;
+        if let RpcResponseBody::MachineImages(images) = &self.body {
+            Ok(images)
+        } else {
+            Err(self.unexpected("machine_images"))
         }
     }
 

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -59,7 +60,7 @@ pub fn load_project(options: &LoadOptions) -> Result<ComposeProject, ComposeErro
     );
     convert_raw_project(
         raw,
-        project_working_dir(options),
+        project_working_dir(options)?,
         environment,
         &recovered_secrets,
     )
@@ -175,33 +176,30 @@ fn secret_overrides(names: &BTreeSet<String>) -> String {
     format!("secrets:\n{entries}")
 }
 
-fn project_working_dir(options: &LoadOptions) -> PathBuf {
-    options
+fn project_working_dir(options: &LoadOptions) -> Result<PathBuf, ComposeError> {
+    let file = options
         .files
         .first()
         .cloned()
-        .or_else(first_compose_file_from_environment)
-        .map(|file| {
-            if file.is_absolute() {
-                file
-            } else {
-                options
-                    .working_dir
-                    .as_deref()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join(file)
-            }
-        })
-        .and_then(|file| {
-            file.parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-        })
+        .or_else(first_compose_file_from_environment);
+    let file = match file {
+        Some(file) if file.is_absolute() => file,
+        Some(file) => options
+            .working_dir
+            .as_deref()
+            .unwrap_or_else(|| Path::new("."))
+            .join(file),
+        None => discover_default_compose_file(options)?,
+    };
+    Ok(file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
         .or_else(|| options.working_dir.clone())
-        .unwrap_or_else(|| PathBuf::from("."))
+        .unwrap_or_else(|| PathBuf::from(".")))
 }
 
-fn compose_command(
+pub(super) fn compose_command(
     docker: &Path,
     options: &LoadOptions,
     override_file: Option<&TemporaryComposeFile>,
@@ -237,13 +235,42 @@ fn compose_command(
     Ok(command)
 }
 
-fn first_compose_file_from_environment() -> Option<PathBuf> {
+pub(super) fn first_compose_file_from_environment() -> Option<PathBuf> {
     let files = std::env::var_os("COMPOSE_FILE")?;
     files
         .to_string_lossy()
         .split(compose_path_separator().to_string_lossy().as_ref())
         .find(|file| !file.is_empty())
         .map(PathBuf::from)
+}
+
+pub(super) fn discover_default_compose_file(
+    options: &LoadOptions,
+) -> Result<PathBuf, ComposeError> {
+    let current = std::env::current_dir()
+        .map_err(|error| ComposeError::Io(format!("resolve current directory: {error}")))?;
+    let directory = current.join(
+        options
+            .working_dir
+            .as_deref()
+            .unwrap_or_else(|| Path::new(".")),
+    );
+    for directory in directory.ancestors() {
+        for name in [
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        ] {
+            let file = directory.join(name);
+            if file.is_file() {
+                return Ok(file);
+            }
+        }
+    }
+    Err(ComposeError::Invalid(
+        "default Compose file disappeared after project loading".into(),
+    ))
 }
 
 fn compose_path_separator() -> std::ffi::OsString {
@@ -311,12 +338,12 @@ fn parse_environment(bytes: &[u8]) -> BTreeMap<String, String> {
         .collect()
 }
 
-struct TemporaryComposeFile {
-    path: PathBuf,
+pub(super) struct TemporaryComposeFile {
+    pub(super) path: PathBuf,
 }
 
 impl TemporaryComposeFile {
-    fn new(content: &str) -> Result<Self, ComposeError> {
+    pub(super) fn new(content: &str) -> Result<Self, ComposeError> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         for _ in 0..100 {
             let path = std::env::temp_dir().join(format!(
@@ -327,6 +354,7 @@ impl TemporaryComposeFile {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
+                .mode(0o600)
                 .open(&path)
             {
                 Ok(mut file) => {
@@ -353,5 +381,19 @@ impl TemporaryComposeFile {
 impl Drop for TemporaryComposeFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    #[test]
+    fn temporary_compose_files_are_private() {
+        let file = TemporaryComposeFile::new("services: {}\n").unwrap();
+        let mode = fs::metadata(&file.path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

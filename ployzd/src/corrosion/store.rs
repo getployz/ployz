@@ -463,6 +463,17 @@ pub async fn run_machine_publisher(
     replicated: Option<ReplicatedStore>,
     local: Arc<Mutex<LocalMachineStore>>,
     participating: watch::Sender<bool>,
+    shutdown: watch::Receiver<bool>,
+) -> io::Result<()> {
+    let (restart, _) = watch::channel(false);
+    run_machine_publisher_with_restart(replicated, local, participating, restart, shutdown).await
+}
+
+pub async fn run_machine_publisher_with_restart(
+    replicated: Option<ReplicatedStore>,
+    local: Arc<Mutex<LocalMachineStore>>,
+    participating: watch::Sender<bool>,
+    restart: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     if let Some(replicated) = &replicated {
@@ -491,6 +502,7 @@ pub async fn run_machine_publisher(
                 .complete_catch_up()
                 .map_err(io::Error::other)?;
             participating.send_replace(true);
+            restart.send_replace(true);
         }
     }
     loop {
