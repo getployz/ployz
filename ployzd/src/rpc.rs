@@ -825,19 +825,18 @@ impl MachineRpc for MachineService {
                 store.begin_reset()
             }
         };
-        let restart_on_warning = request.restart_on_cleanup_failure && reset.is_ok();
-        let reset_warning = match reset {
-            Ok(()) => publication
-                .remove(&machine_id)
-                .await
-                .err()
-                .map(|error| error.to_string()),
-            Err(error) => Some(error.to_string()),
-        };
+        if let Err(error) = reset {
+            return respond(RpcResponse::error(store_error(error)));
+        }
+        let reset_warning = publication
+            .remove(&machine_id)
+            .await
+            .err()
+            .map(|error| error.to_string());
         respond(RpcResponse::local_machine_removed(local_removal_response(
             &self.restart,
             reset_warning,
-            restart_on_warning,
+            request.restart_on_cleanup_failure,
         )))
     }
 
