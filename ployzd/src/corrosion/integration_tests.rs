@@ -63,8 +63,13 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert!(machines.observations.contains(&local));
     assert!(machines.observations.contains(&duplicate));
 
+    let mut container_changes = store.subscribe_container_changes().await.unwrap();
     let observation = container(&local.id, "a");
     store.publish_container(&observation).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), container_changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
     let duplicate_service_name = container(&local.id, "c");
     store
         .publish_container(&duplicate_service_name)

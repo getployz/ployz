@@ -588,13 +588,14 @@ impl Error {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::ResolvedServiceSpec;
+    use ployz_core::{MachineGateway, ResolvedServiceSpec};
 
     use super::*;
 
     #[test]
     fn create_body_translates_runtime_fields_and_hook_overrides() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
         let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
             "service_id": "a".repeat(32),
             "name": "api",
@@ -627,9 +628,13 @@ mod tests {
         }))
         .unwrap();
 
-        let regular =
-            create::container_create_body(&machine_id, ContainerKind::ServiceContainer, &spec)
-                .unwrap();
+        let regular = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &spec,
+        )
+        .unwrap();
         assert!(
             regular
                 .env
@@ -639,6 +644,9 @@ mod tests {
         );
         assert_eq!(regular.cmd, Some(vec!["serve".into()]));
         let regular_host = regular.host_config.unwrap();
+        assert_eq!(regular_host.dns, Some(vec![gateway.0.to_string()]));
+        assert_eq!(regular_host.dns_search, Some(vec!["internal".into()]));
+        assert_eq!(regular_host.dns_options, Some(vec!["ndots:1".into()]));
         assert_eq!(regular_host.memory, Some(1_048_576));
         assert_eq!(
             regular_host.restart_policy.unwrap().name,
@@ -646,8 +654,13 @@ mod tests {
         );
         assert!(regular_host.port_bindings.is_some());
 
-        let hook = create::container_create_body(&machine_id, ContainerKind::PreDeployHook, &spec)
-            .unwrap();
+        let hook = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::PreDeployHook,
+            &spec,
+        )
+        .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
         assert_eq!(hook.user.as_deref(), Some("1000"));
         let hook_env = hook.env.as_ref().unwrap();
@@ -657,6 +670,9 @@ mod tests {
         assert!(hook_env.contains(&"PLOYZ_HOOK_PRE_DEPLOY=true".into()));
         assert_eq!(hook.healthcheck.unwrap().test, Some(vec!["NONE".into()]));
         let hook_host = hook.host_config.unwrap();
+        assert_eq!(hook_host.dns, Some(vec![gateway.0.to_string()]));
+        assert_eq!(hook_host.dns_search, Some(vec!["internal".into()]));
+        assert_eq!(hook_host.dns_options, Some(vec!["ndots:1".into()]));
         assert_eq!(hook_host.privileged, Some(true));
         assert!(hook_host.port_bindings.is_none());
         assert_eq!(

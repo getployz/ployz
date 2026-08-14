@@ -18,6 +18,7 @@ use ployzd::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, RunningCorrosion,
         run_machine_publisher,
     },
+    dns,
     docker::{ContainerObserver, LocalDocker, MachineSpecStore},
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
@@ -179,7 +180,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let network_runner = async {
         if let Some(network) = &mut network {
             network
-                .run(replicated_store, Arc::clone(&store), shutdown_rx.clone())
+                .run(
+                    replicated_store.clone(),
+                    Arc::clone(&store),
+                    shutdown_rx.clone(),
+                )
                 .await
         } else {
             wait_for_shutdown(shutdown_rx.clone()).await;
@@ -198,6 +203,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     };
+    let dns = async {
+        match (local_record.machine.clone(), replicated_store.clone()) {
+            (Some(machine), Some(replicated)) => {
+                dns::run(machine, replicated, shutdown_rx.clone()).await
+            }
+            _ => {
+                wait_for_shutdown(shutdown_rx.clone()).await;
+                Ok(())
+            }
+        }
+    };
     let servers = async {
         tokio::try_join!(
             async { rpc.await.map_err(io::Error::other) },
@@ -206,6 +222,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             network_rpc,
             network_runner,
             observer,
+            dns,
         )
         .map(|_| ())
     };

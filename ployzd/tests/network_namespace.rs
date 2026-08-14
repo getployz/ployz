@@ -208,6 +208,14 @@ fn mesh_routing_preserves_container_source_and_internet_nat() {
     apply_in_namespace(&source, "10.210.1.0/24");
     apply_in_namespace(&target, "10.210.2.0/24");
 
+    let mut dns_udp = datagram_server(&target, "10.210.2.1", 53);
+    send_datagram(&container, "10.210.2.2", "10.210.2.1", 53);
+    assert_eq!(dns_udp.peer(), "10.210.2.2");
+
+    let mut dns_tcp = stream_server(&target, "10.210.2.1", 53);
+    connect(&container, "10.210.2.2", "10.210.2.1", 53);
+    assert_eq!(dns_tcp.peer(), "10.210.2.2");
+
     let mut mesh = datagram_server(&container, "10.210.2.2", 40101);
     send_datagram(&source, "10.210.1.2", "10.210.2.2", 40101);
     assert_eq!(mesh.peer(), "10.210.1.2");

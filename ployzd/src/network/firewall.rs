@@ -2,6 +2,8 @@ use std::process::Command;
 
 use ployz_core::MachineSubnet;
 
+use crate::dns;
+
 use super::{
     CORROSION_GOSSIP_PORT, DOCKER_NETWORK_NAME, MACHINE_API_PORT, NetworkError, UNREGISTRY_PORT,
     WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked_command, machine_gateway,
@@ -42,6 +44,25 @@ pub fn apply_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
                 "tcp",
                 "--dport",
                 &port.to_string(),
+                "-j",
+                "ACCEPT",
+            ],
+        )?;
+    }
+    for protocol in ["udp", "tcp"] {
+        ensure_rule(
+            "iptables",
+            "filter",
+            INPUT_CHAIN,
+            &[
+                "-i",
+                DOCKER_NETWORK_NAME,
+                "-d",
+                &machine_gateway(subnet)?.0.to_string(),
+                "-p",
+                protocol,
+                "--dport",
+                &dns::PORT.to_string(),
                 "-j",
                 "ACCEPT",
             ],

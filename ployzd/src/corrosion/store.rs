@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
-use super::{ApiClient, Error, Statement};
+use super::{ApiClient, Error, Statement, Subscription};
 use crate::machine::LocalMachineStore;
 
 #[derive(Clone)]
@@ -225,6 +225,12 @@ impl ReplicatedStore {
             ))
             .await?;
         decode_observations(query.rows(["id", "container"])?)
+    }
+
+    pub(crate) async fn subscribe_container_changes(&self) -> Result<Subscription, Error> {
+        self.api
+            .subscribe(Statement::new("SELECT id, container FROM containers", []))
+            .await
     }
 
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {

@@ -1,7 +1,9 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, pin::Pin, time::Duration};
 
+use bytes::Bytes;
+use futures_util::{Stream, StreamExt};
 use reqwest::{Client, Url, header};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
 
 use super::Error;
@@ -147,6 +149,81 @@ impl ApiClient {
         }
         Ok(QueryResult { columns, rows })
     }
+
+    pub(crate) async fn subscribe(&self, statement: Statement) -> Result<Subscription, Error> {
+        let response = self
+            .client
+            .post(self.base_url.join("v1/subscriptions").expect("static path"))
+            .json(&statement)
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::Api(format!(
+                "HTTP {status}: {}",
+                response.text().await?
+            )));
+        }
+        let mut subscription = Subscription {
+            chunks: Box::pin(response.bytes_stream()),
+            buffer: Vec::new(),
+        };
+        loop {
+            match subscription.next_event().await? {
+                SubscriptionEvent::Columns(_) | SubscriptionEvent::Row(_) => {}
+                SubscriptionEvent::EndOfQuery { .. } => return Ok(subscription),
+                SubscriptionEvent::Change(_) => {
+                    return Err(Error::Protocol(
+                        "subscription change preceded end-of-query".into(),
+                    ));
+                }
+                SubscriptionEvent::Error(error) => return Err(Error::Api(error)),
+            }
+        }
+    }
+}
+
+pub(crate) struct Subscription {
+    chunks: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+    buffer: Vec<u8>,
+}
+
+impl Subscription {
+    pub(crate) async fn changed(&mut self) -> Result<(), Error> {
+        match self.next_event().await? {
+            SubscriptionEvent::Change(_) => Ok(()),
+            SubscriptionEvent::Error(error) => Err(Error::Api(error)),
+            SubscriptionEvent::Columns(_)
+            | SubscriptionEvent::Row(_)
+            | SubscriptionEvent::EndOfQuery { .. } => Err(Error::Protocol(
+                "initial subscription event followed end-of-query".into(),
+            )),
+        }
+    }
+
+    async fn next_event(&mut self) -> Result<SubscriptionEvent, Error> {
+        loop {
+            if let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
+                let mut line = self.buffer.drain(..=newline).collect::<Vec<_>>();
+                line.pop().expect("drained line includes newline");
+                if line.iter().all(u8::is_ascii_whitespace) {
+                    continue;
+                }
+                return Ok(serde_json::from_slice(&line)?);
+            }
+            match self.chunks.next().await {
+                Some(Ok(chunk)) => self.buffer.extend_from_slice(&chunk),
+                Some(Err(error)) => return Err(error.into()),
+                None if self.buffer.iter().all(u8::is_ascii_whitespace) => {
+                    return Err(Error::Protocol("subscription stream closed".into()));
+                }
+                None => {
+                    let line = std::mem::take(&mut self.buffer);
+                    return Ok(serde_json::from_slice(&line)?);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,5 +292,22 @@ enum QueryEvent {
         #[serde(rename = "change_id")]
         _change_id: Option<u64>,
     },
+    Error(String),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+enum SubscriptionEvent {
+    Columns(IgnoredAny),
+    Row(IgnoredAny),
+    #[serde(rename = "eoq")]
+    EndOfQuery {
+        #[serde(rename = "time")]
+        _time: f64,
+        #[serde(default)]
+        #[serde(rename = "change_id")]
+        _change_id: Option<u64>,
+    },
+    Change(IgnoredAny),
     Error(String),
 }

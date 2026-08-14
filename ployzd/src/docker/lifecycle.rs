@@ -5,7 +5,9 @@ use bollard::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
 };
-use ployz_core::{ContainerCreated, ContainerId, ContainerKind, MachineId, ResolvedServiceSpec};
+use ployz_core::{
+    ContainerCreated, ContainerId, ContainerKind, MachineGateway, MachineId, ResolvedServiceSpec,
+};
 
 use crate::docker_image::prepare_image;
 
@@ -20,13 +22,14 @@ impl LocalDocker {
     pub async fn create(
         &self,
         machine_id: &MachineId,
+        gateway: MachineGateway,
         specs: &MachineSpecStore,
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
-        let mut body = create::container_create_body(machine_id, kind, spec)?;
+        let mut body = create::container_create_body(machine_id, gateway, kind, spec)?;
         let mounts = body
             .host_config
             .get_or_insert_default()
