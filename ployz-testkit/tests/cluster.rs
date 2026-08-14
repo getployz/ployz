@@ -34,6 +34,13 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
                 .all(|machine| machine.membership == MembershipObservation::Up)
         );
     }
+    let metrics = cluster
+        .machine_shell(0, "curl -fsS http://127.0.0.1:51090/metrics")
+        .unwrap();
+    assert!(metrics.contains(&format!(
+        "ployz_ployzd_build_info{{version=\"{}\"}} 1",
+        env!("CARGO_PKG_VERSION")
+    )));
 
     cluster.restart(1).unwrap();
     cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
@@ -224,6 +231,12 @@ async fn updates_removes_and_inspects_machine_network_state() {
         )
         .await
         .unwrap();
+    wait_for(&cluster, 0, Duration::from_secs(10), |machines| {
+        machines.iter().any(|machine| {
+            machine.machine.id == first.id && machine.machine.name.as_str() == "partition-duplicate"
+        })
+    })
+    .await;
     cluster
         .update_machine(
             1,
@@ -235,6 +248,28 @@ async fn updates_removes_and_inspects_machine_network_state() {
         )
         .await
         .unwrap();
+    wait_for(&cluster, 1, Duration::from_secs(10), |machines| {
+        machines.iter().any(|machine| {
+            machine.machine.id == second.id
+                && machine.machine.name.as_str() == "partition-duplicate"
+        })
+    })
+    .await;
+    let left = cluster.machines(0).await.unwrap();
+    let right = cluster.machines(1).await.unwrap();
+    assert_eq!(
+        left.iter()
+            .filter(|machine| machine.machine.name.as_str() == "partition-duplicate")
+            .count(),
+        1
+    );
+    assert_eq!(
+        right
+            .iter()
+            .filter(|machine| machine.machine.name.as_str() == "partition-duplicate")
+            .count(),
+        1
+    );
     cluster.unblock_gossip(0).unwrap();
     cluster.unblock_gossip(1).unwrap();
     for entry in 0..2 {

@@ -1,4 +1,7 @@
-use std::{process, time::Duration};
+use std::{
+    process,
+    time::{Duration, Instant},
+};
 
 use ployz::{
     connect::Client,
@@ -30,10 +33,90 @@ async fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
     .await
     .unwrap();
     assert_target_local_volume(&cluster, &client, &machines[1]).await;
+    assert_startup_health_outcomes(&cluster, &mut client, &machines[0]).await;
     assert_unreachable_middle_keeps_prefix(&cluster, &mut client, &machines).await;
     assert_replacement_health_compensation(&cluster, &mut client, &machines[0]).await;
     assert_failed_hooks_are_retained_and_rerun(&cluster, &mut client, &machines[0]).await;
     assert_unhealthy_service_is_not_repaired(&cluster, &mut client, &machines).await;
+}
+
+async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, machine: &Machine) {
+    let healthy_id = ServiceId::random();
+    let mut healthy = service_spec(&healthy_id, "healthy-startup");
+    healthy.container.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+    healthy.container.healthcheck = Some(ployz_core::HealthcheckSpec {
+        test: vec!["CMD".into(), "true".into()],
+        interval_millis: Some(50),
+        timeout_millis: Some(50),
+        start_period_millis: None,
+        start_interval_millis: None,
+        retries: Some(2),
+        disabled: false,
+    });
+    healthy.update.monitor_millis = Some(3_000);
+    let healthy_plan = deploy_plan(
+        healthy_id.clone(),
+        vec![run_with_health_monitor(machine, &healthy)],
+    );
+    let started = Instant::now();
+    let healthy_outcome = execute_plan(&healthy_plan, client, &CancellationToken::new()).await;
+    let elapsed = started.elapsed();
+    assert!(healthy_outcome.failed.is_none());
+    assert!(elapsed >= Duration::from_millis(50));
+    assert!(elapsed < Duration::from_secs(3));
+    let healthy_containers = wait_for_service(client, &healthy_id, 1).await;
+    assert!(matches!(
+        healthy_containers.first().unwrap().runtime,
+        ContainerRuntimeObservation::Running {
+            health: ployz_core::HealthObservation::Healthy
+        }
+    ));
+    remove_all(client, healthy_containers).await;
+
+    for (name, healthcheck) in [
+        (
+            "crash-with-healthcheck",
+            Some(ployz_core::HealthcheckSpec {
+                test: vec!["CMD".into(), "true".into()],
+                interval_millis: Some(50),
+                timeout_millis: Some(50),
+                start_period_millis: None,
+                start_interval_millis: None,
+                retries: Some(1),
+                disabled: false,
+            }),
+        ),
+        ("crash-without-healthcheck", None),
+    ] {
+        let service_id = ServiceId::random();
+        let mut crashing = service_spec(&service_id, name);
+        crashing.container.command = vec!["sh".into(), "-c".into(), "exit 23".into()];
+        crashing.container.healthcheck = healthcheck;
+        crashing.update.monitor_millis = Some(1_000);
+        let plan = deploy_plan(
+            service_id.clone(),
+            vec![run_with_health_monitor(machine, &crashing)],
+        );
+        let started = Instant::now();
+        assert!(matches!(
+            execute_plan(&plan, client, &CancellationToken::new())
+                .await
+                .failed,
+            Some(FailedOperation::Operation {
+                error: ExecutionError::Health { .. },
+                ..
+            })
+        ));
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        let retained = wait_for_service(client, &service_id, 1).await;
+        wait_restarting(client, machine, &retained.first().unwrap().container_id).await;
+        assert!(docker_exists(
+            cluster,
+            0,
+            &retained.first().unwrap().container_id
+        ));
+        remove_all(client, retained).await;
+    }
 }
 
 async fn assert_target_local_volume(cluster: &Cluster, client: &Client, machine: &Machine) {
@@ -345,6 +428,14 @@ fn run_without_health_monitor(machine: &Machine, spec: &ResolvedServiceSpec) -> 
     }
 }
 
+fn run_with_health_monitor(machine: &Machine, spec: &ResolvedServiceSpec) -> DeployOperation {
+    DeployOperation::RunContainer {
+        machine_id: machine.id.clone(),
+        spec: spec.clone(),
+        skip_health_monitor: false,
+    }
+}
+
 fn hook(machine: &Machine, spec: &ResolvedServiceSpec) -> DeployOperation {
     DeployOperation::RunHook {
         machine_id: machine.id.clone(),
@@ -410,6 +501,25 @@ async fn wait_for_service(
                 if containers.len() == count {
                     return containers;
                 }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn wait_restarting(client: &Client, machine: &Machine, container_id: &ContainerId) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if client
+                .inspect_container(machine.id.clone(), container_id.clone())
+                .await
+                .is_ok_and(|container| {
+                    matches!(container.runtime, ContainerRuntimeObservation::Restarting)
+                })
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

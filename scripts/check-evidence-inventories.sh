@@ -4,6 +4,7 @@ set -eu
 unset CDPATH
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 todo_ledger="$repo_root/UPSTREAM_TODOS.md"
+layer1="$repo_root/evidence/layer1.tsv"
 layer3="$repo_root/evidence/layer3.tsv"
 baseline=b7e224a1eff98813b1d1a32034d977be24be994e
 
@@ -38,6 +39,27 @@ bad_ledger_keys=$(printf '%s\n' "$ledger_rows" | awk -F '|' '
 ')
 [ "$bad_ledger_keys" -eq 0 ] || fail "$bad_ledger_keys TODO ledger keys are duplicate or out of sequence"
 
+pending_locations=$(printf '%s\n' "$ledger_rows" | grep -Fc 'Pending — owning implementation slice' || true)
+[ "$pending_locations" -eq 0 ] || fail "$pending_locations TODO ledger rows still have a pending location"
+
+layer1_count=$(awk -F '\t' 'NR > 1 && NF {count++} END {print count + 0}' "$layer1")
+[ "$layer1_count" -eq 85 ] || fail "expected 85 Layer 1 oracle groups, found $layer1_count"
+
+bad_layer1=$(awk -F '\t' -v baseline="$baseline" '
+  NR == 1 {
+    if ($0 != "key\tfamily\tupstream_case\tpinned_source\tdisposition\trust_evidence") bad++
+    next
+  }
+  $1 != sprintf("L1-%03d", NR - 1) {bad++}
+  $1 !~ /^L1-[0-9][0-9][0-9]$/ {bad++}
+  index($4, baseline) == 0 {bad++}
+  $5 !~ /^(tested|not-ported)$/ {bad++}
+  $5 == "tested" && $6 !~ /\.rs::[a-zA-Z0-9_]+$/ {bad++}
+  $5 == "not-ported" && $6 == "" {bad++}
+  END {print bad + 0}
+' "$layer1")
+[ "$bad_layer1" -eq 0 ] || fail "$bad_layer1 malformed Layer 1 fields"
+
 layer3_count=$(awk -F '\t' 'NR > 1 && NF {count++} END {print count + 0}' "$layer3")
 selected_count=$(awk -F '\t' 'NR > 1 && $4 == "selected" {count++} END {print count + 0}' "$layer3")
 not_ported_count=$((layer3_count - selected_count))
@@ -58,6 +80,9 @@ bad_layer3=$(awk -F '\t' -v baseline="$baseline" '
 ' "$layer3")
 [ "$bad_layer3" -eq 0 ] || fail "$bad_layer3 malformed Layer 3 fields"
 
+unmapped_layer3=$(awk -F '\t' 'NR > 1 && $4 == "selected" && $5 !~ /\.rs::[a-zA-Z0-9_]+\.$/ {count++} END {print count + 0}' "$layer3")
+[ "$unmapped_layer3" -eq 0 ] || fail "$unmapped_layer3 selected Layer 3 declarations lack exact Rust evidence"
+
 fixture_count=$(find "$repo_root/evidence/upstream/e2e-fixtures" -type f | wc -l | tr -d ' ')
 reference_count=$(find "$repo_root/evidence/upstream/cli-reference" -type f | wc -l | tr -d ' ')
 [ "$fixture_count" -eq 13 ] || fail "expected 13 fixture files, found $fixture_count"
@@ -71,4 +96,4 @@ bad_deviation_lines=$(grep -Evc '^- .+' "$repo_root/CLI_DEVIATIONS.md" || true)
   sha256sum --check --quiet SHA256SUMS
 )
 
-echo "evidence inventories verified: 151 TODO markers, 19 equivalent omissions, 76 Layer 3 declarations (60 selected, 16 not ported), 13 fixtures, 58 command pages"
+echo "evidence inventories verified: 151 TODO markers, 19 equivalent omissions, 85 Layer 1 oracle groups, 76 Layer 3 declarations (60 selected, 16 not ported), 13 fixtures, 58 command pages"

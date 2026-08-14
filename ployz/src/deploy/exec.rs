@@ -482,6 +482,7 @@ async fn monitor_container<C: MachineOperations>(
     spec: &ResolvedServiceSpec,
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
+    // TODO(UT-032): health monitoring remains silent until its final outcome.
     let monitor = spec
         .update
         .monitor_millis
