@@ -83,10 +83,7 @@ impl ImageProxy {
             connections: JoinSet::new(),
             push_port: 0,
         };
-        let setup = match cancellation.race(proxy.setup(mode)).await {
-            Ok(setup) => setup,
-            Err(error) => Err(error),
-        };
+        let setup = cancellation.race(proxy.setup(mode)).await.flatten();
         match setup {
             Ok(()) => Ok(proxy),
             Err(primary) => match proxy.cleanup().await {

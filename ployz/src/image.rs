@@ -69,6 +69,13 @@ pub enum PushError {
     },
 }
 
+impl PushError {
+    fn is_cancellation(&self) -> bool {
+        matches!(self, Self::Cancelled | Self::Cancellation(_))
+            || matches!(self, Self::CleanupAfter { primary, .. } if primary.is_cancellation())
+    }
+}
+
 struct Cancellation {
     signal: Pin<Box<dyn Future<Output = std::io::Result<()>>>>,
 }
@@ -125,7 +132,7 @@ pub async fn push(
                 machine_id: machine.id,
                 value: (),
             }),
-            Err(source) if matches!(&source, PushError::Cancelled | PushError::Cancellation(_)) => {
+            Err(source) if source.is_cancellation() => {
                 return Err(source);
             }
             Err(source) => result.failures.push(MachineFailure {
@@ -218,13 +225,10 @@ impl PushSession {
             temporary: None,
             command: None,
         };
-        let outcome = match cancellation
+        let outcome = cancellation
             .race(session.push(client, remote, image, platform))
             .await
-        {
-            Ok(outcome) => outcome,
-            Err(error) => Err(error),
-        };
+            .flatten();
         let cleanup = session.cleanup().await;
         match (outcome, cleanup) {
             (Ok(()), Ok(())) => Ok(()),
@@ -467,5 +471,12 @@ mod tests {
         ));
         assert!(validate_push_reference("registry.test/team/api@sha256:abc").is_err());
         assert!(validated_platform("linux/riscv64").is_err());
+        assert!(
+            PushError::CleanupAfter {
+                primary: Box::new(PushError::Cancelled),
+                cleanup: Box::new(PushError::Cleanup("test cleanup".into())),
+            }
+            .is_cancellation()
+        );
     }
 }
