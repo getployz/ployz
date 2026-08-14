@@ -2,11 +2,11 @@ use std::{collections::HashMap, future::Future, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, CreateContainerRequest,
-    InspectContainerRequest, LiveServices, MachineFailure, MachineId, MachineObservation,
-    MachineRpcClient, MachineSuccess, MembershipObservation, OpaquePayload, PartialResult,
-    RemoveContainerRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, RpcRequest, RpcResponse,
-    RpcResponseBody, ServiceSelectorError, StartContainerRequest, StopContainerRequest,
-    derive_live_services, select_service,
+    CreateVolumeRequest, InspectContainerRequest, LiveServices, MachineFailure, MachineId,
+    MachineObservation, MachineRpcClient, MachineSuccess, MembershipObservation, OpaquePayload,
+    PartialResult, RemoveContainerRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, RpcRequest,
+    RpcResponse, RpcResponseBody, ServiceSelectorError, StartContainerRequest,
+    StopContainerRequest, derive_live_services, select_service,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -34,6 +34,19 @@ pub struct LifecycleResult {
 pub struct ContainerOperationFailure {
     pub container_id: ContainerId,
     pub error: RpcError,
+}
+
+pub(crate) async fn create_volume_on_machine(
+    client: &Client,
+    machine_id: &MachineId,
+    request: CreateVolumeRequest,
+) -> Result<(), RpcError> {
+    let mut rpc = client.rpc.clone();
+    let request = routed_request(machine_id, RpcRequest::create_volume(request))?;
+    target_response(timed_rpc(rpc.create_volume(request)).await?)?
+        .decode_volume_created()
+        .map(|_| ())
+        .map_err(codec_error)
 }
 
 impl Client {
@@ -123,6 +136,14 @@ impl Client {
             grace_period_seconds,
         )
         .await
+    }
+
+    pub(crate) async fn remove_container(
+        &self,
+        machine_id: MachineId,
+        container_id: ContainerId,
+    ) -> Result<(), RpcError> {
+        remove_container_rpc(&mut self.rpc.clone(), &machine_id, &container_id).await
     }
 
     pub async fn change_service(
@@ -313,18 +334,28 @@ async fn change_container_rpc(
         }
         ContainerAction::Stop => return Ok(()),
         ContainerAction::Remove => {
-            let request = routed_request(
-                machine_id,
-                RpcRequest::remove_container(RemoveContainerRequest {
-                    container_id: container_id.clone(),
-                    remove_volumes: true,
-                    force: false,
-                }),
-            )?;
-            timed_rpc(rpc.remove_container(request)).await?
+            return remove_container_rpc(rpc, machine_id, container_id).await;
         }
     };
     expect_changed(target_response(response)?)
+}
+
+async fn remove_container_rpc(
+    rpc: &mut MachineRpcClient<Channel>,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+) -> Result<(), RpcError> {
+    let request = routed_request(
+        machine_id,
+        RpcRequest::remove_container(RemoveContainerRequest {
+            container_id: container_id.clone(),
+            remove_volumes: true,
+            force: false,
+        }),
+    )?;
+    expect_changed(target_response(
+        timed_rpc(rpc.remove_container(request)).await?,
+    )?)
 }
 
 fn routed_request(

@@ -314,7 +314,7 @@ fn pre_deploy_operations(
         .collect::<Vec<_>>();
     let mut operations = hooks
         .iter()
-        .filter(|container| is_running(container))
+        .filter(|container| super::is_active_runtime(&container.runtime))
         .map(|container| DeployOperation::StopHook {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
@@ -323,9 +323,9 @@ fn pre_deploy_operations(
     operations.push(DeployOperation::RunHook {
         machine_id: machine_id.clone(),
         spec: spec.clone(),
-        old_hook_container_ids: hooks
+        old_hook_containers: hooks
             .into_iter()
-            .map(|container| container.container_id.clone())
+            .map(|container| (container.machine_id.clone(), container.container_id.clone()))
             .collect(),
     });
     operations
@@ -394,12 +394,12 @@ fn plan_global(
         if let Some((replaced_index, container)) = on_machine
             .iter()
             .copied()
-            .find(|(_, container)| is_running(container))
+            .find(|(_, container)| super::is_active_runtime(&container.runtime))
         {
             used.insert(replaced_index);
             for (index, other) in on_machine.iter().copied() {
                 if index != replaced_index
-                    && is_running(other)
+                    && super::is_active_runtime(&other.runtime)
                     && other.resolved_spec.ports.iter().any(|old| {
                         requested
                             .ports

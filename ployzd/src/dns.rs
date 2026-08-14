@@ -692,6 +692,7 @@ mod tests {
             service_name: service_name.clone(),
             kind,
             runtime,
+            effective_healthcheck: None,
             resolved_spec: fixture_spec(service_id, service_name),
             address: address.map(|octets| ContainerAddress(octets.into())),
             labels: BTreeMap::new(),

@@ -113,6 +113,43 @@ fn changed_running_container_is_replaced_on_its_machine() {
 }
 
 #[test]
+fn global_active_non_running_container_is_replaced_before_reusing_its_host_port() {
+    for runtime in [
+        ContainerRuntimeObservation::Paused,
+        ContainerRuntimeObservation::Restarting,
+    ] {
+        let mut requested = requested(ServiceMode::Global);
+        requested.ports.push(host_port(8080));
+        let mut current = requested.clone();
+        current.container.image = "ghcr.io/getployz/api:old".into();
+        let current_service_id = service_id('a');
+        let mut old = container('b', '1', &current, &current_service_id);
+        old.runtime = runtime;
+        let plan = plan_deploy(
+            &requested,
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                containers: vec![old],
+                ..Default::default()
+            },
+            service_id('f'),
+            PlanOptions::default(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.operations(),
+            [DeployOperation::ReplaceContainer(ReplacementOperation {
+                old_container_id,
+                spec,
+                ..
+            })] if old_container_id == &container_id('b')
+                && spec.update.order == UpdateOrder::StopFirst
+        ));
+    }
+}
+
+#[test]
 fn replicated_plan_removes_containers_beyond_the_requested_count() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

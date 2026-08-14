@@ -1,6 +1,6 @@
 use super::support::*;
 #[test]
-fn pre_deploy_hook_stops_running_predecessors_and_runs_before_replacement() {
+fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
@@ -19,12 +19,16 @@ fn pre_deploy_hook_stops_running_predecessors_and_runs_before_replacement() {
     let mut stopped_hook = container('d', '1', &current, &current_service_id);
     stopped_hook.kind = ContainerKind::PreDeployHook;
     stopped_hook.runtime = ContainerRuntimeObservation::Exited { code: 0 };
+    let mut paused_hook = container('e', '1', &current, &current_service_id);
+    paused_hook.kind = ContainerKind::PreDeployHook;
+    paused_hook.runtime = ContainerRuntimeObservation::Paused;
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![
             container('b', '1', &current, &current_service_id),
             running_hook,
             stopped_hook,
+            paused_hook,
         ],
         ..Default::default()
     };
@@ -40,11 +44,17 @@ fn pre_deploy_hook_stops_running_predecessors_and_runs_before_replacement() {
     assert!(matches!(
         plan.operations(),
         [
-            DeployOperation::StopHook { container_id: stopped, .. },
-            DeployOperation::RunHook { old_hook_container_ids, .. },
+            DeployOperation::StopHook { container_id: running, .. },
+            DeployOperation::StopHook { container_id: paused, .. },
+            DeployOperation::RunHook { old_hook_containers, .. },
             DeployOperation::ReplaceContainer(..),
-        ] if stopped == &container_id('c')
-            && old_hook_container_ids == &vec![container_id('c'), container_id('d')]
+        ] if running == &container_id('c')
+            && paused == &container_id('e')
+            && old_hook_containers == &vec![
+                (machine_id('1'), container_id('c')),
+                (machine_id('1'), container_id('d')),
+                (machine_id('1'), container_id('e')),
+            ]
     ));
 }
 
@@ -73,6 +83,43 @@ fn sequence_failure_keeps_completed_failed_and_unexecuted_operations_exact() {
             if operation == plan.operations().get(1).unwrap() && *error == "container failed"
     ));
     assert_eq!(outcome.unexecuted, plan.operations().get(2..).unwrap());
+}
+
+#[test]
+fn public_outcome_counts_follow_the_shallow_operations_view() {
+    let machine_id = machine_id('1');
+    let nested = DeployOperation::Sequence {
+        operations: vec![
+            DeployOperation::StopContainer {
+                machine_id: machine_id.clone(),
+                container_id: container_id('a'),
+            },
+            DeployOperation::StopContainer {
+                machine_id: machine_id.clone(),
+                container_id: container_id('b'),
+            },
+        ],
+    };
+    let tail = DeployOperation::StopContainer {
+        machine_id,
+        container_id: container_id('c'),
+    };
+    let plan = DeployPlan {
+        service_id: service_id('a'),
+        is_new_service: false,
+        operation: DeployOperation::Sequence {
+            operations: vec![nested.clone(), tail.clone()],
+        },
+    };
+
+    let outcome = plan.failure_outcome(1, "failed").unwrap();
+
+    assert_eq!(outcome.completed, vec![nested]);
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::Operation { operation, error: "failed" }) if operation == tail
+    ));
+    assert!(outcome.unexecuted.is_empty());
 }
 
 #[test]

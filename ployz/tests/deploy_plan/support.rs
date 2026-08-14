@@ -4,7 +4,7 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    DeployOperation, DeploySnapshot, FailedOperation, PlanError, PlanOptions,
+    DeployOperation, DeployPlan, DeploySnapshot, FailedOperation, PlanError, PlanOptions,
     ReplacementCompensation, ReplacementOperation, RestartAttempt, compare_specs, plan_deploy,
 };
 pub(super) use ployz_core::{
@@ -131,6 +131,7 @@ pub(super) fn container(
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         },
+        effective_healthcheck: None,
         resolved_spec: ResolvedServiceSpec {
             service_id: service_id.clone(),
             name: requested.name.clone(),
