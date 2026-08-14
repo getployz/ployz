@@ -63,7 +63,8 @@ fn partial_results_keep_successes_failures_and_omissions_together() {
         omissions: vec![MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap()],
     };
 
-    assert!(!result.all_targets_succeeded());
+    assert!(!result.failures.is_empty());
+    assert!(!result.omissions.is_empty());
     let round_trip: PartialResult<String, String> =
         serde_json::from_value(serde_json::to_value(&result).unwrap()).unwrap();
     assert_eq!(round_trip, result);

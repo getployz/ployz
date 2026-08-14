@@ -1148,6 +1148,15 @@ impl FanoutResponse {
         }
     }
 
+    #[must_use]
+    pub fn omission(machine_id: &MachineId, machine_name: &MachineName) -> Self {
+        Self {
+            machine_id: machine_id.to_string(),
+            machine_name: machine_name.to_string(),
+            outcome: None,
+        }
+    }
+
     pub fn machine_id(&self) -> Result<MachineId, ValueError> {
         MachineId::parse(self.machine_id.clone())
     }

@@ -209,6 +209,33 @@ async fn fanout_keeps_successes_and_target_failures_as_valid_frames() {
     server.await.unwrap().unwrap();
 }
 
+#[tokio::test]
+async fn fanout_emits_an_omission_for_a_target_with_no_message() {
+    let local = machine('1', "local", 1);
+    let proxy = MachineProxy::new(
+        Routes::new(EchoService::default()),
+        local.id.clone(),
+        1,
+        None,
+    );
+    let request = http::Request::builder()
+        .uri("/test.Echo/Call")
+        .header("content-type", "application/grpc")
+        .header("machines", local.name.as_str())
+        .body(Body::empty())
+        .unwrap();
+
+    let response = proxy
+        .dispatch_with_snapshot(request, std::slice::from_ref(&local))
+        .await;
+    let merged = response.into_body().collect().await.unwrap().to_bytes();
+    let frames = grpc_frames(&merged).unwrap();
+    assert_eq!(frames.len(), 1);
+    let omission = FanoutResponse::decode_grpc_frame(frames.first().unwrap()).unwrap();
+    assert_eq!(omission.machine_id().unwrap(), local.id);
+    assert_eq!(omission.outcome, None);
+}
+
 fn selector(value: &str) -> MachineSelector {
     MachineSelector::parse(value).unwrap()
 }

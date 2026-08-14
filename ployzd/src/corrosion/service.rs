@@ -89,7 +89,15 @@ impl CorrosionConfig {
             run_dir: self.run_dir.clone(),
         };
         service.start().await?;
-        wait_ready(&api).await?;
+        if let Err(primary) = wait_ready(&api).await {
+            return match service.stop().await {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(Error::CleanupAfter {
+                    primary: Box::new(primary),
+                    cleanup: Box::new(cleanup),
+                }),
+            };
+        }
         Ok(RunningCorrosion {
             store: ReplicatedStore::new(api),
             admin,

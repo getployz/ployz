@@ -28,6 +28,10 @@ pub enum PushError {
     RegistryPortReference(String),
     #[error("unsupported platform '{0}'")]
     UnsupportedPlatform(String),
+    #[error("image push cancelled")]
+    Cancelled,
+    #[error("listen for image-push cancellation: {0}")]
+    Cancellation(#[source] std::io::Error),
     #[error("image '{0}' not found locally")]
     ImageNotFound(String),
     #[error("Machine target selection failed: {0}")]
@@ -187,9 +191,10 @@ impl PushSession {
             proxy: ImageProxy::open(mode).await?,
             temporary: None,
         };
-        let outcome = session
-            .push(client, remote, image, platform, reference)
-            .await;
+        let outcome = tokio::select! {
+            outcome = session.push(client, remote, image, platform, reference) => outcome,
+            error = cancellation() => Err(error),
+        };
         let cleanup = session.cleanup().await;
         match (outcome, cleanup) {
             (Ok(()), Ok(())) => Ok(()),
@@ -257,6 +262,13 @@ impl PushSession {
         } else {
             Err(PushError::Cleanup(errors.join("; ")))
         }
+    }
+}
+
+async fn cancellation() -> PushError {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => PushError::Cancelled,
+        Err(error) => PushError::Cancellation(error),
     }
 }
 

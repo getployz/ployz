@@ -84,7 +84,7 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
     for failure in &result.failures {
         eprintln!("WARNING: {}: {}", failure.machine_id, failure.error);
     }
-    if result.all_targets_succeeded() {
+    if result.failures.is_empty() && result.omissions.is_empty() {
         Ok(())
     } else {
         Err(format!(

@@ -82,7 +82,7 @@ impl ManagedService {
     pub(crate) async fn stop(&self) -> Result<(), DockerError> {
         match self.docker.stop_container(&self.name, None).await {
             Ok(()) => Ok(()),
-            Err(error) if is_not_found(&error) => Ok(()),
+            Err(error) if is_already_stopped(&error) || is_not_found(&error) => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -112,4 +112,31 @@ fn is_not_found(error: &DockerError) -> bool {
             ..
         }
     )
+}
+
+fn is_already_stopped(error: &DockerError) -> bool {
+    matches!(
+        error,
+        DockerError::DockerResponseServerError {
+            status_code: 304,
+            ..
+        }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopped_and_missing_services_are_idempotent_stop_outcomes() {
+        let response = |status_code| DockerError::DockerResponseServerError {
+            status_code,
+            message: String::new(),
+        };
+        assert!(is_already_stopped(&response(304)));
+        assert!(is_not_found(&response(404)));
+        assert!(!is_already_stopped(&response(500)));
+        assert!(!is_not_found(&response(500)));
+    }
 }

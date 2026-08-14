@@ -113,8 +113,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some(address) => Some(TcpListener::bind(address).await?),
         None => None,
     };
-    let mut corrosion = start_corrosion(&args, &store).await?;
-    let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
     let dns_upstreams = (!args.dns_upstreams.is_empty()).then(|| args.dns_upstreams.clone());
     let specs = MachineSpecStore::open(args.data_dir.join("machine.db")).await?;
     let docker = match LocalDocker::connect() {
@@ -124,13 +122,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
             None
         }
     };
-    let mut unregistry = if local_record.phase == LocalMachinePhase::Participating {
-        match (&docker, local_record.machine.as_ref()) {
-            (Some(docker), Some(machine)) => match docker
-                .start_unregistry(
-                    machine_gateway(machine.subnet)?.0,
-                    args.containerd_socket.as_deref(),
-                )
+    let unregistry_gateway = if local_record.phase == LocalMachinePhase::Participating {
+        local_record
+            .machine
+            .as_ref()
+            .map(|machine| machine_gateway(machine.subnet).map(|gateway| gateway.0))
+            .transpose()?
+    } else {
+        None
+    };
+    let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
+    let mut corrosion = start_corrosion(&args, &store).await?;
+    let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
+    let mut unregistry = match (&docker, unregistry_gateway) {
+        (Some(docker), Some(gateway)) => {
+            match docker
+                .start_unregistry(gateway, args.containerd_socket.as_deref())
                 .await
             {
                 Ok(running) => running,
@@ -138,18 +145,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     eprintln!("WARNING: unregistry disabled: {error}");
                     None
                 }
-            },
-            _ => None,
+            }
         }
-    } else {
-        None
+        _ => None,
     };
     let observer = replicated_store.clone().and_then(|replicated| {
         docker.clone().map(|docker| {
             ContainerObserver::new(docker, specs.clone(), replicated, local_record.id.clone())
         })
     });
-    let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (participating, participating_rx) =
         watch::channel(local_record.phase == LocalMachinePhase::Participating);
