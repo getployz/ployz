@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use super::{ApiClient, Error, Statement, Subscription};
-use crate::machine::{LocalMachineRecord, LocalMachineStore};
+use crate::machine::{LocalMachineRecord, LocalMachineStore, StoreError};
 
 #[derive(Clone)]
 pub struct ReplicatedStore {
@@ -26,6 +26,17 @@ pub(crate) struct MachinePublicationGuard<'a> {
 }
 
 impl MachinePublicationGuard<'_> {
+    pub(crate) fn complete_catch_up(
+        &self,
+        local: &mut LocalMachineStore,
+    ) -> Result<bool, StoreError> {
+        if local.record().phase != LocalMachinePhase::Joining {
+            return Ok(false);
+        }
+        local.complete_catch_up()?;
+        Ok(true)
+    }
+
     pub(crate) fn publishable_machine(&self, local: &LocalMachineRecord) -> Option<Machine> {
         (local.phase == LocalMachinePhase::Participating)
             .then(|| local.machine.clone())
@@ -496,13 +507,19 @@ pub async fn run_machine_publisher_with_restart(
                     return Ok(());
                 }
             }
-            local
-                .lock()
-                .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
-                .complete_catch_up()
-                .map_err(io::Error::other)?;
-            participating.send_replace(true);
-            restart.send_replace(true);
+            let publication = replicated.machine_publication().await;
+            let completed = {
+                let mut local = local
+                    .lock()
+                    .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
+                publication
+                    .complete_catch_up(&mut local)
+                    .map_err(io::Error::other)?
+            };
+            if completed {
+                participating.send_replace(true);
+                restart.send_replace(true);
+            }
         }
     }
     loop {
@@ -600,7 +617,62 @@ mod tests {
         LocalContainerSnapshot, ReplicatedStore, local_container_changes, redacted_container,
     };
     use crate::corrosion::ApiClient;
-    use crate::machine::LocalMachineRecord;
+    use crate::machine::{LocalMachineRecord, LocalMachineStore};
+
+    #[tokio::test]
+    async fn catch_up_waits_for_removal_and_rechecks_phase() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let store = ReplicatedStore::new(
+            ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
+        );
+        let data_dir = std::env::temp_dir().join(format!(
+            "ployzd-catch-up-reset-{}",
+            ployz_core::MachineId::random()
+        ));
+        let mut local = LocalMachineStore::open(&data_dir).unwrap();
+        let public_key = local
+            .record()
+            .wireguard_private_key
+            .as_ref()
+            .unwrap()
+            .public_key();
+        let machine: Machine = serde_json::from_value(json!({
+            "id": "b".repeat(32),
+            "name": "joining",
+            "subnet": "10.210.1.0/24",
+            "management_address": "fdcc::1",
+            "public_key": public_key.0,
+        }))
+        .unwrap();
+        local
+            .join(machine.clone(), vec![machine], BTreeMap::new(), None)
+            .unwrap();
+        let local = Arc::new(Mutex::new(local));
+
+        let first = store.machine_publication().await;
+        let clone = store.clone();
+        let task_local = Arc::clone(&local);
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let second = tokio::spawn(async move {
+            started.send(()).unwrap();
+            let publication = clone.machine_publication().await;
+            publication.complete_catch_up(&mut task_local.lock().unwrap())
+        });
+        waiting.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(!second.is_finished());
+
+        local.lock().unwrap().begin_reset().unwrap();
+        drop(first);
+        let completed = tokio::time::timeout(std::time::Duration::from_secs(1), second)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!completed);
+        drop(local);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 
     #[tokio::test]
     async fn container_publication_waits_for_removal_and_rechecks_phase() {
