@@ -1,8 +1,11 @@
-use std::{process, time::Duration};
+use std::{
+    process::{self, Command},
+    time::Duration,
+};
 
 use ployz_core::{
-    ContainerAction, ContainerKind, LogsOptions, Machine, MachineSelector, MembershipObservation,
-    RequestedServiceSpec, ResolvedServiceSpec, ServiceId,
+    ContainerAction, ContainerKind, Machine, MembershipObservation, RequestedServiceSpec,
+    ResolvedServiceSpec, ServiceId,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -30,17 +33,32 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         assert!(config.contains("/.ployz-verify"));
     }
 
-    let placed = ployz::caddy::service_spec(
-        "caddy:2.10.2".into(),
-        vec![MachineSelector::parse(machines[0].id.as_str()).unwrap()],
-        None,
-    )
-    .unwrap();
-    let caddy_id = deploy(&mut client, &placed).await;
-    wait_running(&mut client, &caddy_id, 1).await;
-    let all = ployz::caddy::service_spec("caddy:2.10.2".into(), Vec::new(), None).unwrap();
-    assert_eq!(deploy(&mut client, &all).await, caddy_id);
-    wait_running(&mut client, &caddy_id, 3).await;
+    let selected_image = ployz::caddy::latest_image().await.unwrap();
+    assert_exact_caddy_image(&selected_image);
+    for index in 0..machines.len() {
+        cluster
+            .machine_shell(index, &format!("docker tag caddy:2.10.2 {selected_image}"))
+            .unwrap();
+    }
+    cli(
+        &direct,
+        &["caddy", "deploy", "--machine", machines[0].id.as_str()],
+    );
+    let caddy_id = wait_service(&mut client, "caddy", 1).await;
+    assert!(
+        wait_running(&mut client, &caddy_id, 1)
+            .await
+            .iter()
+            .all(|container| container.resolved_spec.container.image == selected_image)
+    );
+    cli(&direct, &["caddy", "deploy"]);
+    assert_eq!(wait_service(&mut client, "caddy", 3).await, caddy_id);
+    assert!(
+        wait_running(&mut client, &caddy_id, 3)
+            .await
+            .iter()
+            .all(|container| container.resolved_spec.container.image == selected_image)
+    );
 
     let api_id = ServiceId::random();
     let api: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
@@ -77,6 +95,13 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
                 })
         })
         .await;
+        assert_eq!(
+            cli(
+                &direct,
+                &["caddy", "config", "--machine", machine.id.as_str()],
+            ),
+            config
+        );
         assert!(!config.contains("admin API is not reachable"));
         assert_eq!(
             cluster
@@ -107,67 +132,55 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             .unwrap();
     }
 
-    let cancellation = CancellationToken::new();
-    let opened = client
-        .open_service_logs(
-            &[ployz::operator::ServiceArg {
-                service: "caddy".into(),
-                containers: Vec::new(),
-            }],
-            &[],
-            LogsOptions {
-                follow: false,
-                tail: 1,
-                since: String::new(),
-                until: String::new(),
-            },
-            false,
-            cancellation.clone(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(opened.inputs.len(), 3);
-    cancellation.cancel();
+    let logs = run_cli(&direct, &["caddy", "logs", "--tail", "1"]);
+    let logs = [logs.stdout, logs.stderr].concat();
+    assert!(String::from_utf8(logs).unwrap().contains(" caddy/"));
 
+    assert_health_transition(&mut client, &machines, &api_containers, &observations).await;
+
+    assert_start_first_gap(&cluster, &mut client, &machines).await;
+    assert_failed_load_retry(&cluster, &mut client, &machines[0]).await;
+    assert_membership_blind(&cluster, &mut client, &machines, &observations).await;
+    assert_invalid_template(&mut client, &machines[0]).await;
+}
+
+async fn assert_health_transition(
+    client: &mut ployz::connect::Client,
+    machines: &[Machine; 3],
+    containers: &[ployz_core::ContainerId],
+    observations: &[ployz_core::ContainerObservation],
+) {
     let removed_address = observations
         .iter()
         .find(|container| container.machine_id == machines[1].id)
         .unwrap()
         .address
         .unwrap();
-    client
-        .change_container(
-            machines[1].id.clone(),
-            api_containers.get(1).expect("three API containers").clone(),
-            ContainerAction::Stop,
-            None,
-            Some(0),
-        )
-        .await
-        .unwrap();
-    wait_config(&mut client, &machines[0], |config| {
-        !config.contains(&format!("{}:8080", removed_address.0))
-    })
-    .await;
-    client
-        .change_container(
-            machines[1].id.clone(),
-            api_containers.get(1).expect("three API containers").clone(),
-            ContainerAction::Start,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    wait_config(&mut client, &machines[0], |config| {
-        config.contains(&format!("{}:8080", removed_address.0))
-    })
-    .await;
+    for action in [ContainerAction::Stop, ContainerAction::Start] {
+        client
+            .change_container(
+                machines[1].id.clone(),
+                containers.get(1).expect("three API containers").clone(),
+                action,
+                None,
+                (action == ContainerAction::Stop).then_some(0),
+            )
+            .await
+            .unwrap();
+        wait_config(client, &machines[0], |config| {
+            config.contains(&format!("{}:8080", removed_address.0))
+                == (action == ContainerAction::Start)
+        })
+        .await;
+    }
+}
 
-    let stable = client
-        .get_caddy_config(Some(&machines[0].id))
-        .await
-        .unwrap();
+async fn assert_failed_load_retry(
+    cluster: &Cluster,
+    client: &mut ployz::connect::Client,
+    machine: &Machine,
+) {
+    let stable = client.get_caddy_config(Some(&machine.id)).await.unwrap();
     let load_failure: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": ServiceId::random(),
         "name": "load-failure",
@@ -180,8 +193,8 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         "caddy_config": "load-failure.example {\n\ttls /missing/cert.pem /missing/key.pem\n\trespond bad\n}"
     }))
     .unwrap();
-    let load_failure_container = create_and_start(&client, &machines[0], load_failure).await;
-    wait_log_count(&cluster, "failed to update Caddy configuration", 1).await;
+    let rejected = create_and_start(client, machine, load_failure).await;
+    wait_log_count(cluster, "failed to update Caddy configuration", 1).await;
     let tick: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": ServiceId::random(),
         "name": "tick",
@@ -193,13 +206,10 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         }
     }))
     .unwrap();
-    create_and_start(&client, &machines[0], tick).await;
-    wait_log_count(&cluster, "failed to update Caddy configuration", 2).await;
+    create_and_start(client, machine, tick).await;
+    wait_log_count(cluster, "failed to update Caddy configuration", 2).await;
     assert_eq!(
-        client
-            .get_caddy_config(Some(&machines[0].id))
-            .await
-            .unwrap(),
+        client.get_caddy_config(Some(&machine.id)).await.unwrap(),
         stable
     );
     assert_eq!(
@@ -211,16 +221,23 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     );
     client
         .change_container(
-            machines[0].id.clone(),
-            load_failure_container,
+            machine.id.clone(),
+            rejected,
             ContainerAction::Stop,
             None,
             Some(0),
         )
         .await
         .unwrap();
-    wait_config(&mut client, &machines[0], |config| config != stable).await;
+    wait_config(client, machine, |config| config != stable).await;
+}
 
+async fn assert_membership_blind(
+    cluster: &Cluster,
+    client: &mut ployz::connect::Client,
+    machines: &[Machine; 3],
+    observations: &[ployz_core::ContainerObservation],
+) {
     let retained_address = observations
         .iter()
         .find(|container| container.machine_id == machines[2].id)
@@ -228,16 +245,17 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         .address
         .unwrap();
     cluster.stop(2).unwrap();
-    wait_down(&cluster, &machines[2]).await;
+    wait_down(cluster, &machines[2]).await;
     let retained = client
         .get_caddy_config(Some(&machines[0].id))
         .await
         .unwrap();
     assert!(retained.contains(&format!("{}:8080", retained_address.0)));
+}
 
-    let broken_id = ServiceId::random();
+async fn assert_invalid_template(client: &mut ployz::connect::Client, machine: &Machine) {
     let broken: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": broken_id,
+        "service_id": ServiceId::random(),
         "name": "broken",
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": {
@@ -248,12 +266,147 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         "caddy_config": "{{unknown}}"
     }))
     .unwrap();
-    create_and_start(&client, &machines[0], broken).await;
-    let config = wait_config(&mut client, &machines[0], |config| {
+    create_and_start(client, machine, broken).await;
+    let config = wait_config(client, machine, |config| {
         config.contains("Service 'broken': rendering failed")
     })
     .await;
     assert!(config.contains("http://example.test"));
+}
+
+fn cli(direct: &str, args: &[&str]) -> String {
+    String::from_utf8(run_cli(direct, args).stdout).unwrap()
+}
+
+fn run_cli(direct: &str, args: &[&str]) -> process::Output {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            direct,
+            "--ployz-config",
+            "/missing-ployz-test-config",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "ployz {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+fn assert_exact_caddy_image(image: &str) {
+    let mut parts = image
+        .strip_prefix("caddy:")
+        .expect("Caddy image has the repository prefix")
+        .split('.');
+    assert_eq!(parts.next(), Some("2"));
+    assert!(parts.next().is_some_and(|part| part.parse::<u64>().is_ok()));
+    assert!(parts.next().is_some_and(|part| part.parse::<u64>().is_ok()));
+    assert_eq!(parts.next(), None);
+}
+
+async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: usize) -> ServiceId {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let live = client.live_services().await.unwrap();
+            if let Some(service) = live.services.iter().find(|service| {
+                service
+                    .containers
+                    .first()
+                    .is_some_and(|container| container.service_name.as_str() == name)
+                    && service.containers.len() == count
+            }) {
+                return service.service_id.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn assert_start_first_gap(
+    cluster: &Cluster,
+    client: &mut ployz::connect::Client,
+    machines: &[Machine; 3],
+) {
+    let requested = |machine: &Machine, response: &str| {
+        serde_json::from_value::<RequestedServiceSpec>(serde_json::json!({
+            "name": "switch",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": {
+                "image": "alpine:3.23.3",
+                "command": ["sh", "-c", format!("while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: {}\\r\\n\\r\\n{}\\n' | nc -l -p 8081; done", response.len() + 1, response)],
+                "pull_policy": "missing"
+            },
+            "placement": { "machines": [machine.id] },
+            "ports": [{
+                "mode": "ingress",
+                "hostname": "switch.test",
+                "load_balancer_port": 80,
+                "container_port": 8081,
+                "http_protocol": "http"
+            }],
+            "update": { "order": "start_first" }
+        }))
+        .unwrap()
+    };
+    let first = requested(&machines[0], "old");
+    let service_id = deploy(client, &first).await;
+    let old_address = wait_running(client, &service_id, 1)
+        .await
+        .into_iter()
+        .next()
+        .unwrap()
+        .address
+        .unwrap();
+    wait_config(client, &machines[2], |config| {
+        config.contains(&format!("{}:8081", old_address.0))
+    })
+    .await;
+
+    cluster
+        .machine_shell(2, "kill -STOP $(cat /run/ployzd.pid)")
+        .unwrap();
+    let replacement = requested(&machines[1], "new");
+    assert_eq!(deploy(client, &replacement).await, service_id);
+    let new_address = wait_running(client, &service_id, 1)
+        .await
+        .into_iter()
+        .next()
+        .unwrap()
+        .address
+        .unwrap();
+    let delayed = cluster
+        .machine_shell(2, "cat /var/lib/ployz/caddy/Caddyfile")
+        .unwrap();
+    assert!(delayed.contains(&format!("{}:8081", old_address.0)));
+    assert!(!delayed.contains(&format!("{}:8081", new_address.0)));
+    assert!(
+        cluster
+            .machine_shell(2, "curl -fsS -H 'Host: switch.test' http://127.0.0.1",)
+            .is_err()
+    );
+
+    cluster
+        .machine_shell(2, "kill -CONT $(cat /run/ployzd.pid)")
+        .unwrap();
+    wait_config(client, &machines[2], |config| {
+        config.contains(&format!("{}:8081", new_address.0))
+            && !config.contains(&format!("{}:8081", old_address.0))
+    })
+    .await;
+    assert_eq!(
+        cluster
+            .machine_shell(2, "curl -fsS -H 'Host: switch.test' http://127.0.0.1",)
+            .unwrap()
+            .trim(),
+        "new"
+    );
 }
 
 async fn deploy(

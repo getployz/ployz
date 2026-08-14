@@ -252,31 +252,16 @@ pub(super) async fn deploy_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
 ) -> Result<(), Error> {
-    let mut io = RemoteWorkflow {
-        client,
-        auto_confirm: true,
-    };
-    let snapshot = io.snapshot(None).await?;
-    let matching = ployz_core::derive_services(snapshot.containers.iter().cloned())
-        .into_iter()
-        .filter(|service| {
-            service
-                .containers
-                .first()
-                .or_else(|| service.hook_containers.first())
-                .is_some_and(|container| container.service_name == requested.name)
-        })
-        .collect::<Vec<_>>();
-    let service_id = match matching.as_slice() {
-        [] => ServiceId::random(),
-        [service] => service.service_id.clone(),
-        _ => return Err(format!("Service {:?} is ambiguous", requested.name).into()),
-    };
-    let plan = plan_deploy(requested, &snapshot, service_id, plan_options(false, false))
-        .map_err(|error| error.to_string())?;
-    io.render(plan.operations());
-    let outcome = io.execute(plan.operations()).await;
-    finish(outcome)
+    finish(
+        run_connected(
+            &mut RemoteWorkflow {
+                client,
+                auto_confirm: true,
+            },
+            requested,
+        )
+        .await?,
+    )
 }
 
 async fn deploy_connected(

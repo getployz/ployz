@@ -62,7 +62,3 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         super::workflow::deploy_requested(&mut client, &requested).await
     })
 }
-
-pub(super) fn logs(root: &ArgMatches) -> Result<(), Error> {
-    super::operator::caddy_logs(root)
-}
