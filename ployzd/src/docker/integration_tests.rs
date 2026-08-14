@@ -38,7 +38,10 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .unwrap();
     assert_eq!(inspected.resolved_spec, spec);
     assert_eq!(inspected.kind, ContainerKind::ServiceContainer);
-    assert_eq!(specs.get(&created.container_id).await.unwrap(), Some(spec));
+    assert_eq!(
+        specs.get(&created.container_id).await.unwrap(),
+        Some(spec.clone())
+    );
 
     let malformed = create_managed_container(
         &docker.client,
@@ -82,6 +85,38 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         docker.remove(&specs, &orphan, true, true).await,
         Err(Error::ContainerNotFound(_))
     ));
+
+    let reset_target = docker
+        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .await
+        .unwrap();
+    let malformed_reset_target = create_managed_container(
+        &docker.client,
+        &service_id,
+        &service_name,
+        ContainerKind::ServiceContainer,
+    )
+    .await;
+    docker.remove_all_managed(&specs).await.unwrap();
+    assert!(
+        specs
+            .get(&reset_target.container_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    for container_id in [&reset_target.container_id, &malformed_reset_target] {
+        assert!(matches!(
+            docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            })
+        ));
+    }
 
     let unmanaged = docker
         .client

@@ -52,11 +52,11 @@ impl LocalDocker {
             })?;
 
         if let Err(error) = self.inject_configs(&container_id, spec).await {
-            self.cleanup_created(&container_id).await?;
+            self.force_remove_container(&container_id).await?;
             return Err(error);
         }
         if let Err(error) = specs.put(&container_id, spec).await {
-            self.cleanup_created(&container_id).await?;
+            self.force_remove_container(&container_id).await?;
             return Err(error.into());
         }
         Ok(ContainerCreated {
@@ -129,6 +129,14 @@ impl LocalDocker {
             Err(Error::ContainerNotFound(_)) if specs.remove(container_id).await? => Ok(()),
             Err(error) => Err(error),
         }
+    }
+
+    pub async fn remove_all_managed(&self, specs: &MachineSpecStore) -> Result<(), Error> {
+        for container_id in self.managed_container_ids().await? {
+            self.force_remove_container(&container_id).await?;
+            specs.remove(&container_id).await?;
+        }
+        Ok(())
     }
 
     async fn prepare_image(&self, image: &str, policy: PullPolicy) -> Result<(), Error> {
@@ -220,7 +228,7 @@ impl LocalDocker {
         Ok(())
     }
 
-    async fn cleanup_created(&self, container_id: &ContainerId) -> Result<(), Error> {
+    async fn force_remove_container(&self, container_id: &ContainerId) -> Result<(), Error> {
         let options = RemoveContainerOptionsBuilder::default()
             .v(true)
             .force(true)

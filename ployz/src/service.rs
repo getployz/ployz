@@ -299,7 +299,7 @@ async fn change_container_rpc(
             rpc.stop_container(request),
         )
         .await?;
-        expect_changed(target_response(response)?)?;
+        accept_stop_result(action, target_response(response).and_then(expect_changed))?;
     }
     let response = match action {
         ContainerAction::Start => {
@@ -406,6 +406,18 @@ fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
     }
 }
 
+fn accept_stop_result(
+    action: ContainerAction,
+    result: Result<(), RpcError>,
+) -> Result<(), RpcError> {
+    match result {
+        Err(error) if action == ContainerAction::Remove && error.code == RpcErrorCode::NotFound => {
+            Ok(())
+        }
+        result => result,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +441,35 @@ mod tests {
         assert_eq!(
             stop_rpc_timeout(Some(5)),
             Some(TARGET_RPC_TIMEOUT + Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn remove_tolerates_a_missing_preliminary_stop_target() {
+        let missing = RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "gone".into(),
+            details: Value::Null,
+        };
+
+        assert!(accept_stop_result(ContainerAction::Remove, Err(missing.clone())).is_ok());
+        assert_eq!(
+            accept_stop_result(ContainerAction::Stop, Err(missing.clone()))
+                .unwrap_err()
+                .code,
+            RpcErrorCode::NotFound
+        );
+        assert_eq!(
+            accept_stop_result(
+                ContainerAction::Remove,
+                Err(RpcError {
+                    code: RpcErrorCode::Internal,
+                    ..missing
+                })
+            )
+            .unwrap_err()
+            .code,
+            RpcErrorCode::Internal
         );
     }
 }

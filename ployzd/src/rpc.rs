@@ -508,6 +508,14 @@ impl MachineRpc for MachineService {
         if !matches!(request_body(request)?, RpcRequestBody::Reset(_)) {
             return Err(Status::invalid_argument("expected reset request"));
         }
+        if let Some(containers) = &self.containers
+            && let Err(error) = containers
+                .docker
+                .remove_all_managed(&containers.specs)
+                .await
+        {
+            return respond(RpcResponse::error(docker_rpc_error(error)));
+        }
         let reset = self
             .store
             .lock()
