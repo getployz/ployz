@@ -607,6 +607,7 @@ services:
     image: db:1
     environment: {TOKEN: secret://token}
     volumes: [{type: volume, source: data, target: /data}]
+    x-pre_deploy: {command: [sh, -c, migrate]}
   api:
     image: api:1
     depends_on: {db: {condition: service_started}}
@@ -656,6 +657,39 @@ secrets: {token: {x-command: "printf resolved"}}
         plan.service_plans.get(1).unwrap().operations(),
         [DeployOperation::RunContainer { .. }]
     ));
+    assert!(matches!(
+        plan.service_plans.first().unwrap().operations(),
+        [
+            DeployOperation::RunHook { .. },
+            DeployOperation::RunContainer { .. }
+        ]
+    ));
+}
+
+#[test]
+fn service_selection_keeps_transitive_runtime_dependencies_only() {
+    let project = parse_normalized(
+        r#"
+name: selection
+services:
+  database: {image: database}
+  api: {image: api, depends_on: [database]}
+  web: {image: web, depends_on: [api]}
+  unrelated: {image: unrelated}
+"#,
+        ".",
+    )
+    .unwrap();
+    let selected = project.select_services(&["web".into()]).unwrap();
+    assert_eq!(
+        selected
+            .services
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["api", "database", "web"]
+    );
+    assert!(project.select_services(&["missing".into()]).is_err());
 }
 
 #[test]

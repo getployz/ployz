@@ -101,6 +101,20 @@ pub async fn push(
     platform: Option<&str>,
     selectors: &[String],
 ) -> Result<PartialResult<(), PushError>, PushError> {
+    let machines = client
+        .list_machines()
+        .await
+        .map_err(|error| PushError::Cluster(error.to_string()))?;
+    push_using_machines(client, image, platform, selectors, &machines).await
+}
+
+pub(crate) async fn push_using_machines(
+    client: &Client,
+    image: &str,
+    platform: Option<&str>,
+    selectors: &[String],
+    machines: &[ployz_core::MachineObservation],
+) -> Result<PartialResult<(), PushError>, PushError> {
     let mut cancellation = Cancellation::new();
     // TODO(UT-022): without an explicit platform, Docker chooses what to push; target platforms are not inferred.
     let platform = platform.map(validated_platform).transpose()?;
@@ -115,11 +129,7 @@ pub async fn push(
             command_error("inspect local image", &inspected)
         });
     }
-    let machines = cancellation
-        .race(client.list_machines())
-        .await?
-        .map_err(|error| PushError::Cluster(error.to_string()))?;
-    let targets = select_targets(&machines, selectors)?;
+    let targets = select_targets(machines, selectors)?;
     let mode = cancellation.race(detect_mode()).await??;
     let mut result = PartialResult {
         successes: Vec::new(),

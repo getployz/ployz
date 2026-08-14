@@ -112,7 +112,7 @@ fn make_standard_port(
     })
 }
 
-fn parse_extension_port(value: &str) -> Result<PortPublication, ComposeError> {
+pub(crate) fn parse_extension_port(value: &str) -> Result<PortPublication, ComposeError> {
     if value.matches('@').count() > 1 {
         return Err(invalid("too many '@' symbols in port"));
     }
