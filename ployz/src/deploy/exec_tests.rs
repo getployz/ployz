@@ -596,6 +596,49 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
 }
 
 #[tokio::test]
+async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
+    for order in [UpdateOrder::StartFirst, UpdateOrder::StopFirst] {
+        let machine = machine('1');
+        let old = container('a');
+        let new = container('b');
+        let plan = plan(vec![replacement(&machine, &old, order)]);
+        let mut missing = error("not found");
+        missing.code = RpcErrorCode::NotFound;
+        let mut steps = Vec::new();
+        if order == UpdateOrder::StopFirst {
+            steps.push(Step(
+                Call::Inspect(machine.clone(), old.clone()),
+                Reply::Error(missing.clone()),
+            ));
+        }
+        steps.extend([
+            created(
+                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+                &new,
+            ),
+            ok(Call::Start(machine.clone(), new.clone())),
+            observed(Call::Inspect(machine.clone(), new), healthy()),
+        ]);
+        if order == UpdateOrder::StartFirst {
+            steps.push(Step(
+                Call::Stop(machine.clone(), old.clone()),
+                Reply::Error(missing.clone()),
+            ));
+        }
+        steps.push(Step(
+            Call::Remove(machine.clone(), old),
+            Reply::Error(missing),
+        ));
+        let client = Scripted::new(steps);
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(outcome.failed.is_none());
+        client.assert_done();
+    }
+}
+
+#[tokio::test]
 async fn stop_first_create_or_start_failure_runs_no_compensation() {
     for start_fails in [false, true] {
         let machine = machine('1');

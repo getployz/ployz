@@ -314,7 +314,7 @@ fn pre_deploy_operations(
         .collect::<Vec<_>>();
     let mut operations = hooks
         .iter()
-        .filter(|container| is_running(container))
+        .filter(|container| super::is_active_runtime(&container.runtime))
         .map(|container| DeployOperation::StopHook {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),

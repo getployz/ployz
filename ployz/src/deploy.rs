@@ -1,6 +1,7 @@
 use ployz_core::{
-    ContainerId, ContainerObservation, DockerVolumeId, DockerVolumeName, MachineId,
-    MachineObservation, ResolvedServiceSpec, ServiceId, ServiceVolume, ServiceVolumeReference,
+    ContainerId, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
+    DockerVolumeName, MachineId, MachineObservation, ResolvedServiceSpec, ServiceId, ServiceVolume,
+    ServiceVolumeReference,
 };
 use thiserror::Error;
 
@@ -12,6 +13,15 @@ pub use comparison::compare_specs;
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
 pub use planning::plan_deploy;
 pub(crate) use planning::volume_eligible_machine_ids;
+
+fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
+    matches!(
+        runtime,
+        ContainerRuntimeObservation::Running { .. }
+            | ContainerRuntimeObservation::Paused
+            | ContainerRuntimeObservation::Restarting
+    )
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {

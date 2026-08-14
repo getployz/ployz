@@ -285,13 +285,8 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             container_id,
         } => {
-            match client.stop_container(machine_id, container_id, None).await {
-                Ok(()) => {}
-                Err(error) if error.code == RpcErrorCode::NotFound => {}
-                Err(error) => {
-                    return Err(machine_error(MachineAction::StopContainer, error).into());
-                }
-            }
+            ignore_not_found(client.stop_container(machine_id, container_id, None).await)
+                .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
             client
                 .remove_container(machine_id, container_id)
                 .await
@@ -303,11 +298,8 @@ async fn execute_operation<C: MachineOperations>(
         DeployOperation::StopHook {
             machine_id,
             container_id,
-        } => match client.stop_container(machine_id, container_id, None).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.code == RpcErrorCode::NotFound => Ok(()),
-            Err(error) => Err(machine_error(MachineAction::StopContainer, error).into()),
-        },
+        } => ignore_not_found(client.stop_container(machine_id, container_id, None).await)
+            .map_err(|error| machine_error(MachineAction::StopContainer, error).into()),
         DeployOperation::RunHook {
             machine_id,
             spec,
@@ -360,16 +352,17 @@ async fn replace_container<C: MachineOperations>(
 ) -> Result<(), OperationFailure> {
     let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
     let old_was_active = if stop_first {
-        let old = client
+        let old = match client
             .inspect_container(&operation.machine_id, &operation.old_container_id)
             .await
-            .map_err(|error| machine_error(MachineAction::InspectContainer, error))?;
-        let active = matches!(
-            old.runtime,
-            ContainerRuntimeObservation::Running { .. }
-                | ContainerRuntimeObservation::Paused
-                | ContainerRuntimeObservation::Restarting
-        );
+        {
+            Ok(old) => Some(old),
+            Err(error) if error.code == RpcErrorCode::NotFound => None,
+            Err(error) => {
+                return Err(machine_error(MachineAction::InspectContainer, error).into());
+            }
+        };
+        let active = old.is_some_and(|old| super::is_active_runtime(&old.runtime));
         if active {
             client
                 .stop_container(
@@ -437,19 +430,23 @@ async fn replace_container<C: MachineOperations>(
     if !stop_first {
         // TODO(UT-074): Caddy learns about the new container asynchronously, so stopping the old
         // single replica here can still cause a brief interruption.
-        client
-            .stop_container(
-                &operation.machine_id,
-                &operation.old_container_id,
-                stop_grace_period(&operation.spec),
-            )
-            .await
-            .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
+        ignore_not_found(
+            client
+                .stop_container(
+                    &operation.machine_id,
+                    &operation.old_container_id,
+                    stop_grace_period(&operation.spec),
+                )
+                .await,
+        )
+        .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
     }
-    client
-        .remove_container(&operation.machine_id, &operation.old_container_id)
-        .await
-        .map_err(|error| machine_error(MachineAction::RemoveContainer, error).into())
+    ignore_not_found(
+        client
+            .remove_container(&operation.machine_id, &operation.old_container_id)
+            .await,
+    )
+    .map_err(|error| machine_error(MachineAction::RemoveContainer, error).into())
 }
 
 async fn monitor_container<C: MachineOperations>(
@@ -575,14 +572,12 @@ async fn run_hook<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
     for (old_machine_id, old_container_id) in old_hook_containers {
-        match client
-            .remove_container(old_machine_id, old_container_id)
-            .await
-        {
-            Ok(()) => {}
-            Err(error) if error.code == RpcErrorCode::NotFound => {}
-            Err(error) => return Err(machine_error(MachineAction::RemoveContainer, error)),
-        }
+        ignore_not_found(
+            client
+                .remove_container(old_machine_id, old_container_id)
+                .await,
+        )
+        .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
     }
 
     let container_id =
@@ -688,6 +683,13 @@ async fn inspect<C: MachineOperations>(
 
 fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
     ExecutionError::Machine { action, error }
+}
+
+fn ignore_not_found(result: Result<(), RpcError>) -> Result<(), RpcError> {
+    match result {
+        Err(error) if error.code == RpcErrorCode::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 fn health_error(container_id: &ContainerId, failure: HealthFailure) -> ExecutionError {
