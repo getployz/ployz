@@ -97,7 +97,8 @@ impl Connector for SystemConnector {
             return Err(ConnectError::UnsupportedNetwork(network.into()));
         }
         match connection.transport() {
-            Transport::Tcp(_) | Transport::Unix(_) => TcpStream::connect(address)
+            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.to_string())),
+            Transport::Unix(_) => TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as BoxProxyStream)
                 .map_err(|error| ConnectError::Attempt(error.to_string())),
@@ -583,6 +584,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             },
         },
         error @ (ConnectError::Attempt(_)
+        | ConnectError::ProxyUnsupported(_)
         | ConnectError::UnsupportedNetwork(_)
         | ConnectError::Config(_)
         | ConnectError::Connection(_)
@@ -703,6 +705,8 @@ pub async fn connect(
 pub enum ConnectError {
     #[error("connection attempt failed: {0}")]
     Attempt(String),
+    #[error("proxy dialing is unsupported over {0}")]
+    ProxyUnsupported(String),
     #[error("proxy dialing does not support network {0:?}")]
     UnsupportedNetwork(String),
     #[error(transparent)]

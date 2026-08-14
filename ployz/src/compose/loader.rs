@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -327,6 +328,7 @@ impl TemporaryComposeFile {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
+                .mode(0o600)
                 .open(&path)
             {
                 Ok(mut file) => {
@@ -353,5 +355,19 @@ impl TemporaryComposeFile {
 impl Drop for TemporaryComposeFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    #[test]
+    fn temporary_compose_files_are_private() {
+        let file = TemporaryComposeFile::new("services: {}\n").unwrap();
+        let mode = fs::metadata(&file.path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

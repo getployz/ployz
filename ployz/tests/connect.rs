@@ -31,32 +31,24 @@ struct FakeConnector {
 }
 
 #[tokio::test]
-async fn tcp_and_unix_proxy_dialing_connects_directly() {
+async fn unix_proxy_dialing_is_direct_and_tcp_is_explicitly_unsupported() {
     let connector = SystemConnector::default();
-    for connection in [
-        Connection::tcp("127.0.0.1:1".parse().unwrap()),
-        Connection::unix("/path/that/does/not/exist.sock").unwrap(),
-    ] {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let stream = connector
-            .dial_proxy(
-                &connection,
-                "tcp",
-                &listener.local_addr().unwrap().to_string(),
-            )
-            .await
-            .unwrap();
-        let (accepted, _) = listener.accept().await.unwrap();
-        drop((stream, accepted));
-    }
+    let unix = Connection::unix("/path/that/does/not/exist.sock").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stream = connector
+        .dial_proxy(&unix, "tcp", &listener.local_addr().unwrap().to_string())
+        .await
+        .unwrap();
+    let (accepted, _) = listener.accept().await.unwrap();
+    drop((stream, accepted));
+
+    let tcp = Connection::tcp("127.0.0.1:1".parse().unwrap());
     assert!(matches!(
-        connector
-            .dial_proxy(
-                &Connection::unix("/unused.sock").unwrap(),
-                "udp",
-                "127.0.0.1:1"
-            )
-            .await,
+        connector.dial_proxy(&tcp, "tcp", "10.210.0.1:51500").await,
+        Err(ConnectError::ProxyUnsupported(_))
+    ));
+    assert!(matches!(
+        connector.dial_proxy(&unix, "udp", "127.0.0.1:1").await,
         Err(ConnectError::UnsupportedNetwork(_))
     ));
 }

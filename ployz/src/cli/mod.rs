@@ -128,7 +128,7 @@ fn build() -> Command {
         .arg(switch("check", None))
         .arg(switch("deps", None))
         .arg(many("file", Some('f')).default_value("compose.yaml"))
-        .arg(many("machine", Some('m')))
+        .arg(many("machine", Some('m')).requires("push"))
         .arg(switch("no-cache", None))
         .arg(many("profile", Some('p')))
         .arg(switch("pull", None))
@@ -463,11 +463,21 @@ fn completion() -> Command {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn build_push_destinations_are_mutually_exclusive() {
+    fn build_push_destinations_are_validated() {
         assert!(
             super::command()
                 .try_get_matches_from(["ployz", "build", "--push", "--push-registry"])
                 .is_err()
+        );
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "build", "--machine", "machine-1"])
+                .is_err()
+        );
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "build", "--push", "--machine", "machine-1"])
+                .is_ok()
         );
     }
 }
