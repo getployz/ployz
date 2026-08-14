@@ -22,6 +22,7 @@ pub const CORROSION_IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
 pub const MACHINE_API_PORT: u16 = 51000;
+const HOST_ENTRY_API_PORT: u16 = 51003;
 static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
@@ -179,7 +180,7 @@ impl Cluster {
             }
             args.extend([
                 "--publish".to_owned(),
-                format!("127.0.0.1:{}:{MACHINE_API_PORT}", machine.api_port),
+                format!("127.0.0.1:{}:{HOST_ENTRY_API_PORT}", machine.api_port),
                 image.clone(),
             ]);
             if let Err(error) = docker(args) {
@@ -478,6 +479,39 @@ impl Cluster {
 
     pub fn restart(&self, index: usize) -> Result<(), TestkitError> {
         docker(["restart", &self.machine(index)?.name])
+    }
+
+    pub fn remote_machine_api_rule(
+        &self,
+        entry_index: usize,
+        action: &str,
+    ) -> Result<(), TestkitError> {
+        docker([
+            "exec",
+            &self.machine(entry_index)?.name,
+            "ip6tables",
+            action,
+            "OUTPUT",
+            "--protocol",
+            "tcp",
+            "--destination-port",
+            &MACHINE_API_PORT.to_string(),
+            "--jump",
+            "REJECT",
+        ])
+    }
+
+    pub fn api_address(&self, index: usize) -> Result<String, TestkitError> {
+        Ok(format!("tcp://127.0.0.1:{}", self.machine(index)?.api_port))
+    }
+
+    pub fn machine_shell(&self, index: usize, script: &str) -> Result<String, TestkitError> {
+        let output = docker_output(["exec", &self.machine(index)?.name, "sh", "-c", script])?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(command_error(output))
+        }
     }
 
     async fn wait_phase(

@@ -16,8 +16,9 @@ if iptables -t filter -L >/dev/null 2>&1 \
 fi
 
 docker load --input /opt/ployz/images/corrosion.tar >/dev/null
+docker load --input /opt/ployz/images/alpine.tar >/dev/null
 while :; do
-  ployzd --machine-api-address 0.0.0.0:51000 "$@" &
+  ployzd --machine-api-address 0.0.0.0:51003 "$@" &
   ployzd_pid=$!
   echo "$ployzd_pid" >/run/ployzd.pid
   wait "$ployzd_pid" || exit $?

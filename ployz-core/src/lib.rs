@@ -2,8 +2,10 @@
 
 pub mod domain;
 pub mod rpc;
+pub mod service;
 pub mod value;
 
 pub use domain::*;
 pub use rpc::*;
+pub use service::*;
 pub use value::*;

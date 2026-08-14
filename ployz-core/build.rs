@@ -18,6 +18,12 @@ fn main() {
     let register = method("register", "Register");
     let join = method("join", "Join");
     let list_machines = method("list_machines", "ListMachines");
+    let list_containers = method("list_containers", "ListContainers");
+    let inspect_container = method("inspect_container", "InspectContainer");
+    let create_container = method("create_container", "CreateContainer");
+    let start_container = method("start_container", "StartContainer");
+    let stop_container = method("stop_container", "StopContainer");
+    let remove_container = method("remove_container", "RemoveContainer");
     let machine_rpc = tonic_build::manual::Service::builder()
         .name("MachineRpc")
         .package("ployz.rpc.v1")
@@ -28,6 +34,12 @@ fn main() {
         .method(register)
         .method(join)
         .method(list_machines)
+        .method(list_containers)
+        .method(inspect_container)
+        .method(create_container)
+        .method(start_container)
+        .method(stop_container)
+        .method(remove_container)
         .method(reset)
         .build();
     tonic_build::manual::Builder::new().compile(&[machine_rpc]);

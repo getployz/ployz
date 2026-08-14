@@ -5,3 +5,4 @@ pub mod context;
 pub mod deploy;
 pub mod handlers;
 mod provisioning;
+pub mod service;

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, future::Future, net::TcpListener, path::PathBuf};
 
 use bollard::{
-    models::ContainerCreateBody,
+    models::{ContainerCreateBody, NetworkCreateRequest},
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, RenameContainerOptionsBuilder,
     },
@@ -9,6 +9,178 @@ use bollard::{
 use ployz_core::ResolvedServiceSpec;
 
 use super::*;
+
+static DOCKER_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+#[ignore = "requires Docker and alpine:3.23.3"]
+async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
+    let _lock = DOCKER_NETWORK_LOCK.lock().await;
+    let root = TestRoot::new();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    let docker = LocalDocker::connect().unwrap();
+    let created_network = ensure_ployz_network(&docker.client).await;
+    let machine_id = MachineId::random();
+    let service_id = ServiceId::random();
+    let service_name = ServiceName::parse("default-api").unwrap();
+    let spec = fixture_spec(&service_id, &service_name);
+
+    let created = docker
+        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .await
+        .unwrap();
+    let inspected = docker
+        .inspect_managed(&created.container_id, &machine_id, &specs)
+        .await
+        .unwrap();
+    assert_eq!(inspected.resolved_spec, spec);
+    assert_eq!(inspected.kind, ContainerKind::ServiceContainer);
+    assert_eq!(specs.get(&created.container_id).await.unwrap(), Some(spec));
+
+    docker
+        .remove(&specs, &created.container_id, true, true)
+        .await
+        .unwrap();
+    assert!(specs.get(&created.container_id).await.unwrap().is_none());
+    assert!(matches!(
+        docker
+            .inspect_managed(&created.container_id, &machine_id, &specs)
+            .await,
+        Err(Error::ContainerNotFound(_))
+    ));
+    let orphan = ContainerId::parse("f".repeat(64)).unwrap();
+    specs
+        .put(&orphan, &fixture_spec(&service_id, &service_name))
+        .await
+        .unwrap();
+    docker.remove(&specs, &orphan, true, true).await.unwrap();
+    assert!(specs.get(&orphan).await.unwrap().is_none());
+    assert!(matches!(
+        docker.remove(&specs, &orphan, true, true).await,
+        Err(Error::ContainerNotFound(_))
+    ));
+    cleanup_ployz_network(&docker.client, created_network).await;
+}
+
+#[tokio::test]
+#[ignore = "requires Docker and alpine:3.23.3"]
+async fn l3_062_full_spec_reaches_docker_and_machine_db() {
+    let _lock = DOCKER_NETWORK_LOCK.lock().await;
+    let root = TestRoot::new();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    let docker = LocalDocker::connect().unwrap();
+    let created_network = ensure_ployz_network(&docker.client).await;
+    let machine_id = MachineId::random();
+    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+        "service_id": "b".repeat(32),
+        "name": "full-api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": {
+            "image": "alpine:3.23.3",
+            "command": ["sleep", "30"],
+            "environment": { "TOKEN": "secret" },
+            "cap_add": ["CHOWN"],
+            "cap_drop": ["NET_RAW"],
+            "healthcheck": { "test": ["CMD", "true"], "interval_millis": 1000 },
+            "pull_policy": "missing",
+            "init": true,
+            "user": "0",
+            "working_directory": "/tmp",
+            "resources": {
+                "memory_bytes": 67108864,
+                "memory_reservation_bytes": 33554432,
+                "shared_memory_bytes": 33554432,
+                "ulimits": { "nofile": { "soft": 1024, "hard": 2048 } }
+            },
+            "config_mounts": [{
+                "config_name": "settings",
+                "target": "/etc/settings.conf",
+                "mode": 288
+            }]
+        },
+        "ports": [{
+            "mode": "host",
+            "bind": { "kind": "address", "address": "127.0.0.1" },
+            "published_port": 49111,
+            "container_port": 8080,
+            "transport_protocol": "tcp"
+        }],
+        "volumes": [{
+            "reference": "scratch",
+            "source": { "kind": "tmpfs", "size_bytes": 1048576, "mode": 448 }
+        }],
+        "mounts": [{ "volume": "scratch", "target": "/scratch" }],
+        "configs": [{ "name": "settings", "content": [107, 61, 118, 10] }]
+    }))
+    .unwrap();
+
+    let created = docker
+        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .await
+        .unwrap();
+    let raw = docker
+        .client
+        .inspect_container(created.container_id.as_str(), None)
+        .await
+        .unwrap();
+    let config = raw.config.unwrap();
+    let host = raw.host_config.unwrap();
+    assert!(
+        config
+            .env
+            .unwrap()
+            .contains(&format!("PLOYZ_MACHINE_ID={machine_id}"))
+    );
+    assert_eq!(host.memory, Some(67_108_864));
+    assert_eq!(host.memory_reservation, Some(33_554_432));
+    assert!(host.port_bindings.unwrap().contains_key("8080/tcp"));
+    assert_eq!(
+        host.mounts.unwrap().first().unwrap().target.as_deref(),
+        Some("/scratch")
+    );
+    assert_eq!(specs.get(&created.container_id).await.unwrap(), Some(spec));
+
+    docker
+        .remove(&specs, &created.container_id, true, true)
+        .await
+        .unwrap();
+    cleanup_ployz_network(&docker.client, created_network).await;
+}
+
+async fn ensure_ployz_network(docker: &Docker) -> bool {
+    match docker
+        .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
+        .await
+    {
+        Ok(_) => false,
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => {
+            docker
+                .create_network(NetworkCreateRequest {
+                    name: crate::network::DOCKER_NETWORK_NAME.into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            true
+        }
+        Err(error) => panic!("failed to inspect Ployz Docker network: {error}"),
+    }
+}
+
+async fn cleanup_ployz_network(docker: &Docker, created: bool) {
+    if created {
+        docker
+            .remove_network(crate::network::DOCKER_NETWORK_NAME)
+            .await
+            .unwrap();
+    }
+}
 
 #[tokio::test]
 #[ignore = "requires Docker, alpine:3.23.3, and the pinned Corrosion image"]

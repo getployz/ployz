@@ -266,7 +266,7 @@ impl AsyncWrite for SshIo {
 }
 
 pub struct Client {
-    rpc: MachineRpcClient<Channel>,
+    pub(crate) rpc: MachineRpcClient<Channel>,
     connection: Connection,
     connector: Arc<dyn Connector>,
 }
@@ -398,6 +398,8 @@ pub enum ConnectError {
     Rpc(Box<tonic::Status>),
     #[error("Machine RPC payload failed: {0}")]
     Codec(#[from] CodecError),
+    #[error("Machine RPC returned: {}", .0.message)]
+    Remote(ployz_core::RpcError),
 }
 
 impl From<tonic::Status> for ConnectError {

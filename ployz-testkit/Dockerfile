@@ -13,15 +13,17 @@ COPY ployz-testkit/Cargo.toml ployz-testkit/
 COPY ployz-testkit/src ployz-testkit/src
 RUN --mount=type=cache,id=ployz-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=ployz-target-${TARGETARCH},target=/src/target,sharing=locked \
-    cargo build --locked --release --package ployzd \
+    touch ployz-core/build.rs \
+ && cargo build --locked --release --package ployzd \
  && cp /src/target/release/ployzd /ployzd
 
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl docker.io iproute2 iptables skopeo wireguard-tools \
+ && apt-get install -y --no-install-recommends ca-certificates curl docker.io iproute2 iptables skopeo sqlite3 wireguard-tools \
  && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /opt/ployz/images \
- && skopeo copy docker://ghcr.io/unlabs-dev/corrosion:2026.6.15 docker-archive:/opt/ployz/images/corrosion.tar:ghcr.io/unlabs-dev/corrosion:2026.6.15
+ && skopeo copy docker://ghcr.io/unlabs-dev/corrosion:2026.6.15 docker-archive:/opt/ployz/images/corrosion.tar:ghcr.io/unlabs-dev/corrosion:2026.6.15 \
+ && skopeo copy docker://docker.io/library/alpine:3.23.3 docker-archive:/opt/ployz/images/alpine.tar:alpine:3.23.3
 COPY --from=build /ployzd /usr/local/bin/ployzd
 COPY ployz-testkit/entrypoint.sh /usr/local/bin/ployz-testkit-entrypoint
 RUN chmod +x /usr/local/bin/ployz-testkit-entrypoint \
