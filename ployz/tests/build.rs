@@ -75,6 +75,24 @@ services:
     )
     .unwrap();
     assert!(none.services.is_empty());
+
+    let cycle = parse_normalized(
+        "name: cycle\nservices:\n  a: {build: {context: ., additional_contexts: {b: service:b}}}\n  b: {build: {context: ., additional_contexts: {a: service:a}}}\n",
+        ".",
+    )
+    .unwrap();
+    assert!(
+        plan_build(
+            &cycle,
+            &BuildOptions {
+                services: vec!["a".into()],
+                ..Default::default()
+            }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("build dependency cycle")
+    );
 }
 
 #[test]

@@ -97,6 +97,7 @@ async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
     let cluster = Cluster::create(plan).unwrap();
     cluster.initialize_three().await.unwrap();
     let image = format!("l3.invalid/unique-{}:v1", process::id());
+    let service_id = format!("{:032x}", process::id());
     for index in 0..2 {
         cluster.docker(index, &["pull", "alpine:3.23.3"]).unwrap();
         cluster
@@ -110,6 +111,12 @@ async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
                     "--detach",
                     "--name",
                     &format!("l3-image-replica-{index}"),
+                    "--label",
+                    "ployz.managed",
+                    "--label",
+                    &format!("ployz.service.id={service_id}"),
+                    "--label",
+                    "ployz.service.name=l3-image",
                     &image,
                     "sleep",
                     "120",
@@ -191,6 +198,34 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
             ],
         )
         .unwrap();
+    let pushed = format!("l3.invalid/container-push-{}:v1", process::id());
+    cluster
+        .docker(
+            0,
+            &[
+                "run",
+                "--rm",
+                "--network",
+                "ployz",
+                "--volume",
+                "/var/run/docker.sock:/var/run/docker.sock",
+                "quay.io/skopeo/stable:v1.20.0",
+                "copy",
+                "--dest-tls-verify=false",
+                "docker-daemon:alpine:3.23.3",
+                &format!("docker://{gateway}:{UNREGISTRY_PORT}/{pushed}"),
+            ],
+        )
+        .unwrap();
+    assert!(
+        cluster
+            .images(0, Some(pushed.clone()))
+            .await
+            .unwrap()
+            .images
+            .iter()
+            .any(|image| image.repo_tags.contains(&pushed))
+    );
 }
 
 #[tokio::test]
@@ -248,11 +283,23 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
             .insert("PLOYZ_TESTKIT_CONTAINERD_STORE".into(), "0".into());
     }
     let disabled = Cluster::create(disabled).unwrap();
-    disabled.initialize_two().await.unwrap();
+    let disabled_machines = disabled.initialize_two().await.unwrap();
+    let disabled_gateway =
+        std::net::Ipv4Addr::from(u32::from(disabled_machines[0].subnet.0.network()) + 1);
     assert!(!disabled.images(0, None).await.unwrap().containerd_store);
     assert!(
         disabled
             .shell(0, "docker inspect ployz-unregistry")
+            .is_err()
+    );
+    assert!(
+        disabled
+            .shell(
+                0,
+                &format!(
+                    "curl --fail --silent --connect-timeout 1 http://{disabled_gateway}:{UNREGISTRY_PORT}/v2/"
+                ),
+            )
             .is_err()
     );
     assert!(
@@ -271,9 +318,21 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
         ];
     }
     let missing = Cluster::create(missing).unwrap();
-    missing.initialize_two().await.unwrap();
+    let missing_machines = missing.initialize_two().await.unwrap();
+    let missing_gateway =
+        std::net::Ipv4Addr::from(u32::from(missing_machines[0].subnet.0.network()) + 1);
     assert!(missing.images(0, None).await.unwrap().containerd_store);
     assert!(missing.shell(0, "docker inspect ployz-unregistry").is_err());
+    assert!(
+        missing
+            .shell(
+                0,
+                &format!(
+                    "curl --fail --silent --connect-timeout 1 http://{missing_gateway}:{UNREGISTRY_PORT}/v2/"
+                ),
+            )
+            .is_err()
+    );
     assert!(
         missing
             .logs(0)

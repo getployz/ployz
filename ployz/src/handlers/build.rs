@@ -1,8 +1,6 @@
 use clap::ArgMatches;
 
-use crate::compose::{
-    BuildOptions, BuildService, LoadOptions, execute_build, load_project, plan_build,
-};
+use crate::compose::{BuildOptions, LoadOptions, execute_build, load_project, plan_build};
 
 use super::{Error, image, leaf_matches, string_values};
 
@@ -50,7 +48,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         let mut client = image::connect_client(matches, context).await?;
         let mut failures = Vec::new();
         for service in &plan.services {
-            let targets = push_targets(&explicit, service);
+            let targets = push_targets(&explicit, &service.machines);
             match crate::image::push(&mut client, &service.image, None, &targets).await {
                 Ok(result) => {
                     for success in result.successes {
@@ -81,9 +79,9 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     }
 }
 
-fn push_targets(explicit: &[String], service: &BuildService) -> Vec<String> {
+fn push_targets(explicit: &[String], configured: &[ployz_core::MachineSelector]) -> Vec<String> {
     if explicit.is_empty() {
-        service.machines.iter().map(ToString::to_string).collect()
+        configured.iter().map(ToString::to_string).collect()
     } else {
         explicit.to_vec()
     }
@@ -97,18 +95,12 @@ mod tests {
 
     #[test]
     fn explicit_push_targets_override_service_targets_and_empty_means_all() {
-        let mut service = BuildService {
-            name: "api".into(),
-            image: "api:latest".into(),
-            build: serde_norway::Value::Null,
-            machines: vec![MachineSelector::parse("service-machine").unwrap()],
-        };
+        let configured = [MachineSelector::parse("service-machine").unwrap()];
         assert_eq!(
-            push_targets(&["explicit-machine".into()], &service),
+            push_targets(&["explicit-machine".into()], &configured),
             ["explicit-machine"]
         );
-        assert_eq!(push_targets(&[], &service), ["service-machine"]);
-        service.machines.clear();
-        assert!(push_targets(&[], &service).is_empty());
+        assert_eq!(push_targets(&[], &configured), ["service-machine"]);
+        assert!(push_targets(&[], &[]).is_empty());
     }
 }

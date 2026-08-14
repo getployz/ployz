@@ -59,8 +59,16 @@ pub fn plan_build(
 
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut visiting = BTreeSet::new();
     for name in &options.services {
-        include_service(project, name, options.deps, &mut seen, &mut selected)?;
+        include_service(
+            project,
+            name,
+            options.deps,
+            &mut visiting,
+            &mut seen,
+            &mut selected,
+        )?;
     }
     Ok(BuildPlan {
         services: selected
@@ -148,26 +156,35 @@ fn include_service<'a>(
     project: &'a ComposeProject,
     name: &'a str,
     deps: bool,
+    visiting: &mut BTreeSet<&'a str>,
     seen: &mut BTreeSet<&'a str>,
     selected: &mut Vec<&'a str>,
 ) -> Result<(), ComposeError> {
     if !project.services.contains_key(name) {
         return Err(ComposeError::Invalid(format!("undefined service '{name}'")));
     }
-    if !seen.insert(name) {
+    if visiting.contains(name) {
+        return Err(ComposeError::Invalid(format!(
+            "build dependency cycle at service '{name}'"
+        )));
+    }
+    if seen.contains(name) {
         return Ok(());
     }
+    visiting.insert(name);
     selected.push(name);
     if let Some(build) = project.builds.get(name) {
         for dependency in &build.additional_services {
-            include_service(project, dependency, deps, seen, selected)?;
+            include_service(project, dependency, deps, visiting, seen, selected)?;
         }
     }
     if deps {
         for dependency in project.dependencies.get(name).into_iter().flatten() {
-            include_service(project, dependency, true, seen, selected)?;
+            include_service(project, dependency, true, visiting, seen, selected)?;
         }
     }
+    visiting.remove(name);
+    seen.insert(name);
     Ok(())
 }
 

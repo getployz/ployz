@@ -7,7 +7,6 @@ use std::{
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
-
 use crate::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerPath, DockerVolumeName, MachineId,
     MachineName, MachinePath, MachineSelector, MachineSubnet, ManagementAddress, SelectedEndpoint,
@@ -90,7 +89,7 @@ pub struct MachineObservation {
 
 #[must_use]
 pub fn machine_matches_selector(machine: &Machine, selector: &MachineSelector) -> bool {
-    selector.as_str() == "*"
+    matches!(selector.as_str(), "*" | "all")
         || machine.id.as_str() == selector.as_str()
         || machine.name.as_str() == selector.as_str()
 }

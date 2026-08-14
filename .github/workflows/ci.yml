@@ -121,6 +121,8 @@ jobs:
           fi
           test "$attempts" -eq 2
 
+          retry_once cargo test --package ployz --test build_layer3 --locked -- --ignored
+
           mapfile -t scenarios < <(cargo test --package ployz-testkit --test cluster --locked -- --ignored --list | sed -n 's/: test$//p')
           test "${#scenarios[@]}" -gt 0
           for scenario in "${scenarios[@]}"; do

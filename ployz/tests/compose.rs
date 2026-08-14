@@ -577,6 +577,19 @@ services:
     );
     assert!(service(&dirty, "long").container.image.ends_with(".dirty"));
 
+    let non_git_directory = TestDir::new();
+    let non_git = parse_normalized(yaml, &non_git_directory.path).unwrap();
+    let generated = service(&non_git, "generated")
+        .container
+        .image
+        .strip_prefix("project/generated:")
+        .unwrap();
+    assert!(chrono::NaiveDateTime::parse_from_str(generated, "%Y-%m-%d-%H%M%S").is_ok());
+    assert_eq!(
+        service(&non_git, "conditional").container.image,
+        "example/app:no-git"
+    );
+
     let invalid = parse_normalized(
         "name: project\nservices: {app: {image: 'example/app@sha256:abc', build: .}}",
         &directory.path,

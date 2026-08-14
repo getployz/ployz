@@ -61,20 +61,23 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
     let image = leaf
         .get_one::<String>("image")
         .ok_or_else(|| "image is required".to_owned())?;
-    let result = runtime()?.block_on(async {
-        let mut client = connect_client(
-            matches,
-            leaf.get_one::<String>("context").map(String::as_str),
-        )
-        .await?;
-        crate::image::push(
-            &mut client,
-            image,
-            leaf.get_one::<String>("platform").map(String::as_str),
-            &string_values(leaf, "machine"),
-        )
-        .await
-    })?;
+    let result = runtime()?
+        .block_on(async {
+            let mut client = connect_client(
+                matches,
+                leaf.get_one::<String>("context").map(String::as_str),
+            )
+            .await
+            .map_err(crate::image::PushError::Cluster)?;
+            crate::image::push(
+                &mut client,
+                image,
+                leaf.get_one::<String>("platform").map(String::as_str),
+                &string_values(leaf, "machine"),
+            )
+            .await
+        })
+        .map_err(|error| error.to_string())?;
     for success in &result.successes {
         println!("Pushed {image} to {}", success.machine_id);
     }
