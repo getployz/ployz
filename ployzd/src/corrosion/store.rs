@@ -395,6 +395,7 @@ pub async fn wait_for_catch_up(
 pub async fn run_machine_publisher(
     replicated: Option<ReplicatedStore>,
     local: Arc<Mutex<LocalMachineStore>>,
+    participating: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     if let Some(replicated) = &replicated {
@@ -422,6 +423,7 @@ pub async fn run_machine_publisher(
                 .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
                 .complete_catch_up()
                 .map_err(io::Error::other)?;
+            participating.send_replace(true);
         }
     }
     loop {

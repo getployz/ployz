@@ -48,15 +48,20 @@ enum ResponsePlan {
 }
 
 struct Projection {
-    addresses: HashMap<String, Vec<Ipv4Addr>>,
+    service_ids: HashMap<String, Vec<Ipv4Addr>>,
+    names: HashMap<String, Vec<Ipv4Addr>>,
 }
 
 impl Projection {
     fn from_observations(observations: &[ContainerObservation]) -> Self {
         // TODO(UT-117, UT-118): keep Membership Observations out of DNS projection until a
         // product decision replaces the baseline's deliberately membership-blind behavior.
-        let mut addresses = HashMap::<String, Vec<Ipv4Addr>>::new();
+        let mut service_ids = HashMap::<String, Vec<Ipv4Addr>>::new();
+        let mut names = HashMap::<String, Vec<Ipv4Addr>>::new();
         for observation in observations {
+            let service_addresses = service_ids
+                .entry(observation.service_id.to_string())
+                .or_default();
             let healthy = matches!(
                 &observation.runtime,
                 ContainerRuntimeObservation::Running {
@@ -69,15 +74,15 @@ impl Projection {
             else {
                 continue;
             };
+            service_addresses.push(address.0);
             for selector in [
                 observation.service_name.to_string(),
-                observation.service_id.to_string(),
                 format!("{}.m.{}", observation.machine_id, observation.service_name),
             ] {
-                addresses.entry(selector).or_default().push(address.0);
+                names.entry(selector).or_default().push(address.0);
             }
         }
-        Self { addresses }
+        Self { service_ids, names }
     }
 
     fn plan(&self, name: &Name, record_type: RecordType, local_subnet: Ipv4Net) -> ResponsePlan {
@@ -101,7 +106,12 @@ impl Projection {
             .strip_prefix("nearest.")
             .map_or((selector, false), |selector| (selector, true));
         let selector = selector.strip_prefix("rr.").unwrap_or(selector);
-        let mut addresses = self.addresses.get(selector).cloned().unwrap_or_default();
+        let mut addresses = self
+            .service_ids
+            .get(selector)
+            .or_else(|| self.names.get(selector))
+            .cloned()
+            .unwrap_or_default();
         if nearest {
             addresses.sort_by_key(|address| !local_subnet.contains(address));
         }
@@ -533,6 +543,84 @@ mod tests {
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
         );
+    }
+
+    #[test]
+    fn service_id_selector_takes_precedence_over_a_colliding_name() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let selected_id = ServiceId::parse("b".repeat(32)).unwrap();
+        let other_id = ServiceId::parse("c".repeat(32)).unwrap();
+        let colliding_name = ServiceName::parse(selected_id.to_string()).unwrap();
+        let selected_name = ServiceName::parse("selected").unwrap();
+        let projection = Projection::from_observations(&[
+            observation(
+                1,
+                &machine,
+                &selected_id,
+                &selected_name,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 2]),
+            ),
+            observation(
+                2,
+                &machine,
+                &other_id,
+                &colliding_name,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 3]),
+            ),
+        ]);
+
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii(format!("{selected_id}.internal.")).unwrap(),
+                RecordType::A,
+                "10.210.1.0/24".parse().unwrap(),
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 2)]
+        );
+    }
+
+    #[test]
+    fn empty_service_id_selector_does_not_fall_back_to_a_colliding_name() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let selected_id = ServiceId::parse("b".repeat(32)).unwrap();
+        let other_id = ServiceId::parse("c".repeat(32)).unwrap();
+        let colliding_name = ServiceName::parse(selected_id.to_string()).unwrap();
+        let projection = Projection::from_observations(&[
+            observation(
+                1,
+                &machine,
+                &selected_id,
+                &ServiceName::parse("selected").unwrap(),
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Unhealthy),
+                Some([10, 210, 1, 2]),
+            ),
+            observation(
+                2,
+                &machine,
+                &other_id,
+                &colliding_name,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 3]),
+            ),
+        ]);
+
+        assert!(matches!(
+            projection.plan(
+                &Name::from_ascii(format!("{selected_id}.internal.")).unwrap(),
+                RecordType::A,
+                "10.210.1.0/24".parse().unwrap(),
+            ),
+            ResponsePlan::Internal {
+                code: ResponseCode::NXDomain,
+                answers,
+            } if answers.is_empty()
+        ));
     }
 
     #[test]
