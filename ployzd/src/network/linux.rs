@@ -42,9 +42,7 @@ pub fn inspect_wireguard_device() -> Result<WireGuardDevice, NetworkError> {
     let public_key = host
         .private_key
         .as_ref()
-        .map(Key::public_key)
-        .map(|key| key.as_array())
-        .map(WireGuardPublicKey)
+        .map(|key| WireGuardPublicKey(key.public_key().as_array()))
         .ok_or(NetworkError::MissingPrivateKey)?;
     let peers = host
         .peers

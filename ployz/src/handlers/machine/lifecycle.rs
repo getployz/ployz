@@ -8,8 +8,7 @@ use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, MachineSelector,
     MachineTokenRequest, NameMatches, PublicIpDiscovery, RegisterRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RpcRequest, removal_decision,
-    resolve_machine_selector,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RpcRequest, resolve_machine_selector,
 };
 
 use super::{ConnectionOptions, machine_list, parse_endpoints, runtime, target};
@@ -25,7 +24,7 @@ fn select_machine(
 ) -> Result<Machine, Error> {
     let selector = MachineSelector::parse(selector).map_err(|error| error.to_string())?;
     match resolve_machine_selector(&selector, machines.iter().map(|entry| &entry.machine)) {
-        NameMatches::None => Err(format!("Machine {selector:?} was not found")),
+        NameMatches::None => Err(format!("Machine {selector:?} was not found").into()),
         NameMatches::One(machine) => Ok(machine.clone()),
         NameMatches::Ambiguous(matches) => Err(format!(
             "Machine name {selector:?} is ambiguous: {}",
@@ -34,7 +33,8 @@ fn select_machine(
                 .map(|machine| machine.id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
-        )),
+        )
+        .into()),
     }
 }
 
@@ -68,9 +68,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             .await
             .map_err(|error| error.to_string())?
             .machine_id;
-        let prepare_target =
-            removal_decision(selected.id == current, machines.len(), no_reset, true)
-                .map_err(|error| error.to_string())?;
+        if selected.id == current && machines.len() > 1 {
+            return Err(
+                "the current entry Machine cannot be removed while another Machine is visible"
+                    .into(),
+            );
+        }
         confirm(
             yes,
             &format!("Remove Machine {} ({})?", selected.name, selected.id),
@@ -79,7 +82,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         // TODO(UT-055): do not reroute away from the current entry before removal.
         // TODO(UT-056): there is no drain or unschedulable phase before cleanup.
         let mut removed_by_target = false;
-        if prepare_target {
+        if !no_reset {
             match client
                 .request(
                     RpcRequest::remove_local_machine(RemoveLocalMachineRequest {}),
@@ -99,7 +102,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 Err(error) if is_target_unreachable(&error) => {
                     eprintln!("WARNING: target is unreachable; removing shared rows: {error}");
                 }
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error.to_string().into()),
             }
         }
         if !removed_by_target {
@@ -305,7 +308,7 @@ async fn connect_direct(connection: &Connection) -> Result<Client, Error> {
         Arc::new(SystemConnector::default()),
     )
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string().into())
 }
 
 async fn reconnect_direct(connection: &Connection) -> Result<Client, Error> {
@@ -325,9 +328,7 @@ fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
         return Ok(());
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(format!(
-            "cannot confirm {prompt:?} without a terminal; pass --yes"
-        ));
+        return Err(format!("cannot confirm {prompt:?} without a terminal; pass --yes").into());
     }
     print!("{prompt} [y/N] ");
     io::stdout().flush().map_err(|error| error.to_string())?;

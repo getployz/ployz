@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     convert::Infallible,
     future::poll_fn,
     sync::{Arc, Mutex},
@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full, StreamBody};
 use ployz_core::{
     FanoutFailure, FanoutResponse, FramingError, Machine, MachineId, MachineSelector,
-    ManagementAddress, NameMatches, grpc_frame_length, grpc_frames, resolve_machine_selector,
+    ManagementAddress, grpc_frame_length, grpc_frames, resolve_machine_selectors,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -24,6 +24,8 @@ use tonic::{
 };
 
 use crate::corrosion::ReplicatedStore;
+
+pub use ployz_core::MachineSelectorError as TargetResolutionError;
 
 const ONE_TARGET_HEADER: &str = "machine";
 const ONE_TARGET_BINARY_HEADER: &str = "machine-bin";
@@ -49,72 +51,12 @@ pub fn resolve_route(
 ) -> Result<ProxyRoute, TargetResolutionError> {
     match request {
         RoutingRequest::Local => Ok(ProxyRoute::Local),
-        RoutingRequest::One(selector) => resolve_targets(visible, &[selector])
+        RoutingRequest::One(selector) => resolve_machine_selectors(visible, &[selector])
             .map(|mut targets| ProxyRoute::One(Box::new(targets.remove(0)))),
         RoutingRequest::Many(selectors) => {
-            resolve_targets(visible, &selectors).map(ProxyRoute::Many)
+            resolve_machine_selectors(visible, &selectors).map(ProxyRoute::Many)
         }
     }
-}
-
-fn resolve_targets(
-    visible: &[Machine],
-    selectors: &[MachineSelector],
-) -> Result<Vec<Machine>, TargetResolutionError> {
-    if selectors.is_empty() {
-        return Err(TargetResolutionError::NoTargets);
-    }
-    let mut targets = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut missing = Vec::new();
-    for selector in selectors {
-        if selector.as_str() == "*" {
-            for target in visible {
-                if seen.insert(target.id.clone()) {
-                    targets.push(target.clone());
-                }
-            }
-            continue;
-        }
-        match resolve_machine_selector(selector, visible) {
-            NameMatches::One(target) if seen.insert(target.id.clone()) => {
-                targets.push(target.clone());
-            }
-            NameMatches::One(_) => {}
-            NameMatches::None => missing.push(selector.clone()),
-            NameMatches::Ambiguous(matches) => {
-                return Err(TargetResolutionError::Ambiguous {
-                    selector: selector.clone(),
-                    machine_ids: matches
-                        .into_iter()
-                        .map(|machine| machine.id.clone())
-                        .collect(),
-                });
-            }
-        }
-    }
-    if !missing.is_empty() {
-        Err(TargetResolutionError::NotFound(missing))
-    } else if targets.is_empty() {
-        Err(TargetResolutionError::NoVisibleMachines)
-    } else {
-        Ok(targets)
-    }
-}
-
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-pub enum TargetResolutionError {
-    #[error("no Machine targets were requested")]
-    NoTargets,
-    #[error("no Machines are visible to this entry Machine")]
-    NoVisibleMachines,
-    #[error("Machine selectors were not found: {0:?}")]
-    NotFound(Vec<MachineSelector>),
-    #[error("Machine selector {selector:?} is ambiguous: {machine_ids:?}")]
-    Ambiguous {
-        selector: MachineSelector,
-        machine_ids: Vec<MachineId>,
-    },
 }
 
 #[derive(Clone)]

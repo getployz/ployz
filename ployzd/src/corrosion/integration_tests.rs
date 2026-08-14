@@ -47,12 +47,13 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
 
     let duplicate = machine("duplicate", 2);
     store.publish_local_machine(&duplicate).await.unwrap();
+    let incomplete_machine_id = MachineId::random();
     running
         .store()
         .api()
         .execute([Statement::new(
             "INSERT INTO machines (id) VALUES (?)",
-            [json!(MachineId::random())],
+            [json!(&incomplete_machine_id)],
         )])
         .await
         .unwrap();
@@ -62,6 +63,15 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(machines.incomplete_ids.len(), 1);
     assert!(machines.observations.contains(&local));
     assert!(machines.observations.contains(&duplicate));
+    assert!(
+        store
+            .machine_publication()
+            .await
+            .remove(&incomplete_machine_id)
+            .await
+            .unwrap()
+    );
+    assert!(store.machines().await.unwrap().incomplete_ids.is_empty());
 
     let mut container_changes = store.subscribe_container_changes().await.unwrap();
     let observation = container(&local.id, "a");

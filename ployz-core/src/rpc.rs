@@ -13,8 +13,7 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
     DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineLogService,
     MachineName, MachineObservation, MachineRuntime, MachineToken, MachineUpdate,
-    PublicIpDiscovery, ResolvedServiceSpec, RttObservation, ValueError, WireGuardDevice,
-    WireGuardPublicKey,
+    PublicIpDiscovery, ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
 };
 
 mod docker;

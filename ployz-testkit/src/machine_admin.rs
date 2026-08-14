@@ -42,7 +42,7 @@ impl Cluster {
         Ok(assigned)
     }
 
-    async fn register_machine(
+    pub(super) async fn register_machine(
         &self,
         entry: usize,
         name: &str,
@@ -141,7 +141,7 @@ impl Cluster {
         .clone())
     }
 
-    async fn machine_token(
+    pub(super) async fn machine_token(
         &self,
         index: usize,
         advertised_endpoints: Vec<AdvertisedEndpoint>,

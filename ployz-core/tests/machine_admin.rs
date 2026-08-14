@@ -4,10 +4,9 @@ use ipnet::IpNet;
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
     MachineSelector, MachineSubnet, MachineUpdate, MachineUpdateError, ManagementAddress,
-    MembershipObservation, NameMatches, PublicIpUpdate, RemovalError, RttStatistics,
-    WireGuardDevice, WireGuardPeer, WireGuardPublicKey, apply_machine_update,
-    associate_wireguard_peers, removal_decision, resolve_machine_selector, rtt_statistics,
-    synthesize_membership,
+    MembershipObservation, NameMatches, PublicIpUpdate, RttStatistics, WireGuardDevice,
+    WireGuardPeer, WireGuardPublicKey, apply_machine_update, associate_wireguard_peers,
+    resolve_machine_selector, rtt_statistics, synthesize_membership,
 };
 
 #[test]
@@ -134,17 +133,6 @@ fn rtt_statistics_use_median_and_population_standard_deviation() {
     let odd = rtt_statistics(&[3.0, 1.0, 2.0]).unwrap();
     assert_eq!(odd.median_ns, 2_000_000);
     assert_eq!(odd.population_stddev_ns, 816_496);
-}
-
-#[test]
-fn removal_decision_preserves_optimistic_reset_outcomes() {
-    assert_eq!(
-        removal_decision(true, 2, false, true),
-        Err(RemovalError::CurrentEntryHasPeers)
-    );
-    assert_eq!(removal_decision(true, 1, false, true), Ok(true));
-    assert!(!removal_decision(false, 2, false, false).unwrap());
-    assert!(!removal_decision(false, 2, true, true).unwrap());
 }
 
 #[test]

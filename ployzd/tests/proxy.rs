@@ -62,7 +62,7 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
         resolve_route(RoutingRequest::One(selector("duplicate")), &visible),
         Err(TargetResolutionError::Ambiguous {
             selector: selector("duplicate"),
-            machine_ids: vec![first.id.clone(), second.id.clone()],
+            matches: vec![first.id.clone(), second.id.clone()],
         })
     );
 

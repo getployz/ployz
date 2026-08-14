@@ -113,6 +113,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             docker.clone(),
             specs.clone(),
             replicated,
+            Arc::clone(&store),
             local_record.id.clone(),
         )
     });

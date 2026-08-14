@@ -176,8 +176,19 @@ fn machine_update_is_atomic_and_durable() {
     assert_eq!(updated.advertised_endpoints, endpoints);
     drop(store);
 
-    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    let mut reopened = LocalMachineStore::open(&dir.0).unwrap();
     assert_eq!(reopened.record().machine.as_ref(), Some(&updated));
+    reopened.begin_reset().unwrap();
+    assert!(matches!(
+        reopened.update(
+            MachineUpdate {
+                name: Some(MachineName::parse("too-late").unwrap()),
+                ..Default::default()
+            },
+            &[updated],
+        ),
+        Err(StoreError::NotParticipating)
+    ));
 }
 
 #[test]

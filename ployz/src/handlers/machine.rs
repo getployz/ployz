@@ -51,7 +51,7 @@ impl ConnectionOptions {
             self.context.as_deref(),
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string().into())
     }
 
     pub(super) fn active_config(&self) -> Result<(Config, String), Error> {
@@ -64,38 +64,36 @@ impl ConnectionOptions {
             return Err(format!(
                 "current context is not set in Ployz config {}",
                 config.path().display()
-            ));
+            )
+            .into());
         }
         if !config.contexts.contains_key(&name) {
-            return Err(format!("context {name:?} not found"));
+            return Err(format!("context {name:?} not found").into());
         }
         Ok((config, name))
     }
 
     pub(super) fn load_config(&self) -> Result<Config, Error> {
-        Config::load(&self.config_path).map_err(|error| error.to_string())
+        Config::load(&self.config_path).map_err(|error| error.to_string().into())
     }
 }
 
 pub(super) fn runtime() -> Result<tokio::runtime::Runtime, Error> {
-    tokio::runtime::Runtime::new().map_err(|error| error.to_string())
+    tokio::runtime::Runtime::new().map_err(|error| error.to_string().into())
 }
 
 pub(super) async fn machine_list(client: &mut Client) -> Result<Vec<MachineObservation>, Error> {
     client
-        .request(RpcRequest::list_machines(), None)
+        .list_machines()
         .await
-        .map_err(|error| error.to_string())?
-        .decode_machine_list()
-        .map(<[MachineObservation]>::to_vec)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string().into())
 }
 
 pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str, Error> {
     matches
         .get_one::<String>(name)
         .map(String::as_str)
-        .ok_or_else(|| format!("{name} is required"))
+        .ok_or_else(|| format!("{name} is required").into())
 }
 
 pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
@@ -131,7 +129,7 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
             .map_err(|error| error.to_string())?
             .decode_machine_updated()
             .cloned()
-            .map_err(|error| error.to_string())
+            .map_err(|error| Error::from(error.to_string()))
     })?;
     println!("Updated Machine {} ({})", machine.name, machine.id);
     Ok(())
@@ -192,7 +190,7 @@ pub(super) fn parse_endpoints(
                         .map(|address| SocketAddr::new(address, default_port))
                 })
                 .map(AdvertisedEndpoint)
-                .map_err(|_| format!("invalid WireGuard endpoint {value:?}"))
+                .map_err(|_| format!("invalid WireGuard endpoint {value:?}").into())
         })
         .collect()
 }

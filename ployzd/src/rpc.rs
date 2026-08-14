@@ -12,12 +12,12 @@ use ployz_core::{
     LIST_CONTAINERS_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
     LocalMachinePhase, LocalMachineRemoved, LogMetadata, LogOrigin, MACHINE_LOGS_CAPABILITY,
     MACHINE_TOKEN_CAPABILITY, Machine, MachineDetails, MachineId, MachineIdentity,
-    MachineLogService, MachineObservation, MachineRpc, MachineToken, OpaquePayload, PROTOCOL_MAJOR,
-    PublicIpDiscovery, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
-    REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RttObservation, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, associate_wireguard_peers, synthesize_membership,
+    MachineLogService, MachineRpc, MachineToken, OpaquePayload, PROTOCOL_MAJOR, PublicIpDiscovery,
+    REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY,
+    REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RttObservation,
+    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    associate_wireguard_peers, synthesize_membership,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -30,8 +30,8 @@ use crate::{
     machine::local_runtime,
     machine::{LocalMachineStore, StoreError},
     network::{
-        allocate_machine_subnet, discover_endpoints, discover_network, inspect_wireguard_device,
-        machine_gateway, management_address,
+        allocate_machine_subnet, discover_network, inspect_wireguard_device, machine_gateway,
+        management_address,
     },
 };
 
@@ -104,14 +104,6 @@ impl MachineService {
         self.containers
             .as_ref()
             .ok_or_else(|| unavailable("Docker is not available"))
-    }
-
-    async fn delete_replicated_machine(
-        replicated: &ReplicatedStore,
-        machine_id: &MachineId,
-    ) -> Result<bool, crate::corrosion::Error> {
-        replicated.delete_machine_containers(machine_id).await?;
-        replicated.delete_machine(machine_id).await
     }
 }
 
@@ -228,11 +220,10 @@ impl MachineRpc for MachineService {
         } else {
             Vec::new()
         };
-        let machine = record.machine;
         respond(RpcResponse::machine_details(MachineDetails {
             id: record.id,
             phase: record.phase,
-            machine,
+            machine: record.machine,
             public_key: private_key.public_key(),
             advertised_endpoints,
             store_version,
@@ -776,6 +767,7 @@ impl MachineRpc for MachineService {
             .await
             .map_err(|error| Status::internal(error.to_string()))?
             .observations;
+        let publication = replicated.machine_publication().await;
         let updated = self
             .store
             .lock()
@@ -783,7 +775,7 @@ impl MachineRpc for MachineService {
             .update(request.update, &visible);
         match updated {
             Ok(machine) => {
-                if let Err(error) = replicated.publish_local_machine(&machine).await {
+                if let Err(error) = publication.publish(&machine).await {
                     eprintln!("failed to publish updated local Machine: {error}");
                 }
                 respond(RpcResponse::machine_updated(machine))
@@ -809,32 +801,41 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        let docker = match LocalDocker::connect() {
-            Ok(docker) => docker,
-            Err(error) => return respond(RpcResponse::error(unavailable(&error.to_string()))),
-        };
-        let containers = match docker.managed_container_ids().await {
+        let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(unavailable(&error.to_string()))),
+            Err(error) => return respond(RpcResponse::error(error)),
         };
-        if let Err(error) = docker.remove_managed_containers(&containers).await {
+        if let Err(error) = containers
+            .docker
+            .remove_all_managed(&containers.specs)
+            .await
+        {
             return respond(RpcResponse::error(RpcError {
                 code: RpcErrorCode::Internal,
                 message: error.to_string(),
                 details: Value::Null,
             }));
         }
-        let reset = self
-            .store
-            .lock()
-            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
-            .begin_reset();
+        let publication = replicated.machine_publication().await;
+        let reset = {
+            let mut store = self
+                .store
+                .lock()
+                .map_err(|_| Status::internal("local Machine record lock poisoned"))?;
+            if store.record().phase == LocalMachinePhase::Resetting {
+                Ok(())
+            } else {
+                store.begin_reset()
+            }
+        };
         if let Err(error) = reset {
             return respond(RpcResponse::error(store_error(error)));
         }
-        let removed = Self::delete_replicated_machine(replicated, &machine_id).await;
+        publication
+            .remove(&machine_id)
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
         self.restart.send_replace(true);
-        removed.map_err(|error| Status::internal(error.to_string()))?;
         respond(RpcResponse::local_machine_removed(
             LocalMachineRemoved::default(),
         ))
@@ -851,7 +852,10 @@ impl MachineRpc for MachineService {
             Ok(replicated) => replicated,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        match Self::delete_replicated_machine(replicated, &request.machine_id)
+        match replicated
+            .machine_publication()
+            .await
+            .remove(&request.machine_id)
             .await
             .map_err(|error| Status::internal(error.to_string()))?
         {
@@ -969,9 +973,7 @@ fn unique_identities(
             ambiguous.insert(address);
         }
     }
-    for address in ambiguous {
-        identities.remove(&address);
-    }
+    identities.retain(|address, _| !ambiguous.contains(address));
     identities
 }
 
@@ -985,7 +987,9 @@ fn unavailable(message: &str) -> RpcError {
 
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
-        StoreError::AlreadyResetting | StoreError::AlreadyInitialized => RpcErrorCode::Conflict,
+        StoreError::AlreadyResetting
+        | StoreError::AlreadyInitialized
+        | StoreError::NotParticipating => RpcErrorCode::Conflict,
         StoreError::MissingEndpoints
         | StoreError::MissingPeers
         | StoreError::MissingPrivateKey
@@ -1047,8 +1051,17 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::unique_identities;
-    use ployz_core::{MachineId, MachineIdentity, MachineName};
+    use super::{store_error, unique_identities};
+    use crate::machine::StoreError;
+    use ployz_core::{MachineId, MachineIdentity, MachineName, RpcErrorCode};
+
+    #[test]
+    fn non_participating_update_is_a_typed_conflict() {
+        assert_eq!(
+            store_error(StoreError::NotParticipating).code,
+            RpcErrorCode::Conflict
+        );
+    }
 
     #[test]
     fn duplicate_management_addresses_have_no_identity_winner() {

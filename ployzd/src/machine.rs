@@ -238,6 +238,9 @@ impl LocalMachineStore {
         update: MachineUpdate,
         visible: &[Machine],
     ) -> Result<Machine, StoreError> {
+        if self.record.phase != LocalMachinePhase::Participating {
+            return Err(StoreError::NotParticipating);
+        }
         let machine = self
             .record
             .machine
@@ -390,6 +393,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("local Machine record contains an unrecognized phase")]
     InvalidPhase,
+    #[error("machine is not participating")]
+    NotParticipating,
     #[error("local Machine identity does not match its advertised record")]
     MachineIdMismatch,
     #[error("machine is already resetting")]

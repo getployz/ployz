@@ -12,8 +12,8 @@ use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
     MachineFailure, MachineId, MachineObservation, MachineRpcClient, MachineSelector,
-    MachineSuccess, OpaquePayload, PartialResult, RpcError, RpcErrorCode, RpcRequest,
-    RpcRequestBody, RpcResponse, RpcResponseBody,
+    MachineSuccess, PartialResult, RpcError, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse,
+    RpcResponseBody,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -299,15 +299,11 @@ impl Client {
     }
 
     pub async fn list_machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
-        let response = self
-            .rpc
-            .list_machines(RpcRequest::list_machines().encode()?)
+        self.request(RpcRequest::list_machines(), None)
             .await?
-            .into_inner()
-            .decode_response()?;
-        decode_rpc(response, |response| {
-            response.decode_machine_list().map(<[_]>::to_vec)
-        })
+            .decode_machine_list()
+            .map(<[_]>::to_vec)
+            .map_err(ConnectError::Codec)
     }
 
     pub async fn create_volume(
@@ -315,16 +311,12 @@ impl Client {
         machine_id: &MachineId,
         request: CreateVolumeRequest,
     ) -> Result<DockerVolume, ConnectError> {
-        let request = targeted(RpcRequest::create_volume(request).encode()?, machine_id)?;
-        let response = self
-            .rpc
-            .create_volume(request)
+        let target = MachineSelector::from(machine_id);
+        self.request(RpcRequest::create_volume(request), Some(&target))
             .await?
-            .into_inner()
-            .decode_response()?;
-        decode_rpc(response, |response| {
-            response.decode_volume_created().cloned()
-        })
+            .decode_volume_created()
+            .cloned()
+            .map_err(ConnectError::Codec)
     }
 
     pub async fn list_volumes(
@@ -335,20 +327,18 @@ impl Client {
         let mut requests = tokio::task::JoinSet::new();
         for (index, machine) in machines.iter().enumerate() {
             let machine_id = machine.machine.id.clone();
-            let mut rpc = self.rpc.clone();
+            let mut client = self.clone();
             requests.spawn(async move {
-                let outcome = async {
-                    let request = targeted(RpcRequest::list_volumes().encode()?, &machine_id)?;
-                    let response = rpc
-                        .list_volumes(request)
-                        .await?
-                        .into_inner()
-                        .decode_response()?;
-                    decode_rpc(response, |response| {
-                        response.decode_volume_list().map(<[_]>::to_vec)
-                    })
-                }
-                .await;
+                let target = MachineSelector::from(&machine_id);
+                let outcome = client
+                    .request(RpcRequest::list_volumes(), Some(&target))
+                    .await
+                    .and_then(|response| {
+                        response
+                            .decode_volume_list()
+                            .map(<[_]>::to_vec)
+                            .map_err(ConnectError::Codec)
+                    });
                 (index, machine_id, outcome)
             });
         }
@@ -381,19 +371,12 @@ impl Client {
         &mut self,
         id: &DockerVolumeId,
     ) -> Result<DockerVolume, ConnectError> {
-        let request = targeted(
-            RpcRequest::inspect_volume(id.name.clone()).encode()?,
-            &id.machine_id,
-        )?;
-        let response = self
-            .rpc
-            .inspect_volume(request)
+        let target = MachineSelector::from(&id.machine_id);
+        self.request(RpcRequest::inspect_volume(id.name.clone()), Some(&target))
             .await?
-            .into_inner()
-            .decode_response()?;
-        decode_rpc(response, |response| {
-            response.decode_volume_details().cloned()
-        })
+            .decode_volume_details()
+            .cloned()
+            .map_err(ConnectError::Codec)
     }
 
     pub async fn remove_volume(
@@ -401,17 +384,11 @@ impl Client {
         id: DockerVolumeId,
         force: bool,
     ) -> Result<(), ConnectError> {
-        let request = targeted(
-            RpcRequest::remove_volume(id.name, force).encode()?,
-            &id.machine_id,
-        )?;
-        let response = self
-            .rpc
-            .remove_volume(request)
+        let target = MachineSelector::from(&id.machine_id);
+        self.request(RpcRequest::remove_volume(id.name, force), Some(&target))
             .await?
-            .into_inner()
-            .decode_response()?;
-        decode_rpc(response, RpcResponse::decode_volume_removed)
+            .decode_volume_removed()
+            .map_err(ConnectError::Codec)
     }
 
     pub async fn request(
@@ -421,14 +398,22 @@ impl Client {
     ) -> Result<RpcResponse, ConnectError> {
         let payload = target_request(request.encode()?, target);
         macro_rules! dispatch {
-            ($($variant:ident: ($method:ident, $route:literal, $request:ty, $command:literal),)+) => {
+            (
+                unary { $($variant:ident: ($method:ident, $route:literal, $request:ty, $command:literal),)+ }
+                server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
+            ) => {
                 match request.body {
                     $(RpcRequestBody::$variant(_) => self.rpc.$method(payload).await?,)+
+                    $(RpcRequestBody::$stream_variant(_) => return Err(ConnectError::StreamingRequest($stream_command)),)+
                 }
             };
         }
         let payload = ployz_core::rpc_catalog!(dispatch);
-        decode_response(payload.into_inner())
+        let response = payload.into_inner().decode_response()?;
+        if let RpcResponseBody::Error(error) = &response.body {
+            return Err(ConnectError::Remote(error.clone()));
+        }
+        Ok(response)
     }
 
     pub async fn dial_proxy(
@@ -440,31 +425,6 @@ impl Client {
             .dial_proxy(&self.connection, network, address)
             .await
     }
-}
-
-fn targeted(
-    payload: OpaquePayload,
-    machine_id: &MachineId,
-) -> Result<tonic::Request<OpaquePayload>, ConnectError> {
-    let mut request = tonic::Request::new(payload);
-    request.metadata_mut().insert(
-        "machine",
-        machine_id
-            .as_str()
-            .parse()
-            .map_err(|_| ConnectError::InvalidMachineMetadata)?,
-    );
-    Ok(request)
-}
-
-fn decode_rpc<T>(
-    response: RpcResponse,
-    decode: impl FnOnce(&RpcResponse) -> Result<T, CodecError>,
-) -> Result<T, ConnectError> {
-    if let RpcResponseBody::Error(error) = &response.body {
-        return Err(ConnectError::Remote(error.clone()));
-    }
-    decode(&response).map_err(ConnectError::Codec)
 }
 
 pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
@@ -506,7 +466,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::Path { .. }
         | ConnectError::AllFailed { .. }
         | ConnectError::Codec(_)
-        | ConnectError::InvalidMachineMetadata) => RpcError {
+        | ConnectError::StreamingRequest(_)) => RpcError {
             code: RpcErrorCode::Internal,
             message: error.to_string(),
             details: Value::Null,
@@ -537,14 +497,6 @@ fn target_request(
         }
     }
     request
-}
-
-fn decode_response(payload: ployz_core::OpaquePayload) -> Result<RpcResponse, ConnectError> {
-    let response = payload.decode_response()?;
-    if let RpcResponseBody::Error(error) = &response.body {
-        return Err(ConnectError::Remote(error.clone()));
-    }
-    Ok(response)
 }
 
 pub async fn connect_selected_with(
@@ -649,8 +601,8 @@ pub enum ConnectError {
     Codec(#[from] CodecError),
     #[error("Machine RPC returned: {}", .0.message)]
     Remote(RpcError),
-    #[error("Machine ID cannot be used as routing metadata")]
-    InvalidMachineMetadata,
+    #[error("streaming RPC {0:?} must use the streaming client")]
+    StreamingRequest(&'static str),
 }
 
 impl From<tonic::Status> for ConnectError {

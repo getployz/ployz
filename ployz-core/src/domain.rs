@@ -237,25 +237,28 @@ pub fn resolve_machine_selectors(
     let mut seen = BTreeSet::new();
     let mut missing = Vec::new();
     for selector in selectors {
-        let matches = visible
-            .iter()
-            .filter(|machine| machine_matches_selector(machine, selector))
-            .collect::<Vec<_>>();
-        if selector.as_str() != "*" && matches.len() > 1 {
-            return Err(MachineSelectorError::Ambiguous {
-                selector: selector.clone(),
-                matches: matches
-                    .into_iter()
-                    .map(|machine| machine.id.clone())
-                    .collect(),
-            });
+        if selector.as_str() == "*" {
+            for machine in visible {
+                if seen.insert(machine.id.clone()) {
+                    targets.push(machine.clone());
+                }
+            }
+            continue;
         }
-        if matches.is_empty() {
-            missing.push(selector.clone());
-        }
-        for machine in matches {
-            if seen.insert(machine.id.clone()) {
+        match resolve_machine_selector(selector, visible) {
+            NameMatches::One(machine) if seen.insert(machine.id.clone()) => {
                 targets.push(machine.clone());
+            }
+            NameMatches::One(_) => {}
+            NameMatches::None => missing.push(selector.clone()),
+            NameMatches::Ambiguous(matches) => {
+                return Err(MachineSelectorError::Ambiguous {
+                    selector: selector.clone(),
+                    matches: matches
+                        .into_iter()
+                        .map(|machine| machine.id.clone())
+                        .collect(),
+                });
             }
         }
     }
@@ -351,24 +354,6 @@ pub fn rtt_statistics(samples_ms: &[f64]) -> Option<RttStatistics> {
         median_ns: (median * 1_000_000.0) as u64,
         population_stddev_ns: (variance.sqrt() * 1_000_000.0) as u64,
     })
-}
-
-#[derive(Clone, Copy, Debug, Eq, thiserror::Error, PartialEq)]
-pub enum RemovalError {
-    #[error("the current entry Machine cannot be removed while another Machine is visible")]
-    CurrentEntryHasPeers,
-}
-
-pub fn removal_decision(
-    current_entry: bool,
-    visible_machine_count: usize,
-    no_reset: bool,
-    reachable: bool,
-) -> Result<bool, RemovalError> {
-    if current_entry && visible_machine_count > 1 {
-        return Err(RemovalError::CurrentEntryHasPeers);
-    }
-    Ok(!no_reset && reachable)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

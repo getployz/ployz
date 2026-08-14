@@ -159,7 +159,7 @@ pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error
             .map_err(|error| error.to_string())?
             .decode_wireguard_inspected()
             .cloned()
-            .map_err(|error| error.to_string())
+            .map_err(|error| Error::from(error.to_string()))
     })?;
     println!("interface: {}", device.interface_name);
     println!("public key: {}", device.public_key);

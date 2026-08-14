@@ -15,7 +15,7 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, DockerVolumeName, InitializeRequest, InspectRequest,
     JoinRequest, LocalMachinePhase, Machine, MachineName, MachineRpcClient, MembershipObservation,
-    OpaquePayload, RegisterRequest, Registered, RpcRequest, RpcResponse, RpcResponseBody,
+    OpaquePayload, Registered, RpcRequest, RpcResponse, RpcResponseBody,
 };
 use thiserror::Error;
 
@@ -257,7 +257,12 @@ impl Cluster {
         self.seed_observation(0)?;
         let mut machines = vec![first.clone()];
         for index in 1..self.plan.machines.len() {
-            let registered = self.register(index).await?;
+            let token = self
+                .machine_token(index, vec![self.endpoint(index)?])
+                .await?;
+            let registered = self
+                .register_machine(0, &format!("machine-{}", index + 1), token)
+                .await?;
             self.gossip_rule(index, "--insert")?;
             self.join(index, join_request(&first, &registered)).await?;
             self.wait_for_join_barrier(index, &registered).await?;
@@ -277,7 +282,7 @@ impl Cluster {
     ) -> Result<(), TestkitError> {
         self.wait_phase(index, LocalMachinePhase::Joining, Duration::from_secs(60))
             .await?;
-        if self.inspect(index, Vec::new()).await.is_ok_and(|details| {
+        if self.inspect(index).await.is_ok_and(|details| {
             version_reached(&details.store_version, &registered.target_versions)
         }) {
             return Err(TestkitError::Rpc(
@@ -333,29 +338,6 @@ impl Cluster {
         .clone())
     }
 
-    pub async fn register_second(&self) -> Result<ployz_core::Registered, TestkitError> {
-        self.register(1).await
-    }
-
-    async fn register(&self, index: usize) -> Result<Registered, TestkitError> {
-        let joining = self.inspect(index, vec![self.endpoint(index)?]).await?;
-        let mut client = self.client(0).await?;
-        Ok(response(
-            client
-                .register(
-                    RpcRequest::register(RegisterRequest {
-                        name: MachineName::parse(format!("machine-{}", index + 1))?,
-                        public_key: joining.public_key,
-                        advertised_endpoints: joining.advertised_endpoints,
-                    })
-                    .encode()?,
-                )
-                .await?
-                .into_inner(),
-        )?
-        .decode_registered()?
-        .clone())
-    }
     pub async fn join(&self, index: usize, request: JoinRequest) -> Result<(), TestkitError> {
         let mut client = self.client(index).await?;
         response(

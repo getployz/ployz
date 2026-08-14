@@ -7,15 +7,18 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, net::Ipv4Addr, time::Duration, time::SystemTime};
+use std::{
+    collections::HashMap,
+    net::Ipv4Addr,
+    sync::{Arc, Mutex},
+    time::Duration,
+    time::SystemTime,
+};
 
 use bollard::{
     Docker,
-    errors::Error as DockerError,
     models::{ContainerInspectResponse, HealthConfig},
-    query_parameters::{
-        EventsOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
-    },
+    query_parameters::{EventsOptionsBuilder, ListContainersOptionsBuilder},
 };
 use futures_util::StreamExt;
 use ployz_core::{
@@ -29,6 +32,7 @@ use thiserror::Error;
 use tokio::sync::watch;
 
 use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
+use crate::machine::LocalMachineStore;
 
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
 
@@ -63,7 +67,7 @@ impl LocalDocker {
         })
     }
 
-    pub async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
+    async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
         let filters = HashMap::from([("label", vec![LABEL_MANAGED, LABEL_SERVICE_ID])]);
         let options = ListContainersOptionsBuilder::default()
             .all(true)
@@ -99,34 +103,6 @@ impl LocalDocker {
             }
         }
         Ok(observations)
-    }
-
-    pub async fn remove_managed_containers(&self, ids: &[ContainerId]) -> Result<(), Error> {
-        for id in ids {
-            match self.client.stop_container(id.as_str(), None).await {
-                Ok(()) => {}
-                Err(DockerError::DockerResponseServerError {
-                    status_code: 304 | 404,
-                    ..
-                }) => {}
-                Err(error) => return Err(error.into()),
-            }
-            match self
-                .client
-                .remove_container(
-                    id.as_str(),
-                    Some(RemoveContainerOptionsBuilder::default().v(true).build()),
-                )
-                .await
-            {
-                Ok(()) => {}
-                Err(DockerError::DockerResponseServerError {
-                    status_code: 404, ..
-                }) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(())
     }
 
     pub async fn inspect_managed(
@@ -281,6 +257,7 @@ pub struct ContainerObserver {
     docker: LocalDocker,
     specs: MachineSpecStore,
     replicated: ReplicatedStore,
+    local: Arc<Mutex<LocalMachineStore>>,
     machine_id: MachineId,
     rescan_interval: Duration,
 }
@@ -291,12 +268,14 @@ impl ContainerObserver {
         docker: LocalDocker,
         specs: MachineSpecStore,
         replicated: ReplicatedStore,
+        local: Arc<Mutex<LocalMachineStore>>,
         machine_id: MachineId,
     ) -> Self {
         Self {
             docker,
             specs,
             replicated,
+            local,
             machine_id,
             rescan_interval: RESCAN_INTERVAL,
         }
@@ -408,8 +387,15 @@ impl ContainerObserver {
                 }
             }
         }
-        self.replicated
-            .reconcile_local_containers(&self.machine_id, &snapshot)
+        let publication = self.replicated.machine_publication().await;
+        let local = self
+            .local
+            .lock()
+            .map_err(|_| Error::LocalStorePoisoned)?
+            .record()
+            .clone();
+        publication
+            .reconcile_local_containers(&local, &self.machine_id, &snapshot)
             .await
             .map_err(Error::from)
     }
@@ -603,6 +589,8 @@ pub enum Error {
     EventStreamClosed,
     #[error("observer shutdown channel closed")]
     ShutdownClosed,
+    #[error("local Machine record lock poisoned")]
+    LocalStorePoisoned,
     #[error("system clock cannot be represented for Docker event replay: {0}")]
     Clock(String),
 }
@@ -640,6 +628,7 @@ impl Error {
             | Self::ReplicatedStore(_)
             | Self::EventStreamClosed
             | Self::ShutdownClosed
+            | Self::LocalStorePoisoned
             | Self::Clock(_) => RpcErrorCode::Internal,
         }
     }

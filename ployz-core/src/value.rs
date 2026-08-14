@@ -266,27 +266,6 @@ impl fmt::Display for WireGuardPublicKey {
     }
 }
 
-impl FromStr for WireGuardPublicKey {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let decoded = STANDARD.decode(value).map_err(|_| {
-            ValueError::new(
-                "WireGuard public key",
-                value,
-                "a base64-encoded 32-byte key",
-            )
-        })?;
-        decoded.try_into().map(Self).map_err(|_| {
-            ValueError::new(
-                "WireGuard public key",
-                value,
-                "a base64-encoded 32-byte key",
-            )
-        })
-    }
-}
-
 validated_string_newtype!(
     /// An open wire capability name using a stable namespace.
     CapabilityName,
