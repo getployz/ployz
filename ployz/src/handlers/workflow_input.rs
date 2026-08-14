@@ -39,7 +39,12 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         .unwrap_or_else(|| generated_name(&image));
     let name = ServiceName::parse(name).map_err(|error| error.to_string())?;
     let mode = match required(matches, "mode")?.as_str() {
-        "global" => ServiceMode::Global,
+        "global" => {
+            if matches.value_source("replicas") != Some(clap::parser::ValueSource::DefaultValue) {
+                return Err("replicas can only be specified for replicated services".into());
+            }
+            ServiceMode::Global
+        }
         "replicated" => ServiceMode::Replicated {
             replicas: NonZeroU32::new(parse_u32(matches, "replicas")?)
                 .ok_or_else(|| Error::from("replicas must be greater than zero"))?,

@@ -148,6 +148,26 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
         .try_get_matches_from(["ployz", "run", "--publish", "8080:80", "alpine"])
         .unwrap();
     assert!(run_spec(super::leaf_matches(&matches)).is_err());
+
+    let global = crate::cli::command()
+        .try_get_matches_from(["ployz", "run", "--mode", "global", "alpine"])
+        .unwrap();
+    assert_eq!(
+        run_spec(super::leaf_matches(&global)).unwrap().mode,
+        ServiceMode::Global
+    );
+    let global_replicas = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "run",
+            "--mode",
+            "global",
+            "--replicas",
+            "2",
+            "alpine",
+        ])
+        .unwrap();
+    assert!(run_spec(super::leaf_matches(&global_replicas)).is_err());
 }
 
 #[test]
