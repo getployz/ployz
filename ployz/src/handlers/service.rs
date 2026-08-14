@@ -1,4 +1,4 @@
-use std::{future::Future, path::Path, pin::Pin};
+use std::{collections::HashSet, future::Future, path::Path, pin::Pin};
 
 use clap::ArgMatches;
 use ployz_core::{
@@ -151,10 +151,9 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
                 .await
                 .map_err(|error| error.to_string())?;
             print_observation_warning(&live);
+            let services = select_services(&live.services, &selectors)?;
             let mut partial = false;
-            for selector in selectors {
-                let service =
-                    select_service(&live.services, &selector).map_err(|error| error.to_string())?;
+            for service in services {
                 let outcomes = client
                     .change_observed_service(service, action, signal.clone(), timeout)
                     .await;
@@ -183,6 +182,21 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             }
         })
     })
+}
+
+fn select_services<'a>(
+    services: &'a [ployz_core::ServiceObservation],
+    selectors: &[String],
+) -> Result<Vec<&'a ployz_core::ServiceObservation>, Error> {
+    let mut ids = HashSet::new();
+    let mut selected = Vec::new();
+    for selector in selectors {
+        let service = select_service(services, selector).map_err(|error| error.to_string())?;
+        if ids.insert(service.service_id.clone()) {
+            selected.push(service);
+        }
+    }
+    Ok(selected)
 }
 
 fn stop_options(
@@ -296,6 +310,20 @@ mod tests {
             stop_options(leaf_matches(&matches), ContainerAction::Stop).unwrap(),
             (Some("SIGTERM".into()), Some(10))
         );
+    }
+
+    #[test]
+    fn lifecycle_selectors_deduplicate_names_and_ids() {
+        let container = observation('a', 'a', "api", ContainerRuntimeObservation::Created);
+        let service_id = container.service_id.clone();
+        let services = vec![ployz_core::ServiceObservation {
+            service_id: service_id.clone(),
+            containers: vec![container],
+            hook_containers: Vec::new(),
+        }];
+        let selectors = vec!["api".to_owned(), service_id.to_string()];
+
+        assert_eq!(select_services(&services, &selectors).unwrap().len(), 1);
     }
 
     fn names<'a>(containers: &'a [&ContainerObservation]) -> Vec<&'a str> {

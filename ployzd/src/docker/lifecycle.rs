@@ -52,11 +52,11 @@ impl LocalDocker {
             })?;
 
         if let Err(error) = self.inject_configs(&container_id, spec).await {
-            self.cleanup_created(&container_id).await;
+            self.cleanup_created(&container_id).await?;
             return Err(error);
         }
         if let Err(error) = specs.put(&container_id, spec).await {
-            self.cleanup_created(&container_id).await;
+            self.cleanup_created(&container_id).await?;
             return Err(error.into());
         }
         Ok(ContainerCreated {
@@ -220,15 +220,20 @@ impl LocalDocker {
         Ok(())
     }
 
-    async fn cleanup_created(&self, container_id: &ContainerId) {
+    async fn cleanup_created(&self, container_id: &ContainerId) -> Result<(), Error> {
         let options = RemoveContainerOptionsBuilder::default()
             .v(true)
             .force(true)
             .build();
-        let _ = self
+        match self
             .client
             .remove_container(container_id.as_str(), Some(options))
-            .await;
+            .await
+            .map_err(|error| docker_error(container_id, error))
+        {
+            Ok(()) | Err(Error::ContainerNotFound(_)) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
