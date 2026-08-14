@@ -1,6 +1,8 @@
 use std::{
     ffi::OsStr,
+    future::Future,
     net::Ipv4Addr,
+    pin::Pin,
     process::{Output, Stdio},
 };
 
@@ -10,7 +12,7 @@ use ployz_core::{
     resolve_machine_selectors,
 };
 use thiserror::Error;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 
 use crate::connect::Client;
 
@@ -75,7 +77,7 @@ pub async fn push(
 ) -> Result<PartialResult<(), PushError>, PushError> {
     // TODO(UT-022): without an explicit platform, Docker chooses what to push; target platforms are not inferred.
     let platform = platform.map(validated_platform).transpose()?;
-    let reference = push_reference(image)?;
+    validate_push_reference(image)?;
     let inspected = docker_output(["image", "inspect", image]).await?;
     if !inspected.status.success() {
         return Err(if not_found(&inspected) {
@@ -92,17 +94,31 @@ pub async fn push(
         selectors,
     )?;
     let mode = detect_mode().await?;
+    let cancellation = tokio::signal::ctrl_c();
+    tokio::pin!(cancellation);
     let mut result = PartialResult {
         successes: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
     for machine in targets {
-        match push_to_machine(client, image, platform, &reference, &machine, mode).await {
+        match push_to_machine(
+            client,
+            image,
+            platform,
+            &machine,
+            mode,
+            cancellation.as_mut(),
+        )
+        .await
+        {
             Ok(()) => result.successes.push(MachineSuccess {
                 machine_id: machine.id,
                 value: (),
             }),
+            Err(source) if matches!(&source, PushError::Cancelled | PushError::Cancellation(_)) => {
+                return Err(source);
+            }
             Err(source) => result.failures.push(MachineFailure {
                 machine_id: machine.id,
                 error: PushError::Machine {
@@ -136,14 +152,17 @@ fn select_targets(
         .map_err(|error| PushError::TargetSelection(error.to_string()))
 }
 
-async fn push_to_machine(
+async fn push_to_machine<F>(
     client: &Client,
     image: &str,
     platform: Option<&str>,
-    reference: &PushReference,
     machine: &Machine,
     mode: ProxyMode,
-) -> Result<(), PushError> {
+    cancellation: Pin<&mut F>,
+) -> Result<(), PushError>
+where
+    F: Future<Output = std::io::Result<()>>,
+{
     let store = client
         .list_images(Some(image.into()), &[machine.id.to_string()])
         .await
@@ -170,30 +189,35 @@ async fn push_to_machine(
         .dial_proxy("tcp", &remote)
         .await
         .map_err(|error| PushError::Cluster(format!("reach unregistry: {error}")))?;
-    PushSession::run(client, remote, mode, image, platform, reference).await
+    PushSession::run(client, remote, mode, image, platform, cancellation).await
 }
 
 struct PushSession {
     proxy: ImageProxy,
     temporary: Option<String>,
+    command: Option<Child>,
 }
 
 impl PushSession {
-    async fn run(
+    async fn run<F>(
         client: &Client,
         remote: String,
         mode: ProxyMode,
         image: &str,
         platform: Option<&str>,
-        reference: &PushReference,
-    ) -> Result<(), PushError> {
+        mut cancellation: Pin<&mut F>,
+    ) -> Result<(), PushError>
+    where
+        F: Future<Output = std::io::Result<()>>,
+    {
         let mut session = Self {
-            proxy: ImageProxy::open(mode).await?,
+            proxy: ImageProxy::open(mode, cancellation.as_mut()).await?,
             temporary: None,
+            command: None,
         };
         let outcome = tokio::select! {
-            outcome = session.push(client, remote, image, platform, reference) => outcome,
-            error = cancellation() => Err(error),
+            outcome = session.push(client, remote, image, platform) => outcome,
+            result = cancellation.as_mut() => Err(cancellation_error(result)),
         };
         let cleanup = session.cleanup().await;
         match (outcome, cleanup) {
@@ -212,49 +236,80 @@ impl PushSession {
         remote: String,
         image: &str,
         platform: Option<&str>,
-        reference: &PushReference,
     ) -> Result<(), PushError> {
-        let temporary = temporary_reference(self.proxy.push_port(), reference);
+        let temporary = temporary_reference(self.proxy.push_port(), image);
         self.temporary = Some(temporary.clone());
-        let tagged = docker_output(["tag", image, &temporary]).await?;
-        if !tagged.status.success() {
-            return Err(command_error("tag image for push", &tagged));
-        }
-        let push = async {
-            let mut command = Command::new("docker");
-            command.arg("push");
-            if let Some(platform) = platform {
-                command.args(["--platform", platform]);
-            }
-            let status = command
-                .arg(&temporary)
+        self.command = Some(
+            Command::new("docker")
+                .args(["tag", image, &temporary])
                 .kill_on_drop(true)
-                .status()
-                .await
+                .spawn()
                 .map_err(|error| PushError::Docker {
+                    action: "tag image for push",
+                    diagnostic: error.to_string(),
+                })?,
+        );
+        let tagged = self
+            .command
+            .as_mut()
+            .expect("tag command was stored")
+            .wait()
+            .await
+            .map_err(|error| PushError::Docker {
+                action: "tag image for push",
+                diagnostic: error.to_string(),
+            })?;
+        if !tagged.success() {
+            return Err(PushError::Docker {
+                action: "tag image for push",
+                diagnostic: format!("exited with {tagged}"),
+            });
+        }
+        let mut command = Command::new("docker");
+        command.arg("push");
+        if let Some(platform) = platform {
+            command.args(["--platform", platform]);
+        }
+        self.command = Some(command.arg(&temporary).kill_on_drop(true).spawn().map_err(
+            |error| PushError::Docker {
+                action: "push",
+                diagnostic: error.to_string(),
+            },
+        )?);
+        let push = self
+            .command
+            .as_mut()
+            .expect("push command was stored")
+            .wait();
+        // TODO(UT-023): direct push keeps Docker's progress stream; no quiet mode is exposed.
+        tokio::select! {
+            outcome = push => {
+                let status = outcome.map_err(|error| PushError::Docker {
                     action: "push",
                     diagnostic: error.to_string(),
                 })?;
-            status.success().then_some(()).ok_or(PushError::Docker {
-                action: "push",
-                diagnostic: format!("exited with {status}"),
-            })
-        };
-        // TODO(UT-023): direct push keeps Docker's progress stream; no quiet mode is exposed.
-        tokio::select! {
-            outcome = push => outcome,
+                status.success().then_some(()).ok_or(PushError::Docker {
+                    action: "push",
+                    diagnostic: format!("exited with {status}"),
+                })
+            },
             outcome = self.proxy.serve(client.clone(), remote) => outcome,
         }
     }
 
     async fn cleanup(&mut self) -> Result<(), PushError> {
         let mut errors = Vec::new();
-        if let Some(temporary) = &self.temporary
-            && let Err(error) = remove_image(temporary).await
+        if let Some(command) = &mut self.command
+            && let Err(error) = stop_command(command).await
         {
             errors.push(error.to_string());
         }
         if let Err(error) = self.proxy.cleanup().await {
+            errors.push(error.to_string());
+        }
+        if let Some(temporary) = &self.temporary
+            && let Err(error) = remove_image(temporary).await
+        {
             errors.push(error.to_string());
         }
         if errors.is_empty() {
@@ -265,19 +320,14 @@ impl PushSession {
     }
 }
 
-async fn cancellation() -> PushError {
-    match tokio::signal::ctrl_c().await {
+fn cancellation_error(result: std::io::Result<()>) -> PushError {
+    match result {
         Ok(()) => PushError::Cancelled,
         Err(error) => PushError::Cancellation(error),
     }
 }
 
-struct PushReference {
-    repository: String,
-    tag: String,
-}
-
-fn push_reference(image: &str) -> Result<PushReference, PushError> {
+fn validate_push_reference(image: &str) -> Result<(), PushError> {
     let reference = image
         .parse::<Reference>()
         .map_err(|error| PushError::InvalidReference {
@@ -290,24 +340,22 @@ fn push_reference(image: &str) -> Result<PushReference, PushError> {
     if reference.digest().is_some() {
         return Err(PushError::DigestReference);
     }
-    let tag = reference
-        .tag()
-        .expect("digest references were rejected")
-        .to_owned();
-    Ok(PushReference {
-        repository: image
-            .strip_suffix(&format!(":{tag}"))
-            .unwrap_or(image)
-            .into(),
-        tag,
-    })
+    Ok(())
 }
 
-fn temporary_reference(port: u16, reference: &PushReference) -> String {
-    format!(
-        "127.0.0.1:{port}/{}:{}",
-        reference.repository, reference.tag
-    )
+fn temporary_reference(port: u16, image: &str) -> String {
+    format!("127.0.0.1:{port}/{image}")
+}
+
+async fn stop_command(command: &mut Child) -> Result<(), PushError> {
+    match command.try_wait() {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => command
+            .kill()
+            .await
+            .map_err(|error| PushError::Cleanup(error.to_string())),
+        Err(error) => Err(PushError::Cleanup(error.to_string())),
+    }
 }
 
 fn validated_platform(platform: &str) -> Result<&str, PushError> {
@@ -399,23 +447,23 @@ mod tests {
         assert_eq!(proxy::mode_for(false, true), ProxyMode::Rootless);
         assert_eq!(proxy::mode_for(true, false), ProxyMode::Vm);
         assert_eq!(proxy::mode_for(true, true), ProxyMode::Vm);
-        let reference =
-            temporary_reference(5000, &push_reference("registry.test/team/api:v1").unwrap());
+        validate_push_reference("registry.test/team/api:v1").unwrap();
+        let reference = temporary_reference(5000, "registry.test/team/api:v1");
         assert_eq!(reference, "127.0.0.1:5000/registry.test/team/api:v1");
         assert_eq!(
-            temporary_reference(5000, &push_reference("alpine:3.23").unwrap()),
+            temporary_reference(5000, "alpine:3.23"),
             "127.0.0.1:5000/alpine:3.23"
         );
         let digest = format!("sha256:{}", "a".repeat(64));
         assert!(matches!(
-            push_reference(&format!("registry.test/team/api@{digest}")),
+            validate_push_reference(&format!("registry.test/team/api@{digest}")),
             Err(PushError::DigestReference)
         ));
         assert!(matches!(
-            push_reference("localhost:5000/team/api:v1"),
+            validate_push_reference("localhost:5000/team/api:v1"),
             Err(PushError::RegistryPortReference(_))
         ));
-        assert!(push_reference("registry.test/team/api@sha256:abc").is_err());
+        assert!(validate_push_reference("registry.test/team/api@sha256:abc").is_err());
         assert!(validated_platform("linux/riscv64").is_err());
     }
 }

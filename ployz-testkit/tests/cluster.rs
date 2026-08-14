@@ -110,7 +110,7 @@ async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
                     "run",
                     "--detach",
                     "--name",
-                    &format!("l3-image-replica-{index}"),
+                    &format!("l3-image-container-{index}"),
                     "--label",
                     "ployz.managed",
                     "--label",
