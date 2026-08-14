@@ -10,8 +10,8 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, InspectRequest, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineRpc, MachineSubnet, MachineUpdate, PublicIpUpdate, RpcErrorCode, RpcRequest,
-    RpcResponseBody, SelectedEndpoint,
+    MachineRpc, MachineRuntime, MachineSubnet, MachineUpdate, PublicIpUpdate, RpcErrorCode,
+    RpcRequest, RpcResponseBody, SelectedEndpoint,
 };
 use ployzd::{
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
@@ -107,6 +107,42 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     assert_eq!(second.record().phase, LocalMachinePhase::Joining);
     assert_eq!(second.record().bootstrap_machines, vec![initialized]);
     assert_eq!(second.record().min_store_version.get("actor"), Some(&4));
+}
+
+#[test]
+fn reopening_a_participating_machine_refreshes_runtime_metadata() {
+    let dir = TestDir::new("ployzd-runtime-refresh");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    store
+        .initialize(
+            MachineName::parse("machine").unwrap(),
+            "10.210.0.0/16".parse().unwrap(),
+            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    let path = dir.0.join("machine.json");
+    let mut stale: LocalMachineRecord = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    stale.machine.as_mut().unwrap().runtime = MachineRuntime {
+        daemon_version: "stale".into(),
+        docker_version: "stale".into(),
+        hostname: "stale".into(),
+        architecture: "stale".into(),
+        os_pretty_name: "stale".into(),
+        kernel_version: "stale".into(),
+    };
+    fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
+
+    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    let expected = ployzd::machine::local_runtime();
+    assert_eq!(
+        reopened.record().machine.as_ref().unwrap().runtime,
+        expected
+    );
+    let persisted: LocalMachineRecord = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(persisted.machine.unwrap().runtime, expected);
 }
 
 #[test]

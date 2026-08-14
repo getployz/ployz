@@ -113,7 +113,7 @@ impl LocalMachineStore {
             return Err(StoreError::MachineIdMismatch);
         }
 
-        let store = Self {
+        let mut store = Self {
             data_dir,
             record,
             _lock: lock,
@@ -124,12 +124,32 @@ impl LocalMachineStore {
             drop(store);
             return Self::open(data_dir);
         }
+        store.refresh_runtime()?;
         Ok(store)
     }
 
     #[must_use]
     pub fn record(&self) -> &LocalMachineRecord {
         &self.record
+    }
+
+    fn refresh_runtime(&mut self) -> Result<(), StoreError> {
+        let Some(machine) = &self.record.machine else {
+            return Ok(());
+        };
+        let runtime = local_runtime();
+        if machine.runtime == runtime {
+            return Ok(());
+        }
+        let mut refreshed = self.record.clone();
+        refreshed
+            .machine
+            .as_mut()
+            .expect("Machine presence was checked")
+            .runtime = runtime;
+        save(&self.data_dir, &refreshed)?;
+        self.record = refreshed;
+        Ok(())
     }
 
     pub fn begin_reset(&mut self) -> Result<(), StoreError> {
