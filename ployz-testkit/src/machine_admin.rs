@@ -207,6 +207,22 @@ impl Cluster {
         )
     }
 
+    pub fn seed_machine_collision(
+        &self,
+        index: usize,
+        source: &Machine,
+        id: &MachineId,
+        name: &MachineName,
+    ) -> Result<(), TestkitError> {
+        self.corrosion_transaction(
+            index,
+            &format!(
+                r#"[{{"query":"INSERT INTO machines (id, info, created_at, updated_at) SELECT ?, json_set(info, '$.id', ?, '$.name', ?), datetime('now'), datetime('now') FROM machines WHERE id = ?","params":["{id}","{id}","{name}","{}"]}}]"#,
+                source.id
+            ),
+        )
+    }
+
     pub fn replicated_row_exists(
         &self,
         index: usize,

@@ -13,6 +13,17 @@ fail() {
   exit 1
 }
 
+verify_rust_evidence() {
+  key=$1
+  locator=$2
+  path=${locator%%::*}
+  test_name=${locator#*::}
+  [ "$path" != "$locator" ] || fail "$key has a malformed Rust evidence locator"
+  [ -f "$repo_root/$path" ] || fail "$key references missing Rust evidence file $path"
+  grep -Eq "^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+${test_name}[[:space:]]*\(" "$repo_root/$path" \
+    || fail "$key references missing Rust test $locator"
+}
+
 explicit_count=$(grep -Ec '^\| UT-[0-9]{3} \|' "$todo_ledger")
 [ "$explicit_count" -eq 151 ] || fail "expected 151 explicit TODO rows, found $explicit_count"
 
@@ -43,7 +54,7 @@ pending_locations=$(printf '%s\n' "$ledger_rows" | grep -Fc 'Pending — owning 
 [ "$pending_locations" -eq 0 ] || fail "$pending_locations TODO ledger rows still have a pending location"
 
 layer1_count=$(awk -F '\t' 'NR > 1 && NF {count++} END {print count + 0}' "$layer1")
-[ "$layer1_count" -eq 85 ] || fail "expected 85 Layer 1 oracle groups, found $layer1_count"
+[ "$layer1_count" -eq 86 ] || fail "expected 86 Layer 1 semantic cases, found $layer1_count"
 
 bad_layer1=$(awk -F '\t' -v baseline="$baseline" '
   NR == 1 {
@@ -59,6 +70,12 @@ bad_layer1=$(awk -F '\t' -v baseline="$baseline" '
   END {print bad + 0}
 ' "$layer1")
 [ "$bad_layer1" -eq 0 ] || fail "$bad_layer1 malformed Layer 1 fields"
+
+tab=$(printf '\t')
+while IFS="$tab" read -r key _family _upstream_case _source disposition rust_evidence; do
+  [ "$key" = "key" ] && continue
+  [ "$disposition" = "tested" ] && verify_rust_evidence "$key" "$rust_evidence"
+done < "$layer1"
 
 layer3_count=$(awk -F '\t' 'NR > 1 && NF {count++} END {print count + 0}' "$layer3")
 selected_count=$(awk -F '\t' 'NR > 1 && $4 == "selected" {count++} END {print count + 0}' "$layer3")
@@ -83,6 +100,15 @@ bad_layer3=$(awk -F '\t' -v baseline="$baseline" '
 unmapped_layer3=$(awk -F '\t' 'NR > 1 && $4 == "selected" && $5 !~ /\.rs::[a-zA-Z0-9_]+\.$/ {count++} END {print count + 0}' "$layer3")
 [ "$unmapped_layer3" -eq 0 ] || fail "$unmapped_layer3 selected Layer 3 declarations lack exact Rust evidence"
 
+while IFS="$tab" read -r key _declaration _source disposition reason; do
+  [ "$key" = "key" ] && continue
+  if [ "$disposition" = "selected" ]; then
+    locator=${reason#Covered by }
+    locator=${locator%.}
+    verify_rust_evidence "$key" "$locator"
+  fi
+done < "$layer3"
+
 fixture_count=$(find "$repo_root/evidence/upstream/e2e-fixtures" -type f | wc -l | tr -d ' ')
 reference_count=$(find "$repo_root/evidence/upstream/cli-reference" -type f | wc -l | tr -d ' ')
 [ "$fixture_count" -eq 13 ] || fail "expected 13 fixture files, found $fixture_count"
@@ -96,4 +122,4 @@ bad_deviation_lines=$(grep -Evc '^- .+' "$repo_root/CLI_DEVIATIONS.md" || true)
   sha256sum --check --quiet SHA256SUMS
 )
 
-echo "evidence inventories verified: 151 TODO markers, 19 equivalent omissions, 85 Layer 1 oracle groups, 76 Layer 3 declarations (60 selected, 16 not ported), 13 fixtures, 58 command pages"
+echo "evidence inventories verified: 151 TODO markers, 19 equivalent omissions, 86 Layer 1 semantic cases, 76 Layer 3 declarations (60 selected, 16 not ported), 13 fixtures, 58 command pages"
