@@ -78,6 +78,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "compose-prerequisite-errors".to_owned(),
             "fixed-wireguard-port".to_owned(),
             "local-machine-init-stub".to_owned(),
+            "machine-add-requires-no-caddy".to_owned(),
             "native-completion".to_owned(),
             "no-nightly-daemon-channel".to_owned(),
             "plain-caddy-config".to_owned(),
