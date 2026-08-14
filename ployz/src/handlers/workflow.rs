@@ -23,9 +23,11 @@ use super::{
 };
 
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
-    let requested = run_spec(leaf_matches(root))?;
+    let matches = leaf_matches(root);
+    let requested = run_spec(matches)?;
+    let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        let mut client = connect_client(root, None).await?;
+        let mut client = connect_client(root, context).await?;
         let outcome = run_connected(
             &mut RemoteWorkflow {
                 client: &mut client,
@@ -118,8 +120,9 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
         .ok_or_else(|| Error::from("replicas must be greater than zero"))?;
     let selector = required(matches, "service")?;
     let yes = matches.get_flag("yes");
+    let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        let mut client = connect_client(root, None).await?;
+        let mut client = connect_client(root, context).await?;
         let outcome = scale_connected(
             &mut RemoteWorkflow {
                 client: &mut client,

@@ -195,12 +195,15 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
         if source.is_empty() || target.is_empty() || parts.next().is_some() {
             return Err(format!("invalid volume '{value}'; expected SOURCE:TARGET[:ro]").into());
         }
-        if option.is_some_and(|option| option != "ro") {
+        if option.is_some_and(|option| !matches!(option, "ro" | "volume-nocopy")) {
             return Err(format!("unsupported volume option in '{value}'").into());
         }
         let reference = ServiceVolumeReference::parse(format!("mount-{index}"))
             .expect("generated Volume reference is valid");
         let source = if source.starts_with('/') {
+            if option == Some("volume-nocopy") {
+                return Err(format!("volume-nocopy requires a named volume in '{value}'").into());
+            }
             VolumeSource::Bind {
                 machine_path: ployz_core::MachinePath::parse(source)
                     .map_err(|error| error.to_string())?,
@@ -214,7 +217,7 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
                 external: false,
                 driver: None,
                 labels: BTreeMap::new(),
-                no_copy: false,
+                no_copy: option == Some("volume-nocopy"),
                 subpath: None,
             }
         };

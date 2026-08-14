@@ -109,6 +109,8 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
             "8080:80@host",
             "--volume",
             "data:/data:ro",
+            "--volume",
+            "cache:/cache:volume-nocopy",
             "alpine",
             "echo",
             "hello",
@@ -126,6 +128,21 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
         Some(PortPublication::Host { .. })
     ));
     assert!(spec.mounts.first().is_some_and(|mount| mount.read_only));
+    assert!(matches!(
+        spec.volumes.get(1).map(|volume| &volume.source),
+        Some(ployz_core::VolumeSource::Named { no_copy: true, .. })
+    ));
+
+    let matches = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "run",
+            "--volume",
+            "/tmp:/data:volume-nocopy",
+            "alpine",
+        ])
+        .unwrap();
+    assert!(run_spec(super::leaf_matches(&matches)).is_err());
 
     let matches = crate::cli::command()
         .try_get_matches_from(["ployz", "run", "--publish", "8080:80", "alpine"])
