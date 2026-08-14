@@ -59,6 +59,13 @@ pub struct PartialResult<T, E> {
     pub omissions: Vec<MachineId>,
 }
 
+impl<T, E> PartialResult<T, E> {
+    #[must_use]
+    pub fn all_targets_succeeded(&self) -> bool {
+        self.failures.is_empty() && self.omissions.is_empty()
+    }
+}
+
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
