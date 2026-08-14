@@ -208,11 +208,11 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
                 "--network",
                 "ployz",
                 "--volume",
-                "/var/run/docker.sock:/var/run/docker.sock",
+                "/opt/ployz/images/alpine.tar:/alpine.tar:ro",
                 "quay.io/skopeo/stable:v1.20.0",
                 "copy",
                 "--dest-tls-verify=false",
-                "docker-daemon:alpine:3.23.3",
+                "docker-archive:/alpine.tar",
                 &format!("docker://{gateway}:{UNREGISTRY_PORT}/{pushed}"),
             ],
         )
