@@ -8,8 +8,8 @@ use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, MachineSelector,
     MachineTokenRequest, NameMatches, PublicIpDiscovery, RegisterRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequest,
-    removal_decision, resolve_machine_selector,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RpcRequest, removal_decision,
+    resolve_machine_selector,
 };
 
 use super::{ConnectionOptions, machine_list, parse_endpoints, runtime, target};
@@ -36,6 +36,13 @@ fn select_machine(
                 .join(", ")
         )),
     }
+}
+
+fn is_target_unreachable(error: &ConnectError) -> bool {
+    matches!(
+        error,
+        ConnectError::Rpc(_) | ConnectError::Attempt(_) | ConnectError::AllFailed { .. }
+    )
 }
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -86,16 +93,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     }
                     removed_by_target = true;
                 }
-                Err(ConnectError::Remote(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message,
-                    ..
-                })) => eprintln!("WARNING: target is unreachable; removing shared rows: {message}"),
-                Err(
-                    error @ (ConnectError::Rpc(_)
-                    | ConnectError::Attempt(_)
-                    | ConnectError::AllFailed { .. }),
-                ) => {
+                Err(error) if is_target_unreachable(&error) => {
                     eprintln!("WARNING: target is unreachable; removing shared rows: {error}");
                 }
                 Err(error) => return Err(error.to_string()),
@@ -328,5 +326,25 @@ fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
         Ok(())
     } else {
         Err("aborted".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::{RpcError, RpcErrorCode};
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
+        assert!(is_target_unreachable(&ConnectError::Rpc(Box::new(
+            tonic::Status::unavailable("route failed")
+        ))));
+        assert!(!is_target_unreachable(&ConnectError::Remote(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Docker is unavailable".into(),
+            details: Value::Null,
+        })));
     }
 }
