@@ -110,7 +110,6 @@ fn compose_build_receives_resolved_images_and_builder_flags() {
     let plan = plan_build(&project, &options).unwrap();
 
     execute_build(
-        &project,
         &plan,
         &options,
         &LoadOptions {

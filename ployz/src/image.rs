@@ -1,32 +1,24 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
+    ffi::OsStr,
     fs,
     net::Ipv4Addr,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::{Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
-use bollard::{
-    Docker,
-    errors::Error as DockerError,
-    models::{ContainerCreateBody, HostConfig, PortBinding},
-    query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, PushImageOptionsBuilder,
-        RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder, TagImageOptionsBuilder,
-    },
-};
-use futures_util::TryStreamExt;
-use ployz_core::{Machine, MachineFailure, MachineSuccess, PartialResult};
+use ployz_core::{Machine, MachineFailure, MachineSuccess, PartialResult, UNREGISTRY_PORT};
 use tokio::{
     io::{AsyncRead, AsyncWrite, copy_bidirectional},
     net::{TcpListener, UnixListener},
+    process::Command,
 };
 
 use crate::connect::Client;
 
 const HELPER_IMAGE: &str = "alpine/socat:1.8.0.3";
-const UNREGISTRY_PORT: u16 = 51500;
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,15 +54,16 @@ pub async fn push(
     selectors: &[String],
 ) -> Result<PartialResult<(), String>, String> {
     // TODO(UT-022): without an explicit platform, Docker chooses what to push; target platforms are not inferred.
-    let platform = platform.map(platform_json).transpose()?;
-    let docker = Docker::connect_with_defaults().map_err(|error| error.to_string())?;
-    docker.inspect_image(image).await.map_err(|error| {
-        if is_not_found(&error) {
+    let platform = platform.map(validated_platform).transpose()?;
+    let reference = tagged_reference(image)?;
+    let inspected = docker_output(["image", "inspect", image]).await?;
+    if !inspected.status.success() {
+        return Err(if not_found(&inspected) {
             format!("image '{image}' not found locally")
         } else {
-            format!("inspect image '{image}' locally: {error}")
-        }
-    })?;
+            command_error("inspect local image", &inspected)
+        });
+    }
     let targets = select_targets(
         &client
             .list_machines()
@@ -78,23 +71,14 @@ pub async fn push(
             .map_err(|error| error.to_string())?,
         selectors,
     )?;
-    let environment = detect_environment(&docker).await?;
+    let environment = detect_environment().await?;
     let mut result = PartialResult {
         successes: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
     for machine in targets {
-        match push_to_machine(
-            client,
-            &docker,
-            image,
-            platform.as_deref(),
-            &machine,
-            environment,
-        )
-        .await
-        {
+        match push_to_machine(client, image, platform, reference, &machine, environment).await {
             Ok(()) => result.successes.push(MachineSuccess {
                 machine_id: machine.id,
                 value: (),
@@ -135,9 +119,9 @@ fn select_targets(
 
 async fn push_to_machine(
     client: &Client,
-    docker: &Docker,
     image: &str,
     platform: Option<&str>,
+    reference: (&str, &str),
     machine: &Machine,
     environment: DockerEnvironment,
 ) -> Result<(), String> {
@@ -175,7 +159,7 @@ async fn push_to_machine(
         ProxyMode::Native => proxy.port(),
         ProxyMode::Vm => {
             let destination = format!("TCP-CONNECT:host.docker.internal:{}", proxy.port());
-            let started = match start_helper(docker, &destination, None).await {
+            let started = match start_helper(&destination, None).await {
                 Ok(started) => started,
                 Err(error) => {
                     remove_socket(proxy.socket_path());
@@ -192,7 +176,7 @@ async fn push_to_machine(
                 .expect("rootless proxy has a unix socket");
             let destination = format!("UNIX-CONNECT:{}", socket.display());
             let bind = format!("{}:{}", socket.display(), socket.display());
-            let started = match start_helper(docker, &destination, Some(bind)).await {
+            let started = match start_helper(&destination, Some(bind)).await {
                 Ok(started) => started,
                 Err(error) => {
                     remove_socket(proxy.socket_path());
@@ -204,31 +188,30 @@ async fn push_to_machine(
             port
         }
     };
-    let temporary = temporary_reference(push_port, image)?;
+    let temporary = temporary_reference(push_port, reference);
     let outcome = async {
-        docker
-            .tag_image(
-                image,
-                Some(
-                    TagImageOptionsBuilder::default()
-                        .repo(&temporary.repository)
-                        .tag(&temporary.tag)
-                        .build(),
-                ),
-            )
-            .await
-            .map_err(|error| format!("tag image for push: {error}"))?;
+        let tagged = docker_output(["tag", image, temporary.full.as_str()]).await?;
+        if !tagged.status.success() {
+            return Err(command_error("tag image for push", &tagged));
+        }
         let push = async {
-            let mut options = PushImageOptionsBuilder::default().tag(&temporary.tag);
+            let mut command = Command::new("docker");
+            command.arg("push");
             if let Some(platform) = platform {
-                options = options.platform(platform);
+                command.args(["--platform", platform]);
             }
-            docker
-                .push_image(&temporary.repository, Some(options.build()), None)
-                .try_collect::<Vec<_>>()
+            command
+                .arg(&temporary.full)
+                .kill_on_drop(true)
+                .status()
                 .await
-                .map(|_| ())
-                .map_err(|error| format!("push image: {error}"))
+                .map_err(|error| format!("run Docker push: {error}"))
+                .and_then(|status| {
+                    status
+                        .success()
+                        .then_some(())
+                        .ok_or_else(|| format!("Docker push exited with {status}"))
+                })
         };
         // TODO(UT-023): direct push keeps Docker's progress stream; no quiet mode is exposed.
         tokio::select! {
@@ -237,13 +220,7 @@ async fn push_to_machine(
         }
     }
     .await;
-    let cleanup = cleanup(
-        docker,
-        &temporary.full,
-        helper.as_ref(),
-        proxy.socket_path(),
-    )
-    .await;
+    let cleanup = cleanup(&temporary.full, helper.as_ref(), proxy.socket_path()).await;
     match (outcome, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
@@ -251,17 +228,20 @@ async fn push_to_machine(
     }
 }
 
-async fn detect_environment(docker: &Docker) -> Result<DockerEnvironment, String> {
-    let info = docker
-        .info()
-        .await
-        .map_err(|error| format!("get Docker info: {error}"))?;
-    let rootless = info
-        .security_options
-        .unwrap_or_default()
-        .iter()
-        .any(|option| option.contains("rootless"));
-    let name = info.name.unwrap_or_default().to_ascii_lowercase();
+async fn detect_environment() -> Result<DockerEnvironment, String> {
+    let output = docker_output([
+        "info",
+        "--format",
+        "{{.Name}}\n{{range .SecurityOptions}}{{println .}}{{end}}",
+    ])
+    .await?;
+    if !output.status.success() {
+        return Err(command_error("get Docker info", &output));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+    let name = lines.next().unwrap_or_default().to_ascii_lowercase();
+    let rootless = lines.any(|option| option.contains("rootless"));
     let virtualized = if cfg!(target_os = "macos") {
         name != "orbstack"
     } else {
@@ -322,10 +302,10 @@ impl LocalProxy {
         }
     }
 
-    fn socket_path(&self) -> Option<&PathBuf> {
+    fn socket_path(&self) -> Option<&Path> {
         match self {
             Self::Tcp(_) => None,
-            Self::Unix { path, .. } => Some(path),
+            Self::Unix { path, .. } => Some(path.as_path()),
         }
     }
 
@@ -363,90 +343,68 @@ struct Helper {
     port: u16,
 }
 
-async fn start_helper(
-    docker: &Docker,
-    destination: &str,
-    bind: Option<String>,
-) -> Result<Helper, String> {
+async fn start_helper(destination: &str, bind: Option<String>) -> Result<Helper, String> {
     // TODO(UT-025): the helper image is intentionally fixed rather than configurable.
-    if let Err(error) = docker.inspect_image(HELPER_IMAGE).await {
-        if !is_not_found(&error) {
-            return Err(error.to_string());
+    let inspected = docker_output(["image", "inspect", HELPER_IMAGE]).await?;
+    if !inspected.status.success() {
+        if !not_found(&inspected) {
+            return Err(command_error("inspect proxy helper image", &inspected));
         }
-        docker
-            .create_image(
-                Some(
-                    CreateImageOptionsBuilder::default()
-                        .from_image(HELPER_IMAGE)
-                        .build(),
-                ),
-                None,
-                None,
-            )
-            .try_collect::<Vec<_>>()
+        let status = Command::new("docker")
+            .args(["pull", HELPER_IMAGE])
+            .status()
             .await
             .map_err(|error| format!("pull {HELPER_IMAGE}: {error}"))?;
+        if !status.success() {
+            return Err(format!("pull {HELPER_IMAGE} exited with {status}"));
+        }
     }
     let host_port = reserve_port()?;
-    let port_bindings = HashMap::from([(
-        "5000/tcp".into(),
-        Some(vec![PortBinding {
-            host_ip: Some("127.0.0.1".into()),
-            host_port: Some(host_port.to_string()),
-        }]),
-    )]);
-    let config = ContainerCreateBody {
-        image: Some(HELPER_IMAGE.into()),
-        entrypoint: Some(Vec::new()),
-        cmd: Some(vec![
-            "timeout".into(),
-            "1800".into(),
-            "socat".into(),
-            "TCP-LISTEN:5000,fork,reuseaddr".into(),
-            destination.into(),
-        ]),
-        exposed_ports: Some(vec!["5000/tcp".into()]),
-        labels: Some(HashMap::from([("ployz.managed".into(), String::new())])),
-        host_config: Some(HostConfig {
-            auto_remove: Some(true),
-            binds: bind.map(|bind| vec![bind]),
-            port_bindings: Some(port_bindings),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
     let name = format!(
         "ployz-push-proxy-{}-{}",
         std::process::id(),
         TEMP_ID.fetch_add(1, Ordering::Relaxed)
     );
-    let created = docker
-        .create_container(
-            Some(CreateContainerOptionsBuilder::default().name(&name).build()),
-            config,
-        )
-        .await
-        .map_err(|error| format!("create proxy helper: {error}"))?;
-    if let Err(error) = docker.start_container(&created.id, None).await {
-        let _ = docker
-            .remove_container(
-                &created.id,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
-            )
-            .await;
-        return Err(format!("start proxy helper: {error}"));
+    let published = format!("127.0.0.1:{host_port}:5000");
+    let mut command = Command::new("docker");
+    command.args([
+        "run",
+        "--detach",
+        "--rm",
+        "--name",
+        &name,
+        "--publish",
+        &published,
+        "--label",
+        "ployz.managed",
+    ]);
+    if let Some(bind) = &bind {
+        command.args(["--volume", bind]);
     }
+    let created = command
+        .args([
+            "--entrypoint",
+            "",
+            HELPER_IMAGE,
+            "timeout",
+            "1800",
+            "socat",
+            "TCP-LISTEN:5000,fork,reuseaddr",
+            destination,
+        ])
+        .output()
+        .await
+        .map_err(|error| format!("run proxy helper: {error}"))?;
+    if !created.status.success() {
+        return Err(command_error("run proxy helper", &created));
+    }
+    let id = String::from_utf8_lossy(&created.stdout).trim().to_owned();
     if let Err(error) = wait_for_port(host_port).await {
-        let _ = docker
-            .remove_container(
-                &created.id,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
-            )
-            .await;
-        return Err(format!("proxy helper {}: {error}", created.id));
+        let _ = remove_helper(&id).await;
+        return Err(format!("proxy helper {id}: {error}"));
     }
     Ok(Helper {
-        id: created.id,
+        id,
         port: host_port,
     })
 }
@@ -473,12 +431,10 @@ async fn wait_for_port(port: u16) -> Result<(), String> {
 }
 
 struct TemporaryReference {
-    repository: String,
-    tag: String,
     full: String,
 }
 
-fn temporary_reference(port: u16, image: &str) -> Result<TemporaryReference, String> {
+fn tagged_reference(image: &str) -> Result<(&str, &str), String> {
     if image.contains('@') {
         return Err("direct image push requires a tagged local reference".into());
     }
@@ -489,48 +445,33 @@ fn temporary_reference(port: u16, image: &str) -> Result<TemporaryReference, Str
     } else {
         (image, "latest")
     };
-    let repository = format!("127.0.0.1:{port}/{name}");
-    Ok(TemporaryReference {
-        full: format!("{repository}:{tag}"),
-        repository,
-        tag: tag.into(),
-    })
+    Ok((name, tag))
 }
 
-fn platform_json(platform: &str) -> Result<String, String> {
+fn temporary_reference(port: u16, (name, tag): (&str, &str)) -> TemporaryReference {
+    TemporaryReference {
+        full: format!("127.0.0.1:{port}/{name}:{tag}"),
+    }
+}
+
+fn validated_platform(platform: &str) -> Result<&str, String> {
     match platform {
-        "linux/amd64" => Ok(r#"{"os":"linux","architecture":"amd64"}"#.into()),
-        "linux/arm64" => Ok(r#"{"os":"linux","architecture":"arm64"}"#.into()),
+        "linux/amd64" | "linux/arm64" => Ok(platform),
         _ => Err(format!("unsupported platform '{platform}'")),
     }
 }
 
 async fn cleanup(
-    docker: &Docker,
     temporary: &str,
     helper: Option<&Helper>,
-    socket: Option<&PathBuf>,
+    socket: Option<&Path>,
 ) -> Result<(), String> {
     let mut errors = Vec::new();
-    if let Err(error) = docker
-        .remove_image(
-            temporary,
-            Some(RemoveImageOptionsBuilder::default().force(false).build()),
-            None,
-        )
-        .await
-        && !is_not_found(&error)
-    {
+    if let Err(error) = remove_image(temporary).await {
         errors.push(error.to_string());
     }
     if let Some(helper) = helper
-        && let Err(error) = docker
-            .remove_container(
-                &helper.id,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
-            )
-            .await
-        && !is_not_found(&error)
+        && let Err(error) = remove_helper(&helper.id).await
     {
         errors.push(error.to_string());
     }
@@ -547,20 +488,52 @@ async fn cleanup(
     }
 }
 
-fn remove_socket(socket: Option<&PathBuf>) {
-    if let Some(socket) = socket {
-        let _ = fs::remove_file(socket);
+async fn remove_image(image: &str) -> Result<(), String> {
+    let output = docker_output(["image", "rm", image]).await?;
+    if output.status.success() || not_found(&output) {
+        Ok(())
+    } else {
+        Err(command_error("remove temporary image", &output))
     }
 }
 
-fn is_not_found(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
+async fn remove_helper(id: &str) -> Result<(), String> {
+    let output = docker_output(["rm", "--force", id]).await?;
+    if output.status.success() || not_found(&output) {
+        Ok(())
+    } else {
+        Err(command_error("remove proxy helper", &output))
+    }
+}
+
+async fn docker_output<I, S>(args: I) -> Result<Output, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Command::new("docker")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|error| format!("run Docker: {error}"))
+}
+
+fn command_error(action: &str, output: &Output) -> String {
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    format!("{action}: {}", diagnostic.trim())
+}
+
+fn not_found(output: &Output) -> bool {
+    String::from_utf8_lossy(&output.stderr)
+        .to_ascii_lowercase()
+        .contains("no such")
+}
+
+fn remove_socket(socket: Option<&Path>) {
+    if let Some(socket) = socket {
+        let _ = fs::remove_file(socket);
+    }
 }
 
 #[cfg(test)]
@@ -625,7 +598,10 @@ mod tests {
             .proxy_mode(),
             ProxyMode::Vm
         );
-        let reference = temporary_reference(5000, "registry.test/team/api:v1").unwrap();
+        let reference =
+            temporary_reference(5000, tagged_reference("registry.test/team/api:v1").unwrap());
         assert_eq!(reference.full, "127.0.0.1:5000/registry.test/team/api:v1");
+        assert!(tagged_reference("registry.test/team/api@sha256:abc").is_err());
+        assert!(validated_platform("linux/riscv64").is_err());
     }
 }

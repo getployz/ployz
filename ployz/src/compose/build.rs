@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use ployz_core::MachineSelector;
 use serde::Serialize;
+use serde_norway::Value;
 
 use super::{
     ComposeError, ComposeProject, LoadOptions,
@@ -19,14 +20,15 @@ pub struct BuildOptions {
     pub services: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BuildService {
     pub name: String,
     pub image: String,
+    pub build: Value,
     pub machines: Vec<MachineSelector>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct BuildPlan {
     pub services: Vec<BuildService>,
 }
@@ -70,7 +72,6 @@ pub fn plan_build(
 }
 
 pub fn execute_build(
-    project: &ComposeProject,
     plan: &BuildPlan,
     options: &BuildOptions,
     load: &LoadOptions,
@@ -78,7 +79,7 @@ pub fn execute_build(
     if plan.services.is_empty() {
         return Ok(());
     }
-    let override_file = TemporaryComposeFile::new(&build_override(project, plan)?)?;
+    let override_file = TemporaryComposeFile::new(&build_override(plan)?)?;
     let docker = load
         .docker
         .as_deref()
@@ -115,31 +116,30 @@ pub fn execute_build(
 }
 
 #[derive(Serialize)]
-struct ImageOverride<'a> {
+struct BuildServiceOverride<'a> {
     image: &'a str,
+    build: &'a Value,
 }
 
 #[derive(Serialize)]
 struct BuildOverride<'a> {
-    services: std::collections::BTreeMap<&'a str, ImageOverride<'a>>,
+    services: std::collections::BTreeMap<&'a str, BuildServiceOverride<'a>>,
 }
 
-fn build_override(project: &ComposeProject, plan: &BuildPlan) -> Result<String, ComposeError> {
+fn build_override(plan: &BuildPlan) -> Result<String, ComposeError> {
     let services = plan
         .services
         .iter()
         .map(|service| {
-            let image = &project
-                .services
-                .get(&service.name)
-                .ok_or_else(|| {
-                    ComposeError::Invalid(format!("undefined service '{}'", service.name))
-                })?
-                .container
-                .image;
-            Ok((service.name.as_str(), ImageOverride { image }))
+            (
+                service.name.as_str(),
+                BuildServiceOverride {
+                    image: &service.image,
+                    build: &service.build,
+                },
+            )
         })
-        .collect::<Result<_, ComposeError>>()?;
+        .collect();
     serde_norway::to_string(&BuildOverride { services })
         .map_err(|error| ComposeError::Io(format!("encode Compose build override: {error}")))
 }
@@ -179,6 +179,12 @@ fn build_service(project: &ComposeProject, name: &str) -> Result<BuildService, C
     Ok(BuildService {
         name: name.to_owned(),
         image: service.container.image.clone(),
+        build: project
+            .builds
+            .get(name)
+            .expect("build services come from the build map")
+            .raw
+            .clone(),
         machines: service.placement.machines.clone(),
     })
 }

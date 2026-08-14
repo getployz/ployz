@@ -246,11 +246,9 @@ fn project_image(image: bollard::models::ImageSummary) -> ImageSummary {
 }
 
 fn containerd_store(status: &[Vec<String>]) -> bool {
-    status.iter().any(|entry| {
-        entry.iter().any(|value| {
-            value.eq_ignore_ascii_case("io.containerd.snapshotter.v1")
-                || value.to_ascii_lowercase().contains("containerd")
-        })
+    status.iter().flatten().any(|value| {
+        value.eq_ignore_ascii_case("io.containerd.snapshotter.v1")
+            || value.to_ascii_lowercase().contains("containerd")
     })
 }
 

@@ -73,7 +73,6 @@ impl MachineService {
         self.containers = docker.map(|docker| ContainerContext { docker, specs });
         self
     }
-
     #[allow(clippy::result_large_err)]
     fn local_record(&self) -> Result<crate::machine::LocalMachineRecord, Status> {
         self.store

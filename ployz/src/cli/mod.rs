@@ -133,7 +133,7 @@ fn build() -> Command {
         .arg(many("profile", Some('p')))
         .arg(switch("pull", None))
         .arg(switch("push", None).conflicts_with("push-registry"))
-        .arg(switch("push-registry", None).conflicts_with("push"))
+        .arg(switch("push-registry", None))
         .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
 }
 
@@ -458,4 +458,16 @@ fn wg() -> Command {
 fn completion() -> Command {
     base("completion", "Generate shell completion")
         .arg(positional("shell", true).value_parser(clap::value_parser!(clap_complete::Shell)))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn build_push_destinations_are_mutually_exclusive() {
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "build", "--push", "--push-registry"])
+                .is_err()
+        );
+    }
 }

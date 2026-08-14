@@ -1,14 +1,13 @@
 use clap::ArgMatches;
 
-use crate::compose::{BuildOptions, LoadOptions, execute_build, load_project, plan_build};
+use crate::compose::{
+    BuildOptions, BuildService, LoadOptions, execute_build, load_project, plan_build,
+};
 
 use super::{Error, image, leaf_matches, string_values};
 
 pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
-    if leaf.get_flag("push") && leaf.get_flag("push-registry") {
-        return Err("--push and --push-registry are mutually exclusive".into());
-    }
     let load = LoadOptions {
         command: "build".into(),
         files: string_values(leaf, "file")
@@ -36,7 +35,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         println!("No buildable services selected.");
         return Ok(());
     }
-    execute_build(&project, &plan, &options, &load).map_err(|error| error.to_string())?;
+    execute_build(&plan, &options, &load).map_err(|error| error.to_string())?;
     if !leaf.get_flag("push") {
         return Ok(());
     }
@@ -51,11 +50,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         let mut client = image::connect_client(matches, context).await?;
         let mut failures = Vec::new();
         for service in &plan.services {
-            let targets = if explicit.is_empty() {
-                service.machines.iter().map(ToString::to_string).collect()
-            } else {
-                explicit.clone()
-            };
+            let targets = push_targets(&explicit, service);
             match crate::image::push(&mut client, &service.image, None, &targets).await {
                 Ok(result) => {
                     for success in result.successes {
@@ -83,5 +78,37 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         Ok(())
     } else {
         Err(failures.join("; "))
+    }
+}
+
+fn push_targets(explicit: &[String], service: &BuildService) -> Vec<String> {
+    if explicit.is_empty() {
+        service.machines.iter().map(ToString::to_string).collect()
+    } else {
+        explicit.to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::MachineSelector;
+
+    use super::*;
+
+    #[test]
+    fn explicit_push_targets_override_service_targets_and_empty_means_all() {
+        let mut service = BuildService {
+            name: "api".into(),
+            image: "api:latest".into(),
+            build: serde_norway::Value::Null,
+            machines: vec![MachineSelector::parse("service-machine").unwrap()],
+        };
+        assert_eq!(
+            push_targets(&["explicit-machine".into()], &service),
+            ["explicit-machine"]
+        );
+        assert_eq!(push_targets(&[], &service), ["service-machine"]);
+        service.machines.clear();
+        assert!(push_targets(&[], &service).is_empty());
     }
 }

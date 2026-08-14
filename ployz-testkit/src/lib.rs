@@ -112,23 +112,6 @@ impl ClusterPlan {
             format!("label={CLUSTER_LABEL}={}", self.name),
         ]
     }
-
-    #[must_use]
-    pub fn with_machine_environment(mut self, key: &str, value: &str) -> Self {
-        for machine in &mut self.machines {
-            machine.environment.insert(key.into(), value.into());
-        }
-        self
-    }
-
-    #[must_use]
-    pub fn with_daemon_args(mut self, args: impl IntoIterator<Item = String>) -> Self {
-        let args = args.into_iter().collect::<Vec<_>>();
-        for machine in &mut self.machines {
-            machine.daemon_args = args.clone();
-        }
-        self
-    }
 }
 
 #[must_use]

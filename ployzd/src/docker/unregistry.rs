@@ -17,14 +17,14 @@ use bollard::{
 };
 use futures_util::TryStreamExt;
 
-use crate::network::DOCKER_NETWORK_NAME;
+use crate::network::{DOCKER_NETWORK_NAME, UNREGISTRY_PORT};
 
 use super::{Error, LocalDocker};
 
 pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
 const CONTAINER_SOCKET: &str = "/run/containerd/containerd.sock";
-const PORT: u16 = 51500;
+const CONFIG_VERSION: &str = "1";
 const SOCKETS: &[&str] = &[
     "/run/containerd/containerd.sock",
     "/run/docker/containerd/containerd.sock",
@@ -106,6 +106,10 @@ impl RunningUnregistry {
                 .and_then(|labels| labels.get("ployz.unregistry.gateway"))
                 .map(String::as_str)
                 == Some(gateway.as_str())
+            && labels
+                .and_then(|labels| labels.get("ployz.unregistry.config-version"))
+                .map(String::as_str)
+                == Some(CONFIG_VERSION)
     }
 
     async fn create(&self) -> Result<(), Error> {
@@ -131,7 +135,7 @@ impl RunningUnregistry {
             "5000/tcp".into(),
             Some(vec![PortBinding {
                 host_ip: Some(self.gateway.to_string()),
-                host_port: Some(PORT.to_string()),
+                host_port: Some(UNREGISTRY_PORT.to_string()),
             }]),
         )]);
         let config = ContainerCreateBody {
@@ -149,6 +153,10 @@ impl RunningUnregistry {
                     self.socket.to_string_lossy().into_owned(),
                 ),
                 ("ployz.unregistry.gateway".into(), self.gateway.to_string()),
+                (
+                    "ployz.unregistry.config-version".into(),
+                    CONFIG_VERSION.into(),
+                ),
             ])),
             host_config: Some(HostConfig {
                 mounts: Some(vec![Mount {

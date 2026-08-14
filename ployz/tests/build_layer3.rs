@@ -53,7 +53,6 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compose-build-basic");
     let load = LoadOptions {
         command: "build".into(),
-        files: vec![fixture.join("compose.yaml")],
         working_dir: Some(fixture),
         docker: Some(docker),
         ..Default::default()
@@ -82,7 +81,7 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
         .map(|service| service.image.clone())
         .collect();
 
-    execute_build(&project, &plan, &options, &load).unwrap();
+    execute_build(&plan, &options, &load).unwrap();
     for image in &cleanup.images {
         command(["image", "rm", image]);
         command(["pull", image]);
