@@ -61,7 +61,11 @@ pub(crate) struct PreparedReset {
 
 impl PreparedReset {
     pub(crate) fn commit(self, store: &mut LocalMachineStore) -> Result<(), StoreError> {
-        if store.data_dir != self.data_dir || store.record != self.original {
+        let mut current = store.record.clone();
+        current
+            .selected_endpoints
+            .clone_from(&self.original.selected_endpoints);
+        if store.data_dir != self.data_dir || current != self.original {
             return Err(StoreError::ResetPreparationLost(store.data_dir.clone()));
         }
         fs::rename(
@@ -542,7 +546,14 @@ mod tests {
         assert!(missing.commit(&mut store).is_err());
         assert_eq!(store.record().phase, LocalMachinePhase::Uninitialized);
 
-        store.prepare_reset().unwrap().commit(&mut store).unwrap();
+        let prepared = store.prepare_reset().unwrap();
+        store
+            .persist_selected_endpoint(
+                MachineId::random(),
+                SelectedEndpoint(std::net::SocketAddr::from(([192, 0, 2, 4], 51820))),
+            )
+            .unwrap();
+        prepared.commit(&mut store).unwrap();
         assert_eq!(store.record().phase, LocalMachinePhase::Resetting);
         drop(store);
         fs::remove_dir_all(data_dir).unwrap();
