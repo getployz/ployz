@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, net::Ipv4Addr, process, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, Machine, MembershipObservation, ResolvedServiceSpec, ServiceId,
+    HealthObservation, Machine, MachineId, MembershipObservation, ResolvedServiceSpec, ServiceId,
     select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -70,25 +70,10 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
             .unwrap();
         created.push(container.container_id);
     }
-    let [_, second_container, _] = created.as_slice() else {
+    let [_, second_container, third_container] = created.as_slice() else {
         panic!("expected one container per Machine")
     };
-    for (index, (container_id, machine)) in created.iter().zip(&machines).enumerate() {
-        let docker = docker_inspect(&cluster, index, container_id);
-        let machine_gateway = Ipv4Addr::from(u32::from(machine.subnet.0.network()) + 1).to_string();
-        assert_eq!(
-            docker.pointer("/HostConfig/Dns"),
-            Some(&serde_json::json!([machine_gateway]))
-        );
-        assert_eq!(
-            docker.pointer("/HostConfig/DnsSearch"),
-            Some(&serde_json::json!(["internal"]))
-        );
-        assert_eq!(
-            docker.pointer("/HostConfig/DnsOptions"),
-            Some(&serde_json::json!(["ndots:1"]))
-        );
-    }
+    assert_managed_container_dns(&cluster, &created, &machines);
     let observations = wait_for_dns_observations(&mut client, &service_id, 3).await;
     let by_machine = observations
         .iter()
@@ -99,61 +84,93 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let probe = observations
+    let probe_observation = observations
         .iter()
         .find(|observation| observation.machine_id == first_machine.id)
         .unwrap();
     let gateway = Ipv4Addr::from(u32::from(first_machine.subnet.0.network()) + 1);
-    let local_address = *by_machine.get(&first_machine.id).unwrap();
-    let second_address = *by_machine.get(&second_machine.id).unwrap();
-
-    // L3-071: every selector resolves all healthy replicas with authoritative TTL-zero answers.
-    let expected = by_machine.values().copied().collect::<Vec<_>>();
-    wait_for_dns_addresses(
-        &cluster,
-        0,
-        &probe.container_id,
+    let probe = DnsProbe {
+        cluster: &cluster,
+        container_id: &probe_observation.container_id,
         gateway,
-        "dns-api.internal",
+    };
+    let expected = by_machine.values().copied().collect::<Vec<_>>();
+    assert_internal_selectors(&probe, &service_id, &machines, &by_machine, &expected).await;
+    assert_answer_modes(
+        &probe,
+        *by_machine.get(&first_machine.id).unwrap(),
+        &expected,
+    );
+    assert_projection_changes(
+        &probe,
+        &mut client,
+        second_machine,
+        second_container,
+        *by_machine.get(&second_machine.id).unwrap(),
         &expected,
     )
     .await;
-    let searched = cluster
+    assert_protocol_contract_and_forwarding(&probe);
+    assert_membership_blind_projection(
+        &probe,
+        third_machine,
+        third_container,
+        *by_machine.get(&third_machine.id).unwrap(),
+        &expected,
+    )
+    .await;
+}
+
+fn assert_managed_container_dns(
+    cluster: &Cluster,
+    container_ids: &[ContainerId],
+    machines: &[Machine],
+) {
+    for (index, (container_id, machine)) in container_ids.iter().zip(machines).enumerate() {
+        let docker = docker_inspect(cluster, index, container_id);
+        let gateway = Ipv4Addr::from(u32::from(machine.subnet.0.network()) + 1).to_string();
+        assert_eq!(
+            docker.pointer("/HostConfig/Dns"),
+            Some(&serde_json::json!([gateway]))
+        );
+        assert_eq!(
+            docker.pointer("/HostConfig/DnsSearch"),
+            Some(&serde_json::json!(["internal"]))
+        );
+        assert_eq!(
+            docker.pointer("/HostConfig/DnsOptions"),
+            Some(&serde_json::json!(["ndots:1"]))
+        );
+    }
+}
+
+async fn assert_internal_selectors(
+    probe: &DnsProbe<'_>,
+    service_id: &ServiceId,
+    machines: &[Machine],
+    by_machine: &BTreeMap<MachineId, Ipv4Addr>,
+    expected: &[Ipv4Addr],
+) {
+    // L3-071: every selector resolves all healthy Service Containers with authoritative TTL-zero answers.
+    probe.wait_addresses("dns-api.internal", expected).await;
+    let searched = probe
+        .cluster
         .machine_shell(
             0,
             &format!("docker exec {} nslookup dns-api", probe.container_id),
         )
         .unwrap();
-    for address in &expected {
+    for address in expected {
         assert!(searched.contains(&address.to_string()));
     }
-    assert_dns_addresses(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        &format!("{service_id}.internal"),
-        &expected,
-    );
-    for machine in &machines {
-        assert_dns_addresses(
-            &cluster,
-            0,
-            &probe.container_id,
-            gateway,
+    probe.assert_addresses(&format!("{service_id}.internal"), expected);
+    for machine in machines {
+        probe.assert_addresses(
             &format!("{}.m.dns-api.internal", machine.id),
             &[*by_machine.get(&machine.id).unwrap()],
         );
     }
-    let authoritative = dig(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "dns-api.internal",
-        "A",
-        false,
-    );
+    let authoritative = probe.dig("dns-api.internal", "A", false);
     assert!(authoritative.contains("status: NOERROR"));
     assert!(authoritative.contains("flags: qr aa"));
     assert!(
@@ -162,66 +179,50 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
             .filter(|line| line.contains("\tIN\tA\t"))
             .all(|line| line.split_whitespace().nth(1).is_some_and(|ttl| ttl == "0"))
     );
+}
 
+fn assert_answer_modes(probe: &DnsProbe<'_>, local_address: Ipv4Addr, expected: &[Ipv4Addr]) {
     // L3-072: nearest is local-first and rr keeps the complete answer set.
-    let nearest = dig_addresses(&dig(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "nearest.dns-api.internal",
-        "A",
-        false,
-    ));
+    let nearest = dig_addresses(&probe.dig("nearest.dns-api.internal", "A", false));
     assert_eq!(nearest.first(), Some(&local_address));
-    assert_eq!(sorted(nearest), sorted(expected.clone()));
-    assert_dns_addresses(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "rr.dns-api.internal",
-        &expected,
-    );
+    assert_eq!(sorted(nearest), sorted(expected.to_vec()));
+    probe.assert_addresses("rr.dns-api.internal", expected);
+}
 
+async fn assert_projection_changes(
+    probe: &DnsProbe<'_>,
+    client: &mut ployz::connect::Client,
+    second_machine: &Machine,
+    second_container: &ContainerId,
+    second_address: Ipv4Addr,
+    expected: &[Ipv4Addr],
+) {
     // L3-074: health and runtime changes add and remove records through the live subscription.
-    cluster
+    probe
+        .cluster
         .machine_shell(
             1,
             &format!("docker exec {second_container} rm /tmp/healthy"),
         )
         .unwrap();
-    wait_for_health(&mut client, second_container, HealthObservation::Unhealthy).await;
+    wait_for_health(client, second_container, HealthObservation::Unhealthy).await;
     let without_second = expected
         .iter()
         .copied()
         .filter(|address| *address != second_address)
         .collect::<Vec<_>>();
-    wait_for_dns_addresses(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "dns-api.internal",
-        &without_second,
-    )
-    .await;
-    cluster
+    probe
+        .wait_addresses("dns-api.internal", &without_second)
+        .await;
+    probe
+        .cluster
         .machine_shell(
             1,
             &format!("docker exec {second_container} touch /tmp/healthy"),
         )
         .unwrap();
-    wait_for_health(&mut client, second_container, HealthObservation::Healthy).await;
-    wait_for_dns_addresses(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "dns-api.internal",
-        &expected,
-    )
-    .await;
+    wait_for_health(client, second_container, HealthObservation::Healthy).await;
+    probe.wait_addresses("dns-api.internal", expected).await;
     client
         .change_container(
             second_machine.id.clone(),
@@ -232,15 +233,9 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
         )
         .await
         .unwrap();
-    wait_for_dns_addresses(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "dns-api.internal",
-        &without_second,
-    )
-    .await;
+    probe
+        .wait_addresses("dns-api.internal", &without_second)
+        .await;
     client
         .change_container(
             second_machine.id.clone(),
@@ -251,81 +246,109 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
         )
         .await
         .unwrap();
-    wait_for_dns_addresses(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "dns-api.internal",
-        &expected,
-    )
-    .await;
+    probe.wait_addresses("dns-api.internal", expected).await;
+}
 
-    let missing = dig(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "missing.internal",
-        "A",
-        false,
-    );
+fn assert_protocol_contract_and_forwarding(probe: &DnsProbe<'_>) {
+    let missing = probe.dig("missing.internal", "A", false);
     assert!(missing.contains("status: NXDOMAIN"));
     assert!(missing.contains("flags: qr aa"));
-    let non_a = dig(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "missing.internal",
-        "TXT",
-        false,
-    );
+    let non_a = probe.dig("missing.internal", "TXT", false);
     assert!(non_a.contains("status: NOERROR"));
     assert!(non_a.contains("flags: qr aa"));
 
     for tcp in [false, true] {
         assert_eq!(
-            dig_addresses(&dig(
-                &cluster,
-                0,
-                &probe.container_id,
-                gateway,
-                "forward.test",
-                "A",
-                tcp,
-            )),
+            dig_addresses(&probe.dig("forward.test", "A", tcp)),
             vec![Ipv4Addr::new(203, 0, 113, 7)]
         );
     }
-    cluster
+    probe
+        .cluster
         .machine_shell(0, "kill $(cat /run/ployz-test-dnsmasq.pid)")
         .unwrap();
     assert!(
-        dig(
-            &cluster,
-            0,
-            &probe.container_id,
-            gateway,
-            "forward.test",
-            "A",
-            false,
-        )
-        .contains("status: SERVFAIL")
+        probe
+            .dig("forward.test", "A", false)
+            .contains("status: SERVFAIL")
     );
+}
 
-    // L3-073: losing membership does not erase the last replicated healthy observation.
-    cluster.stop(2).unwrap();
-    wait_for_membership_loss(&cluster, third_machine).await;
-    wait_for_dns_addresses(
-        &cluster,
-        0,
-        &probe.container_id,
-        gateway,
-        "dns-api.internal",
-        &expected,
-    )
-    .await;
+async fn assert_membership_blind_projection(
+    probe: &DnsProbe<'_>,
+    third_machine: &Machine,
+    third_container: &ContainerId,
+    third_address: Ipv4Addr,
+    expected: &[Ipv4Addr],
+) {
+    // L3-073: a Down Membership Observation does not erase the last replicated healthy observation.
+    probe.cluster.stop(2).unwrap();
+    wait_for_down_membership_observation(probe.cluster, third_machine).await;
+    let encoded = probe
+        .cluster
+        .machine_shell(
+            0,
+            &format!(
+                "sqlite3 /var/lib/ployz/corrosion/store.db \"SELECT container FROM containers WHERE id = '{third_container}'\""
+            ),
+        )
+        .unwrap();
+    let retained: ContainerObservation = serde_json::from_str(encoded.trim()).unwrap();
+    assert_eq!(retained.machine_id, third_machine.id);
+    assert_eq!(
+        retained.address.map(|address| address.0),
+        Some(third_address)
+    );
+    assert!(matches!(
+        retained.runtime,
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy
+        }
+    ));
+    probe.wait_addresses("dns-api.internal", expected).await;
+}
+
+struct DnsProbe<'a> {
+    cluster: &'a Cluster,
+    container_id: &'a ContainerId,
+    gateway: Ipv4Addr,
+}
+
+impl DnsProbe<'_> {
+    async fn wait_addresses(&self, name: &str, expected: &[Ipv4Addr]) {
+        let expected = sorted(expected.to_vec());
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if sorted(dig_addresses(&self.dig(name, "A", false))) == expected {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    fn assert_addresses(&self, name: &str, expected: &[Ipv4Addr]) {
+        assert_eq!(
+            sorted(dig_addresses(&self.dig(name, "A", false))),
+            sorted(expected.to_vec())
+        );
+    }
+
+    fn dig(&self, name: &str, record_type: &str, tcp: bool) -> String {
+        self.cluster
+            .container_network_shell(
+                0,
+                self.container_id,
+                &format!(
+                    "dig {}@{} {name} {record_type} +time=1 +tries=1 +noall +comments +answer",
+                    if tcp { "+tcp " } else { "" },
+                    self.gateway,
+                ),
+            )
+            .unwrap()
+    }
 }
 
 async fn wait_for_dns_observations(
@@ -388,44 +411,16 @@ async fn wait_for_health(
     .unwrap();
 }
 
-async fn wait_for_dns_addresses(
-    cluster: &Cluster,
-    machine_index: usize,
-    container_id: &ContainerId,
-    gateway: Ipv4Addr,
-    name: &str,
-    expected: &[Ipv4Addr],
-) {
-    let expected = sorted(expected.to_vec());
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let actual = dig_addresses(&dig(
-                cluster,
-                machine_index,
-                container_id,
-                gateway,
-                name,
-                "A",
-                false,
-            ));
-            if sorted(actual) == expected {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
-async fn wait_for_membership_loss(cluster: &Cluster, machine: &Machine) {
+async fn wait_for_down_membership_observation(cluster: &Cluster, machine: &Machine) {
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             if cluster.machines(0).await.is_ok_and(|observations| {
                 observations
                     .iter()
                     .find(|observation| observation.machine.id == machine.id)
-                    .is_none_or(|observation| observation.membership != MembershipObservation::Up)
+                    .is_some_and(|observation| {
+                        observation.membership == MembershipObservation::Down
+                    })
             }) {
                 return;
             }
@@ -434,49 +429,6 @@ async fn wait_for_membership_loss(cluster: &Cluster, machine: &Machine) {
     })
     .await
     .unwrap();
-}
-
-fn assert_dns_addresses(
-    cluster: &Cluster,
-    machine_index: usize,
-    container_id: &ContainerId,
-    gateway: Ipv4Addr,
-    name: &str,
-    expected: &[Ipv4Addr],
-) {
-    assert_eq!(
-        sorted(dig_addresses(&dig(
-            cluster,
-            machine_index,
-            container_id,
-            gateway,
-            name,
-            "A",
-            false,
-        ))),
-        sorted(expected.to_vec())
-    );
-}
-
-fn dig(
-    cluster: &Cluster,
-    machine_index: usize,
-    container_id: &ContainerId,
-    gateway: Ipv4Addr,
-    name: &str,
-    record_type: &str,
-    tcp: bool,
-) -> String {
-    cluster
-        .workload_shell(
-            machine_index,
-            container_id,
-            &format!(
-                "dig {}@{gateway} {name} {record_type} +time=1 +tries=1 +noall +comments +answer",
-                if tcp { "+tcp " } else { "" }
-            ),
-        )
-        .unwrap()
 }
 
 fn dig_addresses(output: &str) -> Vec<Ipv4Addr> {

@@ -206,7 +206,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dns = async {
         match (local_record.machine.clone(), replicated_store.clone()) {
             (Some(machine), Some(replicated)) => {
-                dns::run(machine, replicated, shutdown_rx.clone()).await
+                dns::run(machine, replicated, None, shutdown_rx.clone()).await
             }
             _ => {
                 wait_for_shutdown(shutdown_rx.clone()).await;

@@ -108,22 +108,6 @@ impl ClusterPlan {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OrchestrationStep {
-    Initialize,
-    Register,
-    Join,
-}
-
-#[must_use]
-pub const fn two_machine_orchestration() -> [OrchestrationStep; 3] {
-    [
-        OrchestrationStep::Initialize,
-        OrchestrationStep::Register,
-        OrchestrationStep::Join,
-    ]
-}
-
 #[must_use]
 pub fn join_request(first: &Machine, registration: &Registered) -> JoinRequest {
     JoinRequest {
@@ -653,7 +637,7 @@ impl Cluster {
         }
     }
 
-    pub fn workload_shell(
+    pub fn container_network_shell(
         &self,
         machine_index: usize,
         container_id: &ContainerId,
@@ -999,14 +983,6 @@ mod tests {
             visible_peers: Vec::new(),
             target_versions: BTreeMap::from([("actor".to_owned(), 7)]),
         };
-        assert_eq!(
-            two_machine_orchestration(),
-            [
-                OrchestrationStep::Initialize,
-                OrchestrationStep::Register,
-                OrchestrationStep::Join,
-            ]
-        );
         let join = join_request(&first, &registration);
         assert_eq!(join.registration.assigned_machine, second);
         assert_eq!(join.registration.visible_peers, vec![first]);

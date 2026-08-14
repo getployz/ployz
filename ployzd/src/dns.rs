@@ -227,6 +227,7 @@ impl Handler {
 pub async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
+    upstreams: Option<Vec<SocketAddr>>,
     shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let gateway = machine_gateway(machine.subnet).map_err(io::Error::other)?.0;
@@ -242,7 +243,7 @@ pub async fn run(
     let handler = Handler {
         projection: Arc::clone(&projection),
         local_subnet: machine.subnet.0,
-        upstreams: system_upstreams(gateway),
+        upstreams: configured_upstreams(upstreams, gateway),
     };
     let udp = UdpSocket::bind(listen_address).await?;
     let tcp = match TcpListener::bind(listen_address).await {
@@ -304,6 +305,13 @@ async fn watch_projection(
             }
         }
     }
+}
+
+fn configured_upstreams(
+    upstreams: Option<Vec<SocketAddr>>,
+    listen_address: Ipv4Addr,
+) -> Vec<SocketAddr> {
+    upstreams.unwrap_or_else(|| system_upstreams(listen_address))
 }
 
 fn system_upstreams(listen_address: Ipv4Addr) -> Vec<SocketAddr> {
@@ -563,6 +571,15 @@ mod tests {
                 subnet,
             ),
             ResponsePlan::Forward
+        );
+    }
+
+    #[test]
+    fn explicit_upstreams_override_system_configuration() {
+        let upstreams = vec!["192.0.2.53:5353".parse().unwrap()];
+        assert_eq!(
+            configured_upstreams(Some(upstreams.clone()), Ipv4Addr::new(10, 210, 1, 1)),
+            upstreams
         );
     }
 
