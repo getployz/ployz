@@ -299,6 +299,12 @@ fn healthy() -> ContainerRuntimeObservation {
     }
 }
 
+fn starting() -> ContainerRuntimeObservation {
+    ContainerRuntimeObservation::Running {
+        health: HealthObservation::Starting,
+    }
+}
+
 fn unhealthy() -> ContainerRuntimeObservation {
     ContainerRuntimeObservation::Running {
         health: HealthObservation::Unhealthy,
