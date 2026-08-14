@@ -60,7 +60,7 @@ pub fn load_project(options: &LoadOptions) -> Result<ComposeProject, ComposeErro
     );
     convert_raw_project(
         raw,
-        project_working_dir(options),
+        project_working_dir(options)?,
         environment,
         &recovered_secrets,
     )
@@ -176,30 +176,27 @@ fn secret_overrides(names: &BTreeSet<String>) -> String {
     format!("secrets:\n{entries}")
 }
 
-fn project_working_dir(options: &LoadOptions) -> PathBuf {
-    options
+fn project_working_dir(options: &LoadOptions) -> Result<PathBuf, ComposeError> {
+    let file = options
         .files
         .first()
         .cloned()
-        .or_else(first_compose_file_from_environment)
-        .map(|file| {
-            if file.is_absolute() {
-                file
-            } else {
-                options
-                    .working_dir
-                    .as_deref()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join(file)
-            }
-        })
-        .and_then(|file| {
-            file.parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-        })
+        .or_else(first_compose_file_from_environment);
+    let file = match file {
+        Some(file) if file.is_absolute() => file,
+        Some(file) => options
+            .working_dir
+            .as_deref()
+            .unwrap_or_else(|| Path::new("."))
+            .join(file),
+        None => discover_default_compose_file(options)?,
+    };
+    Ok(file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
         .or_else(|| options.working_dir.clone())
-        .unwrap_or_else(|| PathBuf::from("."))
+        .unwrap_or_else(|| PathBuf::from(".")))
 }
 
 pub(super) fn compose_command(
@@ -245,6 +242,35 @@ pub(super) fn first_compose_file_from_environment() -> Option<PathBuf> {
         .split(compose_path_separator().to_string_lossy().as_ref())
         .find(|file| !file.is_empty())
         .map(PathBuf::from)
+}
+
+pub(super) fn discover_default_compose_file(
+    options: &LoadOptions,
+) -> Result<PathBuf, ComposeError> {
+    let current = std::env::current_dir()
+        .map_err(|error| ComposeError::Io(format!("resolve current directory: {error}")))?;
+    let directory = current.join(
+        options
+            .working_dir
+            .as_deref()
+            .unwrap_or_else(|| Path::new(".")),
+    );
+    for directory in directory.ancestors() {
+        for name in [
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        ] {
+            let file = directory.join(name);
+            if file.is_file() {
+                return Ok(file);
+            }
+        }
+    }
+    Err(ComposeError::Invalid(
+        "default Compose file disappeared after project loading".into(),
+    ))
 }
 
 fn compose_path_separator() -> std::ffi::OsString {

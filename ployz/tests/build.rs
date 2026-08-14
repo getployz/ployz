@@ -1,4 +1,4 @@
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 use ployz::compose::{BuildOptions, LoadOptions, execute_build, parse_normalized, plan_build};
 
@@ -107,8 +107,10 @@ fn compose_build_receives_resolved_images_and_builder_flags() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let docker = root.join("docker");
+    let compose = root.join("compose.yml");
     let calls = root.join("calls");
     let captured = root.join("override.yaml");
+    fs::write(&compose, "services: {}\n").unwrap();
     fs::write(
         &docker,
         format!(
@@ -137,7 +139,7 @@ fn compose_build_receives_resolved_images_and_builder_flags() {
         &plan,
         &options,
         &LoadOptions {
-            files: vec![PathBuf::from("compose.yaml")],
+            files: Vec::new(),
             profiles: vec!["test".into()],
             working_dir: Some(root.clone()),
             docker: Some(docker),
@@ -146,7 +148,10 @@ fn compose_build_receives_resolved_images_and_builder_flags() {
     )
     .unwrap();
     let call = fs::read_to_string(calls).unwrap();
-    assert!(call.starts_with("compose --all-resources --file compose.yaml --file "));
+    assert!(call.starts_with(&format!(
+        "compose --all-resources --file {} --file ",
+        compose.display()
+    )));
     assert!(call.contains(" --profile test build "));
     assert!(
         call.ends_with(" build --build-arg MODE=release --check --no-cache --pull --push api\n")
@@ -155,5 +160,53 @@ fn compose_build_receives_resolved_images_and_builder_flags() {
     assert!(override_yaml.contains("api"));
     assert!(override_yaml.contains("example.test/api:version2"));
     assert!(!override_yaml.contains("runtime"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn check_with_direct_push_stops_after_validation() {
+    let root = std::env::temp_dir().join(format!("ployz-build-check-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("compose.yaml"),
+        "services: {api: {image: example.test/api, build: .}}\n",
+    )
+    .unwrap();
+    let calls = root.join("calls");
+    let docker = root.join("docker");
+    fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *'config --environment') exit 0 ;;\n  *' config '*) printf 'name: demo\\nservices:\\n  api:\\n    image: example.test/api\\n    build: {{context: .}}\\n'; exit 0 ;;\n  *' build '*) exit 0 ;;\nesac\nexit 1\n",
+            calls.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            "tcp://127.0.0.1:1",
+            "build",
+            "--check",
+            "--push",
+        ])
+        .current_dir(&root)
+        .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        fs::read_to_string(calls)
+            .unwrap()
+            .lines()
+            .any(|call| call.contains(" build --check api"))
+    );
     fs::remove_dir_all(root).unwrap();
 }

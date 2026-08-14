@@ -34,7 +34,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         return Ok(());
     }
     execute_build(&plan, &options, &load).map_err(|error| error.to_string())?;
-    if !leaf.get_flag("push") {
+    if options.check || !leaf.get_flag("push") {
         return Ok(());
     }
 

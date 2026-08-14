@@ -479,5 +479,10 @@ mod tests {
                 .try_get_matches_from(["ployz", "build", "--push", "--machine", "machine-1"])
                 .is_ok()
         );
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "build", "--check", "--push"])
+                .is_ok()
+        );
     }
 }
