@@ -183,6 +183,35 @@ fn replicated_plan_removes_containers_beyond_the_requested_count() {
 }
 
 #[test]
+fn changing_replica_count_keeps_matching_existing_containers() {
+    let current = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut requested = current.clone();
+    requested.mode = ServiceMode::Replicated {
+        replicas: NonZeroU32::new(3).unwrap(),
+    };
+    let current_service_id = service_id('a');
+    let plan = plan_deploy(
+        &requested,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![container('b', '1', &current, &current_service_id)],
+            ..Default::default()
+        },
+        service_id('f'),
+        PlanOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(plan.operations().len(), 2);
+    assert!(
+        plan.operations()
+            .iter()
+            .all(|operation| matches!(operation, DeployOperation::RunContainer { .. }))
+    );
+}
+
+#[test]
 fn global_plan_is_exactly_one_container_per_currently_available_machine() {
     let requested = requested(ServiceMode::Global);
     let current_service_id = service_id('a');

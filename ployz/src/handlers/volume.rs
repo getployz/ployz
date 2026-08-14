@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::{Error, leaf_matches, string_values};
+use super::{Error, confirm, leaf_matches, required, string_values};
 
 pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -313,26 +313,6 @@ fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!("one or more Machines failed: {failures}")
-}
-
-fn confirm() -> Result<bool, Error> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err("confirmation requires a terminal; pass --yes to continue".into());
-    }
-    print!("Continue? [y/N] ");
-    io::stdout().flush().map_err(|error| error.to_string())?;
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .map_err(|error| error.to_string())?;
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
-}
-
-fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
-    matches
-        .get_one::<String>(name)
-        .cloned()
-        .ok_or_else(|| Error::from(format!("{name} is required")))
 }
 
 fn run(future: impl Future<Output = Result<(), Error>>) -> Result<(), Error> {

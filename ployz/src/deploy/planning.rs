@@ -9,7 +9,7 @@ use ployz_core::{
 
 use super::{
     DeployOperation, DeployPlan, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
-    ReplacementOperation, compare_specs,
+    ReplacementOperation, compare_specs, same_service_mode_kind,
 };
 
 pub fn plan_deploy(
@@ -47,7 +47,8 @@ pub fn plan_deploy(
     };
     if !is_new_service
         && snapshot.containers.iter().any(|container| {
-            container.service_id == service_id && container.resolved_spec.mode != requested.mode
+            container.service_id == service_id
+                && !same_service_mode_kind(&container.resolved_spec.mode, &requested.mode)
         })
     {
         return Err(PlanError::ServiceModeCannotChange);

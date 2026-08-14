@@ -369,9 +369,10 @@ secrets:
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "ployz deploy is not implemented yet\n"
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("no Ployz config or local daemon socket is available")
     );
     fs::remove_dir_all(root).unwrap();
 }

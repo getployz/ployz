@@ -52,6 +52,13 @@ pub(crate) async fn create_volume_on_machine(
 impl Client {
     pub async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
         let machines = self.list_machines().await?;
+        self.live_services_from(&machines).await
+    }
+
+    pub(crate) async fn live_services_from(
+        &self,
+        machines: &[MachineObservation],
+    ) -> Result<LiveServices<RpcError>, ConnectError> {
         let mut tasks = JoinSet::new();
         let mut omissions = Vec::new();
         for machine in machines {
@@ -59,11 +66,16 @@ impl Client {
             // current trust boundary; it can be stale and is not an authority or freshness proof.
             match machine.membership {
                 MembershipObservation::Up | MembershipObservation::Suspect => {
-                    tasks.spawn(list_on_machine(self.rpc.clone(), machine.machine.id));
+                    tasks.spawn(list_on_machine(
+                        self.rpc.clone(),
+                        machine.machine.id.clone(),
+                    ));
                 }
                 MembershipObservation::Down
                 | MembershipObservation::Unknown
-                | MembershipObservation::Unrecognized(_) => omissions.push(machine.machine.id),
+                | MembershipObservation::Unrecognized(_) => {
+                    omissions.push(machine.machine.id.clone());
+                }
             }
         }
         let mut result = PartialResult {

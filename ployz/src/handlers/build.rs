@@ -50,23 +50,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         for service in &plan {
             let targets = push_targets(&explicit, &service.machines);
             match crate::image::push(&mut client, &service.image, None, &targets).await {
-                Ok(result) => {
-                    for success in result.successes {
-                        println!("Pushed {} to {}", service.image, success.machine_id);
-                    }
-                    for failure in result.failures {
-                        failures.push(format!(
-                            "{} on {}: {}",
-                            service.image, failure.machine_id, failure.error
-                        ));
-                    }
-                    for omission in result.omissions {
-                        failures.push(format!(
-                            "{} on {}: no terminal response",
-                            service.image, omission
-                        ));
-                    }
-                }
+                Ok(result) => failures.extend(report_push(&service.image, result)),
                 Err(error) => failures.push(push_failure(&service.image, error)?),
             }
         }
@@ -79,7 +63,30 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     }
 }
 
-fn push_targets(explicit: &[String], configured: &[ployz_core::MachineSelector]) -> Vec<String> {
+pub(super) fn report_push(
+    image: &str,
+    result: ployz_core::PartialResult<(), crate::image::PushError>,
+) -> Vec<String> {
+    for success in result.successes {
+        println!("Pushed {image} to {}", success.machine_id);
+    }
+    result
+        .failures
+        .into_iter()
+        .map(|failure| format!("{image} on {}: {}", failure.machine_id, failure.error))
+        .chain(
+            result
+                .omissions
+                .into_iter()
+                .map(|machine| format!("{image} on {machine}: no terminal response")),
+        )
+        .collect()
+}
+
+pub(super) fn push_targets(
+    explicit: &[String],
+    configured: &[ployz_core::MachineSelector],
+) -> Vec<String> {
     if explicit.is_empty() {
         configured.iter().map(ToString::to_string).collect()
     } else {
