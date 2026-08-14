@@ -405,14 +405,16 @@ async fn replace_container<C: MachineOperations>(
         if !matches!(&error, ExecutionError::Health { .. }) {
             return Err(error.into());
         }
-        let stop_new_container = client
-            .stop_container(
-                &operation.machine_id,
-                &container_id,
-                stop_grace_period(&operation.spec),
-            )
-            .await
-            .map_err(|error| machine_error(MachineAction::StopContainer, error));
+        let stop_new_container = ignore_not_found(
+            client
+                .stop_container(
+                    &operation.machine_id,
+                    &container_id,
+                    Some(stop_grace_period(&operation.spec).unwrap_or(0)),
+                )
+                .await,
+        )
+        .map_err(|error| machine_error(MachineAction::StopContainer, error));
         let compensation = if stop_first {
             ReplacementCompensation::StopFirst {
                 stop_new_container,
