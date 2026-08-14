@@ -482,7 +482,9 @@ async fn monitor_container<C: MachineOperations>(
         let observed = inspect(client, machine_id, container_id).await?;
         return if matches!(
             observed.runtime,
-            ContainerRuntimeObservation::Running { .. }
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::NotConfigured | HealthObservation::Healthy,
+            }
         ) {
             Ok(())
         } else {
@@ -657,7 +659,7 @@ async fn interrupt_hook<C: MachineOperations>(
     interruption: HookInterruption,
 ) -> ExecutionError {
     let stop_error = client
-        .stop_container(machine_id, container_id, None)
+        .stop_container(machine_id, container_id, Some(0))
         .await
         .err();
     let failure = match interruption {
