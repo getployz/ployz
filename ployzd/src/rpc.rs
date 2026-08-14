@@ -69,9 +69,8 @@ impl MachineService {
     }
 
     #[must_use]
-    pub fn with_containers(mut self, docker: LocalDocker, specs: MachineSpecStore) -> Self {
-        self.containers = Some(ContainerContext { docker, specs });
-        self
+    pub fn with_containers(self, docker: LocalDocker, specs: MachineSpecStore) -> Self {
+        self.with_optional_containers(Some(docker), specs)
     }
 
     #[must_use]
