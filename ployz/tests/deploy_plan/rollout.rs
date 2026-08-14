@@ -41,10 +41,13 @@ fn pre_deploy_hook_stops_running_predecessors_and_runs_before_replacement() {
         plan.operations(),
         [
             DeployOperation::StopHook { container_id: stopped, .. },
-            DeployOperation::RunHook { old_hook_container_ids, .. },
+            DeployOperation::RunHook { old_hook_containers, .. },
             DeployOperation::ReplaceContainer(..),
         ] if stopped == &container_id('c')
-            && old_hook_container_ids == &vec![container_id('c'), container_id('d')]
+            && old_hook_containers == &vec![
+                (machine_id('1'), container_id('c')),
+                (machine_id('1'), container_id('d')),
+            ]
     ));
 }
 

@@ -5,9 +5,11 @@ use ployz_core::{
 use thiserror::Error;
 
 mod comparison;
+mod exec;
 mod planning;
 
 pub use comparison::compare_specs;
+pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
 pub use planning::plan_deploy;
 pub(crate) use planning::volume_eligible_machine_ids;
 
@@ -46,9 +48,16 @@ impl DeployPlan {
         self.operation.operations()
     }
 
+    pub(super) fn flattened_operations(&self) -> Vec<DeployOperation> {
+        let mut operations = Vec::new();
+        self.operation.flatten_into(&mut operations);
+        operations
+    }
+
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
-        let completed = self.operations().get(..completed_count)?;
-        let (failed, unexecuted) = self.operations().get(completed_count..)?.split_first()?;
+        let operations = self.flattened_operations();
+        let completed = operations.get(..completed_count)?;
+        let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
         Some(DeployOutcome {
             completed: completed.to_vec(),
             failed: Some(FailedOperation::Operation {
@@ -65,8 +74,9 @@ impl DeployPlan {
         error: E,
         compensation: ReplacementCompensation<E>,
     ) -> Option<DeployOutcome<E>> {
-        let completed = self.operations().get(..completed_count)?;
-        let (failed, unexecuted) = self.operations().get(completed_count..)?.split_first()?;
+        let operations = self.flattened_operations();
+        let completed = operations.get(..completed_count)?;
+        let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
         let DeployOperation::ReplaceContainer(operation) = failed else {
             return None;
         };
@@ -84,7 +94,7 @@ impl DeployPlan {
     #[must_use]
     pub fn success_outcome<E>(&self) -> DeployOutcome<E> {
         DeployOutcome {
-            completed: self.operations().to_vec(),
+            completed: self.flattened_operations(),
             failed: None,
             unexecuted: Vec::new(),
         }
@@ -163,7 +173,7 @@ pub enum DeployOperation {
     RunHook {
         machine_id: MachineId,
         spec: ResolvedServiceSpec,
-        old_hook_container_ids: Vec<ContainerId>,
+        old_hook_containers: Vec<(MachineId, ContainerId)>,
     },
     Sequence {
         operations: Vec<DeployOperation>,
@@ -182,6 +192,23 @@ impl DeployOperation {
             | Self::ReplaceContainer(..)
             | Self::StopHook { .. }
             | Self::RunHook { .. }) => std::slice::from_ref(operation),
+        }
+    }
+
+    fn flatten_into(&self, flattened: &mut Vec<Self>) {
+        match self {
+            Self::Sequence { operations } => {
+                for operation in operations {
+                    operation.flatten_into(flattened);
+                }
+            }
+            operation @ (Self::CreateVolume { .. }
+            | Self::RunContainer { .. }
+            | Self::StopContainer { .. }
+            | Self::RemoveContainer { .. }
+            | Self::ReplaceContainer(..)
+            | Self::StopHook { .. }
+            | Self::RunHook { .. }) => flattened.push(operation.clone()),
         }
     }
 }

@@ -323,9 +323,9 @@ fn pre_deploy_operations(
     operations.push(DeployOperation::RunHook {
         machine_id: machine_id.clone(),
         spec: spec.clone(),
-        old_hook_container_ids: hooks
+        old_hook_containers: hooks
             .into_iter()
-            .map(|container| container.container_id.clone())
+            .map(|container| (container.machine_id.clone(), container.container_id.clone()))
             .collect(),
     });
     operations
