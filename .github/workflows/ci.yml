@@ -126,3 +126,4 @@ jobs:
             retry_once cargo test --package ployz-testkit --test cluster --locked "$scenario" -- --ignored --exact
           done
           retry_once cargo test --package ployz --test service_cluster --locked -- --ignored
+          retry_once cargo test --package ployz --test internal_dns_cluster --locked -- --ignored

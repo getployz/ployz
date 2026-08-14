@@ -3,6 +3,7 @@
 mod docker_image;
 
 pub mod corrosion;
+pub mod dns;
 pub mod docker;
 pub mod machine;
 pub mod metrics;

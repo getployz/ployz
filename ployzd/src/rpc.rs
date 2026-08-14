@@ -23,7 +23,7 @@ use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore},
     docker::{Error as DockerError, LocalDocker, MachineSpecStore},
     machine::{LocalMachineStore, StoreError},
-    network::{allocate_machine_subnet, discover_endpoints, management_address},
+    network::{allocate_machine_subnet, discover_endpoints, machine_gateway, management_address},
 };
 
 #[derive(Clone)]
@@ -416,11 +416,18 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(RpcResponse::error(error)),
         };
-        let machine_id = self.local_record()?.id;
+        let record = self.local_record()?;
+        let machine = record
+            .machine
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
+        let gateway =
+            machine_gateway(machine.subnet).map_err(|error| Status::internal(error.to_string()))?;
         match containers
             .docker
             .create(
-                &machine_id,
+                &record.id,
+                gateway,
                 &containers.specs,
                 request.kind,
                 &request.resolved_spec,

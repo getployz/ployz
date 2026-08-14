@@ -108,22 +108,6 @@ impl ClusterPlan {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OrchestrationStep {
-    Initialize,
-    Register,
-    Join,
-}
-
-#[must_use]
-pub const fn two_machine_orchestration() -> [OrchestrationStep; 3] {
-    [
-        OrchestrationStep::Initialize,
-        OrchestrationStep::Register,
-        OrchestrationStep::Join,
-    ]
-}
-
 #[must_use]
 pub fn join_request(first: &Machine, registration: &Registered) -> JoinRequest {
     JoinRequest {
@@ -227,95 +211,104 @@ impl Cluster {
 
     pub async fn initialize_two(&self) -> Result<[Machine; 2], TestkitError> {
         if self.plan.machines.len() != 2 {
-            return Err(TestkitError::MachineCount(self.plan.machines.len()));
+            return Err(TestkitError::MachineCount {
+                expected: 2,
+                actual: self.plan.machines.len(),
+            });
         }
-        self.wait_ready(Duration::from_secs(30)).await?;
-        let mut first = None;
-        let mut registered = None;
-        for step in two_machine_orchestration() {
-            match step {
-                OrchestrationStep::Initialize => {
-                    let initialized = self.initialize_first().await?;
-                    let participating = self
-                        .wait_phase(0, LocalMachinePhase::Participating, Duration::from_secs(60))
-                        .await?
-                        .machine
-                        .ok_or_else(|| {
-                            TestkitError::Rpc("initialized Machine record is missing".into())
-                        })?;
-                    if participating != initialized {
-                        return Err(TestkitError::Rpc(
-                            "initialized Machine changed across restart".into(),
-                        ));
-                    }
-                    first = Some(participating);
-                }
-                OrchestrationStep::Register => {
-                    self.wait_machine_count(0, 1, Duration::from_secs(60))
-                        .await?;
-                    self.seed_observation(0)?;
-                    registered = Some(self.register_second().await?);
-                }
-                OrchestrationStep::Join => {
-                    let first = first.as_ref().ok_or_else(|| {
-                        TestkitError::Rpc("orchestration joined before initialization".into())
-                    })?;
-                    let registered = registered.as_ref().ok_or_else(|| {
-                        TestkitError::Rpc("orchestration joined before registration".into())
-                    })?;
-                    self.gossip_rule(1, "--insert")?;
-                    self.join(1, join_request(first, registered)).await?;
-                    self.wait_for_join_barrier(registered).await?;
-                }
-            }
-        }
-        let first = first.ok_or_else(|| TestkitError::Rpc("Machine was not initialized".into()))?;
-        let registered =
-            registered.ok_or_else(|| TestkitError::Rpc("Machine was not registered".into()))?;
-        self.wait_machine_count(0, 2, Duration::from_secs(60))
-            .await?;
-        self.wait_machine_count(1, 2, Duration::from_secs(60))
-            .await?;
-        Ok([first, registered.assigned_machine])
+        Ok(self
+            .initialize_all()
+            .await?
+            .try_into()
+            .expect("checked length"))
     }
 
-    async fn wait_for_join_barrier(&self, registered: &Registered) -> Result<(), TestkitError> {
-        self.wait_phase(1, LocalMachinePhase::Joining, Duration::from_secs(60))
+    pub async fn initialize_three(&self) -> Result<[Machine; 3], TestkitError> {
+        if self.plan.machines.len() != 3 {
+            return Err(TestkitError::MachineCount {
+                expected: 3,
+                actual: self.plan.machines.len(),
+            });
+        }
+        Ok(self
+            .initialize_all()
+            .await?
+            .try_into()
+            .expect("checked length"))
+    }
+
+    async fn initialize_all(&self) -> Result<Vec<Machine>, TestkitError> {
+        self.wait_ready(Duration::from_secs(30)).await?;
+        let initialized = self.initialize_first().await?;
+        let first = self
+            .wait_phase(0, LocalMachinePhase::Participating, Duration::from_secs(60))
+            .await?
+            .machine
+            .ok_or_else(|| TestkitError::Rpc("initialized Machine record is missing".into()))?;
+        if first != initialized {
+            return Err(TestkitError::Rpc(
+                "initialized Machine changed across restart".into(),
+            ));
+        }
+        self.wait_machine_count(0, 1, Duration::from_secs(60))
             .await?;
-        if self.inspect(1, Vec::new()).await.is_ok_and(|details| {
+        self.seed_observation(0)?;
+        let mut machines = vec![first.clone()];
+        for index in 1..self.plan.machines.len() {
+            let registered = self.register(index).await?;
+            self.gossip_rule(index, "--insert")?;
+            self.join(index, join_request(&first, &registered)).await?;
+            self.wait_for_join_barrier(index, &registered).await?;
+            machines.push(registered.assigned_machine);
+            for entry in 0..=index {
+                self.wait_machine_count(entry, index + 1, Duration::from_secs(60))
+                    .await?;
+            }
+        }
+        Ok(machines)
+    }
+
+    async fn wait_for_join_barrier(
+        &self,
+        index: usize,
+        registered: &Registered,
+    ) -> Result<(), TestkitError> {
+        self.wait_phase(index, LocalMachinePhase::Joining, Duration::from_secs(60))
+            .await?;
+        if self.inspect(index, Vec::new()).await.is_ok_and(|details| {
             version_reached(&details.store_version, &registered.target_versions)
         }) {
             return Err(TestkitError::Rpc(
                 "joining Machine reached its frontier while gossip was blocked".into(),
             ));
         }
-        if self.machines(1).await.is_ok() {
+        if self.machines(index).await.is_ok() {
             return Err(TestkitError::Rpc(
                 "joining Machine served store-dependent data below its frontier".into(),
             ));
         }
         self.insert_known_gap(
-            1,
+            index,
             registered.target_versions.keys().next().ok_or_else(|| {
                 TestkitError::Rpc("registration returned an empty join frontier".into())
             })?,
         )?;
-        self.gossip_rule(1, "--delete")?;
-        self.wait_store_version(1, &registered.target_versions, Duration::from_secs(120))
+        self.gossip_rule(index, "--delete")?;
+        self.wait_store_version(index, &registered.target_versions, Duration::from_secs(120))
             .await?;
-        if self.machines(1).await.is_ok() {
+        if self.machines(index).await.is_ok() {
             return Err(TestkitError::Rpc(
                 "joining Machine served store-dependent data while a known gap remained".into(),
             ));
         }
-        self.clear_known_gaps(1)?;
+        self.clear_known_gaps(index)?;
         self.wait_phase(
-            1,
+            index,
             LocalMachinePhase::Participating,
             Duration::from_secs(120),
         )
         .await?;
-        self.read_seeded_observation(1)
+        self.read_seeded_observation(index)
     }
 
     pub async fn initialize_first(&self) -> Result<Machine, TestkitError> {
@@ -339,15 +332,19 @@ impl Cluster {
     }
 
     pub async fn register_second(&self) -> Result<ployz_core::Registered, TestkitError> {
-        let second = self.inspect(1, vec![self.endpoint(1)?]).await?;
+        self.register(1).await
+    }
+
+    async fn register(&self, index: usize) -> Result<Registered, TestkitError> {
+        let joining = self.inspect(index, vec![self.endpoint(index)?]).await?;
         let mut client = self.client(0).await?;
         Ok(response(
             client
                 .register(
                     RpcRequest::register(RegisterRequest {
-                        name: MachineName::parse("machine-2")?,
-                        public_key: second.public_key,
-                        advertised_endpoints: second.advertised_endpoints,
+                        name: MachineName::parse(format!("machine-{}", index + 1))?,
+                        public_key: joining.public_key,
+                        advertised_endpoints: joining.advertised_endpoints,
                     })
                     .encode()?,
                 )
@@ -636,6 +633,21 @@ impl Cluster {
         }
     }
 
+    pub fn container_network_shell(
+        &self,
+        machine_index: usize,
+        container_id: &ContainerId,
+        script: &str,
+    ) -> Result<String, TestkitError> {
+        self.machine_shell(
+            machine_index,
+            &format!(
+                "pid=$(docker inspect --format '{{{{.State.Pid}}}}' {container_id}); nsenter --target \"$pid\" --net sh -c {}",
+                shell_quote(script)
+            ),
+        )
+    }
+
     async fn wait_phase(
         &self,
         index: usize,
@@ -855,8 +867,8 @@ pub enum TestkitError {
     DockerCommand(String),
     #[error("Machine {0} did not become ready")]
     ReadinessTimeout(String),
-    #[error("expected two Machines, found {0}")]
-    MachineCount(usize),
+    #[error("expected {expected} Machines, found {actual}")]
+    MachineCount { expected: usize, actual: usize },
     #[error("Machine index {0} is out of range")]
     MachineIndex(usize),
     #[error("Machine API failed: {0}")]
@@ -967,14 +979,6 @@ mod tests {
             visible_peers: Vec::new(),
             target_versions: BTreeMap::from([("actor".to_owned(), 7)]),
         };
-        assert_eq!(
-            two_machine_orchestration(),
-            [
-                OrchestrationStep::Initialize,
-                OrchestrationStep::Register,
-                OrchestrationStep::Join,
-            ]
-        );
         let join = join_request(&first, &registration);
         assert_eq!(join.registration.assigned_machine, second);
         assert_eq!(join.registration.visible_peers, vec![first]);

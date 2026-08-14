@@ -16,12 +16,15 @@ use bollard::{
     },
 };
 use futures_util::TryStreamExt;
-use ployz_core::{CreateVolumeRequest, DockerVolumeId, PullPolicy, ResolvedServiceSpec};
+use ployz_core::{
+    CreateVolumeRequest, DockerVolumeId, MachineGateway, PullPolicy, ResolvedServiceSpec,
+};
 
 use super::*;
 
 // ponytail: serialize tests sharing the fixed Ployz network; use unique networks if parallelism matters.
 static DOCKER_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const TEST_GATEWAY: MachineGateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
 
 #[tokio::test]
 #[ignore = "requires Docker and alpine:3.23.3"]
@@ -39,7 +42,13 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     let spec = fixture_spec(&service_id, &service_name);
 
     let created = docker
-        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .create(
+            &machine_id,
+            TEST_GATEWAY,
+            &specs,
+            ContainerKind::ServiceContainer,
+            &spec,
+        )
         .await
         .unwrap();
     let inspected = docker
@@ -99,7 +108,13 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     ));
 
     let reset_target = docker
-        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .create(
+            &machine_id,
+            TEST_GATEWAY,
+            &specs,
+            ContainerKind::ServiceContainer,
+            &spec,
+        )
         .await
         .unwrap();
     let malformed_reset_target = create_managed_container(
@@ -224,7 +239,13 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     .unwrap();
 
     let created = docker
-        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .create(
+            &machine_id,
+            TEST_GATEWAY,
+            &specs,
+            ContainerKind::ServiceContainer,
+            &spec,
+        )
         .await
         .unwrap();
     let raw = docker
@@ -242,6 +263,9 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     );
     assert_eq!(host.memory, Some(67_108_864));
     assert_eq!(host.memory_reservation, Some(33_554_432));
+    assert_eq!(host.dns, Some(vec![TEST_GATEWAY.0.to_string()]));
+    assert_eq!(host.dns_search, Some(vec!["internal".into()]));
+    assert_eq!(host.dns_options, Some(vec!["ndots:1".into()]));
     assert!(host.port_bindings.unwrap().contains_key("8080/tcp"));
     let mounts = host.mounts.unwrap();
     assert_eq!(mounts.first().unwrap().target.as_deref(), Some("/scratch"));
@@ -276,6 +300,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
         docker
             .create(
                 &machine_id,
+                TEST_GATEWAY,
                 &specs,
                 ContainerKind::ServiceContainer,
                 &failed_spec,
@@ -432,7 +457,13 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     .unwrap();
 
     let container_id = docker
-        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .create(
+            &machine_id,
+            TEST_GATEWAY,
+            &specs,
+            ContainerKind::ServiceContainer,
+            &spec,
+        )
         .await
         .unwrap()
         .container_id;

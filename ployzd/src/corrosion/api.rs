@@ -1,8 +1,14 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{io, net::SocketAddr, pin::Pin, time::Duration};
 
+use bytes::Bytes;
+use futures_util::{Stream, StreamExt, TryStreamExt};
 use reqwest::{Client, Url, header};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::Value;
+use tokio_util::{
+    codec::{FramedRead, LinesCodec},
+    io::StreamReader,
+};
 
 use super::Error;
 
@@ -133,7 +139,10 @@ impl ApiClient {
                 QueryEvent::Row(_row_id, values) if columns.is_some() => rows.push(values),
                 QueryEvent::EndOfQuery { .. } if columns.is_some() => ended = true,
                 QueryEvent::Error(error) => return Err(Error::Api(error)),
-                QueryEvent::Columns(_) | QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => {
+                QueryEvent::Columns(_)
+                | QueryEvent::Row(_, _)
+                | QueryEvent::EndOfQuery { .. }
+                | QueryEvent::Change(_) => {
                     return Err(Error::Protocol("query events arrived out of order".into()));
                 }
             }
@@ -146,6 +155,73 @@ impl ApiClient {
             return Err(Error::Protocol("row length does not match columns".into()));
         }
         Ok(QueryResult { columns, rows })
+    }
+
+    pub(crate) async fn subscribe(&self, statement: Statement) -> Result<Subscription, Error> {
+        let response = self
+            .client
+            .post(self.base_url.join("v1/subscriptions").expect("static path"))
+            .json(&statement)
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::Api(format!(
+                "HTTP {status}: {}",
+                response.text().await?
+            )));
+        }
+        let chunks: ByteStream = Box::pin(response.bytes_stream().map_err(io::Error::other));
+        let mut subscription = Subscription {
+            lines: FramedRead::new(
+                StreamReader::new(chunks),
+                LinesCodec::new_with_max_length(8 * 1024 * 1024),
+            ),
+        };
+        loop {
+            match subscription.next_event().await? {
+                QueryEvent::Columns(_) | QueryEvent::Row(_, _) => {}
+                QueryEvent::EndOfQuery { .. } => return Ok(subscription),
+                QueryEvent::Change(_) => {
+                    return Err(Error::Protocol(
+                        "subscription change preceded end-of-query".into(),
+                    ));
+                }
+                QueryEvent::Error(error) => return Err(Error::Api(error)),
+            }
+        }
+    }
+}
+
+type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>;
+
+pub(crate) struct Subscription {
+    lines: FramedRead<StreamReader<ByteStream, Bytes>, LinesCodec>,
+}
+
+impl Subscription {
+    pub(crate) async fn changed(&mut self) -> Result<(), Error> {
+        match self.next_event().await? {
+            QueryEvent::Change(_) => Ok(()),
+            QueryEvent::Error(error) => Err(Error::Api(error)),
+            QueryEvent::Columns(_) | QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(
+                Error::Protocol("initial subscription event followed end-of-query".into()),
+            ),
+        }
+    }
+
+    async fn next_event(&mut self) -> Result<QueryEvent, Error> {
+        loop {
+            let line = self
+                .lines
+                .next()
+                .await
+                .ok_or_else(|| Error::Protocol("subscription stream closed".into()))?
+                .map_err(|error| Error::Protocol(error.to_string()))?;
+            if !line.trim().is_empty() {
+                return Ok(serde_json::from_str(&line)?);
+            }
+        }
     }
 }
 
@@ -215,5 +291,6 @@ enum QueryEvent {
         #[serde(rename = "change_id")]
         _change_id: Option<u64>,
     },
+    Change(IgnoredAny),
     Error(String),
 }

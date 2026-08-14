@@ -10,8 +10,8 @@ use bollard::models::{
     RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
-    ContainerKind, HealthcheckSpec, HostBind, MachineId, PortPublication, ResolvedServiceSpec,
-    ServiceVolume, TransportProtocol, VolumeSource,
+    ContainerKind, HealthcheckSpec, HostBind, MachineGateway, MachineId, PortPublication,
+    ResolvedServiceSpec, ServiceVolume, TransportProtocol, VolumeSource,
 };
 
 use super::{
@@ -20,6 +20,7 @@ use super::{
 
 pub(super) fn container_create_body(
     machine_id: &MachineId,
+    gateway: MachineGateway,
     kind: ContainerKind,
     spec: &ResolvedServiceSpec,
 ) -> Result<ContainerCreateBody, Error> {
@@ -68,6 +69,9 @@ pub(super) fn container_create_body(
     };
     let resources = &container.resources;
     let host_config = HostConfig {
+        dns: Some(vec![gateway.0.to_string()]),
+        dns_search: Some(vec!["internal".into()]),
+        dns_options: Some(vec!["ndots:1".into()]),
         init: container.init,
         network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),
         log_config: container
