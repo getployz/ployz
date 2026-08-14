@@ -58,7 +58,9 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             if tty {
                 send_terminal_size(&session.input).await?;
             }
-            let stdin_task = (!detach).then(|| spawn_stdin(session.input.clone()));
+            if !detach {
+                spawn_stdin(session.input.clone());
+            }
             let resize_task = tty.then(|| spawn_resize(session.input.clone()));
             drop(session.input);
             let mut exit = 0;
@@ -67,18 +69,16 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                     .map_err(|error| error.to_string())?
                 {
                     ExecResponseFrame::ExecId(_) => {}
-                    ExecResponseFrame::Stdout(bytes) => std::io::stdout()
-                        .write_all(&bytes)
-                        .map_err(|error| error.to_string())?,
+                    ExecResponseFrame::Stdout(bytes) => {
+                        write_stdout_frame(&mut std::io::stdout(), &bytes)
+                            .map_err(|error| error.to_string())?
+                    }
                     ExecResponseFrame::Stderr(bytes) => std::io::stderr()
                         .write_all(&bytes)
                         .map_err(|error| error.to_string())?,
                     ExecResponseFrame::Exit(code) => exit = code,
                     ExecResponseFrame::Error(error) => return Err(error.message.into()),
                 }
-            }
-            if let Some(task) = stdin_task {
-                task.abort();
             }
             if let Some(task) = resize_task {
                 task.abort();
@@ -349,6 +349,11 @@ fn timestamp(entry: &LogEntry, utc: bool) -> String {
 
 struct RawTerminal;
 
+fn write_stdout_frame(output: &mut dyn Write, bytes: &[u8]) -> std::io::Result<()> {
+    output.write_all(bytes)?;
+    output.flush()
+}
+
 impl RawTerminal {
     fn enable() -> Result<Self, String> {
         terminal::enable_raw_mode().map_err(|error| error.to_string())?;
@@ -376,67 +381,30 @@ async fn send_terminal_size(
         .map_err(|_| "exec request stream closed".into())
 }
 
-#[cfg(unix)]
-fn spawn_stdin(
-    sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        use std::io::Read;
+fn spawn_stdin(sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>) {
+    spawn_stdin_reader(std::io::stdin(), sender);
+}
 
-        let Ok(stdin) = std::fs::File::open("/dev/stdin") else {
-            return;
-        };
-        let Ok(mut stdin) = tokio::io::unix::AsyncFd::new(stdin) else {
-            return;
-        };
+fn spawn_stdin_reader(
+    mut stdin: impl std::io::Read + Send + 'static,
+    sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
+) {
+    // ponytail: a stalled reader can linger until CLI exit; add cancellable OS I/O if exec becomes reusable.
+    drop(std::thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
-        loop {
-            let Ok(mut ready) = stdin.readable_mut().await else {
-                return;
-            };
-            let read = match ready.try_io(|fd| fd.get_mut().read(&mut buffer)) {
-                Ok(Ok(read)) => read,
-                Ok(Err(_)) => return,
-                Err(_) => continue,
-            };
+        while let Ok(read) = stdin.read(&mut buffer) {
             if read == 0 {
                 return;
             }
-            let frame = ExecRequestFrame::Stdin(buffer.get(..read).unwrap_or_default().to_vec());
+            let frame = ExecRequestFrame::Stdin(buffer.split_at(read).0.to_vec());
             let Ok(payload) = frame.encode() else {
                 return;
             };
-            if sender.send(payload).await.is_err() {
+            if sender.blocking_send(payload).is_err() {
                 return;
             }
         }
-    })
-}
-
-#[cfg(not(unix))]
-fn spawn_stdin(
-    sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-
-        let mut stdin = tokio::io::stdin();
-        let mut buffer = [0_u8; 8192];
-        loop {
-            let Ok(read) = stdin.read(&mut buffer).await else {
-                return;
-            };
-            if read == 0 {
-                return;
-            }
-            let Ok(payload) = ExecRequestFrame::Stdin(buffer[..read].to_vec()).encode() else {
-                return;
-            };
-            if sender.send(payload).await.is_err() {
-                return;
-            }
-        }
-    })
+    }));
 }
 
 #[cfg(unix)]
@@ -468,4 +436,89 @@ fn spawn_resize(
     _sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async {})
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{BufWriter, Read},
+        sync::mpsc,
+        time::Duration,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn redirected_regular_file_stdin_is_framed() {
+        let input = include_bytes!("../../Cargo.toml");
+        let file = std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+
+        spawn_stdin_reader(file, sender);
+        let mut actual = Vec::new();
+        while let Some(payload) = receiver.recv().await {
+            let ExecRequestFrame::Stdin(bytes) = ExecRequestFrame::decode(&payload).unwrap() else {
+                panic!("unexpected stdin frame")
+            };
+            actual.extend(bytes);
+        }
+        assert_eq!(actual, input.to_vec());
+    }
+
+    #[test]
+    fn streamed_stdout_frame_is_flushed() {
+        let mut output = BufWriter::new(Vec::new());
+
+        write_stdout_frame(&mut output, b"ready").unwrap();
+
+        assert!(output.buffer().is_empty());
+        assert_eq!(output.get_ref(), b"ready");
+    }
+
+    #[test]
+    fn stalled_stdin_reader_does_not_block_runtime_shutdown() {
+        struct StalledRead {
+            started: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+        }
+
+        impl Read for StalledRead {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.started.send(()).unwrap();
+                self.release.recv().unwrap();
+                Ok(0)
+            }
+        }
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+                spawn_stdin_reader(
+                    StalledRead {
+                        started: started_tx,
+                        release: release_rx,
+                    },
+                    sender,
+                );
+            });
+            drop(runtime);
+            finished_tx.send(()).unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let shutdown = finished_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+
+        assert!(
+            shutdown.is_ok(),
+            "runtime waited for the stalled stdin read"
+        );
+    }
 }
