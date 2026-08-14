@@ -50,6 +50,8 @@ struct Args {
     socket: PathBuf,
     #[arg(long, default_value = DEFAULT_METRICS_ADDRESS)]
     metrics_address: SocketAddr,
+    #[arg(long = "dns-upstream", value_name = "ADDR")]
+    dns_upstreams: Vec<SocketAddr>,
     #[arg(long, hide = true)]
     machine_api_address: Option<SocketAddr>,
 }
@@ -99,6 +101,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut corrosion = start_corrosion(&args, &store).await?;
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
+    let dns_upstreams = (!args.dns_upstreams.is_empty()).then(|| args.dns_upstreams.clone());
     let specs = MachineSpecStore::open(args.data_dir.join("machine.db")).await?;
     let docker = LocalDocker::connect()?;
     let observer = replicated_store.clone().map(|replicated| {
@@ -206,7 +209,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dns = async {
         match (local_record.machine.clone(), replicated_store.clone()) {
             (Some(machine), Some(replicated)) => {
-                dns::run(machine, replicated, None, shutdown_rx.clone()).await
+                dns::run(machine, replicated, dns_upstreams, shutdown_rx.clone()).await
             }
             _ => {
                 wait_for_shutdown(shutdown_rx.clone()).await;

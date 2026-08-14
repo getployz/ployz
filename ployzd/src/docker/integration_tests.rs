@@ -300,6 +300,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
         docker
             .create(
                 &machine_id,
+                TEST_GATEWAY,
                 &specs,
                 ContainerKind::ServiceContainer,
                 &failed_spec,
@@ -456,7 +457,13 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     .unwrap();
 
     let container_id = docker
-        .create(&machine_id, &specs, ContainerKind::ServiceContainer, &spec)
+        .create(
+            &machine_id,
+            TEST_GATEWAY,
+            &specs,
+            ContainerKind::ServiceContainer,
+            &spec,
+        )
         .await
         .unwrap()
         .container_id;

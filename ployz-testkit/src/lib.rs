@@ -600,10 +600,6 @@ impl Cluster {
         docker(["restart", &self.machine(index)?.name])
     }
 
-    pub fn stop(&self, index: usize) -> Result<(), TestkitError> {
-        docker(["stop", &self.machine(index)?.name])
-    }
-
     pub fn remote_machine_api_rule(
         &self,
         entry_index: usize,
