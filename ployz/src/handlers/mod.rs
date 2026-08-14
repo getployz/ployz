@@ -4,14 +4,13 @@ use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
 use thiserror::Error as ThisError;
 
-use crate::compose::{LoadOptions, load_project};
-
 mod build;
 mod context;
 mod image;
 mod operator;
 mod service;
 mod volume;
+mod workflow;
 
 #[derive(Debug, Eq, PartialEq, ThisError)]
 pub enum Error {
@@ -77,29 +76,6 @@ fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
 
 fn not_implemented(command: &str) -> Result<(), Error> {
     Err(format!("ployz {command} is not implemented yet").into())
-}
-
-fn compose_not_implemented(
-    matches: &ArgMatches,
-    command: &str,
-    all_profiles: bool,
-) -> Result<(), Error> {
-    let leaf = leaf_matches(matches);
-    let project = load_project(&LoadOptions {
-        command: command.into(),
-        files: string_values(leaf, "file")
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-        profiles: string_values(leaf, "profile"),
-        all_profiles,
-        ..Default::default()
-    })
-    .map_err(|error| error.to_string())?;
-    for warning in &project.warnings {
-        eprintln!("WARNING: {warning}");
-    }
-    not_implemented(command)
 }
 
 fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
@@ -220,7 +196,7 @@ stub_handlers! {
                 .map(String::as_str),
         )
     } => "ctx use";
-    deploy(root) { compose_not_implemented(root, "deploy", false) } => "deploy";
+    deploy(root) { workflow::deploy(root) } => "deploy";
     dns_release => "dns release";
     dns_reserve => "dns reserve";
     dns_show => "dns show";
@@ -251,15 +227,15 @@ stub_handlers! {
     proxy(root) { operator::proxy(root) } => "proxy";
     process_list(root) { service::processes(root) } => "ps";
     remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "rm";
-    run_service => "run";
-    scale => "scale";
+    run_service(root) { workflow::run(root) } => "run";
+    scale(root) { workflow::scale(root) } => "scale";
     service_exec(root) { operator::exec(root) } => "service exec";
     service_inspect(root) { service::inspect(root) } => "service inspect";
     service_logs(root) { operator::service_logs(root) } => "service logs";
     service_list(root) { service::list(root) } => "service ls";
     service_remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "service rm";
-    service_run => "service run";
-    service_scale => "service scale";
+    service_run(root) { workflow::run(root) } => "service run";
+    service_scale(root) { workflow::scale(root) } => "service scale";
     service_start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "service start";
     service_stop(root) { service::change(root, ployz_core::ContainerAction::Stop) } => "service stop";
     start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "start";
@@ -331,6 +307,26 @@ mod tests {
         assert_eq!(
             dispatch(&matches, &mut command),
             Err("expected KEY=VALUE, got \"missing-delimiter\"".into())
+        );
+    }
+
+    #[test]
+    fn scale_zero_fails_before_connecting() {
+        let mut command = crate::cli::command();
+        let matches = command
+            .clone()
+            .try_get_matches_from([
+                "ployz",
+                "--connect",
+                "tcp://127.0.0.1:1",
+                "scale",
+                "api",
+                "0",
+            ])
+            .unwrap();
+        assert_eq!(
+            dispatch(&matches, &mut command),
+            Err("replicas must be greater than zero".into())
         );
     }
 

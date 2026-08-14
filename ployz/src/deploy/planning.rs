@@ -47,7 +47,15 @@ pub fn plan_deploy(
     };
     if !is_new_service
         && snapshot.containers.iter().any(|container| {
-            container.service_id == service_id && container.resolved_spec.mode != requested.mode
+            container.service_id == service_id
+                && !matches!(
+                    (&container.resolved_spec.mode, &requested.mode),
+                    (ServiceMode::Global, ServiceMode::Global)
+                        | (
+                            ServiceMode::Replicated { .. },
+                            ServiceMode::Replicated { .. }
+                        )
+                )
         })
     {
         return Err(PlanError::ServiceModeCannotChange);

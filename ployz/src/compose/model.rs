@@ -41,6 +41,33 @@ impl ComposeProject {
                 .flatten()
         })
     }
+
+    pub fn select_services(&self, selected: &[String]) -> Result<Self, ComposeError> {
+        if selected.is_empty() {
+            return Ok(self.clone());
+        }
+        let mut included = std::collections::BTreeSet::new();
+        let mut pending = selected.to_vec();
+        while let Some(name) = pending.pop() {
+            if !self.services.contains_key(&name) {
+                return Err(ComposeError::Invalid(format!("undefined service '{name}'")));
+            }
+            if included.insert(name.clone()) {
+                pending.extend(self.dependencies.get(&name).into_iter().flatten().cloned());
+            }
+        }
+        let mut project = self.clone();
+        project.services.retain(|name, _| included.contains(name));
+        project.builds.retain(|name, _| included.contains(name));
+        project.dependencies.retain(|name, dependencies| {
+            if !included.contains(name) {
+                return false;
+            }
+            dependencies.retain(|dependency| included.contains(dependency));
+            true
+        });
+        Ok(project)
+    }
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

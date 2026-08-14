@@ -79,7 +79,10 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     }
 }
 
-fn push_targets(explicit: &[String], configured: &[ployz_core::MachineSelector]) -> Vec<String> {
+pub(super) fn push_targets(
+    explicit: &[String],
+    configured: &[ployz_core::MachineSelector],
+) -> Vec<String> {
     if explicit.is_empty() {
         configured.iter().map(ToString::to_string).collect()
     } else {

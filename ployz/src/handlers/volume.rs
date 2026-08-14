@@ -315,7 +315,7 @@ fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
     format!("one or more Machines failed: {failures}")
 }
 
-fn confirm() -> Result<bool, Error> {
+pub(super) fn confirm() -> Result<bool, Error> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("confirmation requires a terminal; pass --yes to continue".into());
     }
