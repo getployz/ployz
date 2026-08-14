@@ -28,6 +28,17 @@ fn main() {
     let list_volumes = method("list_volumes", "ListVolumes");
     let inspect_volume = method("inspect_volume", "InspectVolume");
     let remove_volume = method("remove_volume", "RemoveVolume");
+    let exec = tonic_build::manual::Method::builder()
+        .name("exec")
+        .route_name("Exec")
+        .input_type("crate::rpc::OpaquePayload")
+        .output_type("crate::rpc::OpaquePayload")
+        .codec_path("tonic::codec::ProstCodec")
+        .client_streaming()
+        .server_streaming()
+        .build();
+    let container_logs = streaming_method("container_logs", "ContainerLogs");
+    let machine_logs = streaming_method("machine_logs", "MachineLogs");
     let machine_rpc = tonic_build::manual::Service::builder()
         .name("MachineRpc")
         .package("ployz.rpc.v1")
@@ -48,9 +59,23 @@ fn main() {
         .method(list_volumes)
         .method(inspect_volume)
         .method(remove_volume)
+        .method(exec)
+        .method(container_logs)
+        .method(machine_logs)
         .method(reset)
         .build();
     tonic_build::manual::Builder::new().compile(&[machine_rpc]);
+}
+
+fn streaming_method(name: &str, route: &str) -> tonic_build::manual::Method {
+    tonic_build::manual::Method::builder()
+        .name(name)
+        .route_name(route)
+        .input_type("crate::rpc::OpaquePayload")
+        .output_type("crate::rpc::OpaquePayload")
+        .codec_path("tonic::codec::ProstCodec")
+        .server_streaming()
+        .build()
 }
 
 fn method(name: &str, route: &str) -> tonic_build::manual::Method {

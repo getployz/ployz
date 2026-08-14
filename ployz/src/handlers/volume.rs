@@ -95,10 +95,10 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         let mut client = connect_from(root).await?;
         let (volumes, result) = discover(&mut client, &selectors).await?;
         if !result.all_targets_succeeded() {
-            return Err(failure_summary(&result));
+            return Err(failure_summary(&result).into());
         }
         match NameMatches::from_matches(filter_volumes(&volumes, std::slice::from_ref(&name))) {
-            NameMatches::None => Err(format!("Docker Volume {name:?} was not found")),
+            NameMatches::None => Err(format!("Docker Volume {name:?} was not found").into()),
             NameMatches::One(mut volume) => {
                 volume.volume = client
                     .inspect_volume(&volume.volume.id)
@@ -117,7 +117,8 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     .map(|volume| volume.machine_name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
-            )),
+            )
+            .into()),
         }
     })
 }
@@ -142,10 +143,10 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
         {
-            return Err(format!("Docker Volume {name:?} was not found"));
+            return Err(format!("Docker Volume {name:?} was not found").into());
         }
         if volumes.is_empty() {
-            return Err(failure_summary(&result));
+            return Err(failure_summary(&result).into());
         }
         println!("The following Docker Volumes will be removed:");
         for volume in &volumes {
@@ -168,8 +169,8 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             (!removal.all_targets_succeeded()).then(|| failure_summary(&removal)),
         ) {
             (None, None) => Ok(()),
-            (Some(failure), None) | (None, Some(failure)) => Err(failure),
-            (Some(discovery), Some(removal)) => Err(format!("{discovery}; {removal}")),
+            (Some(failure), None) | (None, Some(failure)) => Err(failure.into()),
+            (Some(discovery), Some(removal)) => Err(format!("{discovery}; {removal}").into()),
         }
     })
 }
@@ -207,7 +208,7 @@ async fn connect_from(root: &ArgMatches) -> Result<Client, Error> {
         root.get_one::<String>("context").map(String::as_str),
     )
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| Error::from(error.to_string()))
 }
 
 fn selected_machines(
@@ -250,9 +251,7 @@ fn select_create_machine(
         let selected = selected_machines(machines.to_vec(), &[selector.into()])?;
         return match selected.as_slice() {
             [machine] => Ok(Some(machine.clone())),
-            _ => Err(format!(
-                "Machine selector {selector:?} matched multiple Machines"
-            )),
+            _ => Err(format!("Machine selector {selector:?} matched multiple Machines").into()),
         };
     }
     match machines {
@@ -281,12 +280,12 @@ fn select_create_machine(
                 .ok()
                 .and_then(|value| value.checked_sub(1))
                 .filter(|index| *index < machines.len())
-                .ok_or_else(|| "invalid selection".to_owned())?;
-            machines
+                .ok_or_else(|| Error::from("invalid selection"))?;
+            Ok(machines
                 .get(index)
                 .cloned()
                 .map(Some)
-                .ok_or_else(|| "invalid selection".to_owned())
+                .ok_or_else(|| Error::from("invalid selection"))?)
         }
     }
 }
@@ -333,7 +332,7 @@ fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
     matches
         .get_one::<String>(name)
         .cloned()
-        .ok_or_else(|| format!("{name} is required"))
+        .ok_or_else(|| Error::from(format!("{name} is required")))
 }
 
 fn run(future: impl Future<Output = Result<(), Error>>) -> Result<(), Error> {

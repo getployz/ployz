@@ -1,13 +1,33 @@
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
+use thiserror::Error as ThisError;
 
 use crate::compose::{LoadOptions, load_project};
 
 mod context;
+mod operator;
 mod service;
 mod volume;
 
-pub type Error = String;
+#[derive(Debug, Eq, PartialEq, ThisError)]
+pub enum Error {
+    #[error("{0}")]
+    Message(String),
+    #[error("remote command exited with status {0}")]
+    Exit(u8),
+}
+
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<&str> for Error {
+    fn from(message: &str) -> Self {
+        Self::Message(message.to_owned())
+    }
+}
 
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
@@ -52,7 +72,7 @@ fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
 }
 
 fn not_implemented(command: &str) -> Result<(), Error> {
-    Err(format!("ployz {command} is not implemented yet"))
+    Err(format!("ployz {command} is not implemented yet").into())
 }
 
 fn compose_not_implemented(
@@ -147,20 +167,13 @@ stub_handlers! {
     dns_release => "dns release";
     dns_reserve => "dns reserve";
     dns_show => "dns show";
-    exec => "exec";
+    exec(root) { operator::exec(root) } => "exec";
     image_list => "image ls";
     image_push => "image push";
     images => "images";
     inspect(root) { service::inspect(root) } => "inspect";
     logs(root) {
-        if leaf_matches(root)
-            .get_many::<String>("service-or-container")
-            .is_some_and(|services| services.len() > 0)
-        {
-            not_implemented("logs")
-        } else {
-            compose_not_implemented(root, "logs", true)
-        }
+        operator::service_logs(root)
     } => "logs";
     list(root) { service::list(root) } => "ls";
     machine_add(root) { provision_then_continue(leaf_matches(root), "machine add") } => "machine add";
@@ -172,20 +185,20 @@ stub_handlers! {
             provision_then_continue(matches, "machine init")
         }
     } => "machine init";
-    machine_logs => "machine logs";
+    machine_logs(root) { operator::machine_logs(root) } => "machine logs";
     machine_list => "machine ls";
     machine_rename => "machine rename";
     machine_remove => "machine rm";
     machine_rtt => "machine rtt";
     machine_update => "machine update";
-    proxy => "proxy";
+    proxy(root) { operator::proxy(root) } => "proxy";
     process_list(root) { service::processes(root) } => "ps";
     remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "rm";
     run_service => "run";
     scale => "scale";
-    service_exec => "service exec";
+    service_exec(root) { operator::exec(root) } => "service exec";
     service_inspect(root) { service::inspect(root) } => "service inspect";
-    service_logs => "service logs";
+    service_logs(root) { operator::service_logs(root) } => "service logs";
     service_list(root) { service::list(root) } => "service ls";
     service_remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "service rm";
     service_run => "service run";

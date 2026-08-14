@@ -21,7 +21,7 @@ use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tonic::{
-    Request, Response, Status,
+    Request, Response, Status, Streaming,
     transport::{Channel, Endpoint, Server},
 };
 
@@ -129,6 +129,10 @@ struct DiscoveryService {
 
 #[tonic::async_trait]
 impl MachineRpc for DiscoveryService {
+    type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+
     async fn describe_contract(
         &self,
         request: Request<OpaquePayload>,
@@ -270,6 +274,27 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn exec(
+        &self,
+        _request: Request<Streaming<OpaquePayload>>,
+    ) -> Result<Response<Self::ExecStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn container_logs(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::ContainerLogsStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
+    async fn machine_logs(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::MachineLogsStream>, Status> {
         Err(Status::unimplemented("unused"))
     }
 

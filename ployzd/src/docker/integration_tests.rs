@@ -9,7 +9,9 @@ use std::{
 
 use bollard::{
     exec::StartExecResults,
-    models::{ContainerCreateBody, ExecConfig, MountType, NetworkCreateRequest},
+    models::{
+        ContainerCreateBody, ExecConfig as DockerExecConfig, MountType, NetworkCreateRequest,
+    },
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder,
         RenameContainerOptionsBuilder, StartContainerOptions,
@@ -25,6 +27,8 @@ use super::*;
 // ponytail: serialize tests sharing the fixed Ployz network; use unique networks if parallelism matters.
 static DOCKER_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const TEST_GATEWAY: MachineGateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+
+mod stream;
 
 #[tokio::test]
 #[ignore = "requires Docker and alpine:3.23.3"]
@@ -532,7 +536,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         .client
         .create_exec(
             container_id.as_str(),
-            ExecConfig {
+            DockerExecConfig {
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
                 cmd: Some(vec![

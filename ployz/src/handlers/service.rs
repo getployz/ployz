@@ -214,7 +214,20 @@ fn stop_options(
     Ok((signal, timeout))
 }
 
-fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
+pub(super) fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
+    with_client_context(root, None, work)
+}
+
+pub(super) fn with_client_context<F>(
+    root: &ArgMatches,
+    context_override: Option<&str>,
+    work: F,
+) -> Result<(), Error>
 where
     F: for<'a> FnOnce(
         &'a mut crate::connect::Client,
@@ -226,7 +239,8 @@ where
         .ok_or_else(|| "Ployz config path is required".to_owned())?;
     let config = crate::context::expand_home(Path::new(config));
     let direct = leaf.get_one::<String>("connect").map(String::as_str);
-    let context = leaf.get_one::<String>("context").map(String::as_str);
+    let context =
+        context_override.or_else(|| leaf.get_one::<String>("context").map(String::as_str));
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

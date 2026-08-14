@@ -5,15 +5,16 @@ use std::{
 };
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CREATE_VOLUME_CAPABILITY, CapabilityName, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY,
-    INSPECT_MACHINE_CAPABILITY, INSPECT_VOLUME_CAPABILITY, JOIN_MACHINE_CAPABILITY,
-    LIST_CONTAINERS_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
-    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineObservation, MachineRpc,
-    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, REGISTER_MACHINE_CAPABILITY,
-    REMOVE_CONTAINER_CAPABILITY, REMOVE_VOLUME_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, START_CONTAINER_CAPABILITY,
-    STOP_CONTAINER_CAPABILITY,
+    CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CREATE_VOLUME_CAPABILITY,
+    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
+    INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
+    INSPECT_VOLUME_CAPABILITY, JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
+    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LogMetadata, LogOrigin,
+    MACHINE_LOGS_CAPABILITY, Machine, MachineDetails, MachineId, MachineLogService,
+    MachineObservation, MachineRpc, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
+    REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    RESET_MACHINE_CAPABILITY, Registered, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -22,6 +23,7 @@ use tonic::{Request, Response, Status};
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore},
     docker::{Error as DockerError, LocalDocker, MachineSpecStore},
+    logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachineStore, StoreError},
     network::{allocate_machine_subnet, discover_endpoints, machine_gateway, management_address},
 };
@@ -100,6 +102,10 @@ impl MachineService {
 
 #[tonic::async_trait]
 impl MachineRpc for MachineService {
+    type ExecStream = RpcStream;
+    type ContainerLogsStream = RpcStream;
+    type MachineLogsStream = RpcStream;
+
     async fn describe_contract(
         &self,
         request: Request<OpaquePayload>,
@@ -135,6 +141,9 @@ impl MachineRpc for MachineService {
                     LIST_VOLUMES_CAPABILITY,
                     INSPECT_VOLUME_CAPABILITY,
                     REMOVE_VOLUME_CAPABILITY,
+                    EXEC_CONTAINER_CAPABILITY,
+                    CONTAINER_LOGS_CAPABILITY,
+                    MACHINE_LOGS_CAPABILITY,
                 ]
                 .into_iter()
                 .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
@@ -607,6 +616,76 @@ impl MachineRpc for MachineService {
             Ok(()) => respond(RpcResponse::volume_removed()),
             Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
         }
+    }
+
+    async fn exec(
+        &self,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<Self::ExecStream>, Status> {
+        let containers = self
+            .containers()
+            .map_err(|error| Status::unavailable(error.message))?;
+        containers
+            .docker
+            .exec(request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn container_logs(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::ContainerLogsStream>, Status> {
+        let RpcRequestBody::ContainerLogs(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected container_logs request"));
+        };
+        let containers = self
+            .containers()
+            .map_err(|error| Status::unavailable(error.message))?;
+        let record = self.local_record()?;
+        let machine = record
+            .machine
+            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
+        containers
+            .docker
+            .container_logs(&record.id, &machine.name, &containers.specs, request)
+            .await
+            .map(Response::new)
+    }
+
+    async fn machine_logs(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::MachineLogsStream>, Status> {
+        let RpcRequestBody::MachineLogs(request) = request_body(request)? else {
+            return Err(Status::invalid_argument("expected machine_logs request"));
+        };
+        let record = self.local_record()?;
+        let machine = record
+            .machine
+            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
+        let metadata = LogMetadata {
+            origin: LogOrigin::Machine {
+                service: request.service,
+            },
+            machine_id: record.id,
+            machine_name: machine.name,
+        };
+        let source = match request.service {
+            MachineLogService::Ployz | MachineLogService::Docker => {
+                open_journal_logs(request.service.as_str(), &request.options).await?
+            }
+            MachineLogService::Corrosion => self
+                .containers()
+                .map_err(|error| Status::unavailable(error.message))?
+                .docker
+                .raw_logs(crate::corrosion::DEFAULT_CONTAINER_NAME, &request.options)?,
+        };
+        Ok(Response::new(serve_logs(
+            source,
+            metadata,
+            request.options.follow,
+        )))
     }
 
     async fn reset(

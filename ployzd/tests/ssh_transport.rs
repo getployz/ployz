@@ -16,6 +16,7 @@ use ployz::{
 use ployz_core::{MachineRpcClient, MachineRpcServer, RpcRequest};
 use ployzd::{machine::LocalMachineStore, rpc::MachineService};
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpListener as TokioTcpListener, UnixListener},
     sync::watch,
 };
@@ -52,7 +53,7 @@ async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
     let sshd = start_sshd(&root, port);
     wait_for_port(SocketAddr::from(([127, 0, 0, 1], port)));
     let ssh = ssh_wrapper(&root);
-    let user = std::env::var("USER").unwrap();
+    let user = current_user();
     let connection =
         Connection::ssh(SshDestination::parse(format!("{user}@127.0.0.1:{port}")).unwrap())
             .with_ssh_key_file(root.join("client_key"))
@@ -82,6 +83,78 @@ async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
     drop(sshd);
     tcp_server.abort();
     unix_server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires sudo, ssh, sshd, and ssh-keygen"]
+async fn system_ssh_proxy_preserves_binary_bytes_and_listener_cancellation() {
+    let root = std::env::temp_dir().join(format!("ployz-proxy-openssh-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let ssh_port = unused_address().port();
+    let sshd = start_sshd(&root, ssh_port);
+    wait_for_port(SocketAddr::from(([127, 0, 0, 1], ssh_port)));
+    let user = current_user();
+    let connection =
+        Connection::ssh(SshDestination::parse(format!("{user}@127.0.0.1:{ssh_port}")).unwrap())
+            .with_ssh_key_file(root.join("client_key"))
+            .unwrap();
+    let connector = SystemConnector::new(ssh_wrapper(&root));
+
+    let echo = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_address = echo.local_addr().unwrap();
+    let echo_server = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = echo.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buffer = [0_u8; 64];
+                while let Ok(read) = stream.read(&mut buffer).await {
+                    if read == 0
+                        || stream
+                            .write_all(buffer.get(..read).unwrap_or_default())
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    let local = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_address = local.local_addr().unwrap();
+    let bridge = tokio::spawn(async move {
+        loop {
+            let (mut downstream, _) = local.accept().await.unwrap();
+            let connector = connector.clone();
+            let connection = connection.clone();
+            tokio::spawn(async move {
+                let mut upstream = connector
+                    .dial_proxy(&connection, "tcp", &echo_address.to_string())
+                    .await
+                    .unwrap();
+                copy_bidirectional(&mut downstream, &mut upstream)
+                    .await
+                    .unwrap();
+            });
+        }
+    });
+
+    for payload in [b"first\0\xff".as_slice(), b"\0second\n".as_slice()] {
+        let mut client = tokio::net::TcpStream::connect(local_address).await.unwrap();
+        client.write_all(payload).await.unwrap();
+        let mut echoed = vec![0; payload.len()];
+        client.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(echoed, payload);
+    }
+    bridge.abort();
+    let _ = bridge.await;
+    assert!(tokio::net::TcpStream::connect(local_address).await.is_err());
+
+    echo_server.abort();
+    drop(sshd);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -117,7 +190,7 @@ fn start_sshd(root: &Path, port: u16) -> ChildGuard {
             host_key.display(),
             root.join("sshd.pid").display(),
             authorized_keys.display(),
-            std::env::var("USER").unwrap(),
+            current_user(),
         ),
     )
     .unwrap();
@@ -137,6 +210,15 @@ fn generate_key(path: &Path) {
         .status()
         .unwrap();
     assert!(status.success());
+}
+
+fn current_user() -> String {
+    std::env::var("USER").unwrap_or_else(|_| {
+        String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    })
 }
 
 fn ssh_wrapper(root: &Path) -> PathBuf {

@@ -9,6 +9,7 @@ repository.workspace = true
 async-trait = "0.1.92"
 bollard = { version = "0.21.0", features = ["json_data_content"] }
 bytes = "1.12.1"
+chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["derive"] }
 defguard_wireguard_rs = "=0.7.1"
 # 0.2.4 mixes incompatible netlink-packet-generic major versions with defguard 0.7.
@@ -29,7 +30,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10.9"
 thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio-util = { version = "0.7.19", features = ["codec", "io"] }
 toml = "1.1.4"

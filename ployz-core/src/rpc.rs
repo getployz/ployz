@@ -4,15 +4,15 @@ use std::{
 };
 
 use ipnet::Ipv4Net;
-use prost::{Message, Oneof};
+use prost::Message;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
-    DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineObservation, ResolvedServiceSpec, ValueError, WireGuardPublicKey,
+    DockerVolume, DockerVolumeName, LocalMachinePhase, Machine, MachineId, MachineLogService,
+    MachineName, MachineObservation, ResolvedServiceSpec, WireGuardPublicKey,
 };
 
 mod docker;
@@ -33,6 +33,9 @@ pub const CREATE_CONTAINER_CAPABILITY: &str = "ployz.container.create.v1";
 pub const START_CONTAINER_CAPABILITY: &str = "ployz.container.start.v1";
 pub const STOP_CONTAINER_CAPABILITY: &str = "ployz.container.stop.v1";
 pub const REMOVE_CONTAINER_CAPABILITY: &str = "ployz.container.remove.v1";
+pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
+pub const CONTAINER_LOGS_CAPABILITY: &str = "ployz.container.logs.v1";
+pub const MACHINE_LOGS_CAPABILITY: &str = "ployz.machine.logs.v1";
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
 #[derive(Clone, PartialEq, Message)]
@@ -88,6 +91,8 @@ impl OpaquePayload {
                 | "list_volumes"
                 | "inspect_volume"
                 | "remove_volume"
+                | "container_logs"
+                | "machine_logs"
                 | "reset"
         ) {
             return Err(CodecError::UnsupportedCommand(header.command));
@@ -215,6 +220,28 @@ pub struct RemoveContainerRequest {
     pub force: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LogsOptions {
+    pub follow: bool,
+    pub tail: i32,
+    #[serde(default)]
+    pub since: String,
+    #[serde(default)]
+    pub until: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerLogsRequest {
+    pub container_id: ContainerId,
+    pub options: LogsOptions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineLogsRequest {
+    pub service: MachineLogService,
+    pub options: LogsOptions,
+}
+
 /// Commands are closed and own their typed payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
@@ -235,6 +262,8 @@ pub enum RpcRequestBody {
     ListVolumes(ListVolumesRequest),
     InspectVolume(InspectVolumeRequest),
     RemoveVolume(RemoveVolumeRequest),
+    ContainerLogs(ContainerLogsRequest),
+    MachineLogs(MachineLogsRequest),
     Reset(ResetRequest),
 }
 
@@ -379,6 +408,22 @@ impl RpcRequest {
         Self {
             protocol_major: PROTOCOL_MAJOR,
             body: RpcRequestBody::RemoveContainer(request),
+        }
+    }
+
+    #[must_use]
+    pub fn container_logs(request: ContainerLogsRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::ContainerLogs(request),
+        }
+    }
+
+    #[must_use]
+    pub fn machine_logs(request: MachineLogsRequest) -> Self {
+        Self {
+            protocol_major: PROTOCOL_MAJOR,
+            body: RpcRequestBody::MachineLogs(request),
         }
     }
 
@@ -979,156 +1024,4 @@ pub struct RpcError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub details: Value,
-}
-
-/// Schema-blind response wrapper used only when one request fans out to several Machines.
-#[derive(Clone, PartialEq, Message)]
-pub struct FanoutResponse {
-    #[prost(string, tag = "1")]
-    machine_id: String,
-    #[prost(string, tag = "2")]
-    machine_name: String,
-    #[prost(oneof = "FanoutOutcome", tags = "3, 4")]
-    pub outcome: Option<FanoutOutcome>,
-}
-
-#[derive(Clone, Eq, PartialEq, Oneof)]
-pub enum FanoutOutcome {
-    /// One complete gRPC message frame, including its compression byte and length.
-    #[prost(bytes, tag = "3")]
-    FramedPayload(Vec<u8>),
-    #[prost(message, tag = "4")]
-    Failure(FanoutFailure),
-}
-
-#[derive(Clone, Eq, PartialEq, Message)]
-pub struct FanoutFailure {
-    #[prost(uint32, tag = "1")]
-    pub code: u32,
-    #[prost(string, tag = "2")]
-    pub message: String,
-    #[prost(bytes, tag = "3")]
-    pub details: Vec<u8>,
-}
-
-impl FanoutResponse {
-    pub fn success(
-        machine_id: &MachineId,
-        machine_name: &MachineName,
-        framed_payload: Vec<u8>,
-    ) -> Result<Self, FramingError> {
-        require_one_frame(&framed_payload)?;
-        Ok(Self {
-            machine_id: machine_id.to_string(),
-            machine_name: machine_name.to_string(),
-            outcome: Some(FanoutOutcome::FramedPayload(framed_payload)),
-        })
-    }
-
-    #[must_use]
-    pub fn failure(
-        machine_id: &MachineId,
-        machine_name: &MachineName,
-        failure: FanoutFailure,
-    ) -> Self {
-        Self {
-            machine_id: machine_id.to_string(),
-            machine_name: machine_name.to_string(),
-            outcome: Some(FanoutOutcome::Failure(failure)),
-        }
-    }
-
-    pub fn machine_id(&self) -> Result<MachineId, ValueError> {
-        MachineId::parse(self.machine_id.clone())
-    }
-
-    pub fn machine_name(&self) -> Result<MachineName, ValueError> {
-        MachineName::parse(self.machine_name.clone())
-    }
-
-    #[must_use]
-    pub fn encode_grpc_frame(&self) -> Vec<u8> {
-        encode_grpc_frame(&self.encode_to_vec())
-    }
-
-    pub fn decode_grpc_frame(frame: &[u8]) -> Result<Self, FramingError> {
-        require_one_frame(frame)?;
-        Self::decode(
-            frame
-                .get(GRPC_FRAME_HEADER_LEN..)
-                .expect("one complete gRPC frame was checked"),
-        )
-        .map_err(|error| FramingError::InvalidEnvelope(error.to_string()))
-    }
-}
-
-pub const GRPC_FRAME_HEADER_LEN: usize = 5;
-
-#[must_use]
-pub fn encode_grpc_frame(payload: &[u8]) -> Vec<u8> {
-    let length = u32::try_from(payload.len()).expect("gRPC message exceeds the 4 GiB frame limit");
-    let mut frame = Vec::with_capacity(GRPC_FRAME_HEADER_LEN + payload.len());
-    frame.push(0);
-    frame.extend_from_slice(&length.to_be_bytes());
-    frame.extend_from_slice(payload);
-    frame
-}
-
-pub fn grpc_frames(mut bytes: &[u8]) -> Result<Vec<&[u8]>, FramingError> {
-    let mut frames = Vec::new();
-    while !bytes.is_empty() {
-        let length = grpc_frame_length(bytes)?;
-        let (frame, remaining) = bytes.split_at(length);
-        frames.push(frame);
-        bytes = remaining;
-    }
-    Ok(frames)
-}
-
-pub fn grpc_frame_length(bytes: &[u8]) -> Result<usize, FramingError> {
-    if bytes.len() < GRPC_FRAME_HEADER_LEN {
-        return Err(FramingError::TruncatedHeader);
-    }
-    let compression = *bytes.first().expect("the gRPC header length was checked");
-    if compression > 1 {
-        return Err(FramingError::InvalidCompressionFlag(compression));
-    }
-    let declared = u32::from_be_bytes(
-        bytes
-            .get(1..GRPC_FRAME_HEADER_LEN)
-            .expect("the gRPC header length was checked")
-            .try_into()
-            .expect("the gRPC message length is four bytes"),
-    ) as usize;
-    let available = bytes.len() - GRPC_FRAME_HEADER_LEN;
-    if available < declared {
-        return Err(FramingError::TruncatedMessage {
-            declared,
-            available,
-        });
-    }
-    Ok(GRPC_FRAME_HEADER_LEN + declared)
-}
-
-fn require_one_frame(bytes: &[u8]) -> Result<(), FramingError> {
-    let count = grpc_frames(bytes)?.len();
-    if count == 1 {
-        Ok(())
-    } else {
-        Err(FramingError::ExpectedOneFrame(count))
-    }
-}
-
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-pub enum FramingError {
-    #[error("truncated gRPC frame header")]
-    TruncatedHeader,
-    #[error("invalid gRPC compression flag {0}")]
-    InvalidCompressionFlag(u8),
-    #[error("gRPC frame declares {declared} bytes but only {available} remain")]
-    TruncatedMessage { declared: usize, available: usize },
-    #[error("expected one gRPC frame, found {0}")]
-    ExpectedOneFrame(usize),
-    #[error("invalid fan-out response envelope: {0}")]
-    InvalidEnvelope(String),
 }
