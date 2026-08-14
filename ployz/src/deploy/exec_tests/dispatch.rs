@@ -200,9 +200,12 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
         ),
         Step(
             Call::Stop(machine.clone(), removed.clone()),
+            Reply::Error(missing.clone()),
+        ),
+        Step(
+            Call::Remove(machine.clone(), removed),
             Reply::Error(missing),
         ),
-        ok(Call::Remove(machine.clone(), removed)),
         ok(Call::Stop(machine, suffix)),
     ]);
 

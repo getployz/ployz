@@ -292,9 +292,7 @@ async fn execute_operation<C: MachineOperations>(
         } => {
             ignore_not_found(client.stop_container(machine_id, container_id, None).await)
                 .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
-            client
-                .remove_container(machine_id, container_id)
-                .await
+            ignore_not_found(client.remove_container(machine_id, container_id).await)
                 .map_err(|error| machine_error(MachineAction::RemoveContainer, error).into())
         }
         DeployOperation::ReplaceContainer(replacement) => {
@@ -356,7 +354,7 @@ async fn replace_container<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
     let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
-    let old_was_active = if stop_first {
+    let restart_old_on_failure = if stop_first {
         let old = match client
             .inspect_container(&operation.machine_id, &operation.old_container_id)
             .await
@@ -369,12 +367,19 @@ async fn replace_container<C: MachineOperations>(
         };
         let active = old.is_some_and(|old| super::is_active_runtime(&old.runtime));
         if active {
-            client
+            match client
                 .stop_container(&operation.machine_id, &operation.old_container_id, None)
                 .await
-                .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
+            {
+                Ok(()) => true,
+                Err(error) if error.code == RpcErrorCode::NotFound => false,
+                Err(error) => {
+                    return Err(machine_error(MachineAction::StopContainer, error).into());
+                }
+            }
+        } else {
+            false
         }
-        active
     } else {
         false
     };
@@ -411,7 +416,7 @@ async fn replace_container<C: MachineOperations>(
         let compensation = if stop_first {
             ReplacementCompensation::StopFirst {
                 stop_new_container,
-                restart_old_container: if old_was_active {
+                restart_old_container: if restart_old_on_failure {
                     RestartAttempt::Attempted(
                         client
                             .start_container(&operation.machine_id, &operation.old_container_id)
