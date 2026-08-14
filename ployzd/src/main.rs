@@ -114,6 +114,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     });
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let (shutdown, shutdown_rx) = watch::channel(false);
+    let (participating, participating_rx) =
+        watch::channel(local_record.phase == LocalMachinePhase::Participating);
     let (reset, mut reset_rx) = watch::channel(false);
     let service = MachineService::with_cluster(
         Arc::clone(&store),
@@ -139,6 +141,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let publisher = run_machine_publisher(
         replicated_store.clone(),
         Arc::clone(&store),
+        participating,
         shutdown_rx.clone(),
     );
     let network_rpc = async {
@@ -207,6 +210,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     let dns = async {
+        if !wait_for_participation(participating_rx, shutdown_rx.clone()).await? {
+            return Ok(());
+        }
         match (local_record.machine.clone(), replicated_store.clone()) {
             (Some(machine), Some(replicated)) => {
                 dns::run(machine, replicated, dns_upstreams, shutdown_rx.clone()).await
@@ -333,6 +339,27 @@ async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
     }
 }
 
+async fn wait_for_participation(
+    mut participating: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
+) -> io::Result<bool> {
+    let mut shutdown_wait = shutdown.clone();
+    tokio::select! {
+        biased;
+        changed = shutdown_wait.wait_for(|shutdown| *shutdown) => {
+            changed.map_err(io::Error::other)?;
+            Ok(false)
+        }
+        changed = participating.wait_for(|participating| *participating) => {
+            match changed {
+                Ok(_) => Ok(!*shutdown.borrow()),
+                Err(_) if *shutdown.borrow() => Ok(false),
+                Err(error) => Err(io::Error::other(error)),
+            }
+        }
+    }
+}
+
 async fn shutdown_signal() -> io::Result<()> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -415,5 +442,35 @@ fn group_gid(name: &str) -> Option<u32> {
 fn notify(state: NotifyState<'_>) {
     if let Err(error) = sd_notify::notify(&[state]) {
         eprintln!("systemd notification failed: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn participation_gate_waits_for_catch_up_and_obeys_shutdown() {
+        let (participating, participating_rx) = watch::channel(false);
+        let (_shutdown, shutdown_rx) = watch::channel(false);
+        let waiting = wait_for_participation(participating_rx, shutdown_rx);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        participating.send_replace(true);
+        assert!(waiting.await.unwrap());
+
+        let (participating, participating_rx) = watch::channel(true);
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        shutdown.send_replace(true);
+        drop(participating);
+        assert!(
+            !wait_for_participation(participating_rx, shutdown_rx)
+                .await
+                .unwrap()
+        );
     }
 }
