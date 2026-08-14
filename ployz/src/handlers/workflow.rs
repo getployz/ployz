@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     compose::{
         BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, execute_build,
-        load_project, plan_build, plan_resolved_compose_deploy,
+        load_project, plan_build, plan_compose_deploy,
     },
     connect::Client,
     deploy::{
@@ -270,10 +270,14 @@ async fn deploy_connected(
     io.record(WorkflowStage::Snapshot);
     let snapshot = io.snapshot(Some(machines)).await?;
     io.record(WorkflowStage::Plan);
-    let compose = plan_resolved_compose_deploy(project, &snapshot, options)
-        .map_err(|error| error.to_string())?;
+    let compose =
+        plan_compose_deploy(project, &snapshot, options).map_err(|error| error.to_string())?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    let operations = combined_operations(&compose);
+    let operations = compose
+        .operations()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
     if operations.is_empty() {
         println!("No changes.");
         return Ok(None);
@@ -384,10 +388,6 @@ fn report_partial<T>(kind: &str, result: &ployz_core::PartialResult<T, ployz_cor
     for machine in &result.omissions {
         eprintln!("WARNING: {kind} observation omitted {machine}");
     }
-}
-
-fn combined_operations(compose: &crate::compose::ComposeDeployPlan) -> Vec<DeployOperation> {
-    compose.operations().into_iter().cloned().collect()
 }
 
 fn render(operations: &[DeployOperation], connection: &crate::context::Connection) {

@@ -52,14 +52,7 @@ pub fn plan_compose_deploy(
 ) -> Result<ComposeDeployPlan, ComposePlanError> {
     let mut resolved = project.clone();
     resolved.resolve_secrets()?;
-    plan_resolved_compose_deploy(&resolved, snapshot, options)
-}
-
-pub(crate) fn plan_resolved_compose_deploy(
-    project: &ComposeProject,
-    snapshot: &DeploySnapshot,
-    options: PlanOptions,
-) -> Result<ComposeDeployPlan, ComposePlanError> {
+    let project = &resolved;
     let volume_uses = named_volume_uses(project);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut effective_snapshot = snapshot.clone();

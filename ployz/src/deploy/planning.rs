@@ -48,10 +48,8 @@ pub fn plan_deploy(
     if !is_new_service
         && snapshot.containers.iter().any(|container| {
             container.service_id == service_id
-                && !container
-                    .resolved_spec
-                    .mode
-                    .has_same_kind_as(&requested.mode)
+                && std::mem::discriminant(&container.resolved_spec.mode)
+                    != std::mem::discriminant(&requested.mode)
         })
     {
         return Err(PlanError::ServiceModeCannotChange);

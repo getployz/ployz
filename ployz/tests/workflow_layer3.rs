@@ -102,19 +102,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         ),
     )
     .unwrap();
-    let basic = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "deploy",
-            "--file",
-            "basic.yaml",
-            "--no-build",
-            "--yes",
-        ])
-        .current_dir(&root)
-        .output()
-        .unwrap();
+    let basic = deploy(address, &root, "basic.yaml", true, false);
     assert_success(basic);
     wait_for_ids(&mut client, &["basic"], None).await;
 
@@ -125,19 +113,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         ),
     )
     .unwrap();
-    let blocked = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "deploy",
-            "--file",
-            "blocked.yaml",
-            "--no-build",
-            "--yes",
-        ])
-        .current_dir(&root)
-        .output()
-        .unwrap();
+    let blocked = deploy(address, &root, "blocked.yaml", true, false);
     assert!(!blocked.status.success());
     let blocked = wait_for_hook_only(&mut client, "blocked").await;
     assert!(blocked.containers.is_empty());
@@ -150,19 +126,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         ),
     )
     .unwrap();
-    let impossible = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "deploy",
-            "--file",
-            "missing.yaml",
-            "--no-build",
-            "--yes",
-        ])
-        .current_dir(&root)
-        .output()
-        .unwrap();
+    let impossible = deploy(address, &root, "missing.yaml", true, false);
     assert!(!impossible.status.success());
     fs::write(
         root.join("compose.yaml"),
@@ -191,7 +155,7 @@ volumes:
     )
     .unwrap();
 
-    let declined = deploy(address, &root, false, false);
+    let declined = deploy(address, &root, "compose.yaml", false, false);
     assert!(!declined.status.success());
     assert!(String::from_utf8_lossy(&declined.stderr).contains("confirmation requires a terminal"));
     assert!(
@@ -209,12 +173,12 @@ volumes:
             .all(|volume| volume.id.name.as_str() != "data")
     );
 
-    assert_success(deploy(address, &root, true, false));
+    assert_success(deploy(address, &root, "compose.yaml", true, false));
     let first_ids = wait_for_ids(&mut client, &["api", "database"], None).await;
-    assert_success(deploy(address, &root, true, false));
+    assert_success(deploy(address, &root, "compose.yaml", true, false));
     let unchanged_ids = wait_for_ids(&mut client, &["api", "database"], None).await;
     assert_eq!(unchanged_ids, first_ids);
-    assert_success(deploy(address, &root, true, true));
+    assert_success(deploy(address, &root, "compose.yaml", true, true));
     let recreated_ids = wait_for_ids(&mut client, &["api", "database"], Some(&first_ids)).await;
     assert_ne!(recreated_ids, first_ids);
 
@@ -260,12 +224,14 @@ volumes:
 fn deploy(
     address: std::net::SocketAddr,
     root: &std::path::Path,
+    file: &str,
     yes: bool,
     recreate: bool,
 ) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
     command
         .args(["--connect", &format!("tcp://{address}"), "deploy"])
+        .args(["--file", file])
         .args(recreate.then_some("--recreate"))
         .args(["--no-build"])
         .args(yes.then_some("--yes"))
@@ -295,64 +261,52 @@ async fn wait_for_services(
     names: &[&str],
     regular_containers: usize,
 ) -> ployz_core::LiveServices<ployz_core::RpcError> {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(live) = client.live_services().await {
-                let observed = live
-                    .services
-                    .iter()
-                    .flat_map(|service| &service.containers)
-                    .map(|container| container.service_name.as_str())
-                    .collect::<BTreeSet<_>>();
-                let count = live
-                    .services
-                    .iter()
-                    .map(|service| service.containers.len())
-                    .sum::<usize>();
-                if names.iter().all(|name| observed.contains(name)) && count == regular_containers {
-                    return live;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+    wait_for_live(client, |live| {
+        let observed = live
+            .services
+            .iter()
+            .flat_map(|service| &service.containers)
+            .map(|container| container.service_name.as_str())
+            .collect::<BTreeSet<_>>();
+        let count = live
+            .services
+            .iter()
+            .map(|service| service.containers.len())
+            .sum::<usize>();
+        (names.iter().all(|name| observed.contains(name)) && count == regular_containers)
+            .then_some(live)
     })
     .await
-    .unwrap()
 }
 
 async fn wait_for_hook_only(
     client: &mut ployz::connect::Client,
     name: &str,
 ) -> ployz_core::ServiceObservation {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(live) = client.live_services().await
-                && let Some(service) = live.services.into_iter().find(|service| {
-                    service.containers.is_empty()
-                        && service
-                            .hook_containers
-                            .first()
-                            .is_some_and(|container| container.service_name.as_str() == name)
-                })
-            {
-                return service;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+    wait_for_live(client, |live| {
+        live.services.into_iter().find(|service| {
+            service.containers.is_empty()
+                && service
+                    .hook_containers
+                    .first()
+                    .is_some_and(|container| container.service_name.as_str() == name)
+        })
     })
     .await
-    .unwrap()
 }
 
 async fn service_ids(
     client: &mut ployz::connect::Client,
     names: &[&str],
 ) -> BTreeMap<String, BTreeSet<String>> {
-    client
-        .live_services()
-        .await
-        .unwrap()
-        .services
+    service_ids_from(client.live_services().await.unwrap(), names)
+}
+
+fn service_ids_from(
+    live: ployz_core::LiveServices<ployz_core::RpcError>,
+    names: &[&str],
+) -> BTreeMap<String, BTreeSet<String>> {
+    live.services
         .into_iter()
         .filter_map(|service| {
             let name = service.containers.first()?.service_name.to_string();
@@ -375,11 +329,23 @@ async fn wait_for_ids(
     names: &[&str],
     different_from: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> BTreeMap<String, BTreeSet<String>> {
+    wait_for_live(client, |live| {
+        let ids = service_ids_from(live, names);
+        (ids.len() == names.len() && different_from.is_none_or(|old| old != &ids)).then_some(ids)
+    })
+    .await
+}
+
+async fn wait_for_live<T>(
+    client: &mut ployz::connect::Client,
+    mut select: impl FnMut(ployz_core::LiveServices<ployz_core::RpcError>) -> Option<T>,
+) -> T {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let ids = service_ids(client, names).await;
-            if ids.len() == names.len() && different_from.is_none_or(|old| old != &ids) {
-                return ids;
+            if let Ok(live) = client.live_services().await
+                && let Some(value) = select(live)
+            {
+                return value;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

@@ -53,7 +53,7 @@ fn immutable_service_fields_changed(
     } = requested;
 
     current_name != requested_name
-        || !current_mode.has_same_kind_as(requested_mode)
+        || std::mem::discriminant(current_mode) != std::mem::discriminant(requested_mode)
         || immutable_container_fields_changed(current_container, requested_container)
         || current_placement != requested_placement
         || !same_multiset(current_ports, requested_ports)
