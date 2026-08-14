@@ -26,6 +26,10 @@ macro_rules! rpc_catalog {
                 RemoveVolume: (remove_volume, "RemoveVolume", RemoveVolumeRequest, "remove_volume"),
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images"),
                 GetCaddyConfig: (get_caddy_config, "GetCaddyConfig", GetCaddyConfigRequest, "get_caddy_config"),
+                ReserveDomain: (reserve_domain, "ReserveDomain", ReserveDomainRequest, "reserve_domain"),
+                GetDomain: (get_domain, "GetDomain", GetDomainRequest, "get_domain"),
+                ReleaseDomain: (release_domain, "ReleaseDomain", ReleaseDomainRequest, "release_domain"),
+                CreateDomainRecords: (create_domain_records, "CreateDomainRecords", CreateDomainRecordsRequest, "create_domain_records"),
                 Reset: (reset, "Reset", ResetRequest, "reset"),
             }
             server_streaming {

@@ -10,8 +10,8 @@ use std::{
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
-    HttpProtocol, Machine, MachineId, PortPublication, ServiceName,
+    CADDY_VERIFY_PATH, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+    HealthObservation, HttpProtocol, Machine, MachineId, PortPublication, ServiceName,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -462,7 +462,7 @@ fn automatic_caddyfile(
         output,
         "# Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
-\thandle /.ployz-verify {{\n\
+\thandle {CADDY_VERIFY_PATH} {{\n\
 \t\trespond \"{local_machine}\" 200\n\
 \t}}\n\
 \tlog\n\
@@ -502,10 +502,11 @@ mod tests {
 
     use async_trait::async_trait;
     use ployz_core::{
-        AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-        ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol, Machine, MachineId,
-        MachineName, MachineSubnet, ManagementAddress, PortPublication, ResolvedServiceSpec,
-        ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
+        AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
+        ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind,
+        HttpProtocol, Machine, MachineId, MachineName, MachineSubnet, ManagementAddress,
+        PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
+        WireGuardPublicKey,
     };
     use serde_json::json;
 
@@ -546,7 +547,7 @@ mod tests {
 \n\
 # Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
-\thandle /.ployz-verify {{\n\
+\thandle {CADDY_VERIFY_PATH} {{\n\
 \t\trespond \"{local}\" 200\n\
 \t}}\n\
 \tlog\n\
@@ -606,7 +607,7 @@ https://secure.example.com {{\n\
         ];
 
         let caddyfile = automatic_caddyfile(&local, "node-a", &observations, "TIMESTAMP", None);
-        assert!(caddyfile.contains("/.ployz-verify"));
+        assert!(caddyfile.contains(CADDY_VERIFY_PATH));
         assert!(!caddyfile.contains("missing.example"));
         assert!(!caddyfile.contains("reverse_proxy"));
         assert!(

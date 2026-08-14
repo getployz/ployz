@@ -1955,6 +1955,7 @@ dependencies = [
  "oci-spec 0.10.0",
  "ployz-core",
  "ployz-testkit",
+ "reqwest",
  "semver",
  "serde",
  "serde_json",
