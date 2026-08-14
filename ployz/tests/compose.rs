@@ -665,7 +665,8 @@ volumes: {data: {name: demo_data}}
     let plan = plan_compose_deploy(&replicated, &snapshot, PlanOptions::default()).unwrap();
     assert_eq!(plan.volume_operations.len(), 1);
     let Some(DeployOperation::CreateVolume {
-        machine_id: anchor, ..
+        machine_id: anchor,
+        volume,
     }) = plan.volume_operations.first()
     else {
         panic!("missing Volume creation: {plan:?}")
@@ -675,6 +676,39 @@ volumes: {data: {name: demo_data}}
         service.operations(),
         [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
     )));
+
+    let VolumeSource::Named {
+        name: existing_name,
+        ..
+    } = &volume.source
+    else {
+        panic!("unexpected shared Volume: {volume:?}")
+    };
+    let mut existing_snapshot = snapshot.clone();
+    existing_snapshot.volumes = snapshot
+        .machines
+        .iter()
+        .map(|machine| ObservedDockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id: machine.machine.id.clone(),
+                name: existing_name.clone(),
+            },
+            driver: "local".into(),
+            options: BTreeMap::new(),
+        })
+        .collect();
+    let existing_on_both =
+        plan_compose_deploy(&replicated, &existing_snapshot, PlanOptions::default()).unwrap();
+    assert!(existing_on_both.volume_operations.is_empty());
+    assert!(
+        existing_on_both
+            .service_plans
+            .iter()
+            .all(|service| matches!(
+                service.operations(),
+                [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
+            ))
+    );
 
     let constrained = parse_normalized(
         r#"

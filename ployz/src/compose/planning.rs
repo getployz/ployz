@@ -153,13 +153,6 @@ fn prepare_shared_replicated_volumes(
         .iter()
         .filter(|(_, uses)| uses.len() > 1 && uses.iter().all(|volume_use| !volume_use.global))
     {
-        if snapshot
-            .volumes
-            .iter()
-            .any(|volume| volume.id.name == *name)
-        {
-            continue;
-        }
         let first_use = uses
             .first()
             .copied()
@@ -184,12 +177,21 @@ fn prepare_shared_replicated_volumes(
             });
         }
         let machine_id = eligible.remove(0);
-        let operation = DeployOperation::CreateVolume {
-            machine_id: machine_id.clone(),
-            volume: first_use.volume.clone(),
-        };
-        remember_volume(snapshot, &machine_id, first_use.volume);
-        operations.push(operation);
+        snapshot
+            .volumes
+            .retain(|volume| volume.id.name != *name || volume.id.machine_id == machine_id);
+        if !snapshot
+            .volumes
+            .iter()
+            .any(|volume| volume.id.machine_id == machine_id && volume.id.name == *name)
+        {
+            let operation = DeployOperation::CreateVolume {
+                machine_id: machine_id.clone(),
+                volume: first_use.volume.clone(),
+            };
+            remember_volume(snapshot, &machine_id, first_use.volume);
+            operations.push(operation);
+        }
     }
     Ok(operations)
 }

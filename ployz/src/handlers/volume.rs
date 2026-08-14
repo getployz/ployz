@@ -240,8 +240,13 @@ fn select_create_machine(
     selector: Option<&str>,
 ) -> Result<Option<MachineObservation>, Error> {
     if let Some(selector) = selector {
-        return selected_machines(machines.to_vec(), &[selector.into()])
-            .map(|mut machines| machines.pop());
+        let selected = selected_machines(machines.to_vec(), &[selector.into()])?;
+        return match selected.as_slice() {
+            [machine] => Ok(Some(machine.clone())),
+            _ => Err(format!(
+                "Machine selector {selector:?} matched multiple Machines"
+            )),
+        };
     }
     match machines {
         [] => Err("no Machines are available".into()),

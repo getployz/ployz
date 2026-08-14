@@ -58,6 +58,14 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
             .count(),
         2
     );
+    for selector in ["*", "missing-machine"] {
+        let create = ployz(
+            address,
+            ["volume", "create", "invalid", "--machine", selector],
+        );
+        assert!(!create.status.success());
+    }
+    assert!(!String::from_utf8_lossy(&ployz(address, ["volume", "ls"]).stdout).contains("invalid"));
     let ambiguous = ployz(address, ["volume", "inspect", "shared"]);
     assert!(!ambiguous.status.success());
     assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("ambiguous"));
