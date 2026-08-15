@@ -1,15 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt,
     net::{IpAddr, SocketAddr},
     num::{NonZeroU16, NonZeroU32},
-    str::FromStr,
 };
 
 use crate::{
-    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerPath, DockerVolumeName, MachineId,
-    MachineName, MachinePath, MachineSelector, MachineSubnet, ManagementAddress, SelectedEndpoint,
-    ServiceId, ServiceName, ServiceVolumeReference, ValueError, WireGuardPublicKey,
+    AdvertisedEndpoint, BindRecursive, ContainerAddress, ContainerId, ContainerPath,
+    DockerVolumeName, MachineId, MachineName, MachinePath, MachineSelector, MachineSubnet,
+    ManagementAddress, PidMode, RestartPolicy, SelectedEndpoint, ServiceId, ServiceName,
+    ServiceVolumeReference, WireGuardPublicKey,
 };
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -789,188 +788,6 @@ pub enum PullPolicy {
     Always,
     Missing,
     Never,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RestartPolicyName {
-    No,
-    Always,
-    #[default]
-    UnlessStopped,
-    OnFailure,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RestartPolicy {
-    pub name: RestartPolicyName,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub maximum_retry_count: Option<i64>,
-}
-
-impl Default for RestartPolicy {
-    fn default() -> Self {
-        Self {
-            name: RestartPolicyName::UnlessStopped,
-            maximum_retry_count: None,
-        }
-    }
-}
-
-impl RestartPolicy {
-    #[must_use]
-    pub const fn no() -> Self {
-        Self {
-            name: RestartPolicyName::No,
-            maximum_retry_count: None,
-        }
-    }
-
-    pub fn parse(value: &str) -> Result<Self, ValueError> {
-        let (name, retries) = value
-            .split_once(':')
-            .map_or((value, None), |(name, retries)| (name, Some(retries)));
-        let name = match name {
-            "no" => RestartPolicyName::No,
-            "always" => RestartPolicyName::Always,
-            "unless-stopped" => RestartPolicyName::UnlessStopped,
-            "on-failure" => RestartPolicyName::OnFailure,
-            _ => {
-                return Err(ValueError::new(
-                    "restart policy",
-                    value,
-                    "no, always, unless-stopped, or on-failure[:max]",
-                ));
-            }
-        };
-        let maximum_retry_count = match (name, retries) {
-            (_, None) => None,
-            (RestartPolicyName::OnFailure, Some(retries)) => {
-                let parsed: u64 = retries.parse().map_err(|_| {
-                    ValueError::new(
-                        "restart policy retry count",
-                        retries,
-                        "a non-negative integer",
-                    )
-                })?;
-                Some(i64::try_from(parsed).map_err(|_| {
-                    ValueError::new(
-                        "restart policy retry count",
-                        retries,
-                        "a non-negative integer",
-                    )
-                })?)
-            }
-            _ => {
-                return Err(ValueError::new(
-                    "restart policy",
-                    value,
-                    "a retry count only with on-failure",
-                ));
-            }
-        };
-        Ok(Self {
-            name,
-            maximum_retry_count,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BindRecursive {
-    Disabled,
-    Writable,
-    Readonly,
-}
-
-impl fmt::Display for BindRecursive {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Disabled => "disabled",
-            Self::Writable => "writable",
-            Self::Readonly => "readonly",
-        })
-    }
-}
-
-impl FromStr for BindRecursive {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "disabled" => Ok(Self::Disabled),
-            "writable" => Ok(Self::Writable),
-            "readonly" => Ok(Self::Readonly),
-            _ => Err(ValueError::new(
-                "bind recursive mode",
-                value,
-                "disabled, writable, or readonly",
-            )),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PidMode {
-    Host,
-    Container(String),
-}
-
-impl PidMode {
-    pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
-        let value = value.as_ref();
-        if value == "host" {
-            return Ok(Self::Host);
-        }
-        if let Some(id) = value.strip_prefix("container:")
-            && !id.is_empty()
-        {
-            return Ok(Self::Container(id.to_owned()));
-        }
-        Err(ValueError::new(
-            "PID mode",
-            value,
-            "'host' or 'container:<id>'",
-        ))
-    }
-}
-
-impl fmt::Display for PidMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Host => formatter.write_str("host"),
-            Self::Container(id) => write!(formatter, "container:{id}"),
-        }
-    }
-}
-
-impl FromStr for PidMode {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-impl Serialize for PidMode {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for PidMode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(D::Error::custom)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

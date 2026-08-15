@@ -896,15 +896,15 @@ fn restart_policy_uses_docker_names_and_optional_retry_count() {
 
 #[test]
 fn pid_mode_accepts_host_or_container_and_rejects_other_values() {
-    assert_eq!(PidMode::parse("host").unwrap(), PidMode::Host);
+    assert_eq!("host".parse(), Ok(PidMode::Host));
     assert_eq!(
-        PidMode::parse("container:abc123").unwrap(),
-        PidMode::Container("abc123".into())
+        "container:abc123".parse(),
+        Ok(PidMode::Container("abc123".into()))
     );
     assert_eq!(serde_json::to_value(PidMode::Host).unwrap(), json!("host"));
     for invalid in ["", "private", "container:", "service:web"] {
         assert!(
-            PidMode::parse(invalid).is_err(),
+            invalid.parse::<PidMode>().is_err(),
             "{invalid} should be rejected"
         );
     }

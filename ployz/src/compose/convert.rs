@@ -6,7 +6,7 @@ use std::{
 
 use ployz_core::{
     ContainerPath, ContainerResources, DeviceMapping, DeviceReservation, HealthcheckSpec,
-    LogDriver, MachinePath, MachineSelector, PidMode, Placement, PortPublication, PullPolicy,
+    LogDriver, MachinePath, MachineSelector, Placement, PortPublication, PullPolicy,
     RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceName, Ulimit,
     UpdateConfig, UpdateOrder,
 };
@@ -241,7 +241,7 @@ fn convert_service(
         pid_mode: raw
             .pid
             .as_deref()
-            .map(PidMode::parse)
+            .map(str::parse)
             .transpose()
             .map_err(invalid)?,
         log_driver: Some(
@@ -259,7 +259,12 @@ fn convert_service(
                 }),
         ),
         resources: resources(raw)?,
-        stop_timeout_secs: duration_secs(raw.stop_grace_period.as_deref())?,
+        stop_timeout_secs: duration_millis(raw.stop_grace_period.as_deref())?
+            .map(|millis| {
+                i64::try_from(millis / 1_000)
+                    .map_err(|_| invalid("stop_grace_period exceeds Docker's range"))
+            })
+            .transpose()?,
         sysctls: raw.sysctls.clone(),
         config_mounts,
         restart: raw
@@ -734,15 +739,6 @@ pub(super) fn duration_millis(value: Option<&str>) -> Result<Option<u64>, Compos
         remaining = &remaining[unit_len..];
     }
     Ok(Some(total as u64))
-}
-
-fn duration_secs(value: Option<&str>) -> Result<Option<i64>, ComposeError> {
-    duration_millis(value)?
-        .map(|millis| {
-            i64::try_from(millis / 1_000)
-                .map_err(|_| invalid("stop_grace_period exceeds Docker's range"))
-        })
-        .transpose()
 }
 
 pub(super) fn mapping_string(map: &serde_norway::Mapping, key: &str) -> Option<String> {
