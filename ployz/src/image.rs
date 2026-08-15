@@ -22,18 +22,15 @@ mod proxy;
 
 #[must_use]
 pub fn with_default_tag(image: &str) -> String {
-    if has_explicit_tag(image) {
+    if image
+        .rsplit('/')
+        .next()
+        .is_some_and(|component| component.contains(':') || component.contains('@'))
+    {
         image.to_owned()
     } else {
         format!("{image}:latest")
     }
-}
-
-fn has_explicit_tag(image: &str) -> bool {
-    image
-        .rsplit('/')
-        .next()
-        .is_some_and(|component| component.contains(':') || component.contains('@'))
 }
 
 #[derive(Debug, Error)]
