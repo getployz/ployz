@@ -562,7 +562,17 @@ fn is_unary_retryable(error: &ConnectError) -> bool {
             status.code(),
             tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
         ),
-        _ => false,
+        ConnectError::Remote(_)
+        | ConnectError::ProxyUnsupported(_)
+        | ConnectError::UnsupportedNetwork(_)
+        | ConnectError::Config(_)
+        | ConnectError::Connection(_)
+        | ConnectError::Context(_)
+        | ConnectError::Path { .. }
+        | ConnectError::AllFailed { .. }
+        | ConnectError::Codec(_)
+        | ConnectError::Framing(_)
+        | ConnectError::Value(_) => false,
     }
 }
 
