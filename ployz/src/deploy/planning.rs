@@ -18,6 +18,7 @@ pub fn plan_deploy(
     new_service_id: ServiceId,
     options: PlanOptions,
 ) -> Result<DeployPlan, PlanError> {
+    // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let requested = normalize_and_validate(requested)?;
     let requested = &requested;
     // A Deploy is a finite calculation over this supplied snapshot, never a reconciliation loop.

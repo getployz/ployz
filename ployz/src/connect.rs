@@ -43,7 +43,8 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> ProxyStream for T {}
 
 pub type BoxProxyStream = Box<dyn ProxyStream>;
 
-// TODO: add the separately planned client-side WireGuard connector here.
+// TODO(UT-018, UT-019): a future client-side WireGuard connector must honour
+// cancellation and try each visible Machine; this reconstruction keeps it excluded.
 #[tonic::async_trait]
 pub trait Connector: Send + Sync {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError>;

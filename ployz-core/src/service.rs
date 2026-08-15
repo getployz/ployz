@@ -268,7 +268,7 @@ mod tests {
         let omitted_id = MachineId::parse("3".repeat(32)).unwrap();
         let partial = PartialResult {
             successes: vec![MachineSuccess {
-                machine_id: success_id,
+                machine_id: success_id.clone(),
                 value: vec![observation(
                     '1',
                     &service_id,
@@ -292,6 +292,16 @@ mod tests {
 
         assert!(!live.complete);
         assert_eq!(live.services.len(), 1);
+        assert_eq!(
+            live.services
+                .first()
+                .unwrap()
+                .containers
+                .first()
+                .unwrap()
+                .machine_id,
+            success_id
+        );
         assert_eq!(
             live.containers.failures.first().unwrap().machine_id,
             failed_id

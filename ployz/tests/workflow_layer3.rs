@@ -13,7 +13,8 @@ use ployz::{
 use ployz_core::{ContainerKind, PortPublication};
 use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE};
 
-/// L3-005..L3-007, L3-009..L3-010, L3-014, L3-040..L3-041, and L3-045..L3-046.
+/// L3-005..L3-007, L3-009..L3-010, L3-014, L3-029..L3-030,
+/// L3-040..L3-041, and L3-045..L3-046.
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image and Docker Compose"]
 async fn run_deploy_and_scale_execute_through_the_real_cli() {
@@ -90,6 +91,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         &generated_global.containers.first().unwrap().machine_id,
         machine_1
     );
+    assert_machine_rename_preserves_containers(address, &mut client, machine_1, &initial_run).await;
 
     let root = std::env::temp_dir().join(format!("ployz-l3-workflows-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -240,6 +242,45 @@ fn deploy(
     command.output().unwrap()
 }
 
+async fn assert_machine_rename_preserves_containers(
+    address: std::net::SocketAddr,
+    client: &mut ployz::connect::Client,
+    machine_id: &ployz_core::MachineId,
+    initial: &ployz_core::LiveServices<ployz_core::RpcError>,
+) {
+    let initial_ids = initial
+        .services
+        .iter()
+        .flat_map(|service| &service.containers)
+        .map(|container| container.container_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !ployz(address, ["machine", "rename", "machine-1", ""])
+            .status
+            .success()
+    );
+    assert_success(ployz(
+        address,
+        ["machine", "rename", "machine-1", "workflow-renamed"],
+    ));
+    wait_for_machine_name(client, machine_id, "workflow-renamed").await;
+    let after_rename = wait_for_services(client, &["scaled-workflow"], 3).await;
+    assert_eq!(
+        after_rename
+            .services
+            .iter()
+            .flat_map(|service| &service.containers)
+            .map(|container| container.container_id.clone())
+            .collect::<BTreeSet<_>>(),
+        initial_ids
+    );
+    assert_success(ployz(
+        address,
+        ["machine", "rename", machine_id.as_str(), "machine-1"],
+    ));
+    wait_for_machine_name(client, machine_id, "machine-1").await;
+}
+
 fn observed_service<'a, E>(
     live: &'a ployz_core::LiveServices<E>,
     name: &str,
@@ -334,6 +375,27 @@ async fn wait_for_ids(
         (ids.len() == names.len() && different_from.is_none_or(|old| old != &ids)).then_some(ids)
     })
     .await
+}
+
+async fn wait_for_machine_name(
+    client: &mut ployz::connect::Client,
+    id: &ployz_core::MachineId,
+    name: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if client.list_machines().await.is_ok_and(|machines| {
+                machines.iter().any(|machine| {
+                    &machine.machine.id == id && machine.machine.name.as_str() == name
+                })
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 async fn wait_for_live<T>(

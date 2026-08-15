@@ -167,6 +167,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         },
     );
     let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
+    let published = local.lock().unwrap().record().machine.clone().unwrap();
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
     let (restart, restart_rx) = tokio::sync::watch::channel(false);

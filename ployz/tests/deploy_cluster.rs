@@ -30,10 +30,99 @@ async fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
     .await
     .unwrap();
     assert_target_local_volume(&cluster, &client, &machines[1]).await;
+    assert_startup_health_outcomes(&cluster, &mut client, &machines[0]).await;
     assert_unreachable_middle_keeps_prefix(&cluster, &mut client, &machines).await;
     assert_replacement_health_compensation(&cluster, &mut client, &machines[0]).await;
     assert_failed_hooks_are_retained_and_rerun(&cluster, &mut client, &machines[0]).await;
     assert_unhealthy_service_is_not_repaired(&cluster, &mut client, &machines).await;
+}
+
+async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, machine: &Machine) {
+    let healthy_id = ServiceId::random();
+    let mut healthy = service_spec(&healthy_id, "healthy-startup");
+    healthy.container.healthcheck = Some(healthcheck("true", 2));
+    healthy.update.monitor_millis = Some(3_000);
+    let healthy_plan = deploy_plan(
+        healthy_id.clone(),
+        vec![run_with_health_monitor(machine, &healthy)],
+    );
+    let healthy_outcome = execute_plan(&healthy_plan, client, &CancellationToken::new()).await;
+    assert!(healthy_outcome.failed.is_none());
+    let healthy_containers = wait_for_service(client, &healthy_id, 1).await;
+    assert!(matches!(
+        healthy_containers.first().unwrap().runtime,
+        ContainerRuntimeObservation::Running {
+            health: ployz_core::HealthObservation::Healthy
+        }
+    ));
+    remove_all(client, healthy_containers).await;
+
+    let unhealthy_id = ServiceId::random();
+    let mut unhealthy = service_spec(&unhealthy_id, "unhealthy-startup");
+    unhealthy.container.healthcheck = Some(healthcheck("false", 1));
+    unhealthy.update.monitor_millis = Some(1_000);
+    let unhealthy_plan = deploy_plan(
+        unhealthy_id.clone(),
+        vec![run_with_health_monitor(machine, &unhealthy)],
+    );
+    assert!(matches!(
+        execute_plan(&unhealthy_plan, client, &CancellationToken::new())
+            .await
+            .failed,
+        Some(FailedOperation::Operation {
+            error: ExecutionError::Health { .. },
+            ..
+        })
+    ));
+    let unhealthy_containers = wait_for_service(client, &unhealthy_id, 1).await;
+    wait_for_runtime(
+        client,
+        machine,
+        &unhealthy_containers.first().unwrap().container_id,
+        ContainerRuntimeObservation::Running {
+            health: ployz_core::HealthObservation::Unhealthy,
+        },
+    )
+    .await;
+    remove_all(client, unhealthy_containers).await;
+
+    for (name, healthcheck) in [
+        ("crash-with-healthcheck", Some(healthcheck("true", 1))),
+        ("crash-without-healthcheck", None),
+    ] {
+        let service_id = ServiceId::random();
+        let mut crashing = service_spec(&service_id, name);
+        crashing.container.command = vec!["sh".into(), "-c".into(), "exit 23".into()];
+        crashing.container.healthcheck = healthcheck;
+        crashing.update.monitor_millis = Some(1_000);
+        let plan = deploy_plan(
+            service_id.clone(),
+            vec![run_with_health_monitor(machine, &crashing)],
+        );
+        assert!(matches!(
+            execute_plan(&plan, client, &CancellationToken::new())
+                .await
+                .failed,
+            Some(FailedOperation::Operation {
+                error: ExecutionError::Health { .. },
+                ..
+            })
+        ));
+        let retained = wait_for_service(client, &service_id, 1).await;
+        wait_for_runtime(
+            client,
+            machine,
+            &retained.first().unwrap().container_id,
+            ContainerRuntimeObservation::Restarting,
+        )
+        .await;
+        assert!(docker_exists(
+            cluster,
+            0,
+            &retained.first().unwrap().container_id
+        ));
+        remove_all(client, retained).await;
+    }
 }
 
 async fn assert_target_local_volume(cluster: &Cluster, client: &Client, machine: &Machine) {
@@ -129,15 +218,7 @@ async fn assert_replacement_health_compensation(
         wait_running(client, machine, &old.container_id).await;
 
         let mut failing = old_spec;
-        failing.container.healthcheck = Some(ployz_core::HealthcheckSpec {
-            test: vec!["CMD".into(), "false".into()],
-            interval_millis: Some(50),
-            timeout_millis: Some(50),
-            start_period_millis: None,
-            start_interval_millis: None,
-            retries: Some(1),
-            disabled: false,
-        });
+        failing.container.healthcheck = Some(healthcheck("false", 1));
         failing.update.order = order;
         failing.update.monitor_millis = Some(0);
         let suffix_spec = service_spec(&ServiceId::random(), "untouched-suffix");
@@ -268,15 +349,7 @@ async fn assert_unhealthy_service_is_not_repaired(
 ) {
     let service_id = ServiceId::random();
     let mut spec = service_spec(&service_id, "no-repair");
-    spec.container.healthcheck = Some(ployz_core::HealthcheckSpec {
-        test: vec!["CMD".into(), "false".into()],
-        interval_millis: Some(50),
-        timeout_millis: Some(50),
-        start_period_millis: None,
-        start_interval_millis: None,
-        retries: Some(1),
-        disabled: false,
-    });
+    spec.container.healthcheck = Some(healthcheck("false", 1));
     let plan = deploy_plan(
         service_id.clone(),
         vec![run_without_health_monitor(&machines[0], &spec)],
@@ -345,6 +418,14 @@ fn run_without_health_monitor(machine: &Machine, spec: &ResolvedServiceSpec) -> 
     }
 }
 
+fn run_with_health_monitor(machine: &Machine, spec: &ResolvedServiceSpec) -> DeployOperation {
+    DeployOperation::RunContainer {
+        machine_id: machine.id.clone(),
+        spec: spec.clone(),
+        skip_health_monitor: false,
+    }
+}
+
 fn hook(machine: &Machine, spec: &ResolvedServiceSpec) -> DeployOperation {
     DeployOperation::RunHook {
         machine_id: machine.id.clone(),
@@ -365,6 +446,18 @@ fn service_spec(service_id: &ServiceId, name: &str) -> ResolvedServiceSpec {
         }
     }))
     .unwrap()
+}
+
+fn healthcheck(command: &str, retries: u32) -> ployz_core::HealthcheckSpec {
+    ployz_core::HealthcheckSpec {
+        test: vec!["CMD".into(), command.into()],
+        interval_millis: Some(50),
+        timeout_millis: Some(50),
+        start_period_millis: None,
+        start_interval_millis: None,
+        retries: Some(retries),
+        disabled: false,
+    }
 }
 
 async fn wait_running(client: &Client, machine: &Machine, container_id: &ContainerId) {
@@ -410,6 +503,28 @@ async fn wait_for_service(
                 if containers.len() == count {
                     return containers;
                 }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn wait_for_runtime(
+    client: &Client,
+    machine: &Machine,
+    container_id: &ContainerId,
+    expected: ContainerRuntimeObservation,
+) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if client
+                .inspect_container(machine.id.clone(), container_id.clone())
+                .await
+                .is_ok_and(|container| container.runtime == expected)
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

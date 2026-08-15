@@ -307,7 +307,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         errors.push(error.to_string());
     }
     shutdown.send_replace(true);
-    // TODO(UT-098): preserve the baseline's unbounded graceful shutdown until a timeout is explicitly chosen.
+    // TODO(UT-098, UT-099): preserve both API servers' unbounded graceful shutdown
+    // until a timeout is explicitly chosen.
     let server_result = match completed_servers {
         Some(result) => result,
         None => servers.await,

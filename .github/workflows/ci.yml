@@ -19,6 +19,7 @@ jobs:
         with:
           components: clippy, rustfmt
       - run: cargo fmt --all -- --check
+      - run: scripts/check-evidence-inventories.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - run: bash scripts/test-release-contracts.sh
@@ -128,6 +129,7 @@ jobs:
           for scenario in "${scenarios[@]}"; do
             retry_once cargo test --package ployz-testkit --test cluster --locked "$scenario" -- --ignored --exact
           done
-          retry_once cargo test --package ployz --test service_cluster --locked -- --ignored
-          retry_once cargo test --package ployz --test internal_dns_cluster --locked -- --ignored
-          retry_once cargo test --package ployz --test caddy_cluster --locked -- --ignored
+          for suite in service_cluster internal_dns_cluster caddy_cluster deploy_cluster operator_cluster volume_layer3 workflow_layer3 hosted_dns_cluster; do
+            retry_once cargo test --package ployz --test "$suite" --locked -- --ignored
+          done
+          retry_once cargo test --package ployzd --lib corrosion::integration_tests::replicated_store_preserves_partial_and_contradictory_observations --locked -- --ignored --exact

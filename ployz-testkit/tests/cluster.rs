@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, process, time::Duration};
 
 use ployz_core::{
-    LocalMachinePhase, MachineName, MachineObservation, MachineUpdate, MembershipObservation,
-    PublicIpUpdate, UNREGISTRY_PORT, WireGuardPublicKey,
+    LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, MachineUpdate,
+    MembershipObservation, PublicIpUpdate, UNREGISTRY_PORT, WireGuardPublicKey,
 };
 use ployz_testkit::{Cluster, ClusterPlan, join_request};
 
@@ -34,6 +34,13 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
                 .all(|machine| machine.membership == MembershipObservation::Up)
         );
     }
+    let metrics = cluster
+        .machine_shell(0, "curl -fsS http://127.0.0.1:51090/metrics")
+        .unwrap();
+    assert!(metrics.contains(&format!(
+        "ployz_ployzd_build_info{{version=\"{}\"}} 1",
+        env!("CARGO_PKG_VERSION")
+    )));
 
     cluster.restart(1).unwrap();
     cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
@@ -235,10 +242,26 @@ async fn updates_removes_and_inspects_machine_network_state() {
         )
         .await
         .unwrap();
+    for (entry, local_id) in [(0, &first.id), (1, &second.id)] {
+        let visible = wait_for(&cluster, entry, Duration::from_secs(10), |machines| {
+            machines.iter().any(|machine| {
+                &machine.machine.id == local_id
+                    && machine.machine.name.as_str() == "partition-duplicate"
+            })
+        })
+        .await;
+        assert_eq!(
+            visible
+                .iter()
+                .filter(|machine| machine.machine.name.as_str() == "partition-duplicate")
+                .count(),
+            1
+        );
+    }
     cluster.unblock_gossip(0).unwrap();
     cluster.unblock_gossip(1).unwrap();
     for entry in 0..2 {
-        wait_for(&cluster, entry, Duration::from_secs(60), |machines| {
+        let converged = wait_for(&cluster, entry, Duration::from_secs(60), |machines| {
             machines
                 .iter()
                 .filter(|machine| machine.machine.name.as_str() == "partition-duplicate")
@@ -246,6 +269,16 @@ async fn updates_removes_and_inspects_machine_network_state() {
                 == 2
         })
         .await;
+        assert!(
+            converged
+                .iter()
+                .any(|machine| machine.machine.id == first.id)
+        );
+        assert!(
+            converged
+                .iter()
+                .any(|machine| machine.machine.id == second.id)
+        );
     }
 
     for (index, local, peer) in [(0, &first, &second), (1, &second, &first)] {
@@ -301,6 +334,8 @@ async fn updates_removes_and_inspects_machine_network_state() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
+    assert_partitioned_field_collisions_survive_convergence(&cluster, &first).await;
+
     let target_container = format!("{:0<64}", "target");
     let other_container = format!("{:0<64}", "other");
     cluster
@@ -337,20 +372,80 @@ async fn updates_removes_and_inspects_machine_network_state() {
     .await;
 }
 
+async fn assert_partitioned_field_collisions_survive_convergence(
+    cluster: &Cluster,
+    first: &Machine,
+) {
+    cluster.block_gossip(0).unwrap();
+    cluster.block_gossip(1).unwrap();
+    let mut conflicting = first.clone();
+    conflicting.id = MachineId::random();
+    conflicting.name = MachineName::parse("partition-field-conflict").unwrap();
+    cluster
+        .seed_machine_collision(0, first, &conflicting.id, &conflicting.name)
+        .unwrap();
+    wait_for(cluster, 0, Duration::from_secs(10), |machines| {
+        machines
+            .iter()
+            .any(|machine| machine.machine.id == conflicting.id)
+    })
+    .await;
+    assert!(
+        cluster
+            .machines(1)
+            .await
+            .unwrap()
+            .iter()
+            .all(|machine| machine.machine.id != conflicting.id)
+    );
+    cluster.unblock_gossip(0).unwrap();
+    cluster.unblock_gossip(1).unwrap();
+    for entry in 0..2 {
+        let converged = wait_for(cluster, entry, Duration::from_secs(60), |machines| {
+            machines
+                .iter()
+                .filter(|machine| machine.machine.subnet == first.subnet)
+                .count()
+                == 2
+                && machines
+                    .iter()
+                    .filter(|machine| {
+                        machine.machine.management_address == first.management_address
+                    })
+                    .count()
+                    == 2
+                && machines
+                    .iter()
+                    .filter(|machine| machine.machine.public_key == first.public_key)
+                    .count()
+                    == 2
+        })
+        .await;
+        assert!(
+            converged
+                .iter()
+                .any(|machine| machine.machine.id == first.id)
+        );
+        assert!(
+            converged
+                .iter()
+                .any(|machine| machine.machine.id == conflicting.id)
+        );
+    }
+}
+
 async fn wait_for(
     cluster: &Cluster,
     entry: usize,
     timeout: Duration,
     condition: impl Fn(&[MachineObservation]) -> bool,
-) {
+) -> Vec<MachineObservation> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if cluster
-            .machines(entry)
-            .await
-            .is_ok_and(|machines| condition(&machines))
+        if let Ok(machines) = cluster.machines(entry).await
+            && condition(&machines)
         {
-            return;
+            return machines;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
