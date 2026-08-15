@@ -108,17 +108,20 @@ fn runtime() -> Result<tokio::runtime::Runtime, Error> {
         .build()?)
 }
 
+fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Error> {
+    matches
+        .get_one::<String>("ployz-config")
+        .map(Path::new)
+        .map(crate::context::expand_home)
+        .ok_or_else(|| Error::usage("Ployz config path is required"))
+}
+
 async fn connect_client(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<crate::connect::Client, Error> {
-    let config = matches
-        .get_one::<String>("ployz-config")
-        .map(Path::new)
-        .map(crate::context::expand_home)
-        .ok_or_else(|| Error::usage("Ployz config path is required"))?;
     Ok(crate::connect::connect(
-        &config,
+        &config_path(matches)?,
         matches.get_one::<String>("connect").map(String::as_str),
         context,
     )

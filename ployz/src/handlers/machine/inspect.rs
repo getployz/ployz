@@ -10,59 +10,57 @@ use ployz_core::{
 };
 use serde::Serialize;
 
-use super::{ConnectionOptions, machine_list, runtime};
+use super::{machine_list, with_client};
 use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
-    let options = ConnectionOptions::from_matches(root)?;
-    let output = leaf_matches(root)
-        .get_one::<String>("output")
-        .map(String::as_str);
-    let machines = runtime()?.block_on(async {
-        let mut client = options.connect().await?;
-        machine_list(&mut client).await
-    })?;
-    if output == Some("json") {
-        let machines = machines
-            .iter()
-            .map(|observation| MachineObservationOutput {
-                gateway: gateway(observation.machine.subnet),
-                observation,
-            })
-            .collect::<Vec<_>>();
-        println!("{}", serde_json::to_string_pretty(&machines)?);
-        return Ok(());
-    }
-    println!(
-        "ID\tNAME\tMEMBERSHIP\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
-    );
-    for observed in machines {
-        let machine = observed.machine;
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            machine.id,
-            machine.name,
-            observed.membership.as_str(),
-            machine.subnet.0,
-            gateway(machine.subnet),
-            machine
-                .public_ip
-                .map_or_else(|| "-".into(), |ip| ip.to_string()),
-            machine
-                .advertised_endpoints
-                .iter()
-                .map(|endpoint| endpoint.0.to_string())
-                .collect::<Vec<_>>()
-                .join(","),
-            machine.runtime.hostname,
-            machine.runtime.daemon_version,
-            machine.runtime.docker_version,
-            machine.runtime.os_pretty_name,
-            machine.runtime.kernel_version,
-            machine.runtime.architecture,
-        );
-    }
-    Ok(())
+    let output = leaf_matches(root).get_one::<String>("output").cloned();
+    with_client(root, |client| {
+        Box::pin(async move {
+            let machines = machine_list(client).await?;
+            if output.as_deref() == Some("json") {
+                let machines = machines
+                    .iter()
+                    .map(|observation| MachineObservationOutput {
+                        gateway: gateway(observation.machine.subnet),
+                        observation,
+                    })
+                    .collect::<Vec<_>>();
+                println!("{}", serde_json::to_string_pretty(&machines)?);
+                return Ok(());
+            }
+            println!(
+                "ID\tNAME\tMEMBERSHIP\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
+            );
+            for observed in machines {
+                let machine = observed.machine;
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    machine.id,
+                    machine.name,
+                    observed.membership.as_str(),
+                    machine.subnet.0,
+                    gateway(machine.subnet),
+                    machine
+                        .public_ip
+                        .map_or_else(|| "-".into(), |ip| ip.to_string()),
+                    machine
+                        .advertised_endpoints
+                        .iter()
+                        .map(|endpoint| endpoint.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    machine.runtime.hostname,
+                    machine.runtime.daemon_version,
+                    machine.runtime.docker_version,
+                    machine.runtime.os_pretty_name,
+                    machine.runtime.kernel_version,
+                    machine.runtime.architecture,
+                );
+            }
+            Ok(())
+        })
+    })
 }
 
 #[derive(Serialize)]
@@ -77,37 +75,36 @@ fn gateway(network: MachineSubnet) -> Ipv4Addr {
 }
 
 pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
-    let options = ConnectionOptions::from_matches(root)?;
-    let result = runtime()?.block_on(async {
-        let mut client = options.connect().await?;
-        let machines = machine_list(&mut client).await?;
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
-        for observed in machines {
-            let id = observed.machine.id;
-            let selector = MachineSelector::from(&id);
-            let request = InspectRequest {
-                include_rtts: true,
-                ..Default::default()
+    with_client(root, |client| {
+        Box::pin(async move {
+            let machines = machine_list(client).await?;
+            let mut result = PartialResult {
+                successes: Vec::new(),
+                failures: Vec::new(),
+                omissions: Vec::new(),
             };
-            match client.call::<op::Inspect>(request, Some(&selector)).await {
-                Ok(details) => result.successes.push(MachineSuccess {
-                    machine_id: id,
-                    value: details.rtts,
-                }),
-                Err(error) => result.failures.push(MachineFailure {
-                    machine_id: id,
-                    error: error.to_string(),
-                }),
+            for observed in machines {
+                let id = observed.machine.id;
+                let selector = MachineSelector::from(&id);
+                let request = InspectRequest {
+                    include_rtts: true,
+                    ..Default::default()
+                };
+                match client.call::<op::Inspect>(request, Some(&selector)).await {
+                    Ok(details) => result.successes.push(MachineSuccess {
+                        machine_id: id,
+                        value: details.rtts,
+                    }),
+                    Err(error) => result.failures.push(MachineFailure {
+                        machine_id: id,
+                        error: error.to_string(),
+                    }),
+                }
             }
-        }
-        Ok::<_, Error>(result)
-    })?;
-    print_rtts(&result);
-    Ok(())
+            print_rtts(&result);
+            Ok(())
+        })
+    })
 }
 
 #[must_use]
@@ -155,39 +152,37 @@ fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
 }
 
 pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error> {
-    let options = ConnectionOptions::from_matches(root)?;
     let selector = leaf_matches(root).get_one::<String>("machine").cloned();
-    let device = runtime()?
-        .block_on(async {
-            let mut client = options.connect().await?;
+    with_client(root, |client| {
+        Box::pin(async move {
             let target = selector.map(MachineSelector::parse).transpose()?;
-            client
+            let device = client
                 .call::<op::InspectWireguard>(InspectWireGuardRequest {}, target.as_ref())
-                .await
-                .map_err(Error::from)
-        })?
-        .device;
-    println!("interface: {}", device.interface_name);
-    println!("public key: {}", device.public_key);
-    println!("listening port: {}", device.listen_port);
-    let now_unix_seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    for peer in device.peers {
-        println!();
-        println!("peer: {}", peer.public_key);
-        if let Some(machine) = &peer.machine {
-            println!("  machine: {} ({})", machine.name, machine.id);
-        }
-        if let Some(endpoint) = peer.endpoint {
-            println!("  endpoint: {endpoint}");
-        }
-        println!("{}", format_wg_show_peer_stats(&peer, now_unix_seconds));
-        if let Some(line) = wg_rtt_line(peer.rtt.as_ref()) {
-            println!("{line}");
-        }
-    }
-    Ok(())
+                .await?
+                .device;
+            println!("interface: {}", device.interface_name);
+            println!("public key: {}", device.public_key);
+            println!("listening port: {}", device.listen_port);
+            let now_unix_seconds = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs());
+            for peer in device.peers {
+                println!();
+                println!("peer: {}", peer.public_key);
+                if let Some(machine) = &peer.machine {
+                    println!("  machine: {} ({})", machine.name, machine.id);
+                }
+                if let Some(endpoint) = peer.endpoint {
+                    println!("  endpoint: {endpoint}");
+                }
+                println!("{}", format_wg_show_peer_stats(&peer, now_unix_seconds));
+                if let Some(line) = wg_rtt_line(peer.rtt.as_ref()) {
+                    println!("{line}");
+                }
+            }
+            Ok(())
+        })
+    })
 }
 
 #[must_use]
