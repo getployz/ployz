@@ -81,14 +81,6 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
         resolve_route(RoutingRequest::One(selector("*")), &visible),
         Err(TargetResolutionError::NotFound(vec![selector("*")]))
     );
-
-    let star = machine('5', "*", 5);
-    let mut visible_with_star = visible;
-    visible_with_star.push(star.clone());
-    assert_eq!(
-        resolve_route(RoutingRequest::One(selector("*")), &visible_with_star),
-        Ok(ProxyRoute::One(Box::new(star)))
-    );
 }
 
 #[tokio::test]

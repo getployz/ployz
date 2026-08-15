@@ -268,6 +268,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn machine_rename_rejects_an_invalid_machine_name_before_connecting() {
+        let mut command = crate::cli::command();
+        let matches = command
+            .clone()
+            .try_get_matches_from(["ployz", "machine", "rename", "vultr1", "BAD NAME"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&matches, &mut command),
+            Err("invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label".into())
+        );
+    }
+
+    #[test]
     fn local_machine_initialisation_remains_explicitly_unimplemented() {
         let mut command = crate::cli::command();
         let matches = command
