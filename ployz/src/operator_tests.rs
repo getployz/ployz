@@ -9,7 +9,7 @@ use std::{
 use futures_util::stream;
 use ployz_core::{
     ContainerRuntimeObservation, LogMetadata, LogOrigin, MachineName, ResolvedServiceSpec,
-    ServiceId, ServiceName,
+    RestartPolicy, ServiceId, ServiceName,
 };
 
 use super::*;
@@ -364,10 +364,10 @@ fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservatio
                 pid_mode: None,
                 log_driver: None,
                 resources: Default::default(),
-                stop_grace_period_millis: None,
+                stop_timeout_secs: None,
                 sysctls: Default::default(),
                 config_mounts: vec![],
-                restart: true,
+                restart: RestartPolicy::default(),
             },
             placement: Default::default(),
             ports: vec![],

@@ -306,7 +306,7 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
         let DeployOperation::ReplaceContainer(replacement) = &mut operation else {
             unreachable!()
         };
-        replacement.spec.container.stop_grace_period_millis = Some(30_000);
+        replacement.spec.container.stop_timeout_secs = Some(30);
         let plan = plan(vec![operation]);
         let mut steps = Vec::new();
         if order == UpdateOrder::StopFirst {

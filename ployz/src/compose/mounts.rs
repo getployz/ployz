@@ -71,7 +71,11 @@ pub(super) fn volumes(
                 .map_err(invalid)?,
                 create_machine_path: bind.is_some_and(|bind| bind.create_host_path),
                 propagation: bind.and_then(|bind| bind.propagation.clone()),
-                recursive: bind.and_then(|bind| bind.recursive.clone()),
+                recursive: bind
+                    .and_then(|bind| bind.recursive.as_deref())
+                    .map(str::parse)
+                    .transpose()
+                    .map_err(invalid)?,
             },
             "tmpfs" => VolumeSource::Tmpfs {
                 size_bytes: tmpfs

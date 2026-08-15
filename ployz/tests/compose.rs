@@ -67,6 +67,7 @@ services:
     stdin_open: true
     privileged: true
     pid: host
+    restart: on-failure:5
     stop_grace_period: 30s
     sysctls: {net.ipv4.ip_forward: "1"}
     deploy:
@@ -81,7 +82,7 @@ services:
       timeout: 2m30s
       unknown: ignored
     volumes:
-      - {type: bind, source: /srv/api, target: /host, bind: {create_host_path: true, propagation: rprivate}}
+      - {type: bind, source: /srv/api, target: /host, bind: {create_host_path: true, propagation: rprivate, recursive: disabled}}
       - {type: volume, source: data, target: /data, volume: {nocopy: true, subpath: current}}
       - {type: tmpfs, target: /tmp, tmpfs: {size: "10485760", mode: 1770}}
     configs:
@@ -164,7 +165,15 @@ configs:
         Some(90_000)
     );
     assert_eq!(api.container.log_driver.as_ref().unwrap().name, "local");
-    assert_eq!(api.container.stop_grace_period_millis, Some(30_000));
+    assert_eq!(api.container.stop_timeout_secs, Some(30));
+    assert_eq!(api.container.pid_mode, Some(ployz_core::PidMode::Host));
+    assert_eq!(
+        api.container.restart,
+        ployz_core::RestartPolicy {
+            name: ployz_core::RestartPolicyName::OnFailure,
+            maximum_retry_count: Some(5),
+        }
+    );
     assert_eq!(
         api.placement.machines.first().unwrap().as_str(),
         "machine-1"
@@ -202,6 +211,13 @@ configs:
         Some(0o640)
     );
     assert_eq!(api.volumes.len(), 3);
+    assert!(api.volumes.iter().any(|volume| matches!(
+        &volume.source,
+        VolumeSource::Bind {
+            recursive: Some(ployz_core::BindRecursive::Disabled),
+            ..
+        }
+    )));
     assert!(api.volumes.iter().any(|volume| matches!(
         &volume.source,
         VolumeSource::Named { name, no_copy: true, subpath: Some(subpath), .. }
@@ -308,6 +324,15 @@ secrets:
             "services: {app: {image: app, volumes: [{type: tmpfs, target: /tmp, tmpfs: {size: huge}}]}}",
             "tmpfs.size",
         ),
+        (
+            "services: {app: {image: app, restart: maybe}}",
+            "restart policy",
+        ),
+        ("services: {app: {image: app, pid: private}}", "PID mode"),
+        (
+            "services: {app: {image: app, volumes: [{type: bind, source: /srv, target: /host, bind: {recursive: enabled}}]}}",
+            "bind recursive",
+        ),
     ];
     for (yaml, expected) in cases {
         let error = parse_normalized(yaml, ".").unwrap_err().to_string();
@@ -357,6 +382,19 @@ services:
         PortPublication::Host { bind: HostBind::Prefix { prefix }, .. }
             if prefix.to_string() == "2001:db8::/64"
     ));
+}
+
+#[test]
+fn compose_maps_stop_grace_period_to_whole_docker_seconds() {
+    let project = parse_normalized(
+        "services: {app: {image: app, stop_grace_period: 1500ms}}",
+        ".",
+    )
+    .unwrap();
+    assert_eq!(
+        service(&project, "app").container.stop_timeout_secs,
+        Some(1)
+    );
 }
 
 #[test]

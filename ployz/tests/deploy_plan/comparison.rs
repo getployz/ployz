@@ -46,7 +46,7 @@ fn spec_comparison_covers_upstream_immutable_field_families() {
     changed.container.cap_drop.push("ALL".into());
     changes.push(("cap_drop", changed));
     let mut changed = requested.clone();
-    changed.container.pid_mode = Some("host".into());
+    changed.container.pid_mode = Some(PidMode::Host);
     changes.push(("pid", changed));
     let mut changed = requested.clone();
     changed.container.tty = true;
@@ -103,7 +103,7 @@ fn spec_comparison_covers_upstream_immutable_field_families() {
     );
     changes.push(("ulimit", changed));
     let mut changed = requested.clone();
-    changed.container.restart = false;
+    changed.container.restart = RestartPolicy::no();
     changes.push(("restart", changed));
 
     for (name, changed) in changes {

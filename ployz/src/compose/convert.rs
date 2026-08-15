@@ -6,9 +6,9 @@ use std::{
 
 use ployz_core::{
     ContainerPath, ContainerResources, DeviceMapping, DeviceReservation, HealthcheckSpec,
-    LogDriver, MachinePath, MachineSelector, Placement, PortPublication, PullPolicy,
-    RequestedServiceSpec, ServiceContainerSpec, ServiceMode, ServiceName, Ulimit, UpdateConfig,
-    UpdateOrder,
+    LogDriver, MachinePath, MachineSelector, PidMode, Placement, PortPublication, PullPolicy,
+    RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceName, Ulimit,
+    UpdateConfig, UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -238,7 +238,12 @@ fn convert_service(
         tty: raw.tty,
         open_stdin: raw.stdin_open,
         privileged: raw.privileged,
-        pid_mode: raw.pid.clone(),
+        pid_mode: raw
+            .pid
+            .as_deref()
+            .map(PidMode::parse)
+            .transpose()
+            .map_err(invalid)?,
         log_driver: Some(
             raw.logging
                 .as_ref()
@@ -254,10 +259,16 @@ fn convert_service(
                 }),
         ),
         resources: resources(raw)?,
-        stop_grace_period_millis: duration_millis(raw.stop_grace_period.as_deref())?,
+        stop_timeout_secs: duration_secs(raw.stop_grace_period.as_deref())?,
         sysctls: raw.sysctls.clone(),
         config_mounts,
-        restart: true,
+        restart: raw
+            .restart
+            .as_deref()
+            .map(RestartPolicy::parse)
+            .transpose()
+            .map_err(invalid)?
+            .unwrap_or_default(),
     };
     Ok((
         RequestedServiceSpec {
@@ -723,6 +734,15 @@ pub(super) fn duration_millis(value: Option<&str>) -> Result<Option<u64>, Compos
         remaining = &remaining[unit_len..];
     }
     Ok(Some(total as u64))
+}
+
+fn duration_secs(value: Option<&str>) -> Result<Option<i64>, ComposeError> {
+    duration_millis(value)?
+        .map(|millis| {
+            i64::try_from(millis / 1_000)
+                .map_err(|_| invalid("stop_grace_period exceeds Docker's range"))
+        })
+        .transpose()
 }
 
 pub(super) fn mapping_string(map: &serde_norway::Mapping, key: &str) -> Option<String> {

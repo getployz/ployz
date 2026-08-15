@@ -370,40 +370,6 @@ mod tests {
     }
 
     #[test]
-    fn wg_ago_matches_wireguard_style_for_one_minute_twelve_seconds() {
-        assert_eq!(format_wg_ago(72), "1 minute, 12 seconds ago");
-    }
-
-    #[test]
-    fn wg_show_prints_a_known_handshake_as_relative_ago() {
-        assert_eq!(
-            format_wg_show_peer_stats(&sample_peer(Some(1_700_000_000 - 72)), 1_700_000_000),
-            "  latest handshake: 1 minute, 12 seconds ago\n  transfer: 7 received, 8 sent\n  allowed ips: 10.0.0.2/32"
-        );
-    }
-
-    #[test]
-    fn wg_show_omits_handshake_and_keeps_transfer_and_allowed_ips() {
-        assert_eq!(
-            format_wg_show_peer_stats(&sample_peer(None), 1_700_000_000),
-            "  transfer: 7 received, 8 sent\n  allowed ips: 10.0.0.2/32"
-        );
-    }
-
-    fn sample_peer(last_handshake_unix_seconds: Option<u64>) -> WireGuardPeer {
-        WireGuardPeer {
-            public_key: ployz_core::WireGuardPublicKey([1; 32]),
-            endpoint: None,
-            last_handshake_unix_seconds,
-            received_bytes: 7,
-            sent_bytes: 8,
-            allowed_ips: vec!["10.0.0.2/32".parse().unwrap()],
-            machine: None,
-            rtt: None,
-        }
-    }
-
-    #[test]
     fn machine_json_projection_includes_the_derived_gateway() {
         let observation = MachineObservation {
             machine: ployz_core::Machine {

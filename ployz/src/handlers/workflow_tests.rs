@@ -7,7 +7,7 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, Machine, MachineId, MachineName, MachineSubnet, ManagementAddress,
-    MembershipObservation, PortPublication, ResolvedServiceSpec, WireGuardPublicKey,
+    MembershipObservation, PortPublication, ResolvedServiceSpec, RestartPolicy, WireGuardPublicKey,
 };
 
 use super::*;
@@ -126,7 +126,7 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
     let spec = run_spec(super::leaf_matches(&matches)).unwrap();
     assert_eq!(spec.name.as_str(), "api");
     assert_eq!(spec.container.command, ["echo", "hello"]);
-    assert!(!spec.container.restart);
+    assert_eq!(spec.container.restart, RestartPolicy::no());
     assert_eq!(
         spec.container.environment.get("A").map(String::as_str),
         Some("b")

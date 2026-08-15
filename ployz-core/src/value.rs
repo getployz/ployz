@@ -19,7 +19,11 @@ pub struct ValueError {
 }
 
 impl ValueError {
-    fn new(kind: &'static str, value: impl Into<String>, expected: &'static str) -> Self {
+    pub(crate) fn new(
+        kind: &'static str,
+        value: impl Into<String>,
+        expected: &'static str,
+    ) -> Self {
         Self {
             kind,
             value: value.into(),

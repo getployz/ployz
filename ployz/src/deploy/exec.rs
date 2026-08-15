@@ -728,8 +728,8 @@ fn health_error(container_id: &ContainerId, failure: HealthFailure) -> Execution
 
 fn stop_grace_period(spec: &ResolvedServiceSpec) -> Option<i32> {
     spec.container
-        .stop_grace_period_millis
-        .map(|millis| i32::try_from(millis.div_ceil(1_000)).unwrap_or(i32::MAX))
+        .stop_timeout_secs
+        .map(|secs| i32::try_from(secs).unwrap_or(i32::MAX))
 }
 
 fn is_configured_healthcheck(healthcheck: &ployz_core::HealthcheckSpec) -> bool {
