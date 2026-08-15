@@ -2,8 +2,8 @@ use std::num::NonZeroU32;
 
 use clap::ArgMatches;
 #[cfg(test)]
-use ployz_core::ServiceId;
-use ployz_core::{RequestedServiceSpec, ServiceMode, select_service};
+use ployz_core::{RequestedServiceSpec, ServiceId};
+use ployz_core::{ServiceMode, select_service};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -14,8 +14,8 @@ use crate::{
     connect::Client,
     deploy::{
         DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError, PlanOptions,
-        apply::{expand_ingress, finish, list_machines, plan_options, render, take_snapshot},
-        apply_requested, execute_operations, plan_deploy,
+        apply_requested, execute_operations, expand_ingress, finish, list_machines, plan_deploy,
+        plan_options, render, take_snapshot,
     },
 };
 
@@ -24,6 +24,8 @@ use super::{
     build::{push_targets, report_push},
     confirm, connect_client, leaf_matches, required, runtime, string_values,
 };
+
+pub(super) use crate::deploy::apply_requested as deploy_requested;
 
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -121,13 +123,6 @@ async fn push_image(
     } else {
         Err(Error::usage(failures.join("; ")))
     }
-}
-
-pub(super) async fn deploy_requested(
-    client: &mut Client,
-    requested: &RequestedServiceSpec,
-) -> Result<(), Error> {
-    apply_requested(client, requested).await
 }
 
 async fn deploy_connected(
