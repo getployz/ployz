@@ -14,7 +14,7 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, HostBind, HttpProtocol, Machine, MachineId, MachineName,
     MachineObservation, MachineSubnet, ManagementAddress, MembershipObservation, PortPublication,
-    ServiceMode, TransportProtocol, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    RestartPolicy, ServiceMode, TransportProtocol, UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 
 #[test]
@@ -67,6 +67,7 @@ services:
     stdin_open: true
     privileged: true
     pid: host
+    restart: on-failure:5
     stop_grace_period: 30s
     sysctls: {net.ipv4.ip_forward: "1"}
     deploy:
@@ -81,7 +82,7 @@ services:
       timeout: 2m30s
       unknown: ignored
     volumes:
-      - {type: bind, source: /srv/api, target: /host, bind: {create_host_path: true, propagation: rprivate}}
+      - {type: bind, source: /srv/api, target: /host, bind: {create_host_path: true, propagation: rprivate, recursive: disabled}}
       - {type: volume, source: data, target: /data, volume: {nocopy: true, subpath: current}}
       - {type: tmpfs, target: /tmp, tmpfs: {size: "10485760", mode: 1770}}
     configs:
@@ -164,7 +165,14 @@ configs:
         Some(90_000)
     );
     assert_eq!(api.container.log_driver.as_ref().unwrap().name, "local");
-    assert_eq!(api.container.stop_grace_period_millis, Some(30_000));
+    assert_eq!(api.container.stop_timeout_secs, Some(30));
+    assert_eq!(api.container.pid_mode, Some(ployz_core::PidMode::Host));
+    assert_eq!(
+        api.container.restart,
+        RestartPolicy::OnFailure {
+            maximum_retry_count: Some(5),
+        }
+    );
     assert_eq!(
         api.placement.machines.first().unwrap().as_str(),
         "machine-1"

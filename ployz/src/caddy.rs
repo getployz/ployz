@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, num::NonZeroU16};
 use oci_client::{Client, Reference, secrets::RegistryAuth};
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath,
-    MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec,
+    MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
     ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
     ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
@@ -115,10 +115,10 @@ pub fn service_spec(
             pid_mode: None,
             log_driver: None,
             resources: ContainerResources::default(),
-            stop_grace_period_millis: None,
+            stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
             config_mounts: Vec::new(),
-            restart: true,
+            restart: RestartPolicy::default(),
         },
         placement: Placement { machines },
         ports: vec![

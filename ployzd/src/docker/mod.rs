@@ -863,6 +863,41 @@ mod tests {
     }
 
     #[test]
+    fn create_body_maps_docker_restart_pid_and_stop_timeout() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+            "service_id": "a".repeat(32),
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": {
+                "image": "alpine:3.23.3",
+                "pull_policy": "missing",
+                "pid_mode": "container:abc",
+                "stop_timeout_secs": 1,
+                "restart": { "name": "on-failure", "maximum_retry_count": 3 }
+            }
+        }))
+        .unwrap();
+        let body = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &spec,
+        )
+        .unwrap();
+        assert_eq!(body.stop_timeout, Some(1));
+        let host = body.host_config.unwrap();
+        let restart = host.restart_policy.unwrap();
+        assert_eq!(
+            restart.name,
+            Some(bollard::models::RestartPolicyNameEnum::ON_FAILURE)
+        );
+        assert_eq!(restart.maximum_retry_count, Some(3));
+        assert_eq!(host.pid_mode.as_deref(), Some("container:abc"));
+    }
+
+    #[test]
     fn run_service_container_does_not_restart_after_exit_and_keeps_bind_mounts() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
@@ -874,7 +909,7 @@ mod tests {
                 "image": "alpine:3.23.3",
                 "command": ["cat", "/host-os"],
                 "pull_policy": "missing",
-                "restart": false
+                "restart": { "name": "no" }
             },
             "volumes": [{
                 "reference": "host",
@@ -941,9 +976,18 @@ mod tests {
         assert!(bind.read_only_force_recursive.is_none());
 
         for (recursive, expected) in [
-            ("disabled", (Some(true), None, None)),
-            ("writable", (None, Some(true), None)),
-            ("readonly", (None, None, Some(true))),
+            (
+                ployz_core::BindRecursive::Disabled,
+                (Some(true), None, None),
+            ),
+            (
+                ployz_core::BindRecursive::Writable,
+                (None, Some(true), None),
+            ),
+            (
+                ployz_core::BindRecursive::Readonly,
+                (None, None, Some(true)),
+            ),
         ] {
             let mut recursive_spec = spec.clone();
             let ployz_core::VolumeSource::Bind {
@@ -956,7 +1000,7 @@ mod tests {
             else {
                 panic!("expected bind volume")
             };
-            *setting = Some(recursive.into());
+            *setting = Some(recursive);
             let translated = docker_mounts(&recursive_spec.volumes, &recursive_spec.mounts)
                 .unwrap()
                 .remove(0)

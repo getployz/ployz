@@ -10,8 +10,8 @@ use bollard::models::{
     RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
-    ContainerKind, HealthcheckSpec, HostBind, MachineGateway, MachineId, PortPublication,
-    ResolvedServiceSpec, ServiceVolume, TransportProtocol, VolumeSource,
+    BindRecursive, ContainerKind, HealthcheckSpec, HostBind, MachineGateway, MachineId,
+    PortPublication, ResolvedServiceSpec, ServiceVolume, TransportProtocol, VolumeSource,
 };
 
 use super::{
@@ -82,18 +82,15 @@ pub(super) fn container_create_body(
                 config: Some(driver.options.clone().into_iter().collect()),
             }),
         port_bindings,
-        restart_policy: Some(RestartPolicy {
-            name: Some(if hook.is_some() || !spec.container.restart {
-                RestartPolicyNameEnum::NO
-            } else {
-                RestartPolicyNameEnum::UNLESS_STOPPED
-            }),
-            maximum_retry_count: None,
-        }),
+        restart_policy: Some(docker_restart(if hook.is_some() {
+            ployz_core::RestartPolicy::No
+        } else {
+            spec.container.restart
+        })),
         mounts: (!mounts.is_empty()).then_some(mounts),
         cap_add: (!container.cap_add.is_empty()).then(|| container.cap_add.clone()),
         cap_drop: (!container.cap_drop.is_empty()).then(|| container.cap_drop.clone()),
-        pid_mode: container.pid_mode.clone(),
+        pid_mode: container.pid_mode.as_ref().map(ToString::to_string),
         privileged: Some(
             hook.and_then(|hook| hook.privileged)
                 .unwrap_or(container.privileged),
@@ -135,14 +132,25 @@ pub(super) fn container_create_body(
         entrypoint: (!container.entrypoint.is_empty()).then(|| container.entrypoint.clone()),
         exposed_ports,
         labels: Some(labels),
-        stop_timeout: container
-            .stop_grace_period_millis
-            .map(|millis| i64::try_from(millis.div_ceil(1000)))
-            .transpose()
-            .map_err(|_| Error::DurationOverflow)?,
+        stop_timeout: container.stop_timeout_secs,
         host_config: Some(host_config),
         ..Default::default()
     })
+}
+
+fn docker_restart(policy: ployz_core::RestartPolicy) -> RestartPolicy {
+    let (name, maximum_retry_count) = match policy {
+        ployz_core::RestartPolicy::No => (RestartPolicyNameEnum::NO, None),
+        ployz_core::RestartPolicy::Always => (RestartPolicyNameEnum::ALWAYS, None),
+        ployz_core::RestartPolicy::UnlessStopped => (RestartPolicyNameEnum::UNLESS_STOPPED, None),
+        ployz_core::RestartPolicy::OnFailure {
+            maximum_retry_count,
+        } => (RestartPolicyNameEnum::ON_FAILURE, maximum_retry_count),
+    };
+    RestartPolicy {
+        name: Some(name),
+        maximum_retry_count,
+    }
 }
 
 pub(super) fn docker_healthcheck(spec: &HealthcheckSpec) -> Result<HealthConfig, Error> {
@@ -297,6 +305,13 @@ pub(super) fn docker_mounts(
                 } => {
                     translated.typ = Some(MountType::BIND);
                     translated.source = Some(machine_path.to_string());
+                    let (non_recursive, read_only_non_recursive, read_only_force_recursive) =
+                        match recursive {
+                            Some(BindRecursive::Disabled) => (Some(true), None, None),
+                            Some(BindRecursive::Writable) => (None, Some(true), None),
+                            Some(BindRecursive::Readonly) => (None, None, Some(true)),
+                            None => (None, None, None),
+                        };
                     translated.bind_options = Some(MountBindOptions {
                         propagation: propagation
                             .as_deref()
@@ -304,11 +319,9 @@ pub(super) fn docker_mounts(
                             .transpose()
                             .map_err(Error::InvalidMountPropagation)?,
                         create_mountpoint: create_machine_path.then_some(true),
-                        non_recursive: (recursive.as_deref() == Some("disabled")).then_some(true),
-                        read_only_non_recursive: (recursive.as_deref() == Some("writable"))
-                            .then_some(true),
-                        read_only_force_recursive: (recursive.as_deref() == Some("readonly"))
-                            .then_some(true),
+                        non_recursive,
+                        read_only_non_recursive,
+                        read_only_force_recursive,
                     });
                 }
                 VolumeSource::Named {

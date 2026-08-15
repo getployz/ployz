@@ -121,6 +121,7 @@ pub(super) struct RawService {
     #[serde(default)]
     pub privileged: bool,
     pub pid: Option<String>,
+    pub restart: Option<String>,
     pub logging: Option<RawLogging>,
     pub stop_grace_period: Option<String>,
     #[serde(default)]

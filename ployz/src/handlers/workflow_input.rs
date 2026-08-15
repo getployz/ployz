@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 use clap::ArgMatches;
 use ployz_core::{
     ContainerPath, ContainerResources, DockerVolumeName, MachineSelector, Placement,
-    PortPublication, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, ServiceContainerSpec,
-    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
-    Ulimit, UpdateConfig, VolumeSource,
+    PortPublication, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, RestartPolicy,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, Ulimit, UpdateConfig, VolumeSource,
 };
 
 use crate::{
@@ -123,10 +123,10 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
                 ulimits: parse_ulimits(&string_values(matches, "ulimit"))?,
                 ..Default::default()
             },
-            stop_grace_period_millis: None,
+            stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
             config_mounts: Vec::new(),
-            restart: false,
+            restart: RestartPolicy::No,
         },
         placement: Placement {
             machines: string_values(matches, "machine")

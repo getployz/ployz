@@ -5,9 +5,10 @@ use std::{
 };
 
 use crate::{
-    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerPath, DockerVolumeName, MachineId,
-    MachineName, MachinePath, MachineSelector, MachineSubnet, ManagementAddress, SelectedEndpoint,
-    ServiceId, ServiceName, ServiceVolumeReference, WireGuardPublicKey,
+    AdvertisedEndpoint, BindRecursive, ContainerAddress, ContainerId, ContainerPath,
+    DockerVolumeName, MachineId, MachineName, MachinePath, MachineSelector, MachineSubnet,
+    ManagementAddress, PidMode, RestartPolicy, SelectedEndpoint, ServiceId, ServiceName,
+    ServiceVolumeReference, WireGuardPublicKey,
 };
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -579,7 +580,7 @@ pub enum VolumeSource {
         #[serde(default)]
         propagation: Option<String>,
         #[serde(default)]
-        recursive: Option<String>,
+        recursive: Option<BindRecursive>,
     },
     Named {
         name: DockerVolumeName,
@@ -834,24 +835,19 @@ pub struct ServiceContainerSpec {
     #[serde(default)]
     pub privileged: bool,
     #[serde(default)]
-    pub pid_mode: Option<String>,
+    pub pid_mode: Option<PidMode>,
     #[serde(default)]
     pub log_driver: Option<LogDriver>,
     #[serde(default)]
     pub resources: ContainerResources,
     #[serde(default)]
-    pub stop_grace_period_millis: Option<u64>,
+    pub stop_timeout_secs: Option<i64>,
     #[serde(default)]
     pub sysctls: BTreeMap<String, String>,
     #[serde(default)]
     pub config_mounts: Vec<ConfigMount>,
-    /// When false, the Service Container is not restarted after it exits.
-    #[serde(default = "default_container_restart")]
-    pub restart: bool,
-}
-
-fn default_container_restart() -> bool {
-    true
+    #[serde(default)]
+    pub restart: RestartPolicy,
 }
 
 /// Normalized deploy input before placement and container-specific resolution.

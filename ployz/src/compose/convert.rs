@@ -7,8 +7,8 @@ use std::{
 use ployz_core::{
     ContainerPath, ContainerResources, DeviceMapping, DeviceReservation, HealthcheckSpec,
     LogDriver, MachinePath, MachineSelector, Placement, PortPublication, PullPolicy,
-    RequestedServiceSpec, ServiceContainerSpec, ServiceMode, ServiceName, Ulimit, UpdateConfig,
-    UpdateOrder,
+    RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceName, Ulimit,
+    UpdateConfig, UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -238,7 +238,12 @@ fn convert_service(
         tty: raw.tty,
         open_stdin: raw.stdin_open,
         privileged: raw.privileged,
-        pid_mode: raw.pid.clone(),
+        pid_mode: raw
+            .pid
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(invalid)?,
         log_driver: Some(
             raw.logging
                 .as_ref()
@@ -254,10 +259,17 @@ fn convert_service(
                 }),
         ),
         resources: resources(raw)?,
-        stop_grace_period_millis: duration_millis(raw.stop_grace_period.as_deref())?,
+        stop_timeout_secs: duration_millis(raw.stop_grace_period.as_deref())?
+            .map(|millis| (millis / 1_000) as i64),
         sysctls: raw.sysctls.clone(),
         config_mounts,
-        restart: true,
+        restart: raw
+            .restart
+            .as_deref()
+            .map(RestartPolicy::parse)
+            .transpose()
+            .map_err(invalid)?
+            .unwrap_or_default(),
     };
     Ok((
         RequestedServiceSpec {
