@@ -4,12 +4,12 @@ use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName, HostBind,
     MachineId, MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceVolume, SpecChange,
-    UpdateOrder, VolumeSource, machine_matches_selector,
+    UpdateOrder, VolumeSource, compare_specs, machine_matches_selector, same_service_mode_kind,
 };
 
 use super::{
     DeployOperation, DeployPlan, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
-    ReplacementOperation, compare_specs, same_service_mode_kind,
+    ReplacementOperation,
 };
 
 pub fn plan_deploy(

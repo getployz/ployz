@@ -1,20 +1,19 @@
 use ployz_core::{
     ContainerId, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
-    DockerVolumeName, MachineId, MachineObservation, ResolvedServiceSpec, ServiceId, ServiceMode,
-    ServiceVolume, ServiceVolumeReference,
+    DockerVolumeName, MachineId, MachineObservation, ResolvedServiceSpec, ServiceId, ServiceVolume,
+    ServiceVolumeReference,
 };
 use thiserror::Error;
 
-mod comparison;
 mod exec;
 mod observe;
 mod planning;
 
-pub use comparison::compare_specs;
 pub(crate) use exec::execute_operations;
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
 pub use planning::plan_deploy;
 pub(crate) use planning::volume_eligible_machine_ids;
+pub use ployz_core::compare_specs;
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
@@ -23,10 +22,6 @@ fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
             | ContainerRuntimeObservation::Paused
             | ContainerRuntimeObservation::Restarting
     )
-}
-
-fn same_service_mode_kind(left: &ServiceMode, right: &ServiceMode) -> bool {
-    std::mem::discriminant(left) == std::mem::discriminant(right)
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
