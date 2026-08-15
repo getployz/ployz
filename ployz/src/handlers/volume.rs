@@ -13,7 +13,7 @@ use ployz_core::{
 };
 
 use crate::{
-    connect::{Client, connect, rpc_error},
+    connect::{Client, TARGET_RPC_TIMEOUT, connect},
     context::expand_home,
     volume::{
         MachineVolume, filter_volumes, machine_volumes, parse_assignments, remove_volumes_with,
@@ -42,17 +42,18 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
             return Ok(());
         };
         let volume = client
-            .call::<op::CreateVolume>(
+            .invoke::<op::CreateVolume>(
                 CreateVolumeRequest {
                     name,
                     driver,
                     options,
                     labels,
                 },
-                Some(&MachineSelector::from(&machine.machine.id)),
+                &MachineSelector::from(&machine.machine.id),
+                Some(TARGET_RPC_TIMEOUT),
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.message)?;
         println!("{}\t{}", machine.machine.name, volume.volume.id.name);
         Ok(())
     })
@@ -166,19 +167,19 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         let removal_client = client.clone();
         let removal = remove_volumes_with(&volumes, force, move |id, force| {
-            let mut client = removal_client.clone();
+            let client = removal_client.clone();
             async move {
                 client
-                    .call::<op::RemoveVolume>(
+                    .invoke::<op::RemoveVolume>(
                         RemoveVolumeRequest {
                             name: id.name,
                             force,
                         },
-                        Some(&MachineSelector::from(&id.machine_id)),
+                        &MachineSelector::from(&id.machine_id),
+                        Some(TARGET_RPC_TIMEOUT),
                     )
                     .await
                     .map(drop)
-                    .map_err(rpc_error)
             }
         })
         .await;
