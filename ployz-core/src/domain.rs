@@ -923,10 +923,10 @@ impl PidMode {
         if value == "host" {
             return Ok(Self::Host);
         }
-        if let Some(id) = value.strip_prefix("container:") {
-            if !id.is_empty() {
-                return Ok(Self::Container(id.to_owned()));
-            }
+        if let Some(id) = value.strip_prefix("container:")
+            && !id.is_empty()
+        {
+            return Ok(Self::Container(id.to_owned()));
         }
         Err(ValueError::new(
             "PID mode",
