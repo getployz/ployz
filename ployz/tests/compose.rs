@@ -14,7 +14,7 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, HostBind, HttpProtocol, Machine, MachineId, MachineName,
     MachineObservation, MachineSubnet, ManagementAddress, MembershipObservation, PortPublication,
-    ServiceMode, TransportProtocol, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    RestartPolicy, ServiceMode, TransportProtocol, UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 
 #[test]
@@ -169,8 +169,7 @@ configs:
     assert_eq!(api.container.pid_mode, Some(ployz_core::PidMode::Host));
     assert_eq!(
         api.container.restart,
-        ployz_core::RestartPolicy {
-            name: ployz_core::RestartPolicyName::OnFailure,
+        RestartPolicy::OnFailure {
             maximum_retry_count: Some(5),
         }
     );

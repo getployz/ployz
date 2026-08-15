@@ -11,8 +11,7 @@ use bollard::models::{
 };
 use ployz_core::{
     BindRecursive, ContainerKind, HealthcheckSpec, HostBind, MachineGateway, MachineId,
-    PortPublication, ResolvedServiceSpec, RestartPolicyName, ServiceVolume, TransportProtocol,
-    VolumeSource,
+    PortPublication, ResolvedServiceSpec, ServiceVolume, TransportProtocol, VolumeSource,
 };
 
 use super::{
@@ -83,22 +82,11 @@ pub(super) fn container_create_body(
                 config: Some(driver.options.clone().into_iter().collect()),
             }),
         port_bindings,
-        restart_policy: Some(RestartPolicy {
-            name: Some(if hook.is_some() {
-                RestartPolicyNameEnum::NO
-            } else {
-                match spec.container.restart.name {
-                    RestartPolicyName::No => RestartPolicyNameEnum::NO,
-                    RestartPolicyName::Always => RestartPolicyNameEnum::ALWAYS,
-                    RestartPolicyName::UnlessStopped => RestartPolicyNameEnum::UNLESS_STOPPED,
-                    RestartPolicyName::OnFailure => RestartPolicyNameEnum::ON_FAILURE,
-                }
-            }),
-            maximum_retry_count: hook
-                .is_none()
-                .then_some(spec.container.restart.maximum_retry_count)
-                .flatten(),
-        }),
+        restart_policy: Some(docker_restart(if hook.is_some() {
+            ployz_core::RestartPolicy::No
+        } else {
+            spec.container.restart
+        })),
         mounts: (!mounts.is_empty()).then_some(mounts),
         cap_add: (!container.cap_add.is_empty()).then(|| container.cap_add.clone()),
         cap_drop: (!container.cap_drop.is_empty()).then(|| container.cap_drop.clone()),
@@ -148,6 +136,29 @@ pub(super) fn container_create_body(
         host_config: Some(host_config),
         ..Default::default()
     })
+}
+
+fn docker_restart(policy: ployz_core::RestartPolicy) -> RestartPolicy {
+    match policy {
+        ployz_core::RestartPolicy::No => RestartPolicy {
+            name: Some(RestartPolicyNameEnum::NO),
+            maximum_retry_count: None,
+        },
+        ployz_core::RestartPolicy::Always => RestartPolicy {
+            name: Some(RestartPolicyNameEnum::ALWAYS),
+            maximum_retry_count: None,
+        },
+        ployz_core::RestartPolicy::UnlessStopped => RestartPolicy {
+            name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+            maximum_retry_count: None,
+        },
+        ployz_core::RestartPolicy::OnFailure {
+            maximum_retry_count,
+        } => RestartPolicy {
+            name: Some(RestartPolicyNameEnum::ON_FAILURE),
+            maximum_retry_count,
+        },
+    }
 }
 
 pub(super) fn docker_healthcheck(spec: &HealthcheckSpec) -> Result<HealthConfig, Error> {

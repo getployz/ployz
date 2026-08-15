@@ -260,11 +260,7 @@ fn convert_service(
         ),
         resources: resources(raw)?,
         stop_timeout_secs: duration_millis(raw.stop_grace_period.as_deref())?
-            .map(|millis| {
-                i64::try_from(millis / 1_000)
-                    .map_err(|_| invalid("stop_grace_period exceeds Docker's range"))
-            })
-            .transpose()?,
+            .map(|millis| (millis / 1_000) as i64),
         sysctls: raw.sysctls.clone(),
         config_mounts,
         restart: raw

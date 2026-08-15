@@ -5,77 +5,45 @@ use serde::{Deserialize, Serialize};
 use crate::ValueError;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RestartPolicyName {
+#[serde(tag = "name", rename_all = "kebab-case")]
+pub enum RestartPolicy {
     No,
     Always,
     #[default]
     UnlessStopped,
-    OnFailure,
+    OnFailure {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        maximum_retry_count: Option<i64>,
+    },
 }
 
-impl FromStr for RestartPolicyName {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "no" => Ok(Self::No),
-            "always" => Ok(Self::Always),
-            "unless-stopped" => Ok(Self::UnlessStopped),
-            "on-failure" => Ok(Self::OnFailure),
+impl RestartPolicy {
+    pub fn parse(value: &str) -> Result<Self, ValueError> {
+        let (name, retries) = value
+            .split_once(':')
+            .map_or((value, None), |(name, retries)| (name, Some(retries)));
+        match (name, retries) {
+            ("no", None) => Ok(Self::No),
+            ("always", None) => Ok(Self::Always),
+            ("unless-stopped", None) => Ok(Self::UnlessStopped),
+            ("on-failure", None) => Ok(Self::OnFailure {
+                maximum_retry_count: None,
+            }),
+            ("on-failure", Some(retries)) => Ok(Self::OnFailure {
+                maximum_retry_count: Some(i64::from(retries.parse::<u32>().map_err(|_| {
+                    ValueError::new(
+                        "restart policy retry count",
+                        retries,
+                        "a non-negative integer",
+                    )
+                })?)),
+            }),
             _ => Err(ValueError::new(
                 "restart policy",
                 value,
                 "no, always, unless-stopped, or on-failure[:max]",
             )),
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RestartPolicy {
-    pub name: RestartPolicyName,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub maximum_retry_count: Option<i64>,
-}
-
-impl RestartPolicy {
-    #[must_use]
-    pub const fn no() -> Self {
-        Self {
-            name: RestartPolicyName::No,
-            maximum_retry_count: None,
-        }
-    }
-
-    pub fn parse(value: &str) -> Result<Self, ValueError> {
-        let (name, retries) = value
-            .split_once(':')
-            .map_or((value, None), |(name, retries)| (name, Some(retries)));
-        let name = name.parse()?;
-        let maximum_retry_count = match (name, retries) {
-            (_, None) => None,
-            (RestartPolicyName::OnFailure, Some(retries)) => {
-                Some(i64::from(retries.parse::<u32>().map_err(|_| {
-                    ValueError::new(
-                        "restart policy retry count",
-                        retries,
-                        "a non-negative integer",
-                    )
-                })?))
-            }
-            _ => {
-                return Err(ValueError::new(
-                    "restart policy",
-                    value,
-                    "a retry count only with on-failure",
-                ));
-            }
-        };
-        Ok(Self {
-            name,
-            maximum_retry_count,
-        })
     }
 }
 

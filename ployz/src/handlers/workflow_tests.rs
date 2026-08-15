@@ -126,7 +126,7 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
     let spec = run_spec(super::leaf_matches(&matches)).unwrap();
     assert_eq!(spec.name.as_str(), "api");
     assert_eq!(spec.container.command, ["echo", "hello"]);
-    assert_eq!(spec.container.restart, RestartPolicy::no());
+    assert_eq!(spec.container.restart, RestartPolicy::No);
     assert_eq!(
         spec.container.environment.get("A").map(String::as_str),
         Some("b")

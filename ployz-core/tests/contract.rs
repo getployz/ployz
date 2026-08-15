@@ -14,10 +14,10 @@ use ployz_core::{
     PidMode, Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
     RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RestartPolicy, RestartPolicyName, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
-    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest,
-    UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
+    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -877,8 +877,7 @@ fn restart_policy_uses_docker_names_and_optional_retry_count() {
     let policy = RestartPolicy::parse("on-failure:3").unwrap();
     assert_eq!(
         policy,
-        RestartPolicy {
-            name: RestartPolicyName::OnFailure,
+        RestartPolicy::OnFailure {
             maximum_retry_count: Some(3),
         }
     );
