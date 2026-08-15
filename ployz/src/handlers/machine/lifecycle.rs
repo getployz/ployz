@@ -394,16 +394,34 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         },
     );
     config.save().map_err(|error| error.to_string())?;
-    if !matches.get_flag("no-caddy") {
+    let want_caddy = !matches.get_flag("no-caddy");
+    let want_dns = !matches.get_flag("no-dns");
+    if want_caddy || want_dns {
         runtime()?.block_on(async {
             let mut ready = wait_direct_participating(&connection).await?;
-            let image = crate::caddy::latest_image().await?;
-            let requested = crate::caddy::service_spec(image, Vec::new(), None);
-            crate::handlers::workflow::deploy_requested(&mut ready, &requested).await
+            if want_dns {
+                let endpoint = matches
+                    .get_one::<String>("dns-endpoint")
+                    .cloned()
+                    .ok_or_else(|| Error::from("dns-endpoint is required"))?;
+                let domain = ready
+                    .reserve_domain(endpoint)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                println!("Reserved Cluster domain: {domain}");
+            }
+            if want_caddy {
+                let image = crate::caddy::latest_image().await?;
+                let requested = crate::caddy::service_spec(image, Vec::new(), None);
+                crate::handlers::workflow::deploy_requested(&mut ready, &requested).await?;
+                if want_dns {
+                    crate::dns::update_records_for_caddy(&mut ready)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Ok::<_, Error>(())
         })?;
-    }
-    if !matches.get_flag("no-dns") {
-        eprintln!("WARNING: hosted DNS reservation is not implemented");
     }
     println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
