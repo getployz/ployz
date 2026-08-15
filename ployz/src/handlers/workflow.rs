@@ -1,7 +1,7 @@
 use std::{num::NonZeroU32, time::SystemTime};
 
 use clap::ArgMatches;
-use ployz_core::{RequestedServiceSpec, ServiceId, ServiceMode, select_service};
+use ployz_core::{PortPublication, RequestedServiceSpec, ServiceId, ServiceMode, select_service};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -166,6 +166,7 @@ trait WorkflowIo {
     fn confirmation_required(&self) -> bool;
     fn confirm(&mut self) -> Result<bool, Error>;
     async fn execute(&mut self, operations: &[DeployOperation]) -> DeployOutcome<ExecutionError>;
+    async fn cluster_domain(&mut self) -> Result<Option<String>, Error>;
 }
 
 struct RemoteWorkflow<'a> {
@@ -226,6 +227,13 @@ impl WorkflowIo for RemoteWorkflow<'_> {
     async fn execute(&mut self, operations: &[DeployOperation]) -> DeployOutcome<ExecutionError> {
         execute_operations(operations, self.client, &CancellationToken::new()).await
     }
+
+    async fn cluster_domain(&mut self) -> Result<Option<String>, Error> {
+        self.client
+            .domain_if_reserved()
+            .await
+            .map_err(|error| error.to_string().into())
+    }
 }
 
 async fn run_connected(
@@ -234,9 +242,11 @@ async fn run_connected(
 ) -> Result<DeployOutcome<ExecutionError>, Error> {
     io.record(WorkflowStage::Snapshot);
     let snapshot = io.snapshot(None).await?;
+    let mut requested = requested.clone();
+    expand_specs(std::iter::once(&mut requested), io).await?;
     io.record(WorkflowStage::Plan);
     let plan = plan_deploy(
-        requested,
+        &requested,
         &snapshot,
         ServiceId::random(),
         plan_options(false, false),
@@ -287,6 +297,7 @@ async fn deploy_connected(
         .map_err(|error| error.to_string())?;
     io.record(WorkflowStage::Snapshot);
     let snapshot = io.snapshot(Some(machines)).await?;
+    expand_specs(project.services.values_mut(), io).await?;
     io.record(WorkflowStage::Plan);
     let compose =
         plan_compose_deploy(project, &snapshot, options).map_err(|error| error.to_string())?;
@@ -486,6 +497,29 @@ fn operation_list(operations: &[DeployOperation]) -> String {
         .map(operation_summary)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+async fn expand_specs<'a>(
+    specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
+    io: &mut impl WorkflowIo,
+) -> Result<(), Error> {
+    let specs: Vec<_> = specs.into_iter().collect();
+    if !specs.iter().any(|spec| needs_ingress_expansion(spec)) {
+        return Ok(());
+    }
+    let domain = io.cluster_domain().await?;
+    for spec in specs {
+        crate::dns::expand_ingress_ports(spec, domain.as_deref())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn needs_ingress_expansion(requested: &RequestedServiceSpec) -> bool {
+    requested
+        .ports
+        .iter()
+        .any(|port| matches!(port, PortPublication::Ingress { .. }))
 }
 
 fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> crate::deploy::PlanOptions {

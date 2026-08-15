@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
+    num::NonZeroU16,
 };
 
 use ployz_core::{
@@ -21,6 +22,7 @@ struct Scripted {
     confirmation_error: bool,
     executions: usize,
     execution_outcome: Option<DeployOutcome<ExecutionError>>,
+    cluster_domain: Option<String>,
 }
 
 impl Scripted {
@@ -35,6 +37,7 @@ impl Scripted {
             confirmation_error: false,
             executions: 0,
             execution_outcome: None,
+            cluster_domain: None,
         }
     }
 }
@@ -91,6 +94,10 @@ impl WorkflowIo for Scripted {
                 failed: None,
                 unexecuted: Vec::new(),
             })
+    }
+
+    async fn cluster_domain(&mut self) -> Result<Option<String>, Error> {
+        Ok(self.cluster_domain.clone())
     }
 }
 
@@ -199,6 +206,52 @@ fn resolved_scale_input_changes_only_replicas() {
     let mut expected = requested_from_resolved(&resolved);
     expected.mode = scaled.mode.clone();
     assert_eq!(scaled, expected);
+}
+
+#[tokio::test]
+async fn run_assigns_reserved_cluster_domain_hostnames_before_planning() {
+    let matches = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "run",
+            "--name",
+            "web",
+            "--publish",
+            "8080/https",
+            "nginx",
+        ])
+        .unwrap();
+    let requested = run_spec(super::leaf_matches(&matches)).unwrap();
+    let mut io = Scripted::new(DeploySnapshot {
+        machines: vec![machine()],
+        ..Default::default()
+    });
+    io.cluster_domain = Some("opaque.ployz.example".into());
+    let outcome = run_connected(&mut io, &requested).await.unwrap();
+    let Some(DeployOperation::RunContainer { spec, .. }) = outcome.completed.first() else {
+        panic!("expected a run operation");
+    };
+    assert_eq!(
+        spec.ports,
+        vec![PortPublication::Ingress {
+            hostname: "web.opaque.ployz.example".into(),
+            load_balancer_port: NonZeroU16::new(443).unwrap(),
+            container_port: NonZeroU16::new(8080).unwrap(),
+            http_protocol: ployz_core::HttpProtocol::Https,
+        }]
+    );
+
+    let mut missing = Scripted::new(DeploySnapshot {
+        machines: vec![machine()],
+        ..Default::default()
+    });
+    assert_eq!(
+        run_connected(&mut missing, &requested)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "ingress port has no generated hostname until a cluster domain is reserved: 8080/https"
+    );
 }
 
 #[tokio::test]
