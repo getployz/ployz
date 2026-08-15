@@ -6,7 +6,7 @@ use std::{
 use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSelector,
-    MachineSubnet, MachineSuccess, PartialResult, RttObservation, WireGuardPeer, op,
+    MachineSubnet, MachineSuccess, PartialResult, RttObservation, RttStatistics, WireGuardPeer, op,
 };
 use serde::Serialize;
 
@@ -113,23 +113,42 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
-    println!("SOURCE\tTARGET\tMEDIAN\tSTDDEV");
+#[must_use]
+fn format_measured_rtt(median_ns: u64) -> Option<String> {
+    (median_ns > 0).then(|| format!("{:?}", Duration::from_nanos(median_ns)))
+}
+
+#[must_use]
+fn wg_rtt_line(rtt: Option<&RttStatistics>) -> Option<String> {
+    rtt.and_then(|statistics| format_measured_rtt(statistics.median_ns))
+        .map(|value| format!("  rtt: {value}"))
+}
+
+#[must_use]
+fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, String>) -> String {
+    let mut table = String::from("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
     for success in &result.successes {
         for observation in &success.value {
+            let Some(median) = format_measured_rtt(observation.statistics.median_ns) else {
+                continue;
+            };
             let target = observation
                 .machine
                 .as_ref()
                 .map_or(observation.peer_id.as_str(), |machine| machine.id.as_str());
-            println!(
-                "{}\t{}\t{:?}\t{:?}",
-                success.machine_id,
-                target,
-                Duration::from_nanos(observation.statistics.median_ns),
-                Duration::from_nanos(observation.statistics.population_stddev_ns),
-            );
+            let stddev = format_measured_rtt(observation.statistics.population_stddev_ns)
+                .unwrap_or_default();
+            table.push_str(&format!(
+                "{}\t{target}\t{median}\t{stddev}\n",
+                success.machine_id
+            ));
         }
     }
+    table
+}
+
+fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
+    print!("{}", format_rtt_table(result));
     for failure in &result.failures {
         eprintln!(
             "WARNING: RTT inspection failed for {}: {}",
@@ -170,8 +189,8 @@ pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error
             println!("  endpoint: {endpoint}");
         }
         println!("{}", format_wg_show_peer_stats(&peer, now_unix_seconds));
-        if let Some(rtt) = peer.rtt {
-            println!("  rtt: {:?}", Duration::from_nanos(rtt.median_ns));
+        if let Some(line) = wg_rtt_line(peer.rtt.as_ref()) {
+            println!("{line}");
         }
     }
     Ok(())
@@ -231,6 +250,85 @@ fn format_wg_show_peer_stats(peer: &WireGuardPeer, now_unix_seconds: u64) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::{MachineId, MachineIdentity, MachineName};
+
+    #[test]
+    fn missing_or_zero_rtt_is_omitted_instead_of_printing_0ns() {
+        assert_eq!(format_measured_rtt(0), None);
+        assert_eq!(wg_rtt_line(None), None);
+        assert_eq!(
+            wg_rtt_line(Some(&RttStatistics {
+                median_ns: 0,
+                population_stddev_ns: 0,
+            })),
+            None
+        );
+
+        let table = format_rtt_table(&PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: machine_id('1'),
+                value: vec![rtt_observation("peer-zero", 0, 0)],
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+        assert_eq!(table, "SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
+        assert!(!table.contains("0ns"));
+    }
+
+    #[test]
+    fn measured_rtt_prints_the_same_human_units_for_machine_rtt_and_wg_show() {
+        assert_eq!(format_measured_rtt(1_500_000).as_deref(), Some("1.5ms"));
+        let statistics = RttStatistics {
+            median_ns: 1_500_000,
+            population_stddev_ns: 200_000,
+        };
+        assert_eq!(
+            wg_rtt_line(Some(&statistics)).as_deref(),
+            Some("  rtt: 1.5ms")
+        );
+
+        let source = machine_id('1');
+        let target = machine_id('2');
+        let table = format_rtt_table(&PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: source.clone(),
+                value: vec![RttObservation {
+                    peer_id: "peer-live".into(),
+                    address: "[fdcc::2]:51001".parse().unwrap(),
+                    machine: Some(MachineIdentity {
+                        id: target.clone(),
+                        name: MachineName::parse("node-b").unwrap(),
+                    }),
+                    statistics,
+                }],
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+        assert_eq!(
+            table,
+            format!("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\t{target}\t1.5ms\t200µs\n")
+        );
+        assert!(!table.contains("1500000"));
+        assert!(!table.contains("0ns"));
+    }
+
+    fn machine_id(digit: char) -> MachineId {
+        digit.to_string().repeat(32).parse().unwrap()
+    }
+
+    fn rtt_observation(peer_id: &str, median_ns: u64, population_stddev_ns: u64) -> RttObservation {
+        RttObservation {
+            peer_id: peer_id.into(),
+            address: "[fdcc::2]:51001".parse().unwrap(),
+            machine: None,
+            statistics: RttStatistics {
+                median_ns,
+                population_stddev_ns,
+            },
+        }
+    }
 
     #[test]
     fn wg_ago_matches_wireguard_style_for_one_minute_twelve_seconds() {

@@ -136,6 +136,12 @@ fn rtt_statistics_use_median_and_population_standard_deviation() {
 }
 
 #[test]
+fn rtt_statistics_treat_zero_samples_as_absent() {
+    assert_eq!(rtt_statistics(&[0.0]), None);
+    assert_eq!(rtt_statistics(&[0.0, 0.0]), None);
+}
+
+#[test]
 fn wireguard_projection_keeps_unknown_peers_and_optional_live_fields() {
     let known = machine('2', "known", 2);
     let known_key = known.public_key;
