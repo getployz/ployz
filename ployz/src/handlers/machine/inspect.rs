@@ -205,23 +205,13 @@ fn format_wg_ago(elapsed_seconds: u64) -> String {
 }
 
 #[must_use]
-fn latest_handshake_line(
-    last_handshake_unix_seconds: Option<u64>,
-    now_unix_seconds: u64,
-) -> Option<String> {
-    last_handshake_unix_seconds.map(|handshake| {
-        format!(
-            "  latest handshake: {}",
-            format_wg_ago(now_unix_seconds.saturating_sub(handshake))
-        )
-    })
-}
-
-#[must_use]
 fn format_wg_show_peer_stats(peer: &WireGuardPeer, now_unix_seconds: u64) -> String {
     let mut lines = Vec::new();
-    if let Some(line) = latest_handshake_line(peer.last_handshake_unix_seconds, now_unix_seconds) {
-        lines.push(line);
+    if let Some(handshake) = peer.last_handshake_unix_seconds {
+        lines.push(format!(
+            "  latest handshake: {}",
+            format_wg_ago(now_unix_seconds.saturating_sub(handshake))
+        ));
     }
     lines.push(format!(
         "  transfer: {} received, {} sent",
@@ -248,34 +238,23 @@ mod tests {
     }
 
     #[test]
-    fn latest_handshake_line_uses_relative_ago_for_a_known_handshake() {
+    fn wg_show_prints_a_known_handshake_as_relative_ago() {
         assert_eq!(
-            latest_handshake_line(Some(1_700_000_000 - 72), 1_700_000_000).as_deref(),
-            Some("  latest handshake: 1 minute, 12 seconds ago")
-        );
-    }
-
-    #[test]
-    fn latest_handshake_line_is_omitted_when_handshake_is_unknown() {
-        assert_eq!(latest_handshake_line(None, 1_700_000_000), None);
-    }
-
-    #[test]
-    fn wg_show_peer_stats_keep_transfer_and_allowed_ips() {
-        let with_handshake = sample_peer(Some(1_700_000_000 - 72));
-        assert_eq!(
-            format_wg_show_peer_stats(&with_handshake, 1_700_000_000),
+            format_wg_show_peer_stats(&sample_peer(Some(1_700_000_000 - 72)), 1_700_000_000),
             "  latest handshake: 1 minute, 12 seconds ago\n  transfer: 7 received, 8 sent\n  allowed ips: 10.0.0.2/32"
         );
-        let without_handshake = sample_peer(None);
+    }
+
+    #[test]
+    fn wg_show_omits_handshake_and_keeps_transfer_and_allowed_ips() {
         assert_eq!(
-            format_wg_show_peer_stats(&without_handshake, 1_700_000_000),
+            format_wg_show_peer_stats(&sample_peer(None), 1_700_000_000),
             "  transfer: 7 received, 8 sent\n  allowed ips: 10.0.0.2/32"
         );
     }
 
-    fn sample_peer(last_handshake_unix_seconds: Option<u64>) -> ployz_core::WireGuardPeer {
-        ployz_core::WireGuardPeer {
+    fn sample_peer(last_handshake_unix_seconds: Option<u64>) -> WireGuardPeer {
+        WireGuardPeer {
             public_key: ployz_core::WireGuardPublicKey([1; 32]),
             endpoint: None,
             last_handshake_unix_seconds,
