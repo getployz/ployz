@@ -13,11 +13,16 @@ use crate::{connect::Client, context::Config};
 
 use super::{Error, leaf_matches, string_values, with_client};
 
+mod add;
+mod helpers;
+mod init;
 mod inspect;
-mod lifecycle;
+mod remove;
 
+pub(super) use add::add;
+pub(super) use init::init;
 pub(super) use inspect::{list, rtt, wireguard_show};
-pub(super) use lifecycle::{add, init, remove};
+pub(super) use remove::remove;
 
 const DEFAULT_WIREGUARD_PORT: u16 = 51820;
 
