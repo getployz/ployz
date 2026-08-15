@@ -509,6 +509,35 @@ secrets:
 }
 
 #[test]
+fn compose_deploy_pulls_untagged_images_as_latest() {
+    let project = parse_normalized(
+        r#"
+name: demo
+services:
+  untagged: {image: alpine}
+  tagged: {image: alpine:3.20}
+  digest: {image: 'alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000'}
+  registry: {image: localhost:5000/foo}
+"#,
+        ".",
+    )
+    .unwrap();
+    assert_eq!(
+        service(&project, "untagged").container.image,
+        "alpine:latest"
+    );
+    assert_eq!(service(&project, "tagged").container.image, "alpine:3.20");
+    assert_eq!(
+        service(&project, "digest").container.image,
+        "alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    );
+    assert_eq!(
+        service(&project, "registry").container.image,
+        "localhost:5000/foo:latest"
+    );
+}
+
+#[test]
 fn git_image_templates_keep_explicit_references_and_show_dirty_state() {
     let directory = TestDir::new();
     git(&directory.path, &["init"]);

@@ -8,7 +8,10 @@ use ployz_core::{
     Ulimit, UpdateConfig, VolumeSource,
 };
 
-use crate::compose::{parse_bytes, parse_extension_port};
+use crate::{
+    compose::{parse_bytes, parse_extension_port},
+    image::with_default_tag,
+};
 
 use super::{Error, required, string_values};
 
@@ -32,7 +35,7 @@ pub(super) fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> Request
 }
 
 pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Error> {
-    let image = required(matches, "image")?;
+    let image = with_default_tag(&required(matches, "image")?);
     let name = matches
         .get_one::<String>("name")
         .cloned()
