@@ -5,7 +5,9 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{DnsRecordRequest, DnsRecordType, MachineUpdate, PublicIpUpdate, RpcRequest};
+use ployz_core::{
+    CreateDomainRecordsRequest, DnsRecordRequest, DnsRecordType, MachineUpdate, PublicIpUpdate, op,
+};
 use ployz_testkit::{Cluster, ClusterPlan};
 use reqwest::{Client as HttpClient, redirect::Policy};
 use serde_json::{Value, json};
@@ -188,19 +190,21 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     .unwrap();
     hosted.reject_record_type("AAAA");
     let error = client
-        .request(
-            RpcRequest::create_domain_records(vec![
-                DnsRecordRequest {
-                    name: "*".into(),
-                    record_type: DnsRecordType::A,
-                    values: vec![first_ip.to_string()],
-                },
-                DnsRecordRequest {
-                    name: "*".into(),
-                    record_type: DnsRecordType::Aaaa,
-                    values: vec![Ipv6Addr::LOCALHOST.to_string()],
-                },
-            ]),
+        .call::<op::CreateDomainRecords>(
+            CreateDomainRecordsRequest {
+                records: vec![
+                    DnsRecordRequest {
+                        name: "*".into(),
+                        record_type: DnsRecordType::A,
+                        values: vec![first_ip.to_string()],
+                    },
+                    DnsRecordRequest {
+                        name: "*".into(),
+                        record_type: DnsRecordType::Aaaa,
+                        values: vec![Ipv6Addr::LOCALHOST.to_string()],
+                    },
+                ],
+            },
             None,
         )
         .await

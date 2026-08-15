@@ -10,7 +10,7 @@ use ployz::{
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
 };
-use ployz_core::{ContainerKind, PortPublication};
+use ployz_core::{ContainerKind, ListMachinesRequest, PortPublication, op};
 use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE};
 
 /// L3-005..L3-007, L3-009..L3-010, L3-014, L3-029..L3-030,
@@ -60,7 +60,11 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
     )
     .await
     .unwrap();
-    let machines = client.list_machines().await.unwrap();
+    let machines = client
+        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .await
+        .unwrap()
+        .machines;
     let machine_ids = machines
         .iter()
         .map(|machine| (machine.machine.name.to_string(), machine.machine.id.clone()))
@@ -210,7 +214,11 @@ volumes:
     ));
     let database = observed_service(&deployed, "database");
     assert_eq!(&database.containers.first().unwrap().machine_id, machine_1);
-    let current_machines = client.list_machines().await.unwrap();
+    let current_machines = client
+        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .await
+        .unwrap()
+        .machines;
     let volumes = client.list_volumes(&current_machines).await;
     assert!(
         volumes
@@ -384,11 +392,15 @@ async fn wait_for_machine_name(
 ) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if client.list_machines().await.is_ok_and(|machines| {
-                machines.iter().any(|machine| {
-                    &machine.machine.id == id && machine.machine.name.as_str() == name
+            if client
+                .call::<op::ListMachines>(ListMachinesRequest {}, None)
+                .await
+                .is_ok_and(|list| {
+                    list.machines.iter().any(|machine| {
+                        &machine.machine.id == id && machine.machine.name.as_str() == name
+                    })
                 })
-            }) {
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

@@ -12,10 +12,11 @@ use ployz::{
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    AdvertisedEndpoint, CapabilityName, ContractDescription, DockerVolume, DockerVolumeId,
-    DockerVolumeName, Machine, MachineId, MachineName, MachineObservation, MachineRpc,
-    MachineRpcServer, MachineSubnet, ManagementAddress, MembershipObservation, OpaquePayload,
-    PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, WireGuardPublicKey,
+    AdvertisedEndpoint, CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume,
+    DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineName, MachineObservation,
+    MachineRpc, MachineRpcServer, MachineSubnet, ManagementAddress, MembershipObservation,
+    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
@@ -506,14 +507,26 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         )
         .await
         .unwrap();
-        assert_eq!(client.describe_contract().await.unwrap(), description);
+        assert_eq!(
+            client
+                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+                .await
+                .unwrap(),
+            description
+        );
     }
 
     let fallback = resolve_connections(&config, None, None, &socket).unwrap();
     let mut fallback = connect_selected_with(fallback, Arc::new(SystemConnector::default()))
         .await
         .unwrap();
-    assert_eq!(fallback.describe_contract().await.unwrap(), description);
+    assert_eq!(
+        fallback
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await
+            .unwrap(),
+        description
+    );
 
     std::fs::write(&config, "deliberately: [unusable").unwrap();
     let direct = resolve_connections(
@@ -526,7 +539,13 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
     let mut direct = connect_selected_with(direct, Arc::new(SystemConnector::default()))
         .await
         .unwrap();
-    assert_eq!(direct.describe_contract().await.unwrap(), description);
+    assert_eq!(
+        direct
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await
+            .unwrap(),
+        description
+    );
 
     let unavailable_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let unavailable = unavailable_listener.local_addr().unwrap();
@@ -548,7 +567,13 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         failed_over.connection().to_string(),
         format!("tcp://{tcp_address}")
     );
-    assert_eq!(failed_over.describe_contract().await.unwrap(), description);
+    assert_eq!(
+        failed_over
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await
+            .unwrap(),
+        description
+    );
 
     tcp_server.abort();
     unix_server.abort();

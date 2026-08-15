@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ExecConfig, ExecOptions, ExecRequestFrame,
     ExecResponseFrame, LogEntry, LogStream, LogsOptions, MachineId, MachineName, MachineRpcClient,
-    MachineRpcServer, OpaquePayload, RpcRequest,
+    MachineRpcServer, OpaquePayload, op,
 };
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{Request, Status, transport::Server};
@@ -139,7 +139,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         tonic::Code::InvalidArgument
     );
 
-    let logs = RpcRequest::container_logs(ContainerLogsRequest {
+    let logs = op::ContainerLogs::into_request(ContainerLogsRequest {
         container_id: created.container_id.clone(),
         options: LogsOptions {
             follow: false,

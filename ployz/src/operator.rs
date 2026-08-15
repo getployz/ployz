@@ -11,7 +11,7 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
     ExecOptions, ExecRequestFrame, HealthObservation, LogEntry, LogStream, LogsOptions, MachineId,
     MachineLogService, MachineLogsRequest, MachineObservation, MachineSelector,
-    MembershipObservation, OpaquePayload, RpcError, RpcErrorCode, RpcRequest, ServiceObservation,
+    MembershipObservation, OpaquePayload, RpcError, RpcErrorCode, ServiceObservation, op,
     resolve_machine_selectors, select_service,
 };
 use serde_json::Value;
@@ -365,7 +365,7 @@ impl Client {
                 .into());
             }
             for container in containers {
-                let request = RpcRequest::container_logs(ContainerLogsRequest {
+                let request = op::ContainerLogs::into_request(ContainerLogsRequest {
                     container_id: container.container_id.clone(),
                     options: options.clone(),
                 })
@@ -429,7 +429,7 @@ impl Client {
         let mut inputs = Vec::new();
         for service in services {
             for machine in &machines {
-                let request = RpcRequest::machine_logs(MachineLogsRequest {
+                let request = op::MachineLogs::into_request(MachineLogsRequest {
                     service,
                     options: options.clone(),
                 })

@@ -6,10 +6,10 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineId,
-    MachineName, MachineSelector, MachineToken, MachineTokenRequest, MembershipObservation,
-    NameMatches, PublicIpDiscovery, RegisterRequest, RemoveLocalMachineRequest,
-    RemoveMachineRequest, RpcRequest, resolve_machine_selector,
+    DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase,
+    Machine, MachineId, MachineName, MachineSelector, MachineToken, MachineTokenRequest,
+    MembershipObservation, NameMatches, PublicIpDiscovery, RegisterRequest,
+    RemoveLocalMachineRequest, RemoveMachineRequest, ResetRequest, op, resolve_machine_selector,
 };
 
 use super::{ConnectionOptions, machine_list, parse_endpoints, runtime, target};
@@ -65,7 +65,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let selected = select_machine(&machines, &selector)?;
         let selected_target = MachineSelector::from(&selected.id);
         let current = client
-            .describe_contract()
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await
             .map_err(|error| error.to_string())?
             .machine_id;
@@ -85,18 +85,15 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let mut shared_rows_removed_by_entry = false;
         if !no_reset {
             match client
-                .request(
-                    RpcRequest::remove_local_machine(RemoveLocalMachineRequest {
+                .call::<op::RemoveLocalMachine>(
+                    RemoveLocalMachineRequest {
                         restart_on_cleanup_failure: selected.id != current,
-                    }),
+                    },
                     Some(&selected_target),
                 )
                 .await
             {
-                Ok(response) => {
-                    let removed = response
-                        .decode_local_machine_removed()
-                        .map_err(|error| error.to_string())?;
+                Ok(removed) => {
                     if let Some(warning) = &removed.reset_warning {
                         eprintln!("WARNING: target cleanup/reset failed: {warning}");
                     } else if selected.id == current {
@@ -111,15 +108,13 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         if !shared_rows_removed_by_entry {
             client
-                .request(
-                    RpcRequest::remove_machine(RemoveMachineRequest {
+                .call::<op::RemoveMachine>(
+                    RemoveMachineRequest {
                         machine_id: selected.id.clone(),
-                    }),
+                    },
                     None,
                 )
                 .await
-                .map_err(|error| error.to_string())?
-                .decode_machine_removed()
                 .map_err(|error| error.to_string())?;
         }
 
@@ -189,24 +184,18 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         };
         let mut target_client = connect_direct(&connection).await?;
         let mut token = target_client
-            .request(RpcRequest::machine_token(token_request.clone()), None)
+            .call::<op::MachineToken>(token_request.clone(), None)
             .await
-            .map_err(|error| error.to_string())?
-            .decode_machine_token()
-            .cloned()
             .map_err(|error| error.to_string())?;
         let details = target_client
-            .request(
-                RpcRequest::inspect(InspectRequest {
+            .call::<op::Inspect>(
+                InspectRequest {
                     advertised_endpoints: token.advertised_endpoints.clone(),
                     ..Default::default()
-                }),
+                },
                 None,
             )
             .await
-            .map_err(|error| error.to_string())?
-            .decode_machine_details()
-            .cloned()
             .map_err(|error| error.to_string())?;
         if details.phase != LocalMachinePhase::Uninitialized {
             if visible
@@ -217,51 +206,41 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             }
             confirm(yes, "Reset the Machine before adding it to this Cluster?")?;
             target_client
-                .request(RpcRequest::reset(), None)
+                .call::<op::Reset>(ResetRequest {}, None)
                 .await
-                .map_err(|error| error.to_string())?
-                .decode_reset_accepted()
                 .map_err(|error| error.to_string())?;
             target_client = reconnect_direct(&connection).await?;
             token = target_client
-                .request(RpcRequest::machine_token(token_request), None)
+                .call::<op::MachineToken>(token_request, None)
                 .await
-                .map_err(|error| error.to_string())?
-                .decode_machine_token()
-                .cloned()
                 .map_err(|error| error.to_string())?;
         }
         let name = machine_name(requested_name, &token)?;
 
         // TODO(UT-140): registration is intentionally unfenced and may succeed on a minority.
         let registration = entry
-            .request(
-                RpcRequest::register(RegisterRequest {
+            .call::<op::Register>(
+                RegisterRequest {
                     name,
                     public_key: token.public_key,
                     public_ip: token.public_ip,
                     advertised_endpoints: token.advertised_endpoints,
                     runtime: token.runtime,
-                }),
+                },
                 None,
             )
             .await
-            .map_err(|error| error.to_string())?
-            .decode_registered()
-            .cloned()
             .map_err(|error| error.to_string())?;
         let assigned = registration.assigned_machine.clone();
         target_client
-            .request(
-                RpcRequest::join(JoinRequest {
+            .call::<op::Join>(
+                JoinRequest {
                     registration,
                     wireguard_mtu,
-                }),
+                },
                 None,
             )
             .await
-            .map_err(|error| error.to_string())?
-            .decode_join_accepted()
             .map_err(|error| error.to_string())?;
 
         Ok::<_, Error>((assigned, caddy_settings))
@@ -335,53 +314,40 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let (machine, connection) = runtime()?.block_on(async {
         let mut target = connect_direct(&connection).await?;
         let mut token = target
-            .request(RpcRequest::machine_token(token_request.clone()), None)
+            .call::<op::MachineToken>(token_request.clone(), None)
             .await
-            .map_err(|error| error.to_string())?
-            .decode_machine_token()
-            .cloned()
             .map_err(|error| error.to_string())?;
         let details = target
-            .request(RpcRequest::inspect(InspectRequest::default()), None)
+            .call::<op::Inspect>(InspectRequest::default(), None)
             .await
-            .map_err(|error| error.to_string())?
-            .decode_machine_details()
-            .cloned()
             .map_err(|error| error.to_string())?;
         if details.phase != LocalMachinePhase::Uninitialized {
             confirm(yes, "Reset the Machine before initialising a new Cluster?")?;
             target
-                .request(RpcRequest::reset(), None)
+                .call::<op::Reset>(ResetRequest {}, None)
                 .await
-                .map_err(|error| error.to_string())?
-                .decode_reset_accepted()
                 .map_err(|error| error.to_string())?;
             target = reconnect_direct(&connection).await?;
             token = target
-                .request(RpcRequest::machine_token(token_request), None)
+                .call::<op::MachineToken>(token_request, None)
                 .await
-                .map_err(|error| error.to_string())?
-                .decode_machine_token()
-                .cloned()
                 .map_err(|error| error.to_string())?;
         }
         let name = machine_name(requested_name, &token)?;
         let machine = target
-            .request(
-                RpcRequest::initialize(InitializeRequest {
+            .call::<op::Initialize>(
+                InitializeRequest {
                     name,
                     cluster_network,
                     public_ip: token.public_ip,
                     advertised_endpoints: token.advertised_endpoints,
                     wireguard_mtu,
-                }),
+                },
                 None,
             )
             .await
             .map_err(|error| error.to_string())?
-            .decode_initialized()
-            .cloned()
-            .map_err(|error| error.to_string())?;
+            .machine;
         let connection = connection.with_machine_id(machine.id.clone());
         Ok::<_, Error>((machine, connection))
     })?;
@@ -470,11 +436,9 @@ async fn wait_direct_participating(connection: &Connection) -> Result<Client, Er
         loop {
             if let Ok(mut client) = connect_direct(connection).await
                 && client
-                    .request(RpcRequest::inspect(InspectRequest::default()), None)
+                    .call::<op::Inspect>(InspectRequest::default(), None)
                     .await
-                    .ok()
-                    .and_then(|response| response.decode_machine_details().ok().cloned())
-                    .is_some_and(|details| details.phase == LocalMachinePhase::Participating)
+                    .is_ok_and(|details| details.phase == LocalMachinePhase::Participating)
             {
                 return client;
             }

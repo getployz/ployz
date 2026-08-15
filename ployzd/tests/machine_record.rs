@@ -10,8 +10,8 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, InspectRequest, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineRpc, MachineRuntime, MachineSubnet, MachineUpdate, PublicIpUpdate, RpcErrorCode,
-    RpcRequest, RpcResponseBody, SelectedEndpoint,
+    MachineRpc, MachineRuntime, MachineSubnet, MachineUpdate, PublicIpUpdate, ResetRequest,
+    RpcErrorCode, RpcResponseBody, SelectedEndpoint, op,
 };
 use ployzd::{
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
@@ -228,7 +228,9 @@ async fn repeated_reset_returns_a_typed_conflict() {
     let service = MachineService::new(Arc::new(Mutex::new(store)), reset);
 
     let response = service
-        .reset(tonic::Request::new(RpcRequest::reset().encode().unwrap()))
+        .reset(tonic::Request::new(
+            op::Reset::into_request(ResetRequest {}).encode().unwrap(),
+        ))
         .await
         .unwrap()
         .into_inner()
@@ -257,7 +259,7 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
 
     let details = service
         .inspect(tonic::Request::new(
-            RpcRequest::inspect(InspectRequest {
+            op::Inspect::into_request(InspectRequest {
                 advertised_endpoints: vec![endpoint],
                 ..Default::default()
             })

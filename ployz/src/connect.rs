@@ -10,11 +10,11 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, ContractDescription, CreateVolumeRequest, DockerVolume, DockerVolumeId,
-    FanoutFailure, FanoutOutcome, FanoutResponse, FramingError, MachineFailure, MachineId,
-    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSelector,
-    MachineSuccess, OpaquePayload, PartialResult, RpcError, RpcErrorCode, RpcRequest,
-    RpcRequestBody, RpcResponse, RpcResponseBody,
+    CodecError, DockerVolume, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
+    ListImagesRequest, ListVolumesRequest, MachineFailure, MachineImages, MachineName,
+    MachineObservation, MachineRpcClient, MachineSelector, MachineSuccess, OpaquePayload,
+    PartialResult, Rpc, RpcError, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse,
+    RpcResponseBody, op,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -309,43 +309,16 @@ impl Client {
         &self.source
     }
 
-    pub async fn describe_contract(&mut self) -> Result<ContractDescription, ConnectError> {
-        self.request(RpcRequest::describe_contract(), None)
-            .await?
-            .decode_contract_description()
-            .cloned()
-            .map_err(ConnectError::Codec)
-    }
-
-    pub async fn list_machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
-        self.request(RpcRequest::list_machines(), None)
-            .await?
-            .decode_machine_list()
-            .map(<[_]>::to_vec)
-            .map_err(ConnectError::Codec)
-    }
-
-    pub async fn get_caddy_config(
+    /// Issue one unary RPC. The response type is derived from the RPC, so a request
+    /// cannot be paired with the wrong response.
+    pub async fn call<T: Rpc>(
         &mut self,
-        target: Option<MachineSelector>,
-    ) -> Result<String, ConnectError> {
-        self.request(RpcRequest::get_caddy_config(), target.as_ref())
+        request: T::Request,
+        target: Option<&MachineSelector>,
+    ) -> Result<T::Response, ConnectError> {
+        self.request(T::into_request(request), target)
             .await?
-            .decode_caddy_config()
-            .map(ToOwned::to_owned)
-            .map_err(ConnectError::Codec)
-    }
-
-    pub async fn create_volume(
-        &mut self,
-        machine_id: &MachineId,
-        request: CreateVolumeRequest,
-    ) -> Result<DockerVolume, ConnectError> {
-        let target = MachineSelector::from(machine_id);
-        self.request(RpcRequest::create_volume(request), Some(&target))
-            .await?
-            .decode_volume_created()
-            .cloned()
+            .decode::<T::Response>()
             .map_err(ConnectError::Codec)
     }
 
@@ -361,14 +334,9 @@ impl Client {
             requests.spawn(async move {
                 let target = MachineSelector::from(&machine_id);
                 let outcome = client
-                    .request(RpcRequest::list_volumes(), Some(&target))
+                    .call::<op::ListVolumes>(ListVolumesRequest {}, Some(&target))
                     .await
-                    .and_then(|response| {
-                        response
-                            .decode_volume_list()
-                            .map(<[_]>::to_vec)
-                            .map_err(ConnectError::Codec)
-                    });
+                    .map(|list| list.volumes);
                 (index, machine_id, outcome)
             });
         }
@@ -397,36 +365,14 @@ impl Client {
         result
     }
 
-    pub async fn inspect_volume(
-        &mut self,
-        id: &DockerVolumeId,
-    ) -> Result<DockerVolume, ConnectError> {
-        let target = MachineSelector::from(&id.machine_id);
-        self.request(RpcRequest::inspect_volume(id.name.clone()), Some(&target))
-            .await?
-            .decode_volume_details()
-            .cloned()
-            .map_err(ConnectError::Codec)
-    }
-
-    pub async fn remove_volume(
-        &mut self,
-        id: DockerVolumeId,
-        force: bool,
-    ) -> Result<(), ConnectError> {
-        let target = MachineSelector::from(&id.machine_id);
-        self.request(RpcRequest::remove_volume(id.name, force), Some(&target))
-            .await?
-            .decode_volume_removed()
-            .map_err(ConnectError::Codec)
-    }
-
     pub async fn list_images(
         &self,
         reference: Option<String>,
         targets: &[String],
     ) -> Result<PartialResult<MachineImagesObservation, RpcError>, ConnectError> {
-        let mut request = tonic::Request::new(RpcRequest::list_images(reference).encode()?);
+        let mut request = tonic::Request::new(
+            op::ListImages::into_request(ListImagesRequest { reference }).encode()?,
+        );
         let all = ["*".to_owned()];
         for target in if targets.is_empty() {
             all.as_slice()
@@ -444,7 +390,7 @@ impl Client {
         let response = grpc
             .server_streaming(
                 request,
-                PathAndQuery::from_static("/ployz.rpc.v1.MachineRpc/ListImages"),
+                PathAndQuery::from_static(op::ListImages::PATH),
                 ProstCodec::<OpaquePayload, FanoutResponse>::default(),
             )
             .await?;
@@ -460,49 +406,19 @@ impl Client {
             match envelope.outcome {
                 Some(FanoutOutcome::FramedPayload(frame)) => {
                     let response = OpaquePayload::decode_grpc_frame(&frame)?.decode_response()?;
-                    let actual = response.kind().as_str().to_owned();
-                    match response.body {
-                        RpcResponseBody::MachineImages(images) => {
-                            result.successes.push(MachineSuccess {
-                                machine_id,
-                                value: MachineImagesObservation {
-                                    machine_name,
-                                    images,
-                                },
-                            });
-                        }
-                        RpcResponseBody::Error(error) => {
-                            result.failures.push(MachineFailure { machine_id, error });
-                        }
-                        RpcResponseBody::ContractDescription(_)
-                        | RpcResponseBody::MachineDetails(_)
-                        | RpcResponseBody::MachineToken(_)
-                        | RpcResponseBody::Initialized(_)
-                        | RpcResponseBody::Registered(_)
-                        | RpcResponseBody::JoinAccepted(_)
-                        | RpcResponseBody::MachineList(_)
-                        | RpcResponseBody::ContainerList(_)
-                        | RpcResponseBody::ContainerDetails(_)
-                        | RpcResponseBody::ContainerCreated(_)
-                        | RpcResponseBody::ContainerChanged(_)
-                        | RpcResponseBody::VolumeCreated(_)
-                        | RpcResponseBody::VolumeList(_)
-                        | RpcResponseBody::VolumeDetails(_)
-                        | RpcResponseBody::VolumeRemoved(_)
-                        | RpcResponseBody::CaddyConfig(_)
-                        | RpcResponseBody::Domain(_)
-                        | RpcResponseBody::DomainRecords(_)
-                        | RpcResponseBody::MachineUpdated(_)
-                        | RpcResponseBody::LocalMachineRemoved(_)
-                        | RpcResponseBody::MachineRemoved(_)
-                        | RpcResponseBody::WireGuardInspected(_)
-                        | RpcResponseBody::ResetAccepted(_)
-                        | RpcResponseBody::Unknown { .. } => {
-                            return Err(ConnectError::Codec(CodecError::UnexpectedResponse {
-                                expected: "machine_images",
-                                actual,
-                            }));
-                        }
+                    if let Ok(error) = response.decode_error() {
+                        result.failures.push(MachineFailure {
+                            machine_id,
+                            error: error.clone(),
+                        });
+                    } else {
+                        result.successes.push(MachineSuccess {
+                            machine_id,
+                            value: MachineImagesObservation {
+                                machine_name,
+                                images: response.decode().map_err(ConnectError::Codec)?,
+                            },
+                        });
                     }
                 }
                 Some(FanoutOutcome::Failure(failure)) => {
@@ -525,7 +441,8 @@ impl Client {
         let payload = target_request(request.encode()?, target);
         macro_rules! dispatch {
             (
-                unary { $($variant:ident: ($method:ident, $route:literal, $request:ty, $command:literal),)+ }
+                package $package:literal
+                unary { $($variant:ident: ($method:ident, $route:literal, $request:ty, $command:literal, $response:ty),)+ }
                 server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
             ) => {
                 match request.body {

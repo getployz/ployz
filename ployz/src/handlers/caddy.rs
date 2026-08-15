@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use clap::ArgMatches;
-use ployz_core::MachineSelector;
+use ployz_core::{GetCaddyConfigRequest, MachineSelector, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 
@@ -15,8 +15,9 @@ pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
             .transpose()
             .map_err(|error| error.to_string())?;
         let caddyfile = client
-            .get_caddy_config(target)
+            .call::<op::GetCaddyConfig>(GetCaddyConfigRequest {}, target.as_ref())
             .await
+            .map(|config| config.caddyfile)
             .map_err(|error| error.to_string())?;
         print!("{caddyfile}");
         Ok(())

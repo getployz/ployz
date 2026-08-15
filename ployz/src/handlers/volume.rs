@@ -7,8 +7,9 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    CreateVolumeRequest, DockerVolumeName, MachineObservation, MachineSelector, NameMatches,
-    PartialResult, RpcError, resolve_machine_selectors,
+    CreateVolumeRequest, DockerVolumeName, InspectVolumeRequest, ListMachinesRequest,
+    MachineObservation, MachineSelector, NameMatches, PartialResult, RemoveVolumeRequest, RpcError,
+    op, resolve_machine_selectors,
 };
 
 use crate::{
@@ -33,24 +34,26 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     run(async move {
         let mut client = connect_from(root).await?;
         let machines = client
-            .list_machines()
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
+            .map(|list| list.machines)
             .map_err(|error| error.to_string())?;
         let Some(machine) = select_create_machine(&machines, selector.as_deref())? else {
             println!("Cancelled. No volume was created.");
             return Ok(());
         };
         let volume = client
-            .create_volume(
-                &machine.machine.id,
+            .call::<op::CreateVolume>(
                 CreateVolumeRequest {
                     name,
                     driver,
                     options,
                     labels,
                 },
+                Some(&MachineSelector::from(&machine.machine.id)),
             )
             .await
+            .map(|created| created.volume)
             .map_err(|error| error.to_string())?;
         println!("{}\t{}", machine.machine.name, volume.id.name);
         Ok(())
@@ -101,8 +104,14 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
             NameMatches::None => Err(format!("Docker Volume {name:?} was not found").into()),
             NameMatches::One(mut volume) => {
                 volume.volume = client
-                    .inspect_volume(&volume.volume.id)
+                    .call::<op::InspectVolume>(
+                        InspectVolumeRequest {
+                            name: volume.volume.id.name.clone(),
+                        },
+                        Some(&MachineSelector::from(&volume.volume.id.machine_id)),
+                    )
                     .await
+                    .map(|details| details.volume)
                     .map_err(|error| error.to_string())?;
                 println!(
                     "{}",
@@ -160,7 +169,19 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let removal_client = client.clone();
         let removal = remove_volumes_with(&volumes, force, move |id, force| {
             let mut client = removal_client.clone();
-            async move { client.remove_volume(id, force).await.map_err(rpc_error) }
+            async move {
+                client
+                    .call::<op::RemoveVolume>(
+                        RemoveVolumeRequest {
+                            name: id.name,
+                            force,
+                        },
+                        Some(&MachineSelector::from(&id.machine_id)),
+                    )
+                    .await
+                    .map(drop)
+                    .map_err(rpc_error)
+            }
         })
         .await;
         report_failures(&result);
@@ -187,8 +208,9 @@ async fn discover(
 > {
     let machines = selected_machines(
         client
-            .list_machines()
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
+            .map(|list| list.machines)
             .map_err(|error| error.to_string())?,
         selectors,
     )?;

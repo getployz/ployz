@@ -1,8 +1,9 @@
 use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerKind, DnsRecordRequest, DnsRecordType, InspectRequest, Machine,
-    MachineId, MachineSelector, RpcErrorCode, RpcRequest,
+    CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecordRequest, DnsRecordType,
+    GetDomainRequest, InspectRequest, Machine, MachineId, MachineSelector, ReleaseDomainRequest,
+    ReserveDomainRequest, RpcErrorCode, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -36,38 +37,30 @@ pub struct NoReachableMachines;
 
 impl Client {
     pub async fn reserve_domain(&mut self, endpoint: String) -> Result<String, ConnectError> {
-        self.request(RpcRequest::reserve_domain(endpoint), None)
-            .await?
-            .decode_domain()
-            .map(ToOwned::to_owned)
-            .map_err(ConnectError::Codec)
+        self.call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
+            .await
+            .map(|domain| domain.name)
     }
 
     pub async fn domain(&mut self) -> Result<String, ConnectError> {
-        self.request(RpcRequest::get_domain(), None)
-            .await?
-            .decode_domain()
-            .map(ToOwned::to_owned)
-            .map_err(ConnectError::Codec)
+        self.call::<op::GetDomain>(GetDomainRequest {}, None)
+            .await
+            .map(|domain| domain.name)
     }
 
     pub async fn release_domain(&mut self) -> Result<String, ConnectError> {
-        self.request(RpcRequest::release_domain(), None)
-            .await?
-            .decode_domain()
-            .map(ToOwned::to_owned)
-            .map_err(ConnectError::Codec)
+        self.call::<op::ReleaseDomain>(ReleaseDomainRequest {}, None)
+            .await
+            .map(|domain| domain.name)
     }
 
     async fn create_domain_records(
         &mut self,
         records: Vec<DnsRecordRequest>,
     ) -> Result<(), ConnectError> {
-        self.request(RpcRequest::create_domain_records(records), None)
-            .await?
-            .decode_domain_records()
+        self.call::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
+            .await
             .map(drop)
-            .map_err(ConnectError::Codec)
     }
 }
 
@@ -100,17 +93,8 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     for machine_id in caddy_machines {
         let target = MachineSelector::from(&machine_id);
         let details = client
-            .request(
-                RpcRequest::inspect(InspectRequest::default()),
-                Some(&target),
-            )
+            .call::<op::Inspect>(InspectRequest::default(), Some(&target))
             .await
-            .and_then(|response| {
-                response
-                    .decode_machine_details()
-                    .cloned()
-                    .map_err(ConnectError::Codec)
-            })
             .map_err(|source| Error::Inspect {
                 machine_id: machine_id.clone(),
                 source,

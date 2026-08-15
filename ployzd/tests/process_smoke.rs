@@ -12,7 +12,8 @@ use std::{
 };
 
 use ployz_core::{
-    DESCRIBE_CONTRACT_CAPABILITY, MachineRpcClient, RESET_MACHINE_CAPABILITY, RpcRequest,
+    DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, MachineRpcClient,
+    RESET_MACHINE_CAPABILITY, ResetRequest, op,
 };
 use tonic::transport::{Channel, Endpoint};
 
@@ -159,7 +160,11 @@ fn describe(path: &Path) -> ployz_core::ContractDescription {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         connect(path)
             .await
-            .describe_contract(RpcRequest::describe_contract().encode().unwrap())
+            .describe_contract(
+                op::DescribeContract::into_request(DescribeContractRequest {})
+                    .encode()
+                    .unwrap(),
+            )
             .await
             .unwrap()
             .into_inner()
@@ -175,7 +180,7 @@ fn reset(path: &Path) {
     let response = tokio::runtime::Runtime::new().unwrap().block_on(async {
         connect(path)
             .await
-            .reset(RpcRequest::reset().encode().unwrap())
+            .reset(op::Reset::into_request(ResetRequest {}).encode().unwrap())
             .await
             .unwrap()
             .into_inner()

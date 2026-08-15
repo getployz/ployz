@@ -3,12 +3,13 @@ include!("src/rpc_catalog.rs");
 fn main() {
     macro_rules! build_service {
         (
-            unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal),)+ }
+            package $package:literal
+            unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty),)+ }
             server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
         ) => {{
             let mut service = tonic_build::manual::Service::builder()
                 .name("MachineRpc")
-                .package("ployz.rpc.v1")
+                .package($package)
                 .comment("Machine control RPCs with schema-blind protobuf envelopes.");
             $(service = service.method(method(stringify!($unary_name), $unary_route));)+
             $(service = service.method(streaming_method(stringify!($stream_name), $stream_route));)+

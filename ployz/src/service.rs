@@ -2,11 +2,12 @@ use std::{collections::HashMap, future::Future, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, CreateContainerRequest,
-    CreateVolumeRequest, InspectContainerRequest, LiveServices, MachineFailure, MachineId,
-    MachineObservation, MachineRpcClient, MachineSuccess, MembershipObservation, OpaquePayload,
-    PartialResult, RemoveContainerRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, RpcRequest,
-    RpcResponse, RpcResponseBody, ServiceSelectorError, StartContainerRequest,
-    StopContainerRequest, derive_live_services, select_service,
+    CreateVolumeRequest, InspectContainerRequest, ListContainersRequest, ListMachinesRequest,
+    LiveServices, MachineFailure, MachineId, MachineObservation, MachineRpcClient, MachineSuccess,
+    MembershipObservation, OpaquePayload, PartialResult, RemoveContainerRequest,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, RpcRequest, RpcResponse, RpcResponseBody,
+    ServiceSelectorError, StartContainerRequest, StopContainerRequest, derive_live_services, op,
+    select_service,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -42,7 +43,7 @@ pub(crate) async fn create_volume_on_machine(
     request: CreateVolumeRequest,
 ) -> Result<(), RpcError> {
     let mut rpc = client.rpc.clone();
-    let request = routed_request(machine_id, RpcRequest::create_volume(request))?;
+    let request = routed_request(machine_id, op::CreateVolume::into_request(request))?;
     target_response(timed_rpc(rpc.create_volume(request)).await?)?
         .decode_volume_created()
         .map(|_| ())
@@ -51,7 +52,10 @@ pub(crate) async fn create_volume_on_machine(
 
 impl Client {
     pub async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
-        let machines = self.list_machines().await?;
+        let machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await?
+            .machines;
         self.live_services_from(&machines).await
     }
 
@@ -103,7 +107,7 @@ impl Client {
         let mut rpc = self.rpc.clone();
         let request = routed_request(
             &machine_id,
-            RpcRequest::inspect_container(InspectContainerRequest { container_id }),
+            op::InspectContainer::into_request(InspectContainerRequest { container_id }),
         )?;
         target_response(timed_rpc(rpc.inspect_container(request)).await?)?
             .decode_container_details()
@@ -120,10 +124,10 @@ impl Client {
         let mut rpc = self.rpc.clone();
         let request = routed_request(
             &machine_id,
-            RpcRequest::create_container(CreateContainerRequest {
+            op::CreateContainer::into_request(Box::new(CreateContainerRequest {
                 kind,
                 resolved_spec,
-            }),
+            })),
         )?;
         target_response(rpc_with_timeout(None, rpc.create_container(request)).await?)?
             .decode_container_created()
@@ -242,7 +246,7 @@ pub(crate) async fn entry_machines(
     rpc: &mut MachineRpcClient<Channel>,
 ) -> Result<Vec<MachineObservation>, ConnectError> {
     let response = rpc
-        .list_machines(RpcRequest::list_machines().encode()?)
+        .list_machines(op::ListMachines::into_request(ListMachinesRequest {}).encode()?)
         .await?
         .into_inner()
         .decode_response()?;
@@ -256,11 +260,13 @@ async fn list_on_machine(
     mut rpc: MachineRpcClient<Channel>,
     machine_id: MachineId,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
-    let request = routed_request(&machine_id, RpcRequest::list_containers()).map_err(|error| {
-        MachineFailure {
-            machine_id: machine_id.clone(),
-            error,
-        }
+    let request = routed_request(
+        &machine_id,
+        op::ListContainers::into_request(ListContainersRequest {}),
+    )
+    .map_err(|error| MachineFailure {
+        machine_id: machine_id.clone(),
+        error,
     })?;
     let result = async {
         let response = target_response(timed_rpc(rpc.list_containers(request)).await?)?;
@@ -321,7 +327,7 @@ async fn change_container_rpc(
     if matches!(action, ContainerAction::Stop | ContainerAction::Remove) {
         let request = routed_request(
             machine_id,
-            RpcRequest::stop_container(StopContainerRequest {
+            op::StopContainer::into_request(StopContainerRequest {
                 container_id: container_id.clone(),
                 signal,
                 grace_period_seconds,
@@ -338,7 +344,7 @@ async fn change_container_rpc(
         ContainerAction::Start => {
             let request = routed_request(
                 machine_id,
-                RpcRequest::start_container(StartContainerRequest {
+                op::StartContainer::into_request(StartContainerRequest {
                     container_id: container_id.clone(),
                 }),
             )?;
@@ -359,7 +365,7 @@ async fn remove_container_rpc(
 ) -> Result<(), RpcError> {
     let request = routed_request(
         machine_id,
-        RpcRequest::remove_container(RemoveContainerRequest {
+        op::RemoveContainer::into_request(RemoveContainerRequest {
             container_id: container_id.clone(),
             remove_volumes: true,
             force: false,
