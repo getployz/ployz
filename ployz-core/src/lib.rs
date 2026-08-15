@@ -3,6 +3,7 @@
 pub mod domain;
 pub mod framing;
 mod host_config;
+pub mod routing;
 pub mod rpc;
 mod rpc_catalog;
 pub mod service;
@@ -12,6 +13,7 @@ pub mod value;
 pub use domain::*;
 pub use framing::*;
 pub use host_config::*;
+pub use routing::*;
 pub use rpc::*;
 pub use service::*;
 pub use stream::*;

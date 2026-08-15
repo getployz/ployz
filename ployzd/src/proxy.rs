@@ -9,17 +9,17 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full, StreamBody};
 use ployz_core::{
-    FanoutFailure, FanoutResponse, FramingError, Machine, MachineId, MachineSelector,
-    ManagementAddress, NameMatches, grpc_frame_length, grpc_frames, resolve_machine_selector,
-    resolve_machine_selectors,
+    FanoutFailure, FanoutResponse, FramingError, Machine, MachineId, ManagementAddress,
+    NameMatches, clear_routing_headers, grpc_frame_length, grpc_frames, resolve_machine_selector,
+    resolve_machine_selectors, routing_from_metadata,
 };
-use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tonic::{
     Status,
     body::Body,
     codegen::{Service, http},
+    metadata::MetadataMap,
     service::Routes,
     transport::{Channel, Endpoint},
 };
@@ -27,17 +27,7 @@ use tonic::{
 use crate::corrosion::ReplicatedStore;
 
 pub use ployz_core::MachineSelectorError as TargetResolutionError;
-
-const ONE_TARGET_HEADER: &str = "machine";
-const ONE_TARGET_BINARY_HEADER: &str = "machine-bin";
-const MANY_TARGETS_HEADER: &str = "machines";
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RoutingRequest {
-    Local,
-    One(MachineSelector),
-    Many(Vec<MachineSelector>),
-}
+pub use ployz_core::RoutingRequest;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProxyRoute {
@@ -101,10 +91,11 @@ impl MachineProxy {
         request: http::Request<Body>,
         visible: &[Machine],
     ) -> http::Response<Body> {
-        let routing = match routing_request(request.headers()) {
-            Ok(routing) => routing,
-            Err(error) => return Status::invalid_argument(error.to_string()).into_http(),
-        };
+        let routing =
+            match routing_from_metadata(&MetadataMap::from_headers(request.headers().clone())) {
+                Ok(routing) => routing,
+                Err(error) => return Status::invalid_argument(error.to_string()).into_http(),
+            };
         self.dispatch(request, routing, visible).await
     }
 
@@ -130,9 +121,7 @@ impl MachineProxy {
         mut request: http::Request<Body>,
         target: &Machine,
     ) -> http::Response<Body> {
-        request.headers_mut().remove(ONE_TARGET_HEADER);
-        request.headers_mut().remove(ONE_TARGET_BINARY_HEADER);
-        request.headers_mut().remove(MANY_TARGETS_HEADER);
+        clear_routing_headers(request.headers_mut());
         if target.id == self.local_id {
             return self.call_local(request).await;
         }
@@ -336,70 +325,6 @@ fn grpc_response(receiver: mpsc::Receiver<Bytes>) -> http::Response<Body> {
     response
 }
 
-fn routing_request(headers: &http::HeaderMap) -> Result<RoutingRequest, RoutingMetadataError> {
-    let has_text_target = headers.contains_key(ONE_TARGET_HEADER);
-    let has_binary_target = headers.contains_key(ONE_TARGET_BINARY_HEADER);
-    if has_text_target && has_binary_target {
-        return Err(RoutingMetadataError::ConflictingSingleTargets);
-    }
-    let has_one = has_text_target || has_binary_target;
-    let has_many = headers.contains_key(MANY_TARGETS_HEADER);
-    if has_one && has_many {
-        return Err(RoutingMetadataError::ConflictingTargets);
-    }
-    let selectors = |name| {
-        headers
-            .get_all(name)
-            .iter()
-            .map(|value| {
-                value
-                    .to_str()
-                    .map_err(|_| RoutingMetadataError::InvalidTarget)
-                    .and_then(|value| {
-                        MachineSelector::parse(value)
-                            .map_err(|_| RoutingMetadataError::InvalidTarget)
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()
-    };
-    if has_one {
-        if has_binary_target {
-            let metadata = tonic::metadata::MetadataMap::from_headers(headers.clone());
-            let encoded = metadata
-                .get_bin(ONE_TARGET_BINARY_HEADER)
-                .ok_or(RoutingMetadataError::InvalidTarget)?
-                .to_bytes()
-                .map_err(|_| RoutingMetadataError::InvalidTarget)?;
-            let value =
-                std::str::from_utf8(&encoded).map_err(|_| RoutingMetadataError::InvalidTarget)?;
-            return MachineSelector::parse(value)
-                .map(RoutingRequest::One)
-                .map_err(|_| RoutingMetadataError::InvalidTarget);
-        }
-        let mut selectors = selectors(ONE_TARGET_HEADER)?;
-        if selectors.len() != 1 {
-            return Err(RoutingMetadataError::InvalidSingleTarget);
-        }
-        Ok(RoutingRequest::One(selectors.remove(0)))
-    } else if has_many {
-        Ok(RoutingRequest::Many(selectors(MANY_TARGETS_HEADER)?))
-    } else {
-        Ok(RoutingRequest::Local)
-    }
-}
-
-#[derive(Debug, Error)]
-enum RoutingMetadataError {
-    #[error("both one-target and fan-out routing metadata are set")]
-    ConflictingTargets,
-    #[error("both text and binary one-target routing metadata are set")]
-    ConflictingSingleTargets,
-    #[error("one-target routing metadata must contain exactly one Machine selector")]
-    InvalidSingleTarget,
-    #[error("routing metadata contains an invalid Machine selector")]
-    InvalidTarget,
-}
-
 impl Service<http::Request<Body>> for MachineProxy {
     type Response = http::Response<Body>;
     type Error = Infallible;
@@ -417,7 +342,9 @@ impl Service<http::Request<Body>> for MachineProxy {
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
         let proxy = self.clone();
         Box::pin(async move {
-            let routing = match routing_request(request.headers()) {
+            let routing = match routing_from_metadata(&MetadataMap::from_headers(
+                request.headers().clone(),
+            )) {
                 Ok(routing) => routing,
                 Err(error) => {
                     return Ok(Status::invalid_argument(error.to_string()).into_http());
@@ -447,22 +374,7 @@ mod tests {
     use ployz_core::{MachineId, ManagementAddress};
     use tonic::service::Routes;
 
-    use super::{MachineProxy, RoutingRequest, routing_request};
-
-    #[test]
-    fn binary_routing_metadata_preserves_unicode_machine_names() {
-        let selector = ployz_core::MachineSelector::parse("München edge").unwrap();
-        let mut metadata = tonic::metadata::MetadataMap::new();
-        metadata.insert_bin(
-            "machine-bin",
-            tonic::metadata::MetadataValue::from_bytes(selector.as_str().as_bytes()),
-        );
-
-        assert_eq!(
-            routing_request(&metadata.into_headers()).unwrap(),
-            RoutingRequest::One(selector)
-        );
-    }
+    use super::MachineProxy;
 
     #[tokio::test]
     async fn remote_backend_survives_disappearance_from_later_snapshots() {

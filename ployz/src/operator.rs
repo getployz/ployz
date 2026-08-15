@@ -9,18 +9,17 @@ use std::{
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
-    ExecOptions, ExecRequestFrame, HealthObservation, LogEntry, LogStream, LogsOptions, MachineId,
-    MachineLogService, MachineLogsRequest, MachineObservation, MachineSelector,
-    MembershipObservation, OpaquePayload, RpcError, RpcErrorCode, ServiceObservation, op,
-    resolve_machine_selectors, select_service,
+    ExecOptions, ExecRequestFrame, HealthObservation, ListMachinesRequest, LogEntry, LogStream,
+    LogsOptions, MachineLogService, MachineLogsRequest, MachineObservation, MachineSelector,
+    MembershipObservation, OpaquePayload, ServiceObservation, op, resolve_machine_selectors,
+    select_service,
 };
-use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tonic::{Request, Streaming};
+use tonic::Streaming;
 
-use crate::{connect::Client, service::entry_machines};
+use crate::connect::Client;
 
 pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
     "sh",
@@ -72,8 +71,6 @@ pub enum OperatorError {
     Message(String),
     #[error(transparent)]
     Container(#[from] ContainerSelectorError),
-    #[error("Machine RPC returned: {}", .0.message)]
-    Remote(RpcError),
     #[error("Machine RPC failed: {0}")]
     Rpc(Box<tonic::Status>),
     #[error("stream protocol failed: {0}")]
@@ -312,9 +309,12 @@ impl Client {
             .send(config)
             .await
             .map_err(|_| OperatorError::Message("exec request stream closed".into()))?;
-        let mut request = Request::new(tokio_stream::wrappers::ReceiverStream::new(receiver));
-        route_to(&machine_id, &mut request)?;
-        let output = self.rpc.exec(request).await?.into_inner();
+        let output = self
+            .exec_stream(
+                &MachineSelector::from(&machine_id),
+                tokio_stream::wrappers::ReceiverStream::new(receiver),
+            )
+            .await?;
         Ok(ExecSession {
             input: sender,
             output,
@@ -329,9 +329,11 @@ impl Client {
         compose_selection: bool,
         cancellation: CancellationToken,
     ) -> Result<ServiceLogInputs, OperatorError> {
-        let machines = entry_machines(&mut self.rpc)
+        let machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?;
+            .map_err(|error| OperatorError::Message(error.to_string()))?
+            .machines;
         let selected_machines = select_machines(&machines, machine_selectors)?;
         let machine_ids = selected_machines
             .iter()
@@ -371,16 +373,14 @@ impl Client {
                 })
                 .encode()
                 .map_err(|error| OperatorError::Message(error.to_string()))?;
-                let mut request = Request::new(request);
-                route_to(&container.machine_id, &mut request)?;
                 let identity = format!("{}/{}", arg.service, container.display_name);
+                let target = MachineSelector::from(&container.machine_id);
                 // TODO(UT-082): earlier Container log streams intentionally survive until the
                 // parent cancellation token is cancelled.
                 if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
-                    self.rpc
-                        .container_logs(request)
+                    self.container_logs_stream(&target, request)
                         .await
-                        .map(|response| stream_input(identity, response.into_inner()))
+                        .map(|stream| stream_input(identity, stream))
                 })
                 .await
                 {
@@ -422,9 +422,11 @@ impl Client {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
-        let machines = entry_machines(&mut self.rpc)
+        let machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?;
+            .map_err(|error| OperatorError::Message(error.to_string()))?
+            .machines;
         let machines = select_machines(&machines, machine_selectors)?;
         let mut inputs = Vec::new();
         for service in services {
@@ -435,16 +437,14 @@ impl Client {
                 })
                 .encode()
                 .map_err(|error| OperatorError::Message(error.to_string()))?;
-                let mut request = Request::new(request);
-                route_to(&machine.machine.id, &mut request)?;
                 let identity = format!("{service}@{}", machine.machine.name);
+                let target = MachineSelector::from(&machine.machine.id);
                 // TODO(UT-083): earlier Machine log streams intentionally survive until the
                 // parent cancellation token is cancelled.
                 if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
-                    self.rpc
-                        .machine_logs(request)
+                    self.machine_logs_stream(&target, request)
                         .await
-                        .map(|response| stream_input(identity, response.into_inner()))
+                        .map(|stream| stream_input(identity, stream))
                 })
                 .await
                 {
@@ -566,20 +566,6 @@ fn select_machines<'a>(
                 .ok_or_else(|| "selected Machine disappeared from the snapshot".into())
         })
         .collect()
-}
-
-fn route_to<T>(machine_id: &MachineId, request: &mut Request<T>) -> Result<(), OperatorError> {
-    request.metadata_mut().insert(
-        "machine",
-        machine_id.as_str().parse().map_err(|error| {
-            OperatorError::Remote(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: format!("invalid Machine routing metadata: {error}"),
-                details: Value::Null,
-            })
-        })?,
-    );
-    Ok(())
 }
 
 struct LogEvent {

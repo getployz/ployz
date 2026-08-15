@@ -8,8 +8,8 @@ use std::{
 
 use futures_util::stream;
 use ployz_core::{
-    ContainerRuntimeObservation, LogMetadata, LogOrigin, MachineName, ResolvedServiceSpec,
-    RestartPolicy, ServiceId, ServiceName,
+    ContainerRuntimeObservation, LogMetadata, LogOrigin, MachineId, MachineName,
+    ResolvedServiceSpec, RestartPolicy, ServiceId, ServiceName,
 };
 
 use super::*;
