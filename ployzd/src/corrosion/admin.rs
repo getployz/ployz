@@ -196,6 +196,16 @@ mod tests {
                 .is_none()
         );
         assert!(
+            decode_member_rtt(json!({"id": "peer-1", "state": {"addr": address}, "rtts": []}))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            decode_member_rtt(json!({"id": "peer-1", "state": {"addr": address}, "rtts": [0.0]}))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
             decode_member_rtt(json!({"id": "peer-1", "state": {"addr": address}, "rtts": ["bad"]}))
                 .is_err()
         );
