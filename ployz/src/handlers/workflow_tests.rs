@@ -126,6 +126,7 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
     let spec = run_spec(super::leaf_matches(&matches)).unwrap();
     assert_eq!(spec.name.as_str(), "api");
     assert_eq!(spec.container.command, ["echo", "hello"]);
+    assert!(!spec.container.restart);
     assert_eq!(
         spec.container.environment.get("A").map(String::as_str),
         Some("b")
@@ -175,6 +176,24 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
         ])
         .unwrap();
     assert!(run_spec(super::leaf_matches(&global_replicas)).is_err());
+}
+
+#[test]
+fn run_pulls_untagged_images_as_latest() {
+    let image = |image: &str| {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "run", "--name", "api", image, "sleep", "30"])
+            .unwrap();
+        run_spec(super::leaf_matches(&matches))
+            .unwrap()
+            .container
+            .image
+    };
+    assert_eq!(image("alpine"), "alpine:latest");
+    assert_eq!(image("alpine:3.20"), "alpine:3.20");
+    let digest = format!("alpine@sha256:{}", "0".repeat(64));
+    assert_eq!(image(&digest), digest);
+    assert_eq!(image("localhost:5000/foo"), "localhost:5000/foo:latest");
 }
 
 #[test]

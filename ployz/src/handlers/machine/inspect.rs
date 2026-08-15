@@ -1,9 +1,12 @@
-use std::{net::Ipv4Addr, time::Duration};
+use std::{
+    net::Ipv4Addr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSelector,
-    MachineSubnet, MachineSuccess, PartialResult, RttObservation, op,
+    MachineSubnet, MachineSuccess, PartialResult, RttObservation, RttStatistics, WireGuardPeer, op,
 };
 use serde::Serialize;
 
@@ -110,23 +113,42 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
-    println!("SOURCE\tTARGET\tMEDIAN\tSTDDEV");
+#[must_use]
+fn format_measured_rtt(median_ns: u64) -> String {
+    if median_ns == 0 {
+        "<1ms".into()
+    } else {
+        format!("{:?}", Duration::from_nanos(median_ns))
+    }
+}
+
+#[must_use]
+fn wg_rtt_line(rtt: Option<&RttStatistics>) -> Option<String> {
+    rtt.map(|statistics| format!("  rtt: {}", format_measured_rtt(statistics.median_ns)))
+}
+
+#[must_use]
+fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, String>) -> String {
+    let mut table = String::from("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
     for success in &result.successes {
         for observation in &success.value {
             let target = observation
                 .machine
                 .as_ref()
                 .map_or(observation.peer_id.as_str(), |machine| machine.id.as_str());
-            println!(
-                "{}\t{}\t{:?}\t{:?}",
+            table.push_str(&format!(
+                "{}\t{target}\t{}\t{}\n",
                 success.machine_id,
-                target,
-                Duration::from_nanos(observation.statistics.median_ns),
-                Duration::from_nanos(observation.statistics.population_stddev_ns),
-            );
+                format_measured_rtt(observation.statistics.median_ns),
+                format_measured_rtt(observation.statistics.population_stddev_ns),
+            ));
         }
     }
+    table
+}
+
+fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
+    print!("{}", format_rtt_table(result));
     for failure in &result.failures {
         eprintln!(
             "WARNING: RTT inspection failed for {}: {}",
@@ -154,40 +176,198 @@ pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error
     println!("interface: {}", device.interface_name);
     println!("public key: {}", device.public_key);
     println!("listening port: {}", device.listen_port);
+    let now_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
     for peer in device.peers {
         println!();
         println!("peer: {}", peer.public_key);
-        if let Some(machine) = peer.machine {
+        if let Some(machine) = &peer.machine {
             println!("  machine: {} ({})", machine.name, machine.id);
         }
         if let Some(endpoint) = peer.endpoint {
             println!("  endpoint: {endpoint}");
         }
-        if let Some(handshake) = peer.last_handshake_unix_seconds {
-            println!("  latest handshake: {handshake}");
-        }
-        println!(
-            "  transfer: {} received, {} sent",
-            peer.received_bytes, peer.sent_bytes
-        );
-        println!(
-            "  allowed ips: {}",
-            peer.allowed_ips
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        if let Some(rtt) = peer.rtt {
-            println!("  rtt: {:?}", Duration::from_nanos(rtt.median_ns));
+        println!("{}", format_wg_show_peer_stats(&peer, now_unix_seconds));
+        if let Some(line) = wg_rtt_line(peer.rtt.as_ref()) {
+            println!("{line}");
         }
     }
     Ok(())
 }
 
+#[must_use]
+fn format_wg_ago(elapsed_seconds: u64) -> String {
+    let mut remaining = elapsed_seconds;
+    let mut parts = Vec::new();
+    for (seconds_per_unit, name) in [
+        (365 * 24 * 60 * 60, "year"),
+        (24 * 60 * 60, "day"),
+        (60 * 60, "hour"),
+        (60, "minute"),
+        (1, "second"),
+    ] {
+        let count = remaining / seconds_per_unit;
+        remaining %= seconds_per_unit;
+        if count == 0 {
+            continue;
+        }
+        parts.push(format!(
+            "{count} {name}{}",
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+    if parts.is_empty() {
+        parts.push("0 seconds".into());
+    }
+    format!("{} ago", parts.join(", "))
+}
+
+#[must_use]
+fn format_wg_show_peer_stats(peer: &WireGuardPeer, now_unix_seconds: u64) -> String {
+    let mut lines = Vec::new();
+    if let Some(handshake) = peer.last_handshake_unix_seconds {
+        lines.push(format!(
+            "  latest handshake: {}",
+            format_wg_ago(now_unix_seconds.saturating_sub(handshake))
+        ));
+    }
+    lines.push(format!(
+        "  transfer: {} received, {} sent",
+        peer.received_bytes, peer.sent_bytes
+    ));
+    lines.push(format!(
+        "  allowed ips: {}",
+        peer.allowed_ips
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::{MachineId, MachineIdentity, MachineName};
+
+    #[test]
+    fn missing_rtt_is_omitted_and_sub_millisecond_samples_are_not_printed_as_0ns() {
+        assert_eq!(wg_rtt_line(None), None);
+        assert_eq!(format_measured_rtt(0), "<1ms");
+        assert_eq!(
+            wg_rtt_line(Some(&RttStatistics {
+                median_ns: 0,
+                population_stddev_ns: 0,
+            }))
+            .as_deref(),
+            Some("  rtt: <1ms")
+        );
+
+        let source = machine_id('1');
+        let table = format_rtt_table(&PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: source.clone(),
+                value: vec![rtt_observation("peer-zero", 0, 0)],
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+        assert_eq!(
+            table,
+            format!("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\tpeer-zero\t<1ms\t<1ms\n")
+        );
+        assert!(!table.contains("0ns"));
+    }
+
+    #[test]
+    fn measured_rtt_prints_the_same_human_units_for_machine_rtt_and_wg_show() {
+        assert_eq!(format_measured_rtt(1_500_000), "1.5ms");
+        let statistics = RttStatistics {
+            median_ns: 1_500_000,
+            population_stddev_ns: 200_000,
+        };
+        assert_eq!(
+            wg_rtt_line(Some(&statistics)).as_deref(),
+            Some("  rtt: 1.5ms")
+        );
+
+        let source = machine_id('1');
+        let target = machine_id('2');
+        let table = format_rtt_table(&PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: source.clone(),
+                value: vec![RttObservation {
+                    peer_id: "peer-live".into(),
+                    address: "[fdcc::2]:51001".parse().unwrap(),
+                    machine: Some(MachineIdentity {
+                        id: target.clone(),
+                        name: MachineName::parse("node-b").unwrap(),
+                    }),
+                    statistics,
+                }],
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+        assert_eq!(
+            table,
+            format!("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\t{target}\t1.5ms\t200µs\n")
+        );
+        assert!(!table.contains("1500000"));
+        assert!(!table.contains("0ns"));
+    }
+
+    fn machine_id(digit: char) -> MachineId {
+        digit.to_string().repeat(32).parse().unwrap()
+    }
+
+    fn rtt_observation(peer_id: &str, median_ns: u64, population_stddev_ns: u64) -> RttObservation {
+        RttObservation {
+            peer_id: peer_id.into(),
+            address: "[fdcc::2]:51001".parse().unwrap(),
+            machine: None,
+            statistics: RttStatistics {
+                median_ns,
+                population_stddev_ns,
+            },
+        }
+    }
+
+    #[test]
+    fn wg_ago_matches_wireguard_style_for_one_minute_twelve_seconds() {
+        assert_eq!(format_wg_ago(72), "1 minute, 12 seconds ago");
+    }
+
+    #[test]
+    fn wg_show_prints_a_known_handshake_as_relative_ago() {
+        assert_eq!(
+            format_wg_show_peer_stats(&sample_peer(Some(1_700_000_000 - 72)), 1_700_000_000),
+            "  latest handshake: 1 minute, 12 seconds ago\n  transfer: 7 received, 8 sent\n  allowed ips: 10.0.0.2/32"
+        );
+    }
+
+    #[test]
+    fn wg_show_omits_handshake_and_keeps_transfer_and_allowed_ips() {
+        assert_eq!(
+            format_wg_show_peer_stats(&sample_peer(None), 1_700_000_000),
+            "  transfer: 7 received, 8 sent\n  allowed ips: 10.0.0.2/32"
+        );
+    }
+
+    fn sample_peer(last_handshake_unix_seconds: Option<u64>) -> WireGuardPeer {
+        WireGuardPeer {
+            public_key: ployz_core::WireGuardPublicKey([1; 32]),
+            endpoint: None,
+            last_handshake_unix_seconds,
+            received_bytes: 7,
+            sent_bytes: 8,
+            allowed_ips: vec!["10.0.0.2/32".parse().unwrap()],
+            machine: None,
+            rtt: None,
+        }
+    }
 
     #[test]
     fn machine_json_projection_includes_the_derived_gateway() {

@@ -43,6 +43,7 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             stop_grace_period_millis: None,
             sysctls: Default::default(),
             config_mounts: Vec::new(),
+            restart: true,
         },
         placement: Placement::default(),
         ports: Vec::new(),

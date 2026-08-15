@@ -556,6 +556,7 @@ fn classify_health(
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
         } if health_deadline.is_none() => HealthPoll::Complete,
+        ContainerRuntimeObservation::Exited { code: 0 } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health:
                 HealthObservation::Starting

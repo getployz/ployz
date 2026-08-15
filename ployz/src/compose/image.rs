@@ -49,6 +49,9 @@ impl ImageState {
             image.push(':');
             image.push_str(&self.tag()?);
         }
+        if !image.is_empty() {
+            image = crate::image::with_default_tag(&image);
+        }
         Ok(image)
     }
 

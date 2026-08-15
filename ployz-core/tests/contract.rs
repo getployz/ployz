@@ -85,6 +85,35 @@ fn identities_validate_and_serialize_as_their_wire_strings() {
 }
 
 #[test]
+fn machine_name_rejects_spaces() {
+    assert_eq!(
+        MachineName::parse("BAD NAME").unwrap_err().to_string(),
+        "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
+    );
+}
+
+#[test]
+fn machine_name_rejects_uppercase_and_empty_strings() {
+    assert_eq!(
+        MachineName::parse("Vultr1").unwrap_err().to_string(),
+        "invalid Machine Name \"Vultr1\": a 1-63 character lowercase DNS label"
+    );
+    assert_eq!(
+        MachineName::parse("").unwrap_err().to_string(),
+        "invalid Machine Name \"\": a 1-63 character lowercase DNS label"
+    );
+}
+
+#[test]
+fn machine_name_accepts_lowercase_dns_labels() {
+    assert_eq!(MachineName::parse("vultr1").unwrap().as_str(), "vultr1");
+    assert_eq!(
+        MachineName::parse("machine-a").unwrap().as_str(),
+        "machine-a"
+    );
+}
+
+#[test]
 fn duplicate_name_matches_remain_ambiguous() {
     let first = ServiceId::parse("11111111111111111111111111111111").unwrap();
     let second = ServiceId::parse("22222222222222222222222222222222").unwrap();
@@ -758,6 +787,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             gid: Some(1000),
             mode: Some(0o440),
         }],
+        restart: true,
     };
     let reference = ServiceVolumeReference::parse("data").unwrap();
     let volume = ServiceVolume {
@@ -831,12 +861,15 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         .as_object_mut()
         .unwrap()
         .remove("update");
-    assert_eq!(
-        serde_json::from_value::<RequestedServiceSpec>(older_requested_json)
-            .unwrap()
-            .update,
-        UpdateConfig::default()
-    );
+    older_requested_json
+        .get_mut("container")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .remove("restart");
+    let older_requested =
+        serde_json::from_value::<RequestedServiceSpec>(older_requested_json).unwrap();
+    assert_eq!(older_requested.update, UpdateConfig::default());
+    assert!(older_requested.container.restart);
     let resolved_json = serde_json::to_value(&resolved).unwrap();
     assert_eq!(
         serde_json::from_value::<ResolvedServiceSpec>(resolved_json).unwrap(),

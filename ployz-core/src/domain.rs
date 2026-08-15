@@ -845,6 +845,13 @@ pub struct ServiceContainerSpec {
     pub sysctls: BTreeMap<String, String>,
     #[serde(default)]
     pub config_mounts: Vec<ConfigMount>,
+    /// When false, the Service Container is not restarted after it exits.
+    #[serde(default = "default_container_restart")]
+    pub restart: bool,
+}
+
+fn default_container_restart() -> bool {
+    true
 }
 
 /// Normalized deploy input before placement and container-specific resolution.

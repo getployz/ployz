@@ -40,7 +40,7 @@ use crate::machine::LocalMachineStore;
 
 pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
-pub use unregistry::RunningUnregistry;
+pub use unregistry::{RunningUnregistry, unregistry_matches};
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
@@ -860,6 +860,49 @@ mod tests {
             hook_host.restart_policy.unwrap().name,
             Some(bollard::models::RestartPolicyNameEnum::NO)
         );
+    }
+
+    #[test]
+    fn run_service_container_does_not_restart_after_exit_and_keeps_bind_mounts() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+            "service_id": "a".repeat(32),
+            "name": "oneshot",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": {
+                "image": "alpine:3.23.3",
+                "command": ["cat", "/host-os"],
+                "pull_policy": "missing",
+                "restart": false
+            },
+            "volumes": [{
+                "reference": "host",
+                "source": { "kind": "bind", "machine_path": "/etc/os-release" }
+            }],
+            "mounts": [{ "volume": "host", "target": "/host-os" }]
+        }))
+        .unwrap();
+
+        let body = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &spec,
+        )
+        .unwrap();
+        let host = body.host_config.unwrap();
+        assert_eq!(
+            host.restart_policy.unwrap().name,
+            Some(bollard::models::RestartPolicyNameEnum::NO)
+        );
+        let mounts = host.mounts.expect("bind mount must still be applied");
+        let [bind_mount] = mounts.as_slice() else {
+            panic!("expected one bind mount: {mounts:?}")
+        };
+        assert_eq!(bind_mount.typ, Some(bollard::models::MountType::BIND));
+        assert_eq!(bind_mount.source.as_deref(), Some("/etc/os-release"));
+        assert_eq!(bind_mount.target.as_deref(), Some("/host-os"));
     }
 
     #[test]
