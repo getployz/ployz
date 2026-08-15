@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, num::NonZeroU32};
 
 use ployz_core::{
-    BindRecursive, CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError,
-    ConfigMount, ConfigSpec, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
+    CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
+    ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
     DnsRecordRequest, DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome,
@@ -11,7 +11,7 @@ use ployz_core::{
     ListImagesRequest, MachineFailure, MachineId, MachineImages, MachineName, MachinePath,
     MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess,
     MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
-    PidMode, Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
+    Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
     RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
@@ -870,52 +870,6 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         serde_json::from_value::<ResolvedServiceSpec>(resolved_json).unwrap(),
         resolved
     );
-}
-
-#[test]
-fn restart_policy_uses_docker_names_and_optional_retry_count() {
-    let policy = RestartPolicy::parse("on-failure:3").unwrap();
-    assert_eq!(
-        policy,
-        RestartPolicy::OnFailure {
-            maximum_retry_count: Some(3),
-        }
-    );
-    assert_eq!(
-        serde_json::to_value(policy).unwrap(),
-        json!({ "name": "on-failure", "maximum_retry_count": 3 })
-    );
-    for invalid in ["always:1", "on-failure:-1", "on-failure:x", "maybe"] {
-        assert!(
-            RestartPolicy::parse(invalid).is_err(),
-            "{invalid} should be rejected"
-        );
-    }
-}
-
-#[test]
-fn pid_mode_accepts_host_or_container_and_rejects_other_values() {
-    assert_eq!("host".parse(), Ok(PidMode::Host));
-    assert_eq!(
-        "container:abc123".parse(),
-        Ok(PidMode::Container("abc123".into()))
-    );
-    assert_eq!(serde_json::to_value(PidMode::Host).unwrap(), json!("host"));
-    for invalid in ["", "private", "container:", "service:web"] {
-        assert!(
-            invalid.parse::<PidMode>().is_err(),
-            "{invalid} should be rejected"
-        );
-    }
-}
-
-#[test]
-fn bind_recursive_accepts_docker_modes_and_rejects_unknown_strings() {
-    assert_eq!(
-        serde_json::from_value::<BindRecursive>(json!("writable")).unwrap(),
-        BindRecursive::Writable
-    );
-    assert!(serde_json::from_value::<BindRecursive>(json!("enabled")).is_err());
 }
 
 struct FixtureMachineRpc;

@@ -139,25 +139,17 @@ pub(super) fn container_create_body(
 }
 
 fn docker_restart(policy: ployz_core::RestartPolicy) -> RestartPolicy {
-    match policy {
-        ployz_core::RestartPolicy::No => RestartPolicy {
-            name: Some(RestartPolicyNameEnum::NO),
-            maximum_retry_count: None,
-        },
-        ployz_core::RestartPolicy::Always => RestartPolicy {
-            name: Some(RestartPolicyNameEnum::ALWAYS),
-            maximum_retry_count: None,
-        },
-        ployz_core::RestartPolicy::UnlessStopped => RestartPolicy {
-            name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
-            maximum_retry_count: None,
-        },
+    let (name, maximum_retry_count) = match policy {
+        ployz_core::RestartPolicy::No => (RestartPolicyNameEnum::NO, None),
+        ployz_core::RestartPolicy::Always => (RestartPolicyNameEnum::ALWAYS, None),
+        ployz_core::RestartPolicy::UnlessStopped => (RestartPolicyNameEnum::UNLESS_STOPPED, None),
         ployz_core::RestartPolicy::OnFailure {
             maximum_retry_count,
-        } => RestartPolicy {
-            name: Some(RestartPolicyNameEnum::ON_FAILURE),
-            maximum_retry_count,
-        },
+        } => (RestartPolicyNameEnum::ON_FAILURE, maximum_retry_count),
+    };
+    RestartPolicy {
+        name: Some(name),
+        maximum_retry_count,
     }
 }
 
@@ -313,6 +305,13 @@ pub(super) fn docker_mounts(
                 } => {
                     translated.typ = Some(MountType::BIND);
                     translated.source = Some(machine_path.to_string());
+                    let (non_recursive, read_only_non_recursive, read_only_force_recursive) =
+                        match recursive {
+                            Some(BindRecursive::Disabled) => (Some(true), None, None),
+                            Some(BindRecursive::Writable) => (None, Some(true), None),
+                            Some(BindRecursive::Readonly) => (None, None, Some(true)),
+                            None => (None, None, None),
+                        };
                     translated.bind_options = Some(MountBindOptions {
                         propagation: propagation
                             .as_deref()
@@ -320,15 +319,9 @@ pub(super) fn docker_mounts(
                             .transpose()
                             .map_err(Error::InvalidMountPropagation)?,
                         create_mountpoint: create_machine_path.then_some(true),
-                        non_recursive: matches!(recursive, Some(BindRecursive::Disabled))
-                            .then_some(true),
-                        read_only_non_recursive: matches!(recursive, Some(BindRecursive::Writable))
-                            .then_some(true),
-                        read_only_force_recursive: matches!(
-                            recursive,
-                            Some(BindRecursive::Readonly)
-                        )
-                        .then_some(true),
+                        non_recursive,
+                        read_only_non_recursive,
+                        read_only_force_recursive,
                     });
                 }
                 VolumeSource::Named {

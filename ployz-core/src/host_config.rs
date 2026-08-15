@@ -121,3 +121,55 @@ impl TryFrom<String> for PidMode {
         value.parse()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn restart_policy_uses_docker_names_and_optional_retry_count() {
+        let policy = RestartPolicy::parse("on-failure:3").unwrap();
+        assert_eq!(
+            policy,
+            RestartPolicy::OnFailure {
+                maximum_retry_count: Some(3),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(policy).unwrap(),
+            json!({ "name": "on-failure", "maximum_retry_count": 3 })
+        );
+        for invalid in ["always:1", "on-failure:-1", "on-failure:x", "maybe"] {
+            assert!(
+                RestartPolicy::parse(invalid).is_err(),
+                "{invalid} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn pid_mode_accepts_host_or_container_and_rejects_other_values() {
+        assert_eq!("host".parse(), Ok(PidMode::Host));
+        assert_eq!(
+            "container:abc123".parse(),
+            Ok(PidMode::Container("abc123".into()))
+        );
+        assert_eq!(serde_json::to_value(PidMode::Host).unwrap(), json!("host"));
+        for invalid in ["", "private", "container:", "service:web"] {
+            assert!(
+                invalid.parse::<PidMode>().is_err(),
+                "{invalid} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn bind_recursive_accepts_docker_modes_and_rejects_unknown_strings() {
+        assert_eq!(
+            serde_json::from_value::<BindRecursive>(json!("writable")).unwrap(),
+            BindRecursive::Writable
+        );
+        assert!(serde_json::from_value::<BindRecursive>(json!("enabled")).is_err());
+    }
+}

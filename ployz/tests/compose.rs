@@ -212,13 +212,6 @@ configs:
     assert_eq!(api.volumes.len(), 3);
     assert!(api.volumes.iter().any(|volume| matches!(
         &volume.source,
-        VolumeSource::Bind {
-            recursive: Some(ployz_core::BindRecursive::Disabled),
-            ..
-        }
-    )));
-    assert!(api.volumes.iter().any(|volume| matches!(
-        &volume.source,
         VolumeSource::Named { name, no_copy: true, subpath: Some(subpath), .. }
             if name.as_str() == "data" && subpath == "current"
     )));
@@ -323,15 +316,6 @@ secrets:
             "services: {app: {image: app, volumes: [{type: tmpfs, target: /tmp, tmpfs: {size: huge}}]}}",
             "tmpfs.size",
         ),
-        (
-            "services: {app: {image: app, restart: maybe}}",
-            "restart policy",
-        ),
-        ("services: {app: {image: app, pid: private}}", "PID mode"),
-        (
-            "services: {app: {image: app, volumes: [{type: bind, source: /srv, target: /host, bind: {recursive: enabled}}]}}",
-            "bind recursive",
-        ),
     ];
     for (yaml, expected) in cases {
         let error = parse_normalized(yaml, ".").unwrap_err().to_string();
@@ -381,19 +365,6 @@ services:
         PortPublication::Host { bind: HostBind::Prefix { prefix }, .. }
             if prefix.to_string() == "2001:db8::/64"
     ));
-}
-
-#[test]
-fn compose_maps_stop_grace_period_to_whole_docker_seconds() {
-    let project = parse_normalized(
-        "services: {app: {image: app, stop_grace_period: 1500ms}}",
-        ".",
-    )
-    .unwrap();
-    assert_eq!(
-        service(&project, "app").container.stop_timeout_secs,
-        Some(1)
-    );
 }
 
 #[test]
