@@ -13,8 +13,7 @@ use ployz_core::{
     CodecError, DockerVolume, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
     ListImagesRequest, ListVolumesRequest, MachineFailure, MachineImages, MachineName,
     MachineObservation, MachineRpcClient, MachineSelector, MachineSuccess, OpaquePayload,
-    PartialResult, Rpc, RpcError, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponse,
-    RpcResponseBody, op,
+    PartialResult, Rpc, RpcError, RpcErrorCode, RpcResponseBody, op,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -316,10 +315,24 @@ impl Client {
         request: T::Request,
         target: Option<&MachineSelector>,
     ) -> Result<T::Response, ConnectError> {
-        self.request(T::into_request(request), target)
+        let payload = target_request(T::into_request(request).encode()?, target);
+        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
+        grpc.ready()
+            .await
+            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        let response = grpc
+            .unary(
+                payload,
+                PathAndQuery::from_static(T::PATH),
+                ProstCodec::<OpaquePayload, OpaquePayload>::default(),
+            )
             .await?
-            .decode::<T::Response>()
-            .map_err(ConnectError::Codec)
+            .into_inner()
+            .decode_response()?;
+        if let RpcResponseBody::Error(error) = &response.body {
+            return Err(ConnectError::Remote(error.clone()));
+        }
+        response.decode::<T>().map_err(ConnectError::Codec)
     }
 
     pub async fn list_volumes(
@@ -335,8 +348,7 @@ impl Client {
                 let target = MachineSelector::from(&machine_id);
                 let outcome = client
                     .call::<op::ListVolumes>(ListVolumesRequest {}, Some(&target))
-                    .await
-                    .map(|list| list.volumes);
+                    .await;
                 (index, machine_id, outcome)
             });
         }
@@ -354,7 +366,7 @@ impl Client {
             match outcome {
                 Ok(volumes) => result.successes.push(MachineSuccess {
                     machine_id,
-                    value: volumes,
+                    value: volumes.volumes,
                 }),
                 Err(error) => result.failures.push(MachineFailure {
                     machine_id,
@@ -406,7 +418,7 @@ impl Client {
             match envelope.outcome {
                 Some(FanoutOutcome::FramedPayload(frame)) => {
                     let response = OpaquePayload::decode_grpc_frame(&frame)?.decode_response()?;
-                    if let Ok(error) = response.decode_error() {
+                    if let RpcResponseBody::Error(error) = &response.body {
                         result.failures.push(MachineFailure {
                             machine_id,
                             error: error.clone(),
@@ -416,7 +428,9 @@ impl Client {
                             machine_id,
                             value: MachineImagesObservation {
                                 machine_name,
-                                images: response.decode().map_err(ConnectError::Codec)?,
+                                images: response
+                                    .decode::<op::ListImages>()
+                                    .map_err(ConnectError::Codec)?,
                             },
                         });
                     }
@@ -431,32 +445,6 @@ impl Client {
             }
         }
         Ok(result)
-    }
-
-    pub async fn request(
-        &mut self,
-        request: RpcRequest,
-        target: Option<&MachineSelector>,
-    ) -> Result<RpcResponse, ConnectError> {
-        let payload = target_request(request.encode()?, target);
-        macro_rules! dispatch {
-            (
-                package $package:literal
-                unary { $($variant:ident: ($method:ident, $route:literal, $request:ty, $command:literal, $response:ty),)+ }
-                server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
-            ) => {
-                match request.body {
-                    $(RpcRequestBody::$variant(_) => self.rpc.$method(payload).await?,)+
-                    $(RpcRequestBody::$stream_variant(_) => return Err(ConnectError::StreamingRequest($stream_command)),)+
-                }
-            };
-        }
-        let payload = ployz_core::rpc_catalog!(dispatch);
-        let response = payload.into_inner().decode_response()?;
-        if let RpcResponseBody::Error(error) = &response.body {
-            return Err(ConnectError::Remote(error.clone()));
-        }
-        Ok(response)
     }
 
     pub async fn dial_proxy(
@@ -510,8 +498,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::AllFailed { .. }
         | ConnectError::Codec(_)
         | ConnectError::Framing(_)
-        | ConnectError::Value(_)
-        | ConnectError::StreamingRequest(_)) => RpcError {
+        | ConnectError::Value(_)) => RpcError {
             code: RpcErrorCode::Internal,
             message: error.to_string(),
             details: Value::Null,
@@ -673,8 +660,6 @@ pub enum ConnectError {
     Codec(#[from] CodecError),
     #[error("Machine RPC returned: {}", .0.message)]
     Remote(RpcError),
-    #[error("streaming RPC {0:?} must use the streaming client")]
-    StreamingRequest(&'static str),
     #[error("Machine RPC framing failed: {0}")]
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed: {0}")]

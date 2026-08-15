@@ -353,8 +353,8 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_initialized()?
-        .clone())
+        .decode::<op::Initialize>()?
+        .machine)
     }
 
     pub async fn join(&self, index: usize, request: JoinRequest) -> Result<(), TestkitError> {
@@ -365,7 +365,8 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_join_accepted()
+        .decode::<op::Join>()
+        .map(|_| ())
         .map_err(Into::into)
     }
 
@@ -569,8 +570,7 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_images()?
-        .clone())
+        .decode::<op::ListImages>()?)
     }
 
     pub async fn reset(&self, index: usize) -> Result<(), TestkitError> {
@@ -581,7 +581,7 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_reset_accepted()?;
+        .decode::<op::Reset>()?;
         Ok(())
     }
 
@@ -782,8 +782,7 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_details()?
-        .clone())
+        .decode::<op::Inspect>()?)
     }
 
     async fn client(

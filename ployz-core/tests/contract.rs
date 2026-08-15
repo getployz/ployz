@@ -1,21 +1,22 @@
 use std::{collections::BTreeSet, num::NonZeroU32};
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CapabilityName, CodecError, ConfigMount, ConfigSpec,
+    CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
     ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordRequest, DnsRecordType, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
-    GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation, ImageSummary,
-    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure, MachineId,
-    MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer,
-    MachineSelector, MachineSuccess, MachineTokenRequest, MachineUpdate, NameMatches,
-    OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PreDeployHook, PublicIpDiscovery,
-    PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
-    RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest, ResetRequest,
-    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
+    DnsRecordRequest, DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome,
+    FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest,
+    HealthObservation, ImageSummary, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
+    ListImagesRequest, MachineFailure, MachineId, MachineImages, MachineName, MachinePath,
+    MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess,
+    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
+    Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
+    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
+    ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder, VolumeList,
     VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
@@ -301,16 +302,16 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
             platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
         }],
     };
-    let response = RpcResponse::machine_images(images.clone());
+    let response = RpcResponse::from(images.clone());
     assert_eq!(
         response
             .encode()
             .unwrap()
             .decode_response()
             .unwrap()
-            .decode_machine_images()
+            .decode::<op::ListImages>()
             .unwrap(),
-        &images
+        images
     );
     assert_eq!(LIST_IMAGES_CAPABILITY, "ployz.image.list.v1");
 }
@@ -320,15 +321,18 @@ fn caddy_config_contract_returns_the_owned_plain_file() {
     let request = op::GetCaddyConfig::into_request(GetCaddyConfigRequest {});
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 
-    let response = RpcResponse::caddy_config("example.test { respond ok }\n".into());
+    let response = RpcResponse::from(CaddyConfig {
+        caddyfile: "example.test { respond ok }\n".into(),
+    });
     assert_eq!(
         response
             .encode()
             .unwrap()
             .decode_response()
             .unwrap()
-            .decode_caddy_config()
-            .unwrap(),
+            .decode::<op::GetCaddyConfig>()
+            .unwrap()
+            .caddyfile,
         "example.test { respond ok }\n"
     );
     assert_eq!(GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1");
@@ -376,9 +380,12 @@ fn hosted_dns_contract_keeps_credentials_daemon_side_and_records_exact() {
     );
 
     assert_eq!(
-        RpcResponse::domain("opaque.ployz.example".into())
-            .decode_domain()
-            .unwrap(),
+        RpcResponse::from(Domain {
+            name: "opaque.ployz.example".into()
+        })
+        .decode::<op::GetDomain>()
+        .unwrap()
+        .name,
         "opaque.ployz.example"
     );
     let created = vec![DnsRecord {
@@ -387,9 +394,12 @@ fn hosted_dns_contract_keeps_credentials_daemon_side_and_records_exact() {
         values: vec!["192.0.2.1".into()],
     }];
     assert_eq!(
-        RpcResponse::domain_records(created.clone())
-            .decode_domain_records()
-            .unwrap(),
+        RpcResponse::from(DomainRecords {
+            records: created.clone()
+        })
+        .decode::<op::CreateDomainRecords>()
+        .unwrap()
+        .records,
         created
     );
 }
@@ -565,7 +575,7 @@ fn typed_errors_preserve_future_error_codes() {
     .unwrap();
 
     assert_eq!(error.code, RpcErrorCode::Unknown("rate_limited".into()));
-    let response = RpcResponse::error(error);
+    let response = RpcResponse::from(error);
     assert_eq!(response.kind(), ResponseKind::Error);
     assert!(matches!(
         response.body,
@@ -582,9 +592,9 @@ fn reset_command_and_acknowledgement_have_a_stable_capability() {
         op::Reset::into_request(ResetRequest {})
     );
 
-    let response = RpcResponse::reset_accepted();
+    let response = RpcResponse::from(ResetAccepted {});
     assert_eq!(response.kind(), ResponseKind::ResetAccepted);
-    assert!(response.decode_reset_accepted().is_ok());
+    assert!(response.decode::<op::Reset>().is_ok());
     assert_eq!(RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1");
 }
 
@@ -658,10 +668,13 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         labels: BTreeMap::from([("purpose".into(), "database".into())]),
     };
     assert_eq!(
-        RpcResponse::volume_list(vec![volume.clone()])
-            .decode_volume_list()
-            .unwrap(),
-        &[volume]
+        RpcResponse::from(VolumeList {
+            volumes: vec![volume.clone()]
+        })
+        .decode::<op::ListVolumes>()
+        .unwrap()
+        .volumes,
+        vec![volume]
     );
     let spec: ResolvedServiceSpec = serde_json::from_value(json!({
         "service_id": "11111111111111111111111111111111",
@@ -670,18 +683,18 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
     }))
     .unwrap();
-    let request = op::CreateContainer::into_request(Box::new(CreateContainerRequest {
+    let request = op::CreateContainer::into_request(CreateContainerRequest {
         kind: ContainerKind::ServiceContainer,
         resolved_spec: spec.clone(),
-    }));
+    });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 
     let created = ContainerCreated {
         container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
         display_name: "api-abcd".into(),
     };
-    let response = RpcResponse::container_created(created.clone());
-    assert_eq!(response.decode_container_created().unwrap(), &created);
+    let response = RpcResponse::from(created.clone());
+    assert_eq!(response.decode::<op::CreateContainer>().unwrap(), created);
     assert_eq!(CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1");
 }
 

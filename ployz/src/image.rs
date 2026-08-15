@@ -104,9 +104,8 @@ pub async fn push(
     let machines = client
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await
-        .map(|list| list.machines)
         .map_err(|error| PushError::Cluster(error.to_string()))?;
-    push_using_machines(client, image, platform, selectors, &machines).await
+    push_using_machines(client, image, platform, selectors, &machines.machines).await
 }
 
 pub(crate) async fn push_using_machines(

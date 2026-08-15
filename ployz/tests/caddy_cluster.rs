@@ -279,9 +279,12 @@ async fn assert_membership_blind(
             Some(&MachineSelector::from(&machines[0].id)),
         )
         .await
-        .unwrap()
-        .caddyfile;
-    assert!(retained.contains(&format!("{}:8080", retained_address.0)));
+        .unwrap();
+    assert!(
+        retained
+            .caddyfile
+            .contains(&format!("{}:8080", retained_address.0))
+    );
 }
 
 async fn assert_invalid_template(client: &mut ployz::connect::Client, machine: &Machine) {

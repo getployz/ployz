@@ -36,9 +36,8 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
         let machines = client
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
-            .map(|list| list.machines)
             .map_err(|error| error.to_string())?;
-        let Some(machine) = select_create_machine(&machines, selector.as_deref())? else {
+        let Some(machine) = select_create_machine(&machines.machines, selector.as_deref())? else {
             println!("Cancelled. No volume was created.");
             return Ok(());
         };
@@ -53,9 +52,8 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                 Some(&MachineSelector::from(&machine.machine.id)),
             )
             .await
-            .map(|created| created.volume)
             .map_err(|error| error.to_string())?;
-        println!("{}\t{}", machine.machine.name, volume.id.name);
+        println!("{}\t{}", machine.machine.name, volume.volume.id.name);
         Ok(())
     })
 }

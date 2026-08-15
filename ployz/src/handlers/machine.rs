@@ -131,10 +131,12 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
         client
             .call::<op::UpdateMachine>(UpdateMachineRequest { update }, Some(&selector))
             .await
-            .map(|updated| updated.machine)
             .map_err(|error| Error::from(error.to_string()))
     })?;
-    println!("Updated Machine {} ({})", machine.name, machine.id);
+    println!(
+        "Updated Machine {} ({})",
+        machine.machine.name, machine.machine.id
+    );
     Ok(())
 }
 

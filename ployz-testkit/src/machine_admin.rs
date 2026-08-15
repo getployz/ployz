@@ -65,8 +65,7 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_registered()?
-        .clone())
+        .decode::<op::Register>()?)
     }
 
     pub async fn machines(
@@ -80,8 +79,8 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_list()?
-        .to_vec())
+        .decode::<op::ListMachines>()?
+        .machines)
     }
 
     pub async fn update_machine(
@@ -102,8 +101,8 @@ impl Cluster {
         );
         Ok(
             response(client.update_machine(request).await?.into_inner())?
-                .decode_machine_updated()?
-                .clone(),
+                .decode::<op::UpdateMachine>()?
+                .machine,
         )
     }
 
@@ -122,7 +121,8 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_removed()
+        .decode::<op::RemoveMachine>()
+        .map(|_| ())
         .map_err(Into::into)
     }
 
@@ -140,7 +140,7 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_details()?
+        .decode::<op::Inspect>()?
         .rtts
         .clone())
     }
@@ -163,8 +163,7 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_token()?
-        .clone())
+        .decode::<op::MachineToken>()?)
     }
 
     pub async fn inspect_wireguard(&self, index: usize) -> Result<WireGuardDevice, TestkitError> {
@@ -177,8 +176,8 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_wireguard_inspected()?
-        .clone())
+        .decode::<op::InspectWireguard>()?
+        .device)
     }
 
     pub fn inject_wireguard_peer(

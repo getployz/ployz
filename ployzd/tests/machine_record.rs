@@ -271,9 +271,8 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
         .into_inner()
         .decode_response()
         .unwrap()
-        .decode_machine_details()
-        .unwrap()
-        .clone();
+        .decode::<op::Inspect>()
+        .unwrap();
 
     assert_eq!(details.public_key, public_key);
     assert_eq!(details.advertised_endpoints, [endpoint]);

@@ -138,18 +138,19 @@ fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
 pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
     let selector = leaf_matches(root).get_one::<String>("machine").cloned();
-    let device = runtime()?.block_on(async {
-        let mut client = options.connect().await?;
-        let target = selector
-            .map(MachineSelector::parse)
-            .transpose()
-            .map_err(|error| error.to_string())?;
-        client
-            .call::<op::InspectWireguard>(InspectWireGuardRequest {}, target.as_ref())
-            .await
-            .map(|inspected| inspected.device)
-            .map_err(|error| Error::from(error.to_string()))
-    })?;
+    let device = runtime()?
+        .block_on(async {
+            let mut client = options.connect().await?;
+            let target = selector
+                .map(MachineSelector::parse)
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            client
+                .call::<op::InspectWireguard>(InspectWireGuardRequest {}, target.as_ref())
+                .await
+                .map_err(|error| Error::from(error.to_string()))
+        })?
+        .device;
     println!("interface: {}", device.interface_name);
     println!("public key: {}", device.public_key);
     println!("listening port: {}", device.listen_port);

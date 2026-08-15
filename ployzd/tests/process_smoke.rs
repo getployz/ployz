@@ -170,7 +170,7 @@ fn describe(path: &Path) -> ployz_core::ContractDescription {
             .into_inner()
             .decode_response()
             .unwrap()
-            .decode_contract_description()
+            .decode::<op::DescribeContract>()
             .unwrap()
             .clone()
     })
@@ -187,7 +187,7 @@ fn reset(path: &Path) {
             .decode_response()
             .unwrap()
     });
-    response.decode_reset_accepted().unwrap();
+    response.decode::<ployz_core::op::Reset>().unwrap();
 }
 
 fn metrics(address: SocketAddr) -> String {

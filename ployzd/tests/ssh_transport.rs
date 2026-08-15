@@ -77,7 +77,7 @@ async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
             .into_inner()
             .decode_response()
             .unwrap()
-            .decode_contract_description()
+            .decode::<op::DescribeContract>()
             .unwrap()
             .machine_id
             .clone();

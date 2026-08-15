@@ -17,9 +17,8 @@ pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
         let caddyfile = client
             .call::<op::GetCaddyConfig>(GetCaddyConfigRequest {}, target.as_ref())
             .await
-            .map(|config| config.caddyfile)
             .map_err(|error| error.to_string())?;
-        print!("{caddyfile}");
+        print!("{}", caddyfile.caddyfile);
         Ok(())
     })
 }

@@ -15,7 +15,7 @@ use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume,
     DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineName, MachineObservation,
     MachineRpc, MachineRpcServer, MachineSubnet, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
     WireGuardPublicKey, op,
 };
 use serde_json::Value;
@@ -156,7 +156,7 @@ impl MachineRpc for DiscoveryService {
             return Err(Status::invalid_argument("expected discovery request"));
         }
         Ok(Response::new(
-            RpcResponse::contract_description(self.description.clone())
+            RpcResponse::from(self.description.clone())
                 .encode()
                 .unwrap(),
         ))
@@ -234,21 +234,23 @@ impl MachineRpc for DiscoveryService {
         let request = request.into_inner().decode_request().unwrap();
         assert!(matches!(request.body, RpcRequestBody::ListVolumes(_)));
         let response = if machine_id.as_str().starts_with('b') {
-            RpcResponse::error(RpcError {
+            RpcResponse::from(RpcError {
                 code: RpcErrorCode::Unavailable,
                 message: "target unavailable".into(),
                 details: Value::Null,
             })
         } else {
-            RpcResponse::volume_list(vec![DockerVolume {
-                id: DockerVolumeId {
-                    machine_id,
-                    name: DockerVolumeName::parse("data").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-                labels: Default::default(),
-            }])
+            RpcResponse::from(VolumeList {
+                volumes: vec![DockerVolume {
+                    id: DockerVolumeId {
+                        machine_id,
+                        name: DockerVolumeName::parse("data").unwrap(),
+                    },
+                    driver: "local".into(),
+                    options: Default::default(),
+                    labels: Default::default(),
+                }],
+            })
         };
         Ok(Response::new(response.encode().unwrap()))
     }

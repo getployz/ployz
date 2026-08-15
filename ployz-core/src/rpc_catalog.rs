@@ -1,6 +1,6 @@
 /// The RPC catalog: one row per Machine RPC, read by every consumer that must stay
-/// in step with it — the tonic service (build.rs), the request enum, the client
-/// dispatch and typed `call`, and the daemon's request extractors.
+/// in step with it — the tonic service (build.rs), the request enum, typed `call`,
+/// and request extractors on `op` and `Rpc`.
 ///
 /// Columns, in order:
 ///
@@ -8,9 +8,9 @@
 /// Variant: (method, route, request, command, response)
 /// ```
 ///
-/// `response` is the response the RPC resolves to, so the request/response pairing is
-/// checked by the compiler rather than restated at each call site; several requests may
-/// share one response. Streaming rows have no single response and name none.
+/// `request` is the caller-facing payload (`Rpc::Request`). `response` is the
+/// envelope that RPC resolves to (`Rpc::Response`). Several requests may share
+/// one envelope. Streaming rows have no single response and name none.
 ///
 /// `package` is the gRPC service package. It is stated here rather than at each consumer
 /// so a service-version bump is one edit (plus the `include!` path in `rpc.rs`, which the
@@ -25,7 +25,7 @@ macro_rules! rpc_catalog {
             package "ployz.rpc.v1"
             unary {
                 DescribeContract: (describe_contract, "DescribeContract", DescribeContractRequest, "describe_contract", ContractDescription),
-                Inspect: (inspect, "Inspect", InspectRequest, "inspect", Box<MachineDetails>),
+                Inspect: (inspect, "Inspect", InspectRequest, "inspect", MachineDetails),
                 MachineToken: (machine_token, "MachineToken", MachineTokenRequest, "machine_token", MachineToken),
                 Initialize: (initialize, "Initialize", InitializeRequest, "initialize", Initialized),
                 Register: (register, "Register", RegisterRequest, "register", Registered),
@@ -36,8 +36,8 @@ macro_rules! rpc_catalog {
                 RemoveMachine: (remove_machine, "RemoveMachine", RemoveMachineRequest, "remove_machine", MachineRemoved),
                 InspectWireguard: (inspect_wireguard, "InspectWireguard", InspectWireGuardRequest, "inspect_wireguard", WireGuardInspected),
                 ListContainers: (list_containers, "ListContainers", ListContainersRequest, "list_containers", ContainerList),
-                InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", Box<ContainerDetails>),
-                CreateContainer: (create_container, "CreateContainer", Box<CreateContainerRequest>, "create_container", ContainerCreated),
+                InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", ContainerDetails),
+                CreateContainer: (create_container, "CreateContainer", CreateContainerRequest, "create_container", ContainerCreated),
                 StartContainer: (start_container, "StartContainer", StartContainerRequest, "start_container", ContainerChanged),
                 StopContainer: (stop_container, "StopContainer", StopContainerRequest, "stop_container", ContainerChanged),
                 RemoveContainer: (remove_container, "RemoveContainer", RemoveContainerRequest, "remove_container", ContainerChanged),

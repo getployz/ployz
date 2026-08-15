@@ -11,9 +11,9 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
-    DockerVolume, LocalMachinePhase, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, PublicIpDiscovery,
-    ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
+    LocalMachinePhase, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
+    MachineRuntime, MachineToken, MachineUpdate, PublicIpDiscovery, ResolvedServiceSpec,
+    RttObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -128,6 +128,11 @@ pub enum CodecError {
     UnsupportedProtocolMajor { requested: u32, supported: u32 },
     #[error("expected response kind {expected:?}, received {actual:?}")]
     UnexpectedResponse {
+        expected: &'static str,
+        actual: String,
+    },
+    #[error("expected request command {expected:?}, received {actual:?}")]
+    UnexpectedRequest {
         expected: &'static str,
         actual: String,
     },
@@ -384,7 +389,21 @@ macro_rules! define_request_body {
                 const PATH: &'static str = concat!("/", $package, ".MachineRpc/", $unary_route);
 
                 fn into_request(request: Self::Request) -> RpcRequest {
-                    RpcRequestBody::$unary_variant(request).into()
+                    op::$unary_variant::into_request(request)
+                }
+
+                fn from_request_body(body: RpcRequestBody) -> Result<Self::Request, CodecError> {
+                    match body {
+                        RpcRequestBody::$unary_variant(request) => Ok(request),
+                        other => Err(CodecError::UnexpectedRequest {
+                            expected: $unary_command,
+                            actual: other.command().to_owned(),
+                        }),
+                    }
+                }
+
+                fn from_body(body: RpcResponseBody) -> Result<Self::Response, CodecError> {
+                    <$unary_response as FromResponseBody>::from_body(body)
                 }
             }
         )+
@@ -393,22 +412,50 @@ macro_rules! define_request_body {
                 pub fn into_request(request: $stream_request) -> RpcRequest {
                     RpcRequestBody::$stream_variant(request).into()
                 }
+
+                pub fn from_request_body(
+                    body: RpcRequestBody,
+                ) -> Result<$stream_request, CodecError> {
+                    match body {
+                        RpcRequestBody::$stream_variant(request) => Ok(request),
+                        other => Err(CodecError::UnexpectedRequest {
+                            expected: $stream_command,
+                            actual: other.command().to_owned(),
+                        }),
+                    }
+                }
             }
         )+
+
+        impl RpcRequestBody {
+            #[must_use]
+            pub fn command(&self) -> &'static str {
+                match self {
+                    $(Self::$unary_variant(_) => $unary_command,)+
+                    $(Self::$stream_variant(_) => $stream_command,)+
+                }
+            }
+        }
     };
 }
 
 /// One unary Machine RPC, generated from the catalog. The associated `Response` is the
-/// response that RPC resolves to, so a request paired with the wrong response is a
+/// envelope that RPC resolves to, so a request paired with the wrong response is a
 /// compile error rather than a runtime `UnexpectedResponse`.
 pub trait Rpc {
     type Request;
-    type Response: ResponsePayload;
+    type Response;
 
     /// The fully qualified gRPC path this RPC is dispatched on.
     const PATH: &'static str;
 
     fn into_request(request: Self::Request) -> RpcRequest;
+
+    fn from_request_body(body: RpcRequestBody) -> Result<Self::Request, CodecError>;
+
+    /// Lift this RPC's envelope out of a decoded body. Prefer [`RpcResponse::decode`],
+    /// which checks the protocol major first.
+    fn from_body(body: RpcResponseBody) -> Result<Self::Response, CodecError>;
 }
 
 crate::rpc_catalog!(define_request_body);
@@ -559,13 +606,14 @@ pub struct WireGuardInspected {
     pub device: WireGuardDevice,
 }
 
-/// The single response catalog: one row declares a response's wire kind, its typed
-/// payload, and the accessor callers use to project it. Adding a response is one row.
+/// Envelope identity: one row is the wire kind and the payload stored in that
+/// variant. Callers lift with [`RpcResponse::decode`] and read fields on the envelope.
+trait FromResponseBody: Sized {
+    fn from_body(body: RpcResponseBody) -> Result<Self, CodecError>;
+}
+
 macro_rules! define_responses {
-    ($(
-        $variant:ident($payload:ty) => $wire:literal,
-            $accessor:ident($binding:pat_param) -> $projection:ty = $value:expr;
-    )+) => {
+    ($($variant:ident($payload:ty) => $wire:literal;)+) => {
         crate::value::open_string_enum!(ResponseKind, Unknown {
             $($variant => $wire),+
         });
@@ -601,93 +649,54 @@ macro_rules! define_responses {
             }
         }
 
-        impl RpcResponse {
-            $(
-                pub fn $accessor(&self) -> Result<$projection, CodecError> {
-                    validate_protocol_major(self.protocol_major)?;
-                    if let RpcResponseBody::$variant($binding) = &self.body {
-                        Ok($value)
-                    } else {
-                        Err(self.unexpected($wire))
+        $(
+            impl FromResponseBody for $payload {
+                fn from_body(body: RpcResponseBody) -> Result<Self, CodecError> {
+                    match body {
+                        RpcResponseBody::$variant(payload) => Ok(payload),
+                        other => Err(CodecError::UnexpectedResponse {
+                            expected: $wire,
+                            actual: other.kind().as_str().to_owned(),
+                        }),
                     }
                 }
-            )+
-        }
+            }
 
-        $(
-            impl ResponsePayload for $payload {
-                fn from_body(body: RpcResponseBody) -> Result<Self, CodecError> {
-                    if let RpcResponseBody::$variant(payload) = body {
-                        Ok(payload)
-                    } else {
-                        Err(CodecError::UnexpectedResponse {
-                            expected: $wire,
-                            actual: body.kind().as_str().to_owned(),
-                        })
-                    }
+            impl From<$payload> for RpcResponse {
+                fn from(payload: $payload) -> Self {
+                    RpcResponseBody::$variant(payload).into()
                 }
             }
         )+
     };
 }
 
-/// A typed response payload that can be lifted out of an [`RpcResponseBody`].
-/// Implemented for every row of the response catalog.
-pub trait ResponsePayload: Sized {
-    fn from_body(body: RpcResponseBody) -> Result<Self, CodecError>;
-}
-
 define_responses! {
-    ContractDescription(ContractDescription) => "contract_description",
-        decode_contract_description(description) -> &ContractDescription = description;
-    MachineDetails(Box<MachineDetails>) => "machine_details",
-        decode_machine_details(details) -> &MachineDetails = details;
-    MachineToken(MachineToken) => "machine_token",
-        decode_machine_token(token) -> &MachineToken = token;
-    Initialized(Initialized) => "initialized",
-        decode_initialized(initialized) -> &Machine = &initialized.machine;
-    Registered(Registered) => "registered",
-        decode_registered(registered) -> &Registered = registered;
-    JoinAccepted(JoinAccepted) => "join_accepted",
-        decode_join_accepted(_) -> () = ();
-    MachineList(MachineList) => "machine_list",
-        decode_machine_list(list) -> &[MachineObservation] = &list.machines;
-    ContainerList(ContainerList) => "container_list",
-        decode_container_list(list) -> &[ContainerObservation] = &list.containers;
-    ContainerDetails(Box<ContainerDetails>) => "container_details",
-        decode_container_details(details) -> &ContainerObservation = &details.container;
-    ContainerCreated(ContainerCreated) => "container_created",
-        decode_container_created(created) -> &ContainerCreated = created;
-    ContainerChanged(ContainerChanged) => "container_changed",
-        decode_container_changed(changed) -> &ContainerId = &changed.container_id;
-    VolumeCreated(VolumeCreated) => "volume_created",
-        decode_volume_created(created) -> &DockerVolume = &created.volume;
-    VolumeList(VolumeList) => "volume_list",
-        decode_volume_list(list) -> &[DockerVolume] = &list.volumes;
-    VolumeDetails(VolumeDetails) => "volume_details",
-        decode_volume_details(details) -> &DockerVolume = &details.volume;
-    VolumeRemoved(VolumeRemoved) => "volume_removed",
-        decode_volume_removed(_) -> () = ();
-    MachineImages(MachineImages) => "machine_images",
-        decode_machine_images(images) -> &MachineImages = images;
-    CaddyConfig(CaddyConfig) => "caddy_config",
-        decode_caddy_config(config) -> &str = &config.caddyfile;
-    Domain(Domain) => "domain",
-        decode_domain(domain) -> &str = &domain.name;
-    DomainRecords(DomainRecords) => "domain_records",
-        decode_domain_records(records) -> Vec<DnsRecord> = records.records.clone();
-    MachineUpdated(MachineUpdated) => "machine_updated",
-        decode_machine_updated(updated) -> &Machine = &updated.machine;
-    LocalMachineRemoved(LocalMachineRemoved) => "local_machine_removed",
-        decode_local_machine_removed(removed) -> &LocalMachineRemoved = removed;
-    MachineRemoved(MachineRemoved) => "machine_removed",
-        decode_machine_removed(_) -> () = ();
-    WireGuardInspected(WireGuardInspected) => "wireguard_inspected",
-        decode_wireguard_inspected(inspected) -> &WireGuardDevice = &inspected.device;
-    ResetAccepted(ResetAccepted) => "reset_accepted",
-        decode_reset_accepted(_) -> () = ();
-    Error(RpcError) => "error",
-        decode_error(error) -> &RpcError = error;
+    ContractDescription(ContractDescription) => "contract_description";
+    MachineDetails(MachineDetails) => "machine_details";
+    MachineToken(MachineToken) => "machine_token";
+    Initialized(Initialized) => "initialized";
+    Registered(Registered) => "registered";
+    JoinAccepted(JoinAccepted) => "join_accepted";
+    MachineList(MachineList) => "machine_list";
+    ContainerList(ContainerList) => "container_list";
+    ContainerDetails(ContainerDetails) => "container_details";
+    ContainerCreated(ContainerCreated) => "container_created";
+    ContainerChanged(ContainerChanged) => "container_changed";
+    VolumeCreated(VolumeCreated) => "volume_created";
+    VolumeList(VolumeList) => "volume_list";
+    VolumeDetails(VolumeDetails) => "volume_details";
+    VolumeRemoved(VolumeRemoved) => "volume_removed";
+    MachineImages(MachineImages) => "machine_images";
+    CaddyConfig(CaddyConfig) => "caddy_config";
+    Domain(Domain) => "domain";
+    DomainRecords(DomainRecords) => "domain_records";
+    MachineUpdated(MachineUpdated) => "machine_updated";
+    LocalMachineRemoved(LocalMachineRemoved) => "local_machine_removed";
+    MachineRemoved(MachineRemoved) => "machine_removed";
+    WireGuardInspected(WireGuardInspected) => "wireguard_inspected";
+    ResetAccepted(ResetAccepted) => "reset_accepted";
+    Error(RpcError) => "error";
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -708,156 +717,18 @@ impl From<RpcResponseBody> for RpcResponse {
 
 impl RpcResponse {
     #[must_use]
-    pub fn contract_description(description: ContractDescription) -> Self {
-        RpcResponseBody::ContractDescription(description).into()
-    }
-
-    #[must_use]
-    pub fn error(error: RpcError) -> Self {
-        RpcResponseBody::Error(error).into()
-    }
-
-    #[must_use]
-    pub fn reset_accepted() -> Self {
-        RpcResponseBody::ResetAccepted(ResetAccepted {}).into()
-    }
-
-    #[must_use]
-    pub fn machine_details(details: MachineDetails) -> Self {
-        RpcResponseBody::MachineDetails(Box::new(details)).into()
-    }
-
-    #[must_use]
-    pub fn machine_token(token: MachineToken) -> Self {
-        RpcResponseBody::MachineToken(token).into()
-    }
-
-    #[must_use]
-    pub fn initialized(machine: Machine) -> Self {
-        RpcResponseBody::Initialized(Initialized { machine }).into()
-    }
-
-    #[must_use]
-    pub fn registered(registered: Registered) -> Self {
-        RpcResponseBody::Registered(registered).into()
-    }
-
-    #[must_use]
-    pub fn join_accepted() -> Self {
-        RpcResponseBody::JoinAccepted(JoinAccepted {}).into()
-    }
-
-    #[must_use]
-    pub fn machine_list(machines: Vec<MachineObservation>) -> Self {
-        RpcResponseBody::MachineList(MachineList { machines }).into()
-    }
-
-    #[must_use]
-    pub fn container_list(containers: Vec<ContainerObservation>) -> Self {
-        RpcResponseBody::ContainerList(ContainerList { containers }).into()
-    }
-
-    #[must_use]
-    pub fn volume_created(volume: DockerVolume) -> Self {
-        RpcResponseBody::VolumeCreated(VolumeCreated { volume }).into()
-    }
-
-    #[must_use]
-    pub fn machine_updated(machine: Machine) -> Self {
-        RpcResponseBody::MachineUpdated(MachineUpdated { machine }).into()
-    }
-
-    #[must_use]
-    pub fn container_details(container: ContainerObservation) -> Self {
-        RpcResponseBody::ContainerDetails(Box::new(ContainerDetails { container })).into()
-    }
-
-    #[must_use]
-    pub fn volume_list(volumes: Vec<DockerVolume>) -> Self {
-        RpcResponseBody::VolumeList(VolumeList { volumes }).into()
-    }
-
-    #[must_use]
-    pub fn local_machine_removed(removed: LocalMachineRemoved) -> Self {
-        RpcResponseBody::LocalMachineRemoved(removed).into()
-    }
-
-    #[must_use]
-    pub fn container_created(created: ContainerCreated) -> Self {
-        RpcResponseBody::ContainerCreated(created).into()
-    }
-
-    #[must_use]
-    pub fn volume_details(volume: DockerVolume) -> Self {
-        RpcResponseBody::VolumeDetails(VolumeDetails { volume }).into()
-    }
-
-    #[must_use]
-    pub fn machine_removed() -> Self {
-        RpcResponseBody::MachineRemoved(MachineRemoved {}).into()
-    }
-
-    #[must_use]
-    pub fn container_changed(container_id: ContainerId) -> Self {
-        RpcResponseBody::ContainerChanged(ContainerChanged { container_id }).into()
-    }
-
-    #[must_use]
-    pub fn volume_removed() -> Self {
-        RpcResponseBody::VolumeRemoved(VolumeRemoved {}).into()
-    }
-
-    #[must_use]
-    pub fn machine_images(images: MachineImages) -> Self {
-        RpcResponseBody::MachineImages(images).into()
-    }
-
-    #[must_use]
-    pub fn caddy_config(caddyfile: String) -> Self {
-        RpcResponseBody::CaddyConfig(CaddyConfig { caddyfile }).into()
-    }
-
-    #[must_use]
-    pub fn domain(name: String) -> Self {
-        Self {
-            protocol_major: PROTOCOL_MAJOR,
-            body: RpcResponseBody::Domain(Domain { name }),
-        }
-    }
-
-    #[must_use]
-    pub fn domain_records(records: Vec<DnsRecord>) -> Self {
-        Self {
-            protocol_major: PROTOCOL_MAJOR,
-            body: RpcResponseBody::DomainRecords(DomainRecords { records }),
-        }
-    }
-
-    #[must_use]
-    pub fn wireguard_inspected(device: WireGuardDevice) -> Self {
-        RpcResponseBody::WireGuardInspected(WireGuardInspected { device }).into()
-    }
-
-    #[must_use]
     pub fn kind(&self) -> ResponseKind {
         self.body.kind()
-    }
-
-    fn unexpected(&self, expected: &'static str) -> CodecError {
-        CodecError::UnexpectedResponse {
-            expected,
-            actual: self.kind().as_str().to_owned(),
-        }
     }
 
     pub fn encode(&self) -> Result<OpaquePayload, CodecError> {
         OpaquePayload::from_json(self)
     }
 
-    /// Lift the typed payload out of this response, validating the protocol major first.
-    pub fn decode<P: ResponsePayload>(self) -> Result<P, CodecError> {
+    /// Lift this RPC's envelope out of the response, validating the protocol major first.
+    pub fn decode<T: Rpc>(self) -> Result<T::Response, CodecError> {
         validate_protocol_major(self.protocol_major)?;
-        P::from_body(self.body)
+        T::from_body(self.body)
     }
 }
 
