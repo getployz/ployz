@@ -355,7 +355,6 @@ pub fn rtt_statistics(samples_ms: &[f64]) -> Option<RttStatistics> {
         median_ns: (median * 1_000_000.0) as u64,
         population_stddev_ns: (variance.sqrt() * 1_000_000.0) as u64,
     })
-    .filter(|statistics| statistics.median_ns > 0)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -114,14 +114,17 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
 }
 
 #[must_use]
-fn format_measured_rtt(median_ns: u64) -> Option<String> {
-    (median_ns > 0).then(|| format!("{:?}", Duration::from_nanos(median_ns)))
+fn format_measured_rtt(median_ns: u64) -> String {
+    if median_ns == 0 {
+        "<1ms".into()
+    } else {
+        format!("{:?}", Duration::from_nanos(median_ns))
+    }
 }
 
 #[must_use]
 fn wg_rtt_line(rtt: Option<&RttStatistics>) -> Option<String> {
-    rtt.and_then(|statistics| format_measured_rtt(statistics.median_ns))
-        .map(|value| format!("  rtt: {value}"))
+    rtt.map(|statistics| format!("  rtt: {}", format_measured_rtt(statistics.median_ns)))
 }
 
 #[must_use]
@@ -129,18 +132,15 @@ fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, String>) -> Stri
     let mut table = String::from("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
     for success in &result.successes {
         for observation in &success.value {
-            let Some(median) = format_measured_rtt(observation.statistics.median_ns) else {
-                continue;
-            };
             let target = observation
                 .machine
                 .as_ref()
                 .map_or(observation.peer_id.as_str(), |machine| machine.id.as_str());
-            let stddev = format_measured_rtt(observation.statistics.population_stddev_ns)
-                .unwrap_or_default();
             table.push_str(&format!(
-                "{}\t{target}\t{median}\t{stddev}\n",
-                success.machine_id
+                "{}\t{target}\t{}\t{}\n",
+                success.machine_id,
+                format_measured_rtt(observation.statistics.median_ns),
+                format_measured_rtt(observation.statistics.population_stddev_ns),
             ));
         }
     }
@@ -253,32 +253,37 @@ mod tests {
     use ployz_core::{MachineId, MachineIdentity, MachineName};
 
     #[test]
-    fn missing_or_zero_rtt_is_omitted_instead_of_printing_0ns() {
-        assert_eq!(format_measured_rtt(0), None);
+    fn missing_rtt_is_omitted_and_sub_millisecond_samples_are_not_printed_as_0ns() {
         assert_eq!(wg_rtt_line(None), None);
+        assert_eq!(format_measured_rtt(0), "<1ms");
         assert_eq!(
             wg_rtt_line(Some(&RttStatistics {
                 median_ns: 0,
                 population_stddev_ns: 0,
-            })),
-            None
+            }))
+            .as_deref(),
+            Some("  rtt: <1ms")
         );
 
+        let source = machine_id('1');
         let table = format_rtt_table(&PartialResult {
             successes: vec![MachineSuccess {
-                machine_id: machine_id('1'),
+                machine_id: source.clone(),
                 value: vec![rtt_observation("peer-zero", 0, 0)],
             }],
             failures: Vec::new(),
             omissions: Vec::new(),
         });
-        assert_eq!(table, "SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
+        assert_eq!(
+            table,
+            format!("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\tpeer-zero\t<1ms\t<1ms\n")
+        );
         assert!(!table.contains("0ns"));
     }
 
     #[test]
     fn measured_rtt_prints_the_same_human_units_for_machine_rtt_and_wg_show() {
-        assert_eq!(format_measured_rtt(1_500_000).as_deref(), Some("1.5ms"));
+        assert_eq!(format_measured_rtt(1_500_000), "1.5ms");
         let statistics = RttStatistics {
             median_ns: 1_500_000,
             population_stddev_ns: 200_000,

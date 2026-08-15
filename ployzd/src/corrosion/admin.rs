@@ -200,11 +200,14 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(
-            decode_member_rtt(json!({"id": "peer-1", "state": {"addr": address}, "rtts": [0.0]}))
-                .unwrap()
-                .is_none()
-        );
+        let sub_ms = decode_member_rtt(json!({
+            "id": "peer-1",
+            "state": {"addr": address},
+            "rtts": [0.0]
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(sub_ms.statistics.median_ns, 0);
         assert!(
             decode_member_rtt(json!({"id": "peer-1", "state": {"addr": address}, "rtts": ["bad"]}))
                 .is_err()

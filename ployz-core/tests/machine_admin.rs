@@ -136,9 +136,22 @@ fn rtt_statistics_use_median_and_population_standard_deviation() {
 }
 
 #[test]
-fn rtt_statistics_treat_zero_samples_as_absent() {
-    assert_eq!(rtt_statistics(&[0.0]), None);
-    assert_eq!(rtt_statistics(&[0.0, 0.0]), None);
+fn rtt_statistics_keep_sub_millisecond_samples() {
+    assert_eq!(rtt_statistics(&[]), None);
+    assert_eq!(
+        rtt_statistics(&[0.0]),
+        Some(RttStatistics {
+            median_ns: 0,
+            population_stddev_ns: 0,
+        })
+    );
+    assert_eq!(
+        rtt_statistics(&[0.0, 0.0]),
+        Some(RttStatistics {
+            median_ns: 0,
+            population_stddev_ns: 0,
+        })
+    );
 }
 
 #[test]
