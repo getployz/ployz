@@ -20,6 +20,22 @@ use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 
 mod proxy;
 
+#[must_use]
+pub fn with_default_tag(image: &str) -> String {
+    if has_explicit_tag(image) {
+        image.to_owned()
+    } else {
+        format!("{image}:latest")
+    }
+}
+
+fn has_explicit_tag(image: &str) -> bool {
+    image
+        .rsplit('/')
+        .next()
+        .is_some_and(|component| component.contains(':') || component.contains('@'))
+}
+
 #[derive(Debug, Error)]
 pub enum PushError {
     #[error("invalid image reference '{reference}': {message}")]
@@ -455,6 +471,30 @@ mod tests {
             membership: MembershipObservation::Up,
             selected_endpoint: None,
         }
+    }
+
+    #[test]
+    fn untagged_image_gains_latest_tag() {
+        assert_eq!(with_default_tag("alpine"), "alpine:latest");
+    }
+
+    #[test]
+    fn tagged_image_stays_as_written() {
+        assert_eq!(with_default_tag("alpine:3.20"), "alpine:3.20");
+    }
+
+    #[test]
+    fn digest_image_stays_as_written() {
+        let digest = format!("alpine@sha256:{}", "0".repeat(64));
+        assert_eq!(with_default_tag(&digest), digest);
+    }
+
+    #[test]
+    fn registry_host_port_gains_latest_on_the_name() {
+        assert_eq!(
+            with_default_tag("localhost:5000/foo"),
+            "localhost:5000/foo:latest"
+        );
     }
 
     #[test]

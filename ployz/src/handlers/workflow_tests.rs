@@ -178,6 +178,24 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
 }
 
 #[test]
+fn run_pulls_untagged_images_as_latest() {
+    let image = |image: &str| {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "run", "--name", "api", image, "sleep", "30"])
+            .unwrap();
+        run_spec(super::leaf_matches(&matches))
+            .unwrap()
+            .container
+            .image
+    };
+    assert_eq!(image("alpine"), "alpine:latest");
+    assert_eq!(image("alpine:3.20"), "alpine:3.20");
+    let digest = format!("alpine@sha256:{}", "0".repeat(64));
+    assert_eq!(image(&digest), digest);
+    assert_eq!(image("localhost:5000/foo"), "localhost:5000/foo:latest");
+}
+
+#[test]
 fn resolved_scale_input_changes_only_replicas() {
     let requested: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
         "name": "api",
