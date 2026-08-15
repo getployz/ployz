@@ -35,6 +35,17 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn is_dns_label(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 63
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
 macro_rules! validated_string_newtype {
     ($(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
         $(#[$attribute])*
@@ -165,9 +176,13 @@ macro_rules! open_string_enum {
 
 pub(crate) use open_string_enum;
 
-validated_string_newtype!(MachineName, "Machine Name", "a non-empty string", |value| {
-    !value.is_empty()
-});
+validated_string_newtype!(
+    /// A DNS-label Machine selector. It is not a unique identity.
+    MachineName,
+    "Machine Name",
+    "a 1-63 character lowercase DNS label",
+    |value| is_dns_label(value)
+);
 validated_string_newtype!(
     DockerVolumeName,
     "Docker Volume name",
@@ -219,16 +234,7 @@ validated_string_newtype!(
     ServiceName,
     "Service Name",
     "a 1-63 character lowercase DNS label",
-    |value| {
-        let bytes = value.as_bytes();
-        !bytes.is_empty()
-            && bytes.len() <= 63
-            && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-            && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-            && bytes
-                .iter()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
-    }
+    |value| is_dns_label(value)
 );
 
 /// One Machine's optimistic container subnet candidate.

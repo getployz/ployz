@@ -426,7 +426,7 @@ fn machine_name(
         None if token.runtime.hostname.is_empty() => {
             Err("Machine name is required because the remote hostname is empty".into())
         }
-        None => MachineName::parse(token.runtime.hostname.clone())
+        None => MachineName::parse(token.runtime.hostname.to_ascii_lowercase())
             .map_err(|error| error.to_string().into()),
     }
 }
@@ -553,6 +553,43 @@ mod tests {
         for destination in ["tcp://127.0.0.1:51000", "unix:///tmp/ployz.sock"] {
             let connection = configure_ssh_key(destination.parse().unwrap(), Some(key)).unwrap();
             assert_eq!(connection.ssh_key_file(), None, "destination {destination}");
+        }
+    }
+
+    #[test]
+    fn init_derives_a_machine_name_by_lowercasing_a_dns_label_hostname() {
+        assert_eq!(
+            machine_name(None, &token_with_hostname("Vultr1"))
+                .unwrap()
+                .as_str(),
+            "vultr1"
+        );
+        assert_eq!(
+            machine_name(None, &token_with_hostname("machine-a"))
+                .unwrap()
+                .as_str(),
+            "machine-a"
+        );
+    }
+
+    #[test]
+    fn init_requires_a_name_when_the_remote_hostname_is_empty() {
+        let token = token_with_hostname("");
+        assert_eq!(
+            machine_name(None, &token).unwrap_err().to_string(),
+            "Machine name is required because the remote hostname is empty"
+        );
+    }
+
+    fn token_with_hostname(hostname: &str) -> MachineToken {
+        MachineToken {
+            public_key: ployz_core::WireGuardPublicKey([0; 32]),
+            public_ip: None,
+            advertised_endpoints: Vec::new(),
+            runtime: ployz_core::MachineRuntime {
+                hostname: hostname.into(),
+                ..Default::default()
+            },
         }
     }
 }

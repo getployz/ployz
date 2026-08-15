@@ -85,6 +85,35 @@ fn identities_validate_and_serialize_as_their_wire_strings() {
 }
 
 #[test]
+fn machine_name_rejects_spaces() {
+    assert_eq!(
+        MachineName::parse("BAD NAME").unwrap_err().to_string(),
+        "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
+    );
+}
+
+#[test]
+fn machine_name_rejects_uppercase_and_empty_strings() {
+    assert_eq!(
+        MachineName::parse("Vultr1").unwrap_err().to_string(),
+        "invalid Machine Name \"Vultr1\": a 1-63 character lowercase DNS label"
+    );
+    assert_eq!(
+        MachineName::parse("").unwrap_err().to_string(),
+        "invalid Machine Name \"\": a 1-63 character lowercase DNS label"
+    );
+}
+
+#[test]
+fn machine_name_accepts_lowercase_dns_labels() {
+    assert_eq!(MachineName::parse("vultr1").unwrap().as_str(), "vultr1");
+    assert_eq!(
+        MachineName::parse("machine-a").unwrap().as_str(),
+        "machine-a"
+    );
+}
+
+#[test]
 fn duplicate_name_matches_remain_ambiguous() {
     let first = ServiceId::parse("11111111111111111111111111111111").unwrap();
     let second = ServiceId::parse("22222222222222222222222222222222").unwrap();
