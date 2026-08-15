@@ -250,10 +250,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         .connections
         .push(connection);
     config.save().map_err(|error| error.to_string())?;
-    println!(
-        "{}",
-        MachineAddOutcome::after_saved(&assigned, None).added_line
-    );
+    println!("{}", added_machine_line(&assigned));
 
     let caddy = if let Some((image, machines, caddy_config)) = caddy_settings {
         Some(
@@ -263,16 +260,27 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                     wait_machine_up(&mut entry, &assigned.id).await?;
                     // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
                     let requested = crate::caddy::service_spec(image, machines, caddy_config);
-                    super::super::caddy::deploy_and_refresh_hosted_dns(&mut entry, &requested).await
+                    crate::handlers::workflow::deploy_requested(&mut entry, &requested).await
                 })
                 .map_err(|error| error.to_string()),
         )
     } else {
         None
     };
-    let outcome = MachineAddOutcome::after_saved(&assigned, caddy);
+    let outcome = MachineAddOutcome::after_saved(caddy);
     if let Some(warning) = &outcome.caddy_warning {
         eprintln!("{warning}");
+    }
+    if outcome.refresh_hosted_dns
+        && let Err(error) = runtime()?.block_on(async {
+            let mut entry = options.connect().await?;
+            crate::dns::update_records_if_reserved(&mut entry)
+                .await
+                .map_err(|error| Error::from(error.to_string()))
+        })
+    {
+        eprintln!("{}", caddy_follow_on_warning(&error.to_string()));
+        return Err(error);
     }
     match outcome.follow_on_error {
         Some(error) => Err(error.into()),
@@ -531,31 +539,35 @@ fn cluster_membership_conflict(
 }
 
 struct MachineAddOutcome {
-    added_line: String,
     caddy_warning: Option<String>,
-    #[cfg_attr(not(test), allow(dead_code))]
     refresh_hosted_dns: bool,
     follow_on_error: Option<String>,
 }
 
 impl MachineAddOutcome {
-    fn after_saved(assigned: &Machine, caddy: Option<Result<(), String>>) -> Self {
-        Self {
-            added_line: format!("Added Machine {} ({})", assigned.name, assigned.id),
-            caddy_warning: match &caddy {
-                Some(Err(error)) => Some(caddy_follow_on_warning(error)),
-                Some(Ok(())) | None => None,
+    fn after_saved(caddy: Option<Result<(), String>>) -> Self {
+        match caddy {
+            Some(Ok(())) => Self {
+                caddy_warning: None,
+                refresh_hosted_dns: true,
+                follow_on_error: None,
             },
-            refresh_hosted_dns: match &caddy {
-                Some(Ok(())) => true,
-                Some(Err(_)) | None => false,
+            Some(Err(error)) => Self {
+                caddy_warning: Some(caddy_follow_on_warning(&error)),
+                refresh_hosted_dns: false,
+                follow_on_error: Some(error),
             },
-            follow_on_error: match caddy {
-                Some(Err(error)) => Some(error),
-                Some(Ok(())) | None => None,
+            None => Self {
+                caddy_warning: None,
+                refresh_hosted_dns: false,
+                follow_on_error: None,
             },
         }
     }
+}
+
+fn added_machine_line(assigned: &Machine) -> String {
+    format!("Added Machine {} ({})", assigned.name, assigned.id)
 }
 
 fn caddy_follow_on_warning(error: &str) -> String {
@@ -624,10 +636,9 @@ mod tests {
     #[test]
     fn machine_add_reports_added_when_follow_on_caddy_deploy_fails() {
         let assigned = assigned_machine("edge", 'a');
-        let outcome =
-            MachineAddOutcome::after_saved(&assigned, Some(Err("deploy timed out".into())));
+        let outcome = MachineAddOutcome::after_saved(Some(Err("deploy timed out".into())));
         assert_eq!(
-            outcome.added_line,
+            added_machine_line(&assigned),
             "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
         );
         assert!(outcome.follow_on_error.is_some());
@@ -635,9 +646,7 @@ mod tests {
 
     #[test]
     fn caddy_deploy_failure_after_add_warns_operator_to_run_caddy_deploy() {
-        let assigned = assigned_machine("edge", 'a');
-        let outcome =
-            MachineAddOutcome::after_saved(&assigned, Some(Err("deploy timed out".into())));
+        let outcome = MachineAddOutcome::after_saved(Some(Err("deploy timed out".into())));
         let warning = outcome
             .caddy_warning
             .expect("Caddy Deploy failure must warn the operator");
@@ -654,7 +663,7 @@ mod tests {
     #[test]
     fn successful_add_caddy_deploy_refreshes_hosted_dns() {
         let assigned = assigned_machine("edge", 'a');
-        let outcome = MachineAddOutcome::after_saved(&assigned, Some(Ok(())));
+        let outcome = MachineAddOutcome::after_saved(Some(Ok(())));
         assert!(
             outcome.refresh_hosted_dns,
             "successful Caddy Deploy on add must refresh hosted DNS the same way caddy deploy does"
@@ -662,13 +671,13 @@ mod tests {
         assert!(outcome.caddy_warning.is_none());
         assert!(outcome.follow_on_error.is_none());
         assert_eq!(
-            outcome.added_line,
+            added_machine_line(&assigned),
             "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
         );
 
-        let skipped = MachineAddOutcome::after_saved(&assigned, None);
+        let skipped = MachineAddOutcome::after_saved(None);
         assert!(!skipped.refresh_hosted_dns);
-        let failed = MachineAddOutcome::after_saved(&assigned, Some(Err("boom".into())));
+        let failed = MachineAddOutcome::after_saved(Some(Err("boom".into())));
         assert!(!failed.refresh_hosted_dns);
     }
 

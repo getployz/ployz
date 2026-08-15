@@ -1,9 +1,7 @@
 use std::{fs, path::Path};
 
 use clap::ArgMatches;
-use ployz_core::{GetCaddyConfigRequest, MachineSelector, RequestedServiceSpec, op};
-
-use crate::connect::Client;
+use ployz_core::{GetCaddyConfigRequest, MachineSelector, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 
@@ -45,17 +43,10 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         };
         let requested = crate::caddy::service_spec(image, machines, caddy_config);
         let mut client = connect_client(root, None).await?;
-        deploy_and_refresh_hosted_dns(&mut client, &requested).await
+        super::workflow::deploy_requested(&mut client, &requested).await?;
+        crate::dns::update_records_if_reserved(&mut client)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
     })
-}
-
-pub(super) async fn deploy_and_refresh_hosted_dns(
-    client: &mut Client,
-    requested: &RequestedServiceSpec,
-) -> Result<(), Error> {
-    super::workflow::deploy_requested(client, requested).await?;
-    crate::dns::update_records_if_reserved(client)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(())
 }
