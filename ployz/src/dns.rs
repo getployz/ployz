@@ -69,7 +69,7 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
             container.kind == ContainerKind::ServiceContainer
                 && container.service_name.as_str() == SERVICE_NAME
         })
-        .map(|container| container.machine_id.clone())
+        .map(|container| container.machine_id)
         .collect::<BTreeSet<_>>();
     if caddy_machines.is_empty() {
         return Ok(());
@@ -81,13 +81,10 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
         let details = client
             .call::<op::Inspect>(InspectRequest::default(), Some(&target))
             .await
-            .map_err(|source| Error::Inspect {
-                machine_id: machine_id.clone(),
-                source,
-            })?;
+            .map_err(|source| Error::Inspect { machine_id, source })?;
         let machine = details.machine.ok_or_else(|| Error::Inspect {
             machine_id,
-            source: ConnectError::Attempt("inspect response omitted Machine details".into()),
+            source: ConnectError::MissingMachineDetails,
         })?;
         if machine.public_ip.is_some() {
             machines.push(machine);

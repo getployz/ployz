@@ -1,7 +1,34 @@
-use std::{path::PathBuf, process::Command};
+use std::{io, path::PathBuf, process::Command};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::ArgMatches;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ProvisionError {
+    #[error("ssh+go provisioning is not implemented; use system ssh")]
+    SshGo,
+    #[error("remote machine destination is empty")]
+    EmptyDestination,
+    #[error("remote machine destination is required")]
+    MissingDestination,
+    #[error("run ssh whoami: {0}")]
+    Whoami(#[source] io::Error),
+    #[error("ssh whoami failed: {0}")]
+    WhoamiFailed(String),
+    #[error("ssh whoami returned non-UTF-8 output")]
+    WhoamiUtf8,
+    #[error("ssh whoami returned an empty user")]
+    EmptyUser,
+    #[error("check remote sudo: {0}")]
+    Sudo(#[source] io::Error),
+    #[error("remote user {user} needs passwordless sudo to install Ployz")]
+    SudoRequired { user: String },
+    #[error("run remote Ployz installer: {0}")]
+    Install(#[source] io::Error),
+    #[error("remote Ployz installer exited with {status}")]
+    InstallFailed { status: std::process::ExitStatus },
+}
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
@@ -20,16 +47,16 @@ fn install_command(script: &str, user: &str, version: &str) -> String {
     }
 }
 
-fn ssh_parts(destination: &str) -> Result<(String, Option<String>), String> {
+fn ssh_parts(destination: &str) -> Result<(String, Option<String>), ProvisionError> {
     if destination.starts_with("ssh+go://") {
-        return Err("ssh+go provisioning is not implemented; use system ssh".into());
+        return Err(ProvisionError::SshGo);
     }
     let destination = destination
         .strip_prefix("ssh://")
         .or_else(|| destination.strip_prefix("ssh+cli://"))
         .unwrap_or(destination);
     if destination.is_empty() {
-        return Err("remote machine destination is empty".into());
+        return Err(ProvisionError::EmptyDestination);
     }
     if let Some((host, port)) = destination.rsplit_once(':')
         && !port.is_empty()
@@ -55,10 +82,10 @@ fn ssh_key(matches: &ArgMatches) -> PathBuf {
     )
 }
 
-fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), String> {
+fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError> {
     let destination = matches
         .get_one::<String>("destination")
-        .ok_or_else(|| "remote machine destination is required".to_owned())?;
+        .ok_or(ProvisionError::MissingDestination)?;
     let (destination, port) = ssh_parts(destination)?;
     let mut command = Command::new("ssh");
     command.arg("-i").arg(ssh_key(matches));
@@ -68,24 +95,22 @@ fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), String> {
     Ok((command, destination))
 }
 
-pub fn provision(matches: &ArgMatches) -> Result<(), String> {
+pub fn provision(matches: &ArgMatches) -> Result<(), ProvisionError> {
     let (mut whoami, destination) = ssh_command(matches)?;
     let output = whoami
         .arg(&destination)
         .arg("whoami")
         .output()
-        .map_err(|error| format!("run ssh whoami: {error}"))?;
+        .map_err(ProvisionError::Whoami)?;
     if !output.status.success() {
-        return Err(format!(
-            "ssh whoami failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+        return Err(ProvisionError::WhoamiFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         ));
     }
-    let user = String::from_utf8(output.stdout)
-        .map_err(|_| "ssh whoami returned non-UTF-8 output".to_owned())?;
+    let user = String::from_utf8(output.stdout).map_err(|_| ProvisionError::WhoamiUtf8)?;
     let user = user.trim();
     if user.is_empty() {
-        return Err("ssh whoami returned an empty user".into());
+        return Err(ProvisionError::EmptyUser);
     }
 
     if user != "root" {
@@ -94,11 +119,11 @@ pub fn provision(matches: &ArgMatches) -> Result<(), String> {
             .arg(destination)
             .arg("sudo true")
             .status()
-            .map_err(|error| format!("check remote sudo: {error}"))?;
+            .map_err(ProvisionError::Sudo)?;
         if !status.success() {
-            return Err(format!(
-                "remote user {user} needs passwordless sudo to install Ployz"
-            ));
+            return Err(ProvisionError::SudoRequired {
+                user: user.to_owned(),
+            });
         }
     }
 
@@ -118,11 +143,11 @@ pub fn provision(matches: &ArgMatches) -> Result<(), String> {
         .arg(destination)
         .arg(remote)
         .status()
-        .map_err(|error| format!("run remote Ployz installer: {error}"))?;
+        .map_err(ProvisionError::Install)?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("remote Ployz installer exited with {status}"))
+        Err(ProvisionError::InstallFailed { status })
     }
 }
 

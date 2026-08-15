@@ -24,10 +24,8 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     // EO-011: an explicit non-empty name is required; anonymous Docker Volumes stay unsupported.
     let name = DockerVolumeName::parse(required(matches, "volume-name")?)?;
     let driver = required(matches, "driver")?;
-    let options = parse_assignments(string_values(matches, "opt").iter().map(String::as_str))
-        .map_err(Error::usage)?;
-    let labels = parse_assignments(string_values(matches, "label").iter().map(String::as_str))
-        .map_err(Error::usage)?;
+    let options = parse_assignments(string_values(matches, "opt").iter().map(String::as_str))?;
+    let labels = parse_assignments(string_values(matches, "label").iter().map(String::as_str))?;
     let selector = matches.get_one::<String>("machine").cloned();
     with_client(root, |client| {
         Box::pin(async move {
@@ -235,7 +233,7 @@ fn selected_machines(
     let selected = resolve_machine_selectors(&visible, &selectors)?;
     let mut observations = machines
         .into_iter()
-        .map(|observation| (observation.machine.id.clone(), observation))
+        .map(|observation| (observation.machine.id, observation))
         .collect::<BTreeMap<_, _>>();
     selected
         .into_iter()

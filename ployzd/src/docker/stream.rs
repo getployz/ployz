@@ -16,7 +16,7 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
 use super::{ContainerRuntime, docker_error};
-use crate::logs::{LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space};
+use crate::logs::{JournalError, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space};
 
 impl ContainerRuntime {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
@@ -160,10 +160,10 @@ impl ContainerRuntime {
             origin: LogOrigin::Service {
                 service_id: observation.service_id,
                 service_name: observation.service_name,
-                container_id: observation.container_id.clone(),
+                container_id: observation.container_id,
                 hook: observation.labels.get(super::LABEL_HOOK).cloned(),
             },
-            machine_id: machine_id.clone(),
+            machine_id: *machine_id,
             machine_name: machine_name.clone(),
         };
         let source = self.raw_logs(request.container_id.as_str(), &request.options)?;
@@ -180,7 +180,7 @@ impl ContainerRuntime {
             .map(|entry| {
                 entry
                     .map(parse_log_output)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| JournalError::Docker(error.to_string()))
             });
         Ok(Box::pin(stream))
     }

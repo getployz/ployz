@@ -158,7 +158,7 @@ impl MachineOperations for Client {
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
-        Client::create_container(self, machine_id.clone(), kind, spec.clone()).await
+        Client::create_container(self, *machine_id, kind, spec.clone()).await
     }
 
     async fn start_container(
@@ -168,8 +168,8 @@ impl MachineOperations for Client {
     ) -> Result<(), RpcError> {
         Client::change_container(
             self,
-            machine_id.clone(),
-            container_id.clone(),
+            *machine_id,
+            *container_id,
             ployz_core::ContainerAction::Start,
             None,
             None,
@@ -182,7 +182,7 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerObservation, RpcError> {
-        Client::inspect_container(self, machine_id.clone(), container_id.clone()).await
+        Client::inspect_container(self, *machine_id, *container_id).await
     }
 
     async fn stop_container(
@@ -193,8 +193,8 @@ impl MachineOperations for Client {
     ) -> Result<(), RpcError> {
         Client::change_container(
             self,
-            machine_id.clone(),
-            container_id.clone(),
+            *machine_id,
+            *container_id,
             ployz_core::ContainerAction::Stop,
             None,
             grace_period_seconds,
@@ -207,7 +207,7 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<(), RpcError> {
-        Client::remove_container(self, machine_id.clone(), container_id.clone()).await
+        Client::remove_container(self, *machine_id, *container_id).await
     }
 }
 
@@ -692,7 +692,7 @@ async fn interrupt_hook<C: MachineOperations>(
         HookInterruption::TimedOut => HookFailure::TimedOut { stop_error },
     };
     ExecutionError::Hook {
-        container_id: container_id.clone(),
+        container_id: *container_id,
         failure,
     }
 }
@@ -721,7 +721,7 @@ fn ignore_not_found(result: Result<(), RpcError>) -> Result<(), RpcError> {
 
 fn health_error(container_id: &ContainerId, failure: HealthFailure) -> ExecutionError {
     ExecutionError::Health {
-        container_id: container_id.clone(),
+        container_id: *container_id,
         failure,
     }
 }

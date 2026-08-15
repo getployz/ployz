@@ -24,7 +24,7 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
         assert_eq!(
             observations
                 .iter()
-                .map(|observation| observation.machine.id.clone())
+                .map(|observation| observation.machine.id)
                 .collect::<BTreeSet<_>>(),
             expected
         );
@@ -80,7 +80,7 @@ async fn failed_join_leaves_the_registered_ghost_until_teardown() {
     .await
     .unwrap();
     let mut registered = cluster.register_second().await.unwrap();
-    let ghost = registered.assigned_machine.id.clone();
+    let ghost = registered.assigned_machine.id;
     registered.assigned_machine.public_key = WireGuardPublicKey([0; 32]);
     assert!(
         cluster
@@ -126,7 +126,7 @@ async fn adds_a_third_machine_without_coordination_or_rollback() {
         wait_for(&cluster, entry, Duration::from_secs(60), |machines| {
             machines
                 .iter()
-                .map(|machine| machine.machine.id.clone())
+                .map(|machine| machine.machine.id)
                 .collect::<BTreeSet<_>>()
                 == expected
         })
@@ -344,7 +344,7 @@ async fn updates_removes_and_inspects_machine_network_state() {
     cluster
         .seed_container_row(0, &other_container, &first.id)
         .unwrap();
-    cluster.remove_machine(0, second.id.clone()).await.unwrap();
+    cluster.remove_machine(0, second.id).await.unwrap();
     assert!(
         !cluster
             .replicated_row_exists(0, "machines", second.id.as_str())

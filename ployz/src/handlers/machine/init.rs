@@ -55,7 +55,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches).map_err(Error::usage)?;
+        crate::provisioning::provision(matches)?;
     }
 
     let (machine, connection) = runtime()?.block_on(async {
@@ -86,7 +86,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?
             .machine;
-        let connection = connection.with_machine_id(machine.id.clone());
+        let connection = connection.with_machine_id(machine.id);
         Ok::<_, Error>((machine, connection))
     })?;
 
@@ -112,7 +112,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 println!("Reserved Cluster domain: {domain}");
             }
             if want_caddy {
-                let image = crate::caddy::latest_image().await.map_err(Error::usage)?;
+                let image = crate::caddy::latest_image().await?;
                 let requested = crate::caddy::service_spec(image, Vec::new(), None);
                 crate::deploy::apply_requested(&mut ready, &requested).await?;
                 if want_dns {

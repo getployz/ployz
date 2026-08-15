@@ -8,20 +8,14 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
         let new = container('b');
         let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StartFirst)]);
         let mut steps = vec![
-            created(
-                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-                &new,
-            ),
-            ok(Call::Start(machine.clone(), new.clone())),
-            observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
+            created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Start(machine, new)),
+            observed(Call::Inspect(machine, new), unhealthy()),
         ];
         steps.push(if stop_succeeds {
-            ok(Call::StopWithGrace(machine.clone(), new, 0))
+            ok(Call::StopWithGrace(machine, new, 0))
         } else {
-            failed(
-                Call::StopWithGrace(machine.clone(), new, 0),
-                "stop new failed",
-            )
+            failed(Call::StopWithGrace(machine, new, 0), "stop new failed")
         });
         let client = Scripted::new(steps);
 
@@ -49,12 +43,9 @@ async fn replacement_compensation_tolerates_a_missing_new_container() {
     let mut missing = error("not found");
     missing.code = RpcErrorCode::NotFound;
     let client = Scripted::new(vec![
-        created(
-            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-            &new,
-        ),
-        ok(Call::Start(machine.clone(), new.clone())),
-        observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(Call::Inspect(machine, new), unhealthy()),
         Step(Call::StopWithGrace(machine, new, 0), Reply::Error(missing)),
     ]);
 
@@ -79,11 +70,8 @@ async fn replacement_inspect_failure_runs_no_health_compensation() {
     let new = container('b');
     let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StartFirst)]);
     let client = Scripted::new(vec![
-        created(
-            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-            &new,
-        ),
-        ok(Call::Start(machine.clone(), new.clone())),
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
         failed(Call::Inspect(machine, new), "inspect failed"),
     ]);
 
@@ -112,27 +100,21 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
         let new = container('b');
         let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
         let mut steps = vec![
-            observed(Call::Inspect(machine.clone(), old.clone()), running()),
-            ok(Call::Stop(machine.clone(), old.clone())),
-            created(
-                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-                &new,
-            ),
-            ok(Call::Start(machine.clone(), new.clone())),
-            observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Start(machine, new)),
+            observed(Call::Inspect(machine, new), unhealthy()),
         ];
         steps.push(if stop_succeeds {
-            ok(Call::StopWithGrace(machine.clone(), new, 0))
+            ok(Call::StopWithGrace(machine, new, 0))
         } else {
-            failed(
-                Call::StopWithGrace(machine.clone(), new, 0),
-                "stop new failed",
-            )
+            failed(Call::StopWithGrace(machine, new, 0), "stop new failed")
         });
         steps.push(if restart_succeeds {
-            ok(Call::Start(machine.clone(), old))
+            ok(Call::Start(machine, old))
         } else {
-            failed(Call::Start(machine.clone(), old), "restart old failed")
+            failed(Call::Start(machine, old), "restart old failed")
         });
         let client = Scripted::new(steps);
 
@@ -160,13 +142,10 @@ async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
     let new = container('b');
     let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
     let client = Scripted::new(vec![
-        observed(Call::Inspect(machine.clone(), old), exited(1)),
-        created(
-            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-            &new,
-        ),
-        ok(Call::Start(machine.clone(), new.clone())),
-        observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
+        observed(Call::Inspect(machine, old), exited(1)),
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(Call::Inspect(machine, new), unhealthy()),
         ok(Call::StopWithGrace(machine, new, 0)),
     ]);
 
@@ -196,15 +175,12 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
         let new = container('b');
         let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
         let client = Scripted::new(vec![
-            observed(Call::Inspect(machine.clone(), old.clone()), runtime),
-            ok(Call::Stop(machine.clone(), old.clone())),
-            created(
-                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-                &new,
-            ),
-            ok(Call::Start(machine.clone(), new.clone())),
-            observed(Call::Inspect(machine.clone(), new.clone()), unhealthy()),
-            ok(Call::StopWithGrace(machine.clone(), new, 0)),
+            observed(Call::Inspect(machine, old), runtime),
+            ok(Call::Stop(machine, old)),
+            created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Start(machine, new)),
+            observed(Call::Inspect(machine, new), unhealthy()),
+            ok(Call::StopWithGrace(machine, new, 0)),
             ok(Call::Start(machine, old)),
         ]);
 
@@ -233,17 +209,11 @@ async fn stop_first_tolerates_disappearance_between_inspect_and_stop() {
     let mut missing = error("not found");
     missing.code = RpcErrorCode::NotFound;
     let client = Scripted::new(vec![
-        observed(Call::Inspect(machine.clone(), old.clone()), running()),
-        Step(
-            Call::Stop(machine.clone(), old.clone()),
-            Reply::Error(missing.clone()),
-        ),
-        created(
-            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-            &new,
-        ),
-        ok(Call::Start(machine.clone(), new.clone())),
-        observed(Call::Inspect(machine.clone(), new), healthy()),
+        observed(Call::Inspect(machine, old), running()),
+        Step(Call::Stop(machine, old), Reply::Error(missing.clone())),
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(Call::Inspect(machine, new), healthy()),
         Step(Call::Remove(machine, old), Reply::Error(missing)),
     ]);
 
@@ -265,28 +235,22 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
         let mut steps = Vec::new();
         if order == UpdateOrder::StopFirst {
             steps.push(Step(
-                Call::Inspect(machine.clone(), old.clone()),
+                Call::Inspect(machine, old),
                 Reply::Error(missing.clone()),
             ));
         }
         steps.extend([
-            created(
-                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-                &new,
-            ),
-            ok(Call::Start(machine.clone(), new.clone())),
-            observed(Call::Inspect(machine.clone(), new), healthy()),
+            created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Start(machine, new)),
+            observed(Call::Inspect(machine, new), healthy()),
         ]);
         if order == UpdateOrder::StartFirst {
             steps.push(Step(
-                Call::Stop(machine.clone(), old.clone()),
+                Call::Stop(machine, old),
                 Reply::Error(missing.clone()),
             ));
         }
-        steps.push(Step(
-            Call::Remove(machine.clone(), old),
-            Reply::Error(missing),
-        ));
+        steps.push(Step(Call::Remove(machine, old), Reply::Error(missing)));
         let client = Scripted::new(steps);
 
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -311,20 +275,17 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
         let mut steps = Vec::new();
         if order == UpdateOrder::StopFirst {
             steps.extend([
-                observed(Call::Inspect(machine.clone(), old.clone()), running()),
-                ok(Call::Stop(machine.clone(), old.clone())),
+                observed(Call::Inspect(machine, old), running()),
+                ok(Call::Stop(machine, old)),
             ]);
         }
         steps.extend([
-            created(
-                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-                &new,
-            ),
-            ok(Call::Start(machine.clone(), new.clone())),
-            observed(Call::Inspect(machine.clone(), new), healthy()),
+            created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Start(machine, new)),
+            observed(Call::Inspect(machine, new), healthy()),
         ]);
         if order == UpdateOrder::StartFirst {
-            steps.push(ok(Call::Stop(machine.clone(), old.clone())));
+            steps.push(ok(Call::Stop(machine, old)));
         }
         steps.push(ok(Call::Remove(machine, old)));
         let client = Scripted::new(steps);
@@ -347,20 +308,17 @@ async fn stop_first_create_or_start_failure_runs_no_compensation() {
         let new = container('b');
         let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
         let mut steps = vec![
-            observed(Call::Inspect(machine.clone(), old.clone()), running()),
-            ok(Call::Stop(machine.clone(), old)),
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
         ];
         if start_fails {
             steps.extend([
-                created(
-                    Call::Create(machine.clone(), ContainerKind::ServiceContainer),
-                    &new,
-                ),
-                failed(Call::Start(machine.clone(), new), "start failed"),
+                created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+                failed(Call::Start(machine, new), "start failed"),
             ]);
         } else {
             steps.push(failed(
-                Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+                Call::Create(machine, ContainerKind::ServiceContainer),
                 "create failed",
             ));
         }

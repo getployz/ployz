@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -11,8 +12,8 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FanoutFailure, FramingError, MachineSelector, RpcError, RpcErrorCode,
-    apply_one_target,
+    CodecError, FanoutFailure, FramingError, MachineSelector, RoutingMetadataError, RpcError,
+    RpcErrorCode, apply_one_target,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -48,6 +49,7 @@ pub type BoxProxyStream = Box<dyn ProxyStream>;
 
 // TODO(UT-018, UT-019): a future client-side WireGuard connector must honour
 // cancellation and try each visible Machine; this reconstruction keeps it excluded.
+// Object-safe for `Arc<dyn Connector>` in Client; native async fn is not dyn-safe.
 #[tonic::async_trait]
 pub trait Connector: Send + Sync {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError>;
@@ -106,7 +108,7 @@ impl Connector for SystemConnector {
             Transport::Unix(_) => TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as BoxProxyStream)
-                .map_err(|error| ConnectError::Attempt(error.to_string())),
+                .map_err(ConnectError::from),
             Transport::Ssh {
                 destination,
                 key_file,
@@ -116,19 +118,18 @@ impl Connector for SystemConnector {
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
                 spawn_ssh(&self.ssh_program, &args)
                     .map(|stream| Box::new(stream) as BoxProxyStream)
-                    .map_err(|error| ConnectError::Attempt(error.to_string()))
+                    .map_err(ConnectError::from)
             }
         }
     }
 }
 
 async fn connect_endpoint(target: String) -> Result<Channel, ConnectError> {
-    Endpoint::from_shared(target)
-        .map_err(|error| ConnectError::Attempt(error.to_string()))?
+    Endpoint::from_shared(target)?
         .connect_timeout(Duration::from_secs(5))
         .connect()
         .await
-        .map_err(|error| ConnectError::Attempt(error.to_string()))
+        .map_err(ConnectError::from)
 }
 
 async fn connect_ssh(
@@ -145,13 +146,12 @@ async fn connect_ssh(
         .args(&probe_args)
         .kill_on_drop(true)
         .status()
-        .await
-        .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        .await?;
     if !status.success() {
-        return Err(ConnectError::Attempt(format!(
-            "SSH probe to {} exited with {status}",
-            destination.target()
-        )));
+        return Err(ConnectError::SshProbe {
+            target: destination.target().to_owned(),
+            status,
+        });
     }
     let args = ssh_args(destination, key_file, control_path.as_deref());
     let program = program.to_owned();
@@ -163,7 +163,7 @@ async fn connect_ssh(
             async move { spawn_ssh(&program, &args).map(TokioIo::new) }
         }))
         .await
-        .map_err(|error| ConnectError::Attempt(error.to_string()))
+        .map_err(ConnectError::from)
 }
 
 fn ssh_args(
@@ -291,6 +291,12 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
         error @ (ConnectError::Attempt(_)
+        | ConnectError::Io(_)
+        | ConnectError::Dial(_)
+        | ConnectError::MissingMachineDetails
+        | ConnectError::SshProbe { .. }
+        | ConnectError::Routing(_)
+        | ConnectError::Join(_)
         | ConnectError::ProxyUnsupported(_)
         | ConnectError::UnsupportedNetwork(_)
         | ConnectError::Config(_)
@@ -329,21 +335,7 @@ pub(crate) async fn apply_timeout<T>(
 }
 
 pub(crate) fn is_unary_retryable(error: &ConnectError) -> bool {
-    match error {
-        ConnectError::Attempt(_) => true,
-        ConnectError::Rpc(error) => error.is_retryable(),
-        ConnectError::Remote(_)
-        | ConnectError::ProxyUnsupported(_)
-        | ConnectError::UnsupportedNetwork(_)
-        | ConnectError::Config(_)
-        | ConnectError::Connection(_)
-        | ConnectError::Context(_)
-        | ConnectError::Path { .. }
-        | ConnectError::AllFailed { .. }
-        | ConnectError::Codec(_)
-        | ConnectError::Framing(_)
-        | ConnectError::Value(_) => false,
-    }
+    error.is_retryable()
 }
 
 pub(crate) fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
@@ -456,7 +448,22 @@ pub async fn connect(
 #[derive(Debug, Error)]
 pub enum ConnectError {
     #[error("connection attempt failed: {0}")]
-    Attempt(String),
+    Attempt(Cow<'static, str>),
+    #[error("connection attempt failed: {0}")]
+    Io(#[from] io::Error),
+    #[error("connection attempt failed: {0}")]
+    Dial(#[from] tonic::transport::Error),
+    #[error("connection attempt failed: inspect response omitted Machine details")]
+    MissingMachineDetails,
+    #[error("connection attempt failed: SSH probe to {target} exited with {status}")]
+    SshProbe {
+        target: String,
+        status: std::process::ExitStatus,
+    },
+    #[error("connection attempt failed: {0}")]
+    Routing(#[from] RoutingMetadataError),
+    #[error("connection attempt failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
     #[error("proxy dialing is unsupported over {0}")]
     ProxyUnsupported(String),
     #[error("proxy dialing does not support network {0:?}")]
@@ -491,6 +498,39 @@ pub enum ConnectError {
 impl From<tonic::Status> for ConnectError {
     fn from(status: tonic::Status) -> Self {
         Self::Rpc(TransportError::from(status))
+    }
+}
+
+impl ConnectError {
+    pub(crate) fn is_retryable(&self) -> bool {
+        match self {
+            Self::Attempt(_)
+            | Self::Io(_)
+            | Self::Dial(_)
+            | Self::SshProbe { .. }
+            | Self::Join(_) => true,
+            Self::Rpc(error) => error.is_retryable(),
+            Self::Remote(_)
+            | Self::MissingMachineDetails
+            | Self::Routing(_)
+            | Self::ProxyUnsupported(_)
+            | Self::UnsupportedNetwork(_)
+            | Self::Config(_)
+            | Self::Connection(_)
+            | Self::Context(_)
+            | Self::Path { .. }
+            | Self::AllFailed { .. }
+            | Self::Codec(_)
+            | Self::Framing(_)
+            | Self::Value(_) => false,
+        }
+    }
+
+    pub(crate) fn is_unreachable(&self) -> bool {
+        matches!(
+            self,
+            Self::Attempt(_) | Self::Io(_) | Self::Dial(_) | Self::AllFailed { .. }
+        ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
 }
 

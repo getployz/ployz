@@ -42,10 +42,7 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
     let mut healthy = service_spec(&healthy_id, "healthy-startup");
     healthy.container.healthcheck = Some(healthcheck("true", 2));
     healthy.update.monitor_millis = Some(3_000);
-    let healthy_plan = deploy_plan(
-        healthy_id.clone(),
-        vec![run_with_health_monitor(machine, &healthy)],
-    );
+    let healthy_plan = deploy_plan(healthy_id, vec![run_with_health_monitor(machine, &healthy)]);
     let healthy_outcome = execute_plan(&healthy_plan, client, &CancellationToken::new()).await;
     assert!(healthy_outcome.failed.is_none());
     let healthy_containers = wait_for_service(client, &healthy_id, 1).await;
@@ -62,7 +59,7 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
     unhealthy.container.healthcheck = Some(healthcheck("false", 1));
     unhealthy.update.monitor_millis = Some(1_000);
     let unhealthy_plan = deploy_plan(
-        unhealthy_id.clone(),
+        unhealthy_id,
         vec![run_with_health_monitor(machine, &unhealthy)],
     );
     assert!(matches!(
@@ -96,7 +93,7 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
         crashing.container.healthcheck = healthcheck;
         crashing.update.monitor_millis = Some(1_000);
         let plan = deploy_plan(
-            service_id.clone(),
+            service_id,
             vec![run_with_health_monitor(machine, &crashing)],
         );
         assert!(matches!(
@@ -130,7 +127,7 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &Client, machine:
     let plan = deploy_plan(
         ServiceId::random(),
         vec![DeployOperation::CreateVolume {
-            machine_id: machine.id.clone(),
+            machine_id: machine.id,
             volume,
         }],
     );
@@ -163,12 +160,12 @@ async fn assert_unreachable_middle_keeps_prefix(
     let operations = vec![
         run_without_health_monitor(&machines[0], &spec),
         DeployOperation::CreateVolume {
-            machine_id: machines[1].id.clone(),
+            machine_id: machines[1].id,
             volume: named_volume("unreachable", "ployz-l3-unreachable"),
         },
         run_without_health_monitor(&machines[0], &spec),
     ];
-    let plan = deploy_plan(service_id.clone(), operations.clone());
+    let plan = deploy_plan(service_id, operations.clone());
     cluster.remote_machine_api_rule(0, "--insert").unwrap();
 
     let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
@@ -199,7 +196,7 @@ async fn assert_replacement_health_compensation(
         let old_spec = service_spec(&service_id, "replace-health");
         let old = client
             .create_container(
-                machine.id.clone(),
+                machine.id,
                 ContainerKind::ServiceContainer,
                 old_spec.clone(),
             )
@@ -207,8 +204,8 @@ async fn assert_replacement_health_compensation(
             .unwrap();
         client
             .change_container(
-                machine.id.clone(),
-                old.container_id.clone(),
+                machine.id,
+                old.container_id,
                 ContainerAction::Start,
                 None,
                 None,
@@ -224,14 +221,14 @@ async fn assert_replacement_health_compensation(
         let suffix_spec = service_spec(&ServiceId::random(), "untouched-suffix");
         let operations = vec![
             DeployOperation::ReplaceContainer(ReplacementOperation {
-                machine_id: machine.id.clone(),
-                old_container_id: old.container_id.clone(),
+                machine_id: machine.id,
+                old_container_id: old.container_id,
                 spec: failing,
                 skip_health_monitor: false,
             }),
             run_without_health_monitor(machine, &suffix_spec),
         ];
-        let plan = deploy_plan(service_id.clone(), operations.clone());
+        let plan = deploy_plan(service_id, operations.clone());
 
         let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
 
@@ -255,7 +252,7 @@ async fn assert_replacement_health_compensation(
                     ) => stop_new_container.is_ok() && restart.is_ok(),
                     _ => false,
                 });
-                container_id.clone()
+                *container_id
             }
             failed => panic!("unexpected replacement failure: {failed:?}"),
         };
@@ -298,10 +295,7 @@ async fn assert_failed_hooks_are_retained_and_rerun(
     });
     let suffix =
         run_without_health_monitor(machine, &service_spec(&ServiceId::random(), "hook-suffix"));
-    let plan = deploy_plan(
-        nonzero_id.clone(),
-        vec![hook(machine, &nonzero), suffix.clone()],
-    );
+    let plan = deploy_plan(nonzero_id, vec![hook(machine, &nonzero), suffix.clone()]);
 
     let first = execute_plan(&plan, client, &CancellationToken::new()).await;
     let first_id = failed_hook_id(&first, &suffix);
@@ -320,7 +314,7 @@ async fn assert_failed_hooks_are_retained_and_rerun(
         timeout_millis: Some(50),
         user: None,
     });
-    let timeout_plan = deploy_plan(timeout_id.clone(), vec![hook(machine, &timeout), suffix]);
+    let timeout_plan = deploy_plan(timeout_id, vec![hook(machine, &timeout), suffix]);
     let timed_out = execute_plan(&timeout_plan, client, &CancellationToken::new()).await;
     let timed_out_id = match timed_out.failed {
         Some(FailedOperation::Operation {
@@ -351,7 +345,7 @@ async fn assert_unhealthy_service_is_not_repaired(
     let mut spec = service_spec(&service_id, "no-repair");
     spec.container.healthcheck = Some(healthcheck("false", 1));
     let plan = deploy_plan(
-        service_id.clone(),
+        service_id,
         vec![run_without_health_monitor(&machines[0], &spec)],
     );
     assert!(
@@ -361,7 +355,7 @@ async fn assert_unhealthy_service_is_not_repaired(
             .is_none()
     );
     let before = wait_for_service(client, &service_id, 1).await;
-    let id = before.first().unwrap().container_id.clone();
+    let id = before.first().unwrap().container_id;
     tokio::time::sleep(Duration::from_secs(3)).await;
     let after = wait_for_service(client, &service_id, 1).await;
     assert_eq!(after.first().unwrap().container_id, id);
@@ -383,7 +377,7 @@ fn failed_hook_id(
                     failure: HookFailure::Exit(7),
                 },
             ..
-        }) => container_id.clone(),
+        }) => *container_id,
         failed => panic!("unexpected hook outcome: {failed:?}"),
     }
 }
@@ -412,7 +406,7 @@ fn named_volume(reference: &str, name: &str) -> ServiceVolume {
 
 fn run_without_health_monitor(machine: &Machine, spec: &ResolvedServiceSpec) -> DeployOperation {
     DeployOperation::RunContainer {
-        machine_id: machine.id.clone(),
+        machine_id: machine.id,
         spec: spec.clone(),
         skip_health_monitor: true,
     }
@@ -420,7 +414,7 @@ fn run_without_health_monitor(machine: &Machine, spec: &ResolvedServiceSpec) -> 
 
 fn run_with_health_monitor(machine: &Machine, spec: &ResolvedServiceSpec) -> DeployOperation {
     DeployOperation::RunContainer {
-        machine_id: machine.id.clone(),
+        machine_id: machine.id,
         spec: spec.clone(),
         skip_health_monitor: false,
     }
@@ -428,7 +422,7 @@ fn run_with_health_monitor(machine: &Machine, spec: &ResolvedServiceSpec) -> Dep
 
 fn hook(machine: &Machine, spec: &ResolvedServiceSpec) -> DeployOperation {
     DeployOperation::RunHook {
-        machine_id: machine.id.clone(),
+        machine_id: machine.id,
         spec: spec.clone(),
         old_hook_containers: Vec::new(),
     }
@@ -464,7 +458,7 @@ async fn wait_running(client: &Client, machine: &Machine, container_id: &Contain
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if client
-                .inspect_container(machine.id.clone(), container_id.clone())
+                .inspect_container(machine.id, *container_id)
                 .await
                 .is_ok_and(|container| {
                     matches!(
@@ -520,7 +514,7 @@ async fn wait_for_runtime(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if client
-                .inspect_container(machine.id.clone(), container_id.clone())
+                .inspect_container(machine.id, *container_id)
                 .await
                 .is_ok_and(|container| container.runtime == expected)
             {

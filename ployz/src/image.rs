@@ -50,9 +50,17 @@ pub enum PushError {
     #[error("image '{0}' not found locally")]
     ImageNotFound(String),
     #[error("Machine target selection failed: {0}")]
-    TargetSelection(String),
+    InvalidSelector(#[from] ployz_core::ValueError),
+    #[error("Machine target selection failed: {0}")]
+    Selector(#[from] ployz_core::MachineSelectorError),
     #[error("Cluster operation failed: {0}")]
-    Cluster(String),
+    Cluster(#[from] crate::connect::ConnectError),
+    #[error("Cluster operation failed: check image store: {0}")]
+    CheckImageStore(crate::connect::ConnectError),
+    #[error("Cluster operation failed: {0}")]
+    ImageStore(String),
+    #[error("Cluster operation failed: reach unregistry: {0}")]
+    Unregistry(crate::connect::ConnectError),
     #[error("Docker {action}: {diagnostic}")]
     Docker {
         action: &'static str,
@@ -116,8 +124,7 @@ pub async fn push(
 ) -> Result<PartialResult<(), PushError>, PushError> {
     let machines = client
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
-        .await
-        .map_err(|error| PushError::Cluster(error.to_string()))?;
+        .await?;
     push_using_machines(client, image, platform, selectors, &machines.machines).await
 }
 
@@ -184,11 +191,9 @@ fn select_targets(
         selectors
             .iter()
             .map(MachineSelector::parse)
-            .collect::<Result<_, _>>()
-            .map_err(|error| PushError::TargetSelection(error.to_string()))?
+            .collect::<Result<Vec<_>, _>>()?
     };
-    resolve_machine_selectors(&machines, &selectors)
-        .map_err(|error| PushError::TargetSelection(error.to_string()))
+    Ok(resolve_machine_selectors(&machines, &selectors)?)
 }
 
 async fn push_to_machine(
@@ -202,9 +207,9 @@ async fn push_to_machine(
     let store = cancellation
         .race(client.list_images(Some(image.into()), &[machine.id.to_string()]))
         .await?
-        .map_err(|error| PushError::Cluster(format!("check image store: {error}")))?;
+        .map_err(PushError::CheckImageStore)?;
     let store = store.successes.first().ok_or_else(|| {
-        PushError::Cluster(
+        PushError::ImageStore(
             store
                 .failures
                 .first()
@@ -224,7 +229,7 @@ async fn push_to_machine(
     cancellation
         .race(client.dial_proxy("tcp", &remote))
         .await?
-        .map_err(|error| PushError::Cluster(format!("reach unregistry: {error}")))?;
+        .map_err(PushError::Unregistry)?;
     PushSession::run(client, remote, mode, image, platform, cancellation).await
 }
 

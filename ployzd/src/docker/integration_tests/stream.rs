@@ -118,7 +118,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     ));
 
     let empty = ExecRequestFrame::Config(ExecConfig {
-        container_id: created.container_id.clone(),
+        container_id: created.container_id,
         options: ExecOptions {
             command: vec![],
             attach_stdin: false,
@@ -140,7 +140,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     );
 
     let logs = op::ContainerLogs::into_request(ContainerLogsRequest {
-        container_id: created.container_id.clone(),
+        container_id: created.container_id,
         options: LogsOptions {
             follow: false,
             tail: -1,
@@ -208,7 +208,7 @@ fn exec_config<const N: usize>(
     detach: bool,
 ) -> OpaquePayload {
     ExecRequestFrame::Config(ExecConfig {
-        container_id: container_id.clone(),
+        container_id: *container_id,
         options: ExecOptions {
             command: command.into_iter().map(ToOwned::to_owned).collect(),
             attach_stdin: !detach,

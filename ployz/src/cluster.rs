@@ -185,9 +185,7 @@ impl Client {
         target: Option<&MachineSelector>,
     ) -> Result<T::Response, ConnectError> {
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
-        grpc.ready()
-            .await
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        grpc.ready().await?;
         let response = grpc
             .unary(
                 target_request(payload, target),
@@ -210,7 +208,7 @@ impl Client {
         // UT-028: keep every target's success or typed failure instead of warning and omitting it.
         let mut requests = tokio::task::JoinSet::new();
         for (index, machine) in machines.iter().enumerate() {
-            let machine_id = machine.machine.id.clone();
+            let machine_id = machine.machine.id;
             let mut client = self.clone();
             requests.spawn(async move {
                 let target = MachineSelector::from(&machine_id);
@@ -261,12 +259,9 @@ impl Client {
                 .map(MachineSelector::parse)
                 .collect::<Result<Vec<_>, _>>()?
         };
-        apply_many_targets(request.metadata_mut(), &selectors)
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        apply_many_targets(request.metadata_mut(), &selectors)?;
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
-        grpc.ready()
-            .await
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        grpc.ready().await?;
         let response = grpc
             .server_streaming(
                 request,
@@ -343,12 +338,12 @@ impl Client {
             // current trust boundary; it can be stale and is not an authority or freshness proof.
             match machine.membership {
                 MembershipObservation::Up | MembershipObservation::Suspect => {
-                    tasks.spawn(list_on_machine(self.clone(), machine.machine.id.clone()));
+                    tasks.spawn(list_on_machine(self.clone(), machine.machine.id));
                 }
                 MembershipObservation::Down
                 | MembershipObservation::Unknown
                 | MembershipObservation::Unrecognized(_) => {
-                    omissions.push(machine.machine.id.clone());
+                    omissions.push(machine.machine.id);
                 }
             }
         }
@@ -363,7 +358,7 @@ impl Client {
             match joined {
                 Ok(Ok(success)) => result.successes.push(success),
                 Ok(Err(failure)) => result.failures.push(failure),
-                Err(error) => return Err(ConnectError::Attempt(error.to_string())),
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(derive_live_services(result))
@@ -459,12 +454,12 @@ impl Client {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
         for container in service.containers_for(action) {
-            let machine_id = container.machine_id.clone();
-            let container_id = container.container_id.clone();
+            let machine_id = container.machine_id;
+            let container_id = container.container_id;
             let handle = tasks.spawn(change_on_machine(
                 self.clone(),
-                machine_id.clone(),
-                container_id.clone(),
+                machine_id,
+                container_id,
                 action,
                 signal.clone(),
                 grace_period_seconds,
@@ -512,16 +507,12 @@ impl Client {
         container_selector: Option<&str>,
         options: ExecOptions,
     ) -> Result<ExecSession, OperatorError> {
-        let live = self
-            .live_services()
-            .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?;
-        let service = select_service(&live.services, service_selector)
-            .map_err(|error| OperatorError::Message(error.to_string()))?;
+        let live = self.live_services().await?;
+        let service = select_service(&live.services, service_selector)?;
         let container = select_exec_container(service, container_selector)?;
-        let machine_id = container.machine_id.clone();
+        let machine_id = container.machine_id;
         let config = ExecRequestFrame::Config(ExecConfig {
-            container_id: container.container_id.clone(),
+            container_id: container.container_id,
             options,
         })
         .encode()?;
@@ -529,7 +520,7 @@ impl Client {
         sender
             .send(config)
             .await
-            .map_err(|_| OperatorError::Message("exec request stream closed".into()))?;
+            .map_err(|_| OperatorError::StreamClosed)?;
         let output = self
             .exec_stream(
                 &MachineSelector::from(&machine_id),
@@ -552,18 +543,14 @@ impl Client {
     ) -> Result<ServiceLogInputs, OperatorError> {
         let machines = self
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?
+            .await?
             .machines;
         let selected_machines = select_machines(&machines, machine_selectors)?;
         let machine_ids = selected_machines
             .iter()
-            .map(|machine| machine.machine.id.clone())
+            .map(|machine| machine.machine.id)
             .collect::<HashSet<_>>();
-        let live = self
-            .live_services()
-            .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?;
+        let live = self.live_services().await?;
         let mut inputs = Vec::new();
         let mut skipped_services = Vec::new();
         for arg in args {
@@ -573,7 +560,7 @@ impl Client {
                     skipped_services.push(arg.service.clone());
                     continue;
                 }
-                Err(error) => return Err(error.to_string().into()),
+                Err(error) => return Err(error.into()),
             };
             let containers = select_log_containers(service, &arg.containers)?;
             let containers = containers
@@ -581,19 +568,16 @@ impl Client {
                 .filter(|container| machine_ids.contains(&container.machine_id))
                 .collect::<Vec<_>>();
             if containers.is_empty() {
-                return Err(format!(
-                    "no containers for Service {:?} found on the selected Machines",
-                    arg.service
-                )
-                .into());
+                return Err(OperatorError::NoContainersOnMachines {
+                    service: arg.service.clone(),
+                });
             }
             for container in containers {
                 let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                    container_id: container.container_id.clone(),
+                    container_id: container.container_id,
                     options: options.clone(),
                 })
-                .encode()
-                .map_err(|error| OperatorError::Message(error.to_string()))?;
+                .encode()?;
                 let identity = format!("{}/{}", arg.service, container.display_name);
                 let target = MachineSelector::from(&container.machine_id);
                 // TODO(UT-082): earlier Container log streams intentionally survive until the
@@ -605,16 +589,16 @@ impl Client {
                 })
                 .await
                 {
-                    return Err(format!(
-                        "open logs for Container {} on Machine {}: {error}",
-                        container.container_id, container.machine_id
-                    )
-                    .into());
+                    return Err(OperatorError::OpenContainerLogs {
+                        container_id: container.container_id,
+                        machine_id: container.machine_id,
+                        source: Box::new(error.into()),
+                    });
                 }
             }
         }
         if inputs.is_empty() {
-            return Err("none of the selected Services exist in the Cluster".into());
+            return Err(OperatorError::NoSelectedServices);
         }
         Ok(ServiceLogInputs {
             inputs,
@@ -636,17 +620,17 @@ impl Client {
                 .iter()
                 .map(|service| {
                     service.parse::<MachineLogService>().map_err(|expected| {
-                        OperatorError::Message(format!(
-                            "unsupported Machine log service {service:?}; {expected}"
-                        ))
+                        OperatorError::UnsupportedLogService {
+                            service: service.clone(),
+                            expected,
+                        }
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
         let machines = self
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?
+            .await?
             .machines;
         let machines = select_machines(&machines, machine_selectors)?;
         let mut inputs = Vec::new();
@@ -656,8 +640,7 @@ impl Client {
                     service,
                     options: options.clone(),
                 })
-                .encode()
-                .map_err(|error| OperatorError::Message(error.to_string()))?;
+                .encode()?;
                 let identity = format!("{service}@{}", machine.machine.name);
                 let target = MachineSelector::from(&machine.machine.id);
                 // TODO(UT-083): earlier Machine log streams intentionally survive until the
@@ -669,11 +652,11 @@ impl Client {
                 })
                 .await
                 {
-                    return Err(format!(
-                        "open {service} logs on Machine {}: {error}",
-                        machine.machine.name
-                    )
-                    .into());
+                    return Err(OperatorError::OpenMachineLogs {
+                        service,
+                        machine_name: machine.machine.name.clone(),
+                        source: Box::new(error.into()),
+                    });
                 }
             }
         }
@@ -770,7 +753,7 @@ async fn list_on_machine(
         )
         .await
         .map(|list| MachineSuccess {
-            machine_id: machine_id.clone(),
+            machine_id,
             value: list.containers,
         })
         .map_err(|error| MachineFailure { machine_id, error })
@@ -823,7 +806,7 @@ async fn change_container_rpc(
             client
                 .invoke::<op::StopContainer>(
                     StopContainerRequest {
-                        container_id: container_id.clone(),
+                        container_id: *container_id,
                         signal,
                         grace_period_seconds,
                     },
@@ -838,7 +821,7 @@ async fn change_container_rpc(
         ContainerAction::Start => client
             .invoke::<op::StartContainer>(
                 StartContainerRequest {
-                    container_id: container_id.clone(),
+                    container_id: *container_id,
                 },
                 &target,
                 Some(TARGET_RPC_TIMEOUT),
@@ -858,7 +841,7 @@ async fn remove_container_rpc(
     client
         .invoke::<op::RemoveContainer>(
             RemoveContainerRequest {
-                container_id: container_id.clone(),
+                container_id: *container_id,
                 remove_volumes: true,
                 force: false,
             },

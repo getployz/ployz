@@ -191,7 +191,7 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
         vec![input(
             "broken",
             vec![
-                Err("transport failed".into()),
+                Err(LogError::Message("transport failed".into())),
                 Ok(LogEntry::error(metadata("broken"), "remote failed")),
             ],
         )],
@@ -267,7 +267,7 @@ async fn partial_open_streams_survive_until_parent_cancellation() {
 struct TrackedPending(Arc<AtomicBool>);
 
 impl Stream for TrackedPending {
-    type Item = Result<LogEntry, String>;
+    type Item = Result<LogEntry, LogError>;
 
     fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Poll::Pending
@@ -280,7 +280,7 @@ impl Drop for TrackedPending {
     }
 }
 
-fn input(identity: &str, entries: Vec<Result<LogEntry, String>>) -> LogInput {
+fn input(identity: &str, entries: Vec<Result<LogEntry, LogError>>) -> LogInput {
     LogInput {
         identity: identity.into(),
         stream: Box::pin(stream::iter(entries)),
@@ -317,11 +317,11 @@ fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
 fn observed_service() -> ServiceObservation {
     let service_id = ServiceId::parse("1".repeat(32)).unwrap();
     ServiceObservation {
-        service_id: service_id.clone(),
+        service_id,
         containers: vec![
-            container(&"a".repeat(64), "api-one", service_id.clone()),
-            container(&"b".repeat(64), "api-two", service_id.clone()),
-            container(&format!("{}c", "b".repeat(63)), "b", service_id.clone()),
+            container(&"a".repeat(64), "api-one", service_id),
+            container(&"b".repeat(64), "api-two", service_id),
+            container(&format!("{}c", "b".repeat(63)), "b", service_id),
         ],
         hook_containers: vec![],
     }
@@ -333,7 +333,7 @@ fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservatio
         display_name: name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
-        service_id: service_id.clone(),
+        service_id,
         service_name: ServiceName::parse("api").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {

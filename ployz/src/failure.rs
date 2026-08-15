@@ -1,11 +1,13 @@
 use std::{borrow::Cow, io, process::ExitCode};
 
 use ployz_core::{
-    MachineSelectorError, MachineUpdateError, ServiceSelectorError, StreamProtocolError, ValueError,
+    CodecError, MachineSelectorError, MachineUpdateError, RpcError, ServiceSelectorError,
+    StreamProtocolError, ValueError,
 };
 use thiserror::Error;
 
 use crate::{
+    caddy::CaddyImageError,
     compose::{ComposeError, ComposePlanError},
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
@@ -13,19 +15,21 @@ use crate::{
     dns::{DomainRequired, Error as DnsError, NoReachableMachines},
     image::PushError,
     operator::{ContainerSelectorError, OperatorError},
+    provisioning::ProvisionError,
     service::ServiceClientError,
+    volume::AssignmentError,
 };
 
 /// CLI command outcome. `Display` is product stderr. `Exit` is silent.
-#[derive(Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum Failure {
     #[error("{0}")]
-    Command(Cause),
+    Command(Box<Cause>),
     #[error("exit {0}")]
     Exit(u8),
 }
 
-#[derive(Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum Cause {
     #[error("{0}")]
     Usage(Cow<'static, str>),
@@ -35,6 +39,10 @@ pub enum Cause {
     Context(ContextError),
     #[error(transparent)]
     Connection(ConnectionError),
+    #[error(transparent)]
+    Config(ConfigError),
+    #[error(transparent)]
+    Connect(ConnectError),
     #[error(transparent)]
     MachineSelector(MachineSelectorError),
     #[error(transparent)]
@@ -55,6 +63,32 @@ pub enum Cause {
     NoReachableMachines(NoReachableMachines),
     #[error(transparent)]
     Protocol(StreamProtocolError),
+    #[error(transparent)]
+    Push(PushError),
+    #[error(transparent)]
+    Operator(OperatorError),
+    #[error(transparent)]
+    Dns(DnsError),
+    #[error(transparent)]
+    Transport(TransportError),
+    #[error("{}", .0.message)]
+    Rpc(RpcError),
+    #[error(transparent)]
+    Codec(CodecError),
+    #[error(transparent)]
+    Assignment(AssignmentError),
+    #[error(transparent)]
+    Provision(ProvisionError),
+    #[error(transparent)]
+    CaddyImage(CaddyImageError),
+    #[error("{0}")]
+    Io(io::Error),
+    #[error("{0}")]
+    Json(serde_json::Error),
+    #[error("{0}")]
+    ParseInt(std::num::ParseIntError),
+    #[error("{0}")]
+    ShellWords(shell_words::ParseError),
 }
 
 impl Failure {
@@ -64,7 +98,7 @@ impl Failure {
     }
 
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::Command(Cause::Usage(message.into()))
+        Self::Command(Box::new(Cause::Usage(message.into())))
     }
 }
 
@@ -82,7 +116,7 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
 
 impl From<Cause> for Failure {
     fn from(cause: Cause) -> Self {
-        Self::Command(cause)
+        Self::Command(Box::new(cause))
     }
 }
 
@@ -170,53 +204,59 @@ impl From<ConnectError> for Failure {
             ConnectError::Context(error) => error.into(),
             ConnectError::Connection(error) => error.into(),
             ConnectError::Value(error) => error.into(),
-            other @ (ConnectError::Attempt(_)
+            ConnectError::Config(error) => error.into(),
+            ConnectError::Attempt(_)
+            | ConnectError::Io(_)
+            | ConnectError::Dial(_)
+            | ConnectError::MissingMachineDetails
+            | ConnectError::SshProbe { .. }
+            | ConnectError::Routing(_)
+            | ConnectError::Join(_)
             | ConnectError::ProxyUnsupported(_)
             | ConnectError::UnsupportedNetwork(_)
-            | ConnectError::Config(_)
             | ConnectError::Path { .. }
             | ConnectError::AllFailed { .. }
             | ConnectError::Rpc(_)
             | ConnectError::Codec(_)
             | ConnectError::Remote(_)
-            | ConnectError::Framing(_)) => Self::usage(other.to_string()),
+            | ConnectError::Framing(_) => Cause::Connect(error).into(),
         }
     }
 }
 
 impl From<ConfigError> for Failure {
     fn from(error: ConfigError) -> Self {
-        Self::usage(error.to_string())
+        Cause::Config(error).into()
     }
 }
 
 impl From<io::Error> for Failure {
     fn from(error: io::Error) -> Self {
-        Self::usage(error.to_string())
+        Cause::Io(error).into()
     }
 }
 
 impl From<serde_json::Error> for Failure {
     fn from(error: serde_json::Error) -> Self {
-        Self::usage(error.to_string())
+        Cause::Json(error).into()
     }
 }
 
 impl From<std::num::ParseIntError> for Failure {
     fn from(error: std::num::ParseIntError) -> Self {
-        Self::usage(error.to_string())
+        Cause::ParseInt(error).into()
     }
 }
 
 impl From<shell_words::ParseError> for Failure {
     fn from(error: shell_words::ParseError) -> Self {
-        Self::usage(error.to_string())
+        Cause::ShellWords(error).into()
     }
 }
 
 impl From<PushError> for Failure {
     fn from(error: PushError) -> Self {
-        Self::usage(error.to_string())
+        Cause::Push(error).into()
     }
 }
 
@@ -225,9 +265,27 @@ impl From<OperatorError> for Failure {
         match error {
             OperatorError::Container(error) => error.into(),
             OperatorError::Protocol(error) => error.into(),
-            other @ (OperatorError::Message(_) | OperatorError::Rpc(_)) => {
-                Self::usage(other.to_string())
-            }
+            OperatorError::Connect(error) => error.into(),
+            OperatorError::Selector(error) => error.into(),
+            OperatorError::MachineSelector(error) => error.into(),
+            OperatorError::Value(error) => error.into(),
+            OperatorError::Rpc(_)
+            | OperatorError::Codec(_)
+            | OperatorError::StreamClosed
+            | OperatorError::TtyRequiresStdin
+            | OperatorError::InvalidServiceSelector(_)
+            | OperatorError::InvalidTail(_)
+            | OperatorError::InvalidProxyPort
+            | OperatorError::InvalidLocalPort(_)
+            | OperatorError::InvalidRemotePort(_)
+            | OperatorError::NoHealthyContainer
+            | OperatorError::NoContainersOnMachines { .. }
+            | OperatorError::NoSelectedServices
+            | OperatorError::NoMachines
+            | OperatorError::SnapshotStale
+            | OperatorError::UnsupportedLogService { .. }
+            | OperatorError::OpenContainerLogs { .. }
+            | OperatorError::OpenMachineLogs { .. } => Cause::Operator(error).into(),
         }
     }
 }
@@ -237,9 +295,7 @@ impl From<DnsError> for Failure {
         match error {
             DnsError::Connect(error) => error.into(),
             DnsError::NoReachableMachines(error) => error.into(),
-            other @ (DnsError::Inspect { .. } | DnsError::Http(_)) => {
-                Self::usage(other.to_string())
-            }
+            DnsError::Inspect { .. } | DnsError::Http(_) => Cause::Dns(error).into(),
         }
     }
 }
@@ -255,7 +311,7 @@ impl From<ServiceClientError> for Failure {
 
 impl From<TransportError> for Failure {
     fn from(error: TransportError) -> Self {
-        Self::usage(error.to_string())
+        Cause::Transport(error).into()
     }
 }
 
@@ -265,15 +321,33 @@ impl From<tonic::Status> for Failure {
     }
 }
 
-impl From<ployz_core::RpcError> for Failure {
-    fn from(error: ployz_core::RpcError) -> Self {
-        Self::usage(error.message)
+impl From<RpcError> for Failure {
+    fn from(error: RpcError) -> Self {
+        Cause::Rpc(error).into()
     }
 }
 
-impl From<ployz_core::CodecError> for Failure {
-    fn from(error: ployz_core::CodecError) -> Self {
-        Self::usage(error.to_string())
+impl From<CodecError> for Failure {
+    fn from(error: CodecError) -> Self {
+        Cause::Codec(error).into()
+    }
+}
+
+impl From<AssignmentError> for Failure {
+    fn from(error: AssignmentError) -> Self {
+        Cause::Assignment(error).into()
+    }
+}
+
+impl From<ProvisionError> for Failure {
+    fn from(error: ProvisionError) -> Self {
+        Cause::Provision(error).into()
+    }
+}
+
+impl From<CaddyImageError> for Failure {
+    fn from(error: CaddyImageError) -> Self {
+        Cause::CaddyImage(error).into()
     }
 }
 
@@ -286,15 +360,18 @@ mod tests {
     #[test]
     fn missing_config_stays_a_typed_context_error() {
         let failure = Failure::from(ContextError::NoConfig);
-        assert_eq!(failure, Failure::from(ContextError::NoConfig));
+        assert!(matches!(
+            &failure,
+            Failure::Command(cause) if matches!(cause.as_ref(), Cause::Context(ContextError::NoConfig))
+        ));
         assert_eq!(
             failure.to_string(),
             "no Ployz config or local daemon socket is available"
         );
-        assert_ne!(
-            Failure::usage("no Ployz config or local daemon socket is available"),
-            failure
-        );
+        assert!(!matches!(
+            failure,
+            Failure::Command(cause) if matches!(cause.as_ref(), Cause::Usage(_))
+        ));
     }
 
     #[test]
@@ -308,19 +385,19 @@ mod tests {
 
     #[test]
     fn connect_context_errors_unwrap_to_context() {
-        assert_eq!(
+        assert!(matches!(
             Failure::from(ConnectError::Context(ContextError::NoConfig)),
-            Failure::from(ContextError::NoConfig)
-        );
+            Failure::Command(cause) if matches!(cause.as_ref(), Cause::Context(ContextError::NoConfig))
+        ));
     }
 
     #[test]
     fn exit_is_not_a_printed_command_failure() {
         assert!(matches!(Failure::exit(7), Failure::Exit(7)));
-        assert_ne!(
+        assert!(!matches!(
             Failure::exit(1),
-            Failure::usage("remote command exited with status 1")
-        );
+            Failure::Command(cause) if matches!(cause.as_ref(), Cause::Usage(_))
+        ));
         assert_eq!(terminate(Err(Failure::exit(3))), ExitCode::from(3));
         assert_eq!(terminate(Ok(())), ExitCode::SUCCESS);
         assert_eq!(terminate(Err(Failure::usage("nope"))), ExitCode::FAILURE);

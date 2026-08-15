@@ -97,7 +97,7 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
                     }),
                     Err(error) => result.failures.push(MachineFailure {
                         machine_id: id,
-                        error: error.to_string(),
+                        error,
                     }),
                 }
             }
@@ -122,7 +122,9 @@ fn wg_rtt_line(rtt: Option<&RttStatistics>) -> Option<String> {
 }
 
 #[must_use]
-fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, String>) -> String {
+fn format_rtt_table(
+    result: &PartialResult<Vec<RttObservation>, crate::connect::ConnectError>,
+) -> String {
     let mut table = String::from("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
     for success in &result.successes {
         for observation in &success.value {
@@ -141,7 +143,7 @@ fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, String>) -> Stri
     table
 }
 
-fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
+fn print_rtts(result: &PartialResult<Vec<RttObservation>, crate::connect::ConnectError>) {
     print!("{}", format_rtt_table(result));
     for failure in &result.failures {
         eprintln!(
@@ -257,7 +259,7 @@ mod tests {
         let source = machine_id('1');
         let table = format_rtt_table(&PartialResult {
             successes: vec![MachineSuccess {
-                machine_id: source.clone(),
+                machine_id: source,
                 value: vec![rtt_observation("peer-zero", 0, 0)],
             }],
             failures: Vec::new(),
@@ -286,12 +288,12 @@ mod tests {
         let target = machine_id('2');
         let table = format_rtt_table(&PartialResult {
             successes: vec![MachineSuccess {
-                machine_id: source.clone(),
+                machine_id: source,
                 value: vec![RttObservation {
                     peer_id: "peer-live".into(),
                     address: "[fdcc::2]:51001".parse().unwrap(),
                     machine: Some(MachineIdentity {
-                        id: target.clone(),
+                        id: target,
                         name: MachineName::parse("node-b").unwrap(),
                     }),
                     statistics,

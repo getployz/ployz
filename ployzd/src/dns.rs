@@ -21,6 +21,7 @@ use hickory_server::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation, Machine,
+    ServiceId,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -48,7 +49,7 @@ enum ResponsePlan {
 }
 
 struct Projection {
-    service_ids: HashMap<String, Vec<Ipv4Addr>>,
+    service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
     names: HashMap<String, Vec<Ipv4Addr>>,
 }
 
@@ -56,12 +57,10 @@ impl Projection {
     fn from_observations(observations: &[ContainerObservation]) -> Self {
         // TODO(UT-117, UT-118): keep Membership Observations out of DNS projection until a
         // product decision replaces the baseline's deliberately membership-blind behavior.
-        let mut service_ids = HashMap::<String, Vec<Ipv4Addr>>::new();
+        let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut names = HashMap::<String, Vec<Ipv4Addr>>::new();
         for observation in observations {
-            let service_addresses = service_ids
-                .entry(observation.service_id.to_string())
-                .or_default();
+            let service_addresses = service_ids.entry(observation.service_id).or_default();
             let healthy = matches!(
                 &observation.runtime,
                 ContainerRuntimeObservation::Running {
@@ -106,9 +105,9 @@ impl Projection {
             .strip_prefix("nearest.")
             .map_or((selector, false), |selector| (selector, true));
         let selector = selector.strip_prefix("rr.").unwrap_or(selector);
-        let mut addresses = self
-            .service_ids
-            .get(selector)
+        let mut addresses = ServiceId::parse(selector)
+            .ok()
+            .and_then(|id| self.service_ids.get(&id))
             .or_else(|| self.names.get(selector))
             .cloned()
             .unwrap_or_default();
@@ -678,8 +677,8 @@ mod tests {
             container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
             display_name: format!("{service_name}-{suffix}"),
             created_at_unix_nanos: 0,
-            machine_id: machine_id.clone(),
-            service_id: service_id.clone(),
+            machine_id: *machine_id,
+            service_id: *service_id,
             service_name: service_name.clone(),
             kind,
             runtime,

@@ -195,7 +195,7 @@ impl ContainerRuntime {
         self.specs
             .get(container_id)
             .await?
-            .ok_or_else(|| Error::SpecNotFound(container_id.clone()))?;
+            .ok_or_else(|| Error::SpecNotFound(*container_id))?;
         Ok(())
     }
 

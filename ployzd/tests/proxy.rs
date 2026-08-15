@@ -62,7 +62,7 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
         resolve_route(RoutingRequest::One(selector("duplicate")), &visible),
         Err(TargetResolutionError::Ambiguous {
             selector: selector("duplicate"),
-            matches: vec![first.id.clone(), second.id.clone()],
+            matches: vec![first.id, second.id],
         })
     );
 
@@ -91,7 +91,7 @@ async fn one_to_one_forwards_unknown_bytes_unchanged() {
     let remote_machine = machine('2', "remote", 2);
     let target_proxy = MachineProxy::new(
         Routes::new(EchoService::default()),
-        remote_machine.id.clone(),
+        remote_machine.id,
         remote_port,
         None,
     );
@@ -106,7 +106,7 @@ async fn one_to_one_forwards_unknown_bytes_unchanged() {
     remote.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
     let proxy = MachineProxy::new(
         Routes::new(EchoService::default()),
-        local.id.clone(),
+        local.id,
         remote_port,
         None,
     );
@@ -137,7 +137,7 @@ async fn fanout_keeps_successes_and_target_failures_as_valid_frames() {
     let target_machine = machine('2', "reachable", 2);
     let target_proxy = MachineProxy::new(
         Routes::new(EchoService::default()),
-        target_machine.id.clone(),
+        target_machine.id,
         remote_port,
         None,
     );
@@ -153,7 +153,7 @@ async fn fanout_keeps_successes_and_target_failures_as_valid_frames() {
     let unreachable = machine('3', "unreachable", 3);
     let proxy = MachineProxy::new(
         Routes::new(EchoService::default()),
-        local.id.clone(),
+        local.id,
         remote_port,
         None,
     );
@@ -216,12 +216,7 @@ async fn fanout_keeps_successes_and_target_failures_as_valid_frames() {
 #[tokio::test]
 async fn fanout_emits_an_omission_for_a_target_with_no_message() {
     let local = machine('1', "local", 1);
-    let proxy = MachineProxy::new(
-        Routes::new(EchoService::default()),
-        local.id.clone(),
-        1,
-        None,
-    );
+    let proxy = MachineProxy::new(Routes::new(EchoService::default()), local.id, 1, None);
     let request = http::Request::builder()
         .uri("/test.Echo/Call")
         .header("content-type", "application/grpc")

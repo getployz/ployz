@@ -119,7 +119,7 @@ fn duplicate_name_matches_remain_ambiguous() {
     let second = ServiceId::parse("22222222222222222222222222222222").unwrap();
 
     assert_eq!(
-        NameMatches::from_matches(vec![first.clone(), second.clone()]),
+        NameMatches::from_matches(vec![first, second]),
         NameMatches::Ambiguous(vec![first, second])
     );
 }

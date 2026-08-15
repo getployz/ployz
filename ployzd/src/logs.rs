@@ -1,11 +1,13 @@
 use std::{
+    io,
     pin::Pin,
-    process::Stdio,
+    process::{ExitStatus, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use futures_util::{Stream, StreamExt};
 use ployz_core::{LogEntry, LogMetadata, LogStream, LogsOptions, OpaquePayload};
+use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -17,7 +19,19 @@ use tonic::Status;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(200);
 
-pub type LogSource = Pin<Box<dyn Stream<Item = Result<RawLogEntry, String>> + Send>>;
+#[derive(Debug, Error)]
+pub enum JournalError {
+    #[error("read journal logs: {0}")]
+    Read(io::Error),
+    #[error("journalctl exited with {0}")]
+    Exit(ExitStatus),
+    #[error("wait for journalctl: {0}")]
+    Wait(io::Error),
+    #[error("{0}")]
+    Docker(String),
+}
+
+pub type LogSource = Pin<Box<dyn Stream<Item = Result<RawLogEntry, JournalError>> + Send>>;
 pub type RpcStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,7 +67,7 @@ pub fn serve_logs(mut source: LogSource, metadata: LogMetadata, follow: bool) ->
                         }
                     }
                     Some(Err(error)) => {
-                        let _ = send_entry(&sender, LogEntry::error(metadata.clone(), error)).await;
+                        let _ = send_entry(&sender, LogEntry::error(metadata.clone(), error.to_string())).await;
                         return;
                     }
                     None => return,
@@ -127,9 +141,7 @@ pub async fn open_journal_logs(unit: &str, options: &LogsOptions) -> Result<LogS
                     }
                 }
                 Err(error) => {
-                    let _ = sender
-                        .send(Err(format!("read journal logs: {error}")))
-                        .await;
+                    let _ = sender.send(Err(JournalError::Read(error))).await;
                     return;
                 }
             }
@@ -137,14 +149,10 @@ pub async fn open_journal_logs(unit: &str, options: &LogsOptions) -> Result<LogS
         match child.wait().await {
             Ok(status) if status.success() => {}
             Ok(status) => {
-                let _ = sender
-                    .send(Err(format!("journalctl exited with {status}")))
-                    .await;
+                let _ = sender.send(Err(JournalError::Exit(status))).await;
             }
             Err(error) => {
-                let _ = sender
-                    .send(Err(format!("wait for journalctl: {error}")))
-                    .await;
+                let _ = sender.send(Err(JournalError::Wait(error))).await;
             }
         }
     });

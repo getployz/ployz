@@ -91,7 +91,7 @@ async fn replicated_entry_routes_and_returns_partial_fanout() {
     }
     let mut entry = MachineProxy::new(
         Routes::new(EchoService::default()),
-        local.id.clone(),
+        local.id,
         remote_port,
         Some(entry_store),
     );
@@ -148,7 +148,7 @@ async fn replicated_entry_routes_and_returns_partial_fanout() {
             .iter()
             .map(|outcome| outcome.machine_id().unwrap())
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([local.id.clone(), remote.id.clone()])
+        BTreeSet::from([local.id, remote.id])
     );
     assert!(outcomes.iter().all(|outcome| {
         matches!(
@@ -203,7 +203,7 @@ fn start_target(
                     .expect("Machine IDs are valid headers"),
             ),
         }),
-        machine.id.clone(),
+        machine.id,
         remote_port,
         None,
     );
@@ -231,7 +231,7 @@ async fn wait_for_machines<'a>(
 ) {
     let expected = expected
         .into_iter()
-        .map(|machine| machine.id.clone())
+        .map(|machine| machine.id)
         .collect::<Vec<_>>();
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {

@@ -187,7 +187,7 @@ fn scale_plan(
     Ok(Some(plan_deploy(
         &requested,
         snapshot,
-        service.service_id.clone(),
+        service.service_id,
         plan_options(false, false),
     )?))
 }

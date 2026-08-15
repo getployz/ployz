@@ -129,7 +129,7 @@ pub(super) fn container(
         display_name: format!("{}-{hex}", requested.name),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine_hex),
-        service_id: service_id.clone(),
+        service_id: *service_id,
         service_name: requested.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
@@ -137,7 +137,7 @@ pub(super) fn container(
         },
         effective_healthcheck: None,
         resolved_spec: ResolvedServiceSpec {
-            service_id: service_id.clone(),
+            service_id: *service_id,
             name: requested.name.clone(),
             mode: requested.mode.clone(),
             container: requested.container.clone(),

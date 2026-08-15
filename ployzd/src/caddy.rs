@@ -1,13 +1,3 @@
-use std::{
-    collections::BTreeMap,
-    fmt::Write as _,
-    fs, io,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-    time::Duration,
-};
-
-use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
@@ -15,6 +5,16 @@ use ployz_core::{
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    fmt::Write as _,
+    fs,
+    future::Future,
+    io,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
@@ -41,10 +41,9 @@ enum Error {
     Template(String),
 }
 
-#[async_trait]
 trait CaddyAdmin: Send + Sync {
-    async fn adapt(&self, caddyfile: &str) -> Result<String, Error>;
-    async fn load(&self, json: &str) -> Result<(), Error>;
+    fn adapt(&self, caddyfile: &str) -> impl Future<Output = Result<String, Error>> + Send;
+    fn load(&self, json: &str) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 struct AdminClient {
@@ -88,7 +87,6 @@ impl AdminClient {
     }
 }
 
-#[async_trait]
 impl CaddyAdmin for AdminClient {
     async fn adapt(&self, caddyfile: &str) -> Result<String, Error> {
         let body = self
@@ -140,7 +138,7 @@ pub async fn run(
                     &machine,
                     &containers.observations,
                     &config_file,
-                    admin.as_ref().map(|admin| admin as &dyn CaddyAdmin),
+                    admin.as_ref(),
                 )
                 .await
                 {
@@ -161,11 +159,11 @@ pub async fn run(
     }
 }
 
-async fn reconcile(
+async fn reconcile<A: CaddyAdmin>(
     machine: &Machine,
     observations: &[ContainerObservation],
     config_file: &Path,
-    admin: Option<&dyn CaddyAdmin>,
+    admin: Option<&A>,
 ) -> Result<(), Error> {
     // TODO(UT-116): keep the Caddy projection membership-blind until the membership model is
     // intentionally changed across replicated projections.
@@ -202,12 +200,12 @@ fn prepare_directory(path: &Path) -> io::Result<()> {
     set_ployz_group(path)
 }
 
-async fn generate_caddyfile(
+async fn generate_caddyfile<A: CaddyAdmin>(
     local_machine: &MachineId,
     machine_name: &str,
     observations: &[ContainerObservation],
     timestamp: &str,
-    admin: Option<&dyn CaddyAdmin>,
+    admin: Option<&A>,
 ) -> String {
     let mut output =
         automatic_caddyfile(local_machine, machine_name, observations, timestamp, None);
@@ -495,10 +493,6 @@ http:// {{\n\
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
-
-    use async_trait::async_trait;
     use ployz_core::{
         AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
         ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind,
@@ -507,6 +501,8 @@ mod tests {
         WireGuardPublicKey,
     };
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
 
     use super::{
         CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile, generate_caddyfile, reconcile,
@@ -730,7 +726,8 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
             [10, 210, 1, 1],
         )];
 
-        let caddyfile = generate_caddyfile(&local, "node-a", &observations, "TIME", None).await;
+        let caddyfile =
+            generate_caddyfile(&local, "node-a", &observations, "TIME", None::<&FakeAdmin>).await;
         assert!(!caddyfile.contains("custom.example"));
         assert!(caddyfile.contains("admin API is not reachable"));
     }
@@ -808,7 +805,6 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
         fail_load: bool,
     }
 
-    #[async_trait]
     impl CaddyAdmin for FakeAdmin {
         async fn adapt(&self, caddyfile: &str) -> Result<String, Error> {
             self.adapted.lock().unwrap().push(caddyfile.into());
@@ -858,7 +854,7 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
             container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
             display_name: format!("{service_name}-{suffix}"),
             created_at_unix_nanos: 0,
-            machine_id: machine_id.clone(),
+            machine_id: *machine_id,
             service_id,
             service_name,
             kind: ContainerKind::ServiceContainer,

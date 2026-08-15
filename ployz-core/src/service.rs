@@ -70,9 +70,9 @@ pub fn derive_services(
     let mut services = BTreeMap::<ServiceId, ServiceObservation>::new();
     for container in containers {
         let service = services
-            .entry(container.service_id.clone())
+            .entry(container.service_id)
             .or_insert_with(|| ServiceObservation {
-                service_id: container.service_id.clone(),
+                service_id: container.service_id,
                 containers: Vec::new(),
                 hook_containers: Vec::new(),
             });
@@ -126,7 +126,7 @@ pub fn select_service<'a>(
             selector: selector.to_owned(),
             service_ids: matches
                 .into_iter()
-                .map(|service| service.service_id.clone())
+                .map(|service| service.service_id)
                 .collect(),
         }),
     }
@@ -268,7 +268,7 @@ mod tests {
         let omitted_id = MachineId::parse("3".repeat(32)).unwrap();
         let partial = PartialResult {
             successes: vec![MachineSuccess {
-                machine_id: success_id.clone(),
+                machine_id: success_id,
                 value: vec![observation(
                     '1',
                     &service_id,
@@ -278,14 +278,14 @@ mod tests {
                 )],
             }],
             failures: vec![MachineFailure {
-                machine_id: failed_id.clone(),
+                machine_id: failed_id,
                 error: RpcError {
                     code: RpcErrorCode::Unavailable,
                     message: "offline".into(),
                     details: serde_json::Value::Null,
                 },
             }],
-            omissions: vec![omitted_id.clone()],
+            omissions: vec![omitted_id],
         };
 
         let live = super::derive_live_services(partial);
@@ -388,7 +388,7 @@ mod tests {
             display_name: format!("{name}-{id}"),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
-            service_id: service_id.clone(),
+            service_id: *service_id,
             service_name,
             kind,
             runtime: ContainerRuntimeObservation::Created,

@@ -67,7 +67,7 @@ impl MachineOperations for Scripted {
         machine_id: &MachineId,
         _volume: &ServiceVolume,
     ) -> Result<(), RpcError> {
-        unit(self.next(Call::CreateVolume(machine_id.clone())))
+        unit(self.next(Call::CreateVolume(*machine_id)))
     }
 
     async fn create_container(
@@ -76,7 +76,7 @@ impl MachineOperations for Scripted {
         kind: ContainerKind,
         _spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
-        match self.next(Call::Create(machine_id.clone(), kind)) {
+        match self.next(Call::Create(*machine_id, kind)) {
             Reply::Created(container_id) => Ok(ContainerCreated {
                 display_name: container_id.to_string(),
                 container_id,
@@ -93,7 +93,7 @@ impl MachineOperations for Scripted {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<(), RpcError> {
-        unit(self.next(Call::Start(machine_id.clone(), container_id.clone())))
+        unit(self.next(Call::Start(*machine_id, *container_id)))
     }
 
     async fn inspect_container(
@@ -101,7 +101,7 @@ impl MachineOperations for Scripted {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerObservation, RpcError> {
-        match self.next(Call::Inspect(machine_id.clone(), container_id.clone())) {
+        match self.next(Call::Inspect(*machine_id, *container_id)) {
             Reply::Observed(runtime, healthcheck) => {
                 let mut observation = observation(machine_id, container_id, runtime);
                 observation.effective_healthcheck = healthcheck;
@@ -122,8 +122,8 @@ impl MachineOperations for Scripted {
         grace_period_seconds: Option<i32>,
     ) -> Result<(), RpcError> {
         let call = grace_period_seconds.map_or_else(
-            || Call::Stop(machine_id.clone(), container_id.clone()),
-            |grace| Call::StopWithGrace(machine_id.clone(), container_id.clone(), grace),
+            || Call::Stop(*machine_id, *container_id),
+            |grace| Call::StopWithGrace(*machine_id, *container_id, grace),
         );
         unit(self.next(call))
     }
@@ -133,7 +133,7 @@ impl MachineOperations for Scripted {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<(), RpcError> {
-        unit(self.next(Call::Remove(machine_id.clone(), container_id.clone())))
+        unit(self.next(Call::Remove(*machine_id, *container_id)))
     }
 }
 
@@ -170,7 +170,7 @@ fn run(
     skip_health_monitor: bool,
 ) -> DeployOperation {
     DeployOperation::RunContainer {
-        machine_id: machine_id.clone(),
+        machine_id: *machine_id,
         spec,
         skip_health_monitor,
     }
@@ -184,8 +184,8 @@ fn replacement(
     let mut spec = spec(Some(0), Some(healthcheck()), None);
     spec.update.order = order;
     DeployOperation::ReplaceContainer(ReplacementOperation {
-        machine_id: machine_id.clone(),
-        old_container_id: old_container_id.clone(),
+        machine_id: *machine_id,
+        old_container_id: *old_container_id,
         spec,
         skip_health_monitor: false,
     })
@@ -193,7 +193,7 @@ fn replacement(
 
 fn hook(machine_id: &MachineId, spec: ResolvedServiceSpec) -> DeployOperation {
     DeployOperation::RunHook {
-        machine_id: machine_id.clone(),
+        machine_id: *machine_id,
         spec,
         old_hook_containers: Vec::new(),
     }
@@ -201,8 +201,8 @@ fn hook(machine_id: &MachineId, spec: ResolvedServiceSpec) -> DeployOperation {
 
 fn stop(machine_id: &MachineId, container_id: &ContainerId) -> DeployOperation {
     DeployOperation::StopContainer {
-        machine_id: machine_id.clone(),
-        container_id: container_id.clone(),
+        machine_id: *machine_id,
+        container_id: *container_id,
     }
 }
 
@@ -269,11 +269,11 @@ fn observation(
 ) -> ContainerObservation {
     let spec = spec(None, None, None);
     ContainerObservation {
-        container_id: container_id.clone(),
+        container_id: *container_id,
         display_name: container_id.to_string(),
         created_at_unix_nanos: 0,
-        machine_id: machine_id.clone(),
-        service_id: spec.service_id.clone(),
+        machine_id: *machine_id,
+        service_id: spec.service_id,
         service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime,
@@ -337,7 +337,7 @@ fn ok(call: Call) -> Step {
 }
 
 fn created(call: Call, container_id: &ContainerId) -> Step {
-    Step(call, Reply::Created(container_id.clone()))
+    Step(call, Reply::Created(*container_id))
 }
 
 fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {

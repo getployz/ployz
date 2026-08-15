@@ -184,14 +184,14 @@ pub fn resolve_machine_selectors(
     for selector in selectors {
         if matches!(selector.as_str(), "*" | "all") {
             for machine in visible {
-                if seen.insert(machine.id.clone()) {
+                if seen.insert(machine.id) {
                     targets.push(machine.clone());
                 }
             }
             continue;
         }
         match resolve_machine_selector(selector, visible) {
-            NameMatches::One(machine) if seen.insert(machine.id.clone()) => {
+            NameMatches::One(machine) if seen.insert(machine.id) => {
                 targets.push(machine.clone());
             }
             NameMatches::One(_) => {}
@@ -199,10 +199,7 @@ pub fn resolve_machine_selectors(
             NameMatches::Ambiguous(matches) => {
                 return Err(MachineSelectorError::Ambiguous {
                     selector: selector.clone(),
-                    matches: matches
-                        .into_iter()
-                        .map(|machine| machine.id.clone())
-                        .collect(),
+                    matches: matches.into_iter().map(|machine| machine.id).collect(),
                 });
             }
         }
@@ -344,7 +341,7 @@ pub fn associate_wireguard_peers(
             continue;
         }
         peer.machine = Some(MachineIdentity {
-            id: machine.id.clone(),
+            id: machine.id,
             name: machine.name.clone(),
         });
         peer.rtt = rtts.get(&machine.id).cloned();

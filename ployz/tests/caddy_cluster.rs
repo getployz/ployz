@@ -172,8 +172,8 @@ async fn assert_health_transition(
     for action in [ContainerAction::Stop, ContainerAction::Start] {
         client
             .change_container(
-                machines[1].id.clone(),
-                containers.get(1).expect("three API containers").clone(),
+                machines[1].id,
+                *containers.get(1).expect("three API containers"),
                 action,
                 None,
                 (action == ContainerAction::Stop).then_some(0),
@@ -247,13 +247,7 @@ async fn assert_failed_load_retry(
         "ok"
     );
     client
-        .change_container(
-            machine.id.clone(),
-            rejected,
-            ContainerAction::Stop,
-            None,
-            Some(0),
-        )
+        .change_container(machine.id, rejected, ContainerAction::Stop, None, Some(0))
         .await
         .unwrap();
     wait_config(client, machine, |config| config != stable).await;
@@ -343,7 +337,7 @@ async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: us
                     .is_some_and(|container| container.service_name.as_str() == name)
                     && service.containers.len() == count
             }) {
-                return service.service_id.clone();
+                return service.service_id;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -504,13 +498,13 @@ async fn create_and_start(
     spec: ResolvedServiceSpec,
 ) -> ployz_core::ContainerId {
     let created = client
-        .create_container(machine.id.clone(), ContainerKind::ServiceContainer, spec)
+        .create_container(machine.id, ContainerKind::ServiceContainer, spec)
         .await
         .unwrap();
     client
         .change_container(
-            machine.id.clone(),
-            created.container_id.clone(),
+            machine.id,
+            created.container_id,
             ContainerAction::Start,
             None,
             None,

@@ -279,14 +279,14 @@ impl ReplicatedStore {
             .await?;
         let mut snapshot = LocalContainerSnapshot::default();
         for [id, encoded] in query.rows(["id", "container"])? {
-            let id = ContainerId::parse(text(&id, "container ID")?.to_owned())?;
+            let id = ContainerId::parse(text(&id, "container ID")?)?;
             let encoded = text(&encoded, "replicated container JSON")?;
             let observation = if encoded.is_empty() || encoded == "{}" {
                 None
             } else {
                 Some(serde_json::from_str(encoded)?)
             };
-            snapshot.inventory.insert(id.clone());
+            snapshot.inventory.insert(id);
             if let Some(observation) = observation {
                 snapshot.observations.insert(id, observation);
             }
@@ -314,7 +314,7 @@ impl ReplicatedStore {
             observations: current
                 .observations
                 .iter()
-                .map(|(id, observation)| (id.clone(), redacted_container(observation)))
+                .map(|(id, observation)| (*id, redacted_container(observation)))
                 .collect(),
         };
         let changes = local_container_changes(&existing, &current);
@@ -421,7 +421,7 @@ impl LocalContainerSnapshot {
     pub(crate) fn observed(&mut self, observation: ContainerObservation) {
         debug_assert!(self.inventory.contains(&observation.container_id));
         self.observations
-            .insert(observation.container_id.clone(), observation);
+            .insert(observation.container_id, observation);
     }
 }
 
@@ -773,7 +773,7 @@ mod tests {
         }))
         .unwrap();
         let local = LocalMachineRecord {
-            id: machine.id.clone(),
+            id: machine.id,
             phase: LocalMachinePhase::Participating,
             machine: Some(machine.clone()),
             wireguard_private_key: None,
@@ -865,21 +865,21 @@ mod tests {
         let existing = LocalContainerSnapshot {
             inventory: [stable.clone(), stale.clone(), old_changed.clone()]
                 .into_iter()
-                .map(|item| item.container_id.clone())
+                .map(|item| item.container_id)
                 .collect(),
             observations: [stable.clone(), stale.clone(), old_changed]
                 .into_iter()
-                .map(|item| (item.container_id.clone(), item))
+                .map(|item| (item.container_id, item))
                 .collect::<BTreeMap<_, _>>(),
         };
         let current = LocalContainerSnapshot {
             inventory: [stable.clone(), changed.clone(), new.clone()]
                 .into_iter()
-                .map(|item| item.container_id.clone())
+                .map(|item| item.container_id)
                 .collect(),
             observations: [stable, changed.clone(), new.clone()]
                 .into_iter()
-                .map(|item| (item.container_id.clone(), item))
+                .map(|item| (item.container_id, item))
                 .collect::<BTreeMap<_, _>>(),
         };
         let changes = local_container_changes(&existing, &current);

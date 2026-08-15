@@ -1,17 +1,20 @@
-use std::{cmp::Ordering, collections::BinaryHeap, future::Future, pin::Pin, time::Duration};
+use std::{
+    borrow::Cow, cmp::Ordering, collections::BinaryHeap, future::Future, pin::Pin, time::Duration,
+};
 
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ExecOptions, HealthObservation, LogEntry,
-    LogStream, MachineObservation, MachineSelector, MembershipObservation, OpaquePayload,
-    ServiceObservation, resolve_machine_selectors,
+    LogStream, MachineId, MachineLogService, MachineName, MachineObservation, MachineSelector,
+    MembershipObservation, OpaquePayload, ServiceObservation, StreamProtocolError,
+    resolve_machine_selectors,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
-use crate::connect::TransportError;
+use crate::connect::{ConnectError, TransportError};
 
 pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
     "sh",
@@ -22,7 +25,23 @@ pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
 const LOG_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const LOG_STALL_CHECK: Duration = Duration::from_secs(1);
 
-pub type LogSource = Pin<Box<dyn Stream<Item = Result<LogEntry, String>> + Send>>;
+#[derive(Debug, Error)]
+pub enum LogError {
+    #[error("{0}")]
+    Transport(Box<tonic::Status>),
+    #[error("{0}")]
+    Protocol(#[from] StreamProtocolError),
+    #[error("{0}")]
+    Message(Cow<'static, str>),
+}
+
+impl From<tonic::Status> for LogError {
+    fn from(status: tonic::Status) -> Self {
+        Self::Transport(Box::new(status))
+    }
+}
+
+pub type LogSource = Pin<Box<dyn Stream<Item = Result<LogEntry, LogError>> + Send>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceArg {
@@ -59,26 +78,65 @@ pub enum ContainerSelectorError {
 
 #[derive(Debug, Error)]
 pub enum OperatorError {
-    #[error("{0}")]
-    Message(String),
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+    #[error(transparent)]
+    Selector(#[from] ployz_core::ServiceSelectorError),
+    #[error(transparent)]
+    MachineSelector(#[from] ployz_core::MachineSelectorError),
+    #[error(transparent)]
+    Value(#[from] ployz_core::ValueError),
     #[error(transparent)]
     Container(#[from] ContainerSelectorError),
     #[error("Machine RPC failed: {0}")]
     Rpc(TransportError),
     #[error("stream protocol failed: {0}")]
-    Protocol(#[from] ployz_core::StreamProtocolError),
-}
-
-impl From<String> for OperatorError {
-    fn from(message: String) -> Self {
-        Self::Message(message)
-    }
-}
-
-impl From<&str> for OperatorError {
-    fn from(message: &str) -> Self {
-        Self::Message(message.to_owned())
-    }
+    Protocol(#[from] StreamProtocolError),
+    #[error(transparent)]
+    Codec(#[from] ployz_core::CodecError),
+    #[error("exec request stream closed")]
+    StreamClosed,
+    #[error("cannot attach a terminal exec to non-terminal stdin; use -T")]
+    TtyRequiresStdin,
+    #[error("invalid Service log selector {0:?}")]
+    InvalidServiceSelector(String),
+    #[error("invalid log tail {0:?}: expected a non-negative integer or all")]
+    InvalidTail(String),
+    #[error("invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT")]
+    InvalidProxyPort,
+    #[error("invalid local port {0:?}: expected 0-65535")]
+    InvalidLocalPort(String),
+    #[error("invalid remote port {0:?}: expected 1-65535")]
+    InvalidRemotePort(String),
+    #[error("no running healthy regular container found for Service")]
+    NoHealthyContainer,
+    #[error("no containers for Service {service:?} found on the selected Machines")]
+    NoContainersOnMachines { service: String },
+    #[error("none of the selected Services exist in the Cluster")]
+    NoSelectedServices,
+    #[error("no Machines found")]
+    NoMachines,
+    #[error("selected Machine disappeared from the snapshot")]
+    SnapshotStale,
+    #[error("unsupported Machine log service {service:?}; {expected}")]
+    UnsupportedLogService {
+        service: String,
+        expected: &'static str,
+    },
+    #[error("open logs for Container {container_id} on Machine {machine_id}: {source}")]
+    OpenContainerLogs {
+        container_id: ContainerId,
+        machine_id: MachineId,
+        #[source]
+        source: Box<OperatorError>,
+    },
+    #[error("open {service} logs on Machine {machine_name}: {source}")]
+    OpenMachineLogs {
+        service: MachineLogService,
+        machine_name: MachineName,
+        #[source]
+        source: Box<OperatorError>,
+    },
 }
 
 impl From<tonic::Status> for OperatorError {
@@ -97,7 +155,7 @@ pub fn exec_options(command: Vec<String>, mode: ExecMode) -> Result<ExecOptions,
     // TODO(UT-039): preserve the Compose-style stdout-driven TTY rule.
     let tty = !mode.detach && mode.stdout_terminal && !mode.no_tty;
     if tty && !mode.stdin_terminal {
-        return Err("cannot attach a terminal exec to non-terminal stdin; use -T".into());
+        return Err(OperatorError::TtyRequiresStdin);
     }
     Ok(ExecOptions {
         command: if command.is_empty() {
@@ -158,7 +216,7 @@ fn resolve_container_selector<'a>(
                 selector: selector.to_owned(),
                 container_ids: named
                     .into_iter()
-                    .map(|container| container.container_id.clone())
+                    .map(|container| container.container_id)
                     .collect(),
             });
         }
@@ -177,7 +235,7 @@ fn resolve_container_selector<'a>(
             selector: selector.to_owned(),
             container_ids: prefixed
                 .into_iter()
-                .map(|container| container.container_id.clone())
+                .map(|container| container.container_id)
                 .collect(),
         }),
     }
@@ -193,7 +251,7 @@ pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, Operator
                 (service, Some(container))
             });
         if service.is_empty() || container.is_some_and(str::is_empty) {
-            return Err(format!("invalid Service log selector {value:?}").into());
+            return Err(OperatorError::InvalidServiceSelector(value.to_owned()));
         }
         if let Some(existing) = parsed.iter_mut().find(|arg| arg.service == service) {
             match container {
@@ -223,9 +281,7 @@ pub fn parse_tail(value: &str) -> Result<i32, OperatorError> {
         .parse::<i32>()
         .ok()
         .filter(|tail| *tail >= 0)
-        .ok_or_else(|| {
-            format!("invalid log tail {value:?}: expected a non-negative integer or all").into()
-        })
+        .ok_or_else(|| OperatorError::InvalidTail(value.to_owned()))
 }
 
 #[must_use]
@@ -236,16 +292,16 @@ pub fn service_logs_use_compose(explicit: &[String]) -> bool {
 pub fn parse_proxy_ports(value: &str) -> Result<ProxyPorts, OperatorError> {
     let (local, remote) = value.split_once(':').map_or(("0", value), |parts| parts);
     if remote.contains(':') {
-        return Err("invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT".into());
+        return Err(OperatorError::InvalidProxyPort);
     }
     let local = local
         .parse::<u16>()
-        .map_err(|_| format!("invalid local port {local:?}: expected 0-65535"))?;
+        .map_err(|_| OperatorError::InvalidLocalPort(local.to_owned()))?;
     let remote = remote
         .parse::<u16>()
         .ok()
         .filter(|port| *port > 0)
-        .ok_or_else(|| format!("invalid remote port {remote:?}: expected 1-65535"))?;
+        .ok_or_else(|| OperatorError::InvalidRemotePort(remote.to_owned()))?;
     Ok(ProxyPorts { local, remote })
 }
 
@@ -264,7 +320,7 @@ pub fn select_proxy_container(
                     }
                 )
         })
-        .ok_or_else(|| "no running healthy regular container found for Service".into())
+        .ok_or(OperatorError::NoHealthyContainer)
 }
 
 pub struct ExecSession {
@@ -287,8 +343,8 @@ pub(crate) fn stream_input(identity: String, stream: Streaming<OpaquePayload>) -
         identity,
         stream: Box::pin(stream.map(|result| {
             result
-                .map_err(|error| error.to_string())
-                .and_then(|payload| LogEntry::decode(&payload).map_err(|error| error.to_string()))
+                .map_err(LogError::from)
+                .and_then(|payload| LogEntry::decode(&payload).map_err(LogError::from))
         })),
     }
 }
@@ -364,35 +420,33 @@ pub(crate) fn select_machines<'a>(
         .collect::<Vec<_>>();
     if selectors.is_empty() {
         if eligible.is_empty() {
-            return Err("no Machines found".into());
+            return Err(OperatorError::NoMachines);
         }
         return Ok(eligible);
     }
     let selectors = selectors
         .iter()
         .map(|selector| MachineSelector::parse(selector.clone()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| OperatorError::Message(error.to_string()))?;
+        .collect::<Result<Vec<_>, _>>()?;
     let visible = eligible
         .iter()
         .map(|observation| observation.machine.clone())
         .collect::<Vec<_>>();
-    resolve_machine_selectors(&visible, &selectors)
-        .map_err(|error| OperatorError::Message(error.to_string()))?
+    resolve_machine_selectors(&visible, &selectors)?
         .into_iter()
         .map(|machine| {
             eligible
                 .iter()
                 .copied()
                 .find(|observation| observation.machine.id == machine.id)
-                .ok_or_else(|| "selected Machine disappeared from the snapshot".into())
+                .ok_or(OperatorError::SnapshotStale)
         })
         .collect()
 }
 
 struct LogEvent {
     index: usize,
-    entry: Option<Result<LogEntry, String>>,
+    entry: Option<Result<LogEntry, LogError>>,
 }
 
 struct LogState {

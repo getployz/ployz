@@ -16,11 +16,11 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
         let plan = plan(operations);
         let client = Scripted::new(vec![
             created(
-                Call::Create(machine.clone(), ContainerKind::PreDeployHook),
+                Call::Create(machine, ContainerKind::PreDeployHook),
                 &hook_id,
             ),
-            ok(Call::Start(machine.clone(), hook_id.clone())),
-            Step(Call::Inspect(machine.clone(), hook_id), reply),
+            ok(Call::Start(machine, hook_id)),
+            Step(Call::Inspect(machine, hook_id), reply),
         ]);
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
         assert_eq!(outcome.unexecuted, vec![stop(&machine, &suffix)]);
@@ -36,11 +36,11 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
     ]);
     let client = Scripted::new(vec![
         created(
-            Call::Create(machine.clone(), ContainerKind::PreDeployHook),
+            Call::Create(machine, ContainerKind::PreDeployHook),
             &hook_id,
         ),
-        ok(Call::Start(machine.clone(), hook_id.clone())),
-        observed(Call::Inspect(machine.clone(), hook_id), exited(0)),
+        ok(Call::Start(machine, hook_id)),
+        observed(Call::Inspect(machine, hook_id), exited(0)),
         ok(Call::Stop(machine, suffix)),
     ]);
     assert!(
@@ -59,15 +59,12 @@ async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
     let plan = plan(vec![hook(&machine, spec(None, None, Some(10)))]);
     let client = Scripted::new(vec![
         created(
-            Call::Create(machine.clone(), ContainerKind::PreDeployHook),
+            Call::Create(machine, ContainerKind::PreDeployHook),
             &hook_id,
         ),
-        ok(Call::Start(machine.clone(), hook_id.clone())),
-        Step(
-            Call::Inspect(machine.clone(), hook_id.clone()),
-            Reply::Pending,
-        ),
-        ok(Call::StopWithGrace(machine.clone(), hook_id.clone(), 0)),
+        ok(Call::Start(machine, hook_id)),
+        Step(Call::Inspect(machine, hook_id), Reply::Pending),
+        ok(Call::StopWithGrace(machine, hook_id, 0)),
     ]);
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
     assert!(matches!(
@@ -85,14 +82,11 @@ async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
     let cancellation = CancellationToken::new();
     let client = Scripted::new(vec![
         created(
-            Call::Create(machine.clone(), ContainerKind::PreDeployHook),
+            Call::Create(machine, ContainerKind::PreDeployHook),
             &hook_id,
         ),
-        ok(Call::Start(machine.clone(), hook_id.clone())),
-        Step(
-            Call::Inspect(machine.clone(), hook_id.clone()),
-            Reply::Pending,
-        ),
+        ok(Call::Start(machine, hook_id)),
+        Step(Call::Inspect(machine, hook_id), Reply::Pending),
         failed(Call::StopWithGrace(machine, hook_id, 0), "stop failed"),
     ]);
     let cancel = cancellation.clone();
@@ -123,17 +117,11 @@ async fn executing_the_same_plan_twice_runs_a_fresh_hook_each_time() {
     let second = container('b');
     let plan = plan(vec![hook(&machine, spec(None, None, Some(5_000)))]);
     let client = Scripted::new(vec![
-        created(
-            Call::Create(machine.clone(), ContainerKind::PreDeployHook),
-            &first,
-        ),
-        ok(Call::Start(machine.clone(), first.clone())),
-        observed(Call::Inspect(machine.clone(), first), exited(0)),
-        created(
-            Call::Create(machine.clone(), ContainerKind::PreDeployHook),
-            &second,
-        ),
-        ok(Call::Start(machine.clone(), second.clone())),
+        created(Call::Create(machine, ContainerKind::PreDeployHook), &first),
+        ok(Call::Start(machine, first)),
+        observed(Call::Inspect(machine, first), exited(0)),
+        created(Call::Create(machine, ContainerKind::PreDeployHook), &second),
+        ok(Call::Start(machine, second)),
         observed(Call::Inspect(machine, second), exited(0)),
     ]);
 

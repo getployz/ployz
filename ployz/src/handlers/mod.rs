@@ -31,9 +31,7 @@ pub fn run() -> Result<(), Error> {
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let Some((name, child)) = matches.subcommand() else {
-        command
-            .print_help()
-            .map_err(|error| Error::usage(error.to_string()))?;
+        command.print_help()?;
         println!();
         return Ok(());
     };
@@ -261,10 +259,10 @@ mod tests {
             .try_get_matches_from(["ployz", "machine", "rename", "vultr1", "BAD NAME"])
             .unwrap();
         assert_eq!(
-            dispatch(&matches, &mut command),
-            Err(Error::from(
-                ployz_core::MachineName::parse("BAD NAME").unwrap_err(),
-            ))
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            ployz_core::MachineName::parse("BAD NAME")
+                .unwrap_err()
+                .to_string(),
         );
     }
 
@@ -276,10 +274,8 @@ mod tests {
             .try_get_matches_from(["ployz", "machine", "init"])
             .unwrap();
         assert_eq!(
-            dispatch(&matches, &mut command),
-            Err(Error::usage(
-                "local machine initialisation is not implemented; specify a remote machine",
-            ))
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            "local machine initialisation is not implemented; specify a remote machine",
         );
     }
 
@@ -291,8 +287,8 @@ mod tests {
             .try_get_matches_from(["ployz", "dns", "show"])
             .unwrap();
         assert_eq!(
-            dispatch(&matches, &mut command),
-            Err(Error::from(crate::context::ContextError::NoConfig))
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            crate::context::ContextError::NoConfig.to_string(),
         );
     }
 
@@ -313,10 +309,8 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(
-            dispatch(&matches, &mut command),
-            Err(Error::usage(
-                "expected KEY=VALUE, got \"missing-delimiter\""
-            ))
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            r#"expected KEY=VALUE, got "missing-delimiter""#,
         );
     }
 
@@ -335,8 +329,8 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(
-            dispatch(&matches, &mut command),
-            Err(Error::usage("replicas must be greater than zero"))
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            "replicas must be greater than zero",
         );
     }
 

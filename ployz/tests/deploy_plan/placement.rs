@@ -268,7 +268,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
         .operations()
         .iter()
         .map(|operation| match operation {
-            DeployOperation::RunContainer { machine_id, .. } => machine_id.clone(),
+            DeployOperation::RunContainer { machine_id, .. } => *machine_id,
             other @ (DeployOperation::CreateVolume { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }

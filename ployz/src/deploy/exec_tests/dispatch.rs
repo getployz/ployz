@@ -15,40 +15,40 @@ async fn dispatches_the_complete_algebra_and_flattens_nested_sequences() {
     let hook_spec = spec(None, None, Some(5_000));
     let operations = vec![
         DeployOperation::CreateVolume {
-            machine_id: first.clone(),
+            machine_id: first,
             volume: volume(),
         },
         DeployOperation::RunContainer {
-            machine_id: first.clone(),
+            machine_id: first,
             spec: service.clone(),
             skip_health_monitor: true,
         },
         DeployOperation::StopContainer {
-            machine_id: first.clone(),
-            container_id: old.clone(),
+            machine_id: first,
+            container_id: old,
         },
         DeployOperation::RemoveContainer {
-            machine_id: first.clone(),
-            container_id: removed.clone(),
+            machine_id: first,
+            container_id: removed,
         },
         DeployOperation::ReplaceContainer(ReplacementOperation {
-            machine_id: first.clone(),
-            old_container_id: old.clone(),
+            machine_id: first,
+            old_container_id: old,
             spec: service.clone(),
             skip_health_monitor: true,
         }),
         DeployOperation::StopHook {
-            machine_id: second.clone(),
-            container_id: hook.clone(),
+            machine_id: second,
+            container_id: hook,
         },
         DeployOperation::RunHook {
-            machine_id: first.clone(),
+            machine_id: first,
             spec: hook_spec,
-            old_hook_containers: vec![(second.clone(), hook.clone())],
+            old_hook_containers: vec![(second, hook)],
         },
         DeployOperation::Sequence {
             operations: vec![DeployOperation::RunContainer {
-                machine_id: second.clone(),
+                machine_id: second,
                 spec: service,
                 skip_health_monitor: true,
             }],
@@ -56,32 +56,29 @@ async fn dispatches_the_complete_algebra_and_flattens_nested_sequences() {
     ];
     let plan = plan(operations.clone());
     let client = Scripted::new(vec![
-        ok(Call::CreateVolume(first.clone())),
+        ok(Call::CreateVolume(first)),
         created(
-            Call::Create(first.clone(), ContainerKind::ServiceContainer),
+            Call::Create(first, ContainerKind::ServiceContainer),
             &new_run,
         ),
-        ok(Call::Start(first.clone(), new_run)),
-        ok(Call::Stop(first.clone(), old.clone())),
-        ok(Call::Stop(first.clone(), removed.clone())),
-        ok(Call::Remove(first.clone(), removed)),
+        ok(Call::Start(first, new_run)),
+        ok(Call::Stop(first, old)),
+        ok(Call::Stop(first, removed)),
+        ok(Call::Remove(first, removed)),
         created(
-            Call::Create(first.clone(), ContainerKind::ServiceContainer),
+            Call::Create(first, ContainerKind::ServiceContainer),
             &replacement,
         ),
-        ok(Call::Start(first.clone(), replacement)),
-        ok(Call::Stop(first.clone(), old.clone())),
-        ok(Call::Remove(first.clone(), old)),
-        ok(Call::Stop(second.clone(), hook.clone())),
-        ok(Call::Remove(second.clone(), hook)),
+        ok(Call::Start(first, replacement)),
+        ok(Call::Stop(first, old)),
+        ok(Call::Remove(first, old)),
+        ok(Call::Stop(second, hook)),
+        ok(Call::Remove(second, hook)),
+        created(Call::Create(first, ContainerKind::PreDeployHook), &new_hook),
+        ok(Call::Start(first, new_hook)),
+        observed(Call::Inspect(first, new_hook), exited(0)),
         created(
-            Call::Create(first.clone(), ContainerKind::PreDeployHook),
-            &new_hook,
-        ),
-        ok(Call::Start(first.clone(), new_hook.clone())),
-        observed(Call::Inspect(first.clone(), new_hook), exited(0)),
-        created(
-            Call::Create(second.clone(), ContainerKind::ServiceContainer),
+            Call::Create(second, ContainerKind::ServiceContainer),
             &nested,
         ),
         ok(Call::Start(second, nested)),
@@ -105,7 +102,7 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
     let machine = machine('1');
     let operations = ['a', 'b', 'c']
         .map(|id| DeployOperation::StopContainer {
-            machine_id: machine.clone(),
+            machine_id: machine,
             container_id: container(id),
         })
         .to_vec();
@@ -121,9 +118,9 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
                     unreachable!()
                 };
                 if index == failed_index {
-                    failed(Call::Stop(machine.clone(), container_id.clone()), "boom")
+                    failed(Call::Stop(machine, *container_id), "boom")
                 } else {
-                    ok(Call::Stop(machine.clone(), container_id.clone()))
+                    ok(Call::Stop(machine, *container_id))
                 }
             })
             .collect();
@@ -153,10 +150,10 @@ async fn create_then_start_failure_keeps_the_container_without_cleanup() {
     let plan = plan(vec![run(&machine, spec(None, None, None), false)]);
     let client = Scripted::new(vec![
         created(
-            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+            Call::Create(machine, ContainerKind::ServiceContainer),
             &created_id,
         ),
-        failed(Call::Start(machine.clone(), created_id), "start failed"),
+        failed(Call::Start(machine, created_id), "start failed"),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -184,28 +181,19 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
     missing.code = RpcErrorCode::NotFound;
     let plan = plan(vec![
         DeployOperation::StopContainer {
-            machine_id: machine.clone(),
-            container_id: stopped.clone(),
+            machine_id: machine,
+            container_id: stopped,
         },
         DeployOperation::RemoveContainer {
-            machine_id: machine.clone(),
-            container_id: removed.clone(),
+            machine_id: machine,
+            container_id: removed,
         },
         stop(&machine, &suffix),
     ]);
     let client = Scripted::new(vec![
-        Step(
-            Call::Stop(machine.clone(), stopped),
-            Reply::Error(missing.clone()),
-        ),
-        Step(
-            Call::Stop(machine.clone(), removed.clone()),
-            Reply::Error(missing.clone()),
-        ),
-        Step(
-            Call::Remove(machine.clone(), removed),
-            Reply::Error(missing),
-        ),
+        Step(Call::Stop(machine, stopped), Reply::Error(missing.clone())),
+        Step(Call::Stop(machine, removed), Reply::Error(missing.clone())),
+        Step(Call::Remove(machine, removed), Reply::Error(missing)),
         ok(Call::Stop(machine, suffix)),
     ]);
 

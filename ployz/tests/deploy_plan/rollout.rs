@@ -91,11 +91,11 @@ fn public_outcome_counts_follow_the_shallow_operations_view() {
     let nested = DeployOperation::Sequence {
         operations: vec![
             DeployOperation::StopContainer {
-                machine_id: machine_id.clone(),
+                machine_id,
                 container_id: container_id('a'),
             },
             DeployOperation::StopContainer {
-                machine_id: machine_id.clone(),
+                machine_id,
                 container_id: container_id('b'),
             },
         ],

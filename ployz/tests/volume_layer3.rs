@@ -137,7 +137,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
             .unwrap();
         let created = client
             .create_container(
-                machine.machine.id.clone(),
+                machine.machine.id,
                 ContainerKind::ServiceContainer,
                 mount_spec(index, &shared),
             )
@@ -190,7 +190,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     assert!(
         client
             .create_container(
-                first_machine.machine.id.clone(),
+                first_machine.machine.id,
                 ContainerKind::ServiceContainer,
                 mount_spec(9, &missing),
             )
@@ -556,11 +556,7 @@ async fn execute(client: &mut ployz::connect::Client, operations: Vec<&DeployOpe
                 machine_id, spec, ..
             } => {
                 client
-                    .create_container(
-                        machine_id.clone(),
-                        ContainerKind::ServiceContainer,
-                        spec.clone(),
-                    )
+                    .create_container(*machine_id, ContainerKind::ServiceContainer, spec.clone())
                     .await
                     .unwrap();
             }

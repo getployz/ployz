@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, num::NonZeroU16};
 
-use oci_client::{Client, Reference, secrets::RegistryAuth};
+use oci_client::{
+    Client, ParseError, Reference, errors::OciDistributionError, secrets::RegistryAuth,
+};
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath,
     MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
@@ -8,19 +10,25 @@ use ployz_core::{
     ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
+use thiserror::Error;
 
 pub const SERVICE_NAME: &str = "caddy";
 pub const DATA_PATH: &str = "/var/lib/ployz/caddy";
 pub const RUNTIME_PATH: &str = "/run/ployz/caddy";
 
-pub async fn latest_image() -> Result<String, String> {
-    let reference: Reference = "docker.io/library/caddy:latest"
-        .parse()
-        .map_err(|error| format!("parse Caddy image reference: {error}"))?;
+#[derive(Debug, Error)]
+pub enum CaddyImageError {
+    #[error("parse Caddy image reference: {0}")]
+    Reference(#[from] ParseError),
+    #[error("list Docker Hub Caddy tags: {0}")]
+    ListTags(#[from] OciDistributionError),
+}
+
+pub async fn latest_image() -> Result<String, CaddyImageError> {
+    let reference = "docker.io/library/caddy:latest".parse::<Reference>()?;
     let response = Client::default()
         .list_tags(&reference, &RegistryAuth::Anonymous, None, None)
-        .await
-        .map_err(|error| format!("list Docker Hub Caddy tags: {error}"))?;
+        .await?;
     Ok(select_image(&response.tags))
 }
 

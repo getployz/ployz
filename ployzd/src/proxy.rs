@@ -13,6 +13,7 @@ use ployz_core::{
     NameMatches, clear_routing_headers, grpc_frame_length, grpc_frames, resolve_machine_selector,
     resolve_machine_selectors, routing_from_metadata,
 };
+use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tonic::{
@@ -25,6 +26,14 @@ use tonic::{
 };
 
 use crate::corrosion::ReplicatedStore;
+
+#[derive(Debug, Error)]
+enum BackendError {
+    #[error("remote backend cache lock poisoned")]
+    Poisoned,
+    #[error("{0}")]
+    Endpoint(#[from] tonic::transport::Error),
+}
 
 pub use ployz_core::MachineSelectorError as TargetResolutionError;
 pub use ployz_core::RoutingRequest;
@@ -47,10 +56,7 @@ pub fn resolve_route(
             NameMatches::None => Err(TargetResolutionError::NotFound(vec![selector])),
             NameMatches::Ambiguous(matches) => Err(TargetResolutionError::Ambiguous {
                 selector,
-                matches: matches
-                    .into_iter()
-                    .map(|machine| machine.id.clone())
-                    .collect(),
+                matches: matches.into_iter().map(|machine| machine.id).collect(),
             }),
         },
         RoutingRequest::Many(selectors) => {
@@ -173,7 +179,9 @@ impl MachineProxy {
         request: http::Request<Body>,
         address: ManagementAddress,
     ) -> Result<http::Response<Body>, Status> {
-        let mut channel = self.remote_backend(address).map_err(Status::internal)?;
+        let mut channel = self
+            .remote_backend(address)
+            .map_err(|error| Status::internal(error.to_string()))?;
         poll_fn(|context| channel.poll_ready(context))
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
@@ -183,17 +191,16 @@ impl MachineProxy {
             .map_err(|error| Status::unavailable(error.to_string()))
     }
 
-    fn remote_backend(&self, address: ManagementAddress) -> Result<Channel, String> {
+    fn remote_backend(&self, address: ManagementAddress) -> Result<Channel, BackendError> {
         let mut backends = self
             .remote_backends
             .lock()
-            .map_err(|_| "remote backend cache lock poisoned".to_owned())?;
+            .map_err(|_| BackendError::Poisoned)?;
         if let Some(channel) = backends.get(&address) {
             return Ok(channel.clone());
         }
         let endpoint =
-            Endpoint::from_shared(format!("http://[{}]:{}", address.0, self.remote_port))
-                .map_err(|error| error.to_string())?
+            Endpoint::from_shared(format!("http://[{}]:{}", address.0, self.remote_port))?
                 .connect_timeout(Duration::from_secs(10));
         let channel = endpoint.connect_lazy();
         backends.insert(address, channel.clone());

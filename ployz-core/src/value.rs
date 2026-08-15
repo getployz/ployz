@@ -1,7 +1,7 @@
 use std::{
     fmt,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    str::FromStr,
+    str::{self, FromStr},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -48,6 +48,65 @@ fn is_dns_label(value: &str) -> bool {
         && bytes
             .iter()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
+macro_rules! hex_id_newtype {
+    ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal) => {
+        $(#[$attribute])*
+        #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name([u8; $len]);
+
+        impl $name {
+            pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
+                let value = value.as_ref();
+                if !is_lower_hex(value, $len) {
+                    return Err(ValueError::new($label, value, $expected));
+                }
+                let mut bytes = [0_u8; $len];
+                bytes.copy_from_slice(value.as_bytes());
+                Ok(Self(bytes))
+            }
+
+            pub fn as_str(&self) -> &str {
+                str::from_utf8(&self.0).expect("hex IDs are ASCII")
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.debug_tuple(stringify!($name)).field(&self.as_str()).finish()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = ValueError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::parse(value)
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = ValueError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::parse(value)
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                value.as_str().to_owned()
+            }
+        }
+    };
 }
 
 macro_rules! validated_string_newtype {
@@ -103,37 +162,41 @@ macro_rules! validated_string_newtype {
     };
 }
 
-validated_string_newtype!(
+hex_id_newtype!(
     MachineId,
     "Machine ID",
-    "32 lowercase hexadecimal characters",
-    |value| is_lower_hex(value, 32)
+    32,
+    "32 lowercase hexadecimal characters"
 );
-validated_string_newtype!(
+hex_id_newtype!(
     ServiceId,
     "Service ID",
-    "32 lowercase hexadecimal characters",
-    |value| is_lower_hex(value, 32)
+    32,
+    "32 lowercase hexadecimal characters"
 );
-validated_string_newtype!(
+hex_id_newtype!(
     ContainerId,
     "Container ID",
-    "64 lowercase hexadecimal characters",
-    |value| is_lower_hex(value, 64)
+    64,
+    "64 lowercase hexadecimal characters"
 );
 
 impl MachineId {
     /// Generate the same 32-character lowercase hexadecimal identity shape as the baseline.
     #[must_use]
     pub fn random() -> Self {
-        Self(uuid::Uuid::new_v4().simple().to_string())
+        let mut hex = [0_u8; 32];
+        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
+        Self(hex)
     }
 }
 
 impl ServiceId {
     #[must_use]
     pub fn random() -> Self {
-        Self(uuid::Uuid::new_v4().simple().to_string())
+        let mut hex = [0_u8; 32];
+        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
+        Self(hex)
     }
 }
 

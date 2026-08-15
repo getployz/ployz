@@ -2,10 +2,9 @@
 compile_error!("ployzd supports Linux only");
 
 use std::{
-    error::Error,
     fs::{self, File, OpenOptions},
     io,
-    net::{IpAddr, SocketAddr},
+    net::{AddrParseError, IpAddr, SocketAddr},
     os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -16,19 +15,22 @@ use ployz_core::{LocalMachinePhase, MachineRpcServer};
 use ployzd::{
     caddy,
     corrosion::{
-        CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, RunningCorrosion,
-        run_machine_publisher_with_restart,
+        CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
+        RunningCorrosion, run_machine_publisher_with_restart,
     },
     dns,
-    docker::{ContainerObserver, ContainerRuntime, LocalDocker, MachineSpecStore},
+    docker::{ContainerObserver, ContainerRuntime, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
-    machine::{DEFAULT_DATA_DIR, LocalMachineStore},
+    machine::{DEFAULT_DATA_DIR, LocalMachineStore, StoreError},
     metrics,
-    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkPlane, machine_gateway},
+    network::{
+        CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane, machine_gateway,
+    },
     proxy::MachineProxy,
     rpc::MachineService,
 };
 use sd_notify::NotifyState;
+use thiserror::Error;
 use tokio::{
     io::{AsyncWriteExt, copy, stdin, stdout},
     net::{TcpListener, UnixListener},
@@ -70,22 +72,44 @@ enum Command {
     DialStdio,
 }
 
+#[derive(Debug, Error)]
+enum Error {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Network(#[from] NetworkError),
+    #[error(transparent)]
+    SpecStore(#[from] SpecStoreError),
+    #[error(transparent)]
+    Corrosion(#[from] CorrosionError),
+    #[error(transparent)]
+    Addr(#[from] AddrParseError),
+    #[error(transparent)]
+    Metrics(#[from] prometheus::Error),
+    #[error(transparent)]
+    Transport(#[from] tonic::transport::Error),
+    #[error("local Machine record lock poisoned")]
+    StorePoisoned,
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Error> {
     let args = Args::parse();
     if matches!(args.command, Some(Command::Version)) {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if matches!(args.command, Some(Command::DialStdio)) {
-        return dial_stdio(&args.socket).await.map_err(Into::into);
+        return dial_stdio(&args.socket).await.map_err(Error::from);
     }
     let store = Arc::new(Mutex::new(LocalMachineStore::open(&args.data_dir)?));
     let (rpc_listener, _socket_lock) = bind_socket(&args.socket)?;
     let metrics_listener = TcpListener::bind(args.metrics_address).await?;
     let local_record = store
         .lock()
-        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
+        .map_err(|_| Error::StorePoisoned)?
         .record()
         .clone();
     let mut network = NetworkPlane::start(&local_record).await?;
@@ -142,12 +166,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let observer = replicated_store.clone().and_then(|replicated| {
         containers.clone().map(|runtime| {
-            ContainerObserver::new(
-                runtime,
-                replicated,
-                Arc::clone(&store),
-                local_record.id.clone(),
-            )
+            ContainerObserver::new(runtime, replicated, Arc::clone(&store), local_record.id)
         })
     });
     let shutdown = CancellationToken::new();
@@ -171,7 +190,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .with_caddyfile(caddyfile.clone());
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
-        local_record.id.clone(),
+        local_record.id,
         MACHINE_API_PORT,
         replicated_store.clone(),
     );
@@ -403,10 +422,10 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
 async fn start_corrosion(
     args: &Args,
     store: &Arc<Mutex<LocalMachineStore>>,
-) -> Result<Option<RunningCorrosion>, Box<dyn Error>> {
+) -> Result<Option<RunningCorrosion>, Error> {
     let record = store
         .lock()
-        .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
+        .map_err(|_| Error::StorePoisoned)?
         .record()
         .clone();
     let phase = record.phase;

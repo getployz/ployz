@@ -151,7 +151,7 @@ pub fn peers_for(observer_id: &MachineId, machines: &[Machine]) -> Vec<MeshPeer>
         .iter()
         .filter(|machine| machine.id != *observer_id)
         .map(|machine| MeshPeer {
-            machine_id: machine.id.clone(),
+            machine_id: machine.id,
             public_key: machine.public_key,
             allowed_ips: [
                 IpNet::new(IpAddr::V6(machine.management_address.0), 128)

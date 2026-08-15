@@ -51,17 +51,13 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
     let mut created = Vec::new();
     for machine in &machines {
         let container = client
-            .create_container(
-                machine.id.clone(),
-                ContainerKind::ServiceContainer,
-                spec.clone(),
-            )
+            .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
             .await
             .unwrap();
         client
             .change_container(
-                machine.id.clone(),
-                container.container_id.clone(),
+                machine.id,
+                container.container_id,
                 ContainerAction::Start,
                 None,
                 None,
@@ -77,12 +73,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
     let observations = wait_for_dns_observations(&mut client, &service_id, 3).await;
     let by_machine = observations
         .iter()
-        .map(|observation| {
-            (
-                observation.machine_id.clone(),
-                observation.address.unwrap().0,
-            )
-        })
+        .map(|observation| (observation.machine_id, observation.address.unwrap().0))
         .collect::<BTreeMap<_, _>>();
     let probe_observation = observations
         .iter()
@@ -225,8 +216,8 @@ async fn assert_projection_changes(
     probe.wait_addresses("dns-api.internal", expected).await;
     client
         .change_container(
-            second_machine.id.clone(),
-            second_container.clone(),
+            second_machine.id,
+            *second_container,
             ContainerAction::Stop,
             None,
             None,
@@ -238,8 +229,8 @@ async fn assert_projection_changes(
         .await;
     client
         .change_container(
-            second_machine.id.clone(),
-            second_container.clone(),
+            second_machine.id,
+            *second_container,
             ContainerAction::Start,
             None,
             None,

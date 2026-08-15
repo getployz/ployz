@@ -28,7 +28,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     let second = spec(&service_id, "shared", "v2");
     client
         .create_container(
-            machines[0].id.clone(),
+            machines[0].id,
             ContainerKind::ServiceContainer,
             first.clone(),
         )
@@ -36,26 +36,18 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .unwrap();
     client
         .create_container(
-            machines[1].id.clone(),
+            machines[1].id,
             ContainerKind::ServiceContainer,
             second.clone(),
         )
         .await
         .unwrap();
     client
-        .create_container(
-            machines[0].id.clone(),
-            ContainerKind::PreDeployHook,
-            first.clone(),
-        )
+        .create_container(machines[0].id, ContainerKind::PreDeployHook, first.clone())
         .await
         .unwrap();
     client
-        .create_container(
-            machines[1].id.clone(),
-            ContainerKind::PreDeployHook,
-            second.clone(),
-        )
+        .create_container(machines[1].id, ContainerKind::PreDeployHook, second.clone())
         .await
         .unwrap();
 
@@ -73,7 +65,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     let collision_id = ServiceId::random();
     client
         .create_container(
-            machines[1].id.clone(),
+            machines[1].id,
             ContainerKind::ServiceContainer,
             spec(&collision_id, "shared", "collision"),
         )
@@ -182,16 +174,12 @@ async fn assert_l3_061_default_spec(
     }))
     .unwrap();
     let created = client
-        .create_container(
-            machine.id.clone(),
-            ContainerKind::ServiceContainer,
-            spec.clone(),
-        )
+        .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
         .await
         .unwrap();
 
     let observed = client
-        .inspect_container(machine.id.clone(), created.container_id.clone())
+        .inspect_container(machine.id, created.container_id)
         .await
         .unwrap();
     assert_eq!(observed.resolved_spec, spec);
@@ -220,8 +208,8 @@ async fn assert_l3_061_default_spec(
 
     client
         .change_container(
-            machine.id.clone(),
-            created.container_id.clone(),
+            machine.id,
+            created.container_id,
             ContainerAction::Remove,
             None,
             None,
@@ -279,16 +267,12 @@ async fn assert_l3_062_full_spec(
     }))
     .unwrap();
     let created = client
-        .create_container(
-            machine.id.clone(),
-            ContainerKind::ServiceContainer,
-            spec.clone(),
-        )
+        .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
         .await
         .unwrap();
 
     let observed = client
-        .inspect_container(machine.id.clone(), created.container_id.clone())
+        .inspect_container(machine.id, created.container_id)
         .await
         .unwrap();
     assert_eq!(observed.resolved_spec, spec);
@@ -322,8 +306,8 @@ async fn assert_l3_062_full_spec(
 
     client
         .change_container(
-            machine.id.clone(),
-            created.container_id.clone(),
+            machine.id,
+            created.container_id,
             ContainerAction::Remove,
             None,
             None,

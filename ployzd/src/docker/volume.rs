@@ -62,7 +62,7 @@ impl ContainerRuntime {
 fn docker_volume(machine_id: &MachineId, volume: Volume) -> Result<DockerVolume, Error> {
     Ok(DockerVolume {
         id: DockerVolumeId {
-            machine_id: machine_id.clone(),
+            machine_id: *machine_id,
             name: DockerVolumeName::parse(volume.name).map_err(|source| Error::InvalidValue {
                 field: "Docker Volume name",
                 source,

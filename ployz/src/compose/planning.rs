@@ -211,7 +211,7 @@ fn prepare_shared_replicated_volumes(
             {
                 let first_use = uses.first().expect("shared Volume has at least two uses");
                 let operation = DeployOperation::CreateVolume {
-                    machine_id: machine_id.clone(),
+                    machine_id,
                     volume: first_use.volume.clone(),
                 };
                 remember_volume(snapshot, &machine_id, first_use.volume);
@@ -250,7 +250,7 @@ fn remember_volume(
     };
     snapshot.volumes.push(ObservedDockerVolume {
         id: DockerVolumeId {
-            machine_id: machine_id.clone(),
+            machine_id: *machine_id,
             name: name.clone(),
         },
         driver: driver

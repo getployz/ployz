@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
+    io::{self, Read},
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -10,6 +10,8 @@ use std::{
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
+
+use thiserror::Error;
 
 use super::{
     convert::{invalid, is_external},
@@ -169,18 +171,39 @@ fn resolve_secret(
     Ok(value)
 }
 
-fn bounded_output(mut command: Command, timeout: Duration) -> Result<std::process::Output, String> {
+#[derive(Debug, Error)]
+enum BoundedOutputError {
+    #[error("{0}")]
+    Io(#[from] io::Error),
+    #[error("capture stdout")]
+    Stdout,
+    #[error("capture stderr")]
+    Stderr,
+    #[error("timed out after {0}s")]
+    Timeout(u64),
+    #[error("stdout reader panicked")]
+    StdoutPanic,
+    #[error("stderr reader panicked")]
+    StderrPanic,
+    #[error("output exceeded {limit} bytes")]
+    OutputLimit { limit: usize },
+}
+
+fn bounded_output(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<std::process::Output, BoundedOutputError> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     command.process_group(0);
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let stdout = child.stdout.take().ok_or("capture stdout")?;
-    let stderr = child.stderr.take().ok_or("capture stderr")?;
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take().ok_or(BoundedOutputError::Stdout)?;
+    let stderr = child.stderr.take().ok_or(BoundedOutputError::Stderr)?;
     let stdout_reader = thread::spawn(move || read_capped(stdout));
     let stderr_reader = thread::spawn(move || read_capped(stderr));
     let start = Instant::now();
     let status = loop {
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+        if let Some(status) = child.try_wait()? {
             break status;
         }
         if start.elapsed() >= timeout {
@@ -197,22 +220,22 @@ fn bounded_output(mut command: Command, timeout: Duration) -> Result<std::proces
             let _ = child.wait();
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err(format!("timed out after {}s", timeout.as_secs()));
+            return Err(BoundedOutputError::Timeout(timeout.as_secs()));
         }
         thread::sleep(Duration::from_millis(10));
     };
     let (stdout, stdout_truncated) = stdout_reader
         .join()
-        .map_err(|_| "stdout reader panicked".to_owned())?
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| BoundedOutputError::StdoutPanic)?
+        .map_err(BoundedOutputError::from)?;
     let (stderr, stderr_truncated) = stderr_reader
         .join()
-        .map_err(|_| "stderr reader panicked".to_owned())?
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| BoundedOutputError::StderrPanic)?
+        .map_err(BoundedOutputError::from)?;
     if stdout_truncated || stderr_truncated {
-        return Err(format!(
-            "output exceeded {SECRET_COMMAND_OUTPUT_LIMIT} bytes"
-        ));
+        return Err(BoundedOutputError::OutputLimit {
+            limit: SECRET_COMMAND_OUTPUT_LIMIT,
+        });
     }
     Ok(std::process::Output {
         status,

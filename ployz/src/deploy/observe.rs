@@ -89,7 +89,7 @@ mod tests {
             display_name: "api".into(),
             created_at_unix_nanos: 0,
             machine_id: machine_id(machine),
-            service_id: service_id.clone(),
+            service_id,
             service_name: service_name.clone(),
             kind: ContainerKind::ServiceContainer,
             runtime: ContainerRuntimeObservation::Running {

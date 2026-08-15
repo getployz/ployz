@@ -33,7 +33,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches).map_err(Error::usage)?;
+        crate::provisioning::provision(matches)?;
     }
 
     let (assigned, caddy_settings) = runtime()?.block_on(async {
@@ -105,7 +105,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>((assigned, caddy_settings))
     })?;
 
-    connection = connection.with_machine_id(assigned.id.clone());
+    connection = connection.with_machine_id(assigned.id);
     config
         .contexts
         .get_mut(&context_name)
@@ -292,8 +292,10 @@ mod tests {
                 &LocalMachinePhase::Participating,
                 &visible,
                 &assigned.public_key,
-            ),
-            Err(Error::usage("Machine already belongs to this Cluster"))
+            )
+            .unwrap_err()
+            .to_string(),
+            "Machine already belongs to this Cluster"
         );
         assert!(
             cluster_membership_conflict(

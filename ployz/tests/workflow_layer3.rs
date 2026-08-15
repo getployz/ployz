@@ -67,7 +67,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         .machines;
     let machine_ids = machines
         .iter()
-        .map(|machine| (machine.machine.name.to_string(), machine.machine.id.clone()))
+        .map(|machine| (machine.machine.name.to_string(), machine.machine.id))
         .collect::<BTreeMap<_, _>>();
     let machine_1 = machine_ids.get("machine-1").unwrap();
     let machine_2 = machine_ids.get("machine-2").unwrap();
@@ -260,7 +260,7 @@ async fn assert_machine_rename_preserves_containers(
         .services
         .iter()
         .flat_map(|service| &service.containers)
-        .map(|container| container.container_id.clone())
+        .map(|container| container.container_id)
         .collect::<BTreeSet<_>>();
     assert!(
         !ployz(address, ["machine", "rename", "machine-1", ""])
@@ -278,7 +278,7 @@ async fn assert_machine_rename_preserves_containers(
             .services
             .iter()
             .flat_map(|service| &service.containers)
-            .map(|container| container.container_id.clone())
+            .map(|container| container.container_id)
             .collect::<BTreeSet<_>>(),
         initial_ids
     );

@@ -34,7 +34,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let image = match image {
             Some(image) => image,
-            None => crate::caddy::latest_image().await.map_err(Error::usage)?,
+            None => crate::caddy::latest_image().await?,
         };
         let requested = crate::caddy::service_spec(image, machines, caddy_config);
         let mut client = connect_client(root, None).await?;

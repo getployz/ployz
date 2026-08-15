@@ -229,7 +229,7 @@ impl LocalMachineStore {
             .ok_or(StoreError::MissingPrivateKey)?;
         let public_key = private_key.public_key();
         let machine = Machine {
-            id: self.record.id.clone(),
+            id: self.record.id,
             name,
             subnet: allocate_machine_subnet(cluster_network, [])
                 .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
@@ -270,7 +270,7 @@ impl LocalMachineStore {
         }
         assigned_machine.runtime = local_runtime();
         let mut joining = self.record.clone();
-        joining.id = assigned_machine.id.clone();
+        joining.id = assigned_machine.id;
         joining.phase = LocalMachinePhase::Joining;
         joining.machine = Some(assigned_machine);
         joining.wireguard_mtu = wireguard_mtu;

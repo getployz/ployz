@@ -70,11 +70,11 @@ impl FanoutResponse {
     }
 
     pub fn machine_id(&self) -> Result<MachineId, ValueError> {
-        MachineId::parse(self.machine_id.clone())
+        MachineId::parse(&self.machine_id)
     }
 
     pub fn machine_name(&self) -> Result<MachineName, ValueError> {
-        MachineName::parse(self.machine_name.clone())
+        MachineName::parse(self.machine_name.as_str())
     }
 
     #[must_use]

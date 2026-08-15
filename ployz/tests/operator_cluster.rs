@@ -29,17 +29,13 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     let mut created = Vec::new();
     for machine in [&machines[0], &machines[0], &machines[1]] {
         let container = client
-            .create_container(
-                machine.id.clone(),
-                ContainerKind::ServiceContainer,
-                spec.clone(),
-            )
+            .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
             .await
             .unwrap();
         client
             .change_container(
-                machine.id.clone(),
-                container.container_id.clone(),
+                machine.id,
+                container.container_id,
                 ContainerAction::Start,
                 None,
                 None,
@@ -201,7 +197,7 @@ async fn assert_service_logs(
                     ployz_core::LogStream::Stdout | ployz_core::LogStream::Stderr
                 ) =>
             {
-                Some(container_id.clone())
+                Some(*container_id)
             }
             LogOrigin::Service { .. } | LogOrigin::Machine { .. } => None,
         })
@@ -356,7 +352,7 @@ async fn assert_machine_logs(
             .iter()
             .filter_map(|entry| match entry.metadata.origin {
                 LogOrigin::Machine { service: actual } if actual == service => {
-                    Some(entry.metadata.machine_id.clone())
+                    Some(entry.metadata.machine_id)
                 }
                 LogOrigin::Service { .. } | LogOrigin::Machine { .. } => None,
             })
@@ -365,7 +361,7 @@ async fn assert_machine_logs(
             tagged,
             machines
                 .iter()
-                .map(|machine| machine.id.clone())
+                .map(|machine| machine.id)
                 .collect::<BTreeSet<_>>()
         );
     }

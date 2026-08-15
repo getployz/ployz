@@ -640,14 +640,14 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
 
     let stale_local = fixture_observation(
         ContainerId::parse("c".repeat(64)).unwrap(),
-        machine_id.clone(),
-        service_id.clone(),
+        machine_id,
+        service_id,
         service_name.clone(),
     );
     let stale_foreign = fixture_observation(
         ContainerId::parse("d".repeat(64)).unwrap(),
         foreign_machine_id,
-        service_id.clone(),
+        service_id,
         service_name.clone(),
     );
     replicated.publish_container(&stale_local).await.unwrap();
@@ -681,13 +681,9 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         operation.put(&hook, &spec).await.unwrap();
     }
 
-    let observer = ContainerObserver::new(
-        runtime,
-        replicated.clone(),
-        Arc::clone(&local),
-        machine_id.clone(),
-    )
-    .with_rescan_interval(Duration::from_secs(3));
+    let observer =
+        ContainerObserver::new(runtime, replicated.clone(), Arc::clone(&local), machine_id)
+            .with_rescan_interval(Duration::from_secs(3));
     let shutdown = CancellationToken::new();
     let task = tokio::spawn({
         let shutdown = shutdown.clone();
@@ -916,7 +912,7 @@ fn fixture_observation(
         display_name: format!("{service_name}-stale"),
         created_at_unix_nanos: 0,
         machine_id,
-        service_id: service_id.clone(),
+        service_id,
         service_name: service_name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Created,

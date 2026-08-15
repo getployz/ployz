@@ -774,7 +774,7 @@ volumes: {data: {name: demo_data}}
         .iter()
         .map(|machine| ObservedDockerVolume {
             id: ployz_core::DockerVolumeId {
-                machine_id: machine.machine.id.clone(),
+                machine_id: machine.machine.id,
                 name: existing_name.clone(),
             },
             driver: "local".into(),
@@ -850,7 +850,7 @@ volumes:
             machines: snapshot.machines.clone(),
             volumes: vec![ObservedDockerVolume {
                 id: ployz_core::DockerVolumeId {
-                    machine_id: existing_machine.clone(),
+                    machine_id: existing_machine,
                     name: ployz_core::DockerVolumeName::parse("existing").unwrap(),
                 },
                 driver: "local".into(),

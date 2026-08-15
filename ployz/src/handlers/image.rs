@@ -59,15 +59,16 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
             matches,
             leaf.get_one::<String>("context").map(String::as_str),
         )
-        .await
-        .map_err(|error| crate::image::PushError::Cluster(error.to_string()))?;
-        crate::image::push(
-            &mut client,
-            image,
-            leaf.get_one::<String>("platform").map(String::as_str),
-            &string_values(leaf, "machine"),
+        .await?;
+        Ok::<_, Error>(
+            crate::image::push(
+                &mut client,
+                image,
+                leaf.get_one::<String>("platform").map(String::as_str),
+                &string_values(leaf, "machine"),
+            )
+            .await?,
         )
-        .await
     })?;
     for success in &result.successes {
         println!("Pushed {image} to {}", success.machine_id);

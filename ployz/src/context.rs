@@ -372,7 +372,7 @@ impl Serialize for Connection {
         ConnectionFile {
             transport,
             ssh_key_file: self.ssh_key_file().map(Path::to_owned),
-            machine_id: self.machine_id.clone(),
+            machine_id: self.machine_id,
         }
         .serialize(serializer)
     }

@@ -1,4 +1,9 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+#[error("nightly is not a supported release channel")]
+struct UnsupportedDaemonChannel;
 
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
@@ -106,9 +111,9 @@ fn positional(name: &'static str, required: bool) -> Arg {
     Arg::new(name).required(required).action(ArgAction::Set)
 }
 
-fn daemon_version(value: &str) -> Result<String, String> {
+fn daemon_version(value: &str) -> Result<String, UnsupportedDaemonChannel> {
     if value == "nightly" {
-        Err("nightly is not a supported release channel".into())
+        Err(UnsupportedDaemonChannel)
     } else {
         Ok(value.to_owned())
     }

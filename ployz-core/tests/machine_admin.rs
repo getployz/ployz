@@ -194,7 +194,7 @@ fn wireguard_projection_keeps_unknown_peers_and_optional_live_fields() {
     let projected = associate_wireguard_peers(
         device.clone(),
         std::slice::from_ref(&known),
-        &BTreeMap::from([(known.id.clone(), known_rtt.clone())]),
+        &BTreeMap::from([(known.id, known_rtt.clone())]),
     );
 
     let [known_peer, unknown_peer] = projected.peers.as_slice() else {
@@ -203,7 +203,7 @@ fn wireguard_projection_keeps_unknown_peers_and_optional_live_fields() {
     assert_eq!(
         known_peer.machine,
         Some(MachineIdentity {
-            id: known.id.clone(),
+            id: known.id,
             name: known.name.clone(),
         })
     );

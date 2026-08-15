@@ -156,7 +156,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     write_record(
         &local_dir,
         &LocalMachineRecord {
-            id: published.id.clone(),
+            id: published.id,
             phase: LocalMachinePhase::Joining,
             machine: Some(published.clone()),
             wireguard_private_key: None,

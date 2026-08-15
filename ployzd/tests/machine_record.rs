@@ -24,7 +24,7 @@ use test_dir::TestDir;
 fn machine_record_is_created_once_and_reopened_with_private_permissions() {
     let dir = TestDir::new("ployzd-state");
     let created = LocalMachineStore::open(&dir.0).unwrap();
-    let machine_id = created.record().id.clone();
+    let machine_id = created.record().id;
 
     assert_eq!(created.record().phase, LocalMachinePhase::Uninitialized);
     assert!(created.record().wireguard_private_key.is_some());
@@ -200,7 +200,7 @@ fn machine_update_is_atomic_and_durable() {
 fn resetting_state_is_durable_and_completed_on_the_next_open() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    let old_machine_id = store.record().id.clone();
+    let old_machine_id = store.record().id;
 
     assert!(store.complete_reset().is_err());
     assert!(dir.0.exists());
@@ -378,9 +378,7 @@ fn selected_endpoint_is_best_effort_local_state() {
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     let peer = MachineId::random();
     let endpoint = SelectedEndpoint(SocketAddr::from(([192, 0, 2, 4], 51820)));
-    store
-        .persist_selected_endpoint(peer.clone(), endpoint)
-        .unwrap();
+    store.persist_selected_endpoint(peer, endpoint).unwrap();
     drop(store);
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();

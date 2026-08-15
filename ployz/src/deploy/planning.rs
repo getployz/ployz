@@ -29,7 +29,7 @@ pub fn plan_deploy(
         .containers
         .iter()
         .filter(|container| container.service_name == requested.name)
-        .map(|container| container.service_id.clone())
+        .map(|container| container.service_id)
         .collect::<BTreeSet<_>>();
     let (service_id, is_new_service) = match matching_service_ids.len() {
         0 => (new_service_id, true),
@@ -91,7 +91,7 @@ pub(crate) fn volume_eligible_machine_ids(
     volume_constraints(&requested, snapshot, &mut machines)?;
     Ok(machines
         .into_iter()
-        .map(|machine| machine.machine.id.clone())
+        .map(|machine| machine.machine.id)
         .collect())
 }
 
@@ -133,15 +133,14 @@ fn volume_operations(
             // revisit only if Ployz changes to externally managed volumes exclusively.
             let machine_id = machines
                 .first()
-                .map(|machine| machine.machine.id.clone())
+                .map(|machine| machine.machine.id)
                 .ok_or(PlanError::NoEligibleMachines)?;
             machines.retain(|machine| machine.machine.id == machine_id);
-            operations.extend(missing_volumes.into_iter().map(|volume| {
-                DeployOperation::CreateVolume {
-                    machine_id: machine_id.clone(),
-                    volume,
-                }
-            }));
+            operations.extend(
+                missing_volumes
+                    .into_iter()
+                    .map(|volume| DeployOperation::CreateVolume { machine_id, volume }),
+            );
         }
         ServiceMode::Global => {
             for machine in machines.iter() {
@@ -155,7 +154,7 @@ fn volume_operations(
                             })
                         })
                         .map(|volume| DeployOperation::CreateVolume {
-                            machine_id: machine.machine.id.clone(),
+                            machine_id: machine.machine.id,
                             volume: volume.clone(),
                         }),
                 );
@@ -318,16 +317,16 @@ fn pre_deploy_operations(
         .iter()
         .filter(|container| super::is_active_runtime(&container.runtime))
         .map(|container| DeployOperation::StopHook {
-            machine_id: container.machine_id.clone(),
-            container_id: container.container_id.clone(),
+            machine_id: container.machine_id,
+            container_id: container.container_id,
         })
         .collect::<Vec<_>>();
     operations.push(DeployOperation::RunHook {
-        machine_id: machine_id.clone(),
+        machine_id: *machine_id,
         spec: spec.clone(),
         old_hook_containers: hooks
             .into_iter()
-            .map(|container| (container.machine_id.clone(), container.container_id.clone()))
+            .map(|container| (container.machine_id, container.container_id))
             .collect(),
     });
     operations
@@ -410,24 +409,24 @@ fn plan_global(
                     })
                 {
                     operations.push(DeployOperation::StopContainer {
-                        machine_id: machine.machine.id.clone(),
-                        container_id: other.container_id.clone(),
+                        machine_id: machine.machine.id,
+                        container_id: other.container_id,
                     });
                 }
             }
             let order = determine_update_order(container, requested);
             operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
-                machine_id: machine.machine.id.clone(),
-                old_container_id: container.container_id.clone(),
-                spec: resolve(requested, service_id.clone(), order),
+                machine_id: machine.machine.id,
+                old_container_id: container.container_id,
+                spec: resolve(requested, *service_id, order),
                 skip_health_monitor: options.skip_health_monitor,
             }));
         } else {
             operations.push(DeployOperation::RunContainer {
-                machine_id: machine.machine.id.clone(),
+                machine_id: machine.machine.id,
                 spec: resolve(
                     requested,
-                    service_id.clone(),
+                    *service_id,
                     requested.update.order.unwrap_or(UpdateOrder::StartFirst),
                 ),
                 skip_health_monitor: options.skip_health_monitor,
@@ -451,7 +450,7 @@ fn plan_replicated(
     let mut by_machine = BTreeMap::<MachineId, Vec<(usize, &ContainerObservation)>>::new();
     for (index, container) in &current {
         by_machine
-            .entry(container.machine_id.clone())
+            .entry(container.machine_id)
             .or_default()
             .push((*index, container));
     }
@@ -486,17 +485,17 @@ fn plan_replicated(
             Some(container) => {
                 let order = determine_update_order(container, requested);
                 operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
-                    machine_id: machine.machine.id.clone(),
-                    old_container_id: container.container_id.clone(),
-                    spec: resolve(requested, service_id.clone(), order),
+                    machine_id: machine.machine.id,
+                    old_container_id: container.container_id,
+                    spec: resolve(requested, *service_id, order),
                     skip_health_monitor: options.skip_health_monitor,
                 }));
             }
             None => operations.push(DeployOperation::RunContainer {
-                machine_id: machine.machine.id.clone(),
+                machine_id: machine.machine.id,
                 spec: resolve(
                     requested,
-                    service_id.clone(),
+                    *service_id,
                     requested.update.order.unwrap_or(UpdateOrder::StartFirst),
                 ),
                 skip_health_monitor: options.skip_health_monitor,
@@ -531,8 +530,8 @@ fn remove_unused(
             // TODO(UT-075): placement changes remove now-ineligible containers; there is no
             // deploy-time Machine filter that leaves excluded containers running.
             operations.push(DeployOperation::RemoveContainer {
-                machine_id: container.machine_id.clone(),
-                container_id: container.container_id.clone(),
+                machine_id: container.machine_id,
+                container_id: container.container_id,
             });
         }
     }

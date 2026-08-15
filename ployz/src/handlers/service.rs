@@ -176,7 +176,7 @@ fn select_services<'a>(
     let mut selected = Vec::new();
     for selector in selectors {
         let service = select_service(services, selector)?;
-        if ids.insert(service.service_id.clone()) {
+        if ids.insert(service.service_id) {
             selected.push(service);
         }
     }
@@ -274,9 +274,9 @@ mod tests {
     #[test]
     fn lifecycle_selectors_deduplicate_names_and_ids() {
         let container = observation('a', 'a', "api", ContainerRuntimeObservation::Created);
-        let service_id = container.service_id.clone();
+        let service_id = container.service_id;
         let services = vec![ployz_core::ServiceObservation {
-            service_id: service_id.clone(),
+            service_id,
             containers: vec![container],
             hook_containers: Vec::new(),
         }];
@@ -305,7 +305,7 @@ mod tests {
             display_name: name.into(),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(machine.to_string().repeat(32)).unwrap(),
-            service_id: service_id.clone(),
+            service_id,
             service_name: service_name.clone(),
             kind: ContainerKind::ServiceContainer,
             runtime,
