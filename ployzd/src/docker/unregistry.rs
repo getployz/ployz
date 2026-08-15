@@ -63,13 +63,11 @@ pub struct RunningUnregistry {
 impl RunningUnregistry {
     async fn start(&self) -> Result<(), Error> {
         self.service
-            .ensure(self.config(), |container| self.matches(container))
+            .ensure(self.config(), |container| {
+                unregistry_matches(container, &self.socket, self.gateway)
+            })
             .await
             .map_err(Into::into)
-    }
-
-    fn matches(&self, container: &bollard::models::ContainerInspectResponse) -> bool {
-        unregistry_matches(container, &self.socket, self.gateway)
     }
 
     fn config(&self) -> ContainerCreateBody {
@@ -194,13 +192,7 @@ pub fn unregistry_matches(
         && bound_to_current_socket_inode(labels, socket)
 }
 
-/// True when the running unregistry is bound to the live containerd socket inode.
-/// A missing socket is treated as still bound so a transient recreate gap does not destroy the container.
-#[must_use]
-pub fn bound_to_current_socket_inode(
-    labels: Option<&HashMap<String, String>>,
-    socket: &Path,
-) -> bool {
+fn bound_to_current_socket_inode(labels: Option<&HashMap<String, String>>, socket: &Path) -> bool {
     match socket_inode_label(socket) {
         None => true,
         Some(current) => {

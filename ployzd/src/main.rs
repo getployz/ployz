@@ -317,12 +317,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             false
         }
     };
-    if resetting
-        && let Some(running) = &unregistry
-        && let Err(error) = running.cleanup().await
-    {
-        errors.push(error.to_string());
-    }
     shutdown.send_replace(true);
     // TODO(UT-098, UT-099): preserve both API servers' unbounded graceful shutdown
     // until a timeout is explicitly chosen.
@@ -344,11 +338,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             errors.push(error.to_string());
         }
     }
-    if !resetting
-        && let Some(running) = &unregistry
-        && let Err(error) = running.stop().await
-    {
-        errors.push(error.to_string());
+    if let Some(running) = &unregistry {
+        let result = if resetting {
+            running.cleanup().await
+        } else {
+            running.stop().await
+        };
+        if let Err(error) = result {
+            errors.push(error.to_string());
+        }
     }
     if resetting {
         match store.lock() {
