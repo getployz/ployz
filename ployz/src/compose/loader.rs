@@ -1,10 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs, io,
     os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::Duration,
 };
 
 use super::{
@@ -132,10 +134,9 @@ fn config_output(
     override_file: Option<&TemporaryComposeFile>,
     args: &[&str],
 ) -> Result<Output, ComposeError> {
-    compose_command(docker, options, override_file)?
-        .arg("config")
-        .args(args)
-        .output()
+    let mut command = compose_command(docker, options, override_file)?;
+    command.arg("config").args(args);
+    retry_executable_busy(|| command.output())
         .map_err(|error| classify_spawn_failure(docker, options, error))
 }
 
@@ -300,15 +301,29 @@ fn compose_version(
     docker: &Path,
     options: &LoadOptions,
 ) -> std::io::Result<std::process::ExitStatus> {
-    let mut command = Command::new(docker);
-    command
-        .args(["compose", "version"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(directory) = &options.working_dir {
-        command.current_dir(directory);
+    retry_executable_busy(|| {
+        let mut command = Command::new(docker);
+        command
+            .args(["compose", "version"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(directory) = &options.working_dir {
+            command.current_dir(directory);
+        }
+        command.status()
+    })
+}
+
+fn retry_executable_busy<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    for attempt in 0..4 {
+        match op() {
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                thread::sleep(Duration::from_millis(10 << attempt));
+            }
+            other => return other,
+        }
     }
-    command.status()
+    op()
 }
 
 fn classify_spawn_failure(
@@ -386,7 +401,7 @@ impl Drop for TemporaryComposeFile {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::{io, os::unix::fs::PermissionsExt as _};
 
     use super::*;
 
@@ -395,5 +410,19 @@ mod tests {
         let file = TemporaryComposeFile::new("services: {}\n").unwrap();
         let mode = fs::metadata(&file.path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn retries_executable_file_busy_then_succeeds() {
+        let mut remaining = 2;
+        let result = retry_executable_busy(|| {
+            if remaining > 0 {
+                remaining -= 1;
+                Err(io::Error::from(io::ErrorKind::ExecutableFileBusy))
+            } else {
+                Ok(7)
+            }
+        });
+        assert_eq!(result.unwrap(), 7);
     }
 }

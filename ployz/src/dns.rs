@@ -1,10 +1,8 @@
 use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecordRequest, DnsRecordType,
-    GetDomainRequest, HttpProtocol, InspectRequest, Machine, MachineId, MachineSelector,
-    PortPublication, ReleaseDomainRequest, RequestedServiceSpec, ReserveDomainRequest,
-    RpcErrorCode, op,
+    CADDY_VERIFY_PATH, ContainerKind, DnsRecordRequest, DnsRecordType, HttpProtocol,
+    InspectRequest, Machine, MachineId, MachineSelector, PortPublication, RequestedServiceSpec, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -50,43 +48,6 @@ fn protocol_label(protocol: &HttpProtocol) -> &'static str {
     match protocol {
         HttpProtocol::Http => "http",
         HttpProtocol::Https => "https",
-    }
-}
-
-impl Client {
-    pub async fn reserve_domain(&mut self, endpoint: String) -> Result<String, ConnectError> {
-        self.call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
-            .await
-            .map(|domain| domain.name)
-    }
-
-    pub async fn domain(&mut self) -> Result<String, ConnectError> {
-        self.call::<op::GetDomain>(GetDomainRequest {}, None)
-            .await
-            .map(|domain| domain.name)
-    }
-
-    pub async fn domain_if_reserved(&mut self) -> Result<Option<String>, ConnectError> {
-        match self.domain().await {
-            Ok(domain) => Ok(Some(domain)),
-            Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    pub async fn release_domain(&mut self) -> Result<String, ConnectError> {
-        self.call::<op::ReleaseDomain>(ReleaseDomainRequest {}, None)
-            .await
-            .map(|domain| domain.name)
-    }
-
-    async fn create_domain_records(
-        &mut self,
-        records: Vec<DnsRecordRequest>,
-    ) -> Result<(), ConnectError> {
-        self.call::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
-            .await
-            .map(drop)
     }
 }
 

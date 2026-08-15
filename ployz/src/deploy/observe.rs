@@ -1,59 +1,3 @@
-use ployz_core::{ContainerObservation, DockerVolume, MachineObservation, PartialResult, RpcError};
-
-use crate::connect::{Client, ConnectError};
-
-use super::{DeploySnapshot, ObservedDockerVolume};
-
-pub(crate) struct DeploySnapshotGather {
-    pub snapshot: DeploySnapshot,
-    pub containers: PartialResult<Vec<ContainerObservation>, RpcError>,
-    pub volumes: PartialResult<Vec<DockerVolume>, RpcError>,
-}
-
-impl Client {
-    /// Gather an observer-relative Deploy Snapshot from the given Machines.
-    /// Container and volume fan-out failures stay in the returned Partial
-    /// Results; the snapshot keeps successful observations.
-    pub(crate) async fn deploy_snapshot(
-        &mut self,
-        machines: Vec<MachineObservation>,
-    ) -> Result<DeploySnapshotGather, ConnectError> {
-        let containers = self.live_services_from(&machines).await?.containers;
-        let volumes = self.list_volumes(&machines).await;
-        let snapshot = snapshot_from_partial(machines, &containers, &volumes);
-        Ok(DeploySnapshotGather {
-            snapshot,
-            containers,
-            volumes,
-        })
-    }
-}
-
-fn snapshot_from_partial(
-    machines: Vec<MachineObservation>,
-    containers: &PartialResult<Vec<ContainerObservation>, RpcError>,
-    volumes: &PartialResult<Vec<DockerVolume>, RpcError>,
-) -> DeploySnapshot {
-    DeploySnapshot {
-        machines,
-        containers: containers
-            .successes
-            .iter()
-            .flat_map(|success| success.value.iter().cloned())
-            .collect(),
-        volumes: volumes
-            .successes
-            .iter()
-            .flat_map(|success| success.value.iter().cloned())
-            .map(|volume| ObservedDockerVolume {
-                id: volume.id,
-                driver: volume.driver,
-                options: volume.options,
-            })
-            .collect(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -63,12 +7,13 @@ mod tests {
         AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
         ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
         HealthObservation, Machine, MachineFailure, MachineId, MachineName, MachineObservation,
-        MachineSubnet, MachineSuccess, ManagementAddress, MembershipObservation, RpcError,
-        RpcErrorCode, ServiceId, ServiceName, WireGuardPublicKey,
+        MachineSubnet, MachineSuccess, ManagementAddress, MembershipObservation, PartialResult,
+        RpcError, RpcErrorCode, ServiceId, ServiceName, WireGuardPublicKey,
     };
     use serde_json::{Value, json};
 
-    use super::*;
+    use super::super::ObservedDockerVolume;
+    use crate::cluster::snapshot_from_partial;
 
     #[test]
     fn deploy_snapshot_keeps_successful_observations_and_drops_failures() {

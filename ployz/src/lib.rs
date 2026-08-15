@@ -1,5 +1,6 @@
 pub mod caddy;
 pub mod cli;
+mod cluster;
 pub mod compose;
 pub mod connect;
 pub mod context;

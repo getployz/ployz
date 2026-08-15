@@ -11,11 +11,8 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, DockerVolume, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
-    ListImagesRequest, ListVolumesRequest, MachineFailure, MachineImages, MachineName,
-    MachineObservation, MachineRpcClient, MachineSelector, MachineSuccess, OpaquePayload,
-    PartialResult, Rpc, RpcError, RpcErrorCode, RpcResponseBody, apply_many_targets,
-    apply_one_target, op,
+    CodecError, FanoutFailure, FramingError, MachineSelector, RpcError, RpcErrorCode,
+    apply_one_target,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -24,21 +21,18 @@ use tokio::{
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
-use tonic::{
-    Streaming,
-    codec::ProstCodec,
-    codegen::http::uri::PathAndQuery,
-    transport::{Channel, Endpoint},
-};
+use tonic::transport::{Channel, Endpoint};
 
 use crate::context::{
     Config, ConfigError, Connection, ConnectionError, ConnectionSource, ContextError,
     SelectedConnections, Transport, expand_home, select_connections,
 };
 
+pub use crate::cluster::{Client, MachineImagesObservation};
+
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 
-const UNARY_RETRY_DELAYS: [Duration; 3] = [
+pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(500),
     Duration::from_millis(1500),
     Duration::from_secs(4),
@@ -292,275 +286,6 @@ impl AsyncWrite for SshIo {
     }
 }
 
-#[derive(Clone)]
-pub struct Client {
-    rpc: MachineRpcClient<Channel>,
-    channel: Channel,
-    connection: Connection,
-    source: ConnectionSource,
-    connector: Arc<dyn Connector>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MachineImagesObservation {
-    pub machine_name: MachineName,
-    pub images: MachineImages,
-}
-
-impl Client {
-    #[must_use]
-    pub fn connection(&self) -> &Connection {
-        &self.connection
-    }
-
-    #[must_use]
-    pub fn connection_source(&self) -> &ConnectionSource {
-        &self.source
-    }
-
-    /// Issue one unary RPC. The response type is derived from the RPC, so a request
-    /// cannot be paired with the wrong response.
-    ///
-    /// Transient transport drops (`Attempt`, tonic `Unavailable` / `DeadlineExceeded`)
-    /// redial the same connection and retry up to four times. Domain `Remote` errors
-    /// and other gRPC status codes are not retried.
-    pub async fn call<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineSelector>,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request).encode()?;
-        let mut delays = UNARY_RETRY_DELAYS.iter().copied();
-        let mut redial = false;
-        loop {
-            match self
-                .unary_attempt::<T>(payload.clone(), target, redial)
-                .await
-            {
-                Ok(response) => return Ok(response),
-                Err(error) if is_unary_retryable(&error) => {
-                    let Some(delay) = delays.next() else {
-                        return Err(error);
-                    };
-                    tokio::time::sleep(delay).await;
-                    redial = true;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    async fn unary_attempt<T: Rpc>(
-        &mut self,
-        payload: OpaquePayload,
-        target: Option<&MachineSelector>,
-        redial: bool,
-    ) -> Result<T::Response, ConnectError> {
-        if redial {
-            let channel = self.connector.connect(&self.connection).await?;
-            self.rpc = MachineRpcClient::new(channel.clone());
-            self.channel = channel;
-        }
-        self.call_once::<T>(payload, target).await
-    }
-
-    /// One-shot targeted RPC. No retry — mutating operations must not
-    /// re-issue CreateContainer or CreateVolume after a dropped response.
-    pub(crate) async fn invoke<T: Rpc>(
-        &self,
-        request: T::Request,
-        target: &MachineSelector,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, RpcError> {
-        let payload = T::into_request(request)
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
-    }
-
-    pub(crate) async fn exec_stream(
-        &self,
-        target: &MachineSelector,
-        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.rpc.clone();
-        Ok(rpc
-            .exec(target_request(input, Some(target)))
-            .await?
-            .into_inner())
-    }
-
-    pub(crate) async fn container_logs_stream(
-        &self,
-        target: &MachineSelector,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.rpc.clone();
-        Ok(rpc
-            .container_logs(target_request(request, Some(target)))
-            .await?
-            .into_inner())
-    }
-
-    pub(crate) async fn machine_logs_stream(
-        &self,
-        target: &MachineSelector,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.rpc.clone();
-        Ok(rpc
-            .machine_logs(target_request(request, Some(target)))
-            .await?
-            .into_inner())
-    }
-
-    async fn call_once<T: Rpc>(
-        &self,
-        payload: OpaquePayload,
-        target: Option<&MachineSelector>,
-    ) -> Result<T::Response, ConnectError> {
-        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
-        grpc.ready()
-            .await
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
-        let response = grpc
-            .unary(
-                target_request(payload, target),
-                PathAndQuery::from_static(T::PATH),
-                ProstCodec::<OpaquePayload, OpaquePayload>::default(),
-            )
-            .await?
-            .into_inner()
-            .decode_response()?;
-        if let RpcResponseBody::Error(error) = &response.body {
-            return Err(ConnectError::Remote(error.clone()));
-        }
-        response.decode::<T>().map_err(ConnectError::Codec)
-    }
-
-    pub async fn list_volumes(
-        &mut self,
-        machines: &[MachineObservation],
-    ) -> PartialResult<Vec<DockerVolume>, RpcError> {
-        // UT-028: keep every target's success or typed failure instead of warning and omitting it.
-        let mut requests = tokio::task::JoinSet::new();
-        for (index, machine) in machines.iter().enumerate() {
-            let machine_id = machine.machine.id.clone();
-            let mut client = self.clone();
-            requests.spawn(async move {
-                let target = MachineSelector::from(&machine_id);
-                let outcome = client
-                    .call::<op::ListVolumes>(ListVolumesRequest {}, Some(&target))
-                    .await;
-                (index, machine_id, outcome)
-            });
-        }
-        let mut outcomes = Vec::with_capacity(machines.len());
-        while let Some(outcome) = requests.join_next().await {
-            outcomes.push(outcome.expect("Volume listing task does not panic"));
-        }
-        outcomes.sort_by_key(|(index, _, _)| *index);
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
-        for (_, machine_id, outcome) in outcomes {
-            match outcome {
-                Ok(volumes) => result.successes.push(MachineSuccess {
-                    machine_id,
-                    value: volumes.volumes,
-                }),
-                Err(error) => result.failures.push(MachineFailure {
-                    machine_id,
-                    error: rpc_error(error),
-                }),
-            }
-        }
-        result
-    }
-
-    pub async fn list_images(
-        &self,
-        reference: Option<String>,
-        targets: &[String],
-    ) -> Result<PartialResult<MachineImagesObservation, RpcError>, ConnectError> {
-        let mut request = tonic::Request::new(
-            op::ListImages::into_request(ListImagesRequest { reference }).encode()?,
-        );
-        let selectors = if targets.is_empty() {
-            vec![MachineSelector::parse("*").expect("wildcard selector is valid")]
-        } else {
-            targets
-                .iter()
-                .map(MachineSelector::parse)
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        apply_many_targets(request.metadata_mut(), &selectors)
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
-        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
-        grpc.ready()
-            .await
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
-        let response = grpc
-            .server_streaming(
-                request,
-                PathAndQuery::from_static(op::ListImages::PATH),
-                ProstCodec::<OpaquePayload, FanoutResponse>::default(),
-            )
-            .await?;
-        let mut stream = response.into_inner();
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
-        while let Some(envelope) = stream.message().await? {
-            let machine_id = envelope.machine_id()?;
-            let machine_name = envelope.machine_name()?;
-            match envelope.outcome {
-                Some(FanoutOutcome::FramedPayload(frame)) => {
-                    let response = OpaquePayload::decode_grpc_frame(&frame)?.decode_response()?;
-                    if let RpcResponseBody::Error(error) = &response.body {
-                        result.failures.push(MachineFailure {
-                            machine_id,
-                            error: error.clone(),
-                        });
-                    } else {
-                        result.successes.push(MachineSuccess {
-                            machine_id,
-                            value: MachineImagesObservation {
-                                machine_name,
-                                images: response
-                                    .decode::<op::ListImages>()
-                                    .map_err(ConnectError::Codec)?,
-                            },
-                        });
-                    }
-                }
-                Some(FanoutOutcome::Failure(failure)) => {
-                    result.failures.push(MachineFailure {
-                        machine_id,
-                        error: decode_fanout_failure(failure),
-                    });
-                }
-                None => result.omissions.push(machine_id),
-            }
-        }
-        Ok(result)
-    }
-
-    pub async fn dial_proxy(
-        &self,
-        network: &str,
-        address: &str,
-    ) -> Result<BoxProxyStream, ConnectError> {
-        self.connector
-            .dial_proxy(&self.connection, network, address)
-            .await
-    }
-}
-
 pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
         ConnectError::Remote(error) => error,
@@ -583,7 +308,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     }
 }
 
-async fn apply_timeout<T>(
+pub(crate) async fn apply_timeout<T>(
     timeout: Option<Duration>,
     future: impl Future<Output = Result<T, ConnectError>>,
 ) -> Result<T, RpcError> {
@@ -603,7 +328,7 @@ async fn apply_timeout<T>(
     result.map_err(rpc_error)
 }
 
-fn is_unary_retryable(error: &ConnectError) -> bool {
+pub(crate) fn is_unary_retryable(error: &ConnectError) -> bool {
     match error {
         ConnectError::Attempt(_) => true,
         ConnectError::Rpc(error) => error.is_retryable(),
@@ -621,7 +346,7 @@ fn is_unary_retryable(error: &ConnectError) -> bool {
     }
 }
 
-fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
+pub(crate) fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
     let code = match tonic::Code::from_i32(i32::try_from(failure.code).unwrap_or(i32::MAX)) {
         tonic::Code::InvalidArgument | tonic::Code::OutOfRange => RpcErrorCode::InvalidArgument,
         tonic::Code::NotFound => RpcErrorCode::NotFound,
@@ -647,7 +372,7 @@ fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
     }
 }
 
-fn target_request<T>(payload: T, target: Option<&MachineSelector>) -> tonic::Request<T> {
+pub(crate) fn target_request<T>(payload: T, target: Option<&MachineSelector>) -> tonic::Request<T> {
     let mut request = tonic::Request::new(payload);
     if let Some(target) = target {
         apply_one_target(request.metadata_mut(), target);
@@ -663,13 +388,12 @@ pub async fn connect_selected_with(
     for connection in &selected.connections {
         match connector.connect(connection).await {
             Ok(channel) => {
-                return Ok(Client {
-                    rpc: MachineRpcClient::new(channel.clone()),
+                return Ok(Client::new(
                     channel,
-                    connection: connection.clone(),
-                    source: selected.source.clone(),
+                    connection.clone(),
+                    selected.source.clone(),
                     connector,
-                });
+                ));
             }
             Err(error) => last_error = Some(error),
         }
