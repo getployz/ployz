@@ -10,6 +10,7 @@ use bollard::models::{
     ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, PortBinding,
     RestartPolicy, RestartPolicyNameEnum,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::network::{DOCKER_NETWORK_NAME, UNREGISTRY_PORT};
 
@@ -126,10 +127,7 @@ impl RunningUnregistry {
         }
     }
 
-    pub async fn keep_socket_current(
-        &self,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
-    ) -> Result<(), Error> {
+    pub async fn keep_socket_current(&self, shutdown: CancellationToken) -> Result<(), Error> {
         let mut ticks = tokio::time::interval(SOCKET_REFRESH);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         ticks.tick().await;
@@ -140,12 +138,7 @@ impl RunningUnregistry {
                         eprintln!("WARNING: unregistry socket refresh failed: {error}");
                     }
                 }
-                changed = shutdown.changed() => {
-                    changed.map_err(|_| Error::ShutdownClosed)?;
-                    if *shutdown.borrow() {
-                        return Ok(());
-                    }
-                }
+                () = shutdown.cancelled() => return Ok(()),
             }
         }
     }

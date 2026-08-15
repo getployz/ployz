@@ -33,7 +33,7 @@ use ployz_core::{
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
 use crate::machine::LocalMachineStore;
@@ -371,22 +371,20 @@ impl ContainerObserver {
         self
     }
 
-    pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<(), Error> {
-        while !*shutdown.borrow() {
-            if let Err(error) = self.watch(&mut shutdown).await {
+    pub async fn run(&self, shutdown: CancellationToken) -> Result<(), Error> {
+        while !shutdown.is_cancelled() {
+            if let Err(error) = self.watch(&shutdown).await {
                 eprintln!("local Docker observation failed, retrying: {error}");
                 tokio::select! {
                     () = tokio::time::sleep(Duration::from_secs(1)) => {}
-                    changed = shutdown.changed() => {
-                        changed.map_err(|_| Error::ShutdownClosed)?;
-                    }
+                    () = shutdown.cancelled() => {}
                 }
             }
         }
         Ok(())
     }
 
-    async fn watch(&self, shutdown: &mut watch::Receiver<bool>) -> Result<(), Error> {
+    async fn watch(&self, shutdown: &CancellationToken) -> Result<(), Error> {
         let filters = HashMap::from([
             ("type", vec!["container"]),
             ("scope", vec!["local"]),
@@ -444,10 +442,7 @@ impl ContainerObserver {
                     scan_at = None;
                     self.sync_once().await?;
                 }
-                changed = shutdown.changed() => {
-                    changed.map_err(|_| Error::ShutdownClosed)?;
-                    return Ok(());
-                }
+                () = shutdown.cancelled() => return Ok(()),
             }
         }
     }
@@ -671,8 +666,6 @@ pub enum Error {
     SizeOverflow,
     #[error("Docker event stream closed")]
     EventStreamClosed,
-    #[error("observer shutdown channel closed")]
-    ShutdownClosed,
     #[error("local Machine record lock poisoned")]
     LocalStorePoisoned,
     #[error("system clock cannot be represented for Docker event replay: {0}")]
@@ -711,7 +704,6 @@ impl Error {
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)
             | Self::EventStreamClosed
-            | Self::ShutdownClosed
             | Self::LocalStorePoisoned
             | Self::Clock(_) => RpcErrorCode::Internal,
         }

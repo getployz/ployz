@@ -23,6 +23,7 @@ use ployz_core::{
     AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, MachineGateway, MachineName,
     PullPolicy, ResolvedServiceSpec,
 };
+use tokio_util::sync::CancellationToken;
 
 use super::*;
 
@@ -686,8 +687,11 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         machine_id.clone(),
     )
     .with_rescan_interval(Duration::from_secs(3));
-    let (shutdown, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(async move { observer.run(shutdown_rx).await });
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move { observer.run(shutdown).await }
+    });
 
     wait_for(Duration::from_secs(5), || async {
         let observations = replicated.containers().await.unwrap().observations;
@@ -813,7 +817,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     .await;
     assert!(replicated.container(&service).await.unwrap().is_some());
 
-    shutdown.send_replace(true);
+    shutdown.cancel();
     task.await.unwrap().unwrap();
     let before_failure = replicated.raw_container(&service).await.unwrap();
     let invalid_socket = root.0.join("not-docker.sock");

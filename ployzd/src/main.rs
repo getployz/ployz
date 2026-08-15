@@ -36,6 +36,7 @@ use tokio::{
     sync::watch,
 };
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tokio_util::sync::CancellationToken;
 use tonic::{service::Routes, transport::Server};
 
 const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
@@ -150,7 +151,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
         })
     });
-    let (shutdown, shutdown_rx) = watch::channel(false);
+    let shutdown = CancellationToken::new();
     let (participating, participating_rx) =
         watch::channel(local_record.phase == LocalMachinePhase::Participating);
     let (reset, mut reset_rx) = watch::channel(false);
@@ -179,15 +180,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let rpc = Server::builder().serve_with_incoming_shutdown(
         proxy.clone(),
         UnixListenerStream::new(rpc_listener),
-        wait_for_shutdown(shutdown_rx.clone()),
+        shutdown.clone().cancelled_owned(),
     );
-    let metrics = metrics::serve(metrics_listener, registry, shutdown_rx.clone());
+    let metrics = metrics::serve(metrics_listener, registry, shutdown.clone());
     let publisher = run_machine_publisher_with_restart(
         replicated_store.clone(),
         Arc::clone(&store),
         participating,
         reset.clone(),
-        shutdown_rx.clone(),
+        shutdown.clone(),
     );
     let (management_listener, gateway_listener) = machine_api_listeners
         .map_or((None, None), |(management, gateway)| {
@@ -198,10 +199,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             serve_machine_api(
                 explicit_machine_api_listener,
                 proxy.clone(),
-                shutdown_rx.clone()
+                shutdown.clone()
             ),
-            serve_machine_api(management_listener, proxy.clone(), shutdown_rx.clone()),
-            serve_machine_api(gateway_listener, proxy.clone(), shutdown_rx.clone()),
+            serve_machine_api(management_listener, proxy.clone(), shutdown.clone()),
+            serve_machine_api(gateway_listener, proxy.clone(), shutdown.clone()),
         )
         .map(|_| ())
     };
@@ -211,42 +212,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .run(
                     replicated_store.clone(),
                     Arc::clone(&store),
-                    shutdown_rx.clone(),
+                    shutdown.clone(),
                 )
                 .await
         } else {
-            wait_for_shutdown(shutdown_rx.clone()).await;
+            shutdown.cancelled().await;
             Ok(())
         }
     };
     let observer = async {
         match observer {
             Some(observer) => observer
-                .run(shutdown_rx.clone())
+                .run(shutdown.clone())
                 .await
                 .map_err(io::Error::other),
             None => {
-                wait_for_shutdown(shutdown_rx.clone()).await;
+                shutdown.cancelled().await;
                 Ok(())
             }
         }
     };
     let dns = async {
-        if !wait_for_participation(participating_rx.clone(), shutdown_rx.clone()).await? {
+        if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
             return Ok(());
         }
         match (local_record.machine.clone(), replicated_store.clone()) {
             (Some(machine), Some(replicated)) => {
-                dns::run(machine, replicated, dns_upstreams, shutdown_rx.clone()).await
+                dns::run(machine, replicated, dns_upstreams, shutdown.clone()).await
             }
             _ => {
-                wait_for_shutdown(shutdown_rx.clone()).await;
+                shutdown.cancelled().await;
                 Ok(())
             }
         }
     };
     let caddy = async {
-        if !wait_for_participation(participating_rx.clone(), shutdown_rx.clone()).await? {
+        if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
             return Ok(());
         }
         match (local_record.machine.clone(), replicated_store.clone()) {
@@ -256,19 +257,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     replicated,
                     caddyfile,
                     caddy_admin_socket,
-                    shutdown_rx.clone(),
+                    shutdown.clone(),
                 )
                 .await
             }
             _ => {
-                wait_for_shutdown(shutdown_rx.clone()).await;
+                shutdown.cancelled().await;
                 Ok(())
             }
         }
     };
     let unregistry_refresh = {
         let running = unregistry.clone();
-        let shutdown = shutdown_rx.clone();
+        let shutdown = shutdown.clone();
         async move {
             match running.as_deref() {
                 Some(running) => running
@@ -276,7 +277,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .await
                     .map_err(io::Error::other),
                 None => {
-                    wait_for_shutdown(shutdown).await;
+                    shutdown.cancelled().await;
                     Ok(())
                 }
             }
@@ -317,7 +318,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             false
         }
     };
-    shutdown.send_replace(true);
+    shutdown.cancel();
     // TODO(UT-098, UT-099): preserve both API servers' unbounded graceful shutdown
     // until a timeout is explicitly chosen.
     let server_result = match completed_servers {
@@ -368,19 +369,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn serve_machine_api(
     listener: Option<TcpListener>,
     proxy: MachineProxy,
-    shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> io::Result<()> {
     match listener {
         Some(listener) => Server::builder()
             .serve_with_incoming_shutdown(
                 proxy,
                 TcpListenerStream::new(listener),
-                wait_for_shutdown(shutdown),
+                shutdown.cancelled_owned(),
             )
             .await
             .map_err(io::Error::other),
         None => {
-            wait_for_shutdown(shutdown).await;
+            shutdown.cancelled().await;
             Ok(())
         }
     }
@@ -447,27 +448,17 @@ async fn start_corrosion(
     ))
 }
 
-async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
-    if !*shutdown.borrow() {
-        let _ = shutdown.changed().await;
-    }
-}
-
 async fn wait_for_participation(
     mut participating: watch::Receiver<bool>,
-    shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> io::Result<bool> {
-    let mut shutdown_wait = shutdown.clone();
     tokio::select! {
         biased;
-        changed = shutdown_wait.wait_for(|shutdown| *shutdown) => {
-            changed.map_err(io::Error::other)?;
-            Ok(false)
-        }
+        () = shutdown.cancelled() => Ok(false),
         changed = participating.wait_for(|participating| *participating) => {
             match changed {
-                Ok(_) => Ok(!*shutdown.borrow()),
-                Err(_) if *shutdown.borrow() => Ok(false),
+                Ok(_) => Ok(!shutdown.is_cancelled()),
+                Err(_) if shutdown.is_cancelled() => Ok(false),
                 Err(error) => Err(io::Error::other(error)),
             }
         }
@@ -544,8 +535,8 @@ mod tests {
     #[tokio::test]
     async fn participation_gate_waits_for_catch_up_and_obeys_shutdown() {
         let (participating, participating_rx) = watch::channel(false);
-        let (_shutdown, shutdown_rx) = watch::channel(false);
-        let waiting = wait_for_participation(participating_rx, shutdown_rx);
+        let shutdown = CancellationToken::new();
+        let waiting = wait_for_participation(participating_rx, shutdown);
         tokio::pin!(waiting);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
@@ -556,11 +547,11 @@ mod tests {
         assert!(waiting.await.unwrap());
 
         let (participating, participating_rx) = watch::channel(true);
-        let (shutdown, shutdown_rx) = watch::channel(false);
-        shutdown.send_replace(true);
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
         drop(participating);
         assert!(
-            !wait_for_participation(participating_rx, shutdown_rx)
+            !wait_for_participation(participating_rx, shutdown)
                 .await
                 .unwrap()
         );

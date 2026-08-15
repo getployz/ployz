@@ -10,6 +10,7 @@ use ployz_core::{ContainerId, ContainerObservation, LocalMachinePhase, Machine, 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use super::{ApiClient, Error, Statement, Subscription};
 use crate::{
@@ -516,7 +517,7 @@ pub async fn run_machine_publisher(
     replicated: Option<ReplicatedStore>,
     local: Arc<Mutex<LocalMachineStore>>,
     participating: watch::Sender<bool>,
-    shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> io::Result<()> {
     let (restart, _) = watch::channel(false);
     run_machine_publisher_with_restart(replicated, local, participating, restart, shutdown).await
@@ -527,7 +528,7 @@ pub async fn run_machine_publisher_with_restart(
     local: Arc<Mutex<LocalMachineStore>>,
     participating: watch::Sender<bool>,
     restart: watch::Sender<bool>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> io::Result<()> {
     if let Some(replicated) = &replicated {
         let (joining, target) = {
@@ -544,8 +545,7 @@ pub async fn run_machine_publisher_with_restart(
                 result = wait_for_catch_up(replicated, &target) => {
                     result.map_err(io::Error::other)?;
                 }
-                changed = shutdown.changed() => {
-                    changed.map_err(io::Error::other)?;
+                () = shutdown.cancelled() => {
                     return Ok(());
                 }
             }
@@ -592,8 +592,7 @@ pub async fn run_machine_publisher_with_restart(
         }
         tokio::select! {
             () = tokio::time::sleep(Duration::from_secs(60)) => {}
-            changed = shutdown.changed() => {
-                changed.map_err(io::Error::other)?;
+            () = shutdown.cancelled() => {
                 return Ok(());
             }
         }

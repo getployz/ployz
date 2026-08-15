@@ -25,8 +25,8 @@ use ployz_core::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
-    sync::watch,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{ReplicatedStore, Subscription},
@@ -238,7 +238,7 @@ pub async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
     upstreams: Option<Vec<SocketAddr>>,
-    shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> io::Result<()> {
     let gateway = machine_gateway(machine.subnet).map_err(io::Error::other)?.0;
     let listen_address = SocketAddr::new(IpAddr::V4(gateway), PORT);
@@ -273,17 +273,10 @@ pub async fn run(
     tokio::try_join!(server, projection).map(|_| ())
 }
 
-async fn run_server(
-    mut server: Server<Handler>,
-    mut shutdown: watch::Receiver<bool>,
-) -> io::Result<()> {
-    if *shutdown.borrow() {
-        return server.shutdown_gracefully().await.map_err(io::Error::other);
-    }
+async fn run_server(mut server: Server<Handler>, shutdown: CancellationToken) -> io::Result<()> {
     tokio::select! {
         result = server.block_until_done() => result.map_err(io::Error::other),
-        changed = shutdown.changed() => {
-            changed.map_err(io::Error::other)?;
+        () = shutdown.cancelled() => {
             server.shutdown_gracefully().await.map_err(io::Error::other)
         }
     }
@@ -293,7 +286,7 @@ async fn watch_projection(
     replicated: ReplicatedStore,
     projection: Arc<RwLock<Projection>>,
     changes: &mut Subscription,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> io::Result<()> {
     loop {
         tokio::select! {
@@ -309,10 +302,7 @@ async fn watch_projection(
                     Err(error) => eprintln!("failed to rebuild DNS projection: {error}"),
                 }
             }
-            changed = shutdown.changed() => {
-                changed.map_err(io::Error::other)?;
-                return Ok(());
-            }
+            () = shutdown.cancelled() => return Ok(()),
         }
     }
 }

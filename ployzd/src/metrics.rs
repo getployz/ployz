@@ -4,8 +4,8 @@ use prometheus::{Encoder, IntGaugeVec, Opts, Registry, TextEncoder};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    sync::watch,
 };
+use tokio_util::sync::CancellationToken;
 
 pub fn registry(version: &str) -> Result<Registry, prometheus::Error> {
     let registry = Registry::new_custom(Some("ployz".to_owned()), None)?;
@@ -21,7 +21,7 @@ pub fn registry(version: &str) -> Result<Registry, prometheus::Error> {
 pub async fn serve(
     listener: TcpListener,
     registry: Registry,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> io::Result<()> {
     loop {
         let (mut stream, peer) = tokio::select! {
@@ -33,10 +33,7 @@ pub async fn serve(
                     continue;
                 }
             },
-            changed = shutdown.changed() => {
-                let _ = changed;
-                return Ok(());
-            }
+            () = shutdown.cancelled() => return Ok(()),
         };
         // ponytail: scrapes are serialized; spawn per connection if scrape concurrency matters.
         tokio::select! {
@@ -45,10 +42,7 @@ pub async fn serve(
                     eprintln!("metrics client {peer} failed: {error}");
                 }
             }
-            changed = shutdown.changed() => {
-                let _ = changed;
-                return Ok(());
-            }
+            () = shutdown.cancelled() => return Ok(()),
         }
     }
 }

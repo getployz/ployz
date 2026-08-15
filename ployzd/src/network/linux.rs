@@ -21,7 +21,7 @@ use ployz_core::{
     LocalMachinePhase, Machine, MachineId, SelectedEndpoint, WireGuardDevice, WireGuardPeer,
     WireGuardPublicKey,
 };
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     DOCKER_NETWORK_NAME, EndpointSelection, MACHINE_API_PORT, MeshPeer, NetworkError,
@@ -164,12 +164,10 @@ impl NetworkPlane {
         &mut self,
         replicated: Option<ReplicatedStore>,
         local: Arc<Mutex<LocalMachineStore>>,
-        mut shutdown: watch::Receiver<bool>,
+        shutdown: CancellationToken,
     ) -> io::Result<()> {
         let Some(replicated) = replicated else {
-            if !*shutdown.borrow() {
-                shutdown.changed().await.map_err(io::Error::other)?;
-            }
+            shutdown.cancelled().await;
             return Ok(());
         };
         let mut previous = None;
@@ -190,8 +188,7 @@ impl NetworkPlane {
                         Err(error) => eprintln!("failed to read Machine table for network plane: {error}"),
                     }
                 }
-                changed = shutdown.changed() => {
-                    changed.map_err(io::Error::other)?;
+                () = shutdown.cancelled() => {
                     let resetting = local
                         .lock()
                         .map_err(|_| io::Error::other("local Machine record lock poisoned"))?

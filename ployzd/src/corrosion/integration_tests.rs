@@ -12,6 +12,7 @@ use ployz_core::{
     MachineSubnet, ManagementAddress, WireGuardPublicKey,
 };
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     ApiClient, CorrosionConfig, ReplicatedStore, Statement, run_machine_publisher,
@@ -168,7 +169,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     );
     let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
     let published = local.lock().unwrap().record().machine.clone().unwrap();
-    let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown = CancellationToken::new();
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
     let (restart, restart_rx) = tokio::sync::watch::channel(false);
     let publisher = tokio::spawn(run_machine_publisher_with_restart(
@@ -176,7 +177,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         Arc::clone(&local),
         participating,
         restart,
-        shutdown_rx,
+        shutdown.clone(),
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -188,7 +189,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     })
     .await
     .unwrap();
-    shutdown.send_replace(true);
+    shutdown.cancel();
     publisher.await.unwrap().unwrap();
     let persisted: LocalMachineRecord =
         serde_json::from_slice(&fs::read(local_dir.join("machine.json")).unwrap()).unwrap();
@@ -218,17 +219,17 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     ));
     let unavailable =
         ReplicatedStore::new(ApiClient::new(unused_address(), &"a".repeat(64)).unwrap());
-    let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown = CancellationToken::new();
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
     let publisher = tokio::spawn(run_machine_publisher(
         Some(unavailable),
         interrupted,
         participating,
-        shutdown_rx,
+        shutdown.clone(),
     ));
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert!(!publisher.is_finished());
-    shutdown.send_replace(true);
+    shutdown.cancel();
     publisher.await.unwrap().unwrap();
     let persisted: LocalMachineRecord =
         serde_json::from_slice(&fs::read(interrupted_dir.join("machine.json")).unwrap()).unwrap();
