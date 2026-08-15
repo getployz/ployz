@@ -5,8 +5,8 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    AdvertisedEndpoint, MachineName, MachineObservation, MachineSelector, MachineUpdate,
-    PublicIpUpdate, RpcRequest,
+    AdvertisedEndpoint, ListMachinesRequest, MachineName, MachineObservation, MachineSelector,
+    MachineUpdate, PublicIpUpdate, UpdateMachineRequest, op,
 };
 
 use crate::{
@@ -88,8 +88,9 @@ pub(super) fn runtime() -> Result<tokio::runtime::Runtime, Error> {
 
 pub(super) async fn machine_list(client: &mut Client) -> Result<Vec<MachineObservation>, Error> {
     client
-        .list_machines()
+        .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await
+        .map(|list| list.machines)
         .map_err(|error| error.to_string().into())
 }
 
@@ -128,14 +129,14 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
     let machine = runtime()?.block_on(async {
         let mut client = options.connect().await?;
         client
-            .request(RpcRequest::update_machine(update), Some(&selector))
+            .call::<op::UpdateMachine>(UpdateMachineRequest { update }, Some(&selector))
             .await
-            .map_err(|error| error.to_string())?
-            .decode_machine_updated()
-            .cloned()
             .map_err(|error| Error::from(error.to_string()))
     })?;
-    println!("Updated Machine {} ({})", machine.name, machine.id);
+    println!(
+        "Updated Machine {} ({})",
+        machine.machine.name, machine.machine.id
+    );
     Ok(())
 }
 

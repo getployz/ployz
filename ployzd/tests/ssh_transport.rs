@@ -13,7 +13,7 @@ use ployz::{
     connect::{Connector, SystemConnector},
     context::{Connection, SshDestination},
 };
-use ployz_core::{MachineRpcClient, MachineRpcServer, RpcRequest};
+use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineRpcServer, op};
 use ployzd::{machine::LocalMachineStore, rpc::MachineService};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
@@ -67,13 +67,17 @@ async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
     ] {
         let channel = connector.connect(&connection).await.unwrap();
         let actual = MachineRpcClient::new(channel)
-            .describe_contract(RpcRequest::describe_contract().encode().unwrap())
+            .describe_contract(
+                op::DescribeContract::into_request(DescribeContractRequest {})
+                    .encode()
+                    .unwrap(),
+            )
             .await
             .unwrap()
             .into_inner()
             .decode_response()
             .unwrap()
-            .decode_contract_description()
+            .decode::<op::DescribeContract>()
             .unwrap()
             .machine_id
             .clone();

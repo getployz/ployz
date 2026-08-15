@@ -15,8 +15,9 @@ use ployz::{
     volume::{filter_volumes, machine_volumes},
 };
 use ployz_core::{
-    ContainerKind, CreateVolumeRequest, DockerVolumeName, MachineObservation, NameMatches,
-    RequestedServiceSpec, ResolvedServiceSpec, ServiceId, ServiceMode, VolumeSource,
+    ContainerKind, CreateVolumeRequest, DockerVolumeName, ListMachinesRequest, MachineObservation,
+    MachineSelector, NameMatches, RequestedServiceSpec, ResolvedServiceSpec, ServiceId,
+    ServiceMode, VolumeSource, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use serde_json::json;
@@ -117,7 +118,11 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     )
     .await
     .unwrap();
-    let machines = client.list_machines().await.unwrap();
+    let machines = client
+        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .await
+        .unwrap()
+        .machines;
     let [first_machine, second_machine] = machines.as_slice() else {
         panic!("expected two Machines: {machines:?}")
     };
@@ -236,14 +241,14 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     ));
 
     client
-        .create_volume(
-            &first_machine.machine.id,
+        .call::<op::CreateVolume>(
             CreateVolumeRequest {
                 name: DockerVolumeName::parse("reachable").unwrap(),
                 driver: "local".into(),
                 options: BTreeMap::new(),
                 labels: BTreeMap::new(),
             },
+            Some(&MachineSelector::from(&first_machine.machine.id)),
         )
         .await
         .unwrap();
@@ -333,14 +338,14 @@ volumes: {data: {name: compose_data}}
     execute(client, plan.operations().iter().collect()).await;
 
     client
-        .create_volume(
-            &first_machine.machine.id,
+        .call::<op::CreateVolume>(
             CreateVolumeRequest {
                 name: DockerVolumeName::parse("multi_existing").unwrap(),
                 driver: "local".into(),
                 options: BTreeMap::new(),
                 labels: BTreeMap::new(),
             },
+            Some(&MachineSelector::from(&first_machine.machine.id)),
         )
         .await
         .unwrap();
@@ -387,14 +392,14 @@ volumes: {data: {name: compose_data}}
     execute(client, plan.operations().iter().collect()).await;
 
     client
-        .create_volume(
-            &first_machine.machine.id,
+        .call::<op::CreateVolume>(
             CreateVolumeRequest {
                 name: DockerVolumeName::parse("global_partial").unwrap(),
                 driver: "local".into(),
                 options: BTreeMap::new(),
                 labels: BTreeMap::new(),
             },
+            Some(&MachineSelector::from(&first_machine.machine.id)),
         )
         .await
         .unwrap();
@@ -442,14 +447,14 @@ volumes: {data: {name: compose_data}}
         ("split_b", second_machine),
     ] {
         client
-            .create_volume(
-                &machine.machine.id,
+            .call::<op::CreateVolume>(
                 CreateVolumeRequest {
                     name: DockerVolumeName::parse(name).unwrap(),
                     driver: "local".into(),
                     options: BTreeMap::new(),
                     labels: BTreeMap::new(),
                 },
+                Some(&MachineSelector::from(&machine.machine.id)),
             )
             .await
             .unwrap();
@@ -531,8 +536,7 @@ async fn execute(client: &mut ployz::connect::Client, operations: Vec<&DeployOpe
                     panic!("planner created a non-named Docker Volume")
                 };
                 client
-                    .create_volume(
-                        machine_id,
+                    .call::<op::CreateVolume>(
                         CreateVolumeRequest {
                             name: name.clone(),
                             driver: driver
@@ -543,6 +547,7 @@ async fn execute(client: &mut ployz::connect::Client, operations: Vec<&DeployOpe
                                 .map_or_else(BTreeMap::new, |driver| driver.options.clone()),
                             labels: labels.clone(),
                         },
+                        Some(&MachineSelector::from(machine_id)),
                     )
                     .await
                     .unwrap();

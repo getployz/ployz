@@ -8,8 +8,8 @@ use std::{
 
 use oci_spec::distribution::Reference;
 use ployz_core::{
-    Machine, MachineFailure, MachineSelector, MachineSuccess, PartialResult, UNREGISTRY_PORT,
-    resolve_machine_selectors,
+    ListMachinesRequest, Machine, MachineFailure, MachineSelector, MachineSuccess, PartialResult,
+    UNREGISTRY_PORT, op, resolve_machine_selectors,
 };
 use thiserror::Error;
 use tokio::process::{Child, Command};
@@ -102,10 +102,10 @@ pub async fn push(
     selectors: &[String],
 ) -> Result<PartialResult<(), PushError>, PushError> {
     let machines = client
-        .list_machines()
+        .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await
         .map_err(|error| PushError::Cluster(error.to_string()))?;
-    push_using_machines(client, image, platform, selectors, &machines).await
+    push_using_machines(client, image, platform, selectors, &machines.machines).await
 }
 
 pub(crate) async fn push_using_machines(

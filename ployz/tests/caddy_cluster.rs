@@ -4,8 +4,9 @@ use std::{
 };
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerAction, ContainerKind, Machine, MachineSelector,
-    MembershipObservation, RequestedServiceSpec, ResolvedServiceSpec, ServiceId,
+    CADDY_VERIFY_PATH, ContainerAction, ContainerKind, GetCaddyConfigRequest, ListMachinesRequest,
+    Machine, MachineSelector, MembershipObservation, RequestedServiceSpec, ResolvedServiceSpec,
+    ServiceId, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use semver::Version;
@@ -193,9 +194,13 @@ async fn assert_failed_load_retry(
     machine: &Machine,
 ) {
     let stable = client
-        .get_caddy_config(Some(MachineSelector::from(&machine.id)))
+        .call::<op::GetCaddyConfig>(
+            GetCaddyConfigRequest {},
+            Some(&MachineSelector::from(&machine.id)),
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .caddyfile;
     let load_failure: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": ServiceId::random(),
         "name": "load-failure",
@@ -225,9 +230,13 @@ async fn assert_failed_load_retry(
     wait_log_count(cluster, "failed to update Caddy configuration", 2).await;
     assert_eq!(
         client
-            .get_caddy_config(Some(MachineSelector::from(&machine.id)))
+            .call::<op::GetCaddyConfig>(
+                GetCaddyConfigRequest {},
+                Some(&MachineSelector::from(&machine.id)),
+            )
             .await
-            .unwrap(),
+            .unwrap()
+            .caddyfile,
         stable
     );
     assert_eq!(
@@ -265,10 +274,17 @@ async fn assert_membership_blind(
     cluster.stop(2).unwrap();
     wait_down(cluster, &machines[2]).await;
     let retained = client
-        .get_caddy_config(Some(MachineSelector::from(&machines[0].id)))
+        .call::<op::GetCaddyConfig>(
+            GetCaddyConfigRequest {},
+            Some(&MachineSelector::from(&machines[0].id)),
+        )
         .await
         .unwrap();
-    assert!(retained.contains(&format!("{}:8080", retained_address.0)));
+    assert!(
+        retained
+            .caddyfile
+            .contains(&format!("{}:8080", retained_address.0))
+    );
 }
 
 async fn assert_invalid_template(client: &mut ployz::connect::Client, machine: &Machine) {
@@ -420,7 +436,11 @@ async fn deploy(
     client: &mut ployz::connect::Client,
     requested: &RequestedServiceSpec,
 ) -> ServiceId {
-    let machines = client.list_machines().await.unwrap();
+    let machines = client
+        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .await
+        .unwrap()
+        .machines;
     let live = client.live_services().await.unwrap();
     let snapshot = ployz::deploy::DeploySnapshot {
         machines,
@@ -547,12 +567,15 @@ async fn wait_config(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         match client
-            .get_caddy_config(Some(MachineSelector::from(&machine.id)))
+            .call::<op::GetCaddyConfig>(
+                GetCaddyConfigRequest {},
+                Some(&MachineSelector::from(&machine.id)),
+            )
             .await
         {
-            Ok(config) if expected(&config) => return config,
+            Ok(config) if expected(&config.caddyfile) => return config.caddyfile,
             Ok(config) if tokio::time::Instant::now() >= deadline => {
-                panic!("Caddyfile did not converge:\n{config}")
+                panic!("Caddyfile did not converge:\n{}", config.caddyfile)
             }
             Err(error) if tokio::time::Instant::now() >= deadline => {
                 panic!("Caddyfile was unavailable: {error}")

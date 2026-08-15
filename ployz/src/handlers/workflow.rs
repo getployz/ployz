@@ -1,7 +1,10 @@
 use std::{num::NonZeroU32, time::SystemTime};
 
 use clap::ArgMatches;
-use ployz_core::{PortPublication, RequestedServiceSpec, ServiceId, ServiceMode, select_service};
+use ployz_core::{
+    ListMachinesRequest, PortPublication, RequestedServiceSpec, ServiceId, ServiceMode, op,
+    select_service,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -177,8 +180,9 @@ struct RemoteWorkflow<'a> {
 impl WorkflowIo for RemoteWorkflow<'_> {
     async fn machines(&mut self) -> Result<Vec<ployz_core::MachineObservation>, Error> {
         self.client
-            .list_machines()
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
+            .map(|list| list.machines)
             .map_err(|error| error.to_string().into())
     }
 
@@ -373,8 +377,9 @@ async fn snapshot(
     let machines = match machines {
         Some(machines) => machines,
         None => client
-            .list_machines()
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
+            .map(|list| list.machines)
             .map_err(|error| error.to_string())?,
     };
     let live = client

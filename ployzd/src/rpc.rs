@@ -7,20 +7,22 @@ use std::{
 
 use ployz_core::{
     CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CREATE_DOMAIN_RECORDS_CAPABILITY,
-    CREATE_VOLUME_CAPABILITY, CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
+    CREATE_VOLUME_CAPABILITY, CaddyConfig, CapabilityName, ContainerChanged, ContainerDetails,
+    ContainerList, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, Domain, DomainRecords,
     EXEC_CONTAINER_CAPABILITY, GET_CADDY_CONFIG_CAPABILITY, GET_DOMAIN_CAPABILITY,
     INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY, JOIN_MACHINE_CAPABILITY,
-    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
+    INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY, Initialized, JOIN_MACHINE_CAPABILITY,
+    JoinAccepted, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
     LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LocalMachineRemoved, LogMetadata, LogOrigin,
     MACHINE_LOGS_CAPABILITY, MACHINE_TOKEN_CAPABILITY, Machine, MachineDetails, MachineId,
-    MachineIdentity, MachineLogService, MachineRpc, MachineToken, OpaquePayload, PROTOCOL_MAJOR,
-    PublicIpDiscovery, REGISTER_MACHINE_CAPABILITY, RELEASE_DOMAIN_CAPABILITY,
-    REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY, Registered,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RttObservation,
-    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    associate_wireguard_peers, synthesize_membership,
+    MachineIdentity, MachineList, MachineLogService, MachineRemoved, MachineRpc, MachineToken,
+    MachineUpdated, OpaquePayload, PROTOCOL_MAJOR, PublicIpDiscovery, REGISTER_MACHINE_CAPABILITY,
+    RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY,
+    REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY,
+    RESET_MACHINE_CAPABILITY, Registered, ResetAccepted, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RttObservation, START_CONTAINER_CAPABILITY,
+    STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY, VolumeCreated, VolumeDetails, VolumeList,
+    VolumeRemoved, WireGuardInspected, associate_wireguard_peers, op, synthesize_membership,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -153,11 +155,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::DescribeContract(_)) {
-            return Err(Status::invalid_argument(
-                "expected describe_contract request",
-            ));
-        }
+        expect::<op::DescribeContract>(request)?;
         let machine_id = self.local_record()?.id;
         let mut capabilities = [
             DESCRIBE_CONTRACT_CAPABILITY,
@@ -216,26 +214,22 @@ impl MachineRpc for MachineService {
                 .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
             );
         }
-        respond(RpcResponse::contract_description(ContractDescription {
+        respond(ContractDescription {
             machine_id,
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
             capabilities,
-        }))
+        })
     }
 
     async fn inspect(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::Inspect(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected inspect request"));
-        };
+        let request = expect::<op::Inspect>(request)?;
         let record = self.local_record()?;
         let Some(private_key) = record.wireguard_private_key.as_ref() else {
-            return respond(RpcResponse::error(store_error(
-                StoreError::MissingPrivateKey,
-            )));
+            return respond(store_error(StoreError::MissingPrivateKey));
         };
         let advertised_endpoints = if !request.advertised_endpoints.is_empty() {
             request.advertised_endpoints
@@ -275,7 +269,7 @@ impl MachineRpc for MachineService {
         } else {
             Vec::new()
         };
-        respond(RpcResponse::machine_details(MachineDetails {
+        respond(MachineDetails {
             id: record.id,
             phase: record.phase,
             machine: record.machine,
@@ -283,26 +277,22 @@ impl MachineRpc for MachineService {
             advertised_endpoints,
             store_version,
             rtts,
-        }))
+        })
     }
 
     async fn machine_token(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::MachineToken(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected machine_token request"));
-        };
+        let request = expect::<op::MachineToken>(request)?;
         let record = self.local_record()?;
         let Some(private_key) = record.wireguard_private_key else {
-            return respond(RpcResponse::error(store_error(
-                StoreError::MissingPrivateKey,
-            )));
+            return respond(store_error(StoreError::MissingPrivateKey));
         };
         let discovered = discover_network(request.wireguard_port, request.public_ip)
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
-        respond(RpcResponse::machine_token(MachineToken {
+        respond(MachineToken {
             public_key: private_key.public_key(),
             public_ip: discovered.public_ip,
             advertised_endpoints: if request.advertised_endpoints.is_empty() {
@@ -311,16 +301,14 @@ impl MachineRpc for MachineService {
                 request.advertised_endpoints
             },
             runtime: local_runtime(),
-        }))
+        })
     }
 
     async fn initialize(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::Initialize(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected initialize request"));
-        };
+        let request = expect::<op::Initialize>(request)?;
         let result = self
             .store
             .lock()
@@ -335,9 +323,9 @@ impl MachineRpc for MachineService {
         match result {
             Ok(machine) => {
                 self.restart.send_replace(true);
-                respond(RpcResponse::initialized(machine))
+                respond(Initialized { machine })
             }
-            Err(error) => respond(RpcResponse::error(store_error(error))),
+            Err(error) => respond(store_error(error)),
         }
     }
 
@@ -345,22 +333,16 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::Register(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected register request"));
-        };
+        let request = expect::<op::Register>(request)?;
         if request.advertised_endpoints.is_empty() {
-            return respond(RpcResponse::error(store_error(
-                StoreError::MissingEndpoints,
-            )));
+            return respond(store_error(StoreError::MissingEndpoints));
         }
         if self.local_record()?.phase != LocalMachinePhase::Participating {
-            return respond(RpcResponse::error(unavailable(
-                "Machine is not participating",
-            )));
+            return respond(unavailable("Machine is not participating"));
         }
         let replicated = match self.replicated() {
             Ok(store) => store,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let snapshot = replicated
             .machines()
@@ -371,11 +353,11 @@ impl MachineRpc for MachineService {
             .iter()
             .any(|machine| machine.name == request.name || machine.public_key == request.public_key)
         {
-            return respond(RpcResponse::error(RpcError {
+            return respond(RpcError {
                 code: RpcErrorCode::Conflict,
                 message: "Machine name or public key already exists".into(),
                 details: Value::Null,
-            }));
+            });
         }
         let network = replicated
             .cluster_network()
@@ -412,20 +394,18 @@ impl MachineRpc for MachineService {
             .into_iter()
             .filter(|machine| machine.id != assigned_machine.id)
             .collect();
-        respond(RpcResponse::registered(Registered {
+        respond(Registered {
             assigned_machine,
             visible_peers,
             target_versions,
-        }))
+        })
     }
 
     async fn join(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::Join(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected join request"));
-        };
+        let request = expect::<op::Join>(request)?;
         let result = self
             .store
             .lock()
@@ -439,9 +419,9 @@ impl MachineRpc for MachineService {
         match result {
             Ok(()) => {
                 self.restart.send_replace(true);
-                respond(RpcResponse::join_accepted())
+                respond(JoinAccepted {})
             }
-            Err(error) => respond(RpcResponse::error(store_error(error))),
+            Err(error) => respond(store_error(error)),
         }
     }
 
@@ -449,18 +429,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::ListMachines(_)) {
-            return Err(Status::invalid_argument("expected list_machines request"));
-        }
+        expect::<op::ListMachines>(request)?;
         let local = self.local_record()?;
         if local.phase != LocalMachinePhase::Participating {
-            return respond(RpcResponse::error(unavailable(
-                "Machine is not participating",
-            )));
+            return respond(unavailable("Machine is not participating"));
         }
         let replicated = match self.replicated() {
             Ok(store) => store,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let machines = replicated
             .machines()
@@ -491,19 +467,19 @@ impl MachineRpc for MachineService {
                 .get(&observation.machine.id)
                 .copied();
         }
-        respond(RpcResponse::machine_list(observations))
+        respond(MachineList {
+            machines: observations,
+        })
     }
 
     async fn list_containers(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::ListContainers(_)) {
-            return Err(Status::invalid_argument("expected list_containers request"));
-        }
+        expect::<op::ListContainers>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let machine_id = self.local_record()?.id;
         match containers
@@ -511,8 +487,10 @@ impl MachineRpc for MachineService {
             .list_managed(&machine_id, &containers.specs)
             .await
         {
-            Ok(observations) => respond(RpcResponse::container_list(observations)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(observations) => respond(ContainerList {
+                containers: observations,
+            }),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -520,14 +498,10 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::InspectContainer(request) = request_body(request)? else {
-            return Err(Status::invalid_argument(
-                "expected inspect_container request",
-            ));
-        };
+        let request = expect::<op::InspectContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let machine_id = self.local_record()?.id;
         match containers
@@ -535,8 +509,10 @@ impl MachineRpc for MachineService {
             .inspect_managed(&request.container_id, &machine_id, &containers.specs)
             .await
         {
-            Ok(observation) => respond(RpcResponse::container_details(observation)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(observation) => respond(ContainerDetails {
+                container: observation,
+            }),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -544,14 +520,10 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::CreateContainer(request) = request_body(request)? else {
-            return Err(Status::invalid_argument(
-                "expected create_container request",
-            ));
-        };
+        let request = expect::<op::CreateContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let record = self.local_record()?;
         let machine = record
@@ -571,8 +543,8 @@ impl MachineRpc for MachineService {
             )
             .await
         {
-            Ok(created) => respond(RpcResponse::container_created(created)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(created) => respond(created),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -580,20 +552,20 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::StartContainer(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected start_container request"));
-        };
+        let request = expect::<op::StartContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match containers
             .docker
             .start(&containers.specs, &request.container_id)
             .await
         {
-            Ok(()) => respond(RpcResponse::container_changed(request.container_id)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(()) => respond(ContainerChanged {
+                container_id: request.container_id,
+            }),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -601,12 +573,10 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::StopContainer(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected stop_container request"));
-        };
+        let request = expect::<op::StopContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match containers
             .docker
@@ -618,8 +588,10 @@ impl MachineRpc for MachineService {
             )
             .await
         {
-            Ok(()) => respond(RpcResponse::container_changed(request.container_id)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(()) => respond(ContainerChanged {
+                container_id: request.container_id,
+            }),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -627,14 +599,10 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::RemoveContainer(request) = request_body(request)? else {
-            return Err(Status::invalid_argument(
-                "expected remove_container request",
-            ));
-        };
+        let request = expect::<op::RemoveContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match containers
             .docker
@@ -646,8 +614,10 @@ impl MachineRpc for MachineService {
             )
             .await
         {
-            Ok(()) => respond(RpcResponse::container_changed(request.container_id)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(()) => respond(ContainerChanged {
+                container_id: request.container_id,
+            }),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -655,17 +625,15 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::CreateVolume(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected create_volume request"));
-        };
+        let request = expect::<op::CreateVolume>(request)?;
         let machine_id = self.local_record()?.id;
         let docker = match self.containers() {
             Ok(docker) => docker,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match docker.docker.create_volume(&machine_id, request).await {
-            Ok(volume) => respond(RpcResponse::volume_created(volume)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(volume) => respond(VolumeCreated { volume }),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -673,17 +641,15 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::ListVolumes(_)) {
-            return Err(Status::invalid_argument("expected list_volumes request"));
-        }
+        expect::<op::ListVolumes>(request)?;
         let machine_id = self.local_record()?.id;
         let docker = match self.containers() {
             Ok(docker) => docker,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match docker.docker.list_volumes(&machine_id).await {
-            Ok(volumes) => respond(RpcResponse::volume_list(volumes)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(volumes) => respond(VolumeList { volumes }),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -691,21 +657,19 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::InspectVolume(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected inspect_volume request"));
-        };
+        let request = expect::<op::InspectVolume>(request)?;
         let machine_id = self.local_record()?.id;
         let docker = match self.containers() {
             Ok(docker) => docker,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match docker
             .docker
             .inspect_volume(&machine_id, &request.name)
             .await
         {
-            Ok(volume) => respond(RpcResponse::volume_details(volume)),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(volume) => respond(VolumeDetails { volume }),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -713,20 +677,18 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::RemoveVolume(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected remove_volume request"));
-        };
+        let request = expect::<op::RemoveVolume>(request)?;
         let docker = match self.containers() {
             Ok(docker) => docker,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match docker
             .docker
             .remove_volume(&request.name, request.force)
             .await
         {
-            Ok(()) => respond(RpcResponse::volume_removed()),
-            Err(error) => respond(RpcResponse::error(docker_rpc_error(error))),
+            Ok(()) => respond(VolumeRemoved {}),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 
@@ -748,9 +710,8 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<Self::ContainerLogsStream>, Status> {
-        let RpcRequestBody::ContainerLogs(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected container_logs request"));
-        };
+        let request = op::ContainerLogs::from_request_body(request_body(request)?)
+            .map_err(invalid_request)?;
         let containers = self
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
@@ -769,9 +730,8 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<Self::MachineLogsStream>, Status> {
-        let RpcRequestBody::MachineLogs(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected machine_logs request"));
-        };
+        let request =
+            op::MachineLogs::from_request_body(request_body(request)?).map_err(invalid_request)?;
         let record = self.local_record()?;
         let machine = record
             .machine
@@ -804,19 +764,17 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::UpdateMachine(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected update_machine request"));
-        };
+        let request = expect::<op::UpdateMachine>(request)?;
         if request.update.is_empty() {
-            return respond(RpcResponse::error(RpcError {
+            return respond(RpcError {
                 code: RpcErrorCode::InvalidArgument,
                 message: "at least one Machine update is required".into(),
                 details: Value::Null,
-            }));
+            });
         }
         let replicated = match self.replicated() {
             Ok(replicated) => replicated,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let visible = replicated
             .machines()
@@ -834,9 +792,9 @@ impl MachineRpc for MachineService {
                 if let Err(error) = publication.publish(&machine).await {
                     eprintln!("failed to publish updated local Machine: {error}");
                 }
-                respond(RpcResponse::machine_updated(machine))
+                respond(MachineUpdated { machine })
             }
-            Err(error) => respond(RpcResponse::error(store_error(error))),
+            Err(error) => respond(store_error(error)),
         }
     }
 
@@ -844,19 +802,15 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::RemoveLocalMachine(request) = request_body(request)? else {
-            return Err(Status::invalid_argument(
-                "expected remove_local_machine request",
-            ));
-        };
+        let request = expect::<op::RemoveLocalMachine>(request)?;
         let machine_id = self.local_record()?.id;
         let replicated = match self.replicated() {
             Ok(replicated) => replicated,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let publication = replicated.machine_publication().await;
         let prepared_reset = {
@@ -869,7 +823,7 @@ impl MachineRpc for MachineService {
             } else {
                 match store.prepare_reset() {
                     Ok(prepared) => Some(prepared),
-                    Err(error) => return respond(RpcResponse::error(store_error(error))),
+                    Err(error) => return respond(store_error(error)),
                 }
             }
         };
@@ -878,11 +832,11 @@ impl MachineRpc for MachineService {
             .remove_all_managed(&containers.specs)
             .await
         {
-            return respond(RpcResponse::error(RpcError {
+            return respond(RpcError {
                 code: RpcErrorCode::Internal,
                 message: error.to_string(),
                 details: Value::Null,
-            }));
+            });
         }
         if let Some(prepared_reset) = prepared_reset {
             let mut store = self
@@ -890,7 +844,7 @@ impl MachineRpc for MachineService {
                 .lock()
                 .map_err(|_| Status::internal("local Machine record lock poisoned"))?;
             if let Err(error) = prepared_reset.commit(&mut store) {
-                return respond(RpcResponse::error(store_error(error)));
+                return respond(store_error(error));
             }
         }
         let reset_warning = publication
@@ -898,23 +852,21 @@ impl MachineRpc for MachineService {
             .await
             .err()
             .map(|error| error.to_string());
-        respond(RpcResponse::local_machine_removed(local_removal_response(
+        respond(local_removal_response(
             &self.restart,
             reset_warning,
             request.restart_on_cleanup_failure,
-        )))
+        ))
     }
 
     async fn remove_machine(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::RemoveMachine(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected remove_machine request"));
-        };
+        let request = expect::<op::RemoveMachine>(request)?;
         let replicated = match self.replicated() {
             Ok(replicated) => replicated,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         replicated
             .remove_machine(&request.machine_id)
@@ -924,22 +876,18 @@ impl MachineRpc for MachineService {
         if local.id == request.machine_id && local.phase == LocalMachinePhase::Resetting {
             self.restart.send_replace(true);
         }
-        respond(RpcResponse::machine_removed())
+        respond(MachineRemoved {})
     }
 
     async fn inspect_wireguard(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::InspectWireguard(_)) {
-            return Err(Status::invalid_argument(
-                "expected inspect_wireguard request",
-            ));
-        }
+        expect::<op::InspectWireguard>(request)?;
         let device =
             inspect_wireguard_device().map_err(|error| Status::internal(error.to_string()))?;
         let Some(cluster) = &self.cluster else {
-            return respond(RpcResponse::wireguard_inspected(device));
+            return respond(WireGuardInspected { device });
         };
         let machines = match cluster.replicated.machines().await {
             Ok(snapshot) => snapshot.observations,
@@ -962,53 +910,43 @@ impl MachineRpc for MachineService {
                 .map(|machine| (machine.id, observation.statistics))
         })
         .collect();
-        respond(RpcResponse::wireguard_inspected(associate_wireguard_peers(
-            device, &machines, &rtts,
-        )))
+        respond(WireGuardInspected {
+            device: associate_wireguard_peers(device, &machines, &rtts),
+        })
     }
 
     async fn list_images(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::ListImages(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected list_images request"));
-        };
+        let request = expect::<op::ListImages>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         let images = containers
             .docker
             .list_images(request.reference.as_deref())
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
-        respond(RpcResponse::machine_images(images))
+        respond(images)
     }
 
     async fn get_caddy_config(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::GetCaddyConfig(_)) {
-            return Err(Status::invalid_argument(
-                "expected get_caddy_config request",
-            ));
-        }
+        expect::<op::GetCaddyConfig>(request)?;
         let Some(path) = &self.caddyfile else {
-            return respond(RpcResponse::error(unavailable(
-                "Caddy configuration is not available",
-            )));
+            return respond(unavailable("Caddy configuration is not available"));
         };
         match std::fs::read_to_string(path) {
-            Ok(caddyfile) => respond(RpcResponse::caddy_config(caddyfile)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                respond(RpcResponse::error(RpcError {
-                    code: RpcErrorCode::NotFound,
-                    message: format!("Caddyfile {} does not exist", path.display()),
-                    details: Value::Null,
-                }))
-            }
+            Ok(caddyfile) => respond(CaddyConfig { caddyfile }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => respond(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: format!("Caddyfile {} does not exist", path.display()),
+                details: Value::Null,
+            }),
             Err(error) => Err(Status::internal(format!(
                 "read Caddyfile {}: {error}",
                 path.display()
@@ -1020,27 +958,25 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::ReserveDomain(request) = request_body(request)? else {
-            return Err(Status::invalid_argument("expected reserve_domain request"));
-        };
+        let request = expect::<op::ReserveDomain>(request)?;
         if request.endpoint.is_empty() {
-            return respond(RpcResponse::error(RpcError {
+            return respond(RpcError {
                 code: RpcErrorCode::InvalidArgument,
                 message: "hosted DNS endpoint is required".into(),
                 details: Value::Null,
-            }));
+            });
         }
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match self
             .hosted_dns
             .reserve_domain(replicated, &request.endpoint)
             .await
         {
-            Ok(name) => respond(RpcResponse::domain(name)),
-            Err(error) => respond(RpcResponse::error(hosted_dns_error(error))),
+            Ok(name) => respond(Domain { name }),
+            Err(error) => respond(hosted_dns_error(error)),
         }
     }
 
@@ -1048,16 +984,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::GetDomain(_)) {
-            return Err(Status::invalid_argument("expected get_domain request"));
-        }
+        expect::<op::GetDomain>(request)?;
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match self.hosted_dns.domain(replicated).await {
-            Ok(name) => respond(RpcResponse::domain(name)),
-            Err(error) => respond(RpcResponse::error(hosted_dns_error(error))),
+            Ok(name) => respond(Domain { name }),
+            Err(error) => respond(hosted_dns_error(error)),
         }
     }
 
@@ -1065,16 +999,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::ReleaseDomain(_)) {
-            return Err(Status::invalid_argument("expected release_domain request"));
-        }
+        expect::<op::ReleaseDomain>(request)?;
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match self.hosted_dns.release_domain(replicated).await {
-            Ok(name) => respond(RpcResponse::domain(name)),
-            Err(error) => respond(RpcResponse::error(hosted_dns_error(error))),
+            Ok(name) => respond(Domain { name }),
+            Err(error) => respond(hosted_dns_error(error)),
         }
     }
 
@@ -1082,22 +1014,18 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::CreateDomainRecords(request) = request_body(request)? else {
-            return Err(Status::invalid_argument(
-                "expected create_domain_records request",
-            ));
-        };
+        let request = expect::<op::CreateDomainRecords>(request)?;
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
-            Err(error) => return respond(RpcResponse::error(error)),
+            Err(error) => return respond(error),
         };
         match self
             .hosted_dns
             .create_records(replicated, &request.records)
             .await
         {
-            Ok(records) => respond(RpcResponse::domain_records(records)),
-            Err(error) => respond(RpcResponse::error(hosted_dns_error(error))),
+            Ok(records) => respond(DomainRecords { records }),
+            Err(error) => respond(hosted_dns_error(error)),
         }
     }
 
@@ -1105,16 +1033,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if !matches!(request_body(request)?, RpcRequestBody::Reset(_)) {
-            return Err(Status::invalid_argument("expected reset request"));
-        }
+        expect::<op::Reset>(request)?;
         if let Some(containers) = &self.containers
             && let Err(error) = containers
                 .docker
                 .remove_all_managed(&containers.specs)
                 .await
         {
-            return respond(RpcResponse::error(docker_rpc_error(error)));
+            return respond(docker_rpc_error(error));
         }
         let reset = self
             .store
@@ -1124,9 +1050,9 @@ impl MachineRpc for MachineService {
         match reset {
             Ok(()) => {
                 self.restart.send_replace(true);
-                respond(RpcResponse::reset_accepted())
+                respond(ResetAccepted {})
             }
-            Err(error) => respond(RpcResponse::error(store_error(error))),
+            Err(error) => respond(store_error(error)),
         }
     }
 }
@@ -1255,8 +1181,10 @@ fn docker_rpc_error(error: DockerError) -> RpcError {
 }
 
 #[allow(clippy::result_large_err)]
-fn respond(response: RpcResponse) -> Result<Response<OpaquePayload>, Status> {
-    Ok(Response::new(response.encode().map_err(internal_response)?))
+fn respond(response: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, Status> {
+    Ok(Response::new(
+        response.into().encode().map_err(internal_response)?,
+    ))
 }
 
 fn invalid_request(error: impl std::fmt::Display) -> Status {
@@ -1270,6 +1198,11 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
         .decode_request()
         .map(|request| request.body)
         .map_err(invalid_request)
+}
+
+#[allow(clippy::result_large_err)]
+fn expect<T: Rpc>(request: Request<OpaquePayload>) -> Result<T::Request, Status> {
+    T::from_request_body(request_body(request)?).map_err(invalid_request)
 }
 
 fn internal_response(error: impl std::fmt::Display) -> Status {

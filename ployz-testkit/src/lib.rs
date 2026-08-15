@@ -13,9 +13,10 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, DockerVolumeName, InitializeRequest, InspectRequest,
-    JoinRequest, LocalMachinePhase, Machine, MachineName, MachineRpcClient, MembershipObservation,
-    OpaquePayload, Registered, RpcRequest, RpcResponse, RpcResponseBody,
+    AdvertisedEndpoint, ContainerId, DescribeContractRequest, DockerVolumeName, InitializeRequest,
+    InspectRequest, JoinRequest, ListImagesRequest, LocalMachinePhase, Machine, MachineName,
+    MachineRpcClient, MembershipObservation, OpaquePayload, Registered, ResetRequest, RpcResponse,
+    RpcResponseBody, op,
 };
 use thiserror::Error;
 
@@ -206,7 +207,10 @@ impl Cluster {
             loop {
                 let ready = match self.client(index).await {
                     Ok(mut client) => client
-                        .describe_contract(RpcRequest::describe_contract().encode()?)
+                        .describe_contract(
+                            op::DescribeContract::into_request(DescribeContractRequest {})
+                                .encode()?,
+                        )
                         .await
                         .is_ok(),
                     Err(_) => false,
@@ -337,7 +341,7 @@ impl Cluster {
         Ok(response(
             client
                 .initialize(
-                    RpcRequest::initialize(InitializeRequest {
+                    op::Initialize::into_request(InitializeRequest {
                         name: MachineName::parse("machine-1")?,
                         cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
                         public_ip: None,
@@ -349,19 +353,20 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_initialized()?
-        .clone())
+        .decode::<op::Initialize>()?
+        .machine)
     }
 
     pub async fn join(&self, index: usize, request: JoinRequest) -> Result<(), TestkitError> {
         let mut client = self.client(index).await?;
         response(
             client
-                .join(RpcRequest::join(request).encode()?)
+                .join(op::Join::into_request(request).encode()?)
                 .await?
                 .into_inner(),
         )?
-        .decode_join_accepted()
+        .decode::<op::Join>()
+        .map(|_| ())
         .map_err(Into::into)
     }
 
@@ -559,23 +564,24 @@ impl Cluster {
         let mut client = self.client(index).await?;
         Ok(response(
             client
-                .list_images(RpcRequest::list_images(reference).encode()?)
+                .list_images(
+                    op::ListImages::into_request(ListImagesRequest { reference }).encode()?,
+                )
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_images()?
-        .clone())
+        .decode::<op::ListImages>()?)
     }
 
     pub async fn reset(&self, index: usize) -> Result<(), TestkitError> {
         let mut client = self.client(index).await?;
         response(
             client
-                .reset(RpcRequest::reset().encode()?)
+                .reset(op::Reset::into_request(ResetRequest {}).encode()?)
                 .await?
                 .into_inner(),
         )?
-        .decode_reset_accepted()?;
+        .decode::<op::Reset>()?;
         Ok(())
     }
 
@@ -772,12 +778,11 @@ impl Cluster {
         let mut client = self.client(index).await?;
         Ok(response(
             client
-                .inspect(RpcRequest::inspect(InspectRequest::default()).encode()?)
+                .inspect(op::Inspect::into_request(InspectRequest::default()).encode()?)
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_details()?
-        .clone())
+        .decode::<op::Inspect>()?)
     }
 
     async fn client(

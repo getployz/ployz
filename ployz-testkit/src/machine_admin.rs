@@ -1,9 +1,10 @@
 use std::time::Duration;
 
 use ployz_core::{
-    AdvertisedEndpoint, InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineId,
-    MachineName, MachineToken, MachineTokenRequest, MachineUpdate, RegisterRequest,
-    RemoveMachineRequest, RpcRequest, RttObservation, WireGuardDevice, WireGuardPublicKey,
+    AdvertisedEndpoint, InspectRequest, InspectWireGuardRequest, JoinRequest, ListMachinesRequest,
+    LocalMachinePhase, Machine, MachineId, MachineName, MachineToken, MachineTokenRequest,
+    MachineUpdate, RegisterRequest, RemoveMachineRequest, RttObservation, UpdateMachineRequest,
+    WireGuardDevice, WireGuardPublicKey, op,
 };
 
 use super::{Cluster, TestkitError, docker, response};
@@ -52,7 +53,7 @@ impl Cluster {
         Ok(response(
             client
                 .register(
-                    RpcRequest::register(RegisterRequest {
+                    op::Register::into_request(RegisterRequest {
                         name: MachineName::parse(name)?,
                         public_key: token.public_key,
                         public_ip: token.public_ip,
@@ -64,8 +65,7 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_registered()?
-        .clone())
+        .decode::<op::Register>()?)
     }
 
     pub async fn machines(
@@ -75,12 +75,12 @@ impl Cluster {
         let mut client = self.client(index).await?;
         Ok(response(
             client
-                .list_machines(RpcRequest::list_machines().encode()?)
+                .list_machines(op::ListMachines::into_request(ListMachinesRequest {}).encode()?)
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_list()?
-        .to_vec())
+        .decode::<op::ListMachines>()?
+        .machines)
     }
 
     pub async fn update_machine(
@@ -90,7 +90,9 @@ impl Cluster {
         update: MachineUpdate,
     ) -> Result<Machine, TestkitError> {
         let mut client = self.client(entry).await?;
-        let mut request = tonic::Request::new(RpcRequest::update_machine(update).encode()?);
+        let mut request = tonic::Request::new(
+            op::UpdateMachine::into_request(UpdateMachineRequest { update }).encode()?,
+        );
         request.metadata_mut().insert(
             "machine",
             target
@@ -99,8 +101,8 @@ impl Cluster {
         );
         Ok(
             response(client.update_machine(request).await?.into_inner())?
-                .decode_machine_updated()?
-                .clone(),
+                .decode::<op::UpdateMachine>()?
+                .machine,
         )
     }
 
@@ -113,12 +115,14 @@ impl Cluster {
         response(
             client
                 .remove_machine(
-                    RpcRequest::remove_machine(RemoveMachineRequest { machine_id }).encode()?,
+                    op::RemoveMachine::into_request(RemoveMachineRequest { machine_id })
+                        .encode()?,
                 )
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_removed()
+        .decode::<op::RemoveMachine>()
+        .map(|_| ())
         .map_err(Into::into)
     }
 
@@ -127,7 +131,7 @@ impl Cluster {
         Ok(response(
             client
                 .inspect(
-                    RpcRequest::inspect(InspectRequest {
+                    op::Inspect::into_request(InspectRequest {
                         include_rtts: true,
                         ..Default::default()
                     })
@@ -136,7 +140,7 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_details()?
+        .decode::<op::Inspect>()?
         .rtts
         .clone())
     }
@@ -150,7 +154,7 @@ impl Cluster {
         Ok(response(
             client
                 .machine_token(
-                    RpcRequest::machine_token(MachineTokenRequest {
+                    op::MachineToken::into_request(MachineTokenRequest {
                         advertised_endpoints,
                         ..Default::default()
                     })
@@ -159,20 +163,21 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode_machine_token()?
-        .clone())
+        .decode::<op::MachineToken>()?)
     }
 
     pub async fn inspect_wireguard(&self, index: usize) -> Result<WireGuardDevice, TestkitError> {
         let mut client = self.client(index).await?;
         Ok(response(
             client
-                .inspect_wireguard(RpcRequest::inspect_wireguard().encode()?)
+                .inspect_wireguard(
+                    op::InspectWireguard::into_request(InspectWireGuardRequest {}).encode()?,
+                )
                 .await?
                 .into_inner(),
         )?
-        .decode_wireguard_inspected()?
-        .clone())
+        .decode::<op::InspectWireguard>()?
+        .device)
     }
 
     pub fn inject_wireguard_peer(
