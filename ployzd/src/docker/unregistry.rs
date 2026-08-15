@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
     net::Ipv4Addr,
-    os::unix::fs::FileTypeExt,
+    os::unix::fs::{FileTypeExt, MetadataExt},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use bollard::models::{
@@ -18,6 +19,8 @@ pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
 const CONTAINER_SOCKET: &str = "/run/containerd/containerd.sock";
 const CONFIG_VERSION: &str = "1";
+const SOCKET_INODE_LABEL: &str = "ployz.unregistry.socket-inode";
+const SOCKET_REFRESH: Duration = Duration::from_secs(2);
 const SOCKETS: &[&str] = &[
     "/run/containerd/containerd.sock",
     "/run/docker/containerd/containerd.sock",
@@ -66,29 +69,7 @@ impl RunningUnregistry {
     }
 
     fn matches(&self, container: &bollard::models::ContainerInspectResponse) -> bool {
-        let socket = self.socket.to_string_lossy();
-        let gateway = self.gateway.to_string();
-        let labels = container
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref());
-        container
-            .config
-            .as_ref()
-            .and_then(|config| config.image.as_deref())
-            == Some(IMAGE)
-            && labels
-                .and_then(|labels| labels.get("ployz.unregistry.socket"))
-                .map(String::as_str)
-                == Some(socket.as_ref())
-            && labels
-                .and_then(|labels| labels.get("ployz.unregistry.gateway"))
-                .map(String::as_str)
-                == Some(gateway.as_str())
-            && labels
-                .and_then(|labels| labels.get("ployz.unregistry.config-version"))
-                .map(String::as_str)
-                == Some(CONFIG_VERSION)
+        unregistry_matches(container, &self.socket, self.gateway)
     }
 
     fn config(&self) -> ContainerCreateBody {
@@ -118,6 +99,10 @@ impl RunningUnregistry {
                     "ployz.unregistry.config-version".into(),
                     CONFIG_VERSION.into(),
                 ),
+                (
+                    SOCKET_INODE_LABEL.into(),
+                    socket_inode_label(&self.socket).unwrap_or_default(),
+                ),
             ])),
             host_config: Some(HostConfig {
                 mounts: Some(vec![Mount {
@@ -143,6 +128,30 @@ impl RunningUnregistry {
         }
     }
 
+    pub async fn keep_socket_current(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), Error> {
+        let mut ticks = tokio::time::interval(SOCKET_REFRESH);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ticks.tick().await;
+        loop {
+            tokio::select! {
+                _ = ticks.tick() => {
+                    if let Err(error) = self.start().await {
+                        eprintln!("WARNING: unregistry socket refresh failed: {error}");
+                    }
+                }
+                changed = shutdown.changed() => {
+                    changed.map_err(|_| Error::ShutdownClosed)?;
+                    if *shutdown.borrow() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn stop(&self) -> Result<(), Error> {
         self.service.stop().await.map_err(Into::into)
     }
@@ -150,6 +159,71 @@ impl RunningUnregistry {
     pub async fn cleanup(&self) -> Result<(), Error> {
         self.service.remove().await.map_err(Into::into)
     }
+}
+
+/// Whether a running unregistry still matches this Machine's socket, gateway, and live socket inode.
+#[must_use]
+pub fn unregistry_matches(
+    container: &bollard::models::ContainerInspectResponse,
+    socket: &Path,
+    gateway: Ipv4Addr,
+) -> bool {
+    let socket_name = socket.to_string_lossy();
+    let gateway = gateway.to_string();
+    let labels = container
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref());
+    container
+        .config
+        .as_ref()
+        .and_then(|config| config.image.as_deref())
+        == Some(IMAGE)
+        && labels
+            .and_then(|labels| labels.get("ployz.unregistry.socket"))
+            .map(String::as_str)
+            == Some(socket_name.as_ref())
+        && labels
+            .and_then(|labels| labels.get("ployz.unregistry.gateway"))
+            .map(String::as_str)
+            == Some(gateway.as_str())
+        && labels
+            .and_then(|labels| labels.get("ployz.unregistry.config-version"))
+            .map(String::as_str)
+            == Some(CONFIG_VERSION)
+        && bound_to_current_socket_inode(labels, socket)
+}
+
+/// True when the running unregistry is bound to the live containerd socket inode.
+/// A missing socket is treated as still bound so a transient recreate gap does not destroy the container.
+#[must_use]
+pub fn bound_to_current_socket_inode(
+    labels: Option<&HashMap<String, String>>,
+    socket: &Path,
+) -> bool {
+    match socket_inode_label(socket) {
+        None => true,
+        Some(current) => {
+            labels
+                .and_then(|labels| labels.get(SOCKET_INODE_LABEL))
+                .map(String::as_str)
+                == Some(current.as_str())
+        }
+    }
+}
+
+fn socket_inode_label(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    metadata.file_type().is_socket().then(|| {
+        // ctime distinguishes a replacement file when the filesystem reuses the inode number.
+        format!(
+            "{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        )
+    })
 }
 
 fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
@@ -184,5 +258,129 @@ mod tests {
         assert_eq!(detect_socket(Some(&socket)), Some(socket.clone()));
         drop(listener);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn running_unregistry_is_replaced_when_containerd_recreates_the_socket_inode() {
+        let root = temp_root("inode");
+        let socket = root.join("containerd.sock");
+        let gateway = Ipv4Addr::new(10, 210, 0, 1);
+        let first = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let bound = inspect_bound_to(&socket, gateway);
+        assert!(unregistry_matches(&bound, &socket, gateway));
+        let original = socket_inode_label(&socket).unwrap();
+
+        drop(first);
+        std::fs::remove_file(&socket).unwrap();
+        let started = std::time::Instant::now();
+        let _recreated = loop {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            if socket_inode_label(&socket).as_ref() != Some(&original) {
+                break listener;
+            }
+            drop(listener);
+            std::fs::remove_file(&socket).unwrap();
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "recreated socket kept the original identity {original}"
+            );
+        };
+        assert!(!unregistry_matches(&bound, &socket, gateway));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn running_unregistry_is_replaced_when_recorded_socket_inode_does_not_match() {
+        let root = temp_root("stale-label");
+        let socket = root.join("containerd.sock");
+        let gateway = Ipv4Addr::new(10, 210, 0, 1);
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let stale = inspect_bound_to_inode(&socket, gateway, "0:0:0:0".into());
+        assert!(!unregistry_matches(&stale, &socket, gateway));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unregistry_without_inode_label_is_replaced_when_the_socket_exists() {
+        let root = temp_root("missing-inode");
+        let socket = root.join("containerd.sock");
+        let gateway = Ipv4Addr::new(10, 210, 0, 1);
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let mut bound = inspect_bound_to(&socket, gateway);
+        bound
+            .config
+            .as_mut()
+            .unwrap()
+            .labels
+            .as_mut()
+            .unwrap()
+            .remove(SOCKET_INODE_LABEL);
+        assert!(!unregistry_matches(&bound, &socket, gateway));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_containerd_socket_does_not_force_unregistry_replacement() {
+        let root = temp_root("missing-sock");
+        let socket = root.join("containerd.sock");
+        let gateway = Ipv4Addr::new(10, 210, 0, 1);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let bound = inspect_bound_to(&socket, gateway);
+        drop(listener);
+        std::fs::remove_file(&socket).unwrap();
+        assert!(unregistry_matches(&bound, &socket, gateway));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-unregistry-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn inspect_bound_to(
+        socket: &Path,
+        gateway: Ipv4Addr,
+    ) -> bollard::models::ContainerInspectResponse {
+        inspect_bound_to_inode(
+            socket,
+            gateway,
+            socket_inode_label(socket).expect("test socket"),
+        )
+    }
+
+    fn inspect_bound_to_inode(
+        socket: &Path,
+        gateway: Ipv4Addr,
+        inode: String,
+    ) -> bollard::models::ContainerInspectResponse {
+        bollard::models::ContainerInspectResponse {
+            config: Some(bollard::models::ContainerConfig {
+                image: Some(IMAGE.into()),
+                labels: Some(HashMap::from([
+                    (
+                        "ployz.unregistry.socket".into(),
+                        socket.to_string_lossy().into_owned(),
+                    ),
+                    ("ployz.unregistry.gateway".into(), gateway.to_string()),
+                    (
+                        "ployz.unregistry.config-version".into(),
+                        CONFIG_VERSION.into(),
+                    ),
+                    (SOCKET_INODE_LABEL.into(), inode),
+                ])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
     }
 }

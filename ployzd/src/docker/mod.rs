@@ -40,7 +40,7 @@ use crate::machine::LocalMachineStore;
 
 pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
-pub use unregistry::RunningUnregistry;
+pub use unregistry::{RunningUnregistry, bound_to_current_socket_inode, unregistry_matches};
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};

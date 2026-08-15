@@ -124,13 +124,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let mut corrosion = start_corrosion(&args, &store).await?;
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
-    let mut unregistry = match (&docker, unregistry_gateway) {
+    let unregistry = match (&docker, unregistry_gateway) {
         (Some(docker), Some(gateway)) => {
             match docker
                 .start_unregistry(gateway, args.containerd_socket.as_deref())
                 .await
             {
-                Ok(running) => running,
+                Ok(running) => running.map(Arc::new),
                 Err(error) => {
                     eprintln!("WARNING: unregistry disabled: {error}");
                     None
@@ -266,6 +266,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     };
+    let unregistry_refresh = {
+        let running = unregistry.clone();
+        let shutdown = shutdown_rx.clone();
+        async move {
+            match running.as_deref() {
+                Some(running) => running
+                    .keep_socket_current(shutdown)
+                    .await
+                    .map_err(io::Error::other),
+                None => {
+                    wait_for_shutdown(shutdown).await;
+                    Ok(())
+                }
+            }
+        }
+    };
     let servers = async {
         tokio::try_join!(
             async { rpc.await.map_err(io::Error::other) },
@@ -276,6 +292,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             observer,
             dns,
             caddy,
+            unregistry_refresh,
         )
         .map(|_| ())
     };
@@ -301,7 +318,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     if resetting
-        && let Some(running) = &mut unregistry
+        && let Some(running) = &unregistry
         && let Err(error) = running.cleanup().await
     {
         errors.push(error.to_string());
@@ -328,7 +345,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     if !resetting
-        && let Some(running) = &mut unregistry
+        && let Some(running) = &unregistry
         && let Err(error) = running.stop().await
     {
         errors.push(error.to_string());
