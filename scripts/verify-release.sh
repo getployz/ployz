@@ -59,6 +59,7 @@ for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd
     grep -Fq "$checksum" "$formula" || fail "Homebrew formula has no checksum for $archive"
 done
 grep -Fq 'bin.install "ployz"' "$formula" || fail "Homebrew formula does not install ployz"
+grep -Fiq 'clean break' "$formula" || fail "Homebrew formula omits the clean-break statement"
 
 run_archive() {
     archive=$1 binary=$2 runner=${3:-}
