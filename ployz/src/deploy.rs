@@ -7,6 +7,7 @@ use thiserror::Error;
 
 mod comparison;
 mod exec;
+mod observe;
 mod planning;
 
 pub use comparison::compare_specs;

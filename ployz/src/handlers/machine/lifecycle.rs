@@ -260,7 +260,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                     wait_machine_up(&mut entry, &assigned.id).await?;
                     // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
                     let requested = crate::caddy::service_spec(image, machines, caddy_config);
-                    crate::handlers::workflow::deploy_requested(&mut entry, &requested).await
+                    crate::handlers::deploy::deploy_requested(&mut entry, &requested).await
                 })
                 .map_err(|error| error.to_string()),
         )
@@ -399,7 +399,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             if want_caddy {
                 let image = crate::caddy::latest_image().await?;
                 let requested = crate::caddy::service_spec(image, Vec::new(), None);
-                crate::handlers::workflow::deploy_requested(&mut ready, &requested).await?;
+                crate::handlers::deploy::deploy_requested(&mut ready, &requested).await?;
                 if want_dns {
                     crate::dns::update_records_for_caddy(&mut ready)
                         .await

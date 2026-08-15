@@ -43,7 +43,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         };
         let requested = crate::caddy::service_spec(image, machines, caddy_config);
         let mut client = connect_client(root, None).await?;
-        super::workflow::deploy_requested(&mut client, &requested).await?;
+        super::deploy::deploy_requested(&mut client, &requested).await?;
         crate::dns::update_records_if_reserved(&mut client)
             .await
             .map_err(|error| error.to_string())?;

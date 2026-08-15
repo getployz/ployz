@@ -72,6 +72,10 @@ _Avoid_: Current service spec, canonical service spec
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow.
 _Avoid_: Deployment resource, reconciliation loop
 
+**Deploy Snapshot**:
+The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy. It is Live Observation for a bounded command, not Cluster truth.
+_Avoid_: current cluster state, desired state, cluster snapshot
+
 **Deploy Plan**:
 The ephemeral sequence of operations calculated for one Deploy. It may complete only a prefix and is neither persisted nor generally rolled back.
 _Avoid_: Desired state, workflow

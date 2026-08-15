@@ -12,13 +12,13 @@ use thiserror::Error as ThisError;
 mod build;
 mod caddy;
 mod context;
+mod deploy;
 mod dns;
 mod image;
 mod machine;
 mod operator;
 mod service;
 mod volume;
-mod workflow;
 
 #[derive(Debug, Eq, PartialEq, ThisError)]
 pub enum Error {
@@ -208,7 +208,7 @@ stub_handlers! {
                 .map(String::as_str),
         )
     } => "ctx use";
-    deploy(root) { workflow::deploy(root) } => "deploy";
+    deploy(root) { deploy::deploy(root) } => "deploy";
     dns_release(root) { dns::release(root) } => "dns release";
     dns_reserve(root) { dns::reserve(root) } => "dns reserve";
     dns_show(root) { dns::show(root) } => "dns show";
@@ -232,15 +232,15 @@ stub_handlers! {
     proxy(root) { operator::proxy(root) } => "proxy";
     process_list(root) { service::processes(root) } => "ps";
     remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "rm";
-    run_service(root) { workflow::run(root) } => "run";
-    scale(root) { workflow::scale(root) } => "scale";
+    run_service(root) { deploy::run(root) } => "run";
+    scale(root) { deploy::scale(root) } => "scale";
     service_exec(root) { operator::exec(root) } => "service exec";
     service_inspect(root) { service::inspect(root) } => "service inspect";
     service_logs(root) { operator::service_logs(root) } => "service logs";
     service_list(root) { service::list(root) } => "service ls";
     service_remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "service rm";
-    service_run(root) { workflow::run(root) } => "service run";
-    service_scale(root) { workflow::scale(root) } => "service scale";
+    service_run(root) { deploy::run(root) } => "service run";
+    service_scale(root) { deploy::scale(root) } => "service scale";
     service_start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "service start";
     service_stop(root) { service::change(root, ployz_core::ContainerAction::Stop) } => "service stop";
     start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "start";
