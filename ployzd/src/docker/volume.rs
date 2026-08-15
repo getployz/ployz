@@ -4,15 +4,16 @@ use bollard::{
 };
 use ployz_core::{CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName, MachineId};
 
-use super::{Error, LocalDocker, some_map};
+use super::{ContainerRuntime, Error, some_map};
 
-impl LocalDocker {
+impl ContainerRuntime {
     pub async fn create_volume(
         &self,
         machine_id: &MachineId,
         request: CreateVolumeRequest,
     ) -> Result<DockerVolume, Error> {
         let volume = self
+            .docker
             .client
             .create_volume(VolumeCreateRequest {
                 name: Some(request.name.to_string()),
@@ -26,7 +27,8 @@ impl LocalDocker {
     }
 
     pub async fn list_volumes(&self, machine_id: &MachineId) -> Result<Vec<DockerVolume>, Error> {
-        self.client
+        self.docker
+            .client
             .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
             .await?
             .volumes
@@ -41,12 +43,13 @@ impl LocalDocker {
         machine_id: &MachineId,
         name: &DockerVolumeName,
     ) -> Result<DockerVolume, Error> {
-        let volume = self.client.inspect_volume(name.as_str()).await?;
+        let volume = self.docker.client.inspect_volume(name.as_str()).await?;
         docker_volume(machine_id, volume)
     }
 
     pub async fn remove_volume(&self, name: &DockerVolumeName, force: bool) -> Result<(), Error> {
-        self.client
+        self.docker
+            .client
             .remove_volume(
                 name.as_str(),
                 Some(RemoveVolumeOptionsBuilder::default().force(force).build()),

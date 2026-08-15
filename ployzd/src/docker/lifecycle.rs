@@ -13,18 +13,16 @@ use ployz_core::{
 use crate::docker_image::prepare_image;
 
 use super::{
-    Error, LocalDocker, MachineSpecStore, ManagedLabels, create, docker_error,
-    spec_store::ConfigOperation,
+    ContainerRuntime, Error, ManagedLabels, create, docker_error, spec_store::ConfigOperation,
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
-impl LocalDocker {
+impl ContainerRuntime {
     pub async fn create(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        specs: &MachineSpecStore,
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
@@ -36,14 +34,14 @@ impl LocalDocker {
             .get_or_insert_default()
             .mounts
             .get_or_insert_default();
-        preflight_named_volumes(&self.client, mounts).await?;
+        preflight_named_volumes(&self.docker.client, mounts).await?;
         prepare_image(
-            &self.client,
+            &self.docker.client,
             &spec.container.image,
             spec.container.pull_policy,
         )
         .await?;
-        let mut config_operation = specs.config_operation().await;
+        let mut config_operation = self.specs.config_operation().await;
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         let result = async {
             let mut attempt = 0;
@@ -58,6 +56,7 @@ impl LocalDocker {
                     .name(&display_name)
                     .build();
                 match self
+                    .docker
                     .client
                     .create_container(Some(options), body.clone())
                     .await
@@ -91,13 +90,10 @@ impl LocalDocker {
         result
     }
 
-    pub async fn start(
-        &self,
-        specs: &MachineSpecStore,
-        container_id: &ContainerId,
-    ) -> Result<(), Error> {
-        self.ensure_managed(specs, container_id).await?;
+    pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
+        self.ensure_managed(container_id).await?;
         let result = self
+            .docker
             .client
             .start_container(container_id.as_str(), None)
             .await;
@@ -106,12 +102,11 @@ impl LocalDocker {
 
     pub async fn stop(
         &self,
-        specs: &MachineSpecStore,
         container_id: &ContainerId,
         signal: Option<&str>,
         grace_period_seconds: Option<i32>,
     ) -> Result<(), Error> {
-        self.ensure_managed(specs, container_id).await?;
+        self.ensure_managed(container_id).await?;
         let mut options = StopContainerOptionsBuilder::default();
         if let Some(signal) = signal {
             options = options.signal(signal);
@@ -120,6 +115,7 @@ impl LocalDocker {
             options = options.t(seconds);
         }
         let result = self
+            .docker
             .client
             .stop_container(container_id.as_str(), Some(options.build()))
             .await;
@@ -128,13 +124,12 @@ impl LocalDocker {
 
     pub async fn remove(
         &self,
-        specs: &MachineSpecStore,
         container_id: &ContainerId,
         remove_volumes: bool,
         force: bool,
     ) -> Result<(), Error> {
-        let mut config_operation = specs.config_operation().await;
-        match self.ensure_managed(specs, container_id).await {
+        let mut config_operation = self.specs.config_operation().await;
+        match self.ensure_managed(container_id).await {
             Ok(()) => {}
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
                 return Ok(());
@@ -146,6 +141,7 @@ impl LocalDocker {
             .force(force)
             .build();
         match self
+            .docker
             .client
             .remove_container(container_id.as_str(), Some(options))
             .await
@@ -162,10 +158,11 @@ impl LocalDocker {
         }
     }
 
-    pub async fn remove_all_managed(&self, specs: &MachineSpecStore) -> Result<(), Error> {
-        let mut config_operation = specs.config_operation().await;
-        for container_id in self.managed_container_ids().await? {
+    pub async fn remove_all_managed(&self) -> Result<(), Error> {
+        let mut config_operation = self.specs.config_operation().await;
+        for container_id in self.docker.managed_container_ids().await? {
             match self
+                .docker
                 .client
                 .stop_container(container_id.as_str(), None)
                 .await
@@ -183,12 +180,9 @@ impl LocalDocker {
         Ok(())
     }
 
-    async fn ensure_managed(
-        &self,
-        specs: &MachineSpecStore,
-        container_id: &ContainerId,
-    ) -> Result<(), Error> {
+    async fn ensure_managed(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self
+            .docker
             .client
             .inspect_container(container_id.as_str(), None)
             .await
@@ -198,7 +192,7 @@ impl LocalDocker {
             .and_then(|config| config.labels)
             .ok_or(Error::NotManaged)?;
         ManagedLabels::parse(&labels)?;
-        specs
+        self.specs
             .get(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(container_id.clone()))?;
@@ -211,6 +205,7 @@ impl LocalDocker {
             .force(true)
             .build();
         match self
+            .docker
             .client
             .remove_container(container_id.as_str(), Some(options))
             .await

@@ -30,7 +30,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
-    docker::{Error as DockerError, LocalDocker, MachineSpecStore},
+    docker::{ContainerRuntime, Error as DockerError},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::local_runtime,
     machine::{LocalMachineStore, StoreError},
@@ -46,7 +46,7 @@ pub struct MachineService {
     restart: watch::Sender<bool>,
     hosted_dns: crate::hosted_dns::HostedDns,
     cluster: Option<ClusterContext>,
-    containers: Option<ContainerContext>,
+    containers: Option<ContainerRuntime>,
     caddyfile: Option<PathBuf>,
 }
 
@@ -54,12 +54,6 @@ pub struct MachineService {
 struct ClusterContext {
     replicated: ReplicatedStore,
     admin: AdminClient,
-}
-
-#[derive(Clone)]
-struct ContainerContext {
-    docker: LocalDocker,
-    specs: MachineSpecStore,
 }
 
 impl MachineService {
@@ -85,17 +79,13 @@ impl MachineService {
     }
 
     #[must_use]
-    pub fn with_containers(self, docker: LocalDocker, specs: MachineSpecStore) -> Self {
-        self.with_optional_containers(Some(docker), specs)
+    pub fn with_containers(self, containers: ContainerRuntime) -> Self {
+        self.with_optional_containers(Some(containers))
     }
 
     #[must_use]
-    pub fn with_optional_containers(
-        mut self,
-        docker: Option<LocalDocker>,
-        specs: MachineSpecStore,
-    ) -> Self {
-        self.containers = docker.map(|docker| ContainerContext { docker, specs });
+    pub fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
+        self.containers = containers;
         self
     }
 
@@ -138,7 +128,7 @@ impl MachineService {
         self.replicated()
     }
 
-    fn containers(&self) -> Result<&ContainerContext, RpcError> {
+    fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
         self.containers
             .as_ref()
             .ok_or_else(|| unavailable("Docker is not available"))
@@ -482,11 +472,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         let machine_id = self.local_record()?.id;
-        match containers
-            .docker
-            .list_managed(&machine_id, &containers.specs)
-            .await
-        {
+        match containers.list_managed(&machine_id).await {
             Ok(observations) => respond(ContainerList {
                 containers: observations,
             }),
@@ -505,8 +491,7 @@ impl MachineRpc for MachineService {
         };
         let machine_id = self.local_record()?.id;
         match containers
-            .docker
-            .inspect_managed(&request.container_id, &machine_id, &containers.specs)
+            .inspect_managed(&request.container_id, &machine_id)
             .await
         {
             Ok(observation) => respond(ContainerDetails {
@@ -533,14 +518,7 @@ impl MachineRpc for MachineService {
         let gateway =
             machine_gateway(machine.subnet).map_err(|error| Status::internal(error.to_string()))?;
         match containers
-            .docker
-            .create(
-                &record.id,
-                gateway,
-                &containers.specs,
-                request.kind,
-                &request.resolved_spec,
-            )
+            .create(&record.id, gateway, request.kind, &request.resolved_spec)
             .await
         {
             Ok(created) => respond(created),
@@ -557,11 +535,7 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        match containers
-            .docker
-            .start(&containers.specs, &request.container_id)
-            .await
-        {
+        match containers.start(&request.container_id).await {
             Ok(()) => respond(ContainerChanged {
                 container_id: request.container_id,
             }),
@@ -579,9 +553,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match containers
-            .docker
             .stop(
-                &containers.specs,
                 &request.container_id,
                 request.signal.as_deref(),
                 request.grace_period_seconds,
@@ -605,13 +577,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match containers
-            .docker
-            .remove(
-                &containers.specs,
-                &request.container_id,
-                request.remove_volumes,
-                request.force,
-            )
+            .remove(&request.container_id, request.remove_volumes, request.force)
             .await
         {
             Ok(()) => respond(ContainerChanged {
@@ -627,11 +593,11 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::CreateVolume>(request)?;
         let machine_id = self.local_record()?.id;
-        let docker = match self.containers() {
-            Ok(docker) => docker,
+        let containers = match self.containers() {
+            Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        match docker.docker.create_volume(&machine_id, request).await {
+        match containers.create_volume(&machine_id, request).await {
             Ok(volume) => respond(VolumeCreated { volume }),
             Err(error) => respond(docker_rpc_error(error)),
         }
@@ -643,11 +609,11 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::ListVolumes>(request)?;
         let machine_id = self.local_record()?.id;
-        let docker = match self.containers() {
-            Ok(docker) => docker,
+        let containers = match self.containers() {
+            Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        match docker.docker.list_volumes(&machine_id).await {
+        match containers.list_volumes(&machine_id).await {
             Ok(volumes) => respond(VolumeList { volumes }),
             Err(error) => respond(docker_rpc_error(error)),
         }
@@ -659,15 +625,11 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::InspectVolume>(request)?;
         let machine_id = self.local_record()?.id;
-        let docker = match self.containers() {
-            Ok(docker) => docker,
+        let containers = match self.containers() {
+            Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        match docker
-            .docker
-            .inspect_volume(&machine_id, &request.name)
-            .await
-        {
+        match containers.inspect_volume(&machine_id, &request.name).await {
             Ok(volume) => respond(VolumeDetails { volume }),
             Err(error) => respond(docker_rpc_error(error)),
         }
@@ -678,15 +640,11 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::RemoveVolume>(request)?;
-        let docker = match self.containers() {
-            Ok(docker) => docker,
+        let containers = match self.containers() {
+            Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        match docker
-            .docker
-            .remove_volume(&request.name, request.force)
-            .await
-        {
+        match containers.remove_volume(&request.name, request.force).await {
             Ok(()) => respond(VolumeRemoved {}),
             Err(error) => respond(docker_rpc_error(error)),
         }
@@ -700,7 +658,6 @@ impl MachineRpc for MachineService {
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
         containers
-            .docker
             .exec(request.into_inner())
             .await
             .map(Response::new)
@@ -720,8 +677,7 @@ impl MachineRpc for MachineService {
             .machine
             .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
         containers
-            .docker
-            .container_logs(&record.id, &machine.name, &containers.specs, request)
+            .container_logs(&record.id, &machine.name, request)
             .await
             .map(Response::new)
     }
@@ -750,7 +706,6 @@ impl MachineRpc for MachineService {
             MachineLogService::Corrosion => self
                 .containers()
                 .map_err(|error| Status::unavailable(error.message))?
-                .docker
                 .raw_logs(crate::corrosion::DEFAULT_CONTAINER_NAME, &request.options)?,
         };
         Ok(Response::new(serve_logs(
@@ -827,11 +782,7 @@ impl MachineRpc for MachineService {
                 }
             }
         };
-        if let Err(error) = containers
-            .docker
-            .remove_all_managed(&containers.specs)
-            .await
-        {
+        if let Err(error) = containers.remove_all_managed().await {
             return respond(RpcError {
                 code: RpcErrorCode::Internal,
                 message: error.to_string(),
@@ -925,7 +876,6 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         let images = containers
-            .docker
             .list_images(request.reference.as_deref())
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
@@ -1035,10 +985,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::Reset>(request)?;
         if let Some(containers) = &self.containers
-            && let Err(error) = containers
-                .docker
-                .remove_all_managed(&containers.specs)
-                .await
+            && let Err(error) = containers.remove_all_managed().await
         {
             return respond(docker_rpc_error(error));
         }

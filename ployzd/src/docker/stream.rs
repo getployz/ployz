@@ -15,10 +15,10 @@ use serde_json::Value;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
-use super::{LocalDocker, MachineSpecStore, docker_error};
+use super::{ContainerRuntime, docker_error};
 use crate::logs::{LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space};
 
-impl LocalDocker {
+impl ContainerRuntime {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
         let first = requests
             .message()
@@ -43,11 +43,13 @@ impl LocalDocker {
             ..Default::default()
         };
         let created = self
+            .docker
             .client
             .create_exec(config.container_id.as_str(), create)
             .await
             .map_err(|error| docker_status(docker_error(&config.container_id, error)))?;
         let started = self
+            .docker
             .client
             .start_exec(
                 &created.id,
@@ -70,7 +72,7 @@ impl LocalDocker {
                 mut input,
             } => {
                 let stdin_task = if config.options.attach_stdin {
-                    let docker = self.client.clone();
+                    let docker = self.docker.client.clone();
                     let exec_id = created.id.clone();
                     let sender = sender.clone();
                     let tty = config.options.tty;
@@ -112,7 +114,7 @@ impl LocalDocker {
                 } else {
                     None
                 };
-                let docker = self.client.clone();
+                let docker = self.docker.client.clone();
                 let exec_id = created.id;
                 let tty = config.options.tty;
                 tokio::spawn(async move {
@@ -148,11 +150,10 @@ impl LocalDocker {
         &self,
         machine_id: &MachineId,
         machine_name: &MachineName,
-        specs: &MachineSpecStore,
         request: ContainerLogsRequest,
     ) -> Result<RpcStream, Status> {
         let observation = self
-            .inspect_managed(&request.container_id, machine_id, specs)
+            .inspect_managed(&request.container_id, machine_id)
             .await
             .map_err(docker_status)?;
         let metadata = LogMetadata {
@@ -172,11 +173,15 @@ impl LocalDocker {
     #[allow(clippy::result_large_err)]
     pub fn raw_logs(&self, container: &str, options: &LogsOptions) -> Result<LogSource, Status> {
         let options = docker_log_options(options)?;
-        let stream = self.client.logs(container, Some(options)).map(|entry| {
-            entry
-                .map(parse_log_output)
-                .map_err(|error| error.to_string())
-        });
+        let stream = self
+            .docker
+            .client
+            .logs(container, Some(options))
+            .map(|entry| {
+                entry
+                    .map(parse_log_output)
+                    .map_err(|error| error.to_string())
+            });
         Ok(Box::pin(stream))
     }
 }
