@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+
+release_assets() {
+    local dist=$1 name
+    local expected actual
+    expected=$(printf '%s\n' \
+        checksums.txt \
+        ployz_linux_amd64.tar.gz \
+        ployz_linux_arm64.tar.gz \
+        ployz_macos_amd64.tar.gz \
+        ployz_macos_arm64.tar.gz \
+        ployzd_linux_amd64.tar.gz \
+        ployzd_linux_arm64.tar.gz | sort)
+    actual=$(find "$dist" -maxdepth 1 \( -name '*.tar.gz' -o -name checksums.txt \) -exec basename {} \; | sort)
+    if [ "$actual" != "$expected" ]; then
+        echo "release asset set differs from the seven approved files" >&2
+        echo "expected:"$'\n'"$expected" >&2
+        echo "actual:"$'\n'"$actual" >&2
+        return 1
+    fi
+    while IFS= read -r name; do
+        printf '%s/%s\n' "$dist" "$name"
+    done <<< "$expected"
+}
+
+release_notes() {
+    local tag=$1
+    cat <<EOF
+## $tag
+
+First stable Ployz reconstruction release from https://github.com/getployz/ployz2.
+
+This replaces the older \`getployz/ployz\` implementation as a **clean break** with manual transition. There is no in-place compatibility promise, configuration converter, or stored-state migration.
+
+Install the CLI:
+
+\`\`\`
+curl -fsSL https://raw.githubusercontent.com/getployz/ployz2/$tag/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/getployz/ployz2/$tag/install.sh | sh -s ${tag#v}
+brew install getployz/ployz/ployz
+\`\`\`
+EOF
+}
+
+if [ "${PLOYZ_RELEASE_TEST_ONLY:-false}" != true ]; then
+    tag=${1:-}
+    [ -n "$tag" ] || { echo "usage: $0 <tag>" >&2; exit 1; }
+    dist=${DIST:-"$ROOT/dist"}
+    mapfile -t assets < <(release_assets "$dist")
+    gh release create "$tag" --title "$tag" --notes "$(release_notes "$tag")" "${assets[@]}"
+fi

@@ -1,9 +1,15 @@
 name: Release contracts
 
 on:
+  workflow_call:
+    inputs:
+      goreleaser-args:
+        type: string
+        default: release --snapshot --clean --skip=publish
   workflow_dispatch:
   pull_request:
     paths:
+      - .github/workflows/release.yml
       - .github/workflows/release-contracts.yml
       - .goreleaser.yaml
       - Cargo.lock
@@ -42,7 +48,7 @@ jobs:
         with:
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
-          args: release --snapshot --clean --skip=publish
+          args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }}
       - run: bash scripts/test-release-contracts.sh && bash scripts/test-cli-installer.sh
       - run: softwareupdate --install-rosetta --agree-to-license
       - run: scripts/verify-release.sh macos
