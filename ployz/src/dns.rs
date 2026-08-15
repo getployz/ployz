@@ -1,9 +1,9 @@
 use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecordRequest, DnsRecordType,
-    GetDomainRequest, InspectRequest, Machine, MachineId, MachineSelector, ReleaseDomainRequest,
-    ReserveDomainRequest, RpcErrorCode, op,
+    CADDY_VERIFY_PATH, ContainerKind, DnsRecordRequest, DnsRecordType, HttpProtocol,
+    InspectRequest, Machine, MachineId, MachineSelector, PortPublication, RequestedServiceSpec,
+    RpcErrorCode, RpcRequest,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -35,40 +35,72 @@ pub enum Error {
 #[error("no publicly reachable Caddy Machines found")]
 pub struct NoReachableMachines;
 
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error(
+    "ingress port has no generated hostname until a cluster domain is reserved: {container_port}/{}",
+    protocol_label(protocol)
+)]
+pub struct DomainRequired {
+    pub container_port: u16,
+    pub protocol: HttpProtocol,
+}
+
+fn protocol_label(protocol: &HttpProtocol) -> &'static str {
+    match protocol {
+        HttpProtocol::Http => "http",
+        HttpProtocol::Https => "https",
+    }
+}
+
 impl Client {
     pub async fn reserve_domain(&mut self, endpoint: String) -> Result<String, ConnectError> {
-        self.call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
-            .await
-            .map(|domain| domain.name)
+        self.request(RpcRequest::reserve_domain(endpoint), None)
+            .await?
+            .decode_domain()
+            .map(ToOwned::to_owned)
+            .map_err(ConnectError::Codec)
     }
 
     pub async fn domain(&mut self) -> Result<String, ConnectError> {
-        self.call::<op::GetDomain>(GetDomainRequest {}, None)
-            .await
-            .map(|domain| domain.name)
+        self.request(RpcRequest::get_domain(), None)
+            .await?
+            .decode_domain()
+            .map(ToOwned::to_owned)
+            .map_err(ConnectError::Codec)
+    }
+
+    pub async fn domain_if_reserved(&mut self) -> Result<Option<String>, ConnectError> {
+        match self.domain().await {
+            Ok(domain) => Ok(Some(domain)),
+            Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn release_domain(&mut self) -> Result<String, ConnectError> {
-        self.call::<op::ReleaseDomain>(ReleaseDomainRequest {}, None)
-            .await
-            .map(|domain| domain.name)
+        self.request(RpcRequest::release_domain(), None)
+            .await?
+            .decode_domain()
+            .map(ToOwned::to_owned)
+            .map_err(ConnectError::Codec)
     }
 
     async fn create_domain_records(
         &mut self,
         records: Vec<DnsRecordRequest>,
     ) -> Result<(), ConnectError> {
-        self.call::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
-            .await
+        self.request(RpcRequest::create_domain_records(records), None)
+            .await?
+            .decode_domain_records()
             .map(drop)
+            .map_err(ConnectError::Codec)
     }
 }
 
 pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error> {
-    match client.domain().await {
-        Ok(_) => update_records_for_caddy(client).await,
-        Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+    match client.domain_if_reserved().await? {
+        Some(_) => update_records_for_caddy(client).await,
+        None => Ok(()),
     }
 }
 
@@ -93,8 +125,17 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     for machine_id in caddy_machines {
         let target = MachineSelector::from(&machine_id);
         let details = client
-            .call::<op::Inspect>(InspectRequest::default(), Some(&target))
+            .request(
+                RpcRequest::inspect(InspectRequest::default()),
+                Some(&target),
+            )
             .await
+            .and_then(|response| {
+                response
+                    .decode_machine_details()
+                    .cloned()
+                    .map_err(ConnectError::Codec)
+            })
             .map_err(|source| Error::Inspect {
                 machine_id: machine_id.clone(),
                 source,
@@ -190,13 +231,60 @@ fn records_from_machines(
     }
 }
 
+pub fn expand_ingress_ports(
+    spec: &mut RequestedServiceSpec,
+    cluster_domain: Option<&str>,
+) -> Result<(), DomainRequired> {
+    let domain = cluster_domain.filter(|domain| !domain.is_empty());
+    let assigned = domain.map(|domain| format!("{}.{domain}", spec.name));
+    let mut extras = Vec::new();
+    for port in &mut spec.ports {
+        let PortPublication::Ingress {
+            hostname,
+            load_balancer_port,
+            container_port,
+            http_protocol,
+        } = port
+        else {
+            continue;
+        };
+        if hostname.is_empty() {
+            *hostname = assigned.clone().ok_or(DomainRequired {
+                container_port: container_port.get(),
+                protocol: *http_protocol,
+            })?;
+            continue;
+        }
+        if let (Some(domain), Some(assigned)) = (domain, assigned.as_ref())
+            && !hostname.ends_with(&format!(".{domain}"))
+        {
+            extras.push(PortPublication::Ingress {
+                hostname: assigned.clone(),
+                load_balancer_port: *load_balancer_port,
+                container_port: *container_port,
+                http_protocol: *http_protocol,
+            });
+        }
+    }
+    spec.ports.extend(extras);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::IpAddr;
 
-    use ployz_core::{DnsRecordRequest, DnsRecordType, Machine, MachineId};
+    use std::num::NonZeroU16;
 
-    use super::{NoReachableMachines, reachability_matches, records_from_machines};
+    use ployz_core::{
+        DnsRecordRequest, DnsRecordType, HttpProtocol, Machine, MachineId, PortPublication,
+        RequestedServiceSpec,
+    };
+
+    use super::{
+        DomainRequired, NoReachableMachines, expand_ingress_ports, reachability_matches,
+        records_from_machines,
+    };
 
     #[test]
     fn wildcard_records_include_each_present_address_family_once() {
@@ -250,6 +338,75 @@ mod tests {
         newline.push(b'\n');
         assert!(!reachability_matches(&machine_id, 200, Some(&newline)));
         assert!(!reachability_matches(&machine_id, 200, None));
+    }
+
+    #[test]
+    fn empty_ingress_hostnames_require_a_reserved_cluster_domain() {
+        let mut spec = requested(vec![ingress("", HttpProtocol::Https)]);
+        assert_eq!(
+            expand_ingress_ports(&mut spec, None),
+            Err(DomainRequired {
+                container_port: 8080,
+                protocol: HttpProtocol::Https,
+            })
+        );
+        assert_eq!(
+            expand_ingress_ports(&mut spec, Some(""))
+                .unwrap_err()
+                .to_string(),
+            "ingress port has no generated hostname until a cluster domain is reserved: 8080/https"
+        );
+    }
+
+    #[test]
+    fn reserved_domain_assigns_and_duplicates_external_ingress_hostnames() {
+        let mut spec = requested(vec![
+            ingress("", HttpProtocol::Http),
+            ingress("app.example.com", HttpProtocol::Https),
+            ingress("api.opaque.ployz.example", HttpProtocol::Http),
+            PortPublication::Host {
+                bind: ployz_core::HostBind::All,
+                published_port: NonZeroU16::new(8080).unwrap(),
+                container_port: NonZeroU16::new(8080).unwrap(),
+                transport_protocol: ployz_core::TransportProtocol::Tcp,
+            },
+        ]);
+
+        expand_ingress_ports(&mut spec, Some("opaque.ployz.example")).unwrap();
+        assert_eq!(
+            spec.ports,
+            vec![
+                ingress("web.opaque.ployz.example", HttpProtocol::Http),
+                ingress("app.example.com", HttpProtocol::Https),
+                ingress("api.opaque.ployz.example", HttpProtocol::Http),
+                PortPublication::Host {
+                    bind: ployz_core::HostBind::All,
+                    published_port: NonZeroU16::new(8080).unwrap(),
+                    container_port: NonZeroU16::new(8080).unwrap(),
+                    transport_protocol: ployz_core::TransportProtocol::Tcp,
+                },
+                ingress("web.opaque.ployz.example", HttpProtocol::Https),
+            ]
+        );
+    }
+
+    fn requested(ports: Vec<PortPublication>) -> RequestedServiceSpec {
+        serde_json::from_value(serde_json::json!({
+            "name": "web",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "nginx", "pull_policy": "missing" },
+            "ports": ports,
+        }))
+        .unwrap()
+    }
+
+    fn ingress(hostname: &str, http_protocol: HttpProtocol) -> PortPublication {
+        PortPublication::Ingress {
+            hostname: hostname.into(),
+            load_balancer_port: NonZeroU16::new(80).unwrap(),
+            container_port: NonZeroU16::new(8080).unwrap(),
+            http_protocol,
+        }
     }
 
     fn machine(seed: char, public_ip: &str) -> Machine {
