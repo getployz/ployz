@@ -257,6 +257,7 @@ fn convert_service(
         stop_grace_period_millis: duration_millis(raw.stop_grace_period.as_deref())?,
         sysctls: raw.sysctls.clone(),
         config_mounts,
+        restart: true,
     };
     Ok((
         RequestedServiceSpec {

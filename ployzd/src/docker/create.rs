@@ -83,7 +83,7 @@ pub(super) fn container_create_body(
             }),
         port_bindings,
         restart_policy: Some(RestartPolicy {
-            name: Some(if hook.is_some() {
+            name: Some(if hook.is_some() || !spec.container.restart {
                 RestartPolicyNameEnum::NO
             } else {
                 RestartPolicyNameEnum::UNLESS_STOPPED

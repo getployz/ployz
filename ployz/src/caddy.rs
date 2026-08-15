@@ -118,6 +118,7 @@ pub fn service_spec(
             stop_grace_period_millis: None,
             sysctls: BTreeMap::new(),
             config_mounts: Vec::new(),
+            restart: true,
         },
         placement: Placement { machines },
         ports: vec![
