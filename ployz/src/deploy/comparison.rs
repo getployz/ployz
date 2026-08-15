@@ -91,6 +91,7 @@ fn immutable_container_fields_changed(
         stop_grace_period_millis: current_stop_grace_period_millis,
         sysctls: current_sysctls,
         config_mounts: current_config_mounts,
+        restart: current_restart,
     } = current;
     let ServiceContainerSpec {
         image: requested_image,
@@ -113,6 +114,7 @@ fn immutable_container_fields_changed(
         stop_grace_period_millis: requested_stop_grace_period_millis,
         sysctls: requested_sysctls,
         config_mounts: requested_config_mounts,
+        restart: requested_restart,
     } = requested;
 
     current_image != requested_image
@@ -133,6 +135,7 @@ fn immutable_container_fields_changed(
         || current_stop_grace_period_millis != requested_stop_grace_period_millis
         || current_sysctls != requested_sysctls
         || !same_multiset(current_config_mounts, requested_config_mounts)
+        || current_restart != requested_restart
 }
 
 fn resource_change(current: &ContainerResources, requested: &ContainerResources) -> SpecChange {

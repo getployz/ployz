@@ -758,6 +758,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             gid: Some(1000),
             mode: Some(0o440),
         }],
+        restart: true,
     };
     let reference = ServiceVolumeReference::parse("data").unwrap();
     let volume = ServiceVolume {
@@ -831,12 +832,15 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         .as_object_mut()
         .unwrap()
         .remove("update");
-    assert_eq!(
-        serde_json::from_value::<RequestedServiceSpec>(older_requested_json)
-            .unwrap()
-            .update,
-        UpdateConfig::default()
-    );
+    older_requested_json
+        .get_mut("container")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .remove("restart");
+    let older_requested =
+        serde_json::from_value::<RequestedServiceSpec>(older_requested_json).unwrap();
+    assert_eq!(older_requested.update, UpdateConfig::default());
+    assert!(older_requested.container.restart);
     let resolved_json = serde_json::to_value(&resolved).unwrap();
     assert_eq!(
         serde_json::from_value::<ResolvedServiceSpec>(resolved_json).unwrap(),

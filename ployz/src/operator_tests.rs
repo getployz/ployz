@@ -367,6 +367,7 @@ fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservatio
                 stop_grace_period_millis: None,
                 sysctls: Default::default(),
                 config_mounts: vec![],
+                restart: true,
             },
             placement: Default::default(),
             ports: vec![],

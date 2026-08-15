@@ -102,6 +102,9 @@ fn spec_comparison_covers_upstream_immutable_field_families() {
         },
     );
     changes.push(("ulimit", changed));
+    let mut changed = requested.clone();
+    changed.container.restart = false;
+    changes.push(("restart", changed));
 
     for (name, changed) in changes {
         assert_eq!(

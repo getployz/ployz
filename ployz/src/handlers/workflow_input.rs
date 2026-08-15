@@ -123,6 +123,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
             stop_grace_period_millis: None,
             sysctls: BTreeMap::new(),
             config_mounts: Vec::new(),
+            restart: false,
         },
         placement: Placement {
             machines: string_values(matches, "machine")

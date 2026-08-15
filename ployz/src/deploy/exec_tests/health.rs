@@ -66,6 +66,58 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
 }
 
 #[tokio::test]
+async fn health_monitor_accepts_a_clean_exit_instead_of_failing_as_restarting() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = plan(vec![run(&machine, spec(Some(0), None, None), false)]);
+    let client = Scripted::new(vec![
+        created(
+            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+            &new,
+        ),
+        ok(Call::Start(machine.clone(), new.clone())),
+        observed(Call::Inspect(machine, new), exited(0)),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(outcome.failed.is_none());
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn health_monitor_still_fails_a_restart_loop() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = plan(vec![run(&machine, spec(Some(0), None, None), false)]);
+    let client = Scripted::new(vec![
+        created(
+            Call::Create(machine.clone(), ContainerKind::ServiceContainer),
+            &new,
+        ),
+        ok(Call::Start(machine.clone(), new.clone())),
+        observed(
+            Call::Inspect(machine, new),
+            ContainerRuntimeObservation::Restarting,
+        ),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::Operation {
+            error: ExecutionError::Health {
+                failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+                ..
+            },
+            ..
+        })
+    ));
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_inspection() {
     for (healthcheck, runtime) in [
         (Some(healthcheck()), unhealthy()),
