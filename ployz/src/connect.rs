@@ -44,6 +44,8 @@ const UNARY_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(4),
 ];
 
+pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}
 
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> ProxyStream for T {}
@@ -362,8 +364,8 @@ impl Client {
         self.call_once::<T>(payload, target).await
     }
 
-    /// One-shot targeted RPC. No retry — mutating Deploy operations must not
-    /// re-issue CreateContainer after a dropped response.
+    /// One-shot targeted RPC. No retry — mutating operations must not
+    /// re-issue CreateContainer or CreateVolume after a dropped response.
     pub(crate) async fn invoke<T: Rpc>(
         &self,
         request: T::Request,

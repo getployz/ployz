@@ -12,9 +12,7 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::task::JoinSet;
 
-use crate::connect::{Client, ConnectError};
-
-const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
 #[derive(Debug, Error)]
 pub enum ServiceClientError {
