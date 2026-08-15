@@ -323,7 +323,7 @@ impl MachineRpc for MachineService {
         match result {
             Ok(machine) => {
                 self.restart.send_replace(true);
-                respond(Initialized { machine: machine })
+                respond(Initialized { machine })
             }
             Err(error) => respond(store_error(error)),
         }
@@ -632,7 +632,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match docker.docker.create_volume(&machine_id, request).await {
-            Ok(volume) => respond(VolumeCreated { volume: volume }),
+            Ok(volume) => respond(VolumeCreated { volume }),
             Err(error) => respond(docker_rpc_error(error)),
         }
     }
@@ -648,7 +648,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match docker.docker.list_volumes(&machine_id).await {
-            Ok(volumes) => respond(VolumeList { volumes: volumes }),
+            Ok(volumes) => respond(VolumeList { volumes }),
             Err(error) => respond(docker_rpc_error(error)),
         }
     }
@@ -668,7 +668,7 @@ impl MachineRpc for MachineService {
             .inspect_volume(&machine_id, &request.name)
             .await
         {
-            Ok(volume) => respond(VolumeDetails { volume: volume }),
+            Ok(volume) => respond(VolumeDetails { volume }),
             Err(error) => respond(docker_rpc_error(error)),
         }
     }
@@ -792,7 +792,7 @@ impl MachineRpc for MachineService {
                 if let Err(error) = publication.publish(&machine).await {
                     eprintln!("failed to publish updated local Machine: {error}");
                 }
-                respond(MachineUpdated { machine: machine })
+                respond(MachineUpdated { machine })
             }
             Err(error) => respond(store_error(error)),
         }
@@ -887,7 +887,7 @@ impl MachineRpc for MachineService {
         let device =
             inspect_wireguard_device().map_err(|error| Status::internal(error.to_string()))?;
         let Some(cluster) = &self.cluster else {
-            return respond(WireGuardInspected { device: device });
+            return respond(WireGuardInspected { device });
         };
         let machines = match cluster.replicated.machines().await {
             Ok(snapshot) => snapshot.observations,
@@ -941,9 +941,7 @@ impl MachineRpc for MachineService {
             return respond(unavailable("Caddy configuration is not available"));
         };
         match std::fs::read_to_string(path) {
-            Ok(caddyfile) => respond(CaddyConfig {
-                caddyfile: caddyfile,
-            }),
+            Ok(caddyfile) => respond(CaddyConfig { caddyfile }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => respond(RpcError {
                 code: RpcErrorCode::NotFound,
                 message: format!("Caddyfile {} does not exist", path.display()),
@@ -977,7 +975,7 @@ impl MachineRpc for MachineService {
             .reserve_domain(replicated, &request.endpoint)
             .await
         {
-            Ok(name) => respond(Domain { name: name }),
+            Ok(name) => respond(Domain { name }),
             Err(error) => respond(hosted_dns_error(error)),
         }
     }
@@ -992,7 +990,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match self.hosted_dns.domain(replicated).await {
-            Ok(name) => respond(Domain { name: name }),
+            Ok(name) => respond(Domain { name }),
             Err(error) => respond(hosted_dns_error(error)),
         }
     }
@@ -1007,7 +1005,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match self.hosted_dns.release_domain(replicated).await {
-            Ok(name) => respond(Domain { name: name }),
+            Ok(name) => respond(Domain { name }),
             Err(error) => respond(hosted_dns_error(error)),
         }
     }
@@ -1026,7 +1024,7 @@ impl MachineRpc for MachineService {
             .create_records(replicated, &request.records)
             .await
         {
-            Ok(records) => respond(DomainRecords { records: records }),
+            Ok(records) => respond(DomainRecords { records }),
             Err(error) => respond(hosted_dns_error(error)),
         }
     }

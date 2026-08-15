@@ -352,6 +352,10 @@ macro_rules! define_request_body {
         server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
     ) => {
         /// Commands are closed and own their typed payloads.
+        ///
+        /// The catalog stores caller-facing request types unboxed so
+        /// `Rpc::Request` is the payload. That makes a few variants large.
+        #[allow(clippy::large_enum_variant)]
         #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
         #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
         pub enum RpcRequestBody {
@@ -619,6 +623,10 @@ macro_rules! define_responses {
         });
 
         /// Known responses own typed payloads; future responses retain their raw value.
+        ///
+        /// Envelope identity stores `Rpc::Response` in the variant. Inspect
+        /// payloads are large; boxing them would make `decode` return `Box<T>`.
+        #[allow(clippy::large_enum_variant)]
         #[derive(Clone, Debug, PartialEq)]
         pub enum RpcResponseBody {
             $($variant($payload),)+
