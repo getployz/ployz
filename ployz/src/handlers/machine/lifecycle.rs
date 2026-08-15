@@ -7,9 +7,10 @@ use std::{
 use clap::ArgMatches;
 use ployz_core::{
     DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase,
-    Machine, MachineId, MachineName, MachineSelector, MachineToken, MachineTokenRequest,
-    MembershipObservation, NameMatches, PublicIpDiscovery, RegisterRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, ResetRequest, op, resolve_machine_selector,
+    Machine, MachineId, MachineName, MachineObservation, MachineSelector, MachineToken,
+    MachineTokenRequest, MembershipObservation, NameMatches, PublicIpDiscovery, RegisterRequest,
+    RemoveLocalMachineRequest, RemoveMachineRequest, ResetRequest, WireGuardPublicKey, op,
+    resolve_machine_selector,
 };
 
 use super::{ConnectionOptions, machine_list, parse_endpoints, runtime, target};
@@ -198,12 +199,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             .await
             .map_err(|error| error.to_string())?;
         if details.phase != LocalMachinePhase::Uninitialized {
-            if visible
-                .iter()
-                .any(|machine| machine.machine.public_key == token.public_key)
-            {
-                return Err("Machine already belongs to this Cluster".into());
-            }
+            cluster_membership_conflict(&details.phase, &visible, &token.public_key)?;
             confirm(yes, "Reset the Machine before adding it to this Cluster?")?;
             target_client
                 .call::<op::Reset>(ResetRequest {}, None)
@@ -254,18 +250,34 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         .connections
         .push(connection);
     config.save().map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        MachineAddOutcome::after_saved(&assigned, None).added_line
+    );
 
-    if let Some((image, machines, caddy_config)) = caddy_settings {
-        runtime()?.block_on(async {
-            let mut entry = options.connect().await?;
-            wait_machine_up(&mut entry, &assigned.id).await?;
-            // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
-            let requested = crate::caddy::service_spec(image, machines, caddy_config);
-            crate::handlers::workflow::deploy_requested(&mut entry, &requested).await
-        })?;
+    let caddy = if let Some((image, machines, caddy_config)) = caddy_settings {
+        Some(
+            runtime()?
+                .block_on(async {
+                    let mut entry = options.connect().await?;
+                    wait_machine_up(&mut entry, &assigned.id).await?;
+                    // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
+                    let requested = crate::caddy::service_spec(image, machines, caddy_config);
+                    super::super::caddy::deploy_and_refresh_hosted_dns(&mut entry, &requested).await
+                })
+                .map_err(|error| error.to_string()),
+        )
+    } else {
+        None
+    };
+    let outcome = MachineAddOutcome::after_saved(&assigned, caddy);
+    if let Some(warning) = &outcome.caddy_warning {
+        eprintln!("{warning}");
     }
-    println!("Added Machine {} ({})", assigned.name, assigned.id);
-    Ok(())
+    match outcome.follow_on_error {
+        Some(error) => Err(error.into()),
+        None => Ok(()),
+    }
 }
 
 pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
@@ -502,6 +514,56 @@ async fn reconnect_direct(connection: &Connection) -> Result<Client, Error> {
     Err(last.unwrap_or_else(|| "Machine did not become reachable after reset".into()))
 }
 
+fn cluster_membership_conflict(
+    phase: &LocalMachinePhase,
+    visible: &[MachineObservation],
+    public_key: &WireGuardPublicKey,
+) -> Result<(), Error> {
+    if *phase != LocalMachinePhase::Uninitialized
+        && visible
+            .iter()
+            .any(|observation| observation.machine.public_key == *public_key)
+    {
+        Err("Machine already belongs to this Cluster".into())
+    } else {
+        Ok(())
+    }
+}
+
+struct MachineAddOutcome {
+    added_line: String,
+    caddy_warning: Option<String>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    refresh_hosted_dns: bool,
+    follow_on_error: Option<String>,
+}
+
+impl MachineAddOutcome {
+    fn after_saved(assigned: &Machine, caddy: Option<Result<(), String>>) -> Self {
+        Self {
+            added_line: format!("Added Machine {} ({})", assigned.name, assigned.id),
+            caddy_warning: match &caddy {
+                Some(Err(error)) => Some(caddy_follow_on_warning(error)),
+                Some(Ok(())) | None => None,
+            },
+            refresh_hosted_dns: match &caddy {
+                Some(Ok(())) => true,
+                Some(Err(_)) | None => false,
+            },
+            follow_on_error: match caddy {
+                Some(Err(error)) => Some(error),
+                Some(Ok(())) | None => None,
+            },
+        }
+    }
+}
+
+fn caddy_follow_on_warning(error: &str) -> String {
+    format!(
+        "WARNING: Caddy Deploy failed after adding the Machine: {error}. Run `caddy deploy` to retry."
+    )
+}
+
 fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
     if yes {
         return Ok(());
@@ -524,7 +586,10 @@ fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{RpcError, RpcErrorCode};
+    use ployz_core::{
+        LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, MachineSubnet,
+        ManagementAddress, MembershipObservation, RpcError, RpcErrorCode, WireGuardPublicKey,
+    };
     use serde_json::Value;
 
     use super::*;
@@ -553,6 +618,101 @@ mod tests {
         for destination in ["tcp://127.0.0.1:51000", "unix:///tmp/ployz.sock"] {
             let connection = configure_ssh_key(destination.parse().unwrap(), Some(key)).unwrap();
             assert_eq!(connection.ssh_key_file(), None, "destination {destination}");
+        }
+    }
+
+    #[test]
+    fn machine_add_reports_added_when_follow_on_caddy_deploy_fails() {
+        let assigned = assigned_machine("edge", 'a');
+        let outcome =
+            MachineAddOutcome::after_saved(&assigned, Some(Err("deploy timed out".into())));
+        assert_eq!(
+            outcome.added_line,
+            "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
+        );
+        assert!(outcome.follow_on_error.is_some());
+    }
+
+    #[test]
+    fn caddy_deploy_failure_after_add_warns_operator_to_run_caddy_deploy() {
+        let assigned = assigned_machine("edge", 'a');
+        let outcome =
+            MachineAddOutcome::after_saved(&assigned, Some(Err("deploy timed out".into())));
+        let warning = outcome
+            .caddy_warning
+            .expect("Caddy Deploy failure must warn the operator");
+        assert!(
+            warning.contains("`caddy deploy`"),
+            "warning must tell the operator to run `caddy deploy`, got {warning:?}"
+        );
+        assert!(
+            warning.contains("deploy timed out"),
+            "warning must include the follow-on failure, got {warning:?}"
+        );
+    }
+
+    #[test]
+    fn successful_add_caddy_deploy_refreshes_hosted_dns() {
+        let assigned = assigned_machine("edge", 'a');
+        let outcome = MachineAddOutcome::after_saved(&assigned, Some(Ok(())));
+        assert!(
+            outcome.refresh_hosted_dns,
+            "successful Caddy Deploy on add must refresh hosted DNS the same way caddy deploy does"
+        );
+        assert!(outcome.caddy_warning.is_none());
+        assert!(outcome.follow_on_error.is_none());
+        assert_eq!(
+            outcome.added_line,
+            "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
+        );
+
+        let skipped = MachineAddOutcome::after_saved(&assigned, None);
+        assert!(!skipped.refresh_hosted_dns);
+        let failed = MachineAddOutcome::after_saved(&assigned, Some(Err("boom".into())));
+        assert!(!failed.refresh_hosted_dns);
+    }
+
+    #[test]
+    fn re_adding_a_joined_machine_reports_it_already_belongs_to_the_cluster() {
+        let assigned = assigned_machine("edge", 'a');
+        let visible = [MachineObservation {
+            machine: assigned.clone(),
+            membership: MembershipObservation::Up,
+            selected_endpoint: None,
+        }];
+        assert_eq!(
+            cluster_membership_conflict(
+                &LocalMachinePhase::Participating,
+                &visible,
+                &assigned.public_key,
+            ),
+            Err("Machine already belongs to this Cluster".into())
+        );
+        assert!(
+            cluster_membership_conflict(
+                &LocalMachinePhase::Uninitialized,
+                &visible,
+                &assigned.public_key,
+            )
+            .is_ok()
+        );
+        let other = WireGuardPublicKey([9; 32]);
+        assert!(
+            cluster_membership_conflict(&LocalMachinePhase::Participating, &visible, &other,)
+                .is_ok()
+        );
+    }
+
+    fn assigned_machine(name: &str, seed: char) -> Machine {
+        Machine {
+            id: MachineId::parse(seed.to_string().repeat(32)).unwrap(),
+            name: MachineName::parse(name).unwrap(),
+            subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
+            management_address: ManagementAddress("::1".parse().unwrap()),
+            public_key: WireGuardPublicKey([seed as u8; 32]),
+            public_ip: None,
+            advertised_endpoints: Vec::new(),
+            runtime: Default::default(),
         }
     }
 }
