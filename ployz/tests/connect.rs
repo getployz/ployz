@@ -703,7 +703,7 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&error, ConnectError::Rpc(status) if status.code() == tonic::Code::NotFound),
+        matches!(&error, ConnectError::Rpc(error) if error.is_not_found()),
         "{error:?}"
     );
     assert_eq!(connects.load(Ordering::SeqCst), 1);
@@ -754,7 +754,7 @@ async fn unary_call_gives_up_after_four_unavailable_attempts() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&error, ConnectError::Rpc(status) if status.code() == tonic::Code::Unavailable),
+        matches!(&error, ConnectError::Rpc(error) if error.is_unavailable()),
         "{error:?}"
     );
     assert_eq!(connects.load(Ordering::SeqCst), 4);

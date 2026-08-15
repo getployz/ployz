@@ -10,14 +10,10 @@ pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
     let selector = matches.get_one::<String>("machine").cloned();
     runtime()?.block_on(async {
         let mut client = connect_client(root, None).await?;
-        let target = selector
-            .map(MachineSelector::parse)
-            .transpose()
-            .map_err(|error| error.to_string())?;
+        let target = selector.map(MachineSelector::parse).transpose()?;
         let caddyfile = client
             .call::<op::GetCaddyConfig>(GetCaddyConfigRequest {}, target.as_ref())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         print!("{}", caddyfile.caddyfile);
         Ok(())
     })
@@ -30,23 +26,20 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("caddyfile")
         .map(|path| fs::read_to_string(Path::new(path)))
         .transpose()
-        .map_err(|error| format!("read Caddyfile: {error}"))?;
+        .map_err(|error| Error::usage(format!("read Caddyfile: {error}")))?;
     let machines = string_values(matches, "machine")
         .into_iter()
         .map(MachineSelector::parse)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
+        .collect::<Result<Vec<_>, _>>()?;
     runtime()?.block_on(async {
         let image = match image {
             Some(image) => image,
-            None => crate::caddy::latest_image().await?,
+            None => crate::caddy::latest_image().await.map_err(Error::usage)?,
         };
         let requested = crate::caddy::service_spec(image, machines, caddy_config);
         let mut client = connect_client(root, None).await?;
         super::deploy::deploy_requested(&mut client, &requested).await?;
-        crate::dns::update_records_if_reserved(&mut client)
-            .await
-            .map_err(|error| error.to_string())?;
+        crate::dns::update_records_if_reserved(&mut client).await?;
         Ok(())
     })
 }

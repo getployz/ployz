@@ -241,9 +241,9 @@ async fn partial_open_streams_survive_until_parent_cancellation() {
         .unwrap();
         assert!(
             open_log_input(&mut inputs, &cancellation, async {
-                Err(tonic::Status::unavailable(format!(
-                    "later {boundary} failed"
-                )))
+                Err(crate::connect::TransportError::from(
+                    tonic::Status::unavailable(format!("later {boundary} failed")),
+                ))
             })
             .await
             .unwrap_err()

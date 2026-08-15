@@ -30,10 +30,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                 observation,
             })
             .collect::<Vec<_>>();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&machines).map_err(|error| error.to_string())?
-        );
+        println!("{}", serde_json::to_string_pretty(&machines)?);
         return Ok(());
     }
     println!(
@@ -163,14 +160,11 @@ pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error
     let device = runtime()?
         .block_on(async {
             let mut client = options.connect().await?;
-            let target = selector
-                .map(MachineSelector::parse)
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            let target = selector.map(MachineSelector::parse).transpose()?;
             client
                 .call::<op::InspectWireguard>(InspectWireGuardRequest {}, target.as_ref())
                 .await
-                .map_err(|error| Error::from(error.to_string()))
+                .map_err(Error::from)
         })?
         .device;
     println!("interface: {}", device.interface_name);

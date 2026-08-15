@@ -40,42 +40,48 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         .get_one::<String>("name")
         .cloned()
         .unwrap_or_else(|| generated_name(&image));
-    let name = ServiceName::parse(name).map_err(|error| error.to_string())?;
+    let name = ServiceName::parse(name)?;
     let mode = match required(matches, "mode")?.as_str() {
         "global" => {
             if matches.value_source("replicas") != Some(clap::parser::ValueSource::DefaultValue) {
-                return Err("replicas can only be specified for replicated services".into());
+                return Err(Error::usage(
+                    "replicas can only be specified for replicated services",
+                ));
             }
             ServiceMode::Global
         }
         "replicated" => ServiceMode::Replicated {
             replicas: NonZeroU32::new(parse_u32(matches, "replicas")?)
-                .ok_or_else(|| Error::from("replicas must be greater than zero"))?,
+                .ok_or_else(|| Error::usage("replicas must be greater than zero"))?,
         },
-        mode => return Err(format!("unsupported service mode '{mode}'").into()),
+        mode => return Err(Error::usage(format!("unsupported service mode '{mode}'"))),
     };
     let ports = string_values(matches, "publish")
         .into_iter()
-        .map(|value| parse_extension_port(&value).map_err(|error| error.to_string()))
+        .map(|value| parse_extension_port(&value))
         .collect::<Result<Vec<_>, _>>()?;
     // TODO(UT-044, UT-096): run preserves the baseline's lack of L4 ingress support.
     if ports
         .iter()
         .any(|port| matches!(port, PortPublication::IngressTransport { .. }))
     {
-        return Err("run supports TCP/UDP publications only in @host mode".into());
+        return Err(Error::usage(
+            "run supports TCP/UDP publications only in @host mode",
+        ));
     }
     let caddy_config = matches
         .get_one::<String>("caddyfile")
         .map(fs::read_to_string)
         .transpose()
-        .map_err(|error| format!("read caddyfile: {error}"))?;
+        .map_err(|error| Error::usage(format!("read caddyfile: {error}")))?;
     if caddy_config.is_some()
         && ports
             .iter()
             .any(|port| matches!(port, PortPublication::Ingress { .. }))
     {
-        return Err("ingress ports and --caddyfile cannot be specified together".into());
+        return Err(Error::usage(
+            "ingress ports and --caddyfile cannot be specified together",
+        ));
     }
     let (volumes, mounts) = parse_volumes(&string_values(matches, "volume"))?;
     Ok(RequestedServiceSpec {
@@ -90,7 +96,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
                     if value.is_empty() {
                         Ok(vec![String::new()])
                     } else {
-                        shell_words::split(value).map_err(|error| error.to_string())
+                        shell_words::split(value)
                     }
                 })
                 .transpose()?
@@ -103,7 +109,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
                 "always" => PullPolicy::Always,
                 "missing" => PullPolicy::Missing,
                 "never" => PullPolicy::Never,
-                policy => return Err(format!("unsupported pull policy '{policy}'").into()),
+                policy => return Err(Error::usage(format!("unsupported pull policy '{policy}'"))),
             },
             init: None,
             user: matches.get_one::<String>("user").cloned(),
@@ -131,7 +137,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         placement: Placement {
             machines: string_values(matches, "machine")
                 .into_iter()
-                .map(|value| MachineSelector::parse(value).map_err(|error| error.to_string()))
+                .map(MachineSelector::parse)
                 .collect::<Result<_, _>>()?,
         },
         ports,
@@ -181,12 +187,13 @@ fn parse_environment(values: &[String]) -> Result<BTreeMap<String, String>, Erro
                 Some(pair) => (pair.0, pair.1.to_owned()),
                 None => (
                     value.as_str(),
-                    std::env::var(value)
-                        .map_err(|_| format!("environment variable '{value}' is not set"))?,
+                    std::env::var(value).map_err(|_| {
+                        Error::usage(format!("environment variable '{value}' is not set"))
+                    })?,
                 ),
             };
             if key.is_empty() {
-                return Err(Error::from("environment variable name cannot be empty"));
+                return Err(Error::usage("environment variable name cannot be empty"));
             }
             Ok((key.to_owned(), value))
         })
@@ -202,27 +209,32 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
         let target = parts.next().unwrap_or_default();
         let option = parts.next();
         if source.is_empty() || target.is_empty() || parts.next().is_some() {
-            return Err(format!("invalid volume '{value}'; expected SOURCE:TARGET[:ro]").into());
+            return Err(Error::usage(format!(
+                "invalid volume '{value}'; expected SOURCE:TARGET[:ro]"
+            )));
         }
         if option.is_some_and(|option| !matches!(option, "ro" | "volume-nocopy")) {
-            return Err(format!("unsupported volume option in '{value}'").into());
+            return Err(Error::usage(format!(
+                "unsupported volume option in '{value}'"
+            )));
         }
         let reference = ServiceVolumeReference::parse(format!("mount-{index}"))
             .expect("generated Volume reference is valid");
         let source = if source.starts_with('/') {
             if option == Some("volume-nocopy") {
-                return Err(format!("volume-nocopy requires a named volume in '{value}'").into());
+                return Err(Error::usage(format!(
+                    "volume-nocopy requires a named volume in '{value}'"
+                )));
             }
             VolumeSource::Bind {
-                machine_path: ployz_core::MachinePath::parse(source)
-                    .map_err(|error| error.to_string())?,
+                machine_path: ployz_core::MachinePath::parse(source)?,
                 create_machine_path: true,
                 propagation: None,
                 recursive: None,
             }
         } else {
             VolumeSource::Named {
-                name: DockerVolumeName::parse(source).map_err(|error| error.to_string())?,
+                name: DockerVolumeName::parse(source)?,
                 external: false,
                 driver: None,
                 labels: BTreeMap::new(),
@@ -236,7 +248,7 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
         });
         mounts.push(ServiceMount {
             volume: reference,
-            target: ContainerPath::parse(target).map_err(|error| error.to_string())?,
+            target: ContainerPath::parse(target)?,
             read_only: option == Some("ro"),
         });
     }
@@ -249,16 +261,16 @@ fn parse_ulimits(values: &[String]) -> Result<BTreeMap<String, Ulimit>, Error> {
         .map(|value| {
             let (name, limits) = value
                 .split_once('=')
-                .ok_or_else(|| Error::from(format!("invalid ulimit '{value}'")))?;
+                .ok_or_else(|| Error::usage(format!("invalid ulimit '{value}'")))?;
             let (soft, hard) = limits
                 .split_once(':')
                 .map_or((limits, limits), |(soft, hard)| (soft, hard));
             let soft = soft
                 .parse()
-                .map_err(|_| format!("invalid ulimit '{value}'"))?;
+                .map_err(|_| Error::usage(format!("invalid ulimit '{value}'")))?;
             let hard = hard
                 .parse()
-                .map_err(|_| format!("invalid ulimit '{value}'"))?;
+                .map_err(|_| Error::usage(format!("invalid ulimit '{value}'")))?;
             Ok((name.to_owned(), Ulimit { soft, hard }))
         })
         .collect()
@@ -267,9 +279,9 @@ fn parse_ulimits(values: &[String]) -> Result<BTreeMap<String, Ulimit>, Error> {
 fn parse_cpu(value: &str) -> Result<i64, Error> {
     let cpu = value
         .parse::<f64>()
-        .map_err(|_| Error::from("cpu must be numeric"))?;
+        .map_err(|_| Error::usage("cpu must be numeric"))?;
     if !cpu.is_finite() || cpu < 0.0 {
-        return Err("cpu must be a non-negative finite number".into());
+        return Err(Error::usage("cpu must be a non-negative finite number"));
     }
     Ok((cpu * 1e9) as i64)
 }
@@ -280,7 +292,7 @@ fn optional_bytes(matches: &ArgMatches, name: &str) -> Result<Option<i64>, Error
         .map(|value| {
             parse_bytes(value)
                 .and_then(|value| i64::try_from(value).ok())
-                .ok_or_else(|| Error::from(format!("{name} must be a byte size")))
+                .ok_or_else(|| Error::usage(format!("{name} must be a byte size")))
         })
         .transpose()
 }
@@ -288,5 +300,5 @@ fn optional_bytes(matches: &ArgMatches, name: &str) -> Result<Option<i64>, Error
 pub(super) fn parse_u32(matches: &ArgMatches, name: &str) -> Result<u32, Error> {
     required(matches, name)?
         .parse()
-        .map_err(|_| format!("{name} must be a positive integer").into())
+        .map_err(|_| Error::usage(format!("{name} must be a positive integer")))
 }

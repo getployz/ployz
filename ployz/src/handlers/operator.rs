@@ -30,7 +30,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let service = leaf
         .get_one::<String>("service")
         .cloned()
-        .ok_or_else(|| "Service selector is required".to_owned())?;
+        .ok_or_else(|| Error::usage("Service selector is required"))?;
     let container = leaf.get_one::<String>("container").cloned();
     let command = leaf
         .get_many::<String>("command")
@@ -44,16 +44,14 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             stdout_terminal: std::io::stdout().is_terminal(),
             stdin_terminal: std::io::stdin().is_terminal(),
         },
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     with_client_context(root, None, |client| {
         Box::pin(async move {
             let tty = options.tty;
             let detach = options.detach;
             let mut session = client
                 .open_exec(&service, container.as_deref(), options)
-                .await
-                .map_err(|error| error.to_string())?;
+                .await?;
             let _raw = tty.then(RawTerminal::enable).transpose()?;
             if tty {
                 send_terminal_size(&session.input).await?;
@@ -65,19 +63,14 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             drop(session.input);
             let mut exit = 0;
             while let Some(payload) = session.output.next().await {
-                match ExecResponseFrame::decode(&payload.map_err(|error| error.to_string())?)
-                    .map_err(|error| error.to_string())?
-                {
+                match ExecResponseFrame::decode(&payload?)? {
                     ExecResponseFrame::ExecId(_) => {}
                     ExecResponseFrame::Stdout(bytes) => {
-                        write_stdout_frame(&mut std::io::stdout(), &bytes)
-                            .map_err(|error| error.to_string())?
+                        write_stdout_frame(&mut std::io::stdout(), &bytes)?
                     }
-                    ExecResponseFrame::Stderr(bytes) => std::io::stderr()
-                        .write_all(&bytes)
-                        .map_err(|error| error.to_string())?,
+                    ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
                     ExecResponseFrame::Exit(code) => exit = code,
-                    ExecResponseFrame::Error(error) => return Err(error.message.into()),
+                    ExecResponseFrame::Error(error) => return Err(error.into()),
                 }
             }
             if let Some(task) = resize_task {
@@ -115,13 +108,12 @@ fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Err
                 .collect(),
             all_profiles: true,
             ..Default::default()
-        })
-        .map_err(|error| error.to_string())?;
+        })?;
         for warning in &project.warnings {
             eprintln!("WARNING: {warning}");
         }
         if project.services.is_empty() {
-            return Err("no Services found in Compose file(s)".into());
+            return Err(Error::usage("no Services found in Compose file(s)"));
         }
         let args = project
             .services
@@ -138,11 +130,7 @@ fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Err
             .map(ToOwned::to_owned);
         (args, context, true)
     } else {
-        (
-            parse_service_args(&explicit).map_err(|error| error.to_string())?,
-            None,
-            false,
-        )
+        (parse_service_args(&explicit)?, None, false)
     };
     let options = log_options(leaf)?;
     let machines = string_values(leaf, "machine");
@@ -159,8 +147,7 @@ fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Err
                     compose_selection,
                     cancellation.clone(),
                 )
-                .await
-                .map_err(|error| error.to_string())?;
+                .await?;
             for service in opened.skipped_services {
                 eprintln!("WARNING: Service {service:?} is not in the Cluster; skipping");
             }
@@ -184,8 +171,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
             let _parent = cancellation.clone().drop_guard();
             let inputs = client
                 .open_machine_logs(&services, &machines, options, cancellation.clone())
-                .await
-                .map_err(|error| error.to_string())?;
+                .await?;
             print_logs(merge_logs(inputs, cancellation), utc).await
         })
     })
@@ -196,12 +182,11 @@ pub fn proxy(root: &ArgMatches) -> Result<(), Error> {
     let service = leaf
         .get_one::<String>("service")
         .cloned()
-        .ok_or_else(|| "Service selector is required".to_owned())?;
+        .ok_or_else(|| Error::usage("Service selector is required"))?;
     let ports = parse_proxy_ports(
         leaf.get_one::<String>("port")
-            .ok_or_else(|| "proxy port is required".to_owned())?,
-    )
-    .map_err(|error| error.to_string())?;
+            .ok_or_else(|| Error::usage("proxy port is required"))?,
+    )?;
     with_client_context(root, None, |client| {
         Box::pin(async move { run_proxy(client, &service, ports).await })
     })
@@ -213,37 +198,35 @@ async fn run_proxy(
     ports: ProxyPorts,
 ) -> Result<(), Error> {
     if !matches!(client.connection().transport(), Transport::Ssh { .. }) {
-        return Err(format!("proxy dialing is unsupported over {}", client.connection()).into());
+        return Err(Error::usage(format!(
+            "proxy dialing is unsupported over {}",
+            client.connection()
+        )));
     }
-    let live = client
-        .live_services()
-        .await
-        .map_err(|error| error.to_string())?;
-    let service =
-        select_service(&live.services, service_selector).map_err(|error| error.to_string())?;
-    let container = select_proxy_container(service).map_err(|error| error.to_string())?;
+    let live = client.live_services().await?;
+    let service = select_service(&live.services, service_selector)?;
+    let container = select_proxy_container(service)?;
     let address = container.address.ok_or_else(|| {
-        format!(
+        Error::usage(format!(
             "Container {} has no address on the ployz Docker network",
             container.container_id
-        )
+        ))
     })?;
     let remote = SocketAddr::new(IpAddr::V4(address.0), ports.remote);
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         ports.local,
     ))
-    .await
-    .map_err(|error| error.to_string())?;
+    .await?;
     println!(
         "{} -> {remote} ({service_selector}/{})",
-        listener.local_addr().map_err(|error| error.to_string())?,
+        listener.local_addr()?,
         container.container_id
     );
     loop {
         tokio::select! {
             result = listener.accept() => {
-                let (mut local, _) = result.map_err(|error| error.to_string())?;
+                let (mut local, _) = result?;
                 let client = client.clone();
                 let remote = remote.to_string();
                 tokio::spawn(async move {
@@ -258,7 +241,7 @@ async fn run_proxy(
                 });
             }
             result = tokio::signal::ctrl_c() => {
-                result.map_err(|error| error.to_string())?;
+                result?;
                 return Ok(());
             }
         }
@@ -271,9 +254,8 @@ fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
         tail: parse_tail(
             matches
                 .get_one::<String>("tail")
-                .ok_or_else(|| "log tail is required".to_owned())?,
-        )
-        .map_err(|error| error.to_string())?,
+                .ok_or_else(|| Error::usage("log tail is required"))?,
+        )?,
         since: matches
             .get_one::<String>("since")
             .cloned()
@@ -304,7 +286,7 @@ async fn print_logs(
     utc: bool,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
-        let entry = entry?;
+        let entry = entry.map_err(Error::usage)?;
         let timestamp = timestamp(&entry, utc);
         let (service_name, service_id, container, hook) = match &entry.metadata.origin {
             LogOrigin::Service {
@@ -337,8 +319,7 @@ async fn print_logs(
         };
         output
             .write_all(prefix.as_bytes())
-            .and_then(|()| output.write_all(&entry.message))
-            .map_err(|error| error.to_string())?;
+            .and_then(|()| output.write_all(&entry.message))?;
     }
     Ok(())
 }
@@ -364,8 +345,8 @@ fn write_stdout_frame(output: &mut dyn Write, bytes: &[u8]) -> std::io::Result<(
 }
 
 impl RawTerminal {
-    fn enable() -> Result<Self, String> {
-        terminal::enable_raw_mode().map_err(|error| error.to_string())?;
+    fn enable() -> Result<Self, Error> {
+        terminal::enable_raw_mode()?;
         Ok(Self)
     }
 }
@@ -379,15 +360,11 @@ impl Drop for RawTerminal {
 async fn send_terminal_size(
     sender: &tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
 ) -> Result<(), Error> {
-    let (width, height) = terminal::size().map_err(|error| error.to_string())?;
+    let (width, height) = terminal::size()?;
     sender
-        .send(
-            ExecRequestFrame::Resize { width, height }
-                .encode()
-                .map_err(|error| error.to_string())?,
-        )
+        .send(ExecRequestFrame::Resize { width, height }.encode()?)
         .await
-        .map_err(|_| "exec request stream closed".into())
+        .map_err(|_| Error::usage("exec request stream closed"))
 }
 
 fn spawn_stdin(sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>) {

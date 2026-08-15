@@ -382,7 +382,7 @@ impl Client {
         &self,
         target: &MachineSelector,
         input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> Result<Streaming<OpaquePayload>, tonic::Status> {
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self.rpc.clone();
         Ok(rpc
             .exec(target_request(input, Some(target)))
@@ -394,7 +394,7 @@ impl Client {
         &self,
         target: &MachineSelector,
         request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, tonic::Status> {
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self.rpc.clone();
         Ok(rpc
             .container_logs(target_request(request, Some(target)))
@@ -406,7 +406,7 @@ impl Client {
         &self,
         target: &MachineSelector,
         request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, tonic::Status> {
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self.rpc.clone();
         Ok(rpc
             .machine_logs(target_request(request, Some(target)))
@@ -564,33 +564,7 @@ impl Client {
 pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
         ConnectError::Remote(error) => error,
-        ConnectError::Rpc(status) => RpcError {
-            code: match status.code() {
-                tonic::Code::InvalidArgument => RpcErrorCode::InvalidArgument,
-                tonic::Code::NotFound => RpcErrorCode::NotFound,
-                tonic::Code::AlreadyExists | tonic::Code::Aborted => RpcErrorCode::Conflict,
-                tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => {
-                    RpcErrorCode::Unavailable
-                }
-                tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
-                tonic::Code::Unauthenticated => RpcErrorCode::Unauthenticated,
-                tonic::Code::Ok
-                | tonic::Code::Cancelled
-                | tonic::Code::Unknown
-                | tonic::Code::PermissionDenied
-                | tonic::Code::ResourceExhausted
-                | tonic::Code::FailedPrecondition
-                | tonic::Code::OutOfRange
-                | tonic::Code::Internal
-                | tonic::Code::DataLoss => RpcErrorCode::Internal,
-            },
-            message: status.message().into(),
-            details: if status.details().is_empty() {
-                Value::Null
-            } else {
-                json!({ "grpc_details": String::from_utf8_lossy(status.details()) })
-            },
-        },
+        ConnectError::Rpc(error) => error.to_rpc_error(),
         error @ (ConnectError::Attempt(_)
         | ConnectError::ProxyUnsupported(_)
         | ConnectError::UnsupportedNetwork(_)
@@ -632,10 +606,7 @@ async fn apply_timeout<T>(
 fn is_unary_retryable(error: &ConnectError) -> bool {
     match error {
         ConnectError::Attempt(_) => true,
-        ConnectError::Rpc(status) => matches!(
-            status.code(),
-            tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
-        ),
+        ConnectError::Rpc(error) => error.is_retryable(),
         ConnectError::Remote(_)
         | ConnectError::ProxyUnsupported(_)
         | ConnectError::UnsupportedNetwork(_)
@@ -782,7 +753,7 @@ pub enum ConnectError {
         last: Option<Box<ConnectError>>,
     },
     #[error("Machine RPC failed: {0}")]
-    Rpc(Box<tonic::Status>),
+    Rpc(TransportError),
     #[error("Machine RPC payload failed: {0}")]
     Codec(#[from] CodecError),
     #[error("Machine RPC returned: {}", .0.message)]
@@ -795,7 +766,91 @@ pub enum ConnectError {
 
 impl From<tonic::Status> for ConnectError {
     fn from(status: tonic::Status) -> Self {
-        Self::Rpc(Box::new(status))
+        Self::Rpc(TransportError::from(status))
+    }
+}
+
+/// A gRPC transport failure with Display frozen to `tonic::Status`.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("{display}")]
+pub struct TransportError {
+    code: RpcErrorCode,
+    retryable: bool,
+    unavailable: bool,
+    message: String,
+    display: String,
+    details: Value,
+}
+
+impl TransportError {
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+
+    #[must_use]
+    pub fn is_unavailable(&self) -> bool {
+        self.unavailable
+    }
+
+    #[must_use]
+    pub fn is_not_found(&self) -> bool {
+        self.code == RpcErrorCode::NotFound
+    }
+
+    #[must_use]
+    pub fn to_rpc_error(&self) -> RpcError {
+        RpcError {
+            code: self.code.clone(),
+            message: self.message.clone(),
+            details: self.details.clone(),
+        }
+    }
+}
+
+impl From<tonic::Status> for TransportError {
+    fn from(status: tonic::Status) -> Self {
+        let grpc = status.code();
+        Self {
+            code: rpc_error_code(grpc),
+            retryable: matches!(
+                grpc,
+                tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
+            ),
+            unavailable: grpc == tonic::Code::Unavailable,
+            message: status.message().to_owned(),
+            display: status.to_string(),
+            details: if status.details().is_empty() {
+                Value::Null
+            } else {
+                json!({ "grpc_details": String::from_utf8_lossy(status.details()) })
+            },
+        }
+    }
+}
+
+fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {
+    match code {
+        tonic::Code::InvalidArgument => RpcErrorCode::InvalidArgument,
+        tonic::Code::NotFound => RpcErrorCode::NotFound,
+        tonic::Code::AlreadyExists | tonic::Code::Aborted => RpcErrorCode::Conflict,
+        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => RpcErrorCode::Unavailable,
+        tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
+        tonic::Code::Unauthenticated => RpcErrorCode::Unauthenticated,
+        tonic::Code::Ok
+        | tonic::Code::Cancelled
+        | tonic::Code::Unknown
+        | tonic::Code::PermissionDenied
+        | tonic::Code::ResourceExhausted
+        | tonic::Code::FailedPrecondition
+        | tonic::Code::OutOfRange
+        | tonic::Code::Internal
+        | tonic::Code::DataLoss => RpcErrorCode::Internal,
     }
 }
 

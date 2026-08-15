@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
-use crate::connect::Client;
+use crate::connect::{Client, TransportError};
 
 pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
     "sh",
@@ -72,7 +72,7 @@ pub enum OperatorError {
     #[error(transparent)]
     Container(#[from] ContainerSelectorError),
     #[error("Machine RPC failed: {0}")]
-    Rpc(Box<tonic::Status>),
+    Rpc(TransportError),
     #[error("stream protocol failed: {0}")]
     Protocol(#[from] ployz_core::StreamProtocolError),
 }
@@ -91,7 +91,13 @@ impl From<&str> for OperatorError {
 
 impl From<tonic::Status> for OperatorError {
     fn from(status: tonic::Status) -> Self {
-        Self::Rpc(Box::new(status))
+        Self::Rpc(TransportError::from(status))
+    }
+}
+
+impl From<TransportError> for OperatorError {
+    fn from(error: TransportError) -> Self {
+        Self::Rpc(error)
     }
 }
 
@@ -488,8 +494,8 @@ fn preserve_open_inputs(inputs: Vec<LogInput>, cancellation: CancellationToken) 
 async fn open_log_input(
     inputs: &mut Vec<LogInput>,
     cancellation: &CancellationToken,
-    open: impl Future<Output = Result<LogInput, tonic::Status>>,
-) -> Result<(), tonic::Status> {
+    open: impl Future<Output = Result<LogInput, TransportError>>,
+) -> Result<(), TransportError> {
     match open.await {
         Ok(input) => {
             inputs.push(input);

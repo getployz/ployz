@@ -36,7 +36,7 @@ impl ConnectionOptions {
             .get_one::<String>("ployz-config")
             .map(Path::new)
             .map(expand_home)
-            .ok_or_else(|| "Ployz config path is required".to_owned())?;
+            .ok_or_else(|| Error::usage("Ployz config path is required"))?;
         Ok(Self {
             config_path,
             direct: matches.get_one::<String>("connect").cloned(),
@@ -45,13 +45,12 @@ impl ConnectionOptions {
     }
 
     pub(super) async fn connect(&self) -> Result<Client, Error> {
-        connect(
+        Ok(connect(
             &self.config_path,
             self.direct.as_deref(),
             self.context.as_deref(),
         )
-        .await
-        .map_err(|error| error.to_string().into())
+        .await?)
     }
 
     pub(super) fn active_config(&self) -> Result<(Config, String), Error> {
@@ -61,51 +60,48 @@ impl ConnectionOptions {
             .clone()
             .unwrap_or_else(|| config.current_context.clone());
         if name.is_empty() {
-            return Err(format!(
+            return Err(Error::usage(format!(
                 "current context is not set in Ployz config {}",
                 config.path().display()
-            )
-            .into());
+            )));
         }
         if !config.contexts.contains_key(&name) {
-            return Err(format!("context {name:?} not found").into());
+            return Err(Error::usage(format!("context {name:?} not found")));
         }
         Ok((config, name))
     }
 
     pub(super) fn load_config(&self) -> Result<Config, Error> {
-        Config::load(&self.config_path).map_err(|error| error.to_string().into())
+        Ok(Config::load(&self.config_path)?)
     }
 
     pub(super) fn load_or_empty_config(&self) -> Result<Config, Error> {
-        Config::load_or_empty(&self.config_path).map_err(|error| error.to_string().into())
+        Ok(Config::load_or_empty(&self.config_path)?)
     }
 }
 
 pub(super) fn runtime() -> Result<tokio::runtime::Runtime, Error> {
-    tokio::runtime::Runtime::new().map_err(|error| error.to_string().into())
+    Ok(tokio::runtime::Runtime::new()?)
 }
 
 pub(super) async fn machine_list(client: &mut Client) -> Result<Vec<MachineObservation>, Error> {
-    client
+    Ok(client
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
-        .await
-        .map(|list| list.machines)
-        .map_err(|error| error.to_string().into())
+        .await?
+        .machines)
 }
 
 pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str, Error> {
     matches
         .get_one::<String>(name)
         .map(String::as_str)
-        .ok_or_else(|| format!("{name} is required").into())
+        .ok_or_else(|| Error::usage(format!("{name} is required")))
 }
 
 pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "old-name")?;
-    let name =
-        MachineName::parse(target(matches, "new-name")?).map_err(|error| error.to_string())?;
+    let name = MachineName::parse(target(matches, "new-name")?)?;
     update_target(
         root,
         selector,
@@ -125,13 +121,13 @@ pub(super) fn update(root: &ArgMatches) -> Result<(), Error> {
 
 fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
-    let selector = MachineSelector::parse(selector).map_err(|error| error.to_string())?;
+    let selector = MachineSelector::parse(selector)?;
     let machine = runtime()?.block_on(async {
         let mut client = options.connect().await?;
         client
             .call::<op::UpdateMachine>(UpdateMachineRequest { update }, Some(&selector))
             .await
-            .map_err(|error| Error::from(error.to_string()))
+            .map_err(Error::from)
     })?;
     println!(
         "Updated Machine {} ({})",
@@ -143,7 +139,7 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let name = matches
         .get_one::<String>("name")
-        .map(|name| MachineName::parse(name).map_err(|error| error.to_string()))
+        .map(MachineName::parse)
         .transpose()?;
     let public_ip = match matches.get_one::<String>("public-ip").map(String::as_str) {
         None => PublicIpUpdate::Keep,
@@ -151,7 +147,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
         Some(value) => PublicIpUpdate::Set(
             value
                 .parse::<IpAddr>()
-                .map_err(|_| format!("invalid public IP {value:?}"))?,
+                .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?,
         ),
     };
     let advertised_endpoints = if matches.get_many::<String>("wg-endpoint").is_some() {
@@ -168,14 +164,14 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
         advertised_endpoints,
     };
     if update.is_empty() {
-        return Err("at least one Machine update flag is required".into());
+        return Err(Error::usage("at least one Machine update flag is required"));
     }
     if update
         .advertised_endpoints
         .as_ref()
         .is_some_and(Vec::is_empty)
     {
-        return Err("at least one WireGuard endpoint is required".into());
+        return Err(Error::usage("at least one WireGuard endpoint is required"));
     }
     Ok(update)
 }
@@ -195,7 +191,7 @@ pub(super) fn parse_endpoints(
                         .map(|address| SocketAddr::new(address, default_port))
                 })
                 .map(AdvertisedEndpoint)
-                .map_err(|_| format!("invalid WireGuard endpoint {value:?}").into())
+                .map_err(|_| Error::usage(format!("invalid WireGuard endpoint {value:?}")))
         })
         .collect()
 }

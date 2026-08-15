@@ -5,6 +5,7 @@ pub mod connect;
 pub mod context;
 pub mod deploy;
 pub mod dns;
+pub mod failure;
 pub mod handlers;
 pub mod image;
 pub mod operator;

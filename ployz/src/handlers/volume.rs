@@ -25,18 +25,18 @@ use super::{Error, confirm, leaf_matches, required, string_values};
 pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     // EO-011: an explicit non-empty name is required; anonymous Docker Volumes stay unsupported.
-    let name = DockerVolumeName::parse(required(matches, "volume-name")?)
-        .map_err(|error| error.to_string())?;
+    let name = DockerVolumeName::parse(required(matches, "volume-name")?)?;
     let driver = required(matches, "driver")?;
-    let options = parse_assignments(string_values(matches, "opt").iter().map(String::as_str))?;
-    let labels = parse_assignments(string_values(matches, "label").iter().map(String::as_str))?;
+    let options = parse_assignments(string_values(matches, "opt").iter().map(String::as_str))
+        .map_err(Error::usage)?;
+    let labels = parse_assignments(string_values(matches, "label").iter().map(String::as_str))
+        .map_err(Error::usage)?;
     let selector = matches.get_one::<String>("machine").cloned();
     run(async move {
         let mut client = connect_from(root).await?;
         let machines = client
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         let Some(machine) = select_create_machine(&machines.machines, selector.as_deref())? else {
             println!("Cancelled. No volume was created.");
             return Ok(());
@@ -52,8 +52,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                 &MachineSelector::from(&machine.machine.id),
                 Some(TARGET_RPC_TIMEOUT),
             )
-            .await
-            .map_err(|error| error.message)?;
+            .await?;
         println!("{}\t{}", machine.machine.name, volume.volume.id.name);
         Ok(())
     })
@@ -86,8 +85,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let name = DockerVolumeName::parse(required(matches, "volume-name")?)
-        .map_err(|error| error.to_string())?;
+    let name = DockerVolumeName::parse(required(matches, "volume-name")?)?;
     let selectors = matches
         .get_one::<String>("machine")
         .cloned()
@@ -97,10 +95,12 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         let mut client = connect_from(root).await?;
         let (volumes, result) = discover(&mut client, &selectors).await?;
         if !result.all_targets_succeeded() {
-            return Err(failure_summary(&result).into());
+            return Err(Error::usage(failure_summary(&result)));
         }
         match NameMatches::from_matches(filter_volumes(&volumes, std::slice::from_ref(&name))) {
-            NameMatches::None => Err(format!("Docker Volume {name:?} was not found").into()),
+            NameMatches::None => Err(Error::usage(format!(
+                "Docker Volume {name:?} was not found"
+            ))),
             NameMatches::One(mut volume) => {
                 volume.volume = client
                     .call::<op::InspectVolume>(
@@ -110,23 +110,18 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                         Some(&MachineSelector::from(&volume.volume.id.machine_id)),
                     )
                     .await
-                    .map(|details| details.volume)
-                    .map_err(|error| error.to_string())?;
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&volume).map_err(|error| error.to_string())?
-                );
+                    .map(|details| details.volume)?;
+                println!("{}", serde_json::to_string_pretty(&volume)?);
                 Ok(())
             }
-            NameMatches::Ambiguous(volumes) => Err(format!(
+            NameMatches::Ambiguous(volumes) => Err(Error::usage(format!(
                 "Docker Volume {name:?} is ambiguous; select one Machine: {}",
                 volumes
                     .iter()
                     .map(|volume| volume.machine_name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
-            )
-            .into()),
+            ))),
         }
     })
 }
@@ -137,7 +132,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         .get_many::<String>("volume-name")
         .into_iter()
         .flatten()
-        .map(|name| DockerVolumeName::parse(name.clone()).map_err(|error| error.to_string()))
+        .map(|name| DockerVolumeName::parse(name.clone()))
         .collect::<Result<Vec<_>, _>>()?;
     let selectors = string_values(matches, "machine");
     let force = matches.get_flag("force");
@@ -151,10 +146,12 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
         {
-            return Err(format!("Docker Volume {name:?} was not found").into());
+            return Err(Error::usage(format!(
+                "Docker Volume {name:?} was not found"
+            )));
         }
         if volumes.is_empty() {
-            return Err(failure_summary(&result).into());
+            return Err(Error::usage(failure_summary(&result)));
         }
         println!("The following Docker Volumes will be removed:");
         for volume in &volumes {
@@ -189,8 +186,10 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             (!removal.all_targets_succeeded()).then(|| failure_summary(&removal)),
         ) {
             (None, None) => Ok(()),
-            (Some(failure), None) | (None, Some(failure)) => Err(failure.into()),
-            (Some(discovery), Some(removal)) => Err(format!("{discovery}; {removal}").into()),
+            (Some(failure), None) | (None, Some(failure)) => Err(Error::usage(failure)),
+            (Some(discovery), Some(removal)) => {
+                Err(Error::usage(format!("{discovery}; {removal}")))
+            }
         }
     })
 }
@@ -209,8 +208,7 @@ async fn discover(
         client
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
-            .map(|list| list.machines)
-            .map_err(|error| error.to_string())?,
+            .map(|list| list.machines)?,
         selectors,
     )?;
     let result = client.list_volumes(&machines).await;
@@ -222,14 +220,13 @@ async fn connect_from(root: &ArgMatches) -> Result<Client, Error> {
         .get_one::<String>("ployz-config")
         .map(Path::new)
         .map(expand_home)
-        .ok_or_else(|| "Ployz config path is required".to_owned())?;
-    connect(
+        .ok_or_else(|| Error::usage("Ployz config path is required"))?;
+    Ok(connect(
         &path,
         root.get_one::<String>("connect").map(String::as_str),
         root.get_one::<String>("context").map(String::as_str),
     )
-    .await
-    .map_err(|error| Error::from(error.to_string()))
+    .await?)
 }
 
 fn selected_machines(
@@ -242,14 +239,12 @@ fn selected_machines(
     let selectors = selectors
         .iter()
         .map(|selector| MachineSelector::parse(selector.clone()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
+        .collect::<Result<Vec<_>, _>>()?;
     let visible = machines
         .iter()
         .map(|observation| observation.machine.clone())
         .collect::<Vec<_>>();
-    let selected =
-        resolve_machine_selectors(&visible, &selectors).map_err(|error| error.to_string())?;
+    let selected = resolve_machine_selectors(&visible, &selectors)?;
     let mut observations = machines
         .into_iter()
         .map(|observation| (observation.machine.id.clone(), observation))
@@ -259,7 +254,7 @@ fn selected_machines(
         .map(|machine| {
             observations
                 .remove(&machine.id)
-                .ok_or_else(|| "selected Machine disappeared from the snapshot".into())
+                .ok_or_else(|| Error::usage("selected Machine disappeared from the snapshot"))
         })
         .collect()
 }
@@ -272,26 +267,26 @@ fn select_create_machine(
         let selected = selected_machines(machines.to_vec(), &[selector.into()])?;
         return match selected.as_slice() {
             [machine] => Ok(Some(machine.clone())),
-            _ => Err(format!("Machine selector {selector:?} matched multiple Machines").into()),
+            _ => Err(Error::usage(format!(
+                "Machine selector {selector:?} matched multiple Machines"
+            ))),
         };
     }
     match machines {
-        [] => Err("no Machines are available".into()),
+        [] => Err(Error::usage("no Machines are available")),
         [machine] => Ok(Some(machine.clone())),
-        _ if !io::stdin().is_terminal() || !io::stdout().is_terminal() => {
-            Err("multiple Machines are available; specify --machine".into())
-        }
+        _ if !io::stdin().is_terminal() || !io::stdout().is_terminal() => Err(Error::usage(
+            "multiple Machines are available; specify --machine",
+        )),
         _ => {
             println!("Select a Machine (blank or q cancels):");
             for (index, machine) in machines.iter().enumerate() {
                 println!("  {}. {}", index + 1, machine.machine.name);
             }
             print!("> ");
-            io::stdout().flush().map_err(|error| error.to_string())?;
+            io::stdout().flush()?;
             let mut input = String::new();
-            io::stdin()
-                .read_line(&mut input)
-                .map_err(|error| error.to_string())?;
+            io::stdin().read_line(&mut input)?;
             let input = input.trim();
             if input.is_empty() || input.eq_ignore_ascii_case("q") {
                 return Ok(None);
@@ -301,12 +296,12 @@ fn select_create_machine(
                 .ok()
                 .and_then(|value| value.checked_sub(1))
                 .filter(|index| *index < machines.len())
-                .ok_or_else(|| Error::from("invalid selection"))?;
+                .ok_or_else(|| Error::usage("invalid selection"))?;
             Ok(machines
                 .get(index)
                 .cloned()
                 .map(Some)
-                .ok_or_else(|| Error::from("invalid selection"))?)
+                .ok_or_else(|| Error::usage("invalid selection"))?)
         }
     }
 }
@@ -337,7 +332,5 @@ fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
 }
 
 fn run(future: impl Future<Output = Result<(), Error>>) -> Result<(), Error> {
-    tokio::runtime::Runtime::new()
-        .map_err(|error| error.to_string())?
-        .block_on(future)
+    tokio::runtime::Runtime::new()?.block_on(future)
 }

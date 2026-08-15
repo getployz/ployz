@@ -67,7 +67,7 @@ fn prepare_deploy(matches: &ArgMatches) -> Result<(ComposeProject, Vec<BuildServ
         ..Default::default()
     };
     let selected = string_values(matches, "service");
-    let project = load_project(&load).map_err(|error| error.to_string())?;
+    let project = load_project(&load)?;
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
@@ -79,15 +79,13 @@ fn prepare_deploy(matches: &ArgMatches) -> Result<(ComposeProject, Vec<BuildServ
         services: selected.clone(),
         ..Default::default()
     };
-    let mut builds = plan_build(&project, &build_options).map_err(|error| error.to_string())?;
+    let mut builds = plan_build(&project, &build_options)?;
     if matches.get_flag("no-build") {
         builds.clear();
     } else {
-        execute_build(&builds, &build_options, &load).map_err(|error| error.to_string())?;
+        execute_build(&builds, &build_options, &load)?;
     }
-    let project = project
-        .select_services(&selected)
-        .map_err(|error| error.to_string())?;
+    let project = project.select_services(&selected)?;
     Ok((project, builds))
 }
 
@@ -96,7 +94,7 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let replicas = parse_u32(matches, "replicas")?;
     // TODO(EO-012): reject zero before resolving configuration or connecting to a Machine.
     let replicas = NonZeroU32::new(replicas)
-        .ok_or_else(|| Error::from("replicas must be greater than zero"))?;
+        .ok_or_else(|| Error::usage("replicas must be greater than zero"))?;
     let selector = required(matches, "service")?;
     let yes = matches.get_flag("yes");
     let context = matches.get_one::<String>("context").map(String::as_str);
@@ -108,21 +106,17 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
 }
 
 async fn list_machines(client: &mut Client) -> Result<Vec<ployz_core::MachineObservation>, Error> {
-    client
+    Ok(client
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
-        .await
-        .map(|list| list.machines)
-        .map_err(|error| Error::from(error.to_string()))
+        .await?
+        .machines)
 }
 
 async fn take_snapshot(
     client: &mut Client,
     machines: Vec<ployz_core::MachineObservation>,
 ) -> Result<DeploySnapshot, Error> {
-    let gathered = client
-        .deploy_snapshot(machines)
-        .await
-        .map_err(|error| Error::from(error.to_string()))?;
+    let gathered = client.deploy_snapshot(machines).await?;
     report_observation_warnings("container", &gathered.containers);
     report_observation_warnings("volume", &gathered.volumes);
     Ok(gathered.snapshot)
@@ -149,12 +143,12 @@ async fn push_image(
     let result =
         crate::image::push_using_machines(client, &service.image, None, &targets, machines)
             .await
-            .map_err(|error| format!("{}: {error}", service.image))?;
+            .map_err(|error| Error::usage(format!("{}: {error}", service.image)))?;
     let failures = report_push(&service.image, result);
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(failures.join("; ").into())
+        Err(Error::usage(failures.join("; ")))
     }
 }
 
@@ -171,8 +165,7 @@ async fn run_connected(
         &snapshot,
         ServiceId::random(),
         plan_options(false, false),
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     render(plan.operations(), client.connection());
     Ok(execute_operations(plan.operations(), client, &CancellationToken::new()).await)
 }
@@ -199,15 +192,15 @@ async fn deploy_connected(
         }
     }
     if !failures.is_empty() {
-        return Err(format!("image push failed: {}", failures.join("; ")).into());
+        return Err(Error::usage(format!(
+            "image push failed: {}",
+            failures.join("; ")
+        )));
     }
-    project
-        .resolve_secrets()
-        .map_err(|error| error.to_string())?;
+    project.resolve_secrets()?;
     let snapshot = take_snapshot(client, machines).await?;
     expand_ingress(client, project.services.values_mut()).await?;
-    let compose =
-        plan_compose_deploy(project, &snapshot, options).map_err(|error| error.to_string())?;
+    let compose = plan_compose_deploy(project, &snapshot, options)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
     let operations = compose
         .operations()
@@ -228,14 +221,14 @@ fn scale_plan(
     replicas: NonZeroU32,
 ) -> Result<Option<DeployPlan>, Error> {
     let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
-    let service = select_service(&services, selector).map_err(|error| error.to_string())?;
+    let service = select_service(&services, selector)?;
     let observed_container = service
         .containers
         .first()
-        .ok_or_else(|| Error::from("cannot scale a service without regular containers"))?;
+        .ok_or_else(|| Error::usage("cannot scale a service without regular containers"))?;
     match observed_container.resolved_spec.mode {
         ServiceMode::Replicated { .. } => {}
-        ServiceMode::Global => return Err("global services cannot be scaled".into()),
+        ServiceMode::Global => return Err(Error::usage("global services cannot be scaled")),
     }
     if usize::try_from(replicas.get()) == Ok(service.containers.len()) {
         return Ok(None);
@@ -243,14 +236,12 @@ fn scale_plan(
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
     let mut requested = requested_from_resolved(&observed_container.resolved_spec);
     requested.mode = ServiceMode::Replicated { replicas };
-    plan_deploy(
+    Ok(Some(plan_deploy(
         &requested,
         snapshot,
         service.service_id.clone(),
         plan_options(false, false),
-    )
-    .map(Some)
-    .map_err(|error| Error::from(error.to_string()))
+    )?))
 }
 
 async fn scale_connected(
@@ -323,13 +314,12 @@ fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Error> {
     let Some(failed) = &outcome.failed else {
         return Ok(());
     };
-    Err(format!(
+    Err(Error::usage(format!(
         "Deploy stopped; completed: [{}]; failed: {}; unexecuted: [{}]",
         operation_list(&outcome.completed),
         failed_summary(failed),
         operation_list(&outcome.unexecuted),
-    )
-    .into())
+    )))
 }
 
 fn failed_summary(failed: &FailedOperation<ExecutionError>) -> String {
@@ -371,13 +361,9 @@ async fn expand_ingress<'a>(
     if !specs.iter().any(|spec| needs_ingress_expansion(spec)) {
         return Ok(());
     }
-    let domain = client
-        .domain_if_reserved()
-        .await
-        .map_err(|error| Error::from(error.to_string()))?;
+    let domain = client.domain_if_reserved().await?;
     for spec in specs {
-        crate::dns::expand_ingress_ports(spec, domain.as_deref())
-            .map_err(|error| error.to_string())?;
+        crate::dns::expand_ingress_ports(spec, domain.as_deref())?;
     }
     Ok(())
 }

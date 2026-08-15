@@ -15,7 +15,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
         client
             .list_images(reference, &targets)
             .await
-            .map_err(|error| Error::from(error.to_string()))
+            .map_err(Error::from)
     })?;
     println!("MACHINE\tCONTAINERD\tID\tREPOSITORY:TAG\tCREATED\tSIZE\tCONTAINERS\tPLATFORMS");
     for success in result.successes {
@@ -53,24 +53,22 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
     let image = leaf
         .get_one::<String>("image")
-        .ok_or_else(|| "image is required".to_owned())?;
-    let result = runtime()?
-        .block_on(async {
-            let mut client = connect_client(
-                matches,
-                leaf.get_one::<String>("context").map(String::as_str),
-            )
-            .await
-            .map_err(|error| crate::image::PushError::Cluster(error.to_string()))?;
-            crate::image::push(
-                &mut client,
-                image,
-                leaf.get_one::<String>("platform").map(String::as_str),
-                &string_values(leaf, "machine"),
-            )
-            .await
-        })
-        .map_err(|error| error.to_string())?;
+        .ok_or_else(|| Error::usage("image is required"))?;
+    let result = runtime()?.block_on(async {
+        let mut client = connect_client(
+            matches,
+            leaf.get_one::<String>("context").map(String::as_str),
+        )
+        .await
+        .map_err(|error| crate::image::PushError::Cluster(error.to_string()))?;
+        crate::image::push(
+            &mut client,
+            image,
+            leaf.get_one::<String>("platform").map(String::as_str),
+            &string_values(leaf, "machine"),
+        )
+        .await
+    })?;
     for success in &result.successes {
         println!("Pushed {image} to {}", success.machine_id);
     }
@@ -80,10 +78,9 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
     if result.all_targets_succeeded() {
         Ok(())
     } else {
-        Err(format!(
+        Err(Error::usage(format!(
             "image push failed on {} target(s)",
             result.failures.len() + result.omissions.len()
-        )
-        .into())
+        )))
     }
 }

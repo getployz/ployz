@@ -14,14 +14,16 @@ fn config(matches: &ArgMatches) -> Result<Config, Error> {
         .get_one::<String>("connect")
         .is_some_and(|value| !value.is_empty())
     {
-        return Err("context management is unavailable with a direct connection".into());
+        return Err(Error::usage(
+            "context management is unavailable with a direct connection",
+        ));
     }
     let path = matches
         .get_one::<String>("ployz-config")
         .map(Path::new)
         .map(expand_home)
-        .ok_or_else(|| "Ployz config path is required".to_owned())?;
-    Ok(Config::load_or_empty(path).map_err(|error| error.to_string())?)
+        .ok_or_else(|| Error::usage("Ployz config path is required"))?;
+    Ok(Config::load_or_empty(path)?)
 }
 
 pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
@@ -53,11 +55,10 @@ pub(super) fn show(matches: &ArgMatches) -> Result<(), Error> {
 pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<(), Error> {
     let mut config = config(matches)?;
     if config.contexts.is_empty() {
-        return Err(format!(
+        return Err(Error::usage(format!(
             "no contexts found in Ployz config {}",
             config.path().display()
-        )
-        .into());
+        )));
     }
     let selected = match requested {
         Some(name) => name.to_owned(),
@@ -77,10 +78,10 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
         }
     };
     if !config.contexts.contains_key(&selected) {
-        return Err(format!("context {selected:?} not found").into());
+        return Err(Error::usage(format!("context {selected:?} not found")));
     }
     config.current_context = selected.clone();
-    config.save().map_err(|error| error.to_string())?;
+    config.save()?;
     println!("Current context is now {selected:?}.");
     Ok(())
 }
@@ -91,9 +92,11 @@ pub(super) fn select_connection(matches: &ArgMatches) -> Result<(), Error> {
     let context = config
         .contexts
         .get_mut(&name)
-        .ok_or_else(|| format!("current context {name:?} not found"))?;
+        .ok_or_else(|| Error::usage(format!("current context {name:?} not found")))?;
     if context.connections.is_empty() {
-        return Err(format!("no connections found in context {name:?}").into());
+        return Err(Error::usage(format!(
+            "no connections found in context {name:?}"
+        )));
     }
     let labels = context
         .connections
@@ -111,7 +114,7 @@ pub(super) fn select_connection(matches: &ArgMatches) -> Result<(), Error> {
         .first()
         .expect("a connection was selected")
         .to_string();
-    config.save().map_err(|error| error.to_string())?;
+    config.save()?;
     println!("Default connection for context {name:?} is now {selected:?}.");
     Ok(())
 }
@@ -122,7 +125,9 @@ fn prompt<'a>(
     default: Option<usize>,
 ) -> Result<usize, Error> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(format!("cannot {title} interactively without a terminal").into());
+        return Err(Error::usage(format!(
+            "cannot {title} interactively without a terminal"
+        )));
     }
     let choices = choices.collect::<Vec<_>>();
     println!("{title}:");
@@ -135,13 +140,11 @@ fn prompt<'a>(
         println!("  {}. {choice}{marker}", index + 1);
     }
     print!("> ");
-    io::stdout().flush().map_err(|error| error.to_string())?;
+    io::stdout().flush()?;
     let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .map_err(|error| error.to_string())?;
+    io::stdin().read_line(&mut input)?;
     let index = if input.trim().is_empty() {
-        default.ok_or_else(|| "a selection is required".to_owned())?
+        default.ok_or_else(|| Error::usage("a selection is required"))?
     } else {
         input
             .trim()
@@ -149,7 +152,7 @@ fn prompt<'a>(
             .ok()
             .and_then(|number| number.checked_sub(1))
             .filter(|index| *index < choices.len())
-            .ok_or_else(|| "invalid selection".to_owned())?
+            .ok_or_else(|| Error::usage("invalid selection"))?
     };
     Ok(index)
 }

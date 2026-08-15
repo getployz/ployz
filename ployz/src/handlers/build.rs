@@ -24,16 +24,16 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         push_registry: leaf.get_flag("push-registry"),
         services: string_values(leaf, "service"),
     };
-    let project = load_project(&load).map_err(|error| error.to_string())?;
+    let project = load_project(&load)?;
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
-    let plan = plan_build(&project, &options).map_err(|error| error.to_string())?;
+    let plan = plan_build(&project, &options)?;
     if plan.is_empty() {
         println!("No buildable services selected.");
         return Ok(());
     }
-    execute_build(&plan, &options, &load).map_err(|error| error.to_string())?;
+    execute_build(&plan, &options, &load)?;
     if options.check || !leaf.get_flag("push") {
         return Ok(());
     }
@@ -59,7 +59,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(failures.join("; ").into())
+        Err(Error::usage(failures.join("; ")))
     }
 }
 
@@ -97,7 +97,7 @@ pub(super) fn push_targets(
 fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, Error> {
     let message = format!("{image}: {error}");
     if error.is_cancellation() {
-        Err(message.into())
+        Err(Error::usage(message))
     } else {
         Ok(message)
     }

@@ -11,10 +11,7 @@ use super::{Error, leaf_matches, with_client};
 pub fn list(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client
-                .live_services()
-                .await
-                .map_err(|error| error.to_string())?;
+            let live = client.live_services().await?;
             print_observation_warning(&live);
             println!("SERVICE ID\tNAME\tCONTAINERS\tHOOKS");
             for service in &live.services {
@@ -42,13 +39,10 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     let sort = leaf_matches(root)
         .get_one::<String>("sort")
         .cloned()
-        .ok_or_else(|| "sort order is required".to_owned())?;
+        .ok_or_else(|| Error::usage("sort order is required"))?;
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client
-                .live_services()
-                .await
-                .map_err(|error| error.to_string())?;
+            let live = client.live_services().await?;
             print_observation_warning(&live);
             println!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
             let mut containers = live
@@ -117,20 +111,13 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let selector = leaf_matches(root)
         .get_one::<String>("service")
         .cloned()
-        .ok_or_else(|| "Service selector is required".to_owned())?;
+        .ok_or_else(|| Error::usage("Service selector is required"))?;
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client
-                .live_services()
-                .await
-                .map_err(|error| error.to_string())?;
+            let live = client.live_services().await?;
             print_observation_warning(&live);
-            let service =
-                select_service(&live.services, &selector).map_err(|error| error.to_string())?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(service).map_err(|error| error.to_string())?
-            );
+            let service = select_service(&live.services, &selector)?;
+            println!("{}", serde_json::to_string_pretty(service)?);
             Ok(())
         })
     })
@@ -140,16 +127,13 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let selectors = leaf
         .get_many::<String>("service")
-        .ok_or_else(|| "at least one Service selector is required".to_owned())?
+        .ok_or_else(|| Error::usage("at least one Service selector is required"))?
         .cloned()
         .collect::<Vec<_>>();
     let (signal, timeout) = stop_options(leaf, action)?;
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client
-                .live_services()
-                .await
-                .map_err(|error| error.to_string())?;
+            let live = client.live_services().await?;
             print_observation_warning(&live);
             let services = select_services(&live.services, &selectors)?;
             let mut partial = false;
@@ -176,7 +160,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
                 partial = true;
             }
             if partial {
-                Err("Service lifecycle completed partially".into())
+                Err(Error::usage("Service lifecycle completed partially"))
             } else {
                 Ok(())
             }
@@ -191,7 +175,7 @@ fn select_services<'a>(
     let mut ids = HashSet::new();
     let mut selected = Vec::new();
     for selector in selectors {
-        let service = select_service(services, selector).map_err(|error| error.to_string())?;
+        let service = select_service(services, selector)?;
         if ids.insert(service.service_id.clone()) {
             selected.push(service);
         }
@@ -209,7 +193,7 @@ fn stop_options(
     let signal = matches.get_one::<String>("signal").cloned();
     let timeout = matches
         .get_one::<String>("timeout")
-        .map(|value| value.parse::<i32>().map_err(|error| error.to_string()))
+        .map(|value| value.parse::<i32>())
         .transpose()?;
     Ok((signal, timeout))
 }

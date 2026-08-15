@@ -7,7 +7,8 @@ use std::{
 
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
-use thiserror::Error as ThisError;
+
+use crate::failure::Failure;
 
 mod build;
 mod caddy;
@@ -20,25 +21,7 @@ mod operator;
 mod service;
 mod volume;
 
-#[derive(Debug, Eq, PartialEq, ThisError)]
-pub enum Error {
-    #[error("{0}")]
-    Message(String),
-    #[error("remote command exited with status {0}")]
-    Exit(u8),
-}
-
-impl From<String> for Error {
-    fn from(message: String) -> Self {
-        Self::Message(message)
-    }
-}
-
-impl From<&str> for Error {
-    fn from(message: &str) -> Self {
-        Self::Message(message.to_owned())
-    }
-}
+pub type Error = Failure;
 
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
@@ -48,7 +31,9 @@ pub fn run() -> Result<(), Error> {
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let Some((name, child)) = matches.subcommand() else {
-        command.print_help().map_err(|error| error.to_string())?;
+        command
+            .print_help()
+            .map_err(|error| Error::usage(error.to_string()))?;
         println!();
         return Ok(());
     };
@@ -56,13 +41,13 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         let shell = child
             .get_one::<Shell>("shell")
             .copied()
-            .ok_or_else(|| "completion shell is required".to_owned())?;
+            .ok_or_else(|| Error::usage("completion shell is required"))?;
         generate(shell, command, "ployz", &mut std::io::stdout());
         return Ok(());
     }
     let path = command_path(matches);
-    let handler =
-        handler_for(&path).ok_or_else(|| format!("no handler declared for ployz {path}"))?;
+    let handler = handler_for(&path)
+        .ok_or_else(|| Error::usage(format!("no handler declared for ployz {path}")))?;
     handler(matches)
 }
 
@@ -101,27 +86,26 @@ fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
     matches
         .get_one::<String>(name)
         .cloned()
-        .ok_or_else(|| format!("{name} is required").into())
+        .ok_or_else(|| Error::usage(format!("{name} is required")))
 }
 
 fn confirm() -> Result<bool, Error> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err("confirmation requires a terminal; pass --yes to continue".into());
+        return Err(Error::usage(
+            "confirmation requires a terminal; pass --yes to continue",
+        ));
     }
     print!("Continue? [y/N] ");
-    io::stdout().flush().map_err(|error| error.to_string())?;
+    io::stdout().flush()?;
     let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .map_err(|error| error.to_string())?;
+    io::stdin().read_line(&mut input)?;
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, Error> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?)
+        .build()?)
 }
 
 async fn connect_client(
@@ -132,14 +116,13 @@ async fn connect_client(
         .get_one::<String>("ployz-config")
         .map(Path::new)
         .map(crate::context::expand_home)
-        .ok_or_else(|| "Ployz config path is required".to_owned())?;
+        .ok_or_else(|| Error::usage("Ployz config path is required"))?;
     Ok(crate::connect::connect(
         &config,
         matches.get_one::<String>("connect").map(String::as_str),
         context,
     )
-    .await
-    .map_err(|error| error.to_string())?)
+    .await?)
 }
 
 fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
@@ -276,7 +259,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label".into())
+            Err(Error::from(
+                ployz_core::MachineName::parse("BAD NAME").unwrap_err(),
+            ))
         );
     }
 
@@ -289,7 +274,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("local machine initialisation is not implemented; specify a remote machine".into())
+            Err(Error::usage(
+                "local machine initialisation is not implemented; specify a remote machine",
+            ))
         );
     }
 
@@ -302,7 +289,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("no Ployz config or local daemon socket is available".into())
+            Err(Error::from(crate::context::ContextError::NoConfig))
         );
     }
 
@@ -324,7 +311,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("expected KEY=VALUE, got \"missing-delimiter\"".into())
+            Err(Error::usage(
+                "expected KEY=VALUE, got \"missing-delimiter\""
+            ))
         );
     }
 
@@ -344,7 +333,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command),
-            Err("replicas must be greater than zero".into())
+            Err(Error::usage("replicas must be greater than zero"))
         );
     }
 
