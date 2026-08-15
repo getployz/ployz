@@ -5,14 +5,12 @@ use ployz_core::{
 };
 use thiserror::Error;
 
-mod apply;
+pub(crate) mod apply;
 mod exec;
 mod observe;
 mod planning;
 
-pub(crate) use apply::{
-    apply_requested, expand_ingress, finish, list_machines, plan_options, render, take_snapshot,
-};
+pub(crate) use apply::apply_requested;
 pub(crate) use exec::execute_operations;
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
 pub use planning::plan_deploy;

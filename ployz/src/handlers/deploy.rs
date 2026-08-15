@@ -14,8 +14,8 @@ use crate::{
     connect::Client,
     deploy::{
         DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError, PlanOptions,
-        apply_requested, execute_operations, expand_ingress, finish, list_machines, plan_deploy,
-        plan_options, render, take_snapshot,
+        apply::{expand_ingress, finish, list_machines, plan_options, render, take_snapshot},
+        apply_requested, execute_operations, plan_deploy,
     },
 };
 
