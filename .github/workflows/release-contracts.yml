@@ -33,6 +33,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
       - uses: mlugg/setup-zig@v1
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -41,8 +42,7 @@ jobs:
         with:
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
-          # The OCI/AWS-LC graph exceeds the macOS runner's linker budget when targets build together.
-          args: release --snapshot --clean --skip=publish --parallelism=1 --timeout=60m
+          args: release --snapshot --clean --skip=publish
       - run: bash scripts/test-release-contracts.sh && bash scripts/test-cli-installer.sh
       - run: softwareupdate --install-rosetta --agree-to-license
       - run: scripts/verify-release.sh macos
