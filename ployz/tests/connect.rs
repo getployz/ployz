@@ -1,12 +1,15 @@
 use std::{
     collections::VecDeque,
     net::Ipv6Addr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use ployz::{
     connect::{
-        BoxProxyStream, ConnectError, Connector, SystemConnector, connect_selected_with,
+        BoxProxyStream, Client, ConnectError, Connector, SystemConnector, connect_selected_with,
         resolve_connections,
     },
     context::{Connection, ConnectionSource, SelectedConnections},
@@ -133,9 +136,46 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
     );
 }
 
+enum DescribeOutcome {
+    Status(Status),
+    Remote(RpcError),
+}
+
 #[derive(Clone)]
 struct DiscoveryService {
     description: ContractDescription,
+    describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
+}
+
+impl DiscoveryService {
+    fn new(description: ContractDescription) -> Self {
+        Self {
+            description,
+            describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+}
+
+struct CountingConnector {
+    inner: SystemConnector,
+    connects: Arc<AtomicUsize>,
+}
+
+#[tonic::async_trait]
+impl Connector for CountingConnector {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.connects.fetch_add(1, Ordering::SeqCst);
+        self.inner.connect(connection).await
+    }
+
+    async fn dial_proxy(
+        &self,
+        _connection: &Connection,
+        _network: &str,
+        _address: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        Err(ConnectError::Attempt("unused".into()))
+    }
 }
 
 #[tonic::async_trait]
@@ -148,6 +188,13 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        match self.describe_outcomes.lock().unwrap().pop_front() {
+            Some(DescribeOutcome::Status(status)) => return Err(status),
+            Some(DescribeOutcome::Remote(error)) => {
+                return Ok(Response::new(RpcResponse::from(error).encode().unwrap()));
+            }
+            None => {}
+        }
         let request = request
             .into_inner()
             .decode_request()
@@ -408,7 +455,7 @@ async fn volume_listing_retains_successes_and_target_failures() {
     };
     let server = tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(DiscoveryService { description }))
+            .add_service(MachineRpcServer::new(DiscoveryService::new(description)))
             .serve_with_incoming(TcpListenerStream::new(tcp)),
     );
     let mut client = connect_selected_with(
@@ -483,9 +530,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
             .into_iter()
             .collect(),
     };
-    let service = DiscoveryService {
-        description: description.clone(),
-    };
+    let service = DiscoveryService::new(description.clone());
     let tcp_server = tokio::spawn(
         Server::builder()
             .add_service(MachineRpcServer::new(service.clone()))
@@ -580,4 +625,139 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
     tcp_server.abort();
     unix_server.abort();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+fn test_description() -> ContractDescription {
+    ContractDescription {
+        machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        protocol_major: PROTOCOL_MAJOR,
+        daemon_version: "test".into(),
+        capabilities: Default::default(),
+    }
+}
+
+async fn connected_client(
+    service: DiscoveryService,
+) -> (Client, tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(MachineRpcServer::new(service))
+            .serve_with_incoming(TcpListenerStream::new(tcp))
+            .await
+            .unwrap();
+    });
+    let connects = Arc::new(AtomicUsize::new(0));
+    let client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::tcp(address)],
+        },
+        Arc::new(CountingConnector {
+            inner: SystemConnector::default(),
+            connects: connects.clone(),
+        }),
+    )
+    .await
+    .unwrap();
+    (client, server, connects)
+}
+
+#[tokio::test]
+async fn unary_call_retries_unavailable_after_redial() {
+    let description = test_description();
+    let service = DiscoveryService::new(description.clone());
+    service
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Status(Status::unavailable(
+            "transport error",
+        )));
+    let (mut client, server, connects) = connected_client(service).await;
+
+    assert_eq!(
+        client
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await
+            .unwrap(),
+        description
+    );
+    assert_eq!(connects.load(Ordering::SeqCst), 2);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn unary_call_does_not_retry_remote_or_not_found() {
+    let not_found = DiscoveryService::new(test_description());
+    not_found
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Status(Status::not_found("missing")));
+    let (mut client, server, connects) = connected_client(not_found).await;
+    let error = client
+        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, ConnectError::Rpc(status) if status.code() == tonic::Code::NotFound),
+        "{error:?}"
+    );
+    assert_eq!(connects.load(Ordering::SeqCst), 1);
+    server.abort();
+
+    let remote = DiscoveryService::new(test_description());
+    remote
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Remote(RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "already a member".into(),
+            details: Value::Null,
+        }));
+    let (mut client, server, connects) = connected_client(remote).await;
+    let error = client
+        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ConnectError::Remote(RpcError {
+                code: RpcErrorCode::Conflict,
+                ..
+            })
+        ),
+        "{error:?}"
+    );
+    assert_eq!(connects.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn unary_call_gives_up_after_four_unavailable_attempts() {
+    let service = DiscoveryService::new(test_description());
+    service.describe_outcomes.lock().unwrap().extend([
+        DescribeOutcome::Status(Status::unavailable("drop 1")),
+        DescribeOutcome::Status(Status::unavailable("drop 2")),
+        DescribeOutcome::Status(Status::unavailable("drop 3")),
+        DescribeOutcome::Status(Status::unavailable("drop 4")),
+    ]);
+    let (mut client, server, connects) = connected_client(service).await;
+
+    let error = client
+        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, ConnectError::Rpc(status) if status.code() == tonic::Code::Unavailable),
+        "{error:?}"
+    );
+    assert_eq!(connects.load(Ordering::SeqCst), 4);
+
+    server.abort();
 }

@@ -36,6 +36,12 @@ use crate::context::{
 
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 
+const UNARY_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(500),
+    Duration::from_millis(1500),
+    Duration::from_secs(4),
+];
+
 pub trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}
 
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> ProxyStream for T {}
@@ -310,19 +316,62 @@ impl Client {
 
     /// Issue one unary RPC. The response type is derived from the RPC, so a request
     /// cannot be paired with the wrong response.
+    ///
+    /// Transient transport drops (`Attempt`, tonic `Unavailable` / `DeadlineExceeded`)
+    /// redial the same connection and retry up to four times. Domain `Remote` errors
+    /// and other gRPC status codes are not retried.
     pub async fn call<T: Rpc>(
         &mut self,
         request: T::Request,
         target: Option<&MachineSelector>,
     ) -> Result<T::Response, ConnectError> {
-        let payload = target_request(T::into_request(request).encode()?, target);
+        let payload = T::into_request(request).encode()?;
+        let mut delays = UNARY_RETRY_DELAYS.iter().copied();
+        let mut redial = false;
+        loop {
+            match self
+                .unary_attempt::<T>(payload.clone(), target, redial)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) if is_unary_retryable(&error) => {
+                    let Some(delay) = delays.next() else {
+                        return Err(error);
+                    };
+                    tokio::time::sleep(delay).await;
+                    redial = true;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn unary_attempt<T: Rpc>(
+        &mut self,
+        payload: OpaquePayload,
+        target: Option<&MachineSelector>,
+        redial: bool,
+    ) -> Result<T::Response, ConnectError> {
+        if redial {
+            let channel = self.connector.connect(&self.connection).await?;
+            self.rpc = MachineRpcClient::new(channel.clone());
+            self.channel = channel;
+        }
+        self.call_once::<T>(payload, target).await
+    }
+
+    async fn call_once<T: Rpc>(
+        &mut self,
+        payload: OpaquePayload,
+        target: Option<&MachineSelector>,
+    ) -> Result<T::Response, ConnectError> {
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
         grpc.ready()
             .await
             .map_err(|error| ConnectError::Attempt(error.to_string()))?;
         let response = grpc
             .unary(
-                payload,
+                target_request(payload, target),
                 PathAndQuery::from_static(T::PATH),
                 ProstCodec::<OpaquePayload, OpaquePayload>::default(),
             )
@@ -503,6 +552,27 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             message: error.to_string(),
             details: Value::Null,
         },
+    }
+}
+
+fn is_unary_retryable(error: &ConnectError) -> bool {
+    match error {
+        ConnectError::Attempt(_) => true,
+        ConnectError::Rpc(status) => matches!(
+            status.code(),
+            tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
+        ),
+        ConnectError::Remote(_)
+        | ConnectError::ProxyUnsupported(_)
+        | ConnectError::UnsupportedNetwork(_)
+        | ConnectError::Config(_)
+        | ConnectError::Connection(_)
+        | ConnectError::Context(_)
+        | ConnectError::Path { .. }
+        | ConnectError::AllFailed { .. }
+        | ConnectError::Codec(_)
+        | ConnectError::Framing(_)
+        | ConnectError::Value(_) => false,
     }
 }
 
