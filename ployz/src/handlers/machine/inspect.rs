@@ -1,9 +1,12 @@
-use std::{net::Ipv4Addr, time::Duration};
+use std::{
+    net::Ipv4Addr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSelector,
-    MachineSubnet, MachineSuccess, PartialResult, RttObservation, op,
+    MachineSubnet, MachineSuccess, PartialResult, RttObservation, WireGuardPeer, op,
 };
 use serde::Serialize;
 
@@ -154,30 +157,19 @@ pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error
     println!("interface: {}", device.interface_name);
     println!("public key: {}", device.public_key);
     println!("listening port: {}", device.listen_port);
+    let now_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
     for peer in device.peers {
         println!();
         println!("peer: {}", peer.public_key);
-        if let Some(machine) = peer.machine {
+        if let Some(machine) = &peer.machine {
             println!("  machine: {} ({})", machine.name, machine.id);
         }
         if let Some(endpoint) = peer.endpoint {
             println!("  endpoint: {endpoint}");
         }
-        if let Some(handshake) = peer.last_handshake_unix_seconds {
-            println!("  latest handshake: {handshake}");
-        }
-        println!(
-            "  transfer: {} received, {} sent",
-            peer.received_bytes, peer.sent_bytes
-        );
-        println!(
-            "  allowed ips: {}",
-            peer.allowed_ips
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        println!("{}", format_wg_show_peer_stats(&peer, now_unix_seconds));
         if let Some(rtt) = peer.rtt {
             println!("  rtt: {:?}", Duration::from_nanos(rtt.median_ns));
         }
@@ -185,9 +177,115 @@ pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error
     Ok(())
 }
 
+#[must_use]
+fn format_wg_ago(elapsed_seconds: u64) -> String {
+    let mut remaining = elapsed_seconds;
+    let mut parts = Vec::new();
+    for (seconds_per_unit, name) in [
+        (365 * 24 * 60 * 60, "year"),
+        (24 * 60 * 60, "day"),
+        (60 * 60, "hour"),
+        (60, "minute"),
+        (1, "second"),
+    ] {
+        let count = remaining / seconds_per_unit;
+        remaining %= seconds_per_unit;
+        if count == 0 {
+            continue;
+        }
+        parts.push(format!(
+            "{count} {name}{}",
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+    if parts.is_empty() {
+        parts.push("0 seconds".into());
+    }
+    format!("{} ago", parts.join(", "))
+}
+
+#[must_use]
+fn latest_handshake_line(
+    last_handshake_unix_seconds: Option<u64>,
+    now_unix_seconds: u64,
+) -> Option<String> {
+    last_handshake_unix_seconds.map(|handshake| {
+        format!(
+            "  latest handshake: {}",
+            format_wg_ago(now_unix_seconds.saturating_sub(handshake))
+        )
+    })
+}
+
+#[must_use]
+fn format_wg_show_peer_stats(peer: &WireGuardPeer, now_unix_seconds: u64) -> String {
+    let mut lines = Vec::new();
+    if let Some(line) = latest_handshake_line(peer.last_handshake_unix_seconds, now_unix_seconds) {
+        lines.push(line);
+    }
+    lines.push(format!(
+        "  transfer: {} received, {} sent",
+        peer.received_bytes, peer.sent_bytes
+    ));
+    lines.push(format!(
+        "  allowed ips: {}",
+        peer.allowed_ips
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wg_ago_matches_wireguard_style_for_one_minute_twelve_seconds() {
+        assert_eq!(format_wg_ago(72), "1 minute, 12 seconds ago");
+    }
+
+    #[test]
+    fn latest_handshake_line_uses_relative_ago_for_a_known_handshake() {
+        assert_eq!(
+            latest_handshake_line(Some(1_700_000_000 - 72), 1_700_000_000).as_deref(),
+            Some("  latest handshake: 1 minute, 12 seconds ago")
+        );
+    }
+
+    #[test]
+    fn latest_handshake_line_is_omitted_when_handshake_is_unknown() {
+        assert_eq!(latest_handshake_line(None, 1_700_000_000), None);
+    }
+
+    #[test]
+    fn wg_show_peer_stats_keep_transfer_and_allowed_ips() {
+        let with_handshake = sample_peer(Some(1_700_000_000 - 72));
+        assert_eq!(
+            format_wg_show_peer_stats(&with_handshake, 1_700_000_000),
+            "  latest handshake: 1 minute, 12 seconds ago\n  transfer: 7 received, 8 sent\n  allowed ips: 10.0.0.2/32"
+        );
+        let without_handshake = sample_peer(None);
+        assert_eq!(
+            format_wg_show_peer_stats(&without_handshake, 1_700_000_000),
+            "  transfer: 7 received, 8 sent\n  allowed ips: 10.0.0.2/32"
+        );
+    }
+
+    fn sample_peer(last_handshake_unix_seconds: Option<u64>) -> ployz_core::WireGuardPeer {
+        ployz_core::WireGuardPeer {
+            public_key: ployz_core::WireGuardPublicKey([1; 32]),
+            endpoint: None,
+            last_handshake_unix_seconds,
+            received_bytes: 7,
+            sent_bytes: 8,
+            allowed_ips: vec!["10.0.0.2/32".parse().unwrap()],
+            machine: None,
+            rtt: None,
+        }
+    }
 
     #[test]
     fn machine_json_projection_includes_the_derived_gateway() {
