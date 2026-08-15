@@ -42,24 +42,24 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .await
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
+    let runtime = ContainerRuntime::new(docker.clone(), specs.clone());
     let created_network = ensure_ployz_network(&docker.client).await;
     let machine_id = MachineId::random();
     let service_id = ServiceId::random();
     let service_name = ServiceName::parse("default-api").unwrap();
     let spec = fixture_spec(&service_id, &service_name);
 
-    let created = docker
+    let created = runtime
         .create(
             &machine_id,
             TEST_GATEWAY,
-            &specs,
             ContainerKind::ServiceContainer,
             &spec,
         )
         .await
         .unwrap();
-    let inspected = docker
-        .inspect_managed(&created.container_id, &machine_id, &specs)
+    let inspected = runtime
+        .inspect_managed(&created.container_id, &machine_id)
         .await
         .unwrap();
     assert_eq!(inspected.resolved_spec, spec);
@@ -76,7 +76,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         ContainerKind::ServiceContainer,
     )
     .await;
-    let listed = docker.list_managed(&machine_id, &specs).await.unwrap();
+    let listed = runtime.list_managed(&machine_id).await.unwrap();
     assert!(
         listed
             .iter()
@@ -89,14 +89,14 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     );
     remove_container(&docker.client, &malformed).await;
 
-    docker
-        .remove(&specs, &created.container_id, true, true)
+    runtime
+        .remove(&created.container_id, true, true)
         .await
         .unwrap();
     assert!(specs.get(&created.container_id).await.unwrap().is_none());
     assert!(matches!(
-        docker
-            .inspect_managed(&created.container_id, &machine_id, &specs)
+        runtime
+            .inspect_managed(&created.container_id, &machine_id)
             .await,
         Err(Error::ContainerNotFound(_))
     ));
@@ -107,18 +107,17 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .put(&orphan, &fixture_spec(&service_id, &service_name))
         .await
         .unwrap();
-    docker.remove(&specs, &orphan, true, true).await.unwrap();
+    runtime.remove(&orphan, true, true).await.unwrap();
     assert!(specs.get(&orphan).await.unwrap().is_none());
     assert!(matches!(
-        docker.remove(&specs, &orphan, true, true).await,
+        runtime.remove(&orphan, true, true).await,
         Err(Error::ContainerNotFound(_))
     ));
 
-    let reset_target = docker
+    let reset_target = runtime
         .create(
             &machine_id,
             TEST_GATEWAY,
-            &specs,
             ContainerKind::ServiceContainer,
             &spec,
         )
@@ -131,7 +130,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         ContainerKind::ServiceContainer,
     )
     .await;
-    docker.remove_all_managed(&specs).await.unwrap();
+    runtime.remove_all_managed().await.unwrap();
     assert!(
         specs
             .get(&reset_target.container_id)
@@ -166,15 +165,15 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .unwrap();
     let unmanaged = ContainerId::parse(unmanaged.id).unwrap();
     assert!(matches!(
-        docker.start(&specs, &unmanaged).await,
+        runtime.start(&unmanaged).await,
         Err(Error::NotManaged)
     ));
     assert!(matches!(
-        docker.stop(&specs, &unmanaged, None, None).await,
+        runtime.stop(&unmanaged, None, None).await,
         Err(Error::NotManaged)
     ));
     assert!(matches!(
-        docker.remove(&specs, &unmanaged, true, true).await,
+        runtime.remove(&unmanaged, true, true).await,
         Err(Error::NotManaged)
     ));
     docker
@@ -195,6 +194,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
         .await
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
+    let runtime = ContainerRuntime::new(docker.clone(), specs.clone());
     let created_network = ensure_ployz_network(&docker.client).await;
     let machine_id = MachineId::random();
     let metadata = fs::metadata(&root.0).unwrap();
@@ -245,11 +245,10 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     }))
     .unwrap();
 
-    let created = docker
+    let created = runtime
         .create(
             &machine_id,
             TEST_GATEWAY,
-            &specs,
             ContainerKind::ServiceContainer,
             &spec,
         )
@@ -289,26 +288,25 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
         Some(spec.clone())
     );
 
-    docker.start(&specs, &created.container_id).await.unwrap();
-    docker.start(&specs, &created.container_id).await.unwrap();
-    docker
-        .stop(&specs, &created.container_id, None, Some(0))
+    runtime.start(&created.container_id).await.unwrap();
+    runtime.start(&created.container_id).await.unwrap();
+    runtime
+        .stop(&created.container_id, None, Some(0))
         .await
         .unwrap();
 
-    docker
-        .remove(&specs, &created.container_id, true, true)
+    runtime
+        .remove(&created.container_id, true, true)
         .await
         .unwrap();
     let mut failed_spec = spec.clone();
     failed_spec.container.image = format!("ployz-missing-{machine_id}");
     failed_spec.container.pull_policy = PullPolicy::Never;
     assert!(
-        docker
+        runtime
             .create(
                 &machine_id,
                 TEST_GATEWAY,
-                &specs,
                 ContainerKind::ServiceContainer,
                 &failed_spec,
             )
@@ -357,13 +355,16 @@ async fn cleanup_ployz_network(docker: &Docker, created: bool) {
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
-    let docker = LocalDocker::connect().unwrap();
+    let root = TestRoot::new();
+    let runtime = ContainerRuntime::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
     let machine_id = MachineId::random();
     let name =
         ployz_core::DockerVolumeName::parse(format!("ployz-volume-test-{machine_id}")).unwrap();
     let labels = BTreeMap::from([("purpose".into(), "machine-local-test".into())]);
 
-    let created = docker
+    let created = runtime
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -375,9 +376,9 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
         )
         .await
         .unwrap();
-    let listed = docker.list_volumes(&machine_id).await.unwrap();
-    let inspected = docker.inspect_volume(&machine_id, &name).await.unwrap();
-    docker.remove_volume(&name, false).await.unwrap();
+    let listed = runtime.list_volumes(&machine_id).await.unwrap();
+    let inspected = runtime.inspect_volume(&machine_id, &name).await.unwrap();
+    runtime.remove_volume(&name, false).await.unwrap();
 
     assert_eq!(created.id, DockerVolumeId { machine_id, name });
     assert_eq!(created.driver, "local");
@@ -395,6 +396,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         .await
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
+    let runtime = ContainerRuntime::new(docker.clone(), specs);
     let created_network = match docker
         .client
         .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
@@ -418,7 +420,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     let machine_id = MachineId::random();
     let name =
         ployz_core::DockerVolumeName::parse(format!("ployz-mount-test-{machine_id}")).unwrap();
-    docker
+    runtime
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -463,11 +465,10 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     }))
     .unwrap();
 
-    let container_id = docker
+    let container_id = runtime
         .create(
             &machine_id,
             TEST_GATEWAY,
-            &specs,
             ContainerKind::ServiceContainer,
             &spec,
         )
@@ -571,7 +572,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         )
         .await
         .unwrap();
-    docker.remove_volume(&name, false).await.unwrap();
+    runtime.remove_volume(&name, false).await.unwrap();
     if created_network {
         docker
             .client
@@ -620,6 +621,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         .await
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
+    let runtime = ContainerRuntime::new(docker.clone(), specs.clone());
     let mut local = crate::machine::LocalMachineStore::open(root.0.join("machine")).unwrap();
     let machine_id = local
         .initialize(
@@ -680,8 +682,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     }
 
     let observer = ContainerObserver::new(
-        docker.clone(),
-        specs.clone(),
+        runtime,
         replicated.clone(),
         Arc::clone(&local),
         machine_id.clone(),
@@ -823,8 +824,12 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let invalid_socket = root.0.join("not-docker.sock");
     fs::write(&invalid_socket, []).unwrap();
     let failed_docker = LocalDocker::connect_socket(invalid_socket.to_str().unwrap()).unwrap();
-    let failed_observer =
-        ContainerObserver::new(failed_docker, specs, replicated.clone(), local, machine_id);
+    let failed_observer = ContainerObserver::new(
+        ContainerRuntime::new(failed_docker, specs),
+        replicated.clone(),
+        local,
+        machine_id,
+    );
     assert!(failed_observer.sync_once().await.is_err());
     assert_eq!(
         replicated.raw_container(&service).await.unwrap(),

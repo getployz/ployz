@@ -12,6 +12,7 @@ mod integration_tests;
 use std::{
     collections::HashMap,
     net::Ipv4Addr,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
     time::SystemTime,
@@ -73,29 +74,6 @@ impl LocalDocker {
         })
     }
 
-    pub async fn list_images(&self, reference: Option<&str>) -> Result<MachineImages, Error> {
-        let filters = reference
-            .map(|reference| HashMap::from([("reference", vec![reference])]))
-            .unwrap_or_default();
-        let options = ListImagesOptionsBuilder::default()
-            .all(true)
-            .filters(&filters)
-            .manifests(true)
-            .build();
-        let images = self
-            .client
-            .list_images(Some(options))
-            .await?
-            .into_iter()
-            .map(project_image)
-            .collect();
-        let info = self.client.info().await?;
-        Ok(MachineImages {
-            containerd_store: info.driver_status.as_deref().is_some_and(containerd_store),
-            images,
-        })
-    }
-
     pub async fn uses_containerd_store(&self) -> Result<bool, Error> {
         Ok(self
             .client
@@ -125,15 +103,68 @@ impl LocalDocker {
             })
             .collect()
     }
+}
+
+#[derive(Clone)]
+pub struct ContainerRuntime {
+    docker: LocalDocker,
+    specs: MachineSpecStore,
+}
+
+impl ContainerRuntime {
+    #[must_use]
+    pub fn new(docker: LocalDocker, specs: MachineSpecStore) -> Self {
+        Self { docker, specs }
+    }
+
+    pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {
+        Ok(Self::new(
+            LocalDocker::connect()?,
+            MachineSpecStore::open(spec_store).await?,
+        ))
+    }
+
+    pub async fn list_images(&self, reference: Option<&str>) -> Result<MachineImages, Error> {
+        let filters = reference
+            .map(|reference| HashMap::from([("reference", vec![reference])]))
+            .unwrap_or_default();
+        let options = ListImagesOptionsBuilder::default()
+            .all(true)
+            .filters(&filters)
+            .manifests(true)
+            .build();
+        let images = self
+            .docker
+            .client
+            .list_images(Some(options))
+            .await?
+            .into_iter()
+            .map(project_image)
+            .collect();
+        let info = self.docker.client.info().await?;
+        Ok(MachineImages {
+            containerd_store: info.driver_status.as_deref().is_some_and(containerd_store),
+            images,
+        })
+    }
+
+    pub async fn start_unregistry(
+        &self,
+        gateway: Ipv4Addr,
+        configured_socket: Option<&Path>,
+    ) -> Result<Option<RunningUnregistry>, Error> {
+        self.docker
+            .start_unregistry(gateway, configured_socket)
+            .await
+    }
 
     pub async fn list_managed(
         &self,
         machine_id: &MachineId,
-        specs: &MachineSpecStore,
     ) -> Result<Vec<ContainerObservation>, Error> {
         let mut observations = Vec::new();
-        for container_id in self.managed_container_ids().await? {
-            match self.inspect_managed(&container_id, machine_id, specs).await {
+        for container_id in self.docker.managed_container_ids().await? {
+            match self.inspect_managed(&container_id, machine_id).await {
                 Ok(observation) => observations.push(observation),
                 Err(error) if malformed_container(&error) => {
                     eprintln!("ignoring malformed managed container {container_id}: {error}");
@@ -148,9 +179,9 @@ impl LocalDocker {
         &self,
         container_id: &ContainerId,
         machine_id: &MachineId,
-        specs: &MachineSpecStore,
     ) -> Result<ContainerObservation, Error> {
         let inspected = match self
+            .docker
             .client
             .inspect_container(container_id.as_str(), None)
             .await
@@ -168,7 +199,8 @@ impl LocalDocker {
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::MissingField("container labels"))?;
         let managed = ManagedLabels::parse(labels)?;
-        let resolved_spec = specs
+        let resolved_spec = self
+            .specs
             .get(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(container_id.clone()))?;
@@ -338,8 +370,7 @@ struct RawEndpointSettings {
 }
 
 pub struct ContainerObserver {
-    docker: LocalDocker,
-    specs: MachineSpecStore,
+    runtime: ContainerRuntime,
     replicated: ReplicatedStore,
     local: Arc<Mutex<LocalMachineStore>>,
     machine_id: MachineId,
@@ -349,15 +380,13 @@ pub struct ContainerObserver {
 impl ContainerObserver {
     #[must_use]
     pub fn new(
-        docker: LocalDocker,
-        specs: MachineSpecStore,
+        runtime: ContainerRuntime,
         replicated: ReplicatedStore,
         local: Arc<Mutex<LocalMachineStore>>,
         machine_id: MachineId,
     ) -> Self {
         Self {
-            docker,
-            specs,
+            runtime,
             replicated,
             local,
             machine_id,
@@ -416,7 +445,7 @@ impl ContainerObserver {
             .build();
         // Bollard opens this lazy stream when first polled. The cursor replays any event
         // between capturing `since` and completing the initial snapshot.
-        let mut events = Box::pin(self.docker.client.events(Some(options)));
+        let mut events = Box::pin(self.runtime.docker.client.events(Some(options)));
         self.sync_once().await?;
 
         let mut rescans = tokio::time::interval(self.rescan_interval);
@@ -449,13 +478,13 @@ impl ContainerObserver {
 
     async fn sync_once(&self) -> Result<(), Error> {
         // TODO(UT-120): preserve stale rows when Docker cannot provide a complete inventory.
-        let inventory = self.docker.managed_container_ids().await?;
+        let inventory = self.runtime.docker.managed_container_ids().await?;
         let mut snapshot = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = snapshot.ids().cloned().collect::<Vec<_>>();
         for container_id in &container_ids {
             match self
-                .docker
-                .inspect_managed(container_id, &self.machine_id, &self.specs)
+                .runtime
+                .inspect_managed(container_id, &self.machine_id)
                 .await
             {
                 Ok(observation) => {

@@ -36,6 +36,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         .await
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
+    let runtime = ContainerRuntime::new(docker.clone(), specs);
     let created_network = ensure_ployz_network(&docker.client).await;
     let service_id = ServiceId::random();
     let service_name = ServiceName::parse("stream-api").unwrap();
@@ -45,21 +46,20 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         "-c".into(),
         "printf 'container-out\\n'; sleep 0.05; printf 'container-err\\n' >&2; sleep 30".into(),
     ];
-    let created = docker
+    let created = runtime
         .create(
             &machine.id,
             TEST_GATEWAY,
-            &specs,
             ContainerKind::ServiceContainer,
             &spec,
         )
         .await
         .unwrap();
-    docker.start(&specs, &created.container_id).await.unwrap();
+    runtime.start(&created.container_id).await.unwrap();
 
     let (restart, _) = tokio::sync::watch::channel(false);
-    let service = crate::rpc::MachineService::new(machine_store, restart)
-        .with_containers(docker.clone(), specs.clone());
+    let service =
+        crate::rpc::MachineService::new(machine_store, restart).with_containers(runtime.clone());
     let server = tokio::spawn(
         Server::builder()
             .add_service(MachineRpcServer::new(service))
@@ -174,8 +174,8 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         ]
     );
 
-    docker
-        .remove(&specs, &created.container_id, true, true)
+    runtime
+        .remove(&created.container_id, true, true)
         .await
         .unwrap();
     server.abort();

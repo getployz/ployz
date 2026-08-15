@@ -20,7 +20,7 @@ use ployzd::{
         run_machine_publisher_with_restart,
     },
     dns,
-    docker::{ContainerObserver, LocalDocker, MachineSpecStore},
+    docker::{ContainerObserver, ContainerRuntime, LocalDocker, MachineSpecStore},
     filesystem::set_ployz_group,
     machine::{DEFAULT_DATA_DIR, LocalMachineStore},
     metrics,
@@ -106,8 +106,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let dns_upstreams = (!args.dns_upstreams.is_empty()).then(|| args.dns_upstreams.clone());
     let specs = MachineSpecStore::open(args.data_dir.join("machine.db")).await?;
-    let docker = match LocalDocker::connect() {
-        Ok(docker) => Some(docker),
+    let containers = match LocalDocker::connect() {
+        Ok(docker) => Some(ContainerRuntime::new(docker, specs)),
         Err(error) => {
             eprintln!("WARNING: local Docker is unavailable: {error}");
             None
@@ -125,9 +125,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let mut corrosion = start_corrosion(&args, &store).await?;
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
-    let unregistry = match (&docker, unregistry_gateway) {
-        (Some(docker), Some(gateway)) => {
-            match docker
+    let unregistry = match (&containers, unregistry_gateway) {
+        (Some(runtime), Some(gateway)) => {
+            match runtime
                 .start_unregistry(gateway, args.containerd_socket.as_deref())
                 .await
             {
@@ -141,10 +141,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         _ => None,
     };
     let observer = replicated_store.clone().and_then(|replicated| {
-        docker.clone().map(|docker| {
+        containers.clone().map(|runtime| {
             ContainerObserver::new(
-                docker,
-                specs.clone(),
+                runtime,
                 replicated,
                 Arc::clone(&store),
                 local_record.id.clone(),
@@ -168,7 +167,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client())),
     )
-    .with_optional_containers(docker, specs)
+    .with_optional_containers(containers)
     .with_caddyfile(caddyfile.clone());
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
