@@ -155,6 +155,46 @@ fn resolved_scale_input_changes_only_replicas() {
 }
 
 #[test]
+fn deploy_warning_display_is_the_cli_line_body() {
+    let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "missing" },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": { "kind": "explicit", "hostname": "app.example.com" },
+            "load_balancer_port": 443,
+            "container_port": 8080,
+            "http_protocol": "https"
+        }]
+    }))
+    .unwrap();
+    let warning =
+        crate::dns::ingress_dns_warnings([&spec], None, &["192.0.2.1".parse().unwrap()], |_| {
+            Vec::new()
+        })
+        .into_iter()
+        .map(DeployWarning::IngressHostname)
+        .next()
+        .expect("unresolved custom hostname warns");
+    assert_eq!(
+        warning.to_string(),
+        "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
+    );
+    assert_eq!(
+        DeployWarning::ObservationOmitted {
+            kind: ObservationKind::Volume,
+            machine_id: MachineId::parse("c".repeat(32)).unwrap(),
+        }
+        .to_string(),
+        format!(
+            "volume observation omitted {}",
+            MachineId::parse("c".repeat(32)).unwrap()
+        )
+    );
+}
+
+#[test]
 fn observation_warnings_keep_failures_and_omissions_distinct() {
     let result = PartialResult {
         successes: vec![MachineSuccess {
@@ -175,12 +215,12 @@ fn observation_warnings_keep_failures_and_omissions_distinct() {
     assert_eq!(
         observation_warnings(ObservationKind::Container, &result),
         [
-            ObservationWarning::Failed {
+            DeployWarning::ObservationFailed {
                 kind: ObservationKind::Container,
                 machine_id: MachineId::parse("b".repeat(32)).unwrap(),
                 message: "container listing failed".into(),
             },
-            ObservationWarning::Omitted {
+            DeployWarning::ObservationOmitted {
                 kind: ObservationKind::Container,
                 machine_id: MachineId::parse("c".repeat(32)).unwrap(),
             },

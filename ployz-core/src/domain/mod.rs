@@ -1,9 +1,11 @@
+mod cluster_dns;
 mod machine;
 mod observation;
 mod selector;
 mod service_graph;
 mod spec;
 
+pub use cluster_dns::*;
 pub use machine::*;
 pub use observation::*;
 pub use selector::*;

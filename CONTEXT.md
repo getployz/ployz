@@ -164,6 +164,10 @@ _Avoid_: Service registry record, membership-filtered endpoint set
 The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
 _Avoid_: empty hostname sentinel
 
+**Cluster DNS Verdict**:
+Whether a custom Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
+_Avoid_: DNS health, certificate gate, reachability
+
 **Nearest DNS Selector**:
 An Internal DNS selector that orders addresses from the observing Machine's subnet before other addresses. It expresses subnet locality, not measured reachability or latency.
 _Avoid_: closest Machine, available endpoint

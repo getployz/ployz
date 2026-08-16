@@ -15,8 +15,8 @@ use crate::{
 use super::{
     DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
     pipeline::{
-        DeployPreview, ObservationWarning, PushOutcome, execute_deploy, list_machines,
-        plan_options, plan_project, plan_scale, plan_spec, push_project_images,
+        DeployPreview, PushOutcome, execute_deploy, list_machines, plan_options, plan_project,
+        plan_scale, plan_spec, push_project_images,
     },
 };
 
@@ -96,16 +96,7 @@ fn print_pushed_images(outcome: &PushOutcome) {
 
 fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
-        match warning {
-            ObservationWarning::Failed {
-                kind,
-                machine_id,
-                message,
-            } => eprintln!("WARNING: {kind} observation failed on {machine_id}: {message}"),
-            ObservationWarning::Omitted { kind, machine_id } => {
-                eprintln!("WARNING: {kind} observation omitted {machine_id}");
-            }
-        }
+        eprintln!("WARNING: {warning}");
     }
 }
 
@@ -198,4 +189,70 @@ fn operation_list(operations: &[DeployOperation]) -> String {
         .map(operation_summary)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::pipeline::DeployWarning;
+    use super::*;
+    use crate::dns::ingress_dns_warnings;
+
+    #[test]
+    fn deploy_prints_ingress_misses_as_warning_lines_without_failing() {
+        let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+            "name": "web",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "nginx", "pull_policy": "missing" },
+            "ports": [
+                {
+                    "mode": "ingress",
+                    "hostname": { "kind": "explicit", "hostname": "app.example.com" },
+                    "load_balancer_port": 443,
+                    "container_port": 8080,
+                    "http_protocol": "https"
+                },
+                {
+                    "mode": "ingress",
+                    "hostname": { "kind": "explicit", "hostname": "plain.example.com" },
+                    "load_balancer_port": 80,
+                    "container_port": 8080,
+                    "http_protocol": "http"
+                }
+            ]
+        }))
+        .unwrap();
+        let cluster = ["192.0.2.1".parse().unwrap()];
+        let preview = DeployPreview {
+            operations: Vec::new(),
+            warnings: ingress_dns_warnings([&spec], None, &cluster, |hostname| {
+                match hostname.as_str() {
+                    "app.example.com" => vec!["198.51.100.10".parse().unwrap()],
+                    "plain.example.com" => Vec::new(),
+                    other => panic!("unexpected {other}"),
+                }
+            })
+            .into_iter()
+            .map(DeployWarning::IngressHostname)
+            .collect(),
+        };
+        assert_eq!(
+            preview
+                .warnings
+                .iter()
+                .map(|warning| format!("WARNING: {warning}"))
+                .collect::<Vec<_>>(),
+            [
+                "WARNING: Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster.",
+                "WARNING: Ingress Hostname plain.example.com does not resolve; it should resolve to 192.0.2.1.",
+            ]
+        );
+        assert!(
+            !preview
+                .warnings
+                .iter()
+                .map(|warning| format!("WARNING: {warning}"))
+                .any(|line| line.contains("plain.example.com")
+                    && line.to_ascii_lowercase().contains("certificate"))
+        );
+    }
 }

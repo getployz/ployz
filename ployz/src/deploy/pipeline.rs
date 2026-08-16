@@ -4,7 +4,9 @@
 //! Plan is executed to a Deploy Outcome. This module does not print, read
 //! stdin, or exit the process.
 
+use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
+use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::time::SystemTime;
 
@@ -17,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     compose::{BuildService, ComposeProject},
     connect::Client,
+    dns::{IngressDnsWarning, resolve_ingress_dns_warnings},
     failure::Failure,
     image::PushError,
 };
@@ -30,7 +33,7 @@ use super::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct DeployPreview {
     pub operations: Vec<DeployOperation>,
-    pub warnings: Vec<ObservationWarning>,
+    pub warnings: Vec<DeployWarning>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,16 +64,33 @@ impl Display for ObservationKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ObservationWarning {
-    Failed {
+pub(super) enum DeployWarning {
+    ObservationFailed {
         kind: ObservationKind,
         machine_id: MachineId,
         message: String,
     },
-    Omitted {
+    ObservationOmitted {
         kind: ObservationKind,
         machine_id: MachineId,
     },
+    IngressHostname(IngressDnsWarning),
+}
+
+impl Display for DeployWarning {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ObservationFailed {
+                kind,
+                machine_id,
+                message,
+            } => write!(f, "{kind} observation failed on {machine_id}: {message}"),
+            Self::ObservationOmitted { kind, machine_id } => {
+                write!(f, "{kind} observation omitted {machine_id}")
+            }
+            Self::IngressHostname(warning) => warning.fmt(f),
+        }
+    }
 }
 
 pub(super) async fn plan_spec(
@@ -78,9 +98,10 @@ pub(super) async fn plan_spec(
     requested: &RequestedServiceSpec,
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
-    let (snapshot, warnings) = gather_snapshot(client, machines).await?;
+    let (snapshot, mut warnings) = gather_snapshot(client, machines).await?;
     let mut requested = requested.clone();
-    expand_ingress(client, std::iter::once(&mut requested)).await?;
+    let domain = expand_ingress(client, std::iter::once(&mut requested)).await?;
+    warnings.extend(hostname_warnings([&requested], domain.as_deref(), &snapshot.machines).await);
     let plan = plan_deploy([&requested], &snapshot, plan_options(false, false))?;
     Ok(DeployPreview {
         operations: plan.operations,
@@ -114,8 +135,16 @@ pub(super) async fn plan_project(
     options: PlanOptions,
 ) -> Result<DeployPreview, Failure> {
     project.resolve_secrets()?;
-    let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    expand_ingress(client, project.services.values_mut()).await?;
+    let (snapshot, mut warnings) = gather_snapshot(client, machines).await?;
+    let domain = expand_ingress(client, project.services.values_mut()).await?;
+    warnings.extend(
+        hostname_warnings(
+            project.services.values(),
+            domain.as_deref(),
+            &snapshot.machines,
+        )
+        .await,
+    );
     let plan = plan_deploy(project.dependency_order()?, &snapshot, options)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
     Ok(DeployPreview {
@@ -194,7 +223,7 @@ pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObse
 async fn gather_snapshot(
     client: &mut Client,
     machines: Vec<MachineObservation>,
-) -> Result<(DeploySnapshot, Vec<ObservationWarning>), Failure> {
+) -> Result<(DeploySnapshot, Vec<DeployWarning>), Failure> {
     let gathered = client.deploy_snapshot(machines).await?;
     let mut warnings = observation_warnings(ObservationKind::Container, &gathered.containers);
     warnings.extend(observation_warnings(
@@ -207,11 +236,11 @@ async fn gather_snapshot(
 fn observation_warnings<T>(
     kind: ObservationKind,
     result: &PartialResult<T, RpcError>,
-) -> Vec<ObservationWarning> {
+) -> Vec<DeployWarning> {
     result
         .failures
         .iter()
-        .map(|failure| ObservationWarning::Failed {
+        .map(|failure| DeployWarning::ObservationFailed {
             kind,
             machine_id: failure.machine_id,
             message: failure.error.message.clone(),
@@ -220,7 +249,7 @@ fn observation_warnings<T>(
             result
                 .omissions
                 .iter()
-                .map(|machine| ObservationWarning::Omitted {
+                .map(|machine| DeployWarning::ObservationOmitted {
                     kind,
                     machine_id: *machine,
                 }),
@@ -231,16 +260,37 @@ fn observation_warnings<T>(
 async fn expand_ingress<'a>(
     client: &mut Client,
     specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
-) -> Result<(), Failure> {
+) -> Result<Option<String>, Failure> {
     let specs: Vec<_> = specs.into_iter().collect();
     if !specs.iter().any(|spec| needs_ingress_expansion(spec)) {
-        return Ok(());
+        return Ok(None);
     }
     let domain = client.domain_if_reserved().await?;
     for spec in specs {
         crate::dns::expand_ingress_ports(spec, domain.as_deref())?;
     }
-    Ok(())
+    Ok(domain)
+}
+
+async fn hostname_warnings<'a>(
+    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+    cluster_domain: Option<&str>,
+    machines: &[MachineObservation],
+) -> Vec<DeployWarning> {
+    resolve_ingress_dns_warnings(specs, cluster_domain, &machine_public_addresses(machines))
+        .await
+        .into_iter()
+        .map(DeployWarning::IngressHostname)
+        .collect()
+}
+
+fn machine_public_addresses(machines: &[MachineObservation]) -> Vec<IpAddr> {
+    machines
+        .iter()
+        .filter_map(|machine| machine.machine.public_ip)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn needs_ingress_expansion(requested: &RequestedServiceSpec) -> bool {
