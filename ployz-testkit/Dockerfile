@@ -12,7 +12,7 @@ COPY ployzd/src ployzd/src
 COPY ployz-testkit/Cargo.toml ployz-testkit/
 COPY ployz-testkit/src ployz-testkit/src
 COPY scripts/install.sh scripts/install.sh
-RUN --mount=type=cache,id=ployz-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+RUN --mount=type=cache,id=ployz-cargo-registry,target=/usr/local/cargo/registry,sharing=shared \
     --mount=type=cache,id=ployz-target-${TARGETARCH},target=/src/target,sharing=locked \
     touch ployz-core/build.rs \
  && cargo build --locked --release --package ployz --package ployzd \
