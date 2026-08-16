@@ -328,7 +328,7 @@ impl Daemon {
             )
             .map(|_| ())
         });
-        if let Err(error) = wait_until_socket_accepts(&socket).await {
+        if let Err(error) = wait_until_socket_accepts(&socket, Duration::from_secs(5)).await {
             shutdown.cancel();
             servers.abort();
             let _ = servers.await;
@@ -434,15 +434,43 @@ fn join_servers(result: Result<io::Result<()>, tokio::task::JoinError>) -> io::R
     }
 }
 
-async fn wait_until_socket_accepts(path: &Path) -> io::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+fn socket_not_ready(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Connect to the Machine API Unix socket, waiting while it is missing or refusing
+/// connections.
+///
+/// # Errors
+///
+/// Returns a human-readable I/O error when `timeout` elapses or connect fails
+/// for a reason other than the socket not being ready.
+pub async fn wait_until_socket_accepts(
+    path: &Path,
+    timeout: Duration,
+) -> io::Result<tokio::net::UnixStream> {
+    let deadline = Instant::now() + timeout;
     loop {
         match tokio::net::UnixStream::connect(path).await {
-            Ok(_) => return Ok(()),
-            Err(_) if Instant::now() < deadline => {
+            Ok(stream) => return Ok(stream),
+            Err(error) if socket_not_ready(&error) && Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            Err(error) => return Err(error),
+            Err(error) if socket_not_ready(&error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("Machine API socket did not become ready: {error}"),
+                ));
+            }
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("could not connect to the Machine API socket: {error}"),
+                ));
+            }
         }
     }
 }
@@ -603,13 +631,17 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use tokio::net::UnixListener;
+
     use ployz_core::{
         DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, LIST_CONTAINERS_CAPABILITY,
         MachineRpcClient, ResetRequest, op,
     };
     use tonic::transport::Endpoint;
 
-    use super::{ContainerMode, Daemon, DaemonConfig, wait_for_participation};
+    use super::{
+        ContainerMode, Daemon, DaemonConfig, wait_for_participation, wait_until_socket_accepts,
+    };
     use tokio_util::sync::CancellationToken;
 
     struct TestDir(PathBuf);
@@ -783,5 +815,35 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn socket_wait_connects_once_the_listener_appears() {
+        let root = TestDir::new("ployzd-socket-wait-ready");
+        fs::create_dir_all(&root.0).unwrap();
+        let path = root.0.join("ployz.sock");
+        let listener_path = path.clone();
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let listener = UnixListener::bind(&listener_path).unwrap();
+            listener.accept().await.unwrap()
+        });
+        wait_until_socket_accepts(&path, std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn socket_wait_times_out_with_a_message_not_a_debug_struct() {
+        let root = TestDir::new("ployzd-socket-wait-timeout");
+        fs::create_dir_all(&root.0).unwrap();
+        let path = root.0.join("missing.sock");
+        let error = wait_until_socket_accepts(&path, std::time::Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("did not become ready"), "{message}");
+        assert!(!message.contains("Os {"), "{message}");
     }
 }

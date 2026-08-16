@@ -5,11 +5,13 @@ use std::{
     io,
     net::SocketAddr,
     path::{Path, PathBuf},
+    process::ExitCode,
+    time::Duration,
 };
 
 use clap::{Parser, Subcommand};
 use ployzd::{
-    daemon::{ContainerMode, Daemon, DaemonConfig, Error},
+    daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     machine::DEFAULT_DATA_DIR,
 };
 use sd_notify::NotifyState;
@@ -17,6 +19,7 @@ use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 
 const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
 const DEFAULT_METRICS_ADDRESS: &str = "127.0.0.1:51090";
+const DIAL_STDIO_SOCKET_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Parser)]
 #[command(about = "Ployz Machine daemon")]
@@ -47,7 +50,17 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Error> {
     let args = Args::parse();
     if matches!(args.command, Some(Command::Version)) {
         println!("{}", env!("CARGO_PKG_VERSION"));
@@ -71,7 +84,7 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
-    let stream = tokio::net::UnixStream::connect(path).await?;
+    let stream = wait_until_socket_accepts(path, DIAL_STDIO_SOCKET_TIMEOUT).await?;
     let (mut socket_read, mut socket_write) = stream.into_split();
     let input = async {
         copy(&mut stdin(), &mut socket_write).await?;
