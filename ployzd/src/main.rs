@@ -87,8 +87,6 @@ enum Error {
     #[error(transparent)]
     Addr(#[from] AddrParseError),
     #[error(transparent)]
-    Metrics(#[from] prometheus::Error),
-    #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
     #[error("local Machine record lock poisoned")]
     StorePoisoned,
@@ -146,7 +144,6 @@ async fn main() -> Result<(), Error> {
     } else {
         None
     };
-    let registry = metrics::registry(env!("CARGO_PKG_VERSION"))?;
     let mut corrosion = start_corrosion(&args, &store).await?;
     let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
     let unregistry = match (&containers, unregistry_gateway) {
@@ -201,7 +198,11 @@ async fn main() -> Result<(), Error> {
         UnixListenerStream::new(rpc_listener),
         shutdown.clone().cancelled_owned(),
     );
-    let metrics = metrics::serve(metrics_listener, registry, shutdown.clone());
+    let metrics = metrics::serve(
+        metrics_listener,
+        env!("CARGO_PKG_VERSION"),
+        shutdown.clone(),
+    );
     let publisher = run_machine_publisher_with_restart(
         replicated_store.clone(),
         Arc::clone(&store),
