@@ -10,7 +10,7 @@ use std::{
 use bollard::{
     Docker,
     errors::Error as DockerError,
-    models::{Ipam, IpamConfig, NetworkCreateRequest},
+    models::{Ipam, IpamConfig, NetworkCreateRequest, NetworkDisconnectRequest},
 };
 use defguard_wireguard_rs::{
     InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key,
@@ -205,10 +205,8 @@ impl NetworkPlane {
         if let Err(error) = remove_firewall_rules(self.machine.subnet) {
             failures.push(error.to_string());
         }
-        match self.docker.remove_network(DOCKER_NETWORK_NAME).await {
-            Ok(()) => {}
-            Err(error) if docker_not_found(&error) => {}
-            Err(error) => failures.push(error.to_string()),
+        if let Err(error) = self.remove_docker_network().await {
+            failures.push(error.to_string());
         }
         if let Err(error) = self.wireguard.remove_interface() {
             failures.push(error.to_string());
@@ -217,6 +215,38 @@ impl NetworkPlane {
             Ok(())
         } else {
             Err(NetworkError::Io(io::Error::other(failures.join("; "))))
+        }
+    }
+
+    // Docker refuses to delete a network that still has endpoints. Unregistry
+    // stays attached until after this plane returns, so detach first.
+    async fn remove_docker_network(&self) -> Result<(), NetworkError> {
+        let containers = match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
+            Ok(network) => attached_container_ids(network.containers.as_ref()),
+            Err(error) if docker_not_found(&error) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        for container in containers {
+            match self
+                .docker
+                .disconnect_network(
+                    DOCKER_NETWORK_NAME,
+                    NetworkDisconnectRequest {
+                        container,
+                        force: Some(true),
+                    },
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if docker_not_found(&error) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        match self.docker.remove_network(DOCKER_NETWORK_NAME).await {
+            Ok(()) => Ok(()),
+            Err(error) if docker_not_found(&error) => Ok(()),
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -508,4 +538,33 @@ fn docker_not_found(error: &DockerError) -> bool {
             ..
         }
     )
+}
+
+fn attached_container_ids<T>(containers: Option<&HashMap<String, T>>) -> Vec<String> {
+    containers
+        .map(|containers| containers.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_cleanup_lists_attached_containers_before_removing_the_network() {
+        let network: bollard::models::NetworkInspect = serde_json::from_str(
+            r#"{
+                "Name": "ployz",
+                "Containers": {
+                    "7074faa8a368": { "Name": "ployz-unregistry" },
+                    "779285f57926": { "Name": "leftover" }
+                }
+            }"#,
+        )
+        .unwrap();
+        let mut ids = attached_container_ids(network.containers.as_ref());
+        ids.sort();
+        assert_eq!(ids, ["7074faa8a368".to_owned(), "779285f57926".to_owned()]);
+        assert!(attached_container_ids::<bollard::models::EndpointResource>(None).is_empty());
+    }
 }
