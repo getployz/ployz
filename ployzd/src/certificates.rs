@@ -1,38 +1,126 @@
 //! Obtain certificates for https Ingress Hostnames.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     io,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
     time::Duration,
 };
 
 use bytes::Bytes;
+use futures_util::future::join_all;
 use http_body_util::BodyExt;
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, BytesResponse, ChallengeType, HttpClient,
     Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    ContainerKind, ContainerObservation, HttpProtocol, IngressHost, IngressHostname,
-    PortPublication,
+    ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
+    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, PortPublication,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateChallenge, CertificateMaterial, ReplicatedStore},
+    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
 };
 
 pub(crate) const DIRECTORY_ENV: &str = "PLOYZ_ACME_DIRECTORY";
 const ACCOUNT_FILE: &str = "account.json";
+const CADDY_SERVICE: &str = "caddy";
 const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
+/// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
+pub(crate) const RANK_STEP: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IssuanceAction {
+    Nothing,
+    Order,
+}
+
+/// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
+#[must_use]
+pub(crate) fn machine_rank<'id>(
+    this: &MachineId,
+    machines: impl IntoIterator<Item = &'id MachineId>,
+) -> usize {
+    machines.into_iter().filter(|id| *id < this).count()
+}
+
+/// Whether this Machine should order now.
+#[must_use]
+pub(crate) fn issuance_action(
+    row: Option<&CertificateRow>,
+    rank: usize,
+    elapsed: Duration,
+) -> IssuanceAction {
+    if row.and_then(CertificateRow::material).is_some() {
+        return IssuanceAction::Nothing;
+    }
+    let delay = RANK_STEP.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX));
+    if elapsed < delay {
+        IssuanceAction::Nothing
+    } else {
+        IssuanceAction::Order
+    }
+}
+
+/// Addresses the ordering Machine must see the challenge on before validation.
+#[must_use]
+pub(crate) fn challenge_probe_addresses(
+    resolved: &[IpAddr],
+    caddy_ips: &BTreeSet<IpAddr>,
+) -> Vec<SocketAddr> {
+    resolved
+        .iter()
+        .copied()
+        .filter(|address| caddy_ips.contains(address))
+        .map(|address| SocketAddr::new(address, 80))
+        .collect()
+}
+
+fn caddy_challenge_ips(
+    machines: &[Machine],
+    observations: &[ContainerObservation],
+) -> BTreeSet<IpAddr> {
+    let caddy: BTreeSet<_> = observations
+        .iter()
+        .filter(|observation| observation.service_name.as_str() == CADDY_SERVICE)
+        .filter(|observation| caddy_is_running(observation))
+        .map(|observation| observation.machine_id)
+        .collect();
+    machines
+        .iter()
+        .filter(|machine| caddy.contains(&machine.id))
+        .flat_map(machine_challenge_ips)
+        .collect()
+}
+
+fn caddy_is_running(observation: &ContainerObservation) -> bool {
+    matches!(
+        observation.runtime,
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy | HealthObservation::NotConfigured
+        }
+    )
+}
+
+fn machine_challenge_ips(machine: &Machine) -> impl Iterator<Item = IpAddr> {
+    machine.public_ip.into_iter().chain(
+        machine
+            .advertised_endpoints
+            .iter()
+            .map(|endpoint| endpoint.0.ip()),
+    )
+}
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
@@ -108,6 +196,7 @@ pub(crate) async fn run(
     store: ReplicatedStore,
     data_dir: PathBuf,
     directory: Option<String>,
+    machine_id: MachineId,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let Some(directory) = directory else {
@@ -119,13 +208,27 @@ pub(crate) async fn run(
         .subscribe_container_changes()
         .await
         .map_err(io::Error::other)?;
+    let mut first_seen = BTreeMap::new();
     loop {
-        if let Err(error) = issue_wanted(&store, &directory, &account_dir).await {
+        if let Err(error) = issue_wanted(
+            &store,
+            &directory,
+            &account_dir,
+            &machine_id,
+            &mut first_seen,
+        )
+        .await
+        {
             eprintln!("failed to obtain certificates: {error}");
         }
+        let wait = if first_seen.is_empty() {
+            RETRY_INTERVAL
+        } else {
+            RANK_STEP
+        };
         tokio::select! {
             changed = changes.changed() => changed.map_err(io::Error::other)?,
-            () = tokio::time::sleep(RETRY_INTERVAL) => {}
+            () = tokio::time::sleep(wait) => {}
             () = shutdown.cancelled() => return Ok(()),
         }
     }
@@ -135,15 +238,49 @@ async fn issue_wanted(
     store: &ReplicatedStore,
     directory: &str,
     account_dir: &Path,
+    machine_id: &MachineId,
+    first_seen: &mut BTreeMap<IngressHost, Instant>,
 ) -> Result<(), Error> {
     let containers = store.containers().await?;
     let wanted = wanted_certificate_hosts(containers.observations.iter());
     let rows = store.certificate_state().await?;
-    for hostname in wanted {
-        if rows.get(&hostname).and_then(|row| row.material()).is_some() {
+    let machines = store.machines().await?;
+    let rank = machine_rank(
+        machine_id,
+        machines.observations.iter().map(|machine| &machine.id),
+    );
+    let now = Instant::now();
+    first_seen.retain(|hostname, _| wanted.contains(hostname));
+    let mut to_order = Vec::new();
+    for hostname in &wanted {
+        let row = rows.get(hostname);
+        if row.and_then(CertificateRow::material).is_some() {
+            first_seen.remove(hostname);
             continue;
         }
-        if let Err(error) = obtain(store, &hostname, directory, account_dir).await {
+        let seen = if let Some(&seen) = first_seen.get(hostname) {
+            seen
+        } else {
+            first_seen.insert(hostname.clone(), now);
+            now
+        };
+        let elapsed = now.saturating_duration_since(seen);
+        if issuance_action(row, rank, elapsed) == IssuanceAction::Order {
+            to_order.push(hostname);
+        }
+    }
+    if to_order.is_empty() {
+        return Ok(());
+    }
+    account(directory, account_dir).await?;
+    let results = join_all(
+        to_order
+            .iter()
+            .map(|hostname| obtain(store, hostname, directory, account_dir)),
+    )
+    .await;
+    for (hostname, result) in to_order.iter().zip(results) {
+        if let Err(error) = result {
             eprintln!("failed to obtain certificate for {hostname}: {error}");
         }
     }
@@ -156,6 +293,9 @@ async fn obtain(
     directory: &str,
     account_dir: &Path,
 ) -> Result<(), Error> {
+    if store.certificate(hostname).await?.is_some() {
+        return Ok(());
+    }
     let material = order_certificate(hostname, directory, account_dir, |challenge| {
         let store = store.clone();
         let hostname = hostname.clone();
@@ -163,7 +303,12 @@ async fn obtain(
             store
                 .publish_certificate_challenge(&hostname, &challenge)
                 .await?;
-            wait_for_http01(&hostname, &challenge).await
+            let resolved = resolve_host(&hostname).await;
+            let machines = store.machines().await?;
+            let containers = store.containers().await?;
+            let caddy_ips = caddy_challenge_ips(&machines.observations, &containers.observations);
+            let addresses = challenge_probe_addresses(&resolved, &caddy_ips);
+            wait_for_http01(&hostname, &challenge, &addresses).await
         }
     })
     .await?;
@@ -256,36 +401,63 @@ async fn account(directory: &str, account_dir: &Path) -> Result<Account, Error> 
     Ok(account)
 }
 
+async fn resolve_host(hostname: &IngressHost) -> Vec<IpAddr> {
+    let Ok(lookup) = tokio::net::lookup_host((hostname.as_str(), 80)).await else {
+        return Vec::new();
+    };
+    lookup.map(|address| address.ip()).collect()
+}
+
 async fn wait_for_http01(
     hostname: &IngressHost,
     challenge: &CertificateChallenge,
+    addresses: &[SocketAddr],
 ) -> Result<(), Error> {
+    if addresses.is_empty() {
+        return Err(Error::ChallengeNotServed);
+    }
     let client = Client::builder()
         .redirect(Policy::none())
         .no_proxy()
         .timeout(Duration::from_secs(2))
         .build()?;
-    let url = format!(
-        "http://127.0.0.1/.well-known/acme-challenge/{}",
-        challenge.token()
-    );
-    let deadline = tokio::time::Instant::now() + CHALLENGE_WAIT;
+    let deadline = Instant::now() + CHALLENGE_WAIT;
     loop {
-        if let Ok(response) = client
-            .get(&url)
-            .header(reqwest::header::HOST, hostname.as_str())
-            .send()
-            .await
-            && response.status().is_success()
-            && response.text().await.ok().as_deref() == Some(challenge.response())
-        {
+        let answered = join_all(addresses.iter().map(|address| {
+            let client = &client;
+            async move { challenge_is_served(client, hostname, challenge, *address).await }
+        }))
+        .await;
+        if answered.iter().all(|served| *served) {
             return Ok(());
         }
-        if tokio::time::Instant::now() >= deadline {
+        if Instant::now() >= deadline {
             return Err(Error::ChallengeNotServed);
         }
         tokio::time::sleep(CHALLENGE_POLL).await;
     }
+}
+
+async fn challenge_is_served(
+    client: &Client,
+    hostname: &IngressHost,
+    challenge: &CertificateChallenge,
+    address: SocketAddr,
+) -> bool {
+    let url = format!(
+        "http://{address}/.well-known/acme-challenge/{}",
+        challenge.token()
+    );
+    let Ok(response) = client
+        .get(url)
+        .header(reqwest::header::HOST, hostname.as_str())
+        .send()
+        .await
+    else {
+        return false;
+    };
+    response.status().is_success()
+        && response.text().await.ok().as_deref() == Some(challenge.response())
 }
 
 struct ReqwestAcmeClient {
@@ -348,16 +520,25 @@ impl HttpClient for ReqwestAcmeClient {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        net::{IpAddr, SocketAddr},
+        time::Duration,
+    };
 
     use ployz_core::{
         ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
         ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-        MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
+        Machine, MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
     };
     use serde_json::json;
 
-    use super::{directory_from_env, order_certificate, wanted_certificate_hosts};
+    use super::{
+        IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
+        directory_from_env, issuance_action, machine_rank, order_certificate, wait_for_http01,
+        wanted_certificate_hosts,
+    };
+    use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
     #[test]
     fn directory_empty_disables_issuance() {
@@ -415,6 +596,122 @@ mod tests {
             wanted_certificate_hosts([observation(1, "api", Vec::new())].iter()),
             BTreeSet::new()
         );
+    }
+
+    #[test]
+    fn lowest_machine_id_is_rank_zero() {
+        let low = MachineId::parse("a".repeat(32)).unwrap();
+        let high = MachineId::parse("f".repeat(32)).unwrap();
+        assert_eq!(machine_rank(&low, &[high, low]), 0);
+        assert_eq!(machine_rank(&high, &[low]), 1);
+        assert_eq!(machine_rank(&low, &[]), 0);
+    }
+
+    #[test]
+    fn only_rank_zero_orders_immediately() {
+        assert_eq!(RANK_STEP, Duration::from_secs(30));
+        assert_eq!(
+            issuance_action(None, 0, Duration::ZERO),
+            IssuanceAction::Order
+        );
+        assert_eq!(
+            issuance_action(None, 1, Duration::from_secs(30) - Duration::from_millis(1)),
+            IssuanceAction::Nothing
+        );
+        assert_eq!(
+            issuance_action(None, 1, Duration::from_secs(30)),
+            IssuanceAction::Order
+        );
+        assert_eq!(
+            issuance_action(None, 2, Duration::from_secs(30)),
+            IssuanceAction::Nothing
+        );
+        assert_eq!(
+            issuance_action(None, 2, Duration::from_secs(60)),
+            IssuanceAction::Order
+        );
+    }
+
+    #[test]
+    fn issued_material_means_nothing_to_do() {
+        let material = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let row = CertificateRow::from_parts(Some(material), None);
+        assert_eq!(
+            issuance_action(Some(&row), 0, Duration::from_secs(60)),
+            IssuanceAction::Nothing
+        );
+    }
+
+    #[test]
+    fn probe_addresses_are_the_caddy_intersection() {
+        let caddy_ips = BTreeSet::from([ip("192.0.2.1"), ip("192.0.2.2")]);
+        assert_eq!(
+            challenge_probe_addresses(&[ip("192.0.2.2"), ip("198.51.100.10")], &caddy_ips),
+            vec![socket("192.0.2.2")]
+        );
+        assert_eq!(
+            challenge_probe_addresses(&[ip("198.51.100.10")], &caddy_ips),
+            Vec::<SocketAddr>::new()
+        );
+        assert_eq!(
+            challenge_probe_addresses(&[], &caddy_ips),
+            Vec::<SocketAddr>::new()
+        );
+    }
+
+    #[test]
+    fn caddy_challenge_ips_come_from_running_caddy_machines() {
+        let local = machine_with_endpoint("a", "192.0.2.1");
+        let remote = machine_with_endpoint("b", "192.0.2.2");
+        let mut caddy = observation(1, "caddy", Vec::new());
+        caddy.machine_id = local.id;
+        caddy.service_name = ServiceName::parse("caddy").unwrap();
+        let mut down = observation(2, "caddy", Vec::new());
+        down.machine_id = remote.id;
+        down.service_name = ServiceName::parse("caddy").unwrap();
+        down.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+        assert_eq!(
+            caddy_challenge_ips(&[local, remote], &[caddy, down]),
+            BTreeSet::from([ip("192.0.2.1")])
+        );
+    }
+
+    #[tokio::test]
+    async fn challenge_must_be_answerable_on_every_probe_address() {
+        let hostname = host("app.example.com");
+        let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+        let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::from([(
+            "tok".to_owned(),
+            "tok.thumb".to_owned(),
+        )])));
+        let (first_stop, first_port) =
+            ployz_testkit::fake_acme::serve_http01(std::sync::Arc::clone(&answers));
+        let (second_stop, second_port) = ployz_testkit::fake_acme::serve_http01(answers);
+        wait_for_http01(
+            &hostname,
+            &challenge,
+            &[
+                SocketAddr::from(([127, 0, 0, 1], first_port)),
+                SocketAddr::from(([127, 0, 0, 1], second_port)),
+            ],
+        )
+        .await
+        .unwrap();
+        drop((first_stop, second_stop));
+    }
+
+    #[tokio::test]
+    async fn empty_probe_addresses_fail_without_waiting() {
+        let hostname = host("app.example.com");
+        let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_http01(&hostname, &challenge, &[]),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(matches!(error, super::Error::ChallengeNotServed));
     }
 
     #[tokio::test]
@@ -475,6 +772,26 @@ mod tests {
 
     fn host(name: &str) -> IngressHost {
         IngressHost::parse(name).unwrap()
+    }
+
+    fn ip(value: &str) -> IpAddr {
+        value.parse().unwrap()
+    }
+
+    fn socket(value: &str) -> SocketAddr {
+        SocketAddr::new(ip(value), 80)
+    }
+
+    fn machine_with_endpoint(seed: &str, address: &str) -> Machine {
+        serde_json::from_value(json!({
+            "id": seed.repeat(32),
+            "name": format!("machine-{seed}"),
+            "subnet": "10.210.1.0/24",
+            "management_address": "fdcc::1",
+            "public_key": vec![3; 32],
+            "advertised_endpoints": [format!("{address}:51000")],
+        }))
+        .unwrap()
     }
 
     fn ingress(hostname: &str, http_protocol: HttpProtocol) -> PortPublication {

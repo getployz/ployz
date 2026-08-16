@@ -305,6 +305,7 @@ impl Daemon {
                             replicated,
                             certificate_data_dir,
                             acme_directory,
+                            local_record.id,
                             shutdown.clone(),
                         )
                         .await

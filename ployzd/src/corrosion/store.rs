@@ -9,132 +9,19 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     ContainerId, ContainerObservation, IngressHost, LocalMachinePhase, Machine, MachineId,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{ApiClient, Error, Statement, Subscription};
+use super::{
+    ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, Statement,
+    Subscription,
+};
 use crate::{
     hosted_dns::Reservation,
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
 };
-
-/// Certificate and private key held in cluster state for one Ingress Hostname.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct CertificateMaterial {
-    certificate: String,
-    private_key: String,
-}
-
-impl CertificateMaterial {
-    #[must_use]
-    pub fn new(certificate: impl Into<String>, private_key: impl Into<String>) -> Option<Self> {
-        let certificate = certificate.into();
-        let private_key = private_key.into();
-        (!certificate.is_empty() && !private_key.is_empty()).then_some(Self {
-            certificate,
-            private_key,
-        })
-    }
-
-    #[must_use]
-    pub fn certificate(&self) -> &str {
-        &self.certificate
-    }
-
-    #[must_use]
-    pub fn private_key(&self) -> &str {
-        &self.private_key
-    }
-}
-
-/// HTTP-01 token and key authorization held in cluster state for one Ingress Hostname.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CertificateChallenge {
-    token: String,
-    response: String,
-}
-
-impl CertificateChallenge {
-    #[must_use]
-    pub fn new(token: impl Into<String>, response: impl Into<String>) -> Option<Self> {
-        let token = token.into();
-        let response = response.into();
-        (!token.is_empty() && !response.is_empty()).then_some(Self { token, response })
-    }
-
-    #[must_use]
-    pub fn token(&self) -> &str {
-        &self.token
-    }
-
-    #[must_use]
-    pub fn response(&self) -> &str {
-        &self.response
-    }
-}
-
-#[derive(Clone, Default, Debug, Eq, PartialEq)]
-pub struct CertificateRow {
-    material: Option<CertificateMaterial>,
-    challenge: Option<CertificateChallenge>,
-}
-
-impl CertificateRow {
-    #[must_use]
-    pub fn from_parts(
-        material: Option<CertificateMaterial>,
-        challenge: Option<CertificateChallenge>,
-    ) -> Self {
-        Self {
-            material,
-            challenge,
-        }
-    }
-
-    #[must_use]
-    pub fn material(&self) -> Option<&CertificateMaterial> {
-        self.material.as_ref()
-    }
-
-    #[must_use]
-    pub fn challenge(&self) -> Option<&CertificateChallenge> {
-        self.challenge.as_ref()
-    }
-
-    fn decode(encoded: &str) -> Result<Self, Error> {
-        if encoded.is_empty() {
-            return Ok(Self::default());
-        }
-        let body: CertificateBody = serde_json::from_str(encoded)?;
-        Ok(Self {
-            material: CertificateMaterial::new(body.certificate, body.private_key),
-            challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
-        })
-    }
-
-    fn encode(&self) -> Result<String, Error> {
-        Ok(serde_json::to_string(&json!({
-            "certificate": self.material.as_ref().map(CertificateMaterial::certificate).unwrap_or(""),
-            "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
-            "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
-            "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
-        }))?)
-    }
-}
-
-#[derive(Deserialize)]
-struct CertificateBody {
-    #[serde(default)]
-    certificate: String,
-    #[serde(default)]
-    private_key: String,
-    #[serde(default)]
-    challenge_token: String,
-    #[serde(default)]
-    challenge_response: String,
-}
 
 #[derive(Clone)]
 pub struct ReplicatedStore {
@@ -458,24 +345,19 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         material: &CertificateMaterial,
     ) -> Result<(), Error> {
-        if self.certificate(hostname).await?.as_ref() == Some(material) {
+        let latest = self.certificate_row(hostname).await?;
+        if latest.material() == Some(material) && latest.challenge().is_none() {
             return Ok(());
         }
-        self.upsert_certificate(
-            hostname,
-            &CertificateRow {
-                material: Some(material.clone()),
-                challenge: None,
-            },
-        )
-        .await
+        self.upsert_certificate(hostname, &CertificateRow::issued(material.clone()))
+            .await
     }
 
     pub async fn certificate(
         &self,
         hostname: &IngressHost,
     ) -> Result<Option<CertificateMaterial>, Error> {
-        Ok(self.certificate_row(hostname).await?.material)
+        Ok(self.certificate_row(hostname).await?.into_material())
     }
 
     async fn certificate_row(&self, hostname: &IngressHost) -> Result<CertificateRow, Error> {
@@ -511,18 +393,12 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         challenge: &CertificateChallenge,
     ) -> Result<(), Error> {
-        let row = self.certificate_row(hostname).await?;
-        if row.challenge.as_ref() == Some(challenge) {
+        let latest = self.certificate_row(hostname).await?;
+        if latest.challenge() == Some(challenge) {
             return Ok(());
         }
-        self.upsert_certificate(
-            hostname,
-            &CertificateRow {
-                material: row.material,
-                challenge: Some(challenge.clone()),
-            },
-        )
-        .await
+        self.upsert_certificate(hostname, &latest.with_challenge(challenge.clone()))
+            .await
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
@@ -530,7 +406,7 @@ impl ReplicatedStore {
             .certificate_state()
             .await?
             .into_iter()
-            .filter_map(|(hostname, row)| row.material.map(|material| (hostname, material)))
+            .filter_map(|(hostname, row)| row.into_material().map(|material| (hostname, material)))
             .collect())
     }
 
@@ -762,11 +638,6 @@ pub async fn run_machine_publisher(
     }
 }
 
-#[cfg(test)]
-fn decode_certificate_body(encoded: &str) -> Result<Option<CertificateMaterial>, Error> {
-    Ok(CertificateRow::decode(encoded)?.material)
-}
-
 fn decode_observations<T: DeserializeOwned>(
     rows: Vec<[Value; 2]>,
 ) -> Result<ReplicatedObservations<T>, Error> {
@@ -822,7 +693,7 @@ mod tests {
     use ployz_core::{LocalMachinePhase, Machine};
     use serde_json::json;
 
-    use super::{CertificateChallenge, CertificateMaterial, ReplicatedStore};
+    use super::ReplicatedStore;
     use crate::corrosion::ApiClient;
     use crate::machine::{LocalMachineRecord, LocalMachineStore};
 
@@ -923,49 +794,6 @@ mod tests {
 
         local.phase = LocalMachinePhase::Resetting;
         assert_eq!(publication.publishable_machine(&local), None);
-    }
-
-    #[test]
-    fn invalid_certificate_body_is_an_error() {
-        assert!(super::decode_certificate_body("{").is_err());
-        assert!(super::decode_certificate_body("null").is_err());
-    }
-
-    #[test]
-    fn empty_certificate_body_is_not_present() {
-        assert_eq!(CertificateMaterial::new("", ""), None);
-        assert_eq!(CertificateMaterial::new("CERT", ""), None);
-        assert_eq!(super::decode_certificate_body("").unwrap(), None);
-        assert_eq!(super::decode_certificate_body("{}").unwrap(), None);
-        assert_eq!(
-            super::decode_certificate_body(r#"{"certificate":"CERT","private_key":""}"#).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn certificate_material_reads_known_fields_and_ignores_the_rest() {
-        let material = super::decode_certificate_body(
-            r#"{"certificate":"CERT","private_key":"KEY","last_error":"later"}"#,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(material.certificate(), "CERT");
-        assert_eq!(material.private_key(), "KEY");
-    }
-
-    #[test]
-    fn certificate_challenge_reads_from_the_row_body() {
-        let row = super::CertificateRow::decode(
-            r#"{"certificate":"","private_key":"","challenge_token":"tok","challenge_response":"tok.thumb"}"#,
-        )
-        .unwrap();
-        assert_eq!(row.material, None);
-        let challenge = row.challenge.unwrap();
-        assert_eq!(challenge.token(), "tok");
-        assert_eq!(challenge.response(), "tok.thumb");
-        assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
-        assert_eq!(super::CertificateRow::decode("{}").unwrap().challenge, None);
     }
 
     fn participating_record() -> (Machine, LocalMachineRecord) {
