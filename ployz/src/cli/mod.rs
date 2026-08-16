@@ -210,6 +210,7 @@ fn image() -> Command {
             base("ls", "List images")
                 .visible_alias("list")
                 .arg(many("machine", Some('m')))
+                .arg(value("output", Some('o')).value_parser(["json"]))
                 .arg(positional("image", false)),
         )
         .subcommand(
@@ -223,6 +224,7 @@ fn image() -> Command {
 fn images() -> Command {
     base("images", "List images")
         .arg(many("machine", Some('m')))
+        .arg(value("output", Some('o')).value_parser(["json"]))
         .arg(positional("image", false))
 }
 

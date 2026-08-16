@@ -10,6 +10,7 @@ use ployz_core::{
     RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest, apply_many_targets,
     derive_live_services, op,
 };
+use serde::Serialize;
 use serde_json::Value;
 use tokio::task::JoinSet;
 use tonic::{Streaming, codec::ProstCodec, codegen::http::uri::PathAndQuery, transport::Channel};
@@ -34,7 +35,7 @@ pub struct Client {
     connector: Arc<dyn Connector>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct MachineImagesObservation {
     pub machine_name: MachineName,
     pub images: MachineImages,
