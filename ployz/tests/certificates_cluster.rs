@@ -16,7 +16,9 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
     let mut plan = ClusterPlan::new(&format!("l3-acme-{}", process::id()), 1).unwrap();
-    plan.machines[0]
+    plan.machines
+        .first_mut()
+        .unwrap()
         .environment
         .insert("PLOYZ_ACME_DIRECTORY".to_owned(), ca.directory_url());
     let cluster = Cluster::create(plan).unwrap();
