@@ -18,6 +18,8 @@ Iterators are `iter()` / `iter_mut()` / `into_iter()`. Keep an iterator an itera
 
 ## Types
 
+A type cannot represent an illegal state.
+
 A `CONTEXT.md` term is a newtype, not `String` or a primitive. `MachineId` and `MachineName` are different types.
 
 Fallible construction is `parse` → `Result`. Cheap views are `as_str`. Shadow the binding across a transform: `let value = value.parse()?`.
