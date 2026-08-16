@@ -6,6 +6,11 @@ on:
     branches: [main]
   schedule:
     - cron: "23 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -25,13 +30,6 @@ jobs:
       - run: bash scripts/test-release-contracts.sh
       - run: bash scripts/test-cli-installer.sh
       - run: bash scripts/test-daemon-lifecycle.sh
-
-  macos-cli:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.1
-      - run: cargo check --package ployz --all-targets --locked
       - name: Check the daemon stays outside the CLI graph
         run: |
           if cargo tree --package ployz --target all --edges normal --prefix none --locked | grep -q '^ployzd '; then
@@ -39,8 +37,16 @@ jobs:
             exit 1
           fi
 
+  macos-cli:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - run: cargo check --package ployz --all-targets --locked
+
   layer3-image:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -92,7 +98,7 @@ jobs:
           done
 
   layer3:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: layer3-image
     runs-on: ubuntu-latest
     permissions:

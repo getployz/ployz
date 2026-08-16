@@ -12,13 +12,19 @@ on:
       - .github/workflows/release.yml
       - .github/workflows/release-contracts.yml
       - .goreleaser.yaml
-      - Cargo.lock
-      - Cargo.toml
       - install.sh
-      - ployz/**
-      - ployzd/**
-      - ployz-testkit/**
-      - scripts/*.sh
+      - scripts/install.sh
+      - scripts/uninstall.sh
+      - scripts/verify-release.sh
+      - scripts/publish-github-release.sh
+      - scripts/check-release-tag.sh
+      - scripts/test-release-contracts.sh
+      - scripts/test-cli-installer.sh
+      - scripts/test-daemon-lifecycle.sh
+
+concurrency:
+  group: release-contracts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
