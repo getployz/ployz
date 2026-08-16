@@ -25,21 +25,13 @@ pub struct Failure {
     inner: Inner,
 }
 
+#[derive(Debug)]
 enum Inner {
     Command(Box<dyn Error + Send + Sync>),
     Exit(u8),
 }
 
-impl fmt::Debug for Inner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Command(error) => f.debug_tuple("Command").field(&error.to_string()).finish(),
-            Self::Exit(code) => f.debug_tuple("Exit").field(code).finish(),
-        }
-    }
-}
-
-/// Operator copy. Later `capture_exception` skips this type.
+// Skip marker for later capture_exception; not a library error.
 #[derive(Debug)]
 struct Usage(Cow<'static, str>);
 
