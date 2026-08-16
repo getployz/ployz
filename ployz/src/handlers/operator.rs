@@ -77,7 +77,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 task.abort();
             }
             if !detach && exit != 0 {
-                return Err(Error::Exit(u8::try_from(exit).unwrap_or(1)));
+                return Err(Error::exit(u8::try_from(exit).unwrap_or(1)));
             }
             Ok(())
         })
