@@ -12,6 +12,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
+    diag,
     machine::DEFAULT_DATA_DIR,
 };
 use sd_notify::NotifyState;
@@ -38,6 +39,9 @@ struct Args {
     machine_api_address: Option<SocketAddr>,
     #[arg(long)]
     containerd_socket: Option<PathBuf>,
+    /// Tracing filter. Overrides `PLOYZ_LOG`. Default: info.
+    #[arg(long, value_name = "FILTER")]
+    log_level: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -69,6 +73,8 @@ async fn run() -> Result<(), Error> {
     if matches!(args.command, Some(Command::DialStdio)) {
         return dial_stdio(&args.socket).await.map_err(Error::from);
     }
+    diag::init(args.log_level.as_deref())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let daemon = Daemon::start(DaemonConfig {
         data_dir: args.data_dir,
         socket: args.socket,

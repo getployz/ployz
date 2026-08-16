@@ -148,6 +148,8 @@ Wants=network-online.target
 [Service]
 Type=notify
 ExecStart=$INSTALL_BIN_DIR/ployzd
+# Set PLOYZ_LOG=debug in /etc/default/ployz to raise verbosity.
+EnvironmentFile=-/etc/default/ployz
 TimeoutStartSec=20
 Restart=always
 RestartSec=2

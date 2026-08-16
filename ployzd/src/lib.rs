@@ -5,6 +5,7 @@ mod docker_image;
 pub mod caddy;
 pub mod corrosion;
 pub mod daemon;
+pub mod diag;
 pub mod dns;
 pub mod docker;
 #[doc(hidden)]

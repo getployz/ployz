@@ -28,6 +28,14 @@ impl ContainerRuntime {
     ) -> Result<ContainerCreated, Error> {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
+        tracing::info!(
+            service = spec.name.as_str(),
+            kind = match kind {
+                ContainerKind::ServiceContainer => "service_container",
+                ContainerKind::PreDeployHook => "pre_deploy_hook",
+            },
+            "create container"
+        );
         let mut body = create::container_create_body(machine_id, gateway, kind, spec)?;
         let mounts = body
             .host_config

@@ -91,6 +91,7 @@ run_installer latest
 [ -x "$TMP/install/ployzd" ]
 [ -x "$TMP/install/ployz-uninstall" ]
 [ -f "$TMP/state/preserved" ]
+grep -Fq 'EnvironmentFile=-/etc/default/ployz' "$TMP/systemd/ployz.service"
 grep -Fq 'systemctl restart ployz.service' "$LOG"
 
 : > "$LOG"
