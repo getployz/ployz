@@ -224,12 +224,10 @@ mod tests {
         let cluster = ["192.0.2.1".parse().unwrap()];
         let preview = DeployPreview {
             operations: Vec::new(),
-            warnings: ingress_dns_warnings([&spec], None, &cluster, |hostname| {
-                match hostname.as_str() {
-                    "app.example.com" => vec!["198.51.100.10".parse().unwrap()],
-                    "plain.example.com" => Vec::new(),
-                    other => panic!("unexpected {other}"),
-                }
+            warnings: ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
+                "app.example.com" => vec!["198.51.100.10".parse().unwrap()],
+                "plain.example.com" => Vec::new(),
+                other => panic!("unexpected {other}"),
             })
             .into_iter()
             .map(DeployWarning::IngressHostname)

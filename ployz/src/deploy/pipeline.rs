@@ -100,8 +100,8 @@ pub(super) async fn plan_spec(
     let machines = list_machines(client).await?;
     let (snapshot, mut warnings) = gather_snapshot(client, machines).await?;
     let mut requested = requested.clone();
-    let domain = expand_ingress(client, std::iter::once(&mut requested)).await?;
-    warnings.extend(hostname_warnings([&requested], domain.as_deref(), &snapshot.machines).await);
+    expand_ingress(client, std::iter::once(&mut requested)).await?;
+    warnings.extend(hostname_warnings([&requested], &snapshot.machines).await);
     let plan = plan_deploy([&requested], &snapshot, plan_options(false, false))?;
     Ok(DeployPreview {
         operations: plan.operations,
@@ -136,15 +136,8 @@ pub(super) async fn plan_project(
 ) -> Result<DeployPreview, Failure> {
     project.resolve_secrets()?;
     let (snapshot, mut warnings) = gather_snapshot(client, machines).await?;
-    let domain = expand_ingress(client, project.services.values_mut()).await?;
-    warnings.extend(
-        hostname_warnings(
-            project.services.values(),
-            domain.as_deref(),
-            &snapshot.machines,
-        )
-        .await,
-    );
+    expand_ingress(client, project.services.values_mut()).await?;
+    warnings.extend(hostname_warnings(project.services.values(), &snapshot.machines).await);
     let plan = plan_deploy(project.dependency_order()?, &snapshot, options)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
     Ok(DeployPreview {
@@ -260,24 +253,23 @@ fn observation_warnings<T>(
 async fn expand_ingress<'a>(
     client: &mut Client,
     specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
-) -> Result<Option<String>, Failure> {
+) -> Result<(), Failure> {
     let specs: Vec<_> = specs.into_iter().collect();
     if !specs.iter().any(|spec| needs_ingress_expansion(spec)) {
-        return Ok(None);
+        return Ok(());
     }
     let domain = client.domain_if_reserved().await?;
     for spec in specs {
         crate::dns::expand_ingress_ports(spec, domain.as_deref())?;
     }
-    Ok(domain)
+    Ok(())
 }
 
 async fn hostname_warnings<'a>(
     specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
-    cluster_domain: Option<&str>,
     machines: &[MachineObservation],
 ) -> Vec<DeployWarning> {
-    resolve_ingress_dns_warnings(specs, cluster_domain, &machine_public_addresses(machines))
+    resolve_ingress_dns_warnings(specs, &machine_public_addresses(machines))
         .await
         .into_iter()
         .map(DeployWarning::IngressHostname)

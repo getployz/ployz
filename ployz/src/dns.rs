@@ -8,7 +8,7 @@ use std::{
 use ployz_core::{
     CADDY_VERIFY_PATH, ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
     HttpProtocol, IngressHost, IngressHostname, InspectRequest, Machine, MachineId, MachineTarget,
-    PortPublication, RequestedServiceSpec, cluster_dns_verdict, custom_ingress_host, op,
+    PortPublication, RequestedServiceSpec, cluster_dns_verdict, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -224,7 +224,7 @@ pub fn expand_ingress_ports(
     Ok(())
 }
 
-/// A custom Ingress Hostname that does not resolve into this Cluster.
+/// An Ingress Hostname that does not resolve into this Cluster.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IngressDnsWarning(String);
 
@@ -245,22 +245,18 @@ fn join_addresses(addresses: &[IpAddr]) -> String {
         .join(", ")
 }
 
-fn custom_ingress_targets<'a>(
+fn ingress_targets<'a>(
     specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
-    cluster_domain: Option<&str>,
 ) -> BTreeMap<&'a IngressHost, bool> {
     let mut targets = BTreeMap::new();
     for spec in specs {
         for port in &spec.ports {
             let PortPublication::Ingress {
-                hostname,
+                hostname: IngressHostname::Explicit { hostname },
                 http_protocol,
                 ..
             } = port
             else {
-                continue;
-            };
-            let Some(hostname) = custom_ingress_host(hostname, cluster_domain) else {
                 continue;
             };
             let mentions_certificates = *http_protocol == HttpProtocol::Https;
@@ -315,18 +311,13 @@ fn warnings_from_targets(
         .collect()
 }
 
-/// Collect Deploy warnings for custom Ingress Hostnames that miss this Cluster.
+/// Collect Deploy warnings for Ingress Hostnames that miss this Cluster.
 pub fn ingress_dns_warnings<'a>(
     specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
-    cluster_domain: Option<&str>,
     cluster_addresses: &[IpAddr],
     resolve: impl FnMut(&IngressHost) -> Vec<IpAddr>,
 ) -> Vec<IngressDnsWarning> {
-    warnings_from_targets(
-        custom_ingress_targets(specs, cluster_domain),
-        cluster_addresses,
-        resolve,
-    )
+    warnings_from_targets(ingress_targets(specs), cluster_addresses, resolve)
 }
 
 fn unique_addresses(addresses: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {
@@ -345,13 +336,12 @@ pub async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
     }
 }
 
-/// Resolve custom Ingress Hostnames and warn when they miss this Cluster.
+/// Resolve Ingress Hostnames and warn when they miss this Cluster.
 pub async fn resolve_ingress_dns_warnings<'a>(
     specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
-    cluster_domain: Option<&str>,
     cluster_addresses: &[IpAddr],
 ) -> Vec<IngressDnsWarning> {
-    let targets = custom_ingress_targets(specs, cluster_domain);
+    let targets = ingress_targets(specs);
     let mut resolved = BTreeMap::new();
     for hostname in targets.keys().copied() {
         resolved.insert(hostname, resolve_ingress_addresses(hostname).await);
@@ -359,7 +349,7 @@ pub async fn resolve_ingress_dns_warnings<'a>(
     warnings_from_targets(targets, cluster_addresses, |hostname| {
         resolved
             .remove(hostname)
-            .expect("custom Ingress Hostname was resolved before warning")
+            .expect("Ingress Hostname was resolved before warning")
     })
 }
 
@@ -510,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_hostname_warnings_name_the_addresses_and_still_leave_deploy_unblocked() {
+    fn ingress_hostname_warnings_cover_every_hostname_the_same_way() {
         let cluster = ["192.0.2.1".parse().unwrap(), "192.0.2.2".parse().unwrap()];
         let elsewhere = vec!["198.51.100.10".parse().unwrap()];
         let spec = requested(vec![
@@ -521,6 +511,7 @@ mod tests {
                 HttpProtocol::Https,
             ),
             ingress(explicit("plain.example.com"), HttpProtocol::Http),
+            ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http),
             PortPublication::Host {
                 bind: ployz_core::HostBind::All,
                 published_port: NonZeroU16::new(8080).unwrap(),
@@ -529,32 +520,53 @@ mod tests {
             },
         ]);
 
-        let warnings = ingress_dns_warnings(
-            [&spec],
-            Some("opaque.ployz.example"),
-            &cluster,
-            |hostname| match hostname.as_str() {
-                "app.example.com" => elsewhere.clone(),
-                "plain.example.com" => Vec::new(),
-                other => panic!("Cluster Domain hostname {other} must not be resolved"),
-            },
-        );
+        let warnings =
+            ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
+                "app.example.com" | "web.opaque.ployz.example" => elsewhere.clone(),
+                "plain.example.com" | "api.opaque.ployz.example" => Vec::new(),
+                other => panic!("unexpected {other}"),
+            });
 
         let lines = warnings.iter().map(ToString::to_string).collect::<Vec<_>>();
         assert_eq!(
             lines,
             [
+                "Ingress Hostname api.opaque.ployz.example does not resolve; it should resolve to 192.0.2.1, 192.0.2.2.",
                 "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2. A certificate cannot be issued until it points at this Cluster.",
                 "Ingress Hostname plain.example.com does not resolve; it should resolve to 192.0.2.1, 192.0.2.2.",
+                "Ingress Hostname web.opaque.ployz.example resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2. A certificate cannot be issued until it points at this Cluster.",
             ]
         );
-        let http = lines
-            .iter()
-            .find(|line| line.contains("plain.example.com"))
-            .expect("http hostname warning");
-        assert!(
-            !http.to_ascii_lowercase().contains("certificate"),
-            "http warnings must not mention certificates: {http}"
+        for hostname in ["plain.example.com", "api.opaque.ployz.example"] {
+            let http = lines
+                .iter()
+                .find(|line| line.contains(hostname))
+                .expect("http hostname warning");
+            assert!(
+                !http.to_ascii_lowercase().contains("certificate"),
+                "http warnings must not mention certificates: {http}"
+            );
+        }
+    }
+
+    #[test]
+    fn assigned_hostname_warns_after_expansion() {
+        let cluster = ["192.0.2.1".parse().unwrap()];
+        let mut spec = requested(vec![ingress(
+            IngressHostname::AssignFromClusterDomain,
+            HttpProtocol::Https,
+        )]);
+        expand_ingress_ports(&mut spec, Some("opaque.ployz.example")).unwrap();
+
+        let warnings = ingress_dns_warnings([&spec], &cluster, |hostname| {
+            assert_eq!(hostname.as_str(), "web.opaque.ployz.example");
+            Vec::new()
+        });
+        assert_eq!(
+            warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "Ingress Hostname web.opaque.ployz.example does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
+            ]
         );
     }
 
@@ -566,16 +578,15 @@ mod tests {
             ingress(explicit("mix.example.com"), HttpProtocol::Http),
             ingress(explicit("mix.example.com"), HttpProtocol::Https),
         ]);
-        let warnings = ingress_dns_warnings([&spec], None, &cluster, |hostname| {
-            match hostname.as_str() {
+        let warnings =
+            ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
                 "ok.example.com" => vec![
                     "198.51.100.10".parse().unwrap(),
                     "192.0.2.1".parse().unwrap(),
                 ],
                 "mix.example.com" => Vec::new(),
                 other => panic!("unexpected {other}"),
-            }
-        });
+            });
         assert_eq!(
             warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
             [
@@ -590,9 +601,8 @@ mod tests {
             explicit("app.example.com"),
             HttpProtocol::Http,
         )]);
-        let warnings = ingress_dns_warnings([&spec], None, &[], |_| {
-            vec!["198.51.100.10".parse().unwrap()]
-        });
+        let warnings =
+            ingress_dns_warnings([&spec], &[], |_| vec!["198.51.100.10".parse().unwrap()]);
         assert_eq!(
             warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
             [

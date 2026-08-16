@@ -2,7 +2,6 @@
 
 use std::net::IpAddr;
 
-use super::IngressHostname;
 use crate::IngressHost;
 
 /// Whether resolved addresses intersect this Cluster's Machine public addresses.
@@ -11,21 +10,6 @@ pub enum ClusterDnsVerdict {
     PointsAtCluster,
     ResolvesElsewhere,
     DoesNotResolve,
-}
-
-/// Whether `hostname` is an explicit custom Ingress Hostname, not under the Cluster Domain.
-#[must_use]
-pub fn custom_ingress_host<'a>(
-    hostname: &'a IngressHostname,
-    cluster_domain: Option<&str>,
-) -> Option<&'a IngressHost> {
-    match hostname {
-        IngressHostname::AssignFromClusterDomain => None,
-        IngressHostname::Explicit { hostname } if hostname.under_cluster_domain(cluster_domain) => {
-            None
-        }
-        IngressHostname::Explicit { hostname } => Some(hostname),
-    }
 }
 
 /// Intersect resolved addresses with Machine public addresses.
@@ -62,8 +46,8 @@ impl IngressHost {
 mod tests {
     use std::net::IpAddr;
 
-    use super::{ClusterDnsVerdict, cluster_dns_verdict, custom_ingress_host};
-    use crate::{IngressHost, IngressHostname};
+    use super::{ClusterDnsVerdict, cluster_dns_verdict};
+    use crate::IngressHost;
 
     #[test]
     fn verdict_covers_subset_none_empty_and_mix() {
@@ -89,40 +73,17 @@ mod tests {
     }
 
     #[test]
-    fn assigned_and_cluster_domain_hostnames_are_not_custom() {
+    fn under_cluster_domain_requires_a_label_boundary() {
         let domain = Some("opaque.ployz.example");
-        assert_eq!(
-            custom_ingress_host(&IngressHostname::AssignFromClusterDomain, domain),
-            None
-        );
-        assert_eq!(
-            custom_ingress_host(&explicit("web.opaque.ployz.example"), domain),
-            None
-        );
-        assert_eq!(
-            custom_ingress_host(&explicit("opaque.ployz.example"), domain),
-            None
-        );
-        assert_eq!(
-            custom_ingress_host(&explicit("app.example.com"), domain),
-            Some(&host("app.example.com"))
-        );
-        assert_eq!(
-            custom_ingress_host(&explicit("app.example.com"), None),
-            Some(&host("app.example.com"))
-        );
-        assert_eq!(
-            custom_ingress_host(&explicit("web.opaque.ployz.example"), Some("")),
-            Some(&host("web.opaque.ployz.example"))
-        );
+        assert!(host("web.opaque.ployz.example").under_cluster_domain(domain));
+        assert!(host("opaque.ployz.example").under_cluster_domain(domain));
+        assert!(!host("app.example.com").under_cluster_domain(domain));
+        assert!(!host("web.opaque.ployz.example").under_cluster_domain(None));
+        assert!(!host("web.opaque.ployz.example").under_cluster_domain(Some("")));
         assert!(
             !host("evilopaque.ployz.example").under_cluster_domain(domain),
             "a suffix without a label boundary is not under the Cluster Domain"
         );
-    }
-
-    fn explicit(hostname: &str) -> IngressHostname {
-        IngressHostname::explicit(hostname).unwrap()
     }
 
     fn host(hostname: &str) -> IngressHost {
