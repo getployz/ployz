@@ -103,6 +103,20 @@ impl CertificateRow {
         self.challenge.as_ref()
     }
 
+    /// Last-write-wins is whole-row. A write that does not carry material must
+    /// not erase material another Machine just issued.
+    #[must_use]
+    pub fn with_preserved_material(self, latest: &Self) -> Self {
+        if self.material.is_some() {
+            self
+        } else {
+            Self {
+                material: latest.material.clone(),
+                challenge: self.challenge,
+            }
+        }
+    }
+
     fn decode(encoded: &str) -> Result<Self, Error> {
         if encoded.is_empty() {
             return Ok(Self::default());
@@ -458,12 +472,9 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         material: &CertificateMaterial,
     ) -> Result<(), Error> {
-        if self.certificate(hostname).await?.as_ref() == Some(material) {
-            return Ok(());
-        }
-        self.upsert_certificate(
+        self.commit_certificate_row(
             hostname,
-            &CertificateRow {
+            CertificateRow {
                 material: Some(material.clone()),
                 challenge: None,
             },
@@ -511,18 +522,27 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         challenge: &CertificateChallenge,
     ) -> Result<(), Error> {
-        let row = self.certificate_row(hostname).await?;
-        if row.challenge.as_ref() == Some(challenge) {
-            return Ok(());
-        }
-        self.upsert_certificate(
+        self.commit_certificate_row(
             hostname,
-            &CertificateRow {
-                material: row.material,
+            CertificateRow {
+                material: None,
                 challenge: Some(challenge.clone()),
             },
         )
         .await
+    }
+
+    async fn commit_certificate_row(
+        &self,
+        hostname: &IngressHost,
+        intended: CertificateRow,
+    ) -> Result<(), Error> {
+        let latest = self.certificate_row(hostname).await?;
+        let row = intended.with_preserved_material(&latest);
+        if row == latest {
+            return Ok(());
+        }
+        self.upsert_certificate(hostname, &row).await
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
@@ -966,6 +986,38 @@ mod tests {
         assert_eq!(challenge.response(), "tok.thumb");
         assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
         assert_eq!(super::CertificateRow::decode("{}").unwrap().challenge, None);
+    }
+
+    #[test]
+    fn failure_write_keeps_issued_material() {
+        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let latest = super::CertificateRow::from_parts(Some(issued.clone()), None);
+        let failed = super::CertificateRow::from_parts(None, None);
+        let merged = failed.with_preserved_material(&latest);
+        assert_eq!(merged.material(), Some(&issued));
+        assert_eq!(merged.challenge(), None);
+    }
+
+    #[test]
+    fn challenge_write_keeps_issued_material() {
+        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let latest = super::CertificateRow::from_parts(Some(issued.clone()), None);
+        let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+        let intended = super::CertificateRow::from_parts(None, Some(challenge.clone()));
+        let merged = intended.with_preserved_material(&latest);
+        assert_eq!(merged.material(), Some(&issued));
+        assert_eq!(merged.challenge(), Some(&challenge));
+    }
+
+    #[test]
+    fn issued_write_replaces_the_row() {
+        let previous = CertificateMaterial::new("OLD", "OLDKEY").unwrap();
+        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let latest = super::CertificateRow::from_parts(Some(previous), None);
+        let intended = super::CertificateRow::from_parts(Some(issued.clone()), None);
+        let merged = intended.with_preserved_material(&latest);
+        assert_eq!(merged.material(), Some(&issued));
+        assert_eq!(merged.challenge(), None);
     }
 
     fn participating_record() -> (Machine, LocalMachineRecord) {
