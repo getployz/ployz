@@ -42,12 +42,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let caddy_settings = if deploy_caddy {
             let live = entry.live_services().await?;
             crate::caddy::newest_existing_settings(
-                &live
-                    .containers
-                    .successes
-                    .into_iter()
-                    .flat_map(|success| success.value)
-                    .collect::<Vec<_>>(),
+                live.services.iter().flat_map(|service| &service.containers),
             )
         } else {
             None

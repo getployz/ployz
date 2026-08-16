@@ -113,6 +113,20 @@ pub fn derive_services(
     services.into_values().collect()
 }
 
+/// Role-proven Service Containers from mixed wire observations. Hook Containers are dropped.
+#[must_use]
+pub fn service_containers(
+    observations: impl IntoIterator<Item = ContainerObservation>,
+) -> Vec<ServiceContainer> {
+    observations
+        .into_iter()
+        .filter_map(|observation| match Container::from(observation) {
+            Container::Service(container) => Some(container),
+            Container::Hook(_) => None,
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "error")]
 pub enum ServiceSelectorError {
@@ -164,8 +178,37 @@ mod tests {
     use crate::{
         ContainerId, ContainerKind, ContainerObservation, ContainerRef,
         ContainerRuntimeObservation, MachineFailure, MachineId, MachineSuccess, PartialResult,
-        ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
+        ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceContainer, ServiceId, ServiceName,
     };
+
+    #[test]
+    fn mixed_wire_observations_convert_to_service_containers_without_hooks() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let regular = observation(
+            '1',
+            &service_id,
+            "api",
+            ContainerKind::ServiceContainer,
+            "v1",
+        );
+        let hook = observation(
+            '2',
+            &service_id,
+            "api",
+            ContainerKind::PreDeployHook,
+            "hook",
+        );
+
+        let containers = super::service_containers([regular.clone(), hook]);
+
+        assert_eq!(
+            containers
+                .iter()
+                .map(ServiceContainer::as_observation)
+                .collect::<Vec<_>>(),
+            vec![&regular]
+        );
+    }
 
     #[test]
     fn services_are_derived_in_one_pass_without_losing_history_or_hooks() {

@@ -19,8 +19,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation, Machine,
-    ServiceId, ServiceName,
+    ContainerObservation, ContainerRuntimeObservation, HealthObservation, Machine, ServiceId,
+    ServiceName, service_containers,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -58,10 +58,12 @@ impl Projection {
     fn from_observations(observations: &[ContainerObservation]) -> Self {
         // TODO(UT-117, UT-118): keep Membership Observations out of DNS projection until a
         // product decision replaces the baseline's deliberately membership-blind behavior.
+        let containers = service_containers(observations.iter().cloned());
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut names = HashMap::<ServiceName, Vec<Ipv4Addr>>::new();
         let mut machine_services = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        for observation in observations {
+        for container in &containers {
+            let observation = container.as_observation();
             let service_addresses = service_ids.entry(observation.service_id).or_default();
             let healthy = matches!(
                 &observation.runtime,
@@ -69,10 +71,7 @@ impl Projection {
                     health: HealthObservation::Healthy | HealthObservation::NotConfigured,
                 }
             );
-            let Some(address) = observation
-                .address
-                .filter(|_| observation.kind == ContainerKind::ServiceContainer && healthy)
-            else {
+            let Some(address) = observation.address.filter(|_| healthy) else {
                 continue;
             };
             service_addresses.push(address.0);
@@ -430,6 +429,42 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn does_not_publish_hook_container_addresses() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let service = ServiceId::parse("b".repeat(32)).unwrap();
+        let name = ServiceName::parse("api").unwrap();
+        let observations = [
+            observation(
+                1,
+                &machine,
+                &service,
+                &name,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 2]),
+            ),
+            observation(
+                2,
+                &machine,
+                &service,
+                &name,
+                ContainerKind::PreDeployHook,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 4]),
+            ),
+        ];
+
+        assert_eq!(
+            addresses(Projection::from_observations(&observations).plan(
+                &Name::from_ascii("api.internal.").unwrap(),
+                RecordType::A,
+                "10.210.1.0/24".parse().unwrap(),
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 2)]
+        );
+    }
 
     #[test]
     fn projects_only_healthy_addressed_service_containers() {

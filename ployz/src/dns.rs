@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
-    HttpProtocol, IngressHost, IngressHostname, InspectRequest, Machine, MachineId, MachineTarget,
+    CADDY_VERIFY_PATH, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, HttpProtocol,
+    IngressHost, IngressHostname, InspectRequest, Machine, MachineId, MachineTarget,
     PortPublication, RequestedServiceSpec, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
@@ -62,15 +62,11 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
 pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> {
     let live = client.live_services().await?;
     let caddy_machines = live
-        .containers
-        .successes
+        .services
         .iter()
-        .flat_map(|success| &success.value)
-        .filter(|container| {
-            container.kind == ContainerKind::ServiceContainer
-                && container.service_name.as_str() == SERVICE_NAME
-        })
-        .map(|container| container.machine_id)
+        .flat_map(|service| &service.containers)
+        .filter(|container| container.as_observation().service_name.as_str() == SERVICE_NAME)
+        .map(|container| container.as_observation().machine_id)
         .collect::<BTreeSet<_>>();
     if caddy_machines.is_empty() {
         return Ok(());
