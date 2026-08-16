@@ -10,12 +10,10 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, InspectRequest, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineRpc, MachineRuntime, MachineSubnet, MachineUpdate, PublicIpUpdate, ResetRequest,
-    RpcErrorCode, RpcResponseBody, SelectedEndpoint, op,
+    MachineRuntime, MachineSubnet, MachineUpdate, PublicIpUpdate, SelectedEndpoint,
 };
-use ployzd::{
-    machine::{LocalMachineRecord, LocalMachineStore, StoreError},
-    rpc::MachineService,
+use ployzd::machine::{
+    LocalMachine, LocalMachineError, LocalMachineRecord, LocalMachineStore, StoreError,
 };
 
 use test_dir::TestDir;
@@ -220,30 +218,6 @@ fn resetting_state_is_durable_and_completed_on_the_next_open() {
 }
 
 #[tokio::test]
-async fn repeated_reset_returns_a_typed_conflict() {
-    let dir = TestDir::new("ployzd-state");
-    let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    store.begin_reset().unwrap();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let service = MachineService::new(Arc::new(Mutex::new(store)), reset);
-
-    let response = service
-        .reset(tonic::Request::new(
-            op::Reset::into_request(ResetRequest {}).encode().unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap();
-
-    assert!(matches!(
-        response.body,
-        RpcResponseBody::Error(error) if error.code == RpcErrorCode::Conflict
-    ));
-}
-
-#[tokio::test]
 async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
     let dir = TestDir::new("ployzd-state");
     let store = LocalMachineStore::open(&dir.0).unwrap();
@@ -255,27 +229,34 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
         .public_key();
     let endpoint = AdvertisedEndpoint("192.0.2.8:51820".parse().unwrap());
     let (reset, _) = tokio::sync::watch::channel(false);
-    let service = MachineService::new(Arc::new(Mutex::new(store)), reset);
+    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
 
-    let details = service
-        .inspect(tonic::Request::new(
-            op::Inspect::into_request(InspectRequest {
-                advertised_endpoints: vec![endpoint],
-                ..Default::default()
-            })
-            .encode()
-            .unwrap(),
-        ))
+    let details = local
+        .inspect(InspectRequest {
+            advertised_endpoints: vec![endpoint],
+            ..Default::default()
+        })
         .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::Inspect>()
         .unwrap();
 
     assert_eq!(details.public_key, public_key);
     assert_eq!(details.advertised_endpoints, [endpoint]);
+}
+
+#[tokio::test]
+async fn repeated_reset_returns_a_typed_conflict() {
+    let dir = TestDir::new("ployzd-state");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    store.begin_reset().unwrap();
+    let (reset, _) = tokio::sync::watch::channel(false);
+    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+
+    let error = local.reset().await.unwrap_err();
+
+    assert!(matches!(
+        error,
+        LocalMachineError::Store(StoreError::AlreadyResetting)
+    ));
 }
 
 #[test]

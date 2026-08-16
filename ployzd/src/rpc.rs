@@ -1,6 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    net::IpAddr,
+    collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -11,18 +10,15 @@ use ployz_core::{
     ContainerList, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, Domain, DomainRecords,
     EXEC_CONTAINER_CAPABILITY, GET_CADDY_CONFIG_CAPABILITY, GET_DOMAIN_CAPABILITY,
     INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY, Initialized, JOIN_MACHINE_CAPABILITY,
-    JoinAccepted, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
-    LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LocalMachineRemoved, LogMetadata, LogOrigin,
-    MACHINE_LOGS_CAPABILITY, MACHINE_TOKEN_CAPABILITY, Machine, MachineDetails, MachineId,
-    MachineIdentity, MachineList, MachineLogService, MachineRemoved, MachineRpc, MachineToken,
-    MachineUpdated, OpaquePayload, PROTOCOL_MAJOR, PublicIpDiscovery, REGISTER_MACHINE_CAPABILITY,
-    RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY,
-    REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY,
-    RESET_MACHINE_CAPABILITY, Registered, ResetAccepted, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RttObservation, START_CONTAINER_CAPABILITY,
-    STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY, VolumeCreated, VolumeDetails, VolumeList,
-    VolumeRemoved, WireGuardInspected, associate_wireguard_peers, op, synthesize_membership,
+    INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY, JOIN_MACHINE_CAPABILITY,
+    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
+    LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LogMetadata, LogOrigin, MACHINE_LOGS_CAPABILITY,
+    MACHINE_TOKEN_CAPABILITY, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR,
+    REGISTER_MACHINE_CAPABILITY, RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
+    REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, VolumeCreated, VolumeDetails, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -32,28 +28,15 @@ use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, Error as DockerError},
     logs::{RpcStream, open_journal_logs, serve_logs},
-    machine::local_runtime,
-    machine::{LocalMachineStore, StoreError},
-    network::{
-        allocate_machine_subnet, discover_network, inspect_wireguard_device, machine_gateway,
-        management_address,
-    },
+    machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
+    network::machine_gateway,
 };
 
 #[derive(Clone)]
 pub struct MachineService {
-    store: Arc<Mutex<LocalMachineStore>>,
-    restart: watch::Sender<bool>,
+    local: LocalMachine,
     hosted_dns: crate::hosted_dns::HostedDns,
-    cluster: Option<ClusterContext>,
-    containers: Option<ContainerRuntime>,
     caddyfile: Option<PathBuf>,
-}
-
-#[derive(Clone)]
-struct ClusterContext {
-    replicated: ReplicatedStore,
-    admin: AdminClient,
 }
 
 impl MachineService {
@@ -69,11 +52,8 @@ impl MachineService {
         cluster: Option<(ReplicatedStore, AdminClient)>,
     ) -> Self {
         Self {
-            store,
-            restart,
+            local: LocalMachine::new(store, restart).with_cluster(cluster),
             hosted_dns: crate::hosted_dns::HostedDns::new(),
-            cluster: cluster.map(|(replicated, admin)| ClusterContext { replicated, admin }),
-            containers: None,
             caddyfile: None,
         }
     }
@@ -85,7 +65,7 @@ impl MachineService {
 
     #[must_use]
     pub fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
-        self.containers = containers;
+        self.local = self.local.with_containers(containers);
         self
     }
 
@@ -97,29 +77,21 @@ impl MachineService {
 
     #[allow(clippy::result_large_err)]
     fn local_record(&self) -> Result<crate::machine::LocalMachineRecord, Status> {
-        self.store
-            .lock()
+        self.local
+            .record()
             .map_err(|_| Status::internal("local Machine record lock poisoned"))
-            .map(|store| store.record().clone())
     }
 
     fn replicated(&self) -> Result<&ReplicatedStore, RpcError> {
-        self.cluster
-            .as_ref()
-            .map(|cluster| &cluster.replicated)
-            .ok_or_else(|| RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "Cluster store is not available".into(),
-                details: Value::Null,
-            })
+        self.local
+            .replicated()
+            .map_err(|_| unavailable("Cluster store is not available"))
     }
 
     fn ready_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
         let participating = self
-            .store
-            .lock()
-            .map_err(|_| unavailable("local Machine record lock poisoned"))?
-            .record()
+            .local_record()
+            .map_err(|error| unavailable(error.message()))?
             .phase
             == LocalMachinePhase::Participating;
         if !participating {
@@ -129,8 +101,8 @@ impl MachineService {
     }
 
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
-        self.containers
-            .as_ref()
+        self.local
+            .containers()
             .ok_or_else(|| unavailable("Docker is not available"))
     }
 }
@@ -164,7 +136,7 @@ impl MachineRpc for MachineService {
         .into_iter()
         .map(|name| CapabilityName::parse(name).expect("static capability name is valid"))
         .collect::<BTreeSet<_>>();
-        if self.containers.is_some() {
+        if self.local.containers().is_some() {
             capabilities.extend(
                 [
                     LIST_CONTAINERS_CAPABILITY,
@@ -192,7 +164,7 @@ impl MachineRpc for MachineService {
                     .expect("static capability name is valid"),
             );
         }
-        if self.cluster.is_some() {
+        if self.local.has_cluster() {
             capabilities.extend(
                 [
                     RESERVE_DOMAIN_CAPABILITY,
@@ -216,203 +188,39 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Inspect>(request)?;
-        let record = self.local_record()?;
-        let Some(private_key) = record.wireguard_private_key.as_ref() else {
-            return respond(store_error(StoreError::MissingPrivateKey));
-        };
-        let advertised_endpoints = if !request.advertised_endpoints.is_empty() {
-            request.advertised_endpoints
-        } else if let Some(machine) = &record.machine {
-            machine.advertised_endpoints.clone()
-        } else {
-            discover_network(
-                request.wireguard_port,
-                request
-                    .public_ip_override
-                    .map_or(PublicIpDiscovery::Auto, PublicIpDiscovery::Override),
-            )
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?
-            .endpoints
-        };
-        let store_version = match &self.cluster {
-            Some(cluster) => cluster
-                .replicated
-                .version()
-                .await
-                .map_err(|error| Status::internal(error.to_string()))?,
-            None => Default::default(),
-        };
-        let rtts = if request.include_rtts && record.phase == LocalMachinePhase::Participating {
-            machine_rtts(
-                &self
-                    .cluster
-                    .as_ref()
-                    .ok_or_else(|| Status::unavailable("Cluster is not available"))?
-                    .admin,
-                self.replicated()
-                    .map_err(|error| Status::unavailable(error.message))?,
-            )
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?
-        } else {
-            Vec::new()
-        };
-        respond(MachineDetails {
-            id: record.id,
-            phase: record.phase,
-            machine: record.machine,
-            public_key: private_key.public_key(),
-            advertised_endpoints,
-            store_version,
-            rtts,
-        })
+        finish(self.local.inspect(expect::<op::Inspect>(request)?).await)
     }
 
     async fn machine_token(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::MachineToken>(request)?;
-        let record = self.local_record()?;
-        let Some(private_key) = record.wireguard_private_key else {
-            return respond(store_error(StoreError::MissingPrivateKey));
-        };
-        let discovered = discover_network(request.wireguard_port, request.public_ip)
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        respond(MachineToken {
-            public_key: private_key.public_key(),
-            public_ip: discovered.public_ip,
-            advertised_endpoints: if request.advertised_endpoints.is_empty() {
-                discovered.endpoints
-            } else {
-                request.advertised_endpoints
-            },
-            runtime: local_runtime(),
-        })
+        finish(
+            self.local
+                .machine_token(expect::<op::MachineToken>(request)?)
+                .await,
+        )
     }
 
     async fn initialize(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Initialize>(request)?;
-        let result = self
-            .store
-            .lock()
-            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
-            .initialize(
-                request.name,
-                request.cluster_network,
-                request.public_ip,
-                request.advertised_endpoints,
-                request.wireguard_mtu,
-            );
-        match result {
-            Ok(machine) => {
-                self.restart.send_replace(true);
-                respond(Initialized { machine })
-            }
-            Err(error) => respond(store_error(error)),
-        }
+        finish(self.local.initialize(expect::<op::Initialize>(request)?))
     }
 
     async fn register(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Register>(request)?;
-        if request.advertised_endpoints.is_empty() {
-            return respond(store_error(StoreError::MissingEndpoints));
-        }
-        if self.local_record()?.phase != LocalMachinePhase::Participating {
-            return respond(unavailable("Machine is not participating"));
-        }
-        let replicated = match self.replicated() {
-            Ok(store) => store,
-            Err(error) => return respond(error),
-        };
-        let snapshot = replicated
-            .machines()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        if snapshot
-            .observations
-            .iter()
-            .any(|machine| machine.name == request.name || machine.public_key == request.public_key)
-        {
-            return respond(RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "Machine name or public key already exists".into(),
-                details: Value::Null,
-            });
-        }
-        let network = replicated
-            .cluster_network()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        let assigned_machine = Machine {
-            id: MachineId::random(),
-            name: request.name,
-            subnet: allocate_machine_subnet(
-                network,
-                snapshot.observations.iter().map(|machine| machine.subnet),
-            )
-            .map_err(|error| Status::internal(error.to_string()))?,
-            management_address: management_address(request.public_key),
-            public_key: request.public_key,
-            public_ip: request.public_ip,
-            advertised_endpoints: request.advertised_endpoints,
-            runtime: request.runtime,
-        };
-        // TODO(UT-140): the imperative registration is deliberately unfenced and has no rollback.
-        replicated
-            .publish_local_machine(&assigned_machine)
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        let target_versions = replicated
-            .version()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        let visible_peers = replicated
-            .machines()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?
-            .observations
-            .into_iter()
-            .filter(|machine| machine.id != assigned_machine.id)
-            .collect();
-        respond(Registered {
-            assigned_machine,
-            visible_peers,
-            target_versions,
-        })
+        finish(self.local.register(expect::<op::Register>(request)?).await)
     }
 
     async fn join(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::Join>(request)?;
-        let result = self
-            .store
-            .lock()
-            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
-            .join(
-                request.registration.assigned_machine,
-                request.registration.visible_peers,
-                request.registration.target_versions,
-                request.wireguard_mtu,
-            );
-        match result {
-            Ok(()) => {
-                self.restart.send_replace(true);
-                respond(JoinAccepted {})
-            }
-            Err(error) => respond(store_error(error)),
-        }
+        finish(self.local.join(expect::<op::Join>(request)?))
     }
 
     async fn list_machines(
@@ -420,46 +228,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::ListMachines>(request)?;
-        let local = self.local_record()?;
-        if local.phase != LocalMachinePhase::Participating {
-            return respond(unavailable("Machine is not participating"));
-        }
-        let replicated = match self.replicated() {
-            Ok(store) => store,
-            Err(error) => return respond(error),
-        };
-        let machines = replicated
-            .machines()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?
-            .observations;
-        let states = match &self.cluster {
-            Some(cluster) => cluster
-                .admin
-                .membership_states()
-                .await
-                .map_err(|error| Status::internal(error.to_string()))?,
-            None => Vec::new(),
-        };
-        let states = states
-            .into_iter()
-            .filter_map(|state| match state.address.ip() {
-                IpAddr::V6(address) => {
-                    Some((ployz_core::ManagementAddress(address), state.membership))
-                }
-                IpAddr::V4(_) => None,
-            })
-            .collect();
-        let mut observations = synthesize_membership(machines, &local.id, &states);
-        for observation in &mut observations {
-            observation.selected_endpoint = local
-                .selected_endpoints
-                .get(&observation.machine.id)
-                .copied();
-        }
-        respond(MachineList {
-            machines: observations,
-        })
+        finish(self.local.list_machines().await)
     }
 
     async fn list_containers(
@@ -719,115 +488,33 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::UpdateMachine>(request)?;
-        if request.update.is_empty() {
-            return respond(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "at least one Machine update is required".into(),
-                details: Value::Null,
-            });
-        }
-        let replicated = match self.replicated() {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
-        };
-        let visible = replicated
-            .machines()
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?
-            .observations;
-        let publication = replicated.machine_publication().await;
-        let updated = self
-            .store
-            .lock()
-            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
-            .update(request.update, &visible);
-        match updated {
-            Ok(machine) => {
-                if let Err(error) = publication.publish(&machine).await {
-                    eprintln!("failed to publish updated local Machine: {error}");
-                }
-                respond(MachineUpdated { machine })
-            }
-            Err(error) => respond(store_error(error)),
-        }
+        finish(
+            self.local
+                .update(expect::<op::UpdateMachine>(request)?)
+                .await,
+        )
     }
 
     async fn remove_local_machine(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::RemoveLocalMachine>(request)?;
-        let machine_id = self.local_record()?.id;
-        let replicated = match self.replicated() {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
-        };
-        let containers = match self.containers() {
-            Ok(containers) => containers,
-            Err(error) => return respond(error),
-        };
-        let publication = replicated.machine_publication().await;
-        let prepared_reset = {
-            let store = self
-                .store
-                .lock()
-                .map_err(|_| Status::internal("local Machine record lock poisoned"))?;
-            if store.record().phase == LocalMachinePhase::Resetting {
-                None
-            } else {
-                match store.prepare_reset() {
-                    Ok(prepared) => Some(prepared),
-                    Err(error) => return respond(store_error(error)),
-                }
-            }
-        };
-        if let Err(error) = containers.remove_all_managed().await {
-            return respond(RpcError {
-                code: RpcErrorCode::Internal,
-                message: error.to_string(),
-                details: Value::Null,
-            });
-        }
-        if let Some(prepared_reset) = prepared_reset {
-            let mut store = self
-                .store
-                .lock()
-                .map_err(|_| Status::internal("local Machine record lock poisoned"))?;
-            if let Err(error) = prepared_reset.commit(&mut store) {
-                return respond(store_error(error));
-            }
-        }
-        let reset_warning = publication
-            .remove(&machine_id)
-            .await
-            .err()
-            .map(|error| error.to_string());
-        respond(local_removal_response(
-            &self.restart,
-            reset_warning,
-            request.restart_on_cleanup_failure,
-        ))
+        finish(
+            self.local
+                .remove_local(expect::<op::RemoveLocalMachine>(request)?)
+                .await,
+        )
     }
 
     async fn remove_machine(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::RemoveMachine>(request)?;
-        let replicated = match self.replicated() {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
-        };
-        replicated
-            .remove_machine(&request.machine_id)
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        let local = self.local_record()?;
-        if local.id == request.machine_id && local.phase == LocalMachinePhase::Resetting {
-            self.restart.send_replace(true);
-        }
-        respond(MachineRemoved {})
+        finish(
+            self.local
+                .remove_peer(expect::<op::RemoveMachine>(request)?)
+                .await,
+        )
     }
 
     async fn inspect_wireguard(
@@ -835,35 +522,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::InspectWireguard>(request)?;
-        let device =
-            inspect_wireguard_device().map_err(|error| Status::internal(error.to_string()))?;
-        let Some(cluster) = &self.cluster else {
-            return respond(WireGuardInspected { device });
-        };
-        let machines = match cluster.replicated.machines().await {
-            Ok(snapshot) => snapshot.observations,
-            Err(error) => {
-                eprintln!("WireGuard Machine enrichment is unavailable: {error}");
-                Vec::new()
-            }
-        };
-        let rtts = match machine_rtts(&cluster.admin, &cluster.replicated).await {
-            Ok(rtts) => rtts,
-            Err(error) => {
-                eprintln!("WireGuard RTT enrichment is unavailable: {error}");
-                Vec::new()
-            }
-        }
-        .into_iter()
-        .filter_map(|observation| {
-            observation
-                .machine
-                .map(|machine| (machine.id, observation.statistics))
-        })
-        .collect();
-        respond(WireGuardInspected {
-            device: associate_wireguard_peers(device, &machines, &rtts),
-        })
+        finish(self.local.inspect_wireguard().await)
     }
 
     async fn list_images(
@@ -984,63 +643,54 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::Reset>(request)?;
-        if let Some(containers) = &self.containers
-            && let Err(error) = containers.remove_all_managed().await
-        {
-            return respond(docker_rpc_error(error));
-        }
-        let reset = self
-            .store
-            .lock()
-            .map_err(|_| Status::internal("local Machine record lock poisoned"))?
-            .begin_reset();
-        match reset {
-            Ok(()) => {
-                self.restart.send_replace(true);
-                respond(ResetAccepted {})
-            }
-            Err(error) => respond(store_error(error)),
-        }
+        finish(self.local.reset().await)
     }
 }
 
-async fn machine_rtts(
-    admin: &AdminClient,
-    replicated: &ReplicatedStore,
-) -> Result<Vec<RttObservation>, crate::corrosion::Error> {
-    let machines = replicated.machines().await?.observations;
-    let identities = unique_identities(machines.into_iter().map(|machine| {
-        (
-            IpAddr::V6(machine.management_address.0),
-            MachineIdentity {
-                id: machine.id,
-                name: machine.name,
-            },
-        )
-    }));
-    Ok(admin
-        .member_rtts()
-        .await?
-        .into_iter()
-        .map(|mut observation| {
-            observation.machine = identities.get(&observation.address.ip()).cloned();
-            observation
-        })
-        .collect())
+#[allow(clippy::result_large_err)]
+fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
+    match error {
+        LocalMachineError::Store(error) => respond(store_error(error)),
+        LocalMachineError::NotParticipating => respond(unavailable("Machine is not participating")),
+        LocalMachineError::ClusterStoreUnavailable => {
+            respond(unavailable("Cluster store is not available"))
+        }
+        LocalMachineError::ClusterUnavailable => {
+            Err(Status::unavailable("Cluster is not available"))
+        }
+        LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
+        LocalMachineError::DuplicateMachine => respond(RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "Machine name or public key already exists".into(),
+            details: Value::Null,
+        }),
+        LocalMachineError::EmptyUpdate => respond(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: "at least one Machine update is required".into(),
+            details: Value::Null,
+        }),
+        LocalMachineError::LockPoisoned => {
+            Err(Status::internal("local Machine record lock poisoned"))
+        }
+        LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
+        LocalMachineError::Network(error) => Err(Status::internal(error.to_string())),
+        LocalMachineError::Docker(error) => respond(docker_rpc_error(error)),
+        LocalMachineError::Cleanup(message) => respond(RpcError {
+            code: RpcErrorCode::Internal,
+            message,
+            details: Value::Null,
+        }),
+    }
 }
 
-fn unique_identities(
-    entries: impl IntoIterator<Item = (IpAddr, MachineIdentity)>,
-) -> BTreeMap<IpAddr, MachineIdentity> {
-    let mut identities = BTreeMap::new();
-    let mut ambiguous = BTreeSet::new();
-    for (address, identity) in entries {
-        if identities.insert(address, identity).is_some() {
-            ambiguous.insert(address);
-        }
+#[allow(clippy::result_large_err)]
+fn finish(
+    result: Result<impl Into<RpcResponse>, LocalMachineError>,
+) -> Result<Response<OpaquePayload>, Status> {
+    match result {
+        Ok(value) => respond(value),
+        Err(error) => local_error(error),
     }
-    identities.retain(|address, _| !ambiguous.contains(address));
-    identities
 }
 
 fn unavailable(message: &str) -> RpcError {
@@ -1071,17 +721,6 @@ fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {
         message: error.to_string(),
         details,
     }
-}
-
-fn local_removal_response(
-    restart: &watch::Sender<bool>,
-    reset_warning: Option<String>,
-    restart_on_warning: bool,
-) -> LocalMachineRemoved {
-    if reset_warning.is_none() || restart_on_warning {
-        restart.send_replace(true);
-    }
-    LocalMachineRemoved { reset_warning }
 }
 
 fn store_error(error: StoreError) -> RpcError {
@@ -1158,9 +797,9 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::{local_removal_response, store_error, unique_identities};
+    use super::store_error;
     use crate::machine::StoreError;
-    use ployz_core::{MachineId, MachineIdentity, MachineName, RpcErrorCode};
+    use ployz_core::RpcErrorCode;
 
     #[test]
     fn non_participating_update_is_a_typed_conflict() {
@@ -1168,44 +807,5 @@ mod tests {
             store_error(StoreError::NotParticipating).code,
             RpcErrorCode::Conflict
         );
-    }
-
-    #[test]
-    fn failed_local_removal_keeps_the_daemon_available_for_entry_fallback() {
-        let (restart, restart_rx) = tokio::sync::watch::channel(false);
-        let removed =
-            local_removal_response(&restart, Some("replicated delete failed".into()), false);
-
-        assert_eq!(
-            removed.reset_warning.as_deref(),
-            Some("replicated delete failed")
-        );
-        assert!(!*restart_rx.borrow());
-    }
-
-    #[test]
-    fn failed_remote_removal_restarts_after_delegating_entry_fallback() {
-        let (restart, restart_rx) = tokio::sync::watch::channel(false);
-        local_removal_response(&restart, Some("replicated delete failed".into()), true);
-
-        assert!(*restart_rx.borrow());
-    }
-
-    #[test]
-    fn duplicate_management_addresses_have_no_identity_winner() {
-        let duplicate = "192.0.2.1".parse().unwrap();
-        let unique = "192.0.2.2".parse().unwrap();
-        let identity = |seed: char| MachineIdentity {
-            id: MachineId::parse(seed.to_string().repeat(32)).unwrap(),
-            name: MachineName::parse(seed.to_string()).unwrap(),
-        };
-        let identities = unique_identities([
-            (duplicate, identity('1')),
-            (duplicate, identity('2')),
-            (unique, identity('3')),
-        ]);
-
-        assert!(!identities.contains_key(&duplicate));
-        assert_eq!(identities.get(&unique), Some(&identity('3')));
     }
 }

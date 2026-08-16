@@ -1,3 +1,5 @@
+//! Local Machine record persistence and Live Observation operations.
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -20,6 +22,10 @@ use thiserror::Error;
 
 use crate::network::WireGuardPrivateKey;
 use crate::network::{allocate_machine_subnet, management_address};
+
+mod local_machine;
+
+pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
