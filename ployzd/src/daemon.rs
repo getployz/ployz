@@ -142,14 +142,8 @@ impl Daemon {
                 }
             }
         };
-        let unregistry_gateway = if local_record.phase == LocalMachinePhase::Participating {
-            local_record
-                .machine
-                .as_ref()
-                .map(|machine| machine.subnet.gateway().0)
-        } else {
-            None
-        };
+        let unregistry_gateway =
+            crate::docker::unregistry_gateway(&local_record.phase, local_record.machine.as_ref());
         let corrosion = start_corrosion(&config, &store).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let unregistry = match (&containers, unregistry_gateway) {

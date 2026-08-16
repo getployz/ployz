@@ -12,9 +12,27 @@ use bollard::models::{
 };
 use tokio_util::sync::CancellationToken;
 
+use ployz_core::{LocalMachinePhase, Machine};
+
 use crate::network::{DOCKER_NETWORK_NAME, UNREGISTRY_PORT};
 
 use super::{Error, LocalDocker, ManagedService};
+
+/// Gateway unregistry binds when this Machine already has a subnet.
+#[must_use]
+pub(crate) fn unregistry_gateway(
+    phase: &LocalMachinePhase,
+    machine: Option<&Machine>,
+) -> Option<Ipv4Addr> {
+    match phase {
+        LocalMachinePhase::Joining | LocalMachinePhase::Participating => {
+            machine.map(|machine| machine.subnet.gateway().0)
+        }
+        LocalMachinePhase::Uninitialized
+        | LocalMachinePhase::Resetting
+        | LocalMachinePhase::Unrecognized(_) => None,
+    }
+}
 
 pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
@@ -229,6 +247,44 @@ fn is_socket(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::{
+        AdvertisedEndpoint, MachineId, MachineName, ManagementAddress, WireGuardPublicKey,
+    };
+
+    fn machine() -> Machine {
+        Machine {
+            id: MachineId::parse("a".repeat(32)).unwrap(),
+            name: MachineName::parse("machine-2").unwrap(),
+            subnet: "10.210.2.0/24".parse().unwrap(),
+            management_address: ManagementAddress("fdcc::2".parse().unwrap()),
+            public_key: WireGuardPublicKey([2; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51000".parse().unwrap())],
+            runtime: Default::default(),
+        }
+    }
+
+    #[test]
+    fn joining_machine_exposes_an_unregistry_gateway() {
+        let machine = machine();
+        assert_eq!(
+            unregistry_gateway(&LocalMachinePhase::Joining, Some(&machine)),
+            Some(Ipv4Addr::new(10, 210, 2, 1))
+        );
+        assert_eq!(
+            unregistry_gateway(&LocalMachinePhase::Participating, Some(&machine)),
+            Some(Ipv4Addr::new(10, 210, 2, 1))
+        );
+        assert_eq!(
+            unregistry_gateway(&LocalMachinePhase::Uninitialized, Some(&machine)),
+            None
+        );
+        assert_eq!(
+            unregistry_gateway(&LocalMachinePhase::Resetting, Some(&machine)),
+            None
+        );
+        assert_eq!(unregistry_gateway(&LocalMachinePhase::Joining, None), None);
+    }
 
     #[test]
     fn configured_containerd_socket_wins_and_regular_files_are_rejected() {
