@@ -11,7 +11,7 @@ pub(super) use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
     ContainerResources, ContainerRuntimeObservation, DeviceMapping, DeviceReservation,
     DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver, Machine, MachineId,
-    MachineName, MachineObservation, MachinePath, MachineSelector, ManagementAddress,
+    MachineName, MachineObservation, MachinePath, MachineTarget, ManagementAddress,
     MembershipObservation, PidMode, Placement, PortPublication, PreDeployHook, PullPolicy,
     RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId,
     ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,

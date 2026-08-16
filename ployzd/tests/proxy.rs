@@ -5,7 +5,7 @@ use std::net::Ipv6Addr;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use ployz_core::{
-    FanoutOutcome, FanoutResponse, Machine, MachineId, MachineName, MachineSelector,
+    FanoutOutcome, FanoutResponse, FanoutSelector, Machine, MachineId, MachineName, MachineTarget,
     ManagementAddress, WireGuardPublicKey, encode_grpc_frame, grpc_frames,
 };
 use ployzd::proxy::{
@@ -36,9 +36,9 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
     );
     let resolved = resolve_route(
         RoutingRequest::Many(vec![
-            selector("local"),
-            selector(first.id.as_str()),
-            selector("local"),
+            fanout("local"),
+            fanout(first.id.as_str()),
+            fanout("local"),
         ]),
         &visible,
     )
@@ -46,40 +46,41 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
     assert_eq!(resolved, ProxyRoute::Many(vec![local, first.clone()]));
 
     assert_eq!(
-        resolve_route(RoutingRequest::Many(vec![selector("*")]), &visible).unwrap(),
+        resolve_route(RoutingRequest::Many(vec![FanoutSelector::All]), &visible).unwrap(),
         ProxyRoute::Many(visible.clone())
     );
     assert_eq!(
         resolve_route(
-            RoutingRequest::Many(vec![selector("*"), selector("missing")]),
+            RoutingRequest::Many(vec![FanoutSelector::All, fanout("missing")]),
             &visible,
         ),
-        Err(TargetResolutionError::NotFound(vec![selector("missing")]))
+        Err(TargetResolutionError::NotFound(vec![target("missing")]))
     );
 
     assert_eq!(
-        resolve_route(RoutingRequest::One(selector("duplicate")), &visible),
+        resolve_route(RoutingRequest::One(target("duplicate")), &visible),
         Err(TargetResolutionError::Ambiguous {
-            selector: selector("duplicate"),
+            selector: target("duplicate"),
             matches: vec![first.id, second.id],
         })
     );
 
     let ProxyRoute::One(shared_namespace) =
-        resolve_route(RoutingRequest::One(selector(first.id.as_str())), &visible).unwrap()
+        resolve_route(RoutingRequest::One(target(first.id.as_str())), &visible).unwrap()
     else {
         panic!("expected the exact Machine ID")
     };
     assert_eq!(*shared_namespace, first);
 
     assert_eq!(
-        resolve_route(RoutingRequest::One(selector("missing")), &visible),
-        Err(TargetResolutionError::NotFound(vec![selector("missing")]))
+        resolve_route(RoutingRequest::One(target("missing")), &visible),
+        Err(TargetResolutionError::NotFound(vec![target("missing")]))
     );
     assert_eq!(
-        resolve_route(RoutingRequest::One(selector("*")), &visible),
-        Err(TargetResolutionError::NotFound(vec![selector("*")]))
+        resolve_route(RoutingRequest::One(target("all")), &visible),
+        Err(TargetResolutionError::NotFound(vec![target("all")]))
     );
+    assert!(MachineTarget::parse("*").is_err());
 }
 
 #[tokio::test]
@@ -234,8 +235,12 @@ async fn fanout_emits_an_omission_for_a_target_with_no_message() {
     assert_eq!(omission.outcome, None);
 }
 
-fn selector(value: &str) -> MachineSelector {
-    MachineSelector::parse(value).unwrap()
+fn target(value: &str) -> MachineTarget {
+    MachineTarget::parse(value).unwrap()
+}
+
+fn fanout(value: &str) -> FanoutSelector {
+    FanoutSelector::parse(value).unwrap()
 }
 
 fn machine(id: char, name: &str, subnet: u8) -> Machine {

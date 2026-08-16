@@ -211,7 +211,7 @@ fn global_plan_is_exactly_one_container_per_currently_available_machine() {
 #[test]
 fn placement_by_ambiguous_machine_name_keeps_every_match() {
     let mut requested = requested(ServiceMode::Global);
-    requested.placement.machines = vec![MachineSelector::parse("edge").unwrap()];
+    requested.placement.machines = vec![MachineTarget::parse("edge").unwrap()];
     let snapshot = DeploySnapshot {
         machines: vec![
             machine('1', "edge"),
@@ -237,6 +237,36 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
         })
         .collect::<Vec<_>>();
     assert_eq!(targets, vec![machine_id('1'), machine_id('2')]);
+}
+
+#[test]
+fn empty_placement_keeps_every_eligible_machine_and_all_is_a_name() {
+    let requested = requested(ServiceMode::Global);
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "all"), machine('2', "edge")],
+        ..Default::default()
+    };
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+    let targets = |plan: &ployz::deploy::DeployPlan| {
+        plan.operations
+            .iter()
+            .map(|operation| match operation {
+                DeployOperation::RunContainer { machine_id, .. } => *machine_id,
+                other @ (DeployOperation::CreateVolume { .. }
+                | DeployOperation::StopContainer { .. }
+                | DeployOperation::RemoveContainer { .. }
+                | DeployOperation::ReplaceContainer(..)
+                | DeployOperation::StopHook { .. }
+                | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(targets(&plan), vec![machine_id('1'), machine_id('2')]);
+
+    let mut named_all = requested;
+    named_all.placement.machines = vec![MachineTarget::parse("all").unwrap()];
+    let plan = plan_deploy([&named_all], &snapshot, PlanOptions::default()).unwrap();
+    assert_eq!(targets(&plan), vec![machine_id('1')]);
 }
 
 #[test]

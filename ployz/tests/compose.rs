@@ -455,6 +455,29 @@ volumes:
 }
 
 #[test]
+fn x_machines_rejects_star_and_keeps_all_as_identity() {
+    let rejected =
+        parse_normalized("services: {api: {image: app, x-machines: [\"*\"]}}", ".").unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("a non-empty Machine identity that is not a wildcard")
+    );
+
+    let project =
+        parse_normalized("services: {api: {image: app, x-machines: [all]}}", ".").unwrap();
+    assert_eq!(
+        service(&project, "api")
+            .placement
+            .machines
+            .first()
+            .unwrap()
+            .as_str(),
+        "all"
+    );
+}
+
+#[test]
 fn secrets_are_plaintext_lazy_cached_and_redacted_from_errors() {
     let directory = TestDir::new();
     fs::write(directory.path.join("file-secret"), "from-file\n").unwrap();

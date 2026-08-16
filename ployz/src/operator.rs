@@ -10,10 +10,10 @@ use std::{
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
-    ExecOptions, ExecRequestFrame, HealthObservation, LogEntry, LogStream, LogsOptions, MachineId,
-    MachineLogService, MachineLogsRequest, MachineName, MachineObservation, MachineSelector,
-    MembershipObservation, OpaquePayload, ServiceObservation, StreamProtocolError, op,
-    resolve_machine_selectors, select_service,
+    ExecOptions, ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry, LogStream,
+    LogsOptions, MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
+    MachineTarget, MembershipObservation, OpaquePayload, ServiceObservation, StreamProtocolError,
+    op, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -366,7 +366,7 @@ pub async fn open_exec(
         .map_err(|_| OperatorError::StreamClosed)?;
     let output = client
         .exec_stream(
-            &MachineSelector::from(&machine_id),
+            &MachineTarget::from(&machine_id),
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
         .await?;
@@ -419,7 +419,7 @@ pub async fn open_service_logs(
             })
             .encode()?;
             let identity = format!("{}/{}", arg.service, container.display_name);
-            let target = MachineSelector::from(&container.machine_id);
+            let target = MachineTarget::from(&container.machine_id);
             // TODO(UT-082): earlier Container log streams intentionally survive until the
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
@@ -480,7 +480,7 @@ pub async fn open_machine_logs(
             })
             .encode()?;
             let identity = format!("{service}@{}", machine.machine.name);
-            let target = MachineSelector::from(&machine.machine.id);
+            let target = MachineTarget::from(&machine.machine.id);
             // TODO(UT-083): earlier Machine log streams intentionally survive until the
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
@@ -590,7 +590,7 @@ pub(crate) fn select_machines<'a>(
     }
     let selectors = selectors
         .iter()
-        .map(|selector| MachineSelector::parse(selector.clone()))
+        .map(|selector| FanoutSelector::parse(selector.as_str()))
         .collect::<Result<Vec<_>, _>>()?;
     let visible = eligible
         .iter()

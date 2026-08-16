@@ -2,8 +2,8 @@ use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
-    HttpProtocol, IngressHost, IngressHostname, InspectRequest, Machine, MachineId,
-    MachineSelector, PortPublication, RequestedServiceSpec, op,
+    HttpProtocol, IngressHost, IngressHostname, InspectRequest, Machine, MachineId, MachineTarget,
+    PortPublication, RequestedServiceSpec, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -78,7 +78,7 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
 
     let mut machines = Vec::new();
     for machine_id in caddy_machines {
-        let target = MachineSelector::from(&machine_id);
+        let target = MachineTarget::from(&machine_id);
         let details = client
             .call::<op::Inspect>(InspectRequest::default(), Some(&target))
             .await

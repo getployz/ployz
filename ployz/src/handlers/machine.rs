@@ -5,7 +5,7 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    AdvertisedEndpoint, ListMachinesRequest, MachineName, MachineObservation, MachineSelector,
+    AdvertisedEndpoint, ListMachinesRequest, MachineName, MachineObservation, MachineTarget,
     MachineUpdate, PublicIpUpdate, UpdateMachineRequest, op,
 };
 
@@ -108,7 +108,7 @@ pub(super) fn update(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Result<(), Error> {
-    let selector = MachineSelector::parse(selector)?;
+    let selector = MachineTarget::parse(selector)?;
     with_client(root, |client| {
         Box::pin(async move {
             let machine = client
@@ -230,6 +230,26 @@ mod tests {
         assert_eq!(
             parse_update(leaf_matches(&remove)).unwrap().public_ip,
             PublicIpUpdate::Remove
+        );
+    }
+
+    #[test]
+    fn singular_machine_cli_target_rejects_star_and_keeps_all_as_identity() {
+        let command = crate::cli::command();
+        let star = command
+            .clone()
+            .try_get_matches_from(["ployz", "machine", "update", "*", "--name", "edge"])
+            .unwrap();
+        assert!(MachineTarget::parse(target(leaf_matches(&star), "machine").unwrap()).is_err());
+
+        let named_all = command
+            .try_get_matches_from(["ployz", "machine", "update", "all", "--name", "edge"])
+            .unwrap();
+        assert_eq!(
+            MachineTarget::parse(target(leaf_matches(&named_all), "machine").unwrap())
+                .unwrap()
+                .as_str(),
+            "all"
         );
     }
 }

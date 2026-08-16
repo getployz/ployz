@@ -2,12 +2,12 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, DockerVolume, FanoutOutcome, FanoutResponse, GetDomainRequest,
-    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
-    LiveServices, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
-    MachineRpcClient, MachineSelector, MachineSuccess, MembershipObservation, OpaquePayload,
-    PartialResult, RemoveContainerRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
-    RpcResponseBody, StartContainerRequest, StopContainerRequest, apply_many_targets,
+    CreateContainerRequest, DockerVolume, FanoutOutcome, FanoutResponse, FanoutSelector,
+    GetDomainRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
+    ListVolumesRequest, LiveServices, MachineFailure, MachineId, MachineImages, MachineName,
+    MachineObservation, MachineRpcClient, MachineSuccess, MachineTarget, MembershipObservation,
+    OpaquePayload, PartialResult, RemoveContainerRequest, ResolvedServiceSpec, Rpc, RpcError,
+    RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest, apply_many_targets,
     derive_live_services, op,
 };
 use serde_json::Value;
@@ -81,7 +81,7 @@ impl Client {
     pub async fn call<T: Rpc>(
         &mut self,
         request: T::Request,
-        target: Option<&MachineSelector>,
+        target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
         let payload = T::into_request(request).encode()?;
         let mut delays = UNARY_RETRY_DELAYS.iter().copied();
@@ -107,7 +107,7 @@ impl Client {
     async fn unary_attempt<T: Rpc>(
         &mut self,
         payload: OpaquePayload,
-        target: Option<&MachineSelector>,
+        target: Option<&MachineTarget>,
         redial: bool,
     ) -> Result<T::Response, ConnectError> {
         if redial {
@@ -123,7 +123,7 @@ impl Client {
     pub(crate) async fn invoke<T: Rpc>(
         &self,
         request: T::Request,
-        target: &MachineSelector,
+        target: &MachineTarget,
         timeout: Option<Duration>,
     ) -> Result<T::Response, RpcError> {
         let payload = T::into_request(request)
@@ -134,7 +134,7 @@ impl Client {
 
     pub(crate) async fn exec_stream(
         &self,
-        target: &MachineSelector,
+        target: &MachineTarget,
         input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self.rpc.clone();
@@ -146,7 +146,7 @@ impl Client {
 
     pub(crate) async fn container_logs_stream(
         &self,
-        target: &MachineSelector,
+        target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self.rpc.clone();
@@ -158,7 +158,7 @@ impl Client {
 
     pub(crate) async fn machine_logs_stream(
         &self,
-        target: &MachineSelector,
+        target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self.rpc.clone();
@@ -171,7 +171,7 @@ impl Client {
     async fn call_once<T: Rpc>(
         &self,
         payload: OpaquePayload,
-        target: Option<&MachineSelector>,
+        target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
         grpc.ready().await?;
@@ -200,7 +200,7 @@ impl Client {
             let machine_id = machine.machine.id;
             let mut client = self.clone();
             requests.spawn(async move {
-                let target = MachineSelector::from(&machine_id);
+                let target = MachineTarget::from(&machine_id);
                 let outcome = client
                     .call::<op::ListVolumes>(ListVolumesRequest {}, Some(&target))
                     .await;
@@ -241,11 +241,11 @@ impl Client {
             op::ListImages::into_request(ListImagesRequest { reference }).encode()?,
         );
         let selectors = if targets.is_empty() {
-            vec![MachineSelector::parse("*").expect("wildcard selector is valid")]
+            vec![FanoutSelector::All]
         } else {
             targets
                 .iter()
-                .map(MachineSelector::parse)
+                .map(|target| FanoutSelector::parse(target.as_str()))
                 .collect::<Result<Vec<_>, _>>()?
         };
         apply_many_targets(request.metadata_mut(), &selectors)?;
@@ -373,7 +373,7 @@ impl Client {
                 kind,
                 resolved_spec,
             },
-            &MachineSelector::from(&machine_id),
+            &MachineTarget::from(&machine_id),
             None,
         )
         .await
@@ -494,7 +494,7 @@ async fn list_on_machine(
     client
         .invoke::<op::ListContainers>(
             ListContainersRequest {},
-            &MachineSelector::from(&machine_id),
+            &MachineTarget::from(&machine_id),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
@@ -545,7 +545,7 @@ async fn change_container_rpc(
     signal: Option<String>,
     grace_period_seconds: Option<i32>,
 ) -> Result<(), RpcError> {
-    let target = MachineSelector::from(machine_id);
+    let target = MachineTarget::from(machine_id);
     if matches!(action, ContainerAction::Stop | ContainerAction::Remove) {
         accept_stop_result(
             action,
@@ -591,7 +591,7 @@ async fn remove_container_rpc(
                 remove_volumes: true,
                 force: false,
             },
-            &MachineSelector::from(machine_id),
+            &MachineTarget::from(machine_id),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await

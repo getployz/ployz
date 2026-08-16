@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use clap::ArgMatches;
-use ployz_core::{GetCaddyConfigRequest, MachineSelector, op};
+use ployz_core::{GetCaddyConfigRequest, MachineTarget, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 
@@ -10,7 +10,7 @@ pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
     let selector = matches.get_one::<String>("machine").cloned();
     runtime()?.block_on(async {
         let mut client = connect_client(root, None).await?;
-        let target = selector.map(MachineSelector::parse).transpose()?;
+        let target = selector.map(MachineTarget::parse).transpose()?;
         let caddyfile = client
             .call::<op::GetCaddyConfig>(GetCaddyConfigRequest {}, target.as_ref())
             .await?;
@@ -29,7 +29,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .map_err(|error| Error::usage(format!("read Caddyfile: {error}")))?;
     let machines = string_values(matches, "machine")
         .into_iter()
-        .map(MachineSelector::parse)
+        .map(MachineTarget::parse)
         .collect::<Result<Vec<_>, _>>()?;
     runtime()?.block_on(async {
         let image = match image {

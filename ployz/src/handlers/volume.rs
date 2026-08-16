@@ -5,9 +5,9 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    CreateVolumeRequest, DockerVolumeName, InspectVolumeRequest, ListMachinesRequest,
-    MachineObservation, MachineSelector, NameMatches, PartialResult, RemoveVolumeRequest, RpcError,
-    op, resolve_machine_selectors,
+    CreateVolumeRequest, DockerVolumeName, FanoutSelector, InspectVolumeRequest,
+    ListMachinesRequest, MachineObservation, MachineTarget, NameMatches, PartialResult,
+    RemoveVolumeRequest, RpcError, op, resolve_machine_selectors,
 };
 
 use crate::{
@@ -45,7 +45,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                         options,
                         labels,
                     },
-                    &MachineSelector::from(&machine.machine.id),
+                    &MachineTarget::from(&machine.machine.id),
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
@@ -105,7 +105,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                             InspectVolumeRequest {
                                 name: volume.volume.id.name.clone(),
                             },
-                            Some(&MachineSelector::from(&volume.volume.id.machine_id)),
+                            Some(&MachineTarget::from(&volume.volume.id.machine_id)),
                         )
                         .await?;
                     println!("{}", serde_json::to_string_pretty(&volume)?);
@@ -170,7 +170,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                                 name: id.name,
                                 force,
                             },
-                            &MachineSelector::from(&id.machine_id),
+                            &MachineTarget::from(&id.machine_id),
                             Some(TARGET_RPC_TIMEOUT),
                         )
                         .await
@@ -223,7 +223,7 @@ fn selected_machines(
     }
     let selectors = selectors
         .iter()
-        .map(|selector| MachineSelector::parse(selector.clone()))
+        .map(|selector| FanoutSelector::parse(selector.as_str()))
         .collect::<Result<Vec<_>, _>>()?;
     let visible = machines
         .iter()
@@ -249,11 +249,18 @@ fn select_create_machine(
     selector: Option<&str>,
 ) -> Result<Option<MachineObservation>, Error> {
     if let Some(selector) = selector {
-        let selected = selected_machines(machines.to_vec(), &[selector.into()])?;
-        return match selected.as_slice() {
-            [machine] => Ok(Some(machine.clone())),
-            _ => Err(Error::usage(format!(
-                "Machine selector {selector:?} matched multiple Machines"
+        let target = MachineTarget::parse(selector)?;
+        return match target.resolve(machines.iter().map(|machine| &machine.machine)) {
+            NameMatches::One(machine) => Ok(Some(
+                machines
+                    .iter()
+                    .find(|observation| observation.machine.id == machine.id)
+                    .expect("resolve returned a Machine from this snapshot")
+                    .clone(),
+            )),
+            NameMatches::None => Err(Error::usage(format!("Machine {selector:?} was not found"))),
+            NameMatches::Ambiguous(_) => Err(Error::usage(format!(
+                "Machine Target {selector:?} matched multiple Machines"
             ))),
         };
     }
@@ -314,4 +321,64 @@ fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!("one or more Machines failed: {failures}")
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::{
+        Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
+        MembershipObservation, WireGuardPublicKey,
+    };
+
+    use super::*;
+
+    #[test]
+    fn volume_selection_uses_fanout_for_lists_and_identity_for_create() {
+        let machines = [machine(1, "edge"), machine(2, "all")];
+        assert_eq!(selected_machines(machines.to_vec(), &[]).unwrap().len(), 2);
+        assert_eq!(
+            selected_machines(machines.to_vec(), &["*".into()])
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            selected_machines(machines.to_vec(), &["all".into()])
+                .unwrap()
+                .first()
+                .unwrap()
+                .machine
+                .name
+                .as_str(),
+            "all"
+        );
+        assert!(selected_machines(machines.to_vec(), &["missing".into()]).is_err());
+        assert!(select_create_machine(&machines, Some("*")).is_err());
+        assert_eq!(
+            select_create_machine(&machines, Some("all"))
+                .unwrap()
+                .unwrap()
+                .machine
+                .name
+                .as_str(),
+            "all"
+        );
+    }
+
+    fn machine(seed: u8, name: &str) -> MachineObservation {
+        MachineObservation {
+            machine: Machine {
+                id: MachineId::parse(format!("{seed:032x}")).unwrap(),
+                name: MachineName::parse(name).unwrap(),
+                subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+                management_address: ManagementAddress("fd00::1".parse().unwrap()),
+                public_key: WireGuardPublicKey([seed; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+            },
+            membership: MembershipObservation::Up,
+            selected_endpoint: None,
+        }
+    }
 }

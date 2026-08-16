@@ -320,12 +320,6 @@ impl From<&MachineId> for MachineTarget {
     }
 }
 
-impl From<&MachineTarget> for MachineSelector {
-    fn from(value: &MachineTarget) -> Self {
-        Self(value.as_str().to_owned())
-    }
-}
-
 /// Fan-out selection of every visible Machine or one Machine Target.
 ///
 /// `*` is the only wildcard spelling.

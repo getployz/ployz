@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use ployz_core::MachineSelector;
+use ployz_core::MachineTarget;
 use serde::Serialize;
 use serde_norway::Value;
 
@@ -28,7 +28,7 @@ pub struct BuildService {
     pub name: String,
     pub image: String,
     pub build: Value,
-    pub machines: Vec<MachineSelector>,
+    pub machines: Vec<MachineTarget>,
 }
 
 pub fn plan_build(

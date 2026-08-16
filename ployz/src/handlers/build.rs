@@ -85,7 +85,7 @@ pub(super) fn report_push(
 
 pub(super) fn push_targets(
     explicit: &[String],
-    configured: &[ployz_core::MachineSelector],
+    configured: &[ployz_core::MachineTarget],
 ) -> Vec<String> {
     if explicit.is_empty() {
         configured.iter().map(ToString::to_string).collect()
@@ -105,13 +105,13 @@ fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, E
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::MachineSelector;
+    use ployz_core::MachineTarget;
 
     use super::*;
 
     #[test]
     fn explicit_push_targets_override_service_targets_and_empty_means_all() {
-        let configured = [MachineSelector::parse("service-machine").unwrap()];
+        let configured = [MachineTarget::parse("service-machine").unwrap()];
         assert_eq!(
             push_targets(&["explicit-machine".into()], &configured),
             ["explicit-machine"]

@@ -3,9 +3,8 @@
 use thiserror::Error;
 
 use crate::{
-    ContainerId, ContainerObservation, ContainerSelector, Machine, MachineSelector, MachineTarget,
-    NameMatches, ServiceObservation, ServiceSelector, ServiceSelectorError,
-    resolve_machine_selector, select_service,
+    ContainerId, ContainerObservation, ContainerSelector, Machine, MachineTarget, NameMatches,
+    ServiceObservation, ServiceSelector, ServiceSelectorError, select_service,
 };
 
 impl MachineTarget {
@@ -15,7 +14,7 @@ impl MachineTarget {
         &self,
         visible: impl IntoIterator<Item = &'a Machine>,
     ) -> NameMatches<&'a Machine> {
-        resolve_machine_selector(&MachineSelector::from(self), visible)
+        super::machine::resolve_machine_text(self.as_str(), visible)
     }
 }
 

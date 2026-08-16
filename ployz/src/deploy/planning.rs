@@ -4,7 +4,7 @@ use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, HostBind, MachineId,
     MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceVolumeGraph,
-    SpecChange, UpdateOrder, VolumeSource, compare_specs, machine_matches_selector,
+    SpecChange, UpdateOrder, VolumeSource, compare_specs, machine_matches_target,
     same_service_mode_kind,
 };
 
@@ -137,7 +137,7 @@ fn eligible_machines<'a>(
                     .placement
                     .machines
                     .iter()
-                    .any(|selector| machine_matches_selector(&machine.machine, selector))
+                    .any(|target| machine_matches_target(&machine.machine, target))
         })
         .collect::<Vec<_>>();
     shuffle(&mut machines, options.placement_seed);

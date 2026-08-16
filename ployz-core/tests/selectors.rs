@@ -3,9 +3,10 @@ use std::{collections::BTreeMap, net::IpAddr};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContainerSelector, ContainerSelectorError, FanoutSelector,
-    Machine, MachineId, MachineName, MachineRuntime, MachineSelector, MachineTarget,
-    ManagementAddress, NameMatches, ServiceId, ServiceName, ServiceSelector, WireGuardPublicKey,
-    derive_services, resolve_container_selector, resolve_machine_selector, select_service,
+    Machine, MachineId, MachineName, MachineRuntime, MachineSelector, MachineSelectorError,
+    MachineTarget, ManagementAddress, NameMatches, Placement, ServiceId, ServiceName,
+    ServiceSelector, WireGuardPublicKey, derive_services, resolve_container_selector,
+    resolve_machine_selector, resolve_machine_selectors, select_service,
 };
 use serde_json::json;
 
@@ -63,6 +64,62 @@ fn machine_target_resolution_prefers_ids_and_keeps_name_ambiguity() {
     assert_eq!(
         resolve_machine_selector(&MachineSelector::from(&first.id), &visible),
         NameMatches::One(&first)
+    );
+}
+
+#[test]
+fn fanout_resolution_treats_star_as_all_and_all_as_a_name() {
+    let named_all = machine('1', "all", 1);
+    let other = machine('2', "edge", 2);
+    let visible = [named_all.clone(), other.clone()];
+
+    assert_eq!(
+        resolve_machine_selectors(&visible, &[FanoutSelector::All]).unwrap(),
+        vec![named_all.clone(), other.clone()]
+    );
+    assert_eq!(
+        resolve_machine_selectors(&visible, &[FanoutSelector::parse("all").unwrap()]).unwrap(),
+        vec![named_all.clone()]
+    );
+    assert_eq!(
+        resolve_machine_selectors(&visible, &[FanoutSelector::parse("*").unwrap()]).unwrap(),
+        vec![named_all, other]
+    );
+    assert!(matches!(
+        resolve_machine_selectors(&visible, &[FanoutSelector::parse("missing").unwrap()]),
+        Err(MachineSelectorError::NotFound(missing))
+            if missing == [MachineTarget::parse("missing").unwrap()]
+    ));
+    assert_eq!(
+        resolve_machine_selectors(&[], &[FanoutSelector::All]).unwrap_err(),
+        MachineSelectorError::NoVisibleMachines
+    );
+    assert_eq!(
+        resolve_machine_selectors(&visible, &[]).unwrap_err(),
+        MachineSelectorError::NoTargets
+    );
+}
+
+#[test]
+fn placement_accepts_only_machine_identities() {
+    let placement = Placement {
+        machines: vec![MachineTarget::parse("all").unwrap()],
+    };
+    assert_eq!(placement.machines.first().unwrap().as_str(), "all");
+    assert!(Placement::default().machines.is_empty());
+    assert!(serde_json::from_value::<Placement>(json!({"machines": ["*"]})).is_err());
+    assert_eq!(
+        serde_json::from_value::<Placement>(json!({"machines": ["all"]}))
+            .unwrap()
+            .machines
+            .first()
+            .unwrap()
+            .as_str(),
+        "all"
+    );
+    assert_eq!(
+        serde_json::to_value(&placement).unwrap(),
+        json!({"machines": ["all"]})
     );
 }
 

@@ -10,7 +10,7 @@ use ployz::{
     volume::{filter_volumes, machine_volumes},
 };
 use ployz_core::{
-    ContainerKind, CreateVolumeRequest, DockerVolumeName, ListMachinesRequest, MachineSelector,
+    ContainerKind, CreateVolumeRequest, DockerVolumeName, ListMachinesRequest, MachineTarget,
     NameMatches, ResolvedServiceSpec, ServiceId, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -240,7 +240,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
                 options: BTreeMap::new(),
                 labels: BTreeMap::new(),
             },
-            Some(&MachineSelector::from(&first_machine.machine.id)),
+            Some(&MachineTarget::from(&first_machine.machine.id)),
         )
         .await
         .unwrap();

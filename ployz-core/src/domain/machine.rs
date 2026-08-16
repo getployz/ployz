@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::NameMatches;
 use crate::{
-    AdvertisedEndpoint, MachineId, MachineName, MachineSelector, MachineSubnet, ManagementAddress,
-    SelectedEndpoint, WireGuardPublicKey,
+    AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSelector, MachineSubnet,
+    MachineTarget, ManagementAddress, SelectedEndpoint, WireGuardPublicKey,
 };
 
 /// Resolve an exact Machine ID or an observer-relative Machine Name without
@@ -18,13 +18,20 @@ pub fn resolve_machine_selector<'a>(
     selector: &MachineSelector,
     visible: impl IntoIterator<Item = &'a Machine>,
 ) -> NameMatches<&'a Machine> {
+    resolve_machine_text(selector.as_str(), visible)
+}
+
+pub(super) fn resolve_machine_text<'a>(
+    text: &str,
+    visible: impl IntoIterator<Item = &'a Machine>,
+) -> NameMatches<&'a Machine> {
     let mut exact_id = None;
     let mut names = Vec::new();
     for machine in visible {
-        if machine.id.as_str() == selector.as_str() {
+        if machine.id.as_str() == text {
             exact_id = Some(machine);
         }
-        if machine.name.as_str() == selector.as_str() {
+        if machine.name.as_str() == text {
             names.push(machine);
         }
     }
@@ -164,16 +171,24 @@ pub struct MachineObservation {
     pub selected_endpoint: Option<SelectedEndpoint>,
 }
 
+/// Match a Machine by exact ID or observer-relative Name. `all` is identity text.
 #[must_use]
-pub fn machine_matches_selector(machine: &Machine, selector: &MachineSelector) -> bool {
-    matches!(selector.as_str(), "*" | "all")
-        || machine.id.as_str() == selector.as_str()
-        || machine.name.as_str() == selector.as_str()
+pub fn machine_matches_target(machine: &Machine, target: &MachineTarget) -> bool {
+    machine.id.as_str() == target.as_str() || machine.name.as_str() == target.as_str()
 }
 
+/// Resolve fan-out selection to visible Machines. `*` selects every visible Machine;
+/// other text is a Machine Target.
+///
+/// # Errors
+///
+/// Returns [`MachineSelectorError::NoTargets`] when `selectors` is empty,
+/// [`MachineSelectorError::NotFound`] when a Machine Target matches nothing,
+/// [`MachineSelectorError::Ambiguous`] when a name matches more than one Machine,
+/// or [`MachineSelectorError::NoVisibleMachines`] when `*` matches no Machines.
 pub fn resolve_machine_selectors(
     visible: &[Machine],
-    selectors: &[MachineSelector],
+    selectors: &[FanoutSelector],
 ) -> Result<Vec<Machine>, MachineSelectorError> {
     if selectors.is_empty() {
         return Err(MachineSelectorError::NoTargets);
@@ -182,26 +197,27 @@ pub fn resolve_machine_selectors(
     let mut seen = BTreeSet::new();
     let mut missing = Vec::new();
     for selector in selectors {
-        if matches!(selector.as_str(), "*" | "all") {
-            for machine in visible {
-                if seen.insert(machine.id) {
-                    targets.push(machine.clone());
+        match selector {
+            FanoutSelector::All => {
+                for machine in visible {
+                    if seen.insert(machine.id) {
+                        targets.push(machine.clone());
+                    }
                 }
             }
-            continue;
-        }
-        match resolve_machine_selector(selector, visible) {
-            NameMatches::One(machine) if seen.insert(machine.id) => {
-                targets.push(machine.clone());
-            }
-            NameMatches::One(_) => {}
-            NameMatches::None => missing.push(selector.clone()),
-            NameMatches::Ambiguous(matches) => {
-                return Err(MachineSelectorError::Ambiguous {
-                    selector: selector.clone(),
-                    matches: matches.into_iter().map(|machine| machine.id).collect(),
-                });
-            }
+            FanoutSelector::One(target) => match target.resolve(visible) {
+                NameMatches::One(machine) if seen.insert(machine.id) => {
+                    targets.push(machine.clone());
+                }
+                NameMatches::One(_) => {}
+                NameMatches::None => missing.push(target.clone()),
+                NameMatches::Ambiguous(matches) => {
+                    return Err(MachineSelectorError::Ambiguous {
+                        selector: target.clone(),
+                        matches: matches.into_iter().map(|machine| machine.id).collect(),
+                    });
+                }
+            },
         }
     }
     if !missing.is_empty() {
@@ -220,10 +236,10 @@ pub enum MachineSelectorError {
     #[error("no Machines are visible to this entry Machine")]
     NoVisibleMachines,
     #[error("Machine selectors were not found: {0:?}")]
-    NotFound(Vec<MachineSelector>),
+    NotFound(Vec<MachineTarget>),
     #[error("Machine selector {selector:?} is ambiguous across IDs {matches:?}")]
     Ambiguous {
-        selector: MachineSelector,
+        selector: MachineTarget,
         matches: Vec<MachineId>,
     },
 }

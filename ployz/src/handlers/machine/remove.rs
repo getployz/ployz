@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, Machine, MachineSelector, NameMatches, RemoveLocalMachineRequest,
-    RemoveMachineRequest, op, resolve_machine_selector,
+    DescribeContractRequest, Machine, MachineTarget, NameMatches, RemoveLocalMachineRequest,
+    RemoveMachineRequest, op,
 };
 
 use super::super::{connect_client, runtime};
@@ -25,7 +25,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         };
         let machines = machine_list(&mut client).await?;
         let selected = select_machine(&machines, &selector)?;
-        let selected_target = MachineSelector::from(&selected.id);
+        let selected_target = MachineTarget::from(&selected.id);
         let current = client
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await?
@@ -102,8 +102,8 @@ fn select_machine(
     machines: &[ployz_core::MachineObservation],
     selector: &str,
 ) -> Result<Machine, Error> {
-    let selector = MachineSelector::parse(selector)?;
-    match resolve_machine_selector(&selector, machines.iter().map(|entry| &entry.machine)) {
+    let selector = MachineTarget::parse(selector)?;
+    match selector.resolve(machines.iter().map(|entry| &entry.machine)) {
         NameMatches::None => Err(Error::usage(format!("Machine {selector:?} was not found"))),
         NameMatches::One(machine) => Ok(machine.clone()),
         NameMatches::Ambiguous(matches) => Err(Error::usage(format!(

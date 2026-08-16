@@ -310,8 +310,46 @@ fn metadata(name: &str) -> LogMetadata {
     }
 }
 
+#[test]
+fn machine_selection_treats_star_as_all_and_all_as_a_name() {
+    let machines = [
+        machine_observation(1, "edge"),
+        machine_observation(2, "all"),
+    ];
+    assert_eq!(select_machines(&machines, &[]).unwrap().len(), 2);
+    assert_eq!(select_machines(&machines, &["*".into()]).unwrap().len(), 2);
+    assert_eq!(
+        select_machines(&machines, &["all".into()])
+            .unwrap()
+            .first()
+            .unwrap()
+            .machine
+            .name
+            .as_str(),
+        "all"
+    );
+    assert!(select_machines(&machines, &["missing".into()]).is_err());
+}
+
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(ToOwned::to_owned).collect()
+}
+
+fn machine_observation(seed: u8, name: &str) -> MachineObservation {
+    MachineObservation {
+        machine: ployz_core::Machine {
+            id: MachineId::parse(format!("{seed:032x}")).unwrap(),
+            name: MachineName::parse(name).unwrap(),
+            subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+            management_address: ployz_core::ManagementAddress("fd00::1".parse().unwrap()),
+            public_key: ployz_core::WireGuardPublicKey([seed; 32]),
+            public_ip: None,
+            advertised_endpoints: Vec::new(),
+            runtime: Default::default(),
+        },
+        membership: MembershipObservation::Up,
+        selected_endpoint: None,
+    }
 }
 
 fn observed_service() -> ServiceObservation {

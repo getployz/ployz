@@ -3,7 +3,7 @@ use std::time::Duration;
 use ployz_core::{
     ConfiguredHealthcheck, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, HealthObservation,
-    HealthcheckSpec, InspectContainerRequest, MachineId, MachineSelector, RemoveContainerRequest,
+    HealthcheckSpec, InspectContainerRequest, MachineId, MachineTarget, RemoveContainerRequest,
     ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume, StartContainerRequest,
     StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
@@ -165,7 +165,7 @@ impl MachineOperations for Client {
                 kind,
                 resolved_spec: spec.clone(),
             },
-            &MachineSelector::from(machine_id),
+            &MachineTarget::from(machine_id),
             None,
         )
         .await
@@ -180,7 +180,7 @@ impl MachineOperations for Client {
             StartContainerRequest {
                 container_id: *container_id,
             },
-            &MachineSelector::from(machine_id),
+            &MachineTarget::from(machine_id),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
@@ -196,7 +196,7 @@ impl MachineOperations for Client {
             InspectContainerRequest {
                 container_id: *container_id,
             },
-            &MachineSelector::from(machine_id),
+            &MachineTarget::from(machine_id),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
@@ -215,7 +215,7 @@ impl MachineOperations for Client {
                 signal: None,
                 grace_period_seconds,
             },
-            &MachineSelector::from(machine_id),
+            &MachineTarget::from(machine_id),
             stop_rpc_timeout(grace_period_seconds),
         )
         .await
@@ -233,7 +233,7 @@ impl MachineOperations for Client {
                 remove_volumes: true,
                 force: false,
             },
-            &MachineSelector::from(machine_id),
+            &MachineTarget::from(machine_id),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await

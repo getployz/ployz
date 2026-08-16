@@ -102,7 +102,7 @@ fn duplicate_service_names_are_reported_without_selecting_a_winner() {
 #[test]
 fn unmatched_placement_returns_no_eligible_machines() {
     let mut requested = requested(ServiceMode::Global);
-    requested.placement.machines = vec![MachineSelector::parse("missing").unwrap()];
+    requested.placement.machines = vec![MachineTarget::parse("missing").unwrap()];
 
     assert_eq!(
         plan_deploy(

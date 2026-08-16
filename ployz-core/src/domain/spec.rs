@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, IngressHost, MachinePath,
-    MachineSelector, PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
+    MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
     ValueError,
 };
 
@@ -176,9 +176,9 @@ pub struct ConfigMount {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Placement {
-    /// Machine Names or IDs. Resolution remains observer-relative and may be ambiguous.
+    /// Machine Targets. An empty list remains every eligible Machine.
     #[serde(default)]
-    pub machines: Vec<MachineSelector>,
+    pub machines: Vec<MachineTarget>,
 }
 
 /// Docker's healthcheck disable token. Configured commands cannot begin with it.

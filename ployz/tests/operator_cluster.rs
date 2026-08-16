@@ -7,7 +7,7 @@ use ployz::operator::{
 };
 use ployz_core::{
     ContainerAction, ContainerKind, ExecRequestFrame, ExecResponseFrame, LogEntry, LogOrigin,
-    LogsOptions, MachineLogService, MachineSelector, ResolvedServiceSpec, ServiceId,
+    LogsOptions, MachineLogService, MachineTarget, ResolvedServiceSpec, ServiceId,
     StartContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -39,7 +39,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
                 StartContainerRequest {
                     container_id: container.container_id,
                 },
-                Some(&MachineSelector::from(&machine.id)),
+                Some(&MachineTarget::from(&machine.id)),
             )
             .await
             .unwrap();

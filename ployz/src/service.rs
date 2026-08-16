@@ -1,4 +1,4 @@
-use ployz_core::{CreateVolumeRequest, MachineId, MachineSelector, RpcError, op};
+use ployz_core::{CreateVolumeRequest, MachineId, MachineTarget, RpcError, op};
 
 use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 
@@ -16,7 +16,7 @@ pub(crate) async fn create_volume_on_machine(
     client
         .invoke::<op::CreateVolume>(
             request,
-            &MachineSelector::from(machine_id),
+            &MachineTarget::from(machine_id),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await

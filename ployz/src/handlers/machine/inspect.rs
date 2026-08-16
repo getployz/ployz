@@ -5,8 +5,8 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSelector,
-    MachineSuccess, PartialResult, RttObservation, RttStatistics, WireGuardPeer, op,
+    InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSuccess,
+    MachineTarget, PartialResult, RttObservation, RttStatistics, WireGuardPeer, op,
 };
 use serde::Serialize;
 
@@ -81,7 +81,7 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
             };
             for observed in machines {
                 let id = observed.machine.id;
-                let selector = MachineSelector::from(&id);
+                let selector = MachineTarget::from(&id);
                 let request = InspectRequest {
                     include_rtts: true,
                     ..Default::default()
@@ -153,7 +153,7 @@ pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error
     let selector = leaf_matches(root).get_one::<String>("machine").cloned();
     with_client(root, |client| {
         Box::pin(async move {
-            let target = selector.map(MachineSelector::parse).transpose()?;
+            let target = selector.map(MachineTarget::parse).transpose()?;
             let device = client
                 .call::<op::InspectWireguard>(InspectWireGuardRequest {}, target.as_ref())
                 .await?

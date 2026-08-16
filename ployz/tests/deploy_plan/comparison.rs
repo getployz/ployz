@@ -71,7 +71,7 @@ fn spec_comparison_covers_upstream_immutable_field_families() {
     changed.container.user = Some("1000:1000".into());
     changes.push(("user", changed));
     let mut changed = requested.clone();
-    changed.placement.machines = vec![MachineSelector::parse("first").unwrap()];
+    changed.placement.machines = vec![MachineTarget::parse("first").unwrap()];
     changes.push(("placement", changed));
     let mut changed = requested.clone();
     changed.container.resources.devices.push(DeviceMapping {

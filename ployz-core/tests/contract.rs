@@ -10,7 +10,7 @@ use ployz_core::{
     HealthcheckCommand, HealthcheckSpec, HttpProtocol, ImageSummary, IngressHost, IngressHostname,
     InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure,
     MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
-    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSubnet, MachineSuccess,
+    MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
     MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
     Placement, PortPublication, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
     RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
@@ -932,7 +932,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         },
         container: container.clone(),
         placement: Placement {
-            machines: vec![MachineSelector::parse("edge").unwrap()],
+            machines: vec![MachineTarget::parse("edge").unwrap()],
         },
         ports: Vec::new(),
         volumes: vec![volume.clone()],

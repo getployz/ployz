@@ -163,3 +163,27 @@ fn run_forms_share_normalization() {
         run_spec(super::leaf_matches(&nested)).unwrap()
     );
 }
+
+#[test]
+fn run_placement_rejects_star_and_keeps_all_as_identity() {
+    let command = crate::cli::command();
+    let rejected = command
+        .clone()
+        .try_get_matches_from(["ployz", "run", "--machine", "*", "alpine"])
+        .unwrap();
+    assert!(run_spec(super::leaf_matches(&rejected)).is_err());
+
+    let named_all = command
+        .try_get_matches_from(["ployz", "run", "--machine", "all", "alpine"])
+        .unwrap();
+    assert_eq!(
+        run_spec(super::leaf_matches(&named_all))
+            .unwrap()
+            .placement
+            .machines
+            .first()
+            .unwrap()
+            .as_str(),
+        "all"
+    );
+}

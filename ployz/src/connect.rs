@@ -12,7 +12,7 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FanoutFailure, FramingError, MachineSelector, RoutingMetadataError, RpcError,
+    CodecError, FanoutFailure, FramingError, MachineTarget, RoutingMetadataError, RpcError,
     RpcErrorCode, apply_one_target,
 };
 use serde_json::{Value, json};
@@ -372,7 +372,7 @@ pub(crate) fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
     }
 }
 
-pub(crate) fn target_request<T>(payload: T, target: Option<&MachineSelector>) -> tonic::Request<T> {
+pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> tonic::Request<T> {
     let mut request = tonic::Request::new(payload);
     if let Some(target) = target {
         apply_one_target(request.metadata_mut(), target);
@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn non_ascii_machine_targets_use_binary_metadata() {
-        let target = MachineSelector::parse("München edge").unwrap();
+        let target = MachineTarget::parse("München edge").unwrap();
         let request = target_request(ployz_core::OpaquePayload::new(Vec::new()), Some(&target));
 
         assert!(request.metadata().get(ONE_TARGET_HEADER).is_none());
