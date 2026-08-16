@@ -663,6 +663,31 @@ async fn multi_platform_direct_push_retains_success_beside_target_failure() {
     cluster
         .docker(0, &["tag", "busybox:1.37.0", &image])
         .unwrap();
+    let destination = machines.get(1).unwrap();
+    let gateway = destination.subnet.gateway().0;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if cluster
+                .shell(
+                    1,
+                    &format!(
+                        "docker inspect ployz-unregistry >/dev/null 2>&1 && curl --fail --silent http://{gateway}:{UNREGISTRY_PORT}/v2/ >/dev/null"
+                    ),
+                )
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "destination unregistry did not start:\n{}",
+            cluster.logs(1).unwrap()
+        )
+    });
     cluster.docker(0, &["stop", "ployz-unregistry"]).unwrap();
 
     let pushed = cluster.shell(
@@ -673,14 +698,19 @@ async fn multi_platform_direct_push_retains_success_beside_target_failure() {
     assert!(
         failure
             .to_string()
-            .contains(machines.first().unwrap().id.as_str())
+            .contains(machines.first().unwrap().id.as_str()),
+        "unavailable source must be named: {failure}"
     );
     let retained = cluster.images(1, Some(image.clone())).await.unwrap();
     let image = retained
         .images
         .iter()
         .find(|entry| entry.repo_tags.contains(&image))
-        .expect("successful target retained the original image reference");
+        .unwrap_or_else(|| {
+            panic!(
+                "successful target retained the original image reference\npush error: {failure}\nimages: {retained:?}"
+            )
+        });
     assert!(
         image
             .platforms
