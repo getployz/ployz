@@ -68,18 +68,43 @@ impl MachinePublicationGuard<'_> {
             .await
     }
 
-    pub(crate) async fn reconcile_local_containers(
+    pub(crate) async fn local_containers(
         &self,
-        local: &LocalMachineRecord,
         machine_id: &MachineId,
-        current: &LocalContainerSnapshot,
+    ) -> Result<LocalContainerSnapshot, Error> {
+        self.store.local_containers(machine_id).await
+    }
+
+    pub(crate) async fn apply_container_rows(
+        &self,
+        machine_id: &MachineId,
+        deletions: &[ContainerId],
+        upserts: &[ContainerObservation],
     ) -> Result<(), Error> {
-        if local.phase != LocalMachinePhase::Participating {
-            return Ok(());
+        if upserts
+            .iter()
+            .any(|observation| &observation.machine_id != machine_id)
+        {
+            return Err(Error::Protocol(
+                "local container reconciliation crossed Machine authority".into(),
+            ));
         }
-        self.store
-            .reconcile_local_containers_unlocked(machine_id, current)
-            .await
+        let mut statements = deletions
+            .iter()
+            .map(|id| {
+                Statement::new(
+                    "DELETE FROM containers WHERE id = ? AND machine_id = ?",
+                    [json!(id), json!(machine_id)],
+                )
+            })
+            .collect::<Vec<_>>();
+        for observation in upserts {
+            statements.push(container_upsert(observation)?);
+        }
+        if !statements.is_empty() {
+            self.store.api.execute(statements).await?;
+        }
+        Ok(())
     }
 }
 
@@ -223,11 +248,10 @@ impl ReplicatedStore {
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
-        let observation = redacted_container(observation);
         if self.container(&observation.container_id).await? == Some(observation.clone()) {
             return Ok(());
         }
-        self.api.execute([container_upsert(&observation)?]).await?;
+        self.api.execute([container_upsert(observation)?]).await?;
         Ok(())
     }
 
@@ -294,49 +318,6 @@ impl ReplicatedStore {
         Ok(snapshot)
     }
 
-    async fn reconcile_local_containers_unlocked(
-        &self,
-        machine_id: &MachineId,
-        current: &LocalContainerSnapshot,
-    ) -> Result<(), Error> {
-        if current
-            .observations
-            .values()
-            .any(|observation| &observation.machine_id != machine_id)
-        {
-            return Err(Error::Protocol(
-                "local container reconciliation crossed Machine authority".into(),
-            ));
-        }
-        let existing = self.local_containers(machine_id).await?;
-        let current = LocalContainerSnapshot {
-            inventory: current.inventory.clone(),
-            observations: current
-                .observations
-                .iter()
-                .map(|(id, observation)| (*id, redacted_container(observation)))
-                .collect(),
-        };
-        let changes = local_container_changes(&existing, &current);
-        let mut statements = changes
-            .deletions
-            .iter()
-            .map(|id| {
-                Statement::new(
-                    "DELETE FROM containers WHERE id = ? AND machine_id = ?",
-                    [json!(id), json!(machine_id)],
-                )
-            })
-            .collect::<Vec<_>>();
-        for observation in &changes.upserts {
-            statements.push(container_upsert(observation)?);
-        }
-        if !statements.is_empty() {
-            self.api.execute(statements).await?;
-        }
-        Ok(())
-    }
-
     pub async fn containers(&self) -> Result<ReplicatedObservations<ContainerObservation>, Error> {
         let query = self
             .api
@@ -394,16 +375,10 @@ impl ReplicatedStore {
     }
 }
 
-#[derive(Debug, PartialEq)]
-struct LocalContainerChanges {
-    deletions: Vec<ContainerId>,
-    upserts: Vec<ContainerObservation>,
-}
-
 #[derive(Default)]
 pub(crate) struct LocalContainerSnapshot {
-    inventory: BTreeSet<ContainerId>,
-    observations: BTreeMap<ContainerId, ContainerObservation>,
+    pub(crate) inventory: BTreeSet<ContainerId>,
+    pub(crate) observations: BTreeMap<ContainerId, ContainerObservation>,
 }
 
 impl LocalContainerSnapshot {
@@ -425,28 +400,6 @@ impl LocalContainerSnapshot {
     }
 }
 
-fn local_container_changes(
-    existing: &LocalContainerSnapshot,
-    current: &LocalContainerSnapshot,
-) -> LocalContainerChanges {
-    LocalContainerChanges {
-        deletions: existing
-            .inventory
-            .iter()
-            .filter(|id| !current.inventory.contains(id))
-            .cloned()
-            .collect(),
-        upserts: current
-            .observations
-            .values()
-            .filter(|observation| {
-                existing.observations.get(&observation.container_id) != Some(observation)
-            })
-            .cloned()
-            .collect(),
-    }
-}
-
 fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Error> {
     Ok(Statement::new(
         "INSERT INTO containers (id, container, machine_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id, updated_at = excluded.updated_at",
@@ -456,15 +409,6 @@ fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Err
             json!(observation.machine_id),
         ],
     ))
-}
-
-fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
-    let mut observation = observation.clone();
-    observation.resolved_spec.container.environment.clear();
-    if let Some(hook) = &mut observation.resolved_spec.pre_deploy {
-        hook.environment.clear();
-    }
-    observation
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -651,12 +595,10 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use ployz_core::{ContainerId, ContainerObservation, LocalMachinePhase, Machine};
+    use ployz_core::{LocalMachinePhase, Machine};
     use serde_json::json;
 
-    use super::{
-        LocalContainerSnapshot, ReplicatedStore, local_container_changes, redacted_container,
-    };
+    use super::ReplicatedStore;
     use crate::corrosion::ApiClient;
     use crate::machine::{LocalMachineRecord, LocalMachineStore};
 
@@ -716,31 +658,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn container_publication_waits_for_removal_and_rechecks_phase() {
+    async fn container_publication_waits_for_removal() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let store = ReplicatedStore::new(
             ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
         );
-        let (machine, local) = participating_record();
+        let (machine, _local) = participating_record();
         let machine_id = machine.id;
-        let local = Arc::new(Mutex::new(local));
         let first = store.machine_publication().await;
         let clone = store.clone();
-        let task_local = Arc::clone(&local);
         let (started, waiting) = tokio::sync::oneshot::channel();
         let second = tokio::spawn(async move {
             started.send(()).unwrap();
             let publication = clone.machine_publication().await;
-            let local = task_local.lock().unwrap().clone();
             publication
-                .reconcile_local_containers(&local, &machine_id, &LocalContainerSnapshot::default())
+                .apply_container_rows(&machine_id, &[], &[])
                 .await
         });
         waiting.await.unwrap();
         tokio::task::yield_now().await;
         assert!(!second.is_finished());
 
-        local.lock().unwrap().phase = LocalMachinePhase::Resetting;
         drop(first);
         tokio::time::timeout(std::time::Duration::from_secs(1), second)
             .await
@@ -784,107 +722,5 @@ mod tests {
             min_store_version: BTreeMap::new(),
         };
         (machine, local)
-    }
-
-    #[test]
-    fn publication_redacts_service_and_hook_environment_values() {
-        let observation: ContainerObservation = serde_json::from_value(json!({
-            "container_id": "a".repeat(64),
-            "display_name": "api-test",
-            "machine_id": "b".repeat(32),
-            "service_id": "c".repeat(32),
-            "service_name": "api",
-            "kind": "service_container",
-            "runtime": { "state": "created" },
-            "resolved_spec": {
-                "service_id": "c".repeat(32),
-                "name": "api",
-                "mode": { "mode": "replicated", "replicas": 1 },
-                "container": {
-                    "image": "alpine:3.23.3",
-                    "environment": { "TOKEN": "service-secret" },
-                    "pull_policy": "missing"
-                },
-                "pre_deploy": {
-                    "command": ["true"],
-                    "environment": { "TOKEN": "hook-secret" }
-                }
-            }
-        }))
-        .unwrap();
-
-        let redacted = redacted_container(&observation);
-        assert!(redacted.resolved_spec.container.environment.is_empty());
-        assert!(
-            redacted
-                .resolved_spec
-                .pre_deploy
-                .unwrap()
-                .environment
-                .is_empty()
-        );
-        assert_eq!(
-            observation
-                .resolved_spec
-                .container
-                .environment
-                .get("TOKEN")
-                .map(String::as_str),
-            Some("service-secret")
-        );
-    }
-
-    #[test]
-    fn snapshot_diff_upserts_changes_and_deletes_only_absent_ids() {
-        let observation: ContainerObservation = serde_json::from_value(json!({
-            "container_id": "a".repeat(64),
-            "display_name": "api-test",
-            "machine_id": "b".repeat(32),
-            "service_id": "c".repeat(32),
-            "service_name": "api",
-            "kind": "service_container",
-            "runtime": { "state": "created" },
-            "resolved_spec": {
-                "service_id": "c".repeat(32),
-                "name": "api",
-                "mode": { "mode": "replicated", "replicas": 1 },
-                "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
-            }
-        }))
-        .unwrap();
-        let stable = observation.clone();
-        let mut stale = observation.clone();
-        stale.container_id = ContainerId::parse("b".repeat(64)).unwrap();
-        let mut old_changed = observation.clone();
-        old_changed.container_id = ContainerId::parse("c".repeat(64)).unwrap();
-        let mut changed = old_changed.clone();
-        changed.display_name = "renamed".into();
-        let mut new = observation.clone();
-        new.container_id = ContainerId::parse("d".repeat(64)).unwrap();
-
-        let existing = LocalContainerSnapshot {
-            inventory: [stable.clone(), stale.clone(), old_changed.clone()]
-                .into_iter()
-                .map(|item| item.container_id)
-                .collect(),
-            observations: [stable.clone(), stale.clone(), old_changed]
-                .into_iter()
-                .map(|item| (item.container_id, item))
-                .collect::<BTreeMap<_, _>>(),
-        };
-        let current = LocalContainerSnapshot {
-            inventory: [stable.clone(), changed.clone(), new.clone()]
-                .into_iter()
-                .map(|item| item.container_id)
-                .collect(),
-            observations: [stable, changed.clone(), new.clone()]
-                .into_iter()
-                .map(|item| (item.container_id, item))
-                .collect::<BTreeMap<_, _>>(),
-        };
-        let changes = local_container_changes(&existing, &current);
-
-        assert_eq!(changes.deletions, vec![stale.container_id]);
-        assert_eq!(changes.upserts, vec![changed, new]);
     }
 }

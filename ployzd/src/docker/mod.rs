@@ -1,6 +1,7 @@
 mod create;
 mod lifecycle;
 mod managed_service;
+mod observe;
 mod spec_store;
 mod stream;
 mod unregistry;
@@ -13,19 +14,13 @@ use std::{
     collections::HashMap,
     net::Ipv4Addr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::Duration,
-    time::SystemTime,
 };
 
 use bollard::{
     Docker,
     models::{ContainerInspectResponse, HealthConfig, ImageManifestSummaryKindEnum},
-    query_parameters::{
-        EventsOptionsBuilder, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
-    },
+    query_parameters::{ListContainersOptionsBuilder, ListImagesOptionsBuilder},
 };
-use futures_util::StreamExt;
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HealthObservation, HealthcheckSpec, ImageSummary, MachineId,
@@ -34,10 +29,8 @@ use ployz_core::{
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
-use tokio_util::sync::CancellationToken;
 
-use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
-use crate::machine::LocalMachineStore;
+use observe::ObservationSink;
 
 pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -51,8 +44,6 @@ pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
-pub const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
-const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 pub struct LocalDocker {
@@ -109,12 +100,17 @@ impl LocalDocker {
 pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
+    sink: Option<ObservationSink>,
 }
 
 impl ContainerRuntime {
     #[must_use]
     pub fn new(docker: LocalDocker, specs: MachineSpecStore) -> Self {
-        Self { docker, specs }
+        Self {
+            docker,
+            specs,
+            sink: None,
+        }
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {
@@ -367,146 +363,6 @@ struct RawNetworkSettings {
 #[serde(rename_all = "PascalCase")]
 struct RawEndpointSettings {
     ip_address: Option<String>,
-}
-
-pub struct ContainerObserver {
-    runtime: ContainerRuntime,
-    replicated: ReplicatedStore,
-    local: Arc<Mutex<LocalMachineStore>>,
-    machine_id: MachineId,
-    rescan_interval: Duration,
-}
-
-impl ContainerObserver {
-    #[must_use]
-    pub fn new(
-        runtime: ContainerRuntime,
-        replicated: ReplicatedStore,
-        local: Arc<Mutex<LocalMachineStore>>,
-        machine_id: MachineId,
-    ) -> Self {
-        Self {
-            runtime,
-            replicated,
-            local,
-            machine_id,
-            rescan_interval: RESCAN_INTERVAL,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_rescan_interval(mut self, interval: Duration) -> Self {
-        self.rescan_interval = interval;
-        self
-    }
-
-    pub async fn run(&self, shutdown: CancellationToken) -> Result<(), Error> {
-        while !shutdown.is_cancelled() {
-            if let Err(error) = self.watch(&shutdown).await {
-                eprintln!("local Docker observation failed, retrying: {error}");
-                tokio::select! {
-                    () = tokio::time::sleep(Duration::from_secs(1)) => {}
-                    () = shutdown.cancelled() => {}
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn watch(&self, shutdown: &CancellationToken) -> Result<(), Error> {
-        let filters = HashMap::from([
-            ("type", vec!["container"]),
-            ("scope", vec!["local"]),
-            ("label", vec![LABEL_MANAGED]),
-            (
-                "event",
-                vec![
-                    "create",
-                    "start",
-                    "stop",
-                    "pause",
-                    "unpause",
-                    "kill",
-                    "die",
-                    "oom",
-                    "destroy",
-                    "health_status",
-                ],
-            ),
-        ]);
-        let since = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|error| Error::Clock(error.to_string()))?
-            .as_secs()
-            .to_string();
-        let options = EventsOptionsBuilder::default()
-            .since(&since)
-            .filters(&filters)
-            .build();
-        // Bollard opens this lazy stream when first polled. The cursor replays any event
-        // between capturing `since` and completing the initial snapshot.
-        let mut events = Box::pin(self.runtime.docker.client.events(Some(options)));
-        self.sync_once().await?;
-
-        let mut rescans = tokio::time::interval(self.rescan_interval);
-        rescans.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        rescans.tick().await;
-        let mut scan_at = None;
-        loop {
-            tokio::select! {
-                event = events.next() => match event {
-                    Some(Ok(_)) => {
-                        scan_at = Some(tokio::time::Instant::now() + EVENT_DEBOUNCE);
-                    }
-                    Some(Err(error)) => return Err(error.into()),
-                    None => return Err(Error::EventStreamClosed),
-                },
-                _ = rescans.tick() => self.sync_once().await?,
-                () = async {
-                    match scan_at {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    scan_at = None;
-                    self.sync_once().await?;
-                }
-                () = shutdown.cancelled() => return Ok(()),
-            }
-        }
-    }
-
-    async fn sync_once(&self) -> Result<(), Error> {
-        // TODO(UT-120): preserve stale rows when Docker cannot provide a complete inventory.
-        let inventory = self.runtime.docker.managed_container_ids().await?;
-        let mut snapshot = LocalContainerSnapshot::from_inventory(inventory);
-        let container_ids = snapshot.ids().cloned().collect::<Vec<_>>();
-        for container_id in &container_ids {
-            match self
-                .runtime
-                .inspect_managed(container_id, &self.machine_id)
-                .await
-            {
-                Ok(observation) => {
-                    snapshot.observed(observation);
-                }
-                Err(error) => {
-                    eprintln!("failed to inspect managed container {container_id}: {error}")
-                }
-            }
-        }
-        let publication = self.replicated.machine_publication().await;
-        let local = self
-            .local
-            .lock()
-            .map_err(|_| Error::LocalStorePoisoned)?
-            .record()
-            .clone();
-        publication
-            .reconcile_local_containers(&local, &self.machine_id, &snapshot)
-            .await
-            .map_err(Error::from)
-    }
 }
 
 struct ManagedLabels {

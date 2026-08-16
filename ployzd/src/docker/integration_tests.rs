@@ -6,6 +6,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use bollard::{
@@ -621,7 +622,6 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         .await
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
-    let runtime = ContainerRuntime::new(docker.clone(), specs.clone());
     let mut local = crate::machine::LocalMachineStore::open(root.0.join("machine")).unwrap();
     let machine_id = local
         .initialize(
@@ -681,13 +681,14 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         operation.put(&hook, &spec).await.unwrap();
     }
 
-    let observer =
-        ContainerObserver::new(runtime, replicated.clone(), Arc::clone(&local), machine_id)
-            .with_rescan_interval(Duration::from_secs(3));
+    let runtime = ContainerRuntime::new(docker.clone(), specs.clone())
+        .replicating(replicated.clone(), Arc::clone(&local))
+        .with_rescan_interval(Duration::from_secs(3));
     let shutdown = CancellationToken::new();
     let task = tokio::spawn({
         let shutdown = shutdown.clone();
-        async move { observer.run(shutdown).await }
+        let runtime = runtime.clone();
+        async move { runtime.publish_observations(shutdown).await }
     });
 
     wait_for(Duration::from_secs(5), || async {
@@ -820,13 +821,16 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let invalid_socket = root.0.join("not-docker.sock");
     fs::write(&invalid_socket, []).unwrap();
     let failed_docker = LocalDocker::connect_socket(invalid_socket.to_str().unwrap()).unwrap();
-    let failed_observer = ContainerObserver::new(
-        ContainerRuntime::new(failed_docker, specs),
-        replicated.clone(),
-        local,
-        machine_id,
-    );
-    assert!(failed_observer.sync_once().await.is_err());
+    let failed_runtime = ContainerRuntime::new(failed_docker, specs)
+        .replicating(replicated.clone(), Arc::clone(&local));
+    let fail_shutdown = CancellationToken::new();
+    let fail_task = tokio::spawn({
+        let shutdown = fail_shutdown.clone();
+        async move { failed_runtime.publish_observations(shutdown).await }
+    });
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    fail_shutdown.cancel();
+    fail_task.await.unwrap().unwrap();
     assert_eq!(
         replicated.raw_container(&service).await.unwrap(),
         before_failure

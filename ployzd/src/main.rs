@@ -19,7 +19,7 @@ use ployzd::{
         RunningCorrosion, run_machine_publisher_with_restart,
     },
     dns,
-    docker::{ContainerObserver, ContainerRuntime, LocalDocker, MachineSpecStore, SpecStoreError},
+    docker::{ContainerRuntime, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
     machine::{DEFAULT_DATA_DIR, LocalMachineStore, StoreError},
     metrics,
@@ -164,11 +164,12 @@ async fn main() -> Result<(), Error> {
         }
         _ => None,
     };
-    let observer = replicated_store.clone().and_then(|replicated| {
-        containers.clone().map(|runtime| {
-            ContainerObserver::new(runtime, replicated, Arc::clone(&store), local_record.id)
-        })
-    });
+    let containers = match (containers, replicated_store.clone()) {
+        (Some(runtime), Some(replicated)) => {
+            Some(runtime.replicating(replicated, Arc::clone(&store)))
+        }
+        (runtime, _) => runtime,
+    };
     let shutdown = CancellationToken::new();
     let (participating, participating_rx) =
         watch::channel(local_record.phase == LocalMachinePhase::Participating);
@@ -186,7 +187,7 @@ async fn main() -> Result<(), Error> {
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client())),
     )
-    .with_optional_containers(containers)
+    .with_optional_containers(containers.clone())
     .with_caddyfile(caddyfile.clone());
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
@@ -239,9 +240,9 @@ async fn main() -> Result<(), Error> {
         }
     };
     let observer = async {
-        match observer {
-            Some(observer) => observer
-                .run(shutdown.clone())
+        match containers.clone() {
+            Some(runtime) => runtime
+                .publish_observations(shutdown.clone())
                 .await
                 .map_err(io::Error::other),
             None => {
