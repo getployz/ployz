@@ -18,7 +18,9 @@ DOCKER_DAEMON_CONFIG_FILE=${DOCKER_DAEMON_CONFIG_FILE:-/etc/docker/daemon.json}
 DAEMON_REPLACED=false
 DOCKER_DAEMON_CONFIG='{
   "features": { "containerd-snapshotter": true },
-  "live-restore": true
+  "live-restore": true,
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" }
 }'
 
 log() { echo "$1"; }
