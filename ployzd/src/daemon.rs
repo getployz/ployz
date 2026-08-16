@@ -360,10 +360,16 @@ impl Daemon {
     /// Wait until a signal, [`request_stop`](Self::request_stop), or restart-request
     /// finishes shutdown or reset.
     ///
+    /// systemd READY is advertised only after SIGINT/SIGTERM are catchable, so a
+    /// stop that races with READY cannot hit the default terminate action.
+    ///
     /// # Errors
     ///
     /// If a plane or cleanup step fails.
     pub async fn wait(mut self) -> Result<(), Error> {
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut terminate = signal(SignalKind::terminate())?;
+        notify(NotifyState::Ready);
         let mut servers = self.servers;
         let mut completed_servers = None;
         let mut errors = Vec::new();
@@ -372,13 +378,8 @@ impl Daemon {
                 completed_servers = Some(join_servers(result));
                 StopKind::Plane
             },
-            result = shutdown_signal() => match result {
-                Ok(signal) => StopKind::Signal(signal),
-                Err(error) => {
-                    errors.push(error.to_string());
-                    StopKind::WatchFailed("signal")
-                }
-            },
+            _ = interrupt.recv() => StopKind::Signal("SIGINT"),
+            _ = terminate.recv() => StopKind::Signal("SIGTERM"),
             () = self.stop.cancelled() => StopKind::Stop,
             changed = self.reset_rx.changed() => match changed {
                 Ok(()) => StopKind::Restart,
@@ -593,15 +594,6 @@ enum StopKind {
     Stop,
     Restart,
     WatchFailed(&'static str),
-}
-
-async fn shutdown_signal() -> io::Result<&'static str> {
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
-    tokio::select! {
-        _ = interrupt.recv() => Ok("SIGINT"),
-        _ = terminate.recv() => Ok("SIGTERM"),
-    }
 }
 
 fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {

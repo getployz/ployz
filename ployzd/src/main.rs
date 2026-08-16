@@ -15,7 +15,6 @@ use ployzd::{
     diag,
     machine::DEFAULT_DATA_DIR,
 };
-use sd_notify::NotifyState;
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 
 const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
@@ -85,7 +84,6 @@ async fn run() -> Result<(), Error> {
         containers: ContainerMode::Auto,
     })
     .await?;
-    notify(NotifyState::Ready);
     daemon.wait().await
 }
 
@@ -101,10 +99,4 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
         stdout().flush().await
     };
     tokio::try_join!(input, output).map(|_| ())
-}
-
-fn notify(state: NotifyState<'_>) {
-    if let Err(error) = sd_notify::notify(&[state]) {
-        eprintln!("systemd notification failed: {error}");
-    }
 }
