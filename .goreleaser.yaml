@@ -7,6 +7,7 @@ builds:
   - id: ployz-linux
     builder: rust
     binary: ployz
+    skip: '{{ and (ne (index .Env "RELEASE_OS") "") (ne (index .Env "RELEASE_OS") "linux") }}'
     targets:
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-musl
@@ -22,6 +23,7 @@ builds:
     builder: rust
     command: build
     binary: ployz
+    skip: '{{ and (ne (index .Env "RELEASE_OS") "") (ne (index .Env "RELEASE_OS") "darwin") }}'
     targets:
       - x86_64-apple-darwin
       - aarch64-apple-darwin
@@ -34,6 +36,7 @@ builds:
   - id: ployzd
     builder: rust
     binary: ployzd
+    skip: '{{ and (ne (index .Env "RELEASE_OS") "") (ne (index .Env "RELEASE_OS") "linux") }}'
     targets:
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-musl

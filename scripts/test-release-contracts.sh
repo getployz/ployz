@@ -33,8 +33,26 @@ assert_contains "$ROOT/.github/workflows/release.yml" "check-release-tag.sh"
 assert_contains "$ROOT/.github/workflows/release.yml" "release --clean --skip=publish"
 assert_contains "$ROOT/.github/workflows/release.yml" "publish-github-release.sh"
 assert_contains "$ROOT/.github/workflows/release.yml" "uses: ./.github/workflows/release-contracts.yml"
+assert_contains "$ROOT/.github/workflows/release.yml" "needs: [tag, artifacts]"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh macos"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh linux"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh artifacts"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "runs-on: ubuntu-latest"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "runs-on: macos-15"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "RELEASE_OS: linux"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "RELEASE_OS: darwin"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "taiki-e/install-action@v2"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "Swatinem/rust-cache@v2"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "scripts/pack-release.sh"
+assert_contains "$ROOT/.goreleaser.yaml" 'RELEASE_OS'
+if grep -q 'needs: gate' "$ROOT/.github/workflows/release.yml"; then
+    echo "release still blocks artifacts on the CI gate" >&2
+    exit 1
+fi
+if grep -q 'cargo install cargo-zigbuild' "$ROOT/.github/workflows/release-contracts.yml"; then
+    echo "release still compiles cargo-zigbuild from source" >&2
+    exit 1
+fi
 
 manifest=$(mktemp)
 printf 'version = "1.2.3"\n' > "$manifest"
@@ -129,5 +147,34 @@ assert_eq "$(uninstall_disposition docker-volumes)" "retain"
 assert_eq "$(uninstall_disposition ployz.service)" "remove"
 assert_eq "$(uninstall_disposition ployzd)" "remove"
 assert_eq "$(uninstall_disposition ployz-state)" "remove"
+
+PLOYZ_RELEASE_ARTIFACTS_TEST_ONLY=true source "$ROOT/scripts/release-artifacts-needed.sh"
+assert_eq "$(release_artifacts_needed push)" true
+assert_eq "$(release_artifacts_needed workflow_call)" true
+assert_eq "$(release_artifacts_needed pull_request install.sh scripts/install.sh)" false
+assert_eq "$(release_artifacts_needed pull_request .goreleaser.yaml)" true
+assert_eq "$(release_artifacts_needed pull_request scripts/verify-release.sh)" true
+assert_eq "$(release_artifacts_needed pull_request scripts/pack-release.sh)" true
+assert_eq "$(release_artifacts_needed pull_request .github/workflows/release-contracts.yml)" true
+
+pack_dist=$(mktemp -d)
+pack_bin=$(mktemp -d)
+printf 'x' > "$pack_bin/ployz"
+cp "$ROOT/scripts/uninstall.sh" "$pack_bin/ployz-uninstall"
+printf 'x' > "$pack_bin/ployzd"
+chmod 0755 "$pack_bin/ployz" "$pack_bin/ployz-uninstall" "$pack_bin/ployzd"
+for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
+    tar -czf "$pack_dist/$archive" -C "$pack_bin" ployz
+done
+for archive in ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
+    tar -czf "$pack_dist/$archive" -C "$pack_bin" ployzd ployz-uninstall
+done
+bash "$ROOT/scripts/pack-release.sh" "$pack_dist"
+DIST="$pack_dist" bash "$ROOT/scripts/verify-release.sh" artifacts
+if DIST="$pack_dist" bash "$ROOT/scripts/verify-release.sh" linux >/dev/null 2>&1; then
+    echo "linux verification accepted macos archives" >&2
+    exit 1
+fi
+rm -rf "$pack_dist" "$pack_bin"
 
 echo "release contracts passed"

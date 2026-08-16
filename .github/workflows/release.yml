@@ -7,32 +7,25 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
-  gate:
+  tag:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/check-release-tag.sh "${{ github.ref_name }}"
-      - uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          components: clippy, rustfmt
-      - run: cargo fmt --all -- --check
-      - run: scripts/check-evidence-inventories.sh
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --all-features --locked
-      - run: bash scripts/test-release-contracts.sh
-      - run: bash scripts/test-cli-installer.sh
-      - run: bash scripts/test-daemon-lifecycle.sh
 
   artifacts:
-    needs: gate
     uses: ./.github/workflows/release-contracts.yml
+    permissions:
+      contents: read
+      actions: write
     with:
       goreleaser-args: release --clean --skip=publish
 
   publish:
-    needs: artifacts
+    needs: [tag, artifacts]
     runs-on: ubuntu-latest
     permissions:
       contents: write

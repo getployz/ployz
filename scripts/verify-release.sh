@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-DIST="$ROOT/dist"
+DIST=${DIST:-"$ROOT/dist"}
 EXPECTED_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)
 
 fail() { echo "release verification failed: $1" >&2; exit 1; }
@@ -16,50 +16,51 @@ sha256() {
     fi
 }
 
-expected_archives=$(printf '%s\n' \
-    ployz_linux_amd64.tar.gz \
-    ployz_linux_arm64.tar.gz \
-    ployz_macos_amd64.tar.gz \
-    ployz_macos_arm64.tar.gz \
-    ployzd_linux_amd64.tar.gz \
-    ployzd_linux_arm64.tar.gz | sort)
-actual_archives=$(find "$DIST" -maxdepth 1 -name '*.tar.gz' -exec basename {} \; | sort)
-[ "$actual_archives" = "$expected_archives" ] || fail "archive set differs from the six approved names"
+cli_archives() {
+    printf '%s\n' \
+        ployz_linux_amd64.tar.gz \
+        ployz_linux_arm64.tar.gz \
+        ployz_macos_amd64.tar.gz \
+        ployz_macos_arm64.tar.gz
+}
+
+require_archives() {
+    expected=$(printf '%s\n' "$@" | sort)
+    actual=$(find "$DIST" -maxdepth 1 -name '*.tar.gz' -exec basename {} \; | sort)
+    [ "$actual" = "$expected" ] || fail "archive set differs from the approved names"
+    for archive in "$@"; do
+        case $archive in
+            ployzd_*) check_archive "$archive" $'ployz-uninstall\nployzd' ;;
+            *) check_archive "$archive" ployz ;;
+        esac
+    done
+}
 
 check_archive() {
     archive=$1
     expected=$2
-    members=$(tar -tzf "$DIST/$archive" | sort)
+    members=$(tar -tzf "$DIST/$archive" | LC_ALL=C sort)
     [ "$members" = "$expected" ] || fail "$archive members are '$members'"
     while IFS= read -r mode; do
         [ "$mode" = -rwxr-xr-x ] || fail "$archive contains mode $mode instead of 0755"
     done < <(tar -tvzf "$DIST/$archive" | awk '{print $1}')
 }
 
-for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
-    check_archive "$archive" ployz
-done
-for archive in ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
-    check_archive "$archive" $'ployz-uninstall\nployzd'
-done
+check_checksums_and_formula() {
+    checksum_names=$(awk '{print $2}' "$DIST/checksums.txt" | sort)
+    expected_checksums=$(cli_archives | sort)
+    [ "$checksum_names" = "$expected_checksums" ] || fail "checksums.txt must cover only CLI archives"
 
-checksum_names=$(awk '{print $2}' "$DIST/checksums.txt" | sort)
-expected_checksums=$(printf '%s\n' \
-    ployz_linux_amd64.tar.gz \
-    ployz_linux_arm64.tar.gz \
-    ployz_macos_amd64.tar.gz \
-    ployz_macos_arm64.tar.gz | sort)
-[ "$checksum_names" = "$expected_checksums" ] || fail "checksums.txt must cover only CLI archives"
-
-formula=$(find "$DIST" -name 'ployz.rb' -print -quit)
-[ -n "$formula" ] || fail "Homebrew formula was not generated"
-for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
-    grep -Fq "${archive%.tar.gz}" "$formula" || fail "Homebrew formula omits $archive"
-    checksum=$(sha256 "$DIST/$archive")
-    grep -Fq "$checksum" "$formula" || fail "Homebrew formula has no checksum for $archive"
-done
-grep -Fq 'bin.install "ployz"' "$formula" || fail "Homebrew formula does not install ployz"
-grep -Fiq 'clean break' "$formula" || fail "Homebrew formula omits the clean-break statement"
+    formula=$(find "$DIST" -name 'ployz.rb' -print -quit)
+    [ -n "$formula" ] || fail "Homebrew formula was not generated"
+    while IFS= read -r archive; do
+        grep -Fq "${archive%.tar.gz}" "$formula" || fail "Homebrew formula omits $archive"
+        checksum=$(sha256 "$DIST/$archive")
+        grep -Fq "$checksum" "$formula" || fail "Homebrew formula has no checksum for $archive"
+    done < <(cli_archives)
+    grep -Fq 'bin.install "ployz"' "$formula" || fail "Homebrew formula does not install ployz"
+    grep -Fiq 'clean break' "$formula" || fail "Homebrew formula omits the clean-break statement"
+}
 
 run_archive() {
     archive=$1 binary=$2 runner=${3:-}
@@ -77,10 +78,12 @@ run_archive() {
 
 case "${1:-}" in
     macos)
+        require_archives ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz
         run_archive ployz_macos_arm64.tar.gz ployz "arch -arm64"
         run_archive ployz_macos_amd64.tar.gz ployz "arch -x86_64"
         ;;
     linux)
+        require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz
         run_archive ployz_linux_amd64.tar.gz ployz
         run_archive ployzd_linux_amd64.tar.gz ployzd
         run_archive ployz_linux_arm64.tar.gz ployz qemu-aarch64
@@ -102,7 +105,11 @@ case "${1:-}" in
             rm -rf "$directory"
         done
         ;;
-    *) fail "usage: $0 macos|linux" ;;
+    artifacts)
+        require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz
+        check_checksums_and_formula
+        ;;
+    *) fail "usage: $0 macos|linux|artifacts" ;;
 esac
 
-echo "six release artifacts verified on $1"
+echo "release artifacts verified on $1"

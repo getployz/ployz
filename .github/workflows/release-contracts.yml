@@ -16,6 +16,8 @@ on:
       - scripts/install.sh
       - scripts/uninstall.sh
       - scripts/verify-release.sh
+      - scripts/pack-release.sh
+      - scripts/release-artifacts-needed.sh
       - scripts/publish-github-release.sh
       - scripts/check-release-tag.sh
       - scripts/test-release-contracts.sh
@@ -28,6 +30,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 env:
   RUST_VERSION: 1.97.1
@@ -36,8 +39,74 @@ env:
   GORELEASER_VERSION: 2.6.0
 
 jobs:
-  build:
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      artifacts: ${{ steps.decide.outputs.artifacts }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+      - id: decide
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo "artifacts=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mapfile -t files < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          echo "artifacts=$(bash scripts/release-artifacts-needed.sh pull_request "${files[@]}")" >> "$GITHUB_OUTPUT"
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/test-release-contracts.sh
+      - run: bash scripts/test-cli-installer.sh
+      - run: bash scripts/test-daemon-lifecycle.sh
+
+  build-linux:
+    needs: [decide]
+    if: needs.decide.outputs.artifacts == 'true'
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_OS: linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild@${{ env.CARGO_ZIGBUILD_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ runner.os }}
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: v${{ env.GORELEASER_VERSION }}
+          args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }} --skip=homebrew
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist
+            target/x86_64-unknown-linux-musl/release/sqlite-probe
+            target/aarch64-unknown-linux-musl/release/sqlite-probe
+
+  build-macos:
+    needs: [decide]
+    if: needs.decide.outputs.artifacts == 'true'
     runs-on: macos-15
+    env:
+      RELEASE_OS: darwin
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,18 +115,45 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: x86_64-apple-darwin,aarch64-apple-darwin
-      - uses: mlugg/setup-zig@v1
+      - uses: Swatinem/rust-cache@v2
         with:
-          version: ${{ env.ZIG_VERSION }}
-      - run: cargo install cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION" --locked
+          shared-key: release-${{ runner.os }}
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
-          args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }}
-      - run: bash scripts/test-release-contracts.sh && bash scripts/test-cli-installer.sh
+          args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }} --skip=homebrew
       - run: softwareupdate --install-rosetta --agree-to-license
       - run: scripts/verify-release.sh macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin
+          path: |
+            dist
+            .goreleaser.yaml
+
+  pack:
+    needs: [build-linux, build-macos, scripts]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-linux
+          path: linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-darwin
+          path: darwin
+      - run: |
+          mkdir -p dist
+          cp linux/dist/*.tar.gz dist/
+          cp darwin/dist/*.tar.gz dist/
+          bash scripts/pack-release.sh
+          bash scripts/verify-release.sh artifacts
+          mkdir -p target/x86_64-unknown-linux-musl/release target/aarch64-unknown-linux-musl/release
+          cp linux/target/x86_64-unknown-linux-musl/release/sqlite-probe target/x86_64-unknown-linux-musl/release/
+          cp linux/target/aarch64-unknown-linux-musl/release/sqlite-probe target/aarch64-unknown-linux-musl/release/
       - uses: actions/upload-artifact@v4
         with:
           name: release-contracts
@@ -67,14 +163,13 @@ jobs:
             target/aarch64-unknown-linux-musl/release/sqlite-probe
 
   linux-smoke:
-    needs: build
+    needs: [build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: release-contracts
+          name: release-linux
           path: .
       - run: sudo apt-get update && sudo apt-get install -y file qemu-user
       - run: scripts/verify-release.sh linux
-      - run: bash scripts/test-daemon-lifecycle.sh
