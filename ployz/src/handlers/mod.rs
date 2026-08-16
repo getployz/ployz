@@ -30,6 +30,10 @@ pub fn run() -> Result<(), Error> {
 }
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
+    if matches.get_flag("version") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let Some((name, child)) = matches.subcommand() else {
         command.print_help()?;
         println!();
@@ -63,6 +67,19 @@ fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
         matches = child;
     }
     matches
+}
+
+fn version_text(output: Option<&str>, version: &str) -> Result<String, Error> {
+    let Some(template) = output else {
+        return Ok(version.to_owned());
+    };
+    let rendered = template.replace("{{.Version}}", version);
+    if rendered.contains("{{") {
+        return Err(Error::usage(format!(
+            "unusable output template: {template}"
+        )));
+    }
+    Ok(rendered)
 }
 
 fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
@@ -236,13 +253,16 @@ stub_handlers! {
     service_stop(root) { service::change(root, ployz_core::ContainerAction::Stop) } => "service stop";
     start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "start";
     stop(root) { service::change(root, ployz_core::ContainerAction::Stop) } => "stop";
-    version(matches) {
-        let version = env!("CARGO_PKG_VERSION");
-        if let Some(template) = matches.get_one::<String>("output") {
-            println!("{}", template.replace("{{.Version}}", version));
-        } else {
-            println!("{version}");
-        }
+    version(root) {
+        println!(
+            "{}",
+            version_text(
+                leaf_matches(root)
+                    .get_one::<String>("output")
+                    .map(String::as_str),
+                env!("CARGO_PKG_VERSION"),
+            )?
+        );
         Ok(())
     } => "version";
     volume_create(root) { volume::create(root) } => "volume create";
@@ -257,6 +277,19 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn version_output_template_must_be_usable() {
+        let mut command = crate::cli::command();
+        let matches = command
+            .clone()
+            .try_get_matches_from(["ployz", "version", "-o", "{{.Nope}}"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            "unusable output template: {{.Nope}}",
+        );
+    }
 
     #[test]
     fn machine_rename_rejects_an_invalid_machine_name_before_connecting() {
