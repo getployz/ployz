@@ -6,7 +6,7 @@ use std::{
 };
 
 use ployz_core::{
-    CreateDomainRecordsRequest, DnsRecordRequest, DnsRecordType, MachineUpdate, PublicIpUpdate, op,
+    CreateDomainRecordsRequest, DnsRecord, DnsRecordType, MachineUpdate, PublicIpUpdate, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use reqwest::{Client as HttpClient, redirect::Policy};
@@ -193,12 +193,12 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         .call::<op::CreateDomainRecords>(
             CreateDomainRecordsRequest {
                 records: vec![
-                    DnsRecordRequest {
+                    DnsRecord {
                         name: "*".into(),
                         record_type: DnsRecordType::A,
                         values: vec![first_ip.to_string()],
                     },
-                    DnsRecordRequest {
+                    DnsRecord {
                         name: "*".into(),
                         record_type: DnsRecordType::Aaaa,
                         values: vec![Ipv6Addr::LOCALHOST.to_string()],

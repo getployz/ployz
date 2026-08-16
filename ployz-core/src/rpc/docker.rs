@@ -35,18 +35,8 @@ pub struct RemoveVolumeRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct VolumeCreated {
-    pub volume: DockerVolume,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VolumeList {
     pub volumes: Vec<DockerVolume>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct VolumeDetails {
-    pub volume: DockerVolume,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

@@ -49,7 +49,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
-            println!("{}\t{}", machine.machine.name, volume.volume.id.name);
+            println!("{}\t{}", machine.machine.name, volume.id.name);
             Ok(())
         })
     })
@@ -107,8 +107,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                             },
                             Some(&MachineSelector::from(&volume.volume.id.machine_id)),
                         )
-                        .await
-                        .map(|details| details.volume)?;
+                        .await?;
                     println!("{}", serde_json::to_string_pretty(&volume)?);
                     Ok(())
                 }

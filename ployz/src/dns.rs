@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecordRequest, DnsRecordType,
+    CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
     HttpProtocol, InspectRequest, Machine, MachineId, MachineSelector, PortPublication,
     RequestedServiceSpec, op,
 };
@@ -135,9 +135,7 @@ fn reachability_matches(machine_id: &MachineId, status: u16, body: Option<&[u8]>
     status == 200 && body == Some(machine_id.as_str().as_bytes())
 }
 
-fn records_from_machines(
-    machines: &[Machine],
-) -> Result<Vec<DnsRecordRequest>, NoReachableMachines> {
+fn records_from_machines(machines: &[Machine]) -> Result<Vec<DnsRecord>, NoReachableMachines> {
     if machines.is_empty() {
         return Err(NoReachableMachines);
     }
@@ -155,14 +153,14 @@ fn records_from_machines(
     }
     let mut records = Vec::new();
     if !ipv4.is_empty() {
-        records.push(DnsRecordRequest {
+        records.push(DnsRecord {
             name: "*".into(),
             record_type: DnsRecordType::A,
             values: ipv4.into_iter().collect(),
         });
     }
     if !ipv6.is_empty() {
-        records.push(DnsRecordRequest {
+        records.push(DnsRecord {
             name: "*".into(),
             record_type: DnsRecordType::Aaaa,
             values: ipv6.into_iter().collect(),
@@ -221,7 +219,7 @@ mod tests {
     use std::num::NonZeroU16;
 
     use ployz_core::{
-        DnsRecordRequest, DnsRecordType, HttpProtocol, Machine, MachineId, PortPublication,
+        DnsRecord, DnsRecordType, HttpProtocol, Machine, MachineId, PortPublication,
         RequestedServiceSpec,
     };
 
@@ -237,7 +235,7 @@ mod tests {
 
         assert_eq!(
             records_from_machines(std::slice::from_ref(&ipv4)).unwrap(),
-            vec![DnsRecordRequest {
+            vec![DnsRecord {
                 name: "*".into(),
                 record_type: DnsRecordType::A,
                 values: vec!["192.0.2.1".into()],
@@ -245,7 +243,7 @@ mod tests {
         );
         assert_eq!(
             records_from_machines(std::slice::from_ref(&ipv6)).unwrap(),
-            vec![DnsRecordRequest {
+            vec![DnsRecord {
                 name: "*".into(),
                 record_type: DnsRecordType::Aaaa,
                 values: vec!["2001:db8::1".into()],
@@ -254,12 +252,12 @@ mod tests {
         assert_eq!(
             records_from_machines(&[ipv4, ipv6]).unwrap(),
             vec![
-                DnsRecordRequest {
+                DnsRecord {
                     name: "*".into(),
                     record_type: DnsRecordType::A,
                     values: vec!["192.0.2.1".into()],
                 },
-                DnsRecordRequest {
+                DnsRecord {
                     name: "*".into(),
                     record_type: DnsRecordType::Aaaa,
                     values: vec!["2001:db8::1".into()],

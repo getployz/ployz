@@ -1,4 +1,4 @@
-use ployz_core::{DnsRecord, DnsRecordRequest};
+use ployz_core::DnsRecord;
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -59,7 +59,7 @@ impl HostedDns {
     pub(crate) async fn create_records(
         &self,
         store: &ReplicatedStore,
-        records: &[DnsRecordRequest],
+        records: &[DnsRecord],
     ) -> Result<Vec<DnsRecord>, Error> {
         let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
         self.submit_records(&reservation, records).await
@@ -82,7 +82,7 @@ impl HostedDns {
     async fn submit_records(
         &self,
         reservation: &Reservation,
-        records: &[DnsRecordRequest],
+        records: &[DnsRecord],
     ) -> Result<Vec<DnsRecord>, Error> {
         let url = endpoint_url(
             &reservation.endpoint,
@@ -191,7 +191,7 @@ pub(crate) enum Error {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use ployz_core::{DnsRecordRequest, DnsRecordType};
+    use ployz_core::{DnsRecord, DnsRecordType};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -231,12 +231,12 @@ mod tests {
             .submit_records(
                 &reservation,
                 &[
-                    DnsRecordRequest {
+                    DnsRecord {
                         name: "*".into(),
                         record_type: DnsRecordType::A,
                         values: vec!["192.0.2.1".into()],
                     },
-                    DnsRecordRequest {
+                    DnsRecord {
                         name: "*".into(),
                         record_type: DnsRecordType::Aaaa,
                         values: vec!["2001:db8::1".into()],
@@ -248,12 +248,12 @@ mod tests {
         assert_eq!(
             records,
             vec![
-                ployz_core::DnsRecord {
+                DnsRecord {
                     name: "*.opaque.ployz.example".into(),
                     record_type: DnsRecordType::A,
                     values: vec!["203.0.113.9".into()],
                 },
-                ployz_core::DnsRecord {
+                DnsRecord {
                     name: "*.opaque.ployz.example".into(),
                     record_type: DnsRecordType::Aaaa,
                     values: vec!["2001:db8::99".into()],
@@ -317,7 +317,7 @@ mod tests {
         let error = HostedDns::new()
             .submit_records(
                 &reservation,
-                &[DnsRecordRequest {
+                &[DnsRecord {
                     name: "*".into(),
                     record_type: DnsRecordType::A,
                     values: vec!["192.0.2.1".into()],

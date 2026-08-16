@@ -11,9 +11,9 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
-    LocalMachinePhase, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
-    MachineRuntime, MachineToken, MachineUpdate, PublicIpDiscovery, ResolvedServiceSpec,
-    RttObservation, WireGuardDevice, WireGuardPublicKey,
+    DockerVolume, LocalMachinePhase, Machine, MachineId, MachineLogService, MachineName,
+    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, PublicIpDiscovery,
+    ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -313,7 +313,7 @@ pub enum DnsRecordType {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DnsRecordRequest {
+pub struct DnsRecord {
     pub name: String,
     #[serde(rename = "type")]
     pub record_type: DnsRecordType,
@@ -322,7 +322,7 @@ pub struct DnsRecordRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CreateDomainRecordsRequest {
-    pub records: Vec<DnsRecordRequest>,
+    pub records: Vec<DnsRecord>,
 }
 
 /// Commands are closed and own their typed payloads.
@@ -579,14 +579,6 @@ pub struct Domain {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DnsRecord {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub record_type: DnsRecordType,
-    pub values: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DomainRecords {
     pub records: Vec<DnsRecord>,
 }
@@ -691,9 +683,8 @@ define_responses! {
     ContainerDetails(ContainerDetails) => "container_details";
     ContainerCreated(ContainerCreated) => "container_created";
     ContainerChanged(ContainerChanged) => "container_changed";
-    VolumeCreated(VolumeCreated) => "volume_created";
+    DockerVolume(DockerVolume) => "docker_volume";
     VolumeList(VolumeList) => "volume_list";
-    VolumeDetails(VolumeDetails) => "volume_details";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     MachineImages(MachineImages) => "machine_images";
     CaddyConfig(CaddyConfig) => "caddy_config";

@@ -5,19 +5,19 @@ use ployz_core::{
     ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordRequest, DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome,
-    FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest,
-    HealthObservation, ImageSummary, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
-    ListImagesRequest, MachineFailure, MachineId, MachineImages, MachineName, MachinePath,
-    MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess,
-    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
-    Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
-    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome, FanoutResponse,
+    FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
+    ImageSummary, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest,
+    MachineFailure, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
+    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, MachineTokenRequest,
+    MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement,
+    PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
+    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
+    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames,
+    op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -42,9 +42,8 @@ fn response_kinds_match_the_frozen_wire_contract() {
         (ResponseKind::ContainerDetails, "container_details"),
         (ResponseKind::ContainerCreated, "container_created"),
         (ResponseKind::ContainerChanged, "container_changed"),
-        (ResponseKind::VolumeCreated, "volume_created"),
+        (ResponseKind::DockerVolume, "docker_volume"),
         (ResponseKind::VolumeList, "volume_list"),
-        (ResponseKind::VolumeDetails, "volume_details"),
         (ResponseKind::VolumeRemoved, "volume_removed"),
         (ResponseKind::MachineImages, "machine_images"),
         (ResponseKind::CaddyConfig, "caddy_config"),
@@ -380,12 +379,12 @@ fn hosted_dns_contract_keeps_credentials_daemon_side_and_records_exact() {
     );
 
     let records = vec![
-        DnsRecordRequest {
+        DnsRecord {
             name: "*".into(),
             record_type: DnsRecordType::A,
             values: vec!["192.0.2.1".into()],
         },
-        DnsRecordRequest {
+        DnsRecord {
             name: "*".into(),
             record_type: DnsRecordType::Aaaa,
             values: vec!["2001:db8::1".into()],
@@ -696,6 +695,18 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         options: BTreeMap::from([("type".into(), "none".into())]),
         labels: BTreeMap::from([("purpose".into(), "database".into())]),
     };
+    let volume_response = RpcResponse::from(volume.clone());
+    assert_eq!(volume_response.kind(), ResponseKind::DockerVolume);
+    assert_eq!(
+        volume_response.decode::<op::CreateVolume>().unwrap(),
+        volume
+    );
+    assert_eq!(
+        RpcResponse::from(volume.clone())
+            .decode::<op::InspectVolume>()
+            .unwrap(),
+        volume
+    );
     assert_eq!(
         RpcResponse::from(VolumeList {
             volumes: vec![volume.clone()]
