@@ -246,27 +246,24 @@ async fn execute_with<C: MachineOperations>(
 }
 
 async fn execute_operation_sequence<C: MachineOperations>(
-    operations: &[DeployOperation],
+    operations: impl IntoIterator<Item = &DeployOperation>,
     client: &C,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    let mut flattened = Vec::new();
-    for operation in operations {
-        operation.flatten_into(&mut flattened);
-    }
-    for (index, operation) in flattened.iter().enumerate() {
+    let operations: Vec<DeployOperation> = operations.into_iter().cloned().collect();
+    for (index, operation) in operations.iter().enumerate() {
         match execute_operation(operation, client, cancellation).await {
             Ok(()) => {}
             Err(OperationFailure::Ordinary(error)) => {
-                return DeployPlan::failure_outcome_from(&flattened, index, error)
-                    .expect("the failed flattened operation belongs to this plan");
+                return DeployPlan::failure_outcome_from(&operations, index, error)
+                    .expect("the failed operation belongs to this plan");
             }
             Err(OperationFailure::ReplacementHealth {
                 error,
                 compensation,
             }) => {
                 return DeployPlan::replacement_health_failure_outcome_from(
-                    &flattened,
+                    &operations,
                     index,
                     error,
                     *compensation,
@@ -276,7 +273,7 @@ async fn execute_operation_sequence<C: MachineOperations>(
         }
     }
     DeployOutcome {
-        completed: flattened,
+        completed: operations,
         failed: None,
         unexecuted: Vec::new(),
     }
@@ -329,9 +326,6 @@ async fn execute_operation<C: MachineOperations>(
         } => run_hook(client, machine_id, spec, old_hook_containers, cancellation)
             .await
             .map_err(Into::into),
-        DeployOperation::Sequence { .. } => {
-            unreachable!("nested sequences are flattened before execution")
-        }
     }
 }
 

@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn dispatches_the_complete_algebra_and_flattens_nested_sequences() {
+async fn dispatches_the_complete_algebra() {
     let first = machine('1');
     let second = machine('2');
     let old = container('a');
@@ -46,12 +46,10 @@ async fn dispatches_the_complete_algebra_and_flattens_nested_sequences() {
             spec: hook_spec,
             old_hook_containers: vec![(second, hook)],
         },
-        DeployOperation::Sequence {
-            operations: vec![DeployOperation::RunContainer {
-                machine_id: second,
-                spec: service,
-                skip_health_monitor: true,
-            }],
+        DeployOperation::RunContainer {
+            machine_id: second,
+            spec: service,
+            skip_health_monitor: true,
         },
     ];
     let plan = plan(operations.clone());
@@ -86,12 +84,7 @@ async fn dispatches_the_complete_algebra_and_flattens_nested_sequences() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    let mut expected = operations.get(..7).unwrap().to_vec();
-    let DeployOperation::Sequence { operations: tail } = operations.get(7).unwrap() else {
-        unreachable!()
-    };
-    expected.extend(tail.clone());
-    assert_eq!(outcome.completed, expected);
+    assert_eq!(outcome.completed, operations);
     assert!(outcome.failed.is_none());
     assert!(outcome.unexecuted.is_empty());
     client.assert_done();

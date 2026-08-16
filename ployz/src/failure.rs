@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     caddy::CaddyImageError,
-    compose::{ComposeError, ComposePlanError},
+    compose::ComposeError,
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
     deploy::PlanError,
@@ -53,8 +53,6 @@ pub enum Cause {
     Plan(PlanError),
     #[error(transparent)]
     Compose(ComposeError),
-    #[error(transparent)]
-    ComposePlan(ComposePlanError),
     #[error(transparent)]
     MachineUpdate(MachineUpdateError),
     #[error(transparent)]
@@ -165,12 +163,6 @@ impl From<PlanError> for Failure {
 impl From<ComposeError> for Failure {
     fn from(error: ComposeError) -> Self {
         Cause::Compose(error).into()
-    }
-}
-
-impl From<ComposePlanError> for Failure {
-    fn from(error: ComposePlanError) -> Self {
-        Cause::ComposePlan(error).into()
     }
 }
 

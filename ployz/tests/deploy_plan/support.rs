@@ -4,7 +4,7 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    DeployOperation, DeployPlan, DeploySnapshot, FailedOperation, PlanError, PlanOptions,
+    DeployOperation, DeploySnapshot, FailedOperation, PlanError, PlanOptions,
     ReplacementCompensation, ReplacementOperation, RestartAttempt, compare_specs, plan_deploy,
 };
 pub(super) use ployz_core::{

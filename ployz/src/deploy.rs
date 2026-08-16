@@ -13,7 +13,6 @@ mod planning;
 pub(crate) use apply::{apply_requested, deploy_project, deploy_scale, deploy_spec};
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
 pub use planning::plan_deploy;
-pub(crate) use planning::volume_eligible_machine_ids;
 pub use ployz_core::compare_specs;
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
@@ -48,20 +47,45 @@ pub struct PlanOptions {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeployPlan {
+pub struct ServicePlan {
     pub service_id: ServiceId,
     pub is_new_service: bool,
-    pub operation: DeployOperation,
+    pub operations: Vec<DeployOperation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeployPlan {
+    pub volume_operations: Vec<DeployOperation>,
+    pub service_plans: Vec<ServicePlan>,
 }
 
 impl DeployPlan {
     #[must_use]
-    pub fn operations(&self) -> &[DeployOperation] {
-        self.operation.operations()
+    pub fn new(volume_operations: Vec<DeployOperation>, service_plans: Vec<ServicePlan>) -> Self {
+        Self {
+            volume_operations,
+            service_plans,
+        }
+    }
+
+    #[must_use]
+    pub fn operations(&self) -> Vec<&DeployOperation> {
+        self.volume_operations
+            .iter()
+            .chain(
+                self.service_plans
+                    .iter()
+                    .flat_map(|plan| plan.operations.iter()),
+            )
+            .collect()
+    }
+
+    fn cloned_operations(&self) -> Vec<DeployOperation> {
+        self.operations().into_iter().cloned().collect()
     }
 
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
-        Self::failure_outcome_from(self.operations(), completed_count, error)
+        Self::failure_outcome_from(&self.cloned_operations(), completed_count, error)
     }
 
     pub(super) fn failure_outcome_from<E>(
@@ -88,7 +112,7 @@ impl DeployPlan {
         compensation: ReplacementCompensation<E>,
     ) -> Option<DeployOutcome<E>> {
         Self::replacement_health_failure_outcome_from(
-            self.operations(),
+            &self.cloned_operations(),
             completed_count,
             error,
             compensation,
@@ -120,7 +144,7 @@ impl DeployPlan {
     #[must_use]
     pub fn success_outcome<E>(&self) -> DeployOutcome<E> {
         DeployOutcome {
-            completed: self.operations().to_vec(),
+            completed: self.cloned_operations(),
             failed: None,
             unexecuted: Vec::new(),
         }
@@ -201,42 +225,6 @@ pub enum DeployOperation {
         spec: ResolvedServiceSpec,
         old_hook_containers: Vec<(MachineId, ContainerId)>,
     },
-    Sequence {
-        operations: Vec<DeployOperation>,
-    },
-}
-
-impl DeployOperation {
-    #[must_use]
-    pub fn operations(&self) -> &[DeployOperation] {
-        match self {
-            Self::Sequence { operations } => operations,
-            operation @ (Self::CreateVolume { .. }
-            | Self::RunContainer { .. }
-            | Self::StopContainer { .. }
-            | Self::RemoveContainer { .. }
-            | Self::ReplaceContainer(..)
-            | Self::StopHook { .. }
-            | Self::RunHook { .. }) => std::slice::from_ref(operation),
-        }
-    }
-
-    fn flatten_into(&self, flattened: &mut Vec<Self>) {
-        match self {
-            Self::Sequence { operations } => {
-                for operation in operations {
-                    operation.flatten_into(flattened);
-                }
-            }
-            operation @ (Self::CreateVolume { .. }
-            | Self::RunContainer { .. }
-            | Self::StopContainer { .. }
-            | Self::RemoveContainer { .. }
-            | Self::ReplaceContainer(..)
-            | Self::StopHook { .. }
-            | Self::RunHook { .. }) => flattened.push(operation.clone()),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -257,4 +245,18 @@ pub enum PlanError {
     UnknownConfigName { name: String },
     #[error("mounted Service Volumes disagree about Docker Volume {name}")]
     ConflictingDockerVolumeDefinitions { name: DockerVolumeName },
+    #[error("plan service '{service}': {source}")]
+    Service {
+        service: String,
+        #[source]
+        source: Box<PlanError>,
+    },
+    #[error(
+        "Docker Volume {name} cannot be shared by global service '{global}' and replicated service '{replicated}'"
+    )]
+    MixedVolumeModes {
+        name: DockerVolumeName,
+        global: String,
+        replicated: String,
+    },
 }

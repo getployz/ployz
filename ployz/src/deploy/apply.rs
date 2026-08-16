@@ -182,7 +182,6 @@ fn operation_summary(operation: &DeployOperation) -> String {
         DeployOperation::RunHook {
             machine_id, spec, ..
         } => format!("run pre-deploy hook for {} on {machine_id}", spec.name),
-        DeployOperation::Sequence { operations } => format!("{} operations", operations.len()),
     }
 }
 

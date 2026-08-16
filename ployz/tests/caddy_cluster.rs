@@ -447,15 +447,17 @@ async fn deploy(
         volumes: Vec::new(),
     };
     let plan = ployz::deploy::plan_deploy(
-        requested,
+        [requested],
         &snapshot,
-        ServiceId::random(),
         ployz::deploy::PlanOptions::default(),
     )
     .unwrap();
     let outcome = ployz::deploy::execute_plan(&plan, client, &CancellationToken::new()).await;
     assert!(outcome.failed.is_none(), "{outcome:?}");
-    plan.service_id
+    plan.service_plans
+        .first()
+        .expect("single-spec Deploy Plan")
+        .service_id
 }
 
 async fn wait_down(cluster: &Cluster, machine: &Machine) {

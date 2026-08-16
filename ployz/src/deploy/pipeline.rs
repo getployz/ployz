@@ -10,13 +10,13 @@ use std::time::SystemTime;
 
 use ployz_core::{
     ListMachinesRequest, MachineId, MachineObservation, PartialResult, PortPublication,
-    RequestedServiceSpec, ResolvedServiceSpec, RpcError, ServiceId, ServiceMode, UpdateConfig, op,
+    RequestedServiceSpec, ResolvedServiceSpec, RpcError, ServiceMode, UpdateConfig, op,
     select_service,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    compose::{BuildService, ComposeProject, plan_compose_deploy},
+    compose::{BuildService, ComposeProject},
     connect::Client,
     failure::Failure,
     image::PushError,
@@ -82,14 +82,9 @@ pub(super) async fn plan_spec(
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let mut requested = requested.clone();
     expand_ingress(client, std::iter::once(&mut requested)).await?;
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        ServiceId::random(),
-        plan_options(false, false),
-    )?;
+    let plan = plan_deploy([&requested], &snapshot, plan_options(false, false))?;
     Ok(DeployPreview {
-        operations: plan.operations().to_vec(),
+        operations: plan.operations().into_iter().cloned().collect(),
         warnings,
     })
 }
@@ -122,14 +117,10 @@ pub(super) async fn plan_project(
     project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     expand_ingress(client, project.services.values_mut()).await?;
-    let compose = plan_compose_deploy(project, &snapshot, options)?;
+    let plan = plan_deploy(project.dependency_order()?, &snapshot, options)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
     Ok(DeployPreview {
-        operations: compose
-            .operations()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>(),
+        operations: plan.operations().into_iter().cloned().collect(),
         warnings,
     })
 }
@@ -142,7 +133,7 @@ pub(super) async fn plan_scale(
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let operations = match scale_plan(&snapshot, selector, replicas)? {
-        Some(plan) => plan.operations().to_vec(),
+        Some(plan) => plan.operations().into_iter().cloned().collect(),
         None => Vec::new(),
     };
     Ok(DeployPreview {
@@ -190,9 +181,8 @@ fn scale_plan(
     let mut requested = requested_from_resolved(&observed_container.resolved_spec);
     requested.mode = ServiceMode::Replicated { replicas };
     Ok(Some(plan_deploy(
-        &requested,
+        [&requested],
         snapshot,
-        service.service_id,
         plan_options(false, false),
     )?))
 }

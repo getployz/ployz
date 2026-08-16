@@ -9,19 +9,24 @@ fn new_replicated_service_runs_the_requested_count_across_available_machines() {
         ..Default::default()
     };
 
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('a'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
-    assert!(plan.is_new_service);
-    assert_eq!(plan.service_id, service_id('a'));
+    assert_eq!(plan.service_plans.len(), 1);
+    let service = plan
+        .service_plans
+        .first()
+        .expect("new replicated service yields one Service Plan");
+    assert!(service.is_new_service);
+    assert!(
+        service.operations.iter().all(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { spec, .. } if spec.service_id == service.service_id
+        )),
+        "every RunContainer op must carry the generated Service ID"
+    );
     assert_eq!(plan.operations().len(), 2);
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [
             DeployOperation::RunContainer { machine_id: first, .. },
             DeployOperation::RunContainer { machine_id: second, .. },
@@ -34,18 +39,17 @@ fn new_container_keeps_an_explicit_stop_first_order_in_its_resolved_spec() {
     let mut requested = requested(ServiceMode::Global);
     requested.update.order = Some(UpdateOrder::StopFirst);
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [DeployOperation::RunContainer { spec, .. }]
             if spec.update.order == UpdateOrder::StopFirst
     ));
@@ -63,16 +67,15 @@ fn matching_running_container_is_left_untouched() {
         ..Default::default()
     };
 
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('f'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
-    assert!(!plan.is_new_service);
-    assert_eq!(plan.service_id, current_service_id);
+    assert_eq!(plan.service_plans.len(), 1);
+    assert_eq!(
+        plan.service_plans
+            .first()
+            .map(|service| (service.service_id, service.is_new_service)),
+        Some((current_service_id, false))
+    );
     assert!(plan.operations().is_empty());
 }
 
@@ -91,16 +94,10 @@ fn changed_running_container_is_replaced_on_its_machine() {
     };
 
     requested.update.order = Some(UpdateOrder::StartFirst);
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('f'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [DeployOperation::ReplaceContainer(ReplacementOperation {
             machine_id: target_machine_id,
             old_container_id,
@@ -126,19 +123,18 @@ fn global_active_non_running_container_is_replaced_before_reusing_its_host_port(
         let mut old = container('b', '1', &current, &current_service_id);
         old.runtime = runtime;
         let plan = plan_deploy(
-            &requested,
+            [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
                 containers: vec![old],
                 ..Default::default()
             },
-            service_id('f'),
             PlanOptions::default(),
         )
         .unwrap();
 
         assert!(matches!(
-            plan.operations(),
+            plan.operations().as_slice(),
             [DeployOperation::ReplaceContainer(ReplacementOperation {
                 old_container_id,
                 spec,
@@ -164,16 +160,10 @@ fn replicated_plan_removes_containers_beyond_the_requested_count() {
         ..Default::default()
     };
 
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('f'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [DeployOperation::RemoveContainer {
             machine_id: target_machine_id,
             container_id: removed,
@@ -193,13 +183,12 @@ fn changing_replica_count_keeps_matching_existing_containers() {
     };
     let current_service_id = service_id('a');
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &current_service_id)],
             ..Default::default()
         },
-        service_id('f'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -226,17 +215,11 @@ fn global_plan_is_exactly_one_container_per_currently_available_machine() {
         ..Default::default()
     };
 
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('f'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert_eq!(
         plan.operations(),
-        vec![DeployOperation::RemoveContainer {
+        vec![&DeployOperation::RemoveContainer {
             machine_id: machine_id('2'),
             container_id: container_id('c'),
         }]
@@ -256,13 +239,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
         ..Default::default()
     };
 
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('a'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     let targets = plan
         .operations()
@@ -274,8 +251,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::Sequence { .. }) => panic!("unexpected operation: {other:?}"),
+            | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
         })
         .collect::<Vec<_>>();
     assert_eq!(targets, vec![machine_id('1'), machine_id('2')]);
@@ -300,13 +276,7 @@ fn mounted_docker_volume_anchors_all_replicas_to_its_machine() {
         ..Default::default()
     };
 
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('a'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(plan.operations().iter().all(|operation| matches!(
         operation,
@@ -326,16 +296,10 @@ fn missing_mounted_volume_is_created_before_replicas_on_one_machine() {
         ..Default::default()
     };
 
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('a'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: volume_machine, .. },
             DeployOperation::RunContainer { machine_id: first, .. },
@@ -383,13 +347,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
             });
         }
 
-        let plan = plan_deploy(
-            &requested,
-            &snapshot,
-            service_id('f'),
-            PlanOptions::default(),
-        )
-        .unwrap();
+        let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
         let order = plan
             .operations()
             .iter()
@@ -400,8 +358,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::StopHook { .. }
-                | DeployOperation::RunHook { .. }
-                | DeployOperation::Sequence { .. } => None,
+                | DeployOperation::RunHook { .. } => None,
             })
             .unwrap();
         assert_eq!(order, expected, "{name}");
@@ -415,7 +372,7 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
     let mut current = requested.clone();
     current.container.image = "ghcr.io/getployz/api:old".into();
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &service_id('a'))],
@@ -428,13 +385,12 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
                 options: Default::default(),
             }],
         },
-        service_id('f'),
         PlanOptions::default(),
     )
     .unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })]
             if spec.update.order == UpdateOrder::StopFirst
     ));

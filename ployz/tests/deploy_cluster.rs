@@ -4,7 +4,7 @@ use ployz::{
     connect::Client,
     deploy::{
         DeployOperation, DeployPlan, ExecutionError, FailedOperation, HookFailure,
-        ReplacementCompensation, ReplacementOperation, execute_plan,
+        ReplacementCompensation, ReplacementOperation, ServicePlan, execute_plan,
     },
 };
 use ployz_core::{
@@ -383,11 +383,14 @@ fn failed_hook_id(
 }
 
 fn deploy_plan(service_id: ServiceId, operations: Vec<DeployOperation>) -> DeployPlan {
-    DeployPlan {
-        service_id,
-        is_new_service: true,
-        operation: DeployOperation::Sequence { operations },
-    }
+    DeployPlan::new(
+        Vec::new(),
+        vec![ServicePlan {
+            service_id,
+            is_new_service: true,
+            operations,
+        }],
+    )
 }
 
 fn named_volume(reference: &str, name: &str) -> ServiceVolume {

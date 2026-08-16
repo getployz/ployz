@@ -9,9 +9,8 @@ fn missing_volume_and_config_references_are_rejected_before_placement() {
     });
     assert_eq!(
         plan_deploy(
-            &missing_volume,
+            [&missing_volume],
             &DeploySnapshot::default(),
-            service_id('a'),
             PlanOptions::default(),
         ),
         Err(PlanError::UnknownVolumeReference {
@@ -32,9 +31,8 @@ fn missing_volume_and_config_references_are_rejected_before_placement() {
         });
     assert_eq!(
         plan_deploy(
-            &missing_config,
+            [&missing_config],
             &DeploySnapshot::default(),
-            service_id('a'),
             PlanOptions::default(),
         ),
         Err(PlanError::UnknownConfigName {
@@ -48,7 +46,7 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
             volumes: vec![ployz::deploy::ObservedDockerVolume {
@@ -61,13 +59,12 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
             }],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: target, .. },
             DeployOperation::RunContainer { .. },
@@ -91,9 +88,8 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
     };
     let targets = |placement_seed| {
         plan_deploy(
-            &requested,
+            [&requested],
             &snapshot,
-            service_id('a'),
             PlanOptions {
                 placement_seed,
                 ..Default::default()
@@ -109,8 +105,7 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::Sequence { .. }) => panic!("unexpected operation: {other:?}"),
+            | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
         })
         .collect::<Vec<_>>()
     };
@@ -138,23 +133,31 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
     });
 
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [
             DeployOperation::CreateVolume { .. },
             DeployOperation::RunContainer { .. }
         ]
     ));
+}
+
+#[test]
+fn empty_spec_iterator_returns_an_empty_plan() {
+    let plan = plan_deploy([], &DeploySnapshot::default(), PlanOptions::default()).unwrap();
+
+    assert!(plan.volume_operations.is_empty());
+    assert!(plan.service_plans.is_empty());
+    assert!(plan.operations().is_empty());
 }
 
 #[test]
@@ -184,12 +187,11 @@ fn conflicting_named_volume_aliases_are_rejected() {
 
     assert_eq!(
         plan_deploy(
-            &requested,
+            [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
                 ..Default::default()
             },
-            service_id('a'),
             PlanOptions::default(),
         ),
         Err(PlanError::ConflictingDockerVolumeDefinitions {

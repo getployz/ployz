@@ -6,7 +6,7 @@ use std::{
 };
 
 use ployz::{
-    compose::{parse_normalized, plan_compose_deploy},
+    compose::parse_normalized,
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
     deploy::{
@@ -307,8 +307,8 @@ volumes: {data: {name: compose_data}}
         ".",
     )
     .unwrap();
-    let plan = plan_compose_deploy(
-        &compose,
+    let plan = plan_deploy(
+        compose.dependency_order().unwrap(),
         &live_snapshot(client, machines).await,
         PlanOptions::default(),
     )
@@ -324,9 +324,8 @@ volumes: {data: {name: compose_data}}
         &["auto_data"],
     );
     let plan = plan_deploy(
-        &replicated,
+        [&replicated],
         &live_snapshot(client, machines).await,
-        ServiceId::random(),
         PlanOptions::default(),
     )
     .unwrap();
@@ -335,7 +334,7 @@ volumes: {data: {name: compose_data}}
         Some(DeployOperation::CreateVolume { .. })
     ));
     assert_eq!(plan.operations().len(), 4);
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     client
         .call::<op::CreateVolume>(
@@ -357,14 +356,13 @@ volumes: {data: {name: compose_data}}
         &["multi_existing", "multi_missing"],
     );
     let plan = plan_deploy(
-        &multiple_with_one_missing,
+        [&multiple_with_one_missing],
         &live_snapshot(client, machines).await,
-        ServiceId::random(),
         PlanOptions::default(),
     )
     .unwrap();
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [DeployOperation::CreateVolume { machine_id, volume }, rest @ ..]
             if machine_id == &first_machine.machine.id
                 && matches!(&volume.source, VolumeSource::Named { name, .. } if name.as_str() == "multi_missing")
@@ -372,13 +370,12 @@ volumes: {data: {name: compose_data}}
                     DeployOperation::RunContainer { machine_id, .. }
                         if machine_id == &first_machine.machine.id))
     ));
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     let global = requested("global", ServiceMode::Global, &["global_data"]);
     let plan = plan_deploy(
-        &global,
+        [&global],
         &live_snapshot(client, machines).await,
-        ServiceId::random(),
         PlanOptions::default(),
     )
     .unwrap();
@@ -389,7 +386,7 @@ volumes: {data: {name: compose_data}}
             .count(),
         2
     );
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     client
         .call::<op::CreateVolume>(
@@ -405,9 +402,8 @@ volumes: {data: {name: compose_data}}
         .unwrap();
     let global_partial = requested("global-partial", ServiceMode::Global, &["global_partial"]);
     let plan = plan_deploy(
-        &global_partial,
+        [&global_partial],
         &live_snapshot(client, machines).await,
-        ServiceId::random(),
         PlanOptions::default(),
     )
     .unwrap();
@@ -423,13 +419,12 @@ volumes: {data: {name: compose_data}}
             .count(),
         1
     );
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     let global_existing = requested("global-existing", ServiceMode::Global, &["global_data"]);
     let plan = plan_deploy(
-        &global_existing,
+        [&global_existing],
         &live_snapshot(client, machines).await,
-        ServiceId::random(),
         PlanOptions::default(),
     )
     .unwrap();
@@ -438,7 +433,7 @@ volumes: {data: {name: compose_data}}
             .iter()
             .all(|operation| !matches!(operation, DeployOperation::CreateVolume { .. }))
     );
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     for (name, machine) in [
         ("intersect_a", first_machine),
@@ -467,19 +462,13 @@ volumes: {data: {name: compose_data}}
         },
         &["intersect_a", "intersect_b"],
     );
-    let plan = plan_deploy(
-        &intersection,
-        &snapshot,
-        ServiceId::random(),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&intersection], &snapshot, PlanOptions::default()).unwrap();
     assert!(plan.operations().iter().all(|operation| matches!(
         operation,
         DeployOperation::RunContainer { machine_id, .. }
             if machine_id == &first_machine.machine.id
     )));
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     let split = requested(
         "split",
@@ -489,12 +478,7 @@ volumes: {data: {name: compose_data}}
         &["split_a", "split_b"],
     );
     assert_eq!(
-        plan_deploy(
-            &split,
-            &snapshot,
-            ServiceId::random(),
-            PlanOptions::default(),
-        ),
+        plan_deploy([&split], &snapshot, PlanOptions::default(),),
         Err(PlanError::NoEligibleMachines)
     );
 }
@@ -564,8 +548,7 @@ async fn execute(client: &mut ployz::connect::Client, operations: Vec<&DeployOpe
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::Sequence { .. }) => {
+            | DeployOperation::RunHook { .. }) => {
                 panic!("new-deploy test received {operation:?}")
             }
         }
