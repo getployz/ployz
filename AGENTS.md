@@ -1,7 +1,7 @@
 # Change workflow
 
-Use `$implement` for every change in this codebase.
+Use `$implement` for Rust changes.
 
-For `$implement`, `$four-axis-review` supersedes `$code-review`. After implementation, follow its incremental rerun loop until all four axes pass. Skip `$four-axis-review` for doc-only changes.
+For `$implement`, `$four-axis-review` supersedes `$code-review`. After implementation, follow its incremental rerun loop until all four axes pass.
 
 Prefer simple diagrams. Use `$i-have-adhd` output.
