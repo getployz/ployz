@@ -63,7 +63,9 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
         .is_err()
     );
 
-    let first = select_exec_container(&observed, None).unwrap();
+    let first = select_exec_container(&observed, None)
+        .unwrap()
+        .as_observation();
     for selector in [
         first.display_name.clone(),
         first.container_id.to_string(),
@@ -218,7 +220,7 @@ async fn assert_service_logs(
             .iter()
             .filter_map(|entry| match &entry.metadata.origin {
                 LogOrigin::Service { container_id, .. }
-                    if *container_id == container.container_id
+                    if *container_id == container.as_observation().container_id
                         && matches!(
                             entry.stream,
                             ployz_core::LogStream::Stdout | ployz_core::LogStream::Stderr
@@ -236,7 +238,7 @@ async fn assert_service_logs(
         assert_eq!(
             actual
                 .iter()
-                .filter(|id| **id == container.container_id)
+                .filter(|id| **id == container.as_observation().container_id)
                 .count(),
             2
         );
@@ -276,7 +278,7 @@ async fn assert_service_logs(
         .is_err()
     );
 
-    let selected = observed.containers.first().unwrap();
+    let selected = observed.containers.first().unwrap().as_observation();
     for selector in [
         selected.container_id.to_string(),
         selected.display_name.clone(),

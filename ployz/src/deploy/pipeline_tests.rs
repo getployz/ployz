@@ -101,6 +101,38 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
 }
 
 #[test]
+fn scale_plan_accepts_only_service_containers() {
+    let service_id = ServiceId::random();
+    let replicas = |count: u32| NonZeroU32::new(count).unwrap();
+    let replicated = ServiceMode::Replicated {
+        replicas: replicas(1),
+    };
+    let mut hook = observation(&service_id, replicated.clone(), "hook", '2');
+    hook.kind = ContainerKind::PreDeployHook;
+    let snapshot = |containers: Vec<ContainerObservation>| DeploySnapshot {
+        machines: vec![machine()],
+        containers,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        scale_plan(&snapshot(vec![hook.clone()]), "api", replicas(2))
+            .unwrap_err()
+            .to_string(),
+        "cannot scale a service without regular containers"
+    );
+    assert!(
+        scale_plan(
+            &snapshot(vec![observation(&service_id, replicated, "v1", '1'), hook]),
+            "api",
+            replicas(1),
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
 fn resolved_scale_input_changes_only_replicas() {
     let requested: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
         "name": "api",

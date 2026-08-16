@@ -9,11 +9,11 @@ use std::{
 
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
-    ExecOptions, ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry, LogStream,
-    LogsOptions, MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
-    MachineTarget, MembershipObservation, OpaquePayload, ServiceObservation, StreamProtocolError,
-    op, resolve_machine_selectors, select_service,
+    ContainerId, ContainerLogsRequest, ContainerObservation, ContainerRef, ExecConfig, ExecOptions,
+    ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry, LogStream, LogsOptions,
+    MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
+    MachineTarget, MembershipObservation, OpaquePayload, ServiceContainer, ServiceObservation,
+    StreamProtocolError, op, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -183,36 +183,29 @@ pub fn exec_options(command: Vec<String>, mode: ExecMode) -> Result<ExecOptions,
 pub fn select_exec_container<'a>(
     service: &'a ServiceObservation,
     selector: Option<&str>,
-) -> Result<&'a ContainerObservation, ContainerSelectorError> {
-    let regular = service
-        .containers
-        .iter()
-        .filter(|container| container.kind == ContainerKind::ServiceContainer)
-        .collect::<Vec<_>>();
+) -> Result<&'a ServiceContainer, ContainerSelectorError> {
     let Some(selector) = selector.filter(|selector| !selector.is_empty()) else {
-        return regular
-            .into_iter()
-            .next()
+        return service
+            .containers
+            .first()
             .ok_or(ContainerSelectorError::NoRegularContainer);
     };
-    resolve_container_selector(&regular, selector)
+    resolve_container_selector(&service.containers, selector)
 }
 
-fn resolve_container_selector<'a>(
-    containers: &[&'a ContainerObservation],
+fn resolve_container_selector<'a, T: AsRef<ContainerObservation>>(
+    containers: &'a [T],
     selector: &str,
-) -> Result<&'a ContainerObservation, ContainerSelectorError> {
+) -> Result<&'a T, ContainerSelectorError> {
     if let Some(container) = containers
         .iter()
-        .copied()
-        .find(|container| container.container_id.as_str() == selector)
+        .find(|container| container.as_ref().container_id.as_str() == selector)
     {
         return Ok(container);
     }
     let named = containers
         .iter()
-        .copied()
-        .filter(|container| container.display_name == selector)
+        .filter(|container| container.as_ref().display_name == selector)
         .collect::<Vec<_>>();
     match named.as_slice() {
         [container] => return Ok(container),
@@ -222,15 +215,20 @@ fn resolve_container_selector<'a>(
                 selector: selector.to_owned(),
                 container_ids: named
                     .into_iter()
-                    .map(|container| container.container_id)
+                    .map(|container| container.as_ref().container_id)
                     .collect(),
             });
         }
     }
     let prefixed = containers
         .iter()
-        .copied()
-        .filter(|container| container.container_id.as_str().starts_with(selector))
+        .filter(|container| {
+            container
+                .as_ref()
+                .container_id
+                .as_str()
+                .starts_with(selector)
+        })
         .collect::<Vec<_>>();
     match prefixed.as_slice() {
         [] => Err(ContainerSelectorError::NotFound {
@@ -241,7 +239,7 @@ fn resolve_container_selector<'a>(
             selector: selector.to_owned(),
             container_ids: prefixed
                 .into_iter()
-                .map(|container| container.container_id)
+                .map(|container| container.as_ref().container_id)
                 .collect(),
         }),
     }
@@ -313,18 +311,17 @@ pub fn parse_proxy_ports(value: &str) -> Result<ProxyPorts, OperatorError> {
 
 pub fn select_proxy_container(
     service: &ServiceObservation,
-) -> Result<&ContainerObservation, OperatorError> {
+) -> Result<&ServiceContainer, OperatorError> {
     service
         .containers
         .iter()
         .find(|container| {
-            container.kind == ContainerKind::ServiceContainer
-                && matches!(
-                    container.runtime,
-                    ployz_core::ContainerRuntimeObservation::Running {
-                        health: HealthObservation::Healthy | HealthObservation::NotConfigured
-                    }
-                )
+            matches!(
+                container.as_observation().runtime,
+                ployz_core::ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy | HealthObservation::NotConfigured
+                }
+            )
         })
         .ok_or(OperatorError::NoHealthyContainer)
 }
@@ -352,7 +349,7 @@ pub async fn open_exec(
 ) -> Result<ExecSession, OperatorError> {
     let live = client.live_services().await?;
     let service = select_service(&live.services, service_selector)?;
-    let container = select_exec_container(service, container_selector)?;
+    let container = select_exec_container(service, container_selector)?.as_observation();
     let machine_id = container.machine_id;
     let config = ExecRequestFrame::Config(ExecConfig {
         container_id: container.container_id,
@@ -405,7 +402,7 @@ pub async fn open_service_logs(
         let containers = select_log_containers(service, &arg.containers)?;
         let containers = containers
             .into_iter()
-            .filter(|container| machine_ids.contains(&container.machine_id))
+            .filter(|container| machine_ids.contains(&container.as_observation().machine_id))
             .collect::<Vec<_>>();
         if containers.is_empty() {
             return Err(OperatorError::NoContainersOnMachines {
@@ -413,13 +410,14 @@ pub async fn open_service_logs(
             });
         }
         for container in containers {
+            let observation = container.as_observation();
             let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                container_id: container.container_id,
+                container_id: observation.container_id,
                 options: options.clone(),
             })
             .encode()?;
-            let identity = format!("{}/{}", arg.service, container.display_name);
-            let target = MachineTarget::from(&container.machine_id);
+            let identity = format!("{}/{}", arg.service, observation.display_name);
+            let target = MachineTarget::from(&observation.machine_id);
             // TODO(UT-082): earlier Container log streams intentionally survive until the
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
@@ -431,8 +429,8 @@ pub async fn open_service_logs(
             .await
             {
                 return Err(OperatorError::OpenContainerLogs {
-                    container_id: container.container_id,
-                    machine_id: container.machine_id,
+                    container_id: observation.container_id,
+                    machine_id: observation.machine_id,
                     source: Box::new(error.into()),
                 });
             }
@@ -547,22 +545,17 @@ pub(crate) async fn open_log_input(
 pub(crate) fn select_log_containers<'a>(
     service: &'a ServiceObservation,
     selectors: &[String],
-) -> Result<Vec<&'a ContainerObservation>, OperatorError> {
-    let all = service
-        .containers
-        .iter()
-        .chain(&service.hook_containers)
-        .collect::<Vec<_>>();
+) -> Result<Vec<ContainerRef<'a>>, OperatorError> {
+    let all = service.members().collect::<Vec<_>>();
     if selectors.is_empty() {
         return Ok(all);
     }
     let mut selected = Vec::new();
     for selector in selectors {
-        let container = resolve_container_selector(&all, selector)?;
-        if !selected
-            .iter()
-            .any(|selected: &&ContainerObservation| selected.container_id == container.container_id)
-        {
+        let container = *resolve_container_selector(&all, selector)?;
+        if !selected.iter().any(|selected: &ContainerRef<'a>| {
+            selected.as_observation().container_id == container.as_observation().container_id
+        }) {
             selected.push(container);
         }
     }

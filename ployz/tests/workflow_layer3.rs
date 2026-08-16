@@ -10,7 +10,7 @@ use ployz::{
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
 };
-use ployz_core::{ContainerKind, ListMachinesRequest, PortPublication, op};
+use ployz_core::{ListMachinesRequest, PortPublication, op};
 use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE};
 
 /// L3-005..L3-007, L3-009..L3-010, L3-014, L3-029..L3-030,
@@ -78,21 +78,29 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
         scaled
             .containers
             .iter()
-            .all(|container| &container.machine_id == machine_1)
+            .all(|container| &container.as_observation().machine_id == machine_1)
     );
     let generated_global = initial_run
         .services
         .iter()
         .find(|service| {
-            service
-                .containers
-                .first()
-                .is_some_and(|container| container.service_name.as_str().starts_with("alpine-"))
+            service.containers.first().is_some_and(|container| {
+                container
+                    .as_observation()
+                    .service_name
+                    .as_str()
+                    .starts_with("alpine-")
+            })
         })
         .unwrap();
     assert_eq!(generated_global.containers.len(), 1);
     assert_eq!(
-        &generated_global.containers.first().unwrap().machine_id,
+        &generated_global
+            .containers
+            .first()
+            .unwrap()
+            .as_observation()
+            .machine_id,
         machine_1
     );
     assert_machine_rename_preserves_containers(address, &mut client, machine_1, &initial_run).await;
@@ -195,15 +203,10 @@ volumes:
     )
     .await;
     let api = observed_service(&deployed, "api");
-    let api_container = api.containers.first().unwrap();
+    let api_container = api.containers.first().unwrap().as_observation();
     assert_eq!(api.containers.len(), 1);
     assert_eq!(&api_container.machine_id, machine_2);
     assert!(!api.hook_containers.is_empty());
-    assert!(
-        api.hook_containers
-            .iter()
-            .all(|container| container.kind == ContainerKind::PreDeployHook)
-    );
     assert_eq!(
         api_container.resolved_spec.configs.first().unwrap().content,
         b"hello\n"
@@ -213,7 +216,15 @@ volumes:
         [PortPublication::Host { .. }]
     ));
     let database = observed_service(&deployed, "database");
-    assert_eq!(&database.containers.first().unwrap().machine_id, machine_1);
+    assert_eq!(
+        &database
+            .containers
+            .first()
+            .unwrap()
+            .as_observation()
+            .machine_id,
+        machine_1
+    );
     let current_machines = client
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await
@@ -260,7 +271,7 @@ async fn assert_machine_rename_preserves_containers(
         .services
         .iter()
         .flat_map(|service| &service.containers)
-        .map(|container| container.container_id)
+        .map(|container| container.as_observation().container_id)
         .collect::<BTreeSet<_>>();
     assert!(
         !ployz(address, ["machine", "rename", "machine-1", ""])
@@ -278,7 +289,7 @@ async fn assert_machine_rename_preserves_containers(
             .services
             .iter()
             .flat_map(|service| &service.containers)
-            .map(|container| container.container_id)
+            .map(|container| container.as_observation().container_id)
             .collect::<BTreeSet<_>>(),
         initial_ids
     );
@@ -295,13 +306,7 @@ fn observed_service<'a, E>(
 ) -> &'a ployz_core::ServiceObservation {
     live.services
         .iter()
-        .find(|service| {
-            service
-                .containers
-                .iter()
-                .chain(&service.hook_containers)
-                .any(|container| container.service_name.as_str() == name)
-        })
+        .find(|service| service.has_name(name))
         .unwrap()
 }
 
@@ -315,7 +320,7 @@ async fn wait_for_services(
             .services
             .iter()
             .flat_map(|service| &service.containers)
-            .map(|container| container.service_name.as_str())
+            .map(|container| container.as_observation().service_name.as_str())
             .collect::<BTreeSet<_>>();
         let count = live
             .services
@@ -335,10 +340,9 @@ async fn wait_for_hook_only(
     wait_for_live(client, |live| {
         live.services.into_iter().find(|service| {
             service.containers.is_empty()
-                && service
-                    .hook_containers
-                    .first()
-                    .is_some_and(|container| container.service_name.as_str() == name)
+                && service.hook_containers.first().is_some_and(|container| {
+                    container.as_observation().service_name.as_str() == name
+                })
         })
     })
     .await
@@ -358,14 +362,19 @@ fn service_ids_from(
     live.services
         .into_iter()
         .filter_map(|service| {
-            let name = service.containers.first()?.service_name.to_string();
+            let name = service
+                .containers
+                .first()?
+                .as_observation()
+                .service_name
+                .to_string();
             names.contains(&name.as_str()).then(|| {
                 (
                     name,
                     service
                         .containers
                         .into_iter()
-                        .map(|container| container.container_id.to_string())
+                        .map(|container| container.as_observation().container_id.to_string())
                         .collect(),
                 )
             })

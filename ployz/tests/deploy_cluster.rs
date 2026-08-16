@@ -464,9 +464,8 @@ async fn wait_for_service(
                     .find(|service| service.service_id == *service_id)
             {
                 let containers = service
-                    .containers
-                    .into_iter()
-                    .chain(service.hook_containers)
+                    .members()
+                    .map(|container| container.as_observation().clone())
                     .collect::<Vec<_>>();
                 if containers.len() == count {
                     return containers;

@@ -389,8 +389,9 @@ impl Client {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
         for container in service.containers_for(action) {
-            let machine_id = container.machine_id;
-            let container_id = container.container_id;
+            let observation = container.as_observation();
+            let machine_id = observation.machine_id;
+            let container_id = observation.container_id;
             let handle = tasks.spawn(change_on_machine(
                 self.clone(),
                 machine_id,

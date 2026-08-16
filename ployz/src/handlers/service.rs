@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use clap::ArgMatches;
 use ployz_core::{
-    ContainerAction, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, LiveServices, RpcError, select_service,
+    ContainerAction, ContainerRef, ContainerRuntimeObservation, HealthObservation, LiveServices,
+    RpcError, select_service,
 };
 
 use super::{Error, leaf_matches, with_client};
@@ -16,11 +16,8 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
             println!("SERVICE ID\tNAME\tCONTAINERS\tHOOKS");
             for service in &live.services {
                 let name = service
-                    .containers
-                    .iter()
-                    .chain(&service.hook_containers)
-                    .next()
-                    .map(|container| container.service_name.as_str())
+                    .service_name()
+                    .map(|name| name.as_str())
                     .unwrap_or("-");
                 println!(
                     "{}\t{}\t{}\t{}",
@@ -48,17 +45,18 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             let mut containers = live
                 .services
                 .iter()
-                .flat_map(|service| service.containers.iter().chain(&service.hook_containers))
+                .flat_map(ployz_core::ServiceObservation::members)
                 .collect::<Vec<_>>();
             sort_processes(&mut containers, &sort);
             for container in containers {
+                let observation = container.as_observation();
                 println!(
-                    "{}\t{}\t{:?}\t{}\t{:?}",
-                    container.container_id,
-                    container.service_name,
-                    container.kind,
-                    container.machine_id,
-                    container.runtime
+                    "{}\t{}\t{}\t{}\t{:?}",
+                    observation.container_id,
+                    observation.service_name,
+                    process_kind(container),
+                    observation.machine_id,
+                    observation.runtime
                 );
             }
             Ok(())
@@ -66,25 +64,62 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn sort_processes(containers: &mut [&ContainerObservation], sort: &str) {
+fn sort_processes(containers: &mut [ContainerRef<'_>], sort: &str) {
     containers.sort_by(|left, right| {
+        let left_observation = left.as_observation();
+        let right_observation = right.as_observation();
         let primary = match sort {
-            "health" => health_rank(left)
-                .cmp(&health_rank(right))
-                .then_with(|| left.service_name.as_str().cmp(right.service_name.as_str())),
-            "machine" => left
+            "health" => health_rank(*left).cmp(&health_rank(*right)).then_with(|| {
+                left_observation
+                    .service_name
+                    .as_str()
+                    .cmp(right_observation.service_name.as_str())
+            }),
+            "machine" => left_observation
                 .machine_id
                 .as_str()
-                .cmp(right.machine_id.as_str())
-                .then_with(|| left.service_name.as_str().cmp(right.service_name.as_str())),
-            _ => left.service_name.as_str().cmp(right.service_name.as_str()),
+                .cmp(right_observation.machine_id.as_str())
+                .then_with(|| {
+                    left_observation
+                        .service_name
+                        .as_str()
+                        .cmp(right_observation.service_name.as_str())
+                }),
+            _ => left_observation
+                .service_name
+                .as_str()
+                .cmp(right_observation.service_name.as_str()),
         };
-        primary.then_with(|| left.container_id.as_str().cmp(right.container_id.as_str()))
+        primary.then_with(|| {
+            left_observation
+                .container_id
+                .as_str()
+                .cmp(right_observation.container_id.as_str())
+        })
     });
 }
 
-fn health_rank(container: &ContainerObservation) -> u8 {
-    match &container.runtime {
+fn process_kind(container: ContainerRef<'_>) -> &'static str {
+    match container {
+        ContainerRef::Service(_) => "ServiceContainer",
+        ContainerRef::Hook(_) => "PreDeployHook",
+    }
+}
+
+fn health_rank(container: ContainerRef<'_>) -> u8 {
+    if let ContainerRef::Hook(container) = container
+        && matches!(
+            container.as_observation().runtime,
+            ContainerRuntimeObservation::Exited { code: 0 }
+        )
+    {
+        return 3;
+    }
+    runtime_health_rank(&container.as_observation().runtime)
+}
+
+fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
+    match runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::Unhealthy,
         }
@@ -93,11 +128,6 @@ fn health_rank(container: &ContainerObservation) -> u8 {
             health: HealthObservation::Healthy,
         } => 2,
         ContainerRuntimeObservation::Running { .. } => 3,
-        ContainerRuntimeObservation::Exited { code: 0 }
-            if container.kind == ContainerKind::PreDeployHook =>
-        {
-            3
-        }
         ContainerRuntimeObservation::Created
         | ContainerRuntimeObservation::Paused
         | ContainerRuntimeObservation::Restarting
@@ -213,7 +243,7 @@ fn print_observation_warning(live: &LiveServices<RpcError>) {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{MachineId, ServiceId, ServiceName};
+    use ployz_core::{HookContainer, MachineId, ServiceContainer, ServiceId, ServiceName};
     use serde_json::json;
 
     use super::*;
@@ -237,14 +267,29 @@ mod tests {
             },
         );
         let gamma = observation('c', 'a', "gamma", ContainerRuntimeObservation::Created);
+        let hook = hook_observation(
+            'd',
+            'd',
+            "delta",
+            ContainerRuntimeObservation::Exited { code: 0 },
+        );
 
-        let mut containers = vec![&beta, &alpha, &gamma];
+        let beta = ServiceContainer::try_from(beta).unwrap();
+        let alpha = ServiceContainer::try_from(alpha).unwrap();
+        let gamma = ServiceContainer::try_from(gamma).unwrap();
+        let hook = HookContainer::try_from(hook).unwrap();
+        let mut containers = vec![
+            ContainerRef::Service(&beta),
+            ContainerRef::Service(&alpha),
+            ContainerRef::Service(&gamma),
+            ContainerRef::Hook(&hook),
+        ];
         sort_processes(&mut containers, "service");
-        assert_eq!(names(&containers), ["alpha", "beta", "gamma"]);
+        assert_eq!(names(&containers), ["alpha", "beta", "delta", "gamma"]);
         sort_processes(&mut containers, "machine");
-        assert_eq!(names(&containers), ["gamma", "beta", "alpha"]);
+        assert_eq!(names(&containers), ["gamma", "beta", "alpha", "delta"]);
         sort_processes(&mut containers, "health");
-        assert_eq!(names(&containers), ["alpha", "gamma", "beta"]);
+        assert_eq!(names(&containers), ["alpha", "gamma", "beta", "delta"]);
     }
 
     #[test]
@@ -277,7 +322,7 @@ mod tests {
         let service_id = container.service_id;
         let services = vec![ployz_core::ServiceObservation {
             service_id,
-            containers: vec![container],
+            containers: vec![ServiceContainer::try_from(container).unwrap()],
             hook_containers: Vec::new(),
         }];
         let selectors = vec!["api".to_owned(), service_id.to_string()];
@@ -285,11 +330,22 @@ mod tests {
         assert_eq!(select_services(&services, &selectors).unwrap().len(), 1);
     }
 
-    fn names<'a>(containers: &'a [&ContainerObservation]) -> Vec<&'a str> {
+    fn names<'a>(containers: &'a [ContainerRef<'a>]) -> Vec<&'a str> {
         containers
             .iter()
-            .map(|container| container.service_name.as_str())
+            .map(|container| container.as_observation().service_name.as_str())
             .collect()
+    }
+
+    fn hook_observation(
+        id: char,
+        machine: char,
+        name: &str,
+        runtime: ContainerRuntimeObservation,
+    ) -> ployz_core::ContainerObservation {
+        let mut observation = observation(id, machine, name, runtime);
+        observation.kind = ployz_core::ContainerKind::PreDeployHook;
+        observation
     }
 
     fn observation(
@@ -297,17 +353,17 @@ mod tests {
         machine: char,
         name: &str,
         runtime: ContainerRuntimeObservation,
-    ) -> ContainerObservation {
+    ) -> ployz_core::ContainerObservation {
         let service_id = ServiceId::parse(id.to_string().repeat(32)).unwrap();
         let service_name = ServiceName::parse(name).unwrap();
-        ContainerObservation {
+        ployz_core::ContainerObservation {
             container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: name.into(),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(machine.to_string().repeat(32)).unwrap(),
             service_id,
             service_name: service_name.clone(),
-            kind: ContainerKind::ServiceContainer,
+            kind: ployz_core::ContainerKind::ServiceContainer,
             runtime,
             effective_healthcheck: None,
             resolved_spec: serde_json::from_value(json!({

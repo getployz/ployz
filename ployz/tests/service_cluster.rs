@@ -59,8 +59,18 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     assert_eq!(observed.containers.len(), 2);
     assert_eq!(observed.hook_containers.len(), 2);
     assert_ne!(
-        observed.containers.first().unwrap().resolved_spec,
-        observed.containers.get(1).unwrap().resolved_spec
+        observed
+            .containers
+            .first()
+            .unwrap()
+            .as_observation()
+            .resolved_spec,
+        observed
+            .containers
+            .get(1)
+            .unwrap()
+            .as_observation()
+            .resolved_spec
     );
 
     let collision_id = ServiceId::random();
@@ -96,12 +106,17 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         observed
             .hook_containers
             .iter()
-            .all(|hook| hook.container_id != success.value)
+            .all(|hook| hook.as_observation().container_id != success.value)
     }));
     let local_after_start = client.live_services().await.unwrap();
     let local_service = select_service(&local_after_start.services, service_id.as_str()).unwrap();
     assert!(matches!(
-        local_service.hook_containers.first().unwrap().runtime,
+        local_service
+            .hook_containers
+            .first()
+            .unwrap()
+            .as_observation()
+            .runtime,
         ContainerRuntimeObservation::Created
     ));
 

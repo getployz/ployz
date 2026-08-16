@@ -328,16 +328,21 @@ async fn wait_for_dns_observations(
                 && let Ok(service) = select_service(&live.services, service_id.as_str())
                 && service.containers.len() == count
                 && service.containers.iter().all(|container| {
-                    container.address.is_some()
+                    let observation = container.as_observation();
+                    observation.address.is_some()
                         && matches!(
-                            &container.runtime,
+                            &observation.runtime,
                             ContainerRuntimeObservation::Running {
                                 health: HealthObservation::Healthy
                             }
                         )
                 })
             {
-                return service.containers.clone();
+                return service
+                    .containers
+                    .iter()
+                    .map(|container| container.as_observation().clone())
+                    .collect();
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

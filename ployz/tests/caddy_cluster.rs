@@ -337,11 +337,9 @@ async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: us
         loop {
             let live = client.live_services().await.unwrap();
             if let Some(service) = live.services.iter().find(|service| {
-                service
-                    .containers
-                    .first()
-                    .is_some_and(|container| container.service_name.as_str() == name)
-                    && service.containers.len() == count
+                service.containers.first().is_some_and(|container| {
+                    container.as_observation().service_name.as_str() == name
+                }) && service.containers.len() == count
             }) {
                 return service.service_id;
             }
@@ -579,6 +577,7 @@ async fn wait_running(
             let running = service
                 .containers
                 .iter()
+                .map(|container| container.as_observation().clone())
                 .filter(|container| {
                     matches!(
                         container.runtime,
@@ -588,7 +587,6 @@ async fn wait_running(
                         }
                     )
                 })
-                .cloned()
                 .collect::<Vec<_>>();
             if running.len() == count {
                 return running;

@@ -133,13 +133,15 @@ pub struct ContainerObservation {
 }
 
 /// A Service Container after its role has been proven from a mixed observation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ContainerObservation", into = "ContainerObservation")]
 pub struct ServiceContainer {
     observation: ContainerObservation,
 }
 
 /// A Hook Container after its role has been proven from a mixed observation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ContainerObservation", into = "ContainerObservation")]
 pub struct HookContainer {
     observation: ContainerObservation,
 }
@@ -149,6 +151,13 @@ pub struct HookContainer {
 pub enum Container {
     Service(ServiceContainer),
     Hook(HookContainer),
+}
+
+/// Borrowed role-proven view of one Service member.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContainerRef<'a> {
+    Service(&'a ServiceContainer),
+    Hook(&'a HookContainer),
 }
 
 /// Rejected conversion from a mixed Container observation to a requested role.
@@ -184,6 +193,41 @@ impl HookContainer {
     #[must_use]
     pub fn into_observation(self) -> ContainerObservation {
         self.observation
+    }
+}
+
+impl AsRef<ContainerObservation> for ServiceContainer {
+    fn as_ref(&self) -> &ContainerObservation {
+        self.as_observation()
+    }
+}
+
+impl<'a> ContainerRef<'a> {
+    /// Borrow the mixed observation this view was proven from.
+    #[must_use]
+    pub fn as_observation(self) -> &'a ContainerObservation {
+        match self {
+            Self::Service(container) => container.as_observation(),
+            Self::Hook(container) => container.as_observation(),
+        }
+    }
+}
+
+impl AsRef<ContainerObservation> for ContainerRef<'_> {
+    fn as_ref(&self) -> &ContainerObservation {
+        self.as_observation()
+    }
+}
+
+impl From<ServiceContainer> for ContainerObservation {
+    fn from(container: ServiceContainer) -> Self {
+        container.into_observation()
+    }
+}
+
+impl From<HookContainer> for ContainerObservation {
+    fn from(container: HookContainer) -> Self {
+        container.into_observation()
     }
 }
 

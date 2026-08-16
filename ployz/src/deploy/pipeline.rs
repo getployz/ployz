@@ -168,7 +168,8 @@ fn scale_plan(
     let observed_container = service
         .containers
         .first()
-        .ok_or_else(|| Failure::usage("cannot scale a service without regular containers"))?;
+        .ok_or_else(|| Failure::usage("cannot scale a service without regular containers"))?
+        .as_observation();
     match observed_container.resolved_spec.mode {
         ServiceMode::Replicated { .. } => {}
         ServiceMode::Global => return Err(Failure::usage("global services cannot be scaled")),
