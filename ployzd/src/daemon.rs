@@ -1,0 +1,791 @@
+//! Local Machine daemon lifecycle.
+
+use std::{
+    fs::{self, File, OpenOptions},
+    io,
+    net::{AddrParseError, IpAddr, SocketAddr},
+    os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use ployz_core::{LocalMachinePhase, MachineRpcServer};
+use sd_notify::NotifyState;
+use thiserror::Error;
+use tokio::{
+    net::{TcpListener, UnixListener},
+    signal::unix::{SignalKind, signal},
+    sync::watch,
+    task::JoinHandle,
+    time::Instant,
+};
+use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tokio_util::sync::CancellationToken;
+use tonic::{service::Routes, transport::Server};
+
+use crate::{
+    caddy,
+    corrosion::{
+        CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
+        RunningCorrosion, run_machine_publisher_with_restart,
+    },
+    dns,
+    docker::{ContainerRuntime, LocalDocker, MachineSpecStore, RunningUnregistry, SpecStoreError},
+    filesystem::set_ployz_group,
+    machine::{LocalMachineStore, StoreError},
+    metrics,
+    network::{
+        CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane, machine_gateway,
+    },
+    proxy::MachineProxy,
+    rpc::MachineService,
+};
+
+/// How the daemon attaches a Container Runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainerMode {
+    /// Connect to local Docker; on failure warn and continue without a Container Runtime.
+    Auto,
+    /// Do not attach a Container Runtime.
+    Absent,
+}
+
+/// Inputs the daemon needs to start. Local Machine Phase decides which planes run.
+pub struct DaemonConfig {
+    pub data_dir: PathBuf,
+    pub socket: PathBuf,
+    pub metrics_address: SocketAddr,
+    pub dns_upstreams: Vec<SocketAddr>,
+    pub machine_api_address: Option<SocketAddr>,
+    pub containerd_socket: Option<PathBuf>,
+    pub containers: ContainerMode,
+}
+
+/// Running Local Machine daemon. Callers do not choose which planes start.
+pub struct Daemon {
+    stop: CancellationToken,
+    shutdown: CancellationToken,
+    store: Arc<Mutex<LocalMachineStore>>,
+    corrosion: Option<RunningCorrosion>,
+    unregistry: Option<Arc<RunningUnregistry>>,
+    reset_rx: watch::Receiver<bool>,
+    servers: JoinHandle<io::Result<()>>,
+    _socket_lock: File,
+}
+
+/// Failures while starting or waiting for the daemon.
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Network(#[from] NetworkError),
+    #[error(transparent)]
+    SpecStore(#[from] SpecStoreError),
+    #[error(transparent)]
+    Corrosion(#[from] CorrosionError),
+    #[error(transparent)]
+    Addr(#[from] AddrParseError),
+    #[error(transparent)]
+    Transport(#[from] tonic::transport::Error),
+    #[error("local Machine record lock poisoned")]
+    StorePoisoned,
+}
+
+impl Daemon {
+    /// Start serving Machine RPC on the configured unix socket.
+    ///
+    /// Returns only once that socket accepts connections. Local Machine Phase
+    /// decides which planes start, degrade, or wait for catch-up.
+    ///
+    /// # Errors
+    ///
+    /// If construction, binding, or required planes fail.
+    pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
+        let store = Arc::new(Mutex::new(LocalMachineStore::open(&config.data_dir)?));
+        let (rpc_listener, socket_lock) = bind_socket(&config.socket)?;
+        let metrics_listener = TcpListener::bind(config.metrics_address).await?;
+        let local_record = store
+            .lock()
+            .map_err(|_| Error::StorePoisoned)?
+            .record()
+            .clone();
+        let mut network = NetworkPlane::start(&local_record).await?;
+        let machine_api_listeners = if config.machine_api_address.is_none()
+            && let Some(network) = &network
+        {
+            let [management, gateway] = network.machine_api_addresses()?;
+            Some((
+                TcpListener::bind(management).await?,
+                TcpListener::bind(gateway).await?,
+            ))
+        } else {
+            None
+        };
+        let explicit_machine_api_listener = match config.machine_api_address {
+            Some(address) => Some(TcpListener::bind(address).await?),
+            None => None,
+        };
+        let dns_upstreams =
+            (!config.dns_upstreams.is_empty()).then(|| config.dns_upstreams.clone());
+        let containers = match config.containers {
+            ContainerMode::Absent => None,
+            ContainerMode::Auto => {
+                let specs = MachineSpecStore::open(config.data_dir.join("machine.db")).await?;
+                match LocalDocker::connect() {
+                    Ok(docker) => Some(ContainerRuntime::new(docker, specs)),
+                    Err(error) => {
+                        eprintln!("WARNING: local Docker is unavailable: {error}");
+                        None
+                    }
+                }
+            }
+        };
+        let unregistry_gateway = if local_record.phase == LocalMachinePhase::Participating {
+            local_record
+                .machine
+                .as_ref()
+                .map(|machine| machine_gateway(machine.subnet).map(|gateway| gateway.0))
+                .transpose()?
+        } else {
+            None
+        };
+        let corrosion = start_corrosion(&config, &store).await?;
+        let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
+        let unregistry = match (&containers, unregistry_gateway) {
+            (Some(runtime), Some(gateway)) => {
+                match runtime
+                    .start_unregistry(gateway, config.containerd_socket.as_deref())
+                    .await
+                {
+                    Ok(running) => running.map(Arc::new),
+                    Err(error) => {
+                        eprintln!("WARNING: unregistry disabled: {error}");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let containers = match (containers, replicated_store.clone()) {
+            (Some(runtime), Some(replicated)) => {
+                Some(runtime.replicating(replicated, Arc::clone(&store)))
+            }
+            (runtime, _) => runtime,
+        };
+        let shutdown = CancellationToken::new();
+        let (participating, participating_rx) =
+            watch::channel(local_record.phase == LocalMachinePhase::Participating);
+        let (reset, reset_rx) = watch::channel(false);
+        let caddyfile = caddy::caddyfile_path(&config.data_dir);
+        let caddy_admin_socket = config
+            .socket
+            .parent()
+            .unwrap_or_else(|| Path::new("/run/ployz"))
+            .join("caddy/admin.sock");
+        let service = MachineService::with_cluster(
+            Arc::clone(&store),
+            reset.clone(),
+            corrosion
+                .as_ref()
+                .map(|running| (running.store().clone(), running.admin_client())),
+        )
+        .with_optional_containers(containers.clone())
+        .with_caddyfile(caddyfile.clone());
+        let proxy = MachineProxy::new(
+            Routes::new(MachineRpcServer::new(service)),
+            local_record.id,
+            MACHINE_API_PORT,
+            replicated_store.clone(),
+        );
+
+        let rpc = Server::builder().serve_with_incoming_shutdown(
+            proxy.clone(),
+            UnixListenerStream::new(rpc_listener),
+            shutdown.clone().cancelled_owned(),
+        );
+        let metrics = metrics::serve(
+            metrics_listener,
+            env!("CARGO_PKG_VERSION"),
+            shutdown.clone(),
+        );
+        let publisher = run_machine_publisher_with_restart(
+            replicated_store.clone(),
+            Arc::clone(&store),
+            participating,
+            reset,
+            shutdown.clone(),
+        );
+        let (management_listener, gateway_listener) = machine_api_listeners
+            .map_or((None, None), |(management, gateway)| {
+                (Some(management), Some(gateway))
+            });
+        let socket = config.socket.clone();
+        let unregistry_for_refresh = unregistry.clone();
+        let store_for_servers = Arc::clone(&store);
+        let shutdown_for_servers = shutdown.clone();
+        let servers = tokio::spawn(async move {
+            let store = store_for_servers;
+            let shutdown = shutdown_for_servers;
+            let network_rpc = async {
+                tokio::try_join!(
+                    serve_machine_api(
+                        explicit_machine_api_listener,
+                        proxy.clone(),
+                        shutdown.clone()
+                    ),
+                    serve_machine_api(management_listener, proxy.clone(), shutdown.clone()),
+                    serve_machine_api(gateway_listener, proxy.clone(), shutdown.clone()),
+                )
+                .map(|_| ())
+            };
+            let network_runner = async {
+                if let Some(network) = &mut network {
+                    network
+                        .run(
+                            replicated_store.clone(),
+                            Arc::clone(&store),
+                            shutdown.clone(),
+                        )
+                        .await
+                } else {
+                    shutdown.cancelled().await;
+                    Ok(())
+                }
+            };
+            let observer = async {
+                match containers.clone() {
+                    Some(runtime) => runtime
+                        .publish_observations(shutdown.clone())
+                        .await
+                        .map_err(io::Error::other),
+                    None => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
+            let dns = async {
+                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                match (local_record.machine.clone(), replicated_store.clone()) {
+                    (Some(machine), Some(replicated)) => {
+                        dns::run(machine, replicated, dns_upstreams, shutdown.clone()).await
+                    }
+                    _ => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
+            let caddy = async {
+                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                match (local_record.machine.clone(), replicated_store.clone()) {
+                    (Some(machine), Some(replicated)) => {
+                        caddy::run(
+                            machine,
+                            replicated,
+                            caddyfile,
+                            caddy_admin_socket,
+                            shutdown.clone(),
+                        )
+                        .await
+                    }
+                    _ => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
+            let unregistry_refresh = {
+                let running = unregistry_for_refresh;
+                let shutdown = shutdown.clone();
+                async move {
+                    match running.as_deref() {
+                        Some(running) => running
+                            .keep_socket_current(shutdown)
+                            .await
+                            .map_err(io::Error::other),
+                        None => {
+                            shutdown.cancelled().await;
+                            Ok(())
+                        }
+                    }
+                }
+            };
+            tokio::try_join!(
+                async { rpc.await.map_err(io::Error::other) },
+                metrics,
+                publisher,
+                network_rpc,
+                network_runner,
+                observer,
+                dns,
+                caddy,
+                unregistry_refresh,
+            )
+            .map(|_| ())
+        });
+        if let Err(error) = wait_until_socket_accepts(&socket).await {
+            shutdown.cancel();
+            servers.abort();
+            let _ = servers.await;
+            return Err(error.into());
+        }
+        Ok(Self {
+            stop: CancellationToken::new(),
+            shutdown,
+            store,
+            corrosion,
+            unregistry,
+            reset_rx,
+            servers,
+            _socket_lock: socket_lock,
+        })
+    }
+
+    /// Ask a running daemon to exit. [`wait`](Self::wait) still has to be called.
+    pub fn request_stop(&self) {
+        self.stop.cancel();
+    }
+
+    /// Wait until a signal, [`request_stop`](Self::request_stop), or restart-request
+    /// finishes shutdown or reset.
+    ///
+    /// # Errors
+    ///
+    /// If a plane or cleanup step fails.
+    pub async fn wait(mut self) -> Result<(), Error> {
+        let mut servers = self.servers;
+        let mut completed_servers = None;
+        let trigger_error = tokio::select! {
+            result = &mut servers => {
+                completed_servers = Some(join_servers(result));
+                None
+            },
+            result = shutdown_signal() => result.err().map(|error| error.to_string()),
+            () = self.stop.cancelled() => None,
+            changed = self.reset_rx.changed() => changed.err().map(|error| error.to_string()),
+        };
+        notify(NotifyState::Stopping);
+        let mut errors = trigger_error.into_iter().collect::<Vec<_>>();
+        let resetting = match self.store.lock() {
+            Ok(store) => store.record().phase == LocalMachinePhase::Resetting,
+            Err(_) => {
+                errors.push("local Machine record lock poisoned".into());
+                false
+            }
+        };
+        self.shutdown.cancel();
+        // TODO(UT-098, UT-099): preserve both API servers' unbounded graceful shutdown
+        // until a timeout is explicitly chosen.
+        let server_result = match completed_servers {
+            Some(result) => result,
+            None => join_servers(servers.await),
+        };
+        if let Err(error) = server_result {
+            errors.push(error.to_string());
+        }
+
+        if let Some(running) = &mut self.corrosion {
+            let result = if resetting {
+                running.cleanup().await
+            } else {
+                running.stop().await
+            };
+            if let Err(error) = result {
+                errors.push(error.to_string());
+            }
+        }
+        if let Some(running) = &self.unregistry {
+            let result = if resetting {
+                running.cleanup().await
+            } else {
+                running.stop().await
+            };
+            if let Err(error) = result {
+                errors.push(error.to_string());
+            }
+        }
+        if resetting {
+            match self.store.lock() {
+                Ok(store) => {
+                    if let Err(error) = store.complete_reset() {
+                        errors.push(error.to_string());
+                    }
+                }
+                Err(_) => errors.push("local Machine record lock poisoned".into()),
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(errors.join("; ")).into())
+        }
+    }
+}
+
+fn join_servers(result: Result<io::Result<()>, tokio::task::JoinError>) -> io::Result<()> {
+    match result {
+        Ok(result) => result,
+        Err(error) => Err(io::Error::other(error)),
+    }
+}
+
+async fn wait_until_socket_accepts(path: &Path) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match tokio::net::UnixStream::connect(path).await {
+            Ok(_) => return Ok(()),
+            Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn serve_machine_api(
+    listener: Option<TcpListener>,
+    proxy: MachineProxy,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    match listener {
+        Some(listener) => Server::builder()
+            .serve_with_incoming_shutdown(
+                proxy,
+                TcpListenerStream::new(listener),
+                shutdown.cancelled_owned(),
+            )
+            .await
+            .map_err(io::Error::other),
+        None => {
+            shutdown.cancelled().await;
+            Ok(())
+        }
+    }
+}
+
+async fn start_corrosion(
+    config: &DaemonConfig,
+    store: &Arc<Mutex<LocalMachineStore>>,
+) -> Result<Option<RunningCorrosion>, Error> {
+    let record = store
+        .lock()
+        .map_err(|_| Error::StorePoisoned)?
+        .record()
+        .clone();
+    let phase = record.phase;
+    if !matches!(
+        phase,
+        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+    ) {
+        return Ok(None);
+    }
+    let Some(machine) = record.machine else {
+        return Ok(None);
+    };
+    let run_dir = config
+        .socket
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
+        .join("corrosion");
+    let bootstrap = record.bootstrap_machines.iter().map(|machine| {
+        SocketAddr::new(
+            IpAddr::V6(machine.management_address.0),
+            CORROSION_GOSSIP_PORT,
+        )
+    });
+    Ok(Some(
+        CorrosionConfig::new(
+            config.data_dir.join("corrosion"),
+            run_dir,
+            DEFAULT_API_ADDRESS.parse()?,
+            SocketAddr::new(
+                IpAddr::V6(machine.management_address.0),
+                CORROSION_GOSSIP_PORT,
+            ),
+            DEFAULT_CONTAINER_NAME,
+        )
+        .with_bootstrap(bootstrap)
+        .start()
+        .await?,
+    ))
+}
+
+async fn wait_for_participation(
+    mut participating: watch::Receiver<bool>,
+    shutdown: CancellationToken,
+) -> io::Result<bool> {
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => Ok(false),
+        changed = participating.wait_for(|participating| *participating) => {
+            match changed {
+                Ok(_) => Ok(!shutdown.is_cancelled()),
+                Err(_) if shutdown.is_cancelled() => Ok(false),
+                Err(error) => Err(io::Error::other(error)),
+            }
+        }
+    }
+}
+
+async fn shutdown_signal() -> io::Result<()> {
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        _ = interrupt.recv() => {}
+        _ = terminate.recv() => {}
+    }
+    Ok(())
+}
+
+fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
+    let parent_created = !parent.exists();
+    fs::create_dir_all(parent)?;
+    if parent_created {
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o750))?;
+        set_ployz_group(parent)?;
+    }
+
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(lock_path)?;
+    fs2::FileExt::try_lock_exclusive(&lock).map_err(|error| {
+        if error.kind() == io::ErrorKind::WouldBlock {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "socket is owned by another daemon",
+            )
+        } else {
+            error
+        }
+    })?;
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "refusing to replace a non-socket path",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let listener = UnixListener::bind(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
+    set_ployz_group(path)?;
+    Ok((listener, lock))
+}
+
+fn notify(state: NotifyState<'_>) {
+    if let Err(error) = sd_notify::notify(&[state]) {
+        eprintln!("systemd notification failed: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        net::{SocketAddr, TcpListener},
+        path::{Path, PathBuf},
+    };
+
+    use ployz_core::{
+        DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, LIST_CONTAINERS_CAPABILITY,
+        MachineRpcClient, ResetRequest, op,
+    };
+    use tonic::transport::Endpoint;
+
+    use super::{ContainerMode, Daemon, DaemonConfig, wait_for_participation};
+    use tokio_util::sync::CancellationToken;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            Self(std::env::temp_dir().join(format!("{prefix}-{}", ployz_core::MachineId::random())))
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unused_address() -> SocketAddr {
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+    }
+
+    fn test_config(root: &Path, containers: ContainerMode) -> (DaemonConfig, PathBuf) {
+        fs::create_dir_all(root).unwrap();
+        let socket = root.join("run/ployz.sock");
+        (
+            DaemonConfig {
+                data_dir: root.join("data"),
+                socket: socket.clone(),
+                metrics_address: unused_address(),
+                dns_upstreams: Vec::new(),
+                machine_api_address: None,
+                containerd_socket: None,
+                containers,
+            },
+            socket,
+        )
+    }
+
+    async fn describe(path: &Path) -> ployz_core::ContractDescription {
+        let channel = Endpoint::from_shared(format!("unix:{}", path.display()))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        MachineRpcClient::new(channel)
+            .describe_contract(
+                op::DescribeContract::into_request(DescribeContractRequest {})
+                    .encode()
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::DescribeContract>()
+            .unwrap()
+            .clone()
+    }
+
+    async fn reset(path: &Path) {
+        let channel = Endpoint::from_shared(format!("unix:{}", path.display()))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let response = MachineRpcClient::new(channel)
+            .reset(op::Reset::into_request(ResetRequest {}).encode().unwrap())
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        response.decode::<op::Reset>().unwrap();
+    }
+
+    #[tokio::test]
+    async fn absent_containers_start_without_container_capabilities() {
+        let root = TestDir::new("ployzd-daemon-absent");
+        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        let daemon = Daemon::start(config).await.unwrap();
+        let description = describe(&socket).await;
+        assert!(description.supports(DESCRIBE_CONTRACT_CAPABILITY));
+        assert!(!description.supports(LIST_CONTAINERS_CAPABILITY));
+        daemon.request_stop();
+        daemon.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_stop_leaves_data_dir() {
+        let root = TestDir::new("ployzd-daemon-stop");
+        let (config, _) = test_config(&root.0, ContainerMode::Absent);
+        let data_dir = config.data_dir.clone();
+        let daemon = Daemon::start(config).await.unwrap();
+        daemon.request_stop();
+        daemon.wait().await.unwrap();
+        assert!(data_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn second_start_on_same_socket_fails() {
+        let root = TestDir::new("ployzd-daemon-bind");
+        fs::create_dir_all(&root.0).unwrap();
+        let socket = root.0.join("run/ployz.sock");
+        let first = Daemon::start(DaemonConfig {
+            data_dir: root.0.join("data-a"),
+            socket: socket.clone(),
+            metrics_address: unused_address(),
+            dns_upstreams: Vec::new(),
+            machine_api_address: None,
+            containerd_socket: None,
+            containers: ContainerMode::Absent,
+        })
+        .await
+        .unwrap();
+        let second = Daemon::start(DaemonConfig {
+            data_dir: root.0.join("data-b"),
+            socket,
+            metrics_address: unused_address(),
+            dns_upstreams: Vec::new(),
+            machine_api_address: None,
+            containerd_socket: None,
+            containers: ContainerMode::Absent,
+        })
+        .await;
+        assert!(second.is_err());
+        first.request_stop();
+        first.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restart_keeps_machine_id_and_reset_clears_data_dir() {
+        let root = TestDir::new("ployzd-daemon-reset");
+        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        let data_dir = config.data_dir.clone();
+        let daemon = Daemon::start(config).await.unwrap();
+        let first = describe(&socket).await;
+        daemon.request_stop();
+        daemon.wait().await.unwrap();
+
+        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        let daemon = Daemon::start(config).await.unwrap();
+        assert_eq!(describe(&socket).await.machine_id, first.machine_id);
+        reset(&socket).await;
+        daemon.wait().await.unwrap();
+        assert!(!data_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn participation_gate_waits_for_catch_up_and_obeys_shutdown() {
+        let (participating, participating_rx) = tokio::sync::watch::channel(false);
+        let shutdown = CancellationToken::new();
+        let waiting = wait_for_participation(participating_rx, shutdown);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        participating.send_replace(true);
+        assert!(waiting.await.unwrap());
+
+        let (participating, participating_rx) = tokio::sync::watch::channel(true);
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        drop(participating);
+        assert!(
+            !wait_for_participation(participating_rx, shutdown)
+                .await
+                .unwrap()
+        );
+    }
+}

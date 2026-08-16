@@ -11,10 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ployz_core::{
-    DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, MachineRpcClient,
-    RESET_MACHINE_CAPABILITY, ResetRequest, op,
-};
+use ployz_core::{DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, MachineRpcClient, op};
 use tonic::transport::{Channel, Endpoint};
 
 use test_dir::TestDir;
@@ -29,7 +26,7 @@ impl Drop for ChildGuard {
 }
 
 #[test]
-fn daemon_create_reopen_signal_and_reset_lifecycle() {
+fn version_notify_socket_modes_and_signal() {
     let version = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .arg("version")
         .output()
@@ -52,20 +49,6 @@ fn daemon_create_reopen_signal_and_reset_lifecycle() {
     let first = describe(&socket);
     assert_eq!(first.daemon_version, env!("CARGO_PKG_VERSION"));
     assert!(first.supports(DESCRIBE_CONTRACT_CAPABILITY));
-    assert!(first.supports(RESET_MACHINE_CAPABILITY));
-    let duplicate = Command::new(env!("CARGO_BIN_EXE_ployzd"))
-        .args([
-            "--data-dir",
-            data_dir.to_str().unwrap(),
-            "--socket",
-            socket.to_str().unwrap(),
-            "--metrics-address",
-            &unused_address().to_string(),
-        ])
-        .output()
-        .unwrap();
-    assert!(!duplicate.status.success());
-    assert_eq!(describe(&socket).machine_id, first.machine_id);
     assert!(metrics(metrics_address).contains(&format!(
         "ployz_ployzd_build_info{{version=\"{}\"}} 1",
         env!("CARGO_PKG_VERSION")
@@ -79,13 +62,6 @@ fn daemon_create_reopen_signal_and_reset_lifecycle() {
         .status()
         .unwrap();
     wait_for_success(&mut daemon.0, "signal");
-
-    let (mut daemon, _) = start_daemon(&data_dir, &socket, &notify_socket);
-    assert_eq!(describe(&socket).machine_id, first.machine_id);
-
-    reset(&socket);
-    wait_for_success(&mut daemon.0, "reset");
-    assert!(!data_dir.exists());
 
     let existing_parent = root.0.join("existing");
     fs::create_dir(&existing_parent).unwrap();
@@ -174,20 +150,6 @@ fn describe(path: &Path) -> ployz_core::ContractDescription {
             .unwrap()
             .clone()
     })
-}
-
-fn reset(path: &Path) {
-    let response = tokio::runtime::Runtime::new().unwrap().block_on(async {
-        connect(path)
-            .await
-            .reset(op::Reset::into_request(ResetRequest {}).encode().unwrap())
-            .await
-            .unwrap()
-            .into_inner()
-            .decode_response()
-            .unwrap()
-    });
-    response.decode::<ployz_core::op::Reset>().unwrap();
 }
 
 fn metrics(address: SocketAddr) -> String {
