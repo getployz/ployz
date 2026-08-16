@@ -155,6 +155,8 @@ mod health;
 mod hooks;
 #[path = "exec_tests/replacement.rs"]
 mod replacement;
+#[path = "exec_tests/restart.rs"]
+mod restart;
 
 fn plan(operations: Vec<DeployOperation>) -> DeployPlan {
     DeployPlan::new(operations)
@@ -353,4 +355,16 @@ fn observed_with_healthcheck(
 
 fn failed(call: Call, message: &str) -> Step {
     Step(call, Reply::Error(error(message)))
+}
+
+fn unavailable(message: &str) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: message.into(),
+        details: serde_json::Value::Null,
+    }
+}
+
+fn failed_unavailable(call: Call, message: &str) -> Step {
+    Step(call, Reply::Error(unavailable(message)))
 }

@@ -28,7 +28,7 @@ use crate::{
     caddy,
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
-        RunningCorrosion, run_machine_publisher_with_restart,
+        RunningCorrosion, run_machine_publisher,
     },
     dns,
     docker::{ContainerRuntime, LocalDocker, MachineSpecStore, RunningUnregistry, SpecStoreError},
@@ -209,11 +209,10 @@ impl Daemon {
             env!("CARGO_PKG_VERSION"),
             shutdown.clone(),
         );
-        let publisher = run_machine_publisher_with_restart(
+        let publisher = run_machine_publisher(
             replicated_store.clone(),
             Arc::clone(&store),
             participating,
-            reset,
             shutdown.clone(),
         );
         let (management_listener, gateway_listener) = machine_api_listeners

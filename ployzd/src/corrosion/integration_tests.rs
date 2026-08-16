@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     ApiClient, CorrosionConfig, ReplicatedStore, Statement, run_machine_publisher,
-    run_machine_publisher_with_restart, wait_for_catch_up,
+    wait_for_catch_up,
 };
 use crate::machine::{LocalMachineRecord, LocalMachineStore};
 
@@ -171,12 +171,10 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let published = local.lock().unwrap().record().machine.clone().unwrap();
     let shutdown = CancellationToken::new();
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
-    let (restart, restart_rx) = tokio::sync::watch::channel(false);
-    let publisher = tokio::spawn(run_machine_publisher_with_restart(
+    let publisher = tokio::spawn(run_machine_publisher(
         Some(store.clone()),
         Arc::clone(&local),
         participating,
-        restart,
         shutdown.clone(),
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -196,7 +194,6 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(persisted.phase, LocalMachinePhase::Participating);
     assert!(persisted.min_store_version.is_empty());
     assert!(*participating_rx.borrow());
-    assert!(*restart_rx.borrow());
 
     let interrupted_dir = root.0.join("interrupted-machine");
     let target = BTreeMap::from([("unreachable-actor".to_owned(), 1)]);

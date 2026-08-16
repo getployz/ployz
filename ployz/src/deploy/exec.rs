@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use ployz_core::{
     ConfiguredHealthcheck, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
@@ -21,6 +21,8 @@ use super::{
 const DEFAULT_HEALTH_MONITOR: Duration = Duration::from_secs(5);
 const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+const RESTART_WAIT: Duration = Duration::from_secs(60);
+const RESTART_POLL: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MachineAction {
@@ -267,6 +269,111 @@ impl From<ExecutionError> for OperationFailure {
     }
 }
 
+// Wait out a target daemon restart on the same Machine. Create stays
+// one-shot — a dropped create response must not mint a second container.
+// Do not walk to another connection; that is a different command-entry problem.
+struct RestartTolerant<'a, C> {
+    inner: &'a C,
+    cancellation: &'a CancellationToken,
+}
+
+impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
+    async fn create_volume(
+        &self,
+        machine_id: &MachineId,
+        volume: &ServiceVolume,
+    ) -> Result<(), RpcError> {
+        self.inner.create_volume(machine_id, volume).await
+    }
+
+    async fn create_container(
+        &self,
+        machine_id: &MachineId,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerCreated, RpcError> {
+        self.inner.create_container(machine_id, kind, spec).await
+    }
+
+    async fn start_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+    ) -> Result<(), RpcError> {
+        wait_out_restart(self.cancellation, || {
+            self.inner.start_container(machine_id, container_id)
+        })
+        .await
+    }
+
+    async fn inspect_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+    ) -> Result<ContainerObservation, RpcError> {
+        wait_out_restart(self.cancellation, || {
+            self.inner.inspect_container(machine_id, container_id)
+        })
+        .await
+    }
+
+    async fn stop_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        grace_period_seconds: Option<i32>,
+    ) -> Result<(), RpcError> {
+        wait_out_restart(self.cancellation, || {
+            self.inner
+                .stop_container(machine_id, container_id, grace_period_seconds)
+        })
+        .await
+    }
+
+    async fn remove_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+    ) -> Result<(), RpcError> {
+        wait_out_restart(self.cancellation, || {
+            self.inner.remove_container(machine_id, container_id)
+        })
+        .await
+    }
+}
+
+fn is_unavailable(error: &RpcError) -> bool {
+    error.code == RpcErrorCode::Unavailable
+}
+
+// Start that loses its transport leaves the container Created; retrying
+// start is idempotent and finishes it once the daemon is back.
+async fn wait_out_restart<T, Fut>(
+    cancellation: &CancellationToken,
+    mut op: impl FnMut() -> Fut,
+) -> Result<T, RpcError>
+where
+    Fut: Future<Output = Result<T, RpcError>>,
+{
+    let deadline = Instant::now() + RESTART_WAIT;
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if is_unavailable(&error)
+                    && Instant::now() < deadline
+                    && !cancellation.is_cancelled() =>
+            {
+                tokio::select! {
+                    () = cancellation.cancelled() => return Err(error),
+                    () = tokio::time::sleep(RESTART_POLL) => {}
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 async fn execute_with<C: MachineOperations>(
     plan: &DeployPlan,
     client: &C,
@@ -281,8 +388,12 @@ async fn execute_operation_sequence<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
     let operations: Vec<DeployOperation> = operations.into_iter().cloned().collect();
+    let client = RestartTolerant {
+        inner: client,
+        cancellation,
+    };
     for (index, operation) in operations.iter().enumerate() {
-        match execute_operation(operation, client, cancellation).await {
+        match execute_operation(operation, &client, cancellation).await {
             Ok(()) => {}
             Err(OperationFailure::Ordinary(error)) => {
                 return DeployPlan::failure_outcome_from(&operations, index, error)
