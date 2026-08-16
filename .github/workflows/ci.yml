@@ -36,6 +36,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - run: bash scripts/test-release-contracts.sh
+      - run: bash scripts/test-testkit-image.sh
       - run: bash scripts/test-cli-installer.sh
       - run: bash scripts/test-daemon-lifecycle.sh
       - name: Check the daemon stays outside the CLI graph
@@ -59,7 +60,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      actions: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-testkit-image
@@ -72,7 +73,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      actions: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-testkit-image
