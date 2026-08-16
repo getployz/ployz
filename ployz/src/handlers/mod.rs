@@ -181,7 +181,14 @@ stub_handlers! {
     caddy_deploy(root) { caddy::deploy(root) } => "caddy deploy";
     caddy_logs(root) { operator::caddy_logs(root) } => "caddy logs";
     context(root) { context::select(root, None) } => "ctx";
-    context_connection(root) { context::select_connection(root) } => "ctx connection";
+    context_connection(root) {
+        context::connection(
+            root,
+            leaf_matches(root)
+                .get_one::<String>("connection")
+                .map(String::as_str),
+        )
+    } => "ctx connection";
     context_list(root) { context::list(root) } => "ctx ls";
     context_show(root) { context::show(root) } => "ctx show";
     context_use(root) {

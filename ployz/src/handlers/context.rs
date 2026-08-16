@@ -86,7 +86,7 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
     Ok(())
 }
 
-pub(super) fn select_connection(matches: &ArgMatches) -> Result<(), Error> {
+pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Result<(), Error> {
     let mut config = config(matches)?;
     let name = config.current_context.clone();
     let context = config
@@ -98,16 +98,21 @@ pub(super) fn select_connection(matches: &ArgMatches) -> Result<(), Error> {
             "no connections found in context {name:?}"
         )));
     }
-    let labels = context
+    let Some(requested) = requested else {
+        println!(
+            "{}",
+            context
+                .connections
+                .first()
+                .expect("the current context has a connection")
+        );
+        return Ok(());
+    };
+    let index = context
         .connections
         .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let index = prompt(
-        "Select a default connection",
-        labels.iter().map(String::as_str),
-        Some(0),
-    )?;
+        .position(|connection| connection.to_string() == requested)
+        .ok_or_else(|| Error::usage(format!("connection {requested:?} not found")))?;
     context.select_connection(index);
     let selected = context
         .connections

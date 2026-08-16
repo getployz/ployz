@@ -172,7 +172,11 @@ fn caddy() -> Command {
 fn ctx() -> Command {
     base("ctx", "Manage local contexts")
         .visible_alias("context")
-        .subcommand(base("connection", "Show the connection").visible_alias("conn"))
+        .subcommand(
+            base("connection", "Show or select the default connection")
+                .visible_alias("conn")
+                .arg(positional("connection", false)),
+        )
         .subcommand(base("ls", "List contexts").visible_alias("list"))
         .subcommand(base("show", "Show a context"))
         .subcommand(base("use", "Select a context").arg(positional("context-name", false)))
