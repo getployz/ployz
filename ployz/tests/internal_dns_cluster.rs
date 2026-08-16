@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, net::Ipv4Addr, process, time::Duration};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
     HealthObservation, Machine, MachineId, MachineTarget, MembershipObservation,
-    ResolvedServiceSpec, ServiceId, StartContainerRequest, StopContainerRequest, op,
-    select_service,
+    ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, StopContainerRequest,
+    op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 
@@ -325,7 +325,8 @@ async fn wait_for_dns_observations(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Ok(live) = client.live_services().await
-                && let Ok(service) = select_service(&live.services, service_id.as_str())
+                && let Ok(service) =
+                    select_service(&live.services, &ServiceSelector::from(service_id))
                 && service.containers.len() == count
                 && service.containers.iter().all(|container| {
                     let observation = container.as_observation();

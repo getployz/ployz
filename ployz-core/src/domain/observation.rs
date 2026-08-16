@@ -196,6 +196,12 @@ impl HookContainer {
     }
 }
 
+impl AsRef<ContainerObservation> for ContainerObservation {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl AsRef<ContainerObservation> for ServiceContainer {
     fn as_ref(&self) -> &ContainerObservation {
         self.as_observation()

@@ -8,8 +8,8 @@ use clap::ArgMatches;
 use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
-    ExecRequestFrame, ExecResponseFrame, LogEntry, LogOrigin, LogStream, LogsOptions,
-    select_service,
+    ContainerSelector, ExecRequestFrame, ExecResponseFrame, FanoutSelector, LogEntry, LogOrigin,
+    LogStream, LogsOptions, ServiceSelector, select_service,
 };
 use tokio::io::copy_bidirectional;
 use tokio_util::sync::CancellationToken;
@@ -28,11 +28,16 @@ use super::{Error, leaf_matches, string_values, with_client_context};
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let service = leaf
-        .get_one::<String>("service")
-        .cloned()
-        .ok_or_else(|| Error::usage("Service selector is required"))?;
-    let container = leaf.get_one::<String>("container").cloned();
+    let service = ServiceSelector::parse(
+        leaf.get_one::<String>("service")
+            .cloned()
+            .ok_or_else(|| Error::usage("Service selector is required"))?,
+    )?;
+    let container = leaf
+        .get_one::<String>("container")
+        .filter(|selector| !selector.is_empty())
+        .map(|selector| ContainerSelector::parse(selector.as_str()))
+        .transpose()?;
     let command = leaf
         .get_many::<String>("command")
         .map(|values| values.cloned().collect())
@@ -50,7 +55,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let tty = options.tty;
             let detach = options.detach;
-            let mut session = open_exec(client, &service, container.as_deref(), options).await?;
+            let mut session = open_exec(client, &service, container.as_ref(), options).await?;
             let _raw = tty.then(RawTerminal::enable).transpose()?;
             if tty {
                 send_terminal_size(&session.input).await?;
@@ -114,14 +119,13 @@ fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Err
         if project.services.is_empty() {
             return Err(Error::usage("no Services found in Compose file(s)"));
         }
-        let args = project
-            .services
-            .keys()
-            .map(|service| crate::operator::ServiceArg {
-                service: service.clone(),
+        let mut args = Vec::new();
+        for service in project.services.keys() {
+            args.push(crate::operator::ServiceArg {
+                service: ServiceSelector::parse(service.as_str())?,
                 containers: vec![],
-            })
-            .collect();
+            });
+        }
         let direct = leaf.get_one::<String>("connect").map(String::as_str);
         let explicit_context = leaf.get_one::<String>("context").map(String::as_str);
         let context = project
@@ -132,7 +136,7 @@ fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Err
         (parse_service_args(&explicit)?, None, false)
     };
     let options = log_options(leaf)?;
-    let machines = string_values(leaf, "machine");
+    let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let utc = leaf.get_flag("utc");
     with_client_context(root, context.as_deref(), |client| {
         Box::pin(async move {
@@ -148,7 +152,7 @@ fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Err
             )
             .await?;
             for service in opened.skipped_services {
-                eprintln!("WARNING: Service {service:?} is not in the Cluster; skipping");
+                eprintln!("WARNING: Service {service} is not in the Cluster; skipping");
             }
             print_logs(merge_logs(opened.inputs, cancellation), utc).await
         })
@@ -161,7 +165,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
         .get_many::<String>("service")
         .map(|values| values.cloned().collect::<Vec<_>>())
         .unwrap_or_default();
-    let machines = string_values(leaf, "machine");
+    let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let options = log_options(leaf)?;
     let utc = leaf.get_flag("utc");
     with_client_context(root, None, |client| {
@@ -178,10 +182,11 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
 
 pub fn proxy(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let service = leaf
-        .get_one::<String>("service")
-        .cloned()
-        .ok_or_else(|| Error::usage("Service selector is required"))?;
+    let service = ServiceSelector::parse(
+        leaf.get_one::<String>("service")
+            .cloned()
+            .ok_or_else(|| Error::usage("Service selector is required"))?,
+    )?;
     let ports = parse_proxy_ports(
         leaf.get_one::<String>("port")
             .ok_or_else(|| Error::usage("proxy port is required"))?,
@@ -193,7 +198,7 @@ pub fn proxy(root: &ArgMatches) -> Result<(), Error> {
 
 async fn run_proxy(
     client: &mut crate::connect::Client,
-    service_selector: &str,
+    service_selector: &ServiceSelector,
     ports: ProxyPorts,
 ) -> Result<(), Error> {
     if !matches!(client.connection().transport(), Transport::Ssh { .. }) {
@@ -245,6 +250,13 @@ async fn run_proxy(
             }
         }
     }
+}
+
+fn parse_fanout_selectors(values: Vec<String>) -> Result<Vec<FanoutSelector>, Error> {
+    Ok(values
+        .iter()
+        .map(|selector| FanoutSelector::parse(selector.as_str()))
+        .collect::<Result<Vec<_>, _>>()?)
 }
 
 fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {

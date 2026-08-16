@@ -8,8 +8,10 @@ use std::{
 
 use futures_util::stream;
 use ployz_core::{
-    ContainerKind, ContainerRuntimeObservation, HookContainer, LogMetadata, LogOrigin, MachineId,
+    ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
+    ContainerSelector, FanoutSelector, HookContainer, LogMetadata, LogOrigin, MachineId,
     MachineName, ResolvedServiceSpec, RestartPolicy, ServiceContainer, ServiceId, ServiceName,
+    ServiceSelector,
 };
 
 use super::*;
@@ -25,25 +27,26 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         "api-one"
     );
     assert_eq!(
-        select_exec_container(&service, Some(&"b".repeat(64)))
+        select_exec_container(&service, Some(&container_selector(&"b".repeat(64))))
             .unwrap()
             .as_observation()
             .display_name,
         "api-two"
     );
     assert_eq!(
-        select_exec_container(&service, Some("b"))
+        select_exec_container(&service, Some(&container_selector("b")))
             .unwrap()
             .as_observation()
             .display_name,
         "b"
     );
     assert!(matches!(
-        select_exec_container(&service, Some("bb")),
-        Err(ContainerSelectorError::Ambiguous { .. })
+        select_exec_container(&service, Some(&container_selector("bb"))),
+        Err(OperatorError::Container(ployz_core::ContainerSelectorError::Ambiguous { selector, .. }))
+            if selector.as_str() == "bb"
     ));
     assert_eq!(
-        select_log_containers(&service, &["b".into()])
+        select_log_containers(&service, &[container_selector("b")])
             .unwrap()
             .first()
             .unwrap()
@@ -58,9 +61,17 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         .as_observation()
         .container_id
         .to_string();
+    let hook_selector = container_selector(&hook_id);
     assert!(matches!(
-        select_exec_container(&service, Some(&hook_id)),
-        Err(ContainerSelectorError::NotFound { .. })
+        select_exec_container(&service, Some(&hook_selector)),
+        Err(OperatorError::Container(
+            ployz_core::ContainerSelectorError::NotFound { .. }
+        ))
+    ));
+    assert!(matches!(
+        select_exec_container(&service, Some(&container_selector("api-hook"))),
+        Err(OperatorError::Container(ployz_core::ContainerSelectorError::NotFound { selector }))
+            if selector.as_str() == "api-hook"
     ));
     assert_eq!(
         select_proxy_container(&service)
@@ -71,7 +82,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     );
     assert_eq!(select_log_containers(&service, &[]).unwrap().len(), 4);
     assert!(matches!(
-        select_log_containers(&service, &[hook_id])
+        select_log_containers(&service, &[hook_selector])
             .unwrap()
             .as_slice(),
         [ContainerRef::Hook(_)]
@@ -83,7 +94,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     };
     assert!(matches!(
         select_exec_container(&hook_only, None),
-        Err(ContainerSelectorError::NoRegularContainer)
+        Err(OperatorError::NoRegularContainer)
     ));
     assert!(matches!(
         select_proxy_container(&hook_only),
@@ -96,8 +107,9 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         *slot = ServiceContainer::try_from(observation).unwrap();
     }
     assert!(matches!(
-        select_exec_container(&duplicate_names, Some("api-one")),
-        Err(ContainerSelectorError::Ambiguous { .. })
+        select_exec_container(&duplicate_names, Some(&container_selector("api-one"))),
+        Err(OperatorError::Container(ployz_core::ContainerSelectorError::Ambiguous { selector, .. }))
+            if selector.as_str() == "api-one"
     ));
     let options = exec_options(
         Vec::new(),
@@ -150,12 +162,12 @@ fn service_args_tail_and_proxy_ports_cover_the_argument_tables() {
         parse_service_args(&strings(["api/one", "api/two", "worker/x", "api"])).unwrap(),
         [
             ServiceArg {
-                service: "api".into(),
+                service: service_selector("api"),
                 containers: vec![],
             },
             ServiceArg {
-                service: "worker".into(),
-                containers: vec!["x".into()],
+                service: service_selector("worker"),
+                containers: vec![container_selector("x")],
             },
         ]
     );
@@ -365,9 +377,14 @@ fn machine_selection_treats_star_as_all_and_all_as_a_name() {
         machine_observation(2, "all"),
     ];
     assert_eq!(select_machines(&machines, &[]).unwrap().len(), 2);
-    assert_eq!(select_machines(&machines, &["*".into()]).unwrap().len(), 2);
     assert_eq!(
-        select_machines(&machines, &["all".into()])
+        select_machines(&machines, &[FanoutSelector::parse("*").unwrap()])
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        select_machines(&machines, &[FanoutSelector::parse("all").unwrap()])
             .unwrap()
             .first()
             .unwrap()
@@ -376,11 +393,19 @@ fn machine_selection_treats_star_as_all_and_all_as_a_name() {
             .as_str(),
         "all"
     );
-    assert!(select_machines(&machines, &["missing".into()]).is_err());
+    assert!(select_machines(&machines, &[FanoutSelector::parse("missing").unwrap()]).is_err());
 }
 
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(ToOwned::to_owned).collect()
+}
+
+fn service_selector(value: &str) -> ServiceSelector {
+    ServiceSelector::parse(value).unwrap()
+}
+
+fn container_selector(value: &str) -> ContainerSelector {
+    ContainerSelector::parse(value).unwrap()
 }
 
 fn machine_observation(seed: u8, name: &str) -> MachineObservation {

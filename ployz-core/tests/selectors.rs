@@ -3,10 +3,10 @@ use std::{collections::BTreeMap, net::IpAddr};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContainerSelector, ContainerSelectorError, FanoutSelector,
-    Machine, MachineId, MachineName, MachineRuntime, MachineSelector, MachineSelectorError,
-    MachineTarget, ManagementAddress, NameMatches, Placement, ServiceId, ServiceName,
-    ServiceSelector, WireGuardPublicKey, derive_services, resolve_container_selector,
-    resolve_machine_selector, resolve_machine_selectors, select_service,
+    Machine, MachineId, MachineName, MachineRuntime, MachineSelectorError, MachineTarget,
+    ManagementAddress, NameMatches, Placement, ServiceId, ServiceName, ServiceSelector,
+    ServiceSelectorError, WireGuardPublicKey, derive_services, resolve_container_selector,
+    resolve_machine_selectors,
 };
 use serde_json::json;
 
@@ -42,8 +42,6 @@ fn fanout_selector_treats_star_as_the_only_wildcard() {
         FanoutSelector::parse("").unwrap_err().to_string(),
         "invalid Machine Target \"\": a non-empty Machine identity that is not a wildcard"
     );
-    assert_eq!(MachineSelector::parse("*").unwrap().as_str(), "*");
-    assert_eq!(MachineSelector::parse("all").unwrap().as_str(), "all");
 }
 
 #[test]
@@ -60,10 +58,6 @@ fn machine_target_resolution_prefers_ids_and_keeps_name_ambiguity() {
     assert_eq!(
         MachineTarget::parse("duplicate").unwrap().resolve(&visible),
         NameMatches::Ambiguous(vec![&first, &second])
-    );
-    assert_eq!(
-        resolve_machine_selector(&MachineSelector::from(&first.id), &visible),
-        NameMatches::One(&first)
     );
 }
 
@@ -163,15 +157,8 @@ fn service_selector_resolution_prefers_ids_and_reports_ambiguous_names() {
     ]);
 
     assert_eq!(
-        ServiceSelector::parse(first_id.as_str())
-            .unwrap()
+        ServiceSelector::from(&first_id)
             .resolve(&services)
-            .unwrap()
-            .service_id,
-        first_id
-    );
-    assert_eq!(
-        select_service(&services, first_id.as_str())
             .unwrap()
             .service_id,
         first_id
@@ -188,10 +175,18 @@ fn service_selector_resolution_prefers_ids_and_reports_ambiguous_names() {
         serde_json::to_string(&ServiceSelector::parse("unique").unwrap()).unwrap(),
         "\"unique\""
     );
+    assert_eq!(
+        serde_json::to_value(&ServiceSelectorError::NotFound {
+            selector: ServiceSelector::parse("missing").unwrap(),
+        })
+        .unwrap(),
+        json!({"error": "not_found", "selector": "missing"})
+    );
     assert!(matches!(
         ServiceSelector::parse("shared").unwrap().resolve(&services),
-        Err(ployz_core::ServiceSelectorError::NameAmbiguity { service_ids, .. })
-            if service_ids.len() == 2
+        Err(ServiceSelectorError::NameAmbiguity { selector, service_ids })
+            if selector.as_str() == "shared"
+                && service_ids.len() == 2
                 && service_ids.contains(&first_id)
                 && service_ids.contains(&second_id)
     ));
@@ -199,7 +194,8 @@ fn service_selector_resolution_prefers_ids_and_reports_ambiguous_names() {
         ServiceSelector::parse("missing")
             .unwrap()
             .resolve(&services),
-        Err(ployz_core::ServiceSelectorError::NotFound { .. })
+        Err(ServiceSelectorError::NotFound { selector })
+            if selector.as_str() == "missing"
     ));
     assert!(ServiceSelector::parse("").is_err());
 }
@@ -246,7 +242,8 @@ fn container_selector_uses_exact_id_then_display_name_then_prefix() {
     );
     assert!(matches!(
         ContainerSelector::parse("bb").unwrap().resolve(containers),
-        Err(ContainerSelectorError::Ambiguous { .. })
+        Err(ContainerSelectorError::Ambiguous { selector, .. })
+            if selector.as_str() == "bb"
     ));
     assert_eq!(
         serde_json::to_string(&ContainerSelector::parse("api-one").unwrap()).unwrap(),
@@ -256,7 +253,8 @@ fn container_selector_uses_exact_id_then_display_name_then_prefix() {
         ContainerSelector::parse("missing")
             .unwrap()
             .resolve(containers),
-        Err(ContainerSelectorError::NotFound { .. })
+        Err(ContainerSelectorError::NotFound { selector })
+            if selector.as_str() == "missing"
     ));
     assert!(ContainerSelector::parse("").is_err());
 }

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use clap::ArgMatches;
 use ployz_core::{
     ContainerAction, ContainerRef, ContainerRuntimeObservation, HealthObservation, LiveServices,
-    RpcError, select_service,
+    RpcError, ServiceSelector, select_service,
 };
 
 use super::{Error, leaf_matches, with_client};
@@ -138,10 +138,12 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
 }
 
 pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
-    let selector = leaf_matches(root)
-        .get_one::<String>("service")
-        .cloned()
-        .ok_or_else(|| Error::usage("Service selector is required"))?;
+    let selector = ServiceSelector::parse(
+        leaf_matches(root)
+            .get_one::<String>("service")
+            .cloned()
+            .ok_or_else(|| Error::usage("Service selector is required"))?,
+    )?;
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services().await?;
@@ -158,8 +160,8 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
     let selectors = leaf
         .get_many::<String>("service")
         .ok_or_else(|| Error::usage("at least one Service selector is required"))?
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|selector| ServiceSelector::parse(selector.as_str()))
+        .collect::<Result<Vec<_>, _>>()?;
     let (signal, timeout) = stop_options(leaf, action)?;
     with_client(root, |client| {
         Box::pin(async move {
@@ -200,7 +202,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
 
 fn select_services<'a>(
     services: &'a [ployz_core::ServiceObservation],
-    selectors: &[String],
+    selectors: &[ServiceSelector],
 ) -> Result<Vec<&'a ployz_core::ServiceObservation>, Error> {
     let mut ids = HashSet::new();
     let mut selected = Vec::new();
@@ -325,7 +327,10 @@ mod tests {
             containers: vec![ServiceContainer::try_from(container).unwrap()],
             hook_containers: Vec::new(),
         }];
-        let selectors = vec!["api".to_owned(), service_id.to_string()];
+        let selectors = vec![
+            ServiceSelector::parse("api").unwrap(),
+            ServiceSelector::from(&service_id),
+        ];
 
         assert_eq!(select_services(&services, &selectors).unwrap().len(), 1);
     }

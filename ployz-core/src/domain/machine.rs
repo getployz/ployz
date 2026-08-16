@@ -8,18 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::NameMatches;
 use crate::{
-    AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSelector, MachineSubnet,
-    MachineTarget, ManagementAddress, SelectedEndpoint, WireGuardPublicKey,
+    AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSubnet, MachineTarget,
+    ManagementAddress, SelectedEndpoint, WireGuardPublicKey,
 };
-
-/// Resolve an exact Machine ID or an observer-relative Machine Name without
-/// inventing a winner for duplicate names.
-pub fn resolve_machine_selector<'a>(
-    selector: &MachineSelector,
-    visible: impl IntoIterator<Item = &'a Machine>,
-) -> NameMatches<&'a Machine> {
-    resolve_machine_text(selector.as_str(), visible)
-}
 
 pub(super) fn resolve_machine_text<'a>(
     text: &str,

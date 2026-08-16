@@ -280,13 +280,6 @@ validated_string_newtype!(
     |value| value.starts_with('/')
 );
 validated_string_newtype!(
-    /// The unresolved name-or-ID text used to select a Machine.
-    MachineSelector,
-    "Machine selector",
-    "a non-empty Machine Name or Machine ID",
-    |value| !value.is_empty()
-);
-validated_string_newtype!(
     /// Unresolved name-or-ID text that targets one Machine. It cannot be a wildcard.
     MachineTarget,
     "Machine Target",
@@ -308,14 +301,14 @@ validated_string_newtype!(
     |value| !value.is_empty()
 );
 
-impl From<&MachineId> for MachineSelector {
+impl From<&MachineId> for MachineTarget {
     fn from(value: &MachineId) -> Self {
         Self(value.to_string())
     }
 }
 
-impl From<&MachineId> for MachineTarget {
-    fn from(value: &MachineId) -> Self {
+impl From<&ServiceId> for ServiceSelector {
+    fn from(value: &ServiceId) -> Self {
         Self(value.to_string())
     }
 }

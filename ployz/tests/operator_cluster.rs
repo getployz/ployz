@@ -6,9 +6,9 @@ use ployz::operator::{
     open_service_logs, select_exec_container,
 };
 use ployz_core::{
-    ContainerAction, ContainerKind, ExecRequestFrame, ExecResponseFrame, LogEntry, LogOrigin,
-    LogsOptions, MachineLogService, MachineTarget, ResolvedServiceSpec, ServiceId,
-    StartContainerRequest, op, select_service,
+    ContainerAction, ContainerKind, ContainerSelector, ExecRequestFrame, ExecResponseFrame,
+    FanoutSelector, LogEntry, LogOrigin, LogsOptions, MachineLogService, MachineTarget,
+    ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -48,15 +48,20 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     let observed = wait_for_service(&mut client, &service_id, 3).await;
 
     assert!(
-        open_exec(&mut client, "missing", None, attached(["true"]))
-            .await
-            .is_err()
+        open_exec(
+            &mut client,
+            &ServiceSelector::parse("missing").unwrap(),
+            None,
+            attached(["true"]),
+        )
+        .await
+        .is_err()
     );
     assert!(
         open_exec(
             &mut client,
-            service_id.as_str(),
-            Some("missing"),
+            &ServiceSelector::from(&service_id),
+            Some(&ContainerSelector::parse("missing").unwrap()),
             attached(["true"])
         )
         .await
@@ -73,8 +78,8 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     ] {
         let frames = run_exec(
             &mut client,
-            service_id.as_str(),
-            Some(&selector),
+            &ServiceSelector::from(&service_id),
+            Some(&ContainerSelector::parse(&selector).unwrap()),
             attached(["sh", "-c", "printf out; printf err >&2; exit 42"]),
             Vec::new(),
         )
@@ -88,7 +93,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     assert!(
         run_exec(
             &mut client,
-            service_id.as_str(),
+            &ServiceSelector::from(&service_id),
             None,
             attached(["sh", "-c", "exit 127"]),
             Vec::new(),
@@ -108,15 +113,21 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     )
     .unwrap();
     assert!(
-        run_exec(&mut client, service_id.as_str(), None, defaults, Vec::new(),)
-            .await
-            .unwrap()
-            .contains(&ExecResponseFrame::Exit(0))
+        run_exec(
+            &mut client,
+            &ServiceSelector::from(&service_id),
+            None,
+            defaults,
+            Vec::new(),
+        )
+        .await
+        .unwrap()
+        .contains(&ExecResponseFrame::Exit(0))
     );
 
     let stdin = run_exec(
         &mut client,
-        service_id.as_str(),
+        &ServiceSelector::from(&service_id),
         None,
         attached(["sh", "-c", "read line; printf 'got:%s' \"$line\""]),
         vec![ExecRequestFrame::Stdin(b"hello\n".to_vec())],
@@ -126,7 +137,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     assert!(stdin.contains(&ExecResponseFrame::Stdout(b"got:hello".to_vec())));
     let tty = run_exec(
         &mut client,
-        service_id.as_str(),
+        &ServiceSelector::from(&service_id),
         None,
         tty(["sh", "-c", "printf tty-output"]),
         vec![ExecRequestFrame::Resize {
@@ -144,7 +155,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
 
     let detached_frames = run_exec(
         &mut client,
-        service_id.as_str(),
+        &ServiceSelector::from(&service_id),
         None,
         detached(["sleep", "1"]),
         Vec::new(),
@@ -158,7 +169,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     assert!(
         open_exec(
             &mut client,
-            service_id.as_str(),
+            &ServiceSelector::from(&service_id),
             None,
             detached(["command-that-does-not-exist"]),
         )
@@ -170,7 +181,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     assert_machine_logs(&mut client, &machines).await;
 
     let live = client.live_services().await.unwrap();
-    let service = select_service(&live.services, service_id.as_str()).unwrap();
+    let service = select_service(&live.services, &ServiceSelector::from(&service_id)).unwrap();
     client
         .change_observed_service(service, ContainerAction::Remove, None, None)
         .await;
@@ -184,7 +195,7 @@ async fn assert_service_logs(
     machines: &[ployz_core::Machine; 2],
 ) {
     let args = [ServiceArg {
-        service: service_id.to_string(),
+        service: ServiceSelector::from(service_id),
         containers: Vec::new(),
     }];
     let entries = collect_logs(
@@ -249,7 +260,7 @@ async fn assert_service_logs(
         &[
             args[0].clone(),
             ServiceArg {
-                service: "disabled-but-undeployed".into(),
+                service: ServiceSelector::parse("disabled-but-undeployed").unwrap(),
                 containers: Vec::new(),
             },
         ],
@@ -260,13 +271,16 @@ async fn assert_service_logs(
     )
     .await
     .unwrap();
-    assert_eq!(compose_opened.skipped_services, ["disabled-but-undeployed"]);
+    assert_eq!(
+        compose_opened.skipped_services,
+        [ServiceSelector::parse("disabled-but-undeployed").unwrap()]
+    );
     assert_eq!(compose_opened.inputs.len(), 3);
     assert!(
         open_service_logs(
             client,
             &[ServiceArg {
-                service: "disabled-but-undeployed".into(),
+                service: ServiceSelector::parse("disabled-but-undeployed").unwrap(),
                 containers: Vec::new(),
             }],
             &[],
@@ -287,8 +301,8 @@ async fn assert_service_logs(
         let inputs = open_service_logs(
             client,
             &[ServiceArg {
-                service: service_id.to_string(),
-                containers: vec![selector],
+                service: ServiceSelector::from(service_id),
+                containers: vec![ContainerSelector::parse(&selector).unwrap()],
             }],
             &[],
             log_options(),
@@ -304,8 +318,8 @@ async fn assert_service_logs(
         open_service_logs(
             client,
             &[ServiceArg {
-                service: service_id.to_string(),
-                containers: vec!["missing".into()],
+                service: ServiceSelector::from(service_id),
+                containers: vec![ContainerSelector::parse("missing").unwrap()],
             }],
             &[],
             log_options(),
@@ -318,7 +332,7 @@ async fn assert_service_logs(
     let selected_machine = open_service_logs(
         client,
         &args,
-        &[machines[0].name.to_string()],
+        &[FanoutSelector::parse(machines[0].name.as_str()).unwrap()],
         log_options(),
         false,
         CancellationToken::new(),
@@ -330,7 +344,7 @@ async fn assert_service_logs(
         open_service_logs(
             client,
             &args,
-            &["missing".into()],
+            &[FanoutSelector::parse("missing").unwrap()],
             log_options(),
             false,
             CancellationToken::new(),
@@ -393,7 +407,7 @@ async fn assert_machine_logs(
     let inputs = open_machine_logs(
         client,
         &[],
-        &[machines[0].name.to_string()],
+        &[FanoutSelector::parse(machines[0].name.as_str()).unwrap()],
         LogsOptions {
             follow: true,
             ..log_options()
@@ -410,8 +424,8 @@ async fn assert_machine_logs(
 
 async fn run_exec(
     client: &mut ployz::connect::Client,
-    service: &str,
-    container: Option<&str>,
+    service: &ServiceSelector,
+    container: Option<&ContainerSelector>,
     options: ployz_core::ExecOptions,
     input: Vec<ExecRequestFrame>,
 ) -> Result<Vec<ExecResponseFrame>, ployz::operator::OperatorError> {
@@ -444,7 +458,8 @@ async fn wait_for_service(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Ok(live) = client.live_services().await
-                && let Ok(service) = select_service(&live.services, service_id.as_str())
+                && let Ok(service) =
+                    select_service(&live.services, &ServiceSelector::from(service_id))
                 && service.containers.len() == containers
             {
                 return service.clone();

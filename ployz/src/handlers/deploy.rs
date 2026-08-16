@@ -1,6 +1,7 @@
 use std::num::NonZeroU32;
 
 use clap::ArgMatches;
+use ployz_core::ServiceSelector;
 
 use crate::{
     compose::{
@@ -89,7 +90,7 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     // TODO(EO-012): reject zero before resolving configuration or connecting to a Machine.
     let replicas = NonZeroU32::new(replicas)
         .ok_or_else(|| Error::usage("replicas must be greater than zero"))?;
-    let selector = required(matches, "service")?;
+    let selector = ServiceSelector::parse(required(matches, "service")?)?;
     let yes = matches.get_flag("yes");
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {

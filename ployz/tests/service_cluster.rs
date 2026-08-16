@@ -3,7 +3,7 @@ use std::{process, time::Duration};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerKind, ContainerRuntimeObservation,
     InspectContainerRequest, Machine, MachineId, MachineTarget, RemoveContainerRequest,
-    ResolvedServiceSpec, ServiceId, StopContainerRequest, op, select_service,
+    ResolvedServiceSpec, ServiceId, ServiceSelector, StopContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 
@@ -53,7 +53,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .unwrap();
 
     let live = wait_for_services(&mut client, 1, 4).await;
-    let observed = select_service(&live.services, service_id.as_str())
+    let observed = select_service(&live.services, &ServiceSelector::from(&service_id))
         .unwrap()
         .clone();
     assert_eq!(observed.containers.len(), 2);
@@ -83,9 +83,9 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .await
         .unwrap();
     let live = wait_for_services(&mut client, 2, 5).await;
-    assert!(select_service(&live.services, "shared").is_err());
+    assert!(select_service(&live.services, &ServiceSelector::parse("shared").unwrap()).is_err());
     assert_eq!(
-        select_service(&live.services, collision_id.as_str())
+        select_service(&live.services, &ServiceSelector::from(&collision_id))
             .unwrap()
             .service_id,
         collision_id
@@ -109,7 +109,11 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             .all(|hook| hook.as_observation().container_id != success.value)
     }));
     let local_after_start = client.live_services().await.unwrap();
-    let local_service = select_service(&local_after_start.services, service_id.as_str()).unwrap();
+    let local_service = select_service(
+        &local_after_start.services,
+        &ServiceSelector::from(&service_id),
+    )
+    .unwrap();
     assert!(matches!(
         local_service
             .hook_containers
@@ -148,12 +152,12 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
 
     cluster.remote_machine_api_rule(0, "--delete").unwrap();
     let live = client.live_services().await.unwrap();
-    let service = select_service(&live.services, service_id.as_str()).unwrap();
+    let service = select_service(&live.services, &ServiceSelector::from(&service_id)).unwrap();
     client
         .change_observed_service(service, ContainerAction::Remove, None, Some(10))
         .await;
     let live = client.live_services().await.unwrap();
-    let service = select_service(&live.services, collision_id.as_str()).unwrap();
+    let service = select_service(&live.services, &ServiceSelector::from(&collision_id)).unwrap();
     client
         .change_observed_service(service, ContainerAction::Remove, None, Some(10))
         .await;

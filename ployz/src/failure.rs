@@ -1,8 +1,8 @@
 use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
-    CodecError, MachineSelectorError, MachineUpdateError, RpcError, ServiceSelectorError,
-    StreamProtocolError, ValueError,
+    CodecError, ContainerSelectorError, MachineSelectorError, MachineUpdateError, RpcError,
+    ServiceSelectorError, StreamProtocolError, ValueError,
 };
 
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
     deploy::PlanError,
     dns::{DomainRequired, Error as DnsError, NoReachableMachines},
     image::PushError,
-    operator::{ContainerSelectorError, OperatorError},
+    operator::OperatorError,
     provisioning::ProvisionError,
     volume::AssignmentError,
 };

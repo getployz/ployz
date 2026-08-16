@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::RequestedServiceSpec;
+use ployz_core::{RequestedServiceSpec, ServiceSelector};
 
 use crate::{
     compose::{BuildService, ComposeProject},
@@ -62,7 +62,7 @@ pub(crate) async fn deploy_project(
 
 pub(crate) async fn deploy_scale(
     client: &mut Client,
-    selector: &str,
+    selector: &ServiceSelector,
     replicas: NonZeroU32,
     auto_confirm: bool,
 ) -> Result<(), Failure> {

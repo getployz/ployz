@@ -3,10 +3,9 @@ use std::{collections::BTreeMap, net::IpAddr};
 use ipnet::IpNet;
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
-    MachineSelector, MachineUpdate, MachineUpdateError, ManagementAddress, MembershipObservation,
+    MachineTarget, MachineUpdate, MachineUpdateError, ManagementAddress, MembershipObservation,
     NameMatches, PublicIpUpdate, RttStatistics, WireGuardDevice, WireGuardPeer, WireGuardPublicKey,
-    apply_machine_update, associate_wireguard_peers, resolve_machine_selector, rtt_statistics,
-    synthesize_membership,
+    apply_machine_update, associate_wireguard_peers, rtt_statistics, synthesize_membership,
 };
 
 #[test]
@@ -111,11 +110,11 @@ fn selector_resolution_prefers_ids_and_preserves_name_ambiguity() {
     let visible = [first.clone(), second.clone(), id_collision];
 
     assert_eq!(
-        resolve_machine_selector(&MachineSelector::from(&first.id), &visible),
+        MachineTarget::from(&first.id).resolve(&visible),
         NameMatches::One(&first)
     );
     assert_eq!(
-        resolve_machine_selector(&MachineSelector::parse("duplicate").unwrap(), &visible),
+        MachineTarget::parse("duplicate").unwrap().resolve(&visible),
         NameMatches::Ambiguous(vec![&first, &second])
     );
 }

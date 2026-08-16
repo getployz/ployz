@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use ployz_core::{
     MachineId, MachineObservation, PartialResult, PortPublication, RequestedServiceSpec, RpcError,
-    ServiceMode, select_service,
+    ServiceMode, ServiceSelector, select_service,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -126,7 +126,7 @@ pub(super) async fn plan_project(
 
 pub(super) async fn plan_scale(
     client: &mut Client,
-    selector: &str,
+    selector: &ServiceSelector,
     replicas: NonZeroU32,
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
@@ -160,7 +160,7 @@ pub(super) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> P
 
 fn scale_plan(
     snapshot: &DeploySnapshot,
-    selector: &str,
+    selector: &ServiceSelector,
     replicas: NonZeroU32,
 ) -> Result<Option<DeployPlan>, Failure> {
     let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
