@@ -173,12 +173,9 @@ fn convert_service(
     if caddy_config
         .as_ref()
         .is_some_and(|config| !config.is_empty())
-        && ports.iter().any(|port| {
-            matches!(
-                port,
-                PortPublication::Ingress { .. } | PortPublication::IngressTransport { .. }
-            )
-        })
+        && ports
+            .iter()
+            .any(|port| matches!(port, PortPublication::Ingress { .. }))
     {
         return Err(invalid(format!(
             "service '{name}': ingress ports and 'x-caddy' cannot be specified simultaneously"

@@ -8,8 +8,9 @@ use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MachinePath, MachineSelector,
-    PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference, ValueError,
+    BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, IngressHost, MachinePath,
+    MachineSelector, PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
+    ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -46,22 +47,35 @@ pub enum HostBind {
     Prefix { prefix: IpNet },
 }
 
+/// How an HTTP ingress publication obtains its hostname.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum IngressHostname {
+    AssignFromClusterDomain,
+    Explicit { hostname: IngressHost },
+}
+
+impl IngressHostname {
+    /// Parse a non-empty validated hostname as explicit ingress intent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `hostname` is empty or not a lowercase DNS hostname.
+    pub fn explicit(hostname: impl Into<String>) -> Result<Self, ValueError> {
+        Ok(Self::Explicit {
+            hostname: IngressHost::parse(hostname)?,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode")]
 pub enum PortPublication {
     Ingress {
-        hostname: String,
+        hostname: IngressHostname,
         load_balancer_port: NonZeroU16,
         container_port: NonZeroU16,
         http_protocol: HttpProtocol,
-    },
-    /// A normalized Compose ingress publication that baseline validation rejects later for
-    /// using TCP or UDP rather than HTTP(S). Keeping it typed preserves that incomplete flow.
-    IngressTransport {
-        #[serde(default)]
-        load_balancer_port: Option<NonZeroU16>,
-        container_port: NonZeroU16,
-        transport_protocol: TransportProtocol,
     },
     Host {
         bind: HostBind,

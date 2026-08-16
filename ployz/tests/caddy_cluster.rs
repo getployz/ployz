@@ -81,7 +81,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         },
         "ports": [{
             "mode": "ingress",
-            "hostname": "example.test",
+            "hostname": { "kind": "explicit", "hostname": "example.test" },
             "load_balancer_port": 80,
             "container_port": 8080,
             "http_protocol": "http"
@@ -369,7 +369,7 @@ async fn assert_start_first_gap(
             "placement": { "machines": [machine.id] },
             "ports": [{
                 "mode": "ingress",
-                "hostname": "switch.test",
+                "hostname": { "kind": "explicit", "hostname": "switch.test" },
                 "load_balancer_port": 80,
                 "container_port": 8081,
                 "http_protocol": "http"

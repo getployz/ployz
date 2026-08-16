@@ -41,15 +41,6 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         .into_iter()
         .map(|value| parse_extension_port(&value))
         .collect::<Result<Vec<_>, _>>()?;
-    // TODO(UT-044, UT-096): run preserves the baseline's lack of L4 ingress support.
-    if ports
-        .iter()
-        .any(|port| matches!(port, PortPublication::IngressTransport { .. }))
-    {
-        return Err(Error::usage(
-            "run supports TCP/UDP publications only in @host mode",
-        ));
-    }
     let caddy_config = matches
         .get_one::<String>("caddyfile")
         .map(fs::read_to_string)

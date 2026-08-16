@@ -160,6 +160,10 @@ _Avoid_: Management Address, globally unique container address
 An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations. It is not persisted and is not authoritative Cluster state even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, membership-filtered endpoint set
 
+**Ingress Hostname**:
+The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
+_Avoid_: empty hostname sentinel
+
 **Nearest DNS Selector**:
 An Internal DNS selector that orders addresses from the observing Machine's subnet before other addresses. It expresses subnet locality, not measured reachability or latency.
 _Avoid_: closest Machine, available endpoint

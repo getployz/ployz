@@ -1,6 +1,8 @@
 use std::{net::IpAddr, num::NonZeroU16};
 
-use ployz_core::{HostBind, HttpProtocol, PortPublication, TransportProtocol};
+use ployz_core::{HostBind, HttpProtocol, IngressHostname, PortPublication, TransportProtocol};
+
+const UNSUPPORTED_TRANSPORT_INGRESS: &str = "TCP/UDP ingress is not supported; use host publication (for example 8080:80/tcp@host or mode: host)";
 
 use super::{
     convert::{invalid, scalar, string_list},
@@ -105,11 +107,7 @@ fn make_standard_port(
     if mode != "ingress" {
         return Err(invalid(format!("invalid port mode '{mode}'")));
     }
-    Ok(PortPublication::IngressTransport {
-        load_balancer_port: published,
-        container_port: target,
-        transport_protocol: protocol,
-    })
+    Err(invalid(UNSUPPORTED_TRANSPORT_INGRESS))
 }
 
 pub(crate) fn parse_extension_port(value: &str) -> Result<PortPublication, ComposeError> {
@@ -159,7 +157,7 @@ pub(crate) fn parse_extension_port(value: &str) -> Result<PortPublication, Compo
     };
     match protocol {
         "http" | "https" => Ok(PortPublication::Ingress {
-            hostname: hostname.to_owned(),
+            hostname: ingress_hostname(hostname)?,
             load_balancer_port: published.unwrap_or_else(|| {
                 NonZeroU16::new(if protocol == "https" { 443 } else { 80 }).expect("non-zero")
             }),
@@ -170,13 +168,16 @@ pub(crate) fn parse_extension_port(value: &str) -> Result<PortPublication, Compo
                 HttpProtocol::Http
             },
         }),
-        "tcp" | "udp" if hostname.is_empty() => Ok(PortPublication::IngressTransport {
-            load_balancer_port: published,
-            container_port: target,
-            transport_protocol: transport_protocol(protocol)?,
-        }),
-        "tcp" | "udp" => Err(invalid("hostname is only valid with HTTP or HTTPS")),
+        "tcp" | "udp" => Err(invalid(UNSUPPORTED_TRANSPORT_INGRESS)),
         protocol => Err(invalid(format!("unsupported protocol '{protocol}'"))),
+    }
+}
+
+fn ingress_hostname(hostname: &str) -> Result<IngressHostname, ComposeError> {
+    if hostname.is_empty() {
+        Ok(IngressHostname::AssignFromClusterDomain)
+    } else {
+        IngressHostname::explicit(hostname).map_err(invalid)
     }
 }
 

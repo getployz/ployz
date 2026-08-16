@@ -11,8 +11,8 @@ use ployz::{
     deploy::{DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError},
 };
 use ployz_core::{
-    HostBind, HttpProtocol, PortPublication, RestartPolicy, ServiceMode, TransportProtocol,
-    UpdateOrder, VolumeSource,
+    HostBind, HttpProtocol, IngressHostname, PortPublication, RestartPolicy, ServiceMode,
+    TransportProtocol, UpdateOrder, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -194,7 +194,9 @@ configs:
             load_balancer_port,
             container_port,
             http_protocol: HttpProtocol::Https,
-        } if hostname == "api.example.com" && load_balancer_port.get() == 8443 && container_port.get() == 8080
+        } if *hostname == IngressHostname::explicit("api.example.com").unwrap()
+            && load_balancer_port.get() == 8443
+            && container_port.get() == 8080
     ));
     assert!(matches!(
         api.ports.get(1).unwrap(),
@@ -383,6 +385,7 @@ services:
         .to_string()
         .contains("invalid x-caddy key")
     );
+
     let ipv6 = parse_normalized(
         "services: {app: {image: app, ports: [{target: 80, published: 8080, host_ip: '[2001:db8::]/64', mode: host}]}}",
         ".",

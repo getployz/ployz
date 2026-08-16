@@ -1,4 +1,4 @@
-use ployz_core::{PortPublication, RestartPolicy, ServiceMode};
+use ployz_core::{HttpProtocol, IngressHostname, PortPublication, RestartPolicy, ServiceMode};
 
 use super::*;
 
@@ -56,7 +56,58 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
     let matches = crate::cli::command()
         .try_get_matches_from(["ployz", "run", "--publish", "8080:80", "alpine"])
         .unwrap();
-    assert!(run_spec(super::leaf_matches(&matches)).is_err());
+    assert!(
+        run_spec(super::leaf_matches(&matches))
+            .unwrap_err()
+            .to_string()
+            .contains("host publication")
+    );
+
+    let assigned = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "run",
+            "--name",
+            "api",
+            "--publish",
+            "8080/https",
+            "alpine",
+        ])
+        .unwrap();
+    assert!(matches!(
+        run_spec(super::leaf_matches(&assigned))
+            .unwrap()
+            .ports
+            .first(),
+        Some(PortPublication::Ingress {
+            hostname: IngressHostname::AssignFromClusterDomain,
+            http_protocol: HttpProtocol::Https,
+            ..
+        })
+    ));
+    let explicit = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "run",
+            "--name",
+            "api",
+            "--publish",
+            "app.example.com:8080/https",
+            "alpine",
+        ])
+        .unwrap();
+    assert_eq!(
+        run_spec(super::leaf_matches(&explicit))
+            .unwrap()
+            .ports
+            .first(),
+        Some(&PortPublication::Ingress {
+            hostname: IngressHostname::explicit("app.example.com").unwrap(),
+            load_balancer_port: 443.try_into().unwrap(),
+            container_port: 8080.try_into().unwrap(),
+            http_protocol: HttpProtocol::Https,
+        })
+    );
 
     let global = crate::cli::command()
         .try_get_matches_from(["ployz", "run", "--mode", "global", "alpine"])

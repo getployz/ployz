@@ -50,6 +50,10 @@ fn is_dns_label(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
+fn is_hostname(value: &str) -> bool {
+    (1..=253).contains(&value.len()) && value.split('.').all(is_dns_label)
+}
+
 macro_rules! hex_id_newtype {
     ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal) => {
         $(#[$attribute])*
@@ -397,6 +401,13 @@ validated_string_newtype!(
     "Service Name",
     "a 1-63 character lowercase DNS label",
     |value| is_dns_label(value)
+);
+validated_string_newtype!(
+    /// A validated HTTP ingress hostname. It is not a Machine Name.
+    IngressHost,
+    "Ingress Hostname",
+    "a 1-253 character lowercase DNS hostname",
+    |value| is_hostname(value)
 );
 
 /// One Machine's optimistic container subnet candidate.

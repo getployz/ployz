@@ -2,8 +2,8 @@ use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
-    HttpProtocol, InspectRequest, Machine, MachineId, MachineSelector, PortPublication,
-    RequestedServiceSpec, op,
+    HttpProtocol, IngressHost, IngressHostname, InspectRequest, Machine, MachineId,
+    MachineSelector, PortPublication, RequestedServiceSpec, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -178,7 +178,11 @@ pub fn expand_ingress_ports(
     cluster_domain: Option<&str>,
 ) -> Result<(), DomainRequired> {
     let domain = cluster_domain.filter(|domain| !domain.is_empty());
-    let assigned = domain.map(|domain| format!("{}.{domain}", spec.name));
+    // A Service Name plus a reserved hosted domain is always a valid Ingress Hostname.
+    let assigned = domain.map(|domain| {
+        IngressHost::parse(format!("{}.{domain}", spec.name))
+            .expect("service name and reserved cluster domain form a hostname")
+    });
     let mut extras = Vec::new();
     for port in &mut spec.ports {
         let PortPublication::Ingress {
@@ -190,22 +194,29 @@ pub fn expand_ingress_ports(
         else {
             continue;
         };
-        if hostname.is_empty() {
-            *hostname = assigned.clone().ok_or(DomainRequired {
-                container_port: container_port.get(),
-                protocol: *http_protocol,
-            })?;
-            continue;
-        }
-        if let (Some(domain), Some(assigned)) = (domain, assigned.as_ref())
-            && !hostname.ends_with(&format!(".{domain}"))
-        {
-            extras.push(PortPublication::Ingress {
-                hostname: assigned.clone(),
-                load_balancer_port: *load_balancer_port,
-                container_port: *container_port,
-                http_protocol: *http_protocol,
-            });
+        match hostname {
+            IngressHostname::AssignFromClusterDomain => {
+                *hostname = IngressHostname::Explicit {
+                    hostname: assigned.clone().ok_or(DomainRequired {
+                        container_port: container_port.get(),
+                        protocol: *http_protocol,
+                    })?,
+                };
+            }
+            IngressHostname::Explicit { hostname: existing } => {
+                if let (Some(domain), Some(assigned)) = (domain, assigned.as_ref())
+                    && !existing.as_str().ends_with(&format!(".{domain}"))
+                {
+                    extras.push(PortPublication::Ingress {
+                        hostname: IngressHostname::Explicit {
+                            hostname: assigned.clone(),
+                        },
+                        load_balancer_port: *load_balancer_port,
+                        container_port: *container_port,
+                        http_protocol: *http_protocol,
+                    });
+                }
+            }
         }
     }
     spec.ports.extend(extras);
@@ -219,8 +230,8 @@ mod tests {
     use std::num::NonZeroU16;
 
     use ployz_core::{
-        DnsRecord, DnsRecordType, HttpProtocol, Machine, MachineId, PortPublication,
-        RequestedServiceSpec,
+        DnsRecord, DnsRecordType, HttpProtocol, IngressHostname, Machine, MachineId,
+        PortPublication, RequestedServiceSpec,
     };
 
     use super::{
@@ -283,8 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_ingress_hostnames_require_a_reserved_cluster_domain() {
-        let mut spec = requested(vec![ingress("", HttpProtocol::Https)]);
+    fn assigned_ingress_hostnames_require_a_reserved_cluster_domain() {
+        let mut spec = requested(vec![ingress(
+            IngressHostname::AssignFromClusterDomain,
+            HttpProtocol::Https,
+        )]);
         assert_eq!(
             expand_ingress_ports(&mut spec, None),
             Err(DomainRequired {
@@ -303,9 +317,9 @@ mod tests {
     #[test]
     fn reserved_domain_assigns_and_duplicates_external_ingress_hostnames() {
         let mut spec = requested(vec![
-            ingress("", HttpProtocol::Http),
-            ingress("app.example.com", HttpProtocol::Https),
-            ingress("api.opaque.ployz.example", HttpProtocol::Http),
+            ingress(IngressHostname::AssignFromClusterDomain, HttpProtocol::Http),
+            ingress(explicit("app.example.com"), HttpProtocol::Https),
+            ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http),
             PortPublication::Host {
                 bind: ployz_core::HostBind::All,
                 published_port: NonZeroU16::new(8080).unwrap(),
@@ -318,16 +332,16 @@ mod tests {
         assert_eq!(
             spec.ports,
             vec![
-                ingress("web.opaque.ployz.example", HttpProtocol::Http),
-                ingress("app.example.com", HttpProtocol::Https),
-                ingress("api.opaque.ployz.example", HttpProtocol::Http),
+                ingress(explicit("web.opaque.ployz.example"), HttpProtocol::Http),
+                ingress(explicit("app.example.com"), HttpProtocol::Https),
+                ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http,),
                 PortPublication::Host {
                     bind: ployz_core::HostBind::All,
                     published_port: NonZeroU16::new(8080).unwrap(),
                     container_port: NonZeroU16::new(8080).unwrap(),
                     transport_protocol: ployz_core::TransportProtocol::Tcp,
                 },
-                ingress("web.opaque.ployz.example", HttpProtocol::Https),
+                ingress(explicit("web.opaque.ployz.example"), HttpProtocol::Https),
             ]
         );
     }
@@ -342,9 +356,13 @@ mod tests {
         .unwrap()
     }
 
-    fn ingress(hostname: &str, http_protocol: HttpProtocol) -> PortPublication {
+    fn explicit(hostname: &str) -> IngressHostname {
+        IngressHostname::explicit(hostname).unwrap()
+    }
+
+    fn ingress(hostname: IngressHostname, http_protocol: HttpProtocol) -> PortPublication {
         PortPublication::Ingress {
-            hostname: hostname.into(),
+            hostname,
             load_balancer_port: NonZeroU16::new(80).unwrap(),
             container_port: NonZeroU16::new(8080).unwrap(),
             http_protocol,
