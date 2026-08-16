@@ -47,15 +47,14 @@ pub(crate) enum IssuanceAction {
 
 /// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
 #[must_use]
-pub(crate) fn machine_rank(this: &MachineId, machines: &[MachineId]) -> usize {
-    let mut ids: BTreeSet<MachineId> = machines.iter().copied().collect();
-    ids.insert(*this);
-    ids.iter()
-        .position(|id| id == this)
-        .expect("this Machine was inserted")
+pub(crate) fn machine_rank<'id>(
+    this: &MachineId,
+    machines: impl IntoIterator<Item = &'id MachineId>,
+) -> usize {
+    machines.into_iter().filter(|id| *id < this).count()
 }
 
-/// Whether this Machine should order now. Renewal and refuse are later tickets.
+/// Whether this Machine should order now.
 #[must_use]
 pub(crate) fn issuance_action(
     row: Option<&CertificateRow>,
@@ -77,17 +76,17 @@ pub(crate) fn issuance_action(
 #[must_use]
 pub(crate) fn challenge_probe_addresses(
     resolved: &[IpAddr],
-    cluster: &BTreeSet<IpAddr>,
+    caddy_ips: &BTreeSet<IpAddr>,
 ) -> Vec<SocketAddr> {
     resolved
         .iter()
         .copied()
-        .filter(|address| cluster.contains(address))
+        .filter(|address| caddy_ips.contains(address))
         .map(|address| SocketAddr::new(address, 80))
         .collect()
 }
 
-fn cluster_challenge_ips(
+fn caddy_challenge_ips(
     machines: &[Machine],
     observations: &[ContainerObservation],
 ) -> BTreeSet<IpAddr> {
@@ -245,12 +244,10 @@ async fn issue_wanted(
     let wanted = wanted_certificate_hosts(containers.observations.iter());
     let rows = store.certificate_state().await?;
     let machines = store.machines().await?;
-    let machine_ids: Vec<MachineId> = machines
-        .observations
-        .iter()
-        .map(|machine| machine.id)
-        .collect();
-    let rank = machine_rank(machine_id, &machine_ids);
+    let rank = machine_rank(
+        machine_id,
+        machines.observations.iter().map(|machine| &machine.id),
+    );
     let now = Instant::now();
     first_seen.retain(|hostname, _| wanted.contains(hostname));
     let mut to_order = Vec::new();
@@ -260,15 +257,8 @@ async fn issue_wanted(
             first_seen.remove(&hostname);
             continue;
         }
-        let elapsed = match first_seen.entry(hostname.clone()) {
-            std::collections::btree_map::Entry::Occupied(entry) => {
-                now.saturating_duration_since(*entry.get())
-            }
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(now);
-                Duration::ZERO
-            }
-        };
+        let seen = *first_seen.entry(hostname.clone()).or_insert(now);
+        let elapsed = now.saturating_duration_since(seen);
         if issuance_action(row, rank, elapsed) == IssuanceAction::Order {
             to_order.push(hostname);
         }
@@ -277,13 +267,11 @@ async fn issue_wanted(
         return Ok(());
     }
     account(directory, account_dir).await?;
-    let results = join_all(to_order.iter().map(|hostname| {
-        let store = store.clone();
-        let hostname = hostname.clone();
-        let directory = directory.to_owned();
-        let account_dir = account_dir.to_owned();
-        async move { obtain(&store, &hostname, &directory, &account_dir).await }
-    }))
+    let results = join_all(
+        to_order
+            .iter()
+            .map(|hostname| obtain(store, hostname, directory, account_dir)),
+    )
     .await;
     for (hostname, result) in to_order.iter().zip(results) {
         if let Err(error) = result {
@@ -312,8 +300,8 @@ async fn obtain(
             let resolved = resolve_host(&hostname).await;
             let machines = store.machines().await?;
             let containers = store.containers().await?;
-            let cluster = cluster_challenge_ips(&machines.observations, &containers.observations);
-            let addresses = challenge_probe_addresses(&resolved, &cluster);
+            let caddy_ips = caddy_challenge_ips(&machines.observations, &containers.observations);
+            let addresses = challenge_probe_addresses(&resolved, &caddy_ips);
             wait_for_http01(&hostname, &challenge, &addresses).await
         }
     })
@@ -540,7 +528,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        IssuanceAction, RANK_STEP, challenge_probe_addresses, cluster_challenge_ips,
+        IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
         directory_from_env, issuance_action, machine_rank, order_certificate, wait_for_http01,
         wanted_certificate_hosts,
     };
@@ -642,24 +630,24 @@ mod tests {
     }
 
     #[test]
-    fn probe_addresses_are_the_cluster_intersection() {
-        let cluster = BTreeSet::from([ip("192.0.2.1"), ip("192.0.2.2")]);
+    fn probe_addresses_are_the_caddy_intersection() {
+        let caddy_ips = BTreeSet::from([ip("192.0.2.1"), ip("192.0.2.2")]);
         assert_eq!(
-            challenge_probe_addresses(&[ip("192.0.2.2"), ip("198.51.100.10")], &cluster),
+            challenge_probe_addresses(&[ip("192.0.2.2"), ip("198.51.100.10")], &caddy_ips),
             vec![socket("192.0.2.2")]
         );
         assert_eq!(
-            challenge_probe_addresses(&[ip("198.51.100.10")], &cluster),
+            challenge_probe_addresses(&[ip("198.51.100.10")], &caddy_ips),
             Vec::<SocketAddr>::new()
         );
         assert_eq!(
-            challenge_probe_addresses(&[], &cluster),
+            challenge_probe_addresses(&[], &caddy_ips),
             Vec::<SocketAddr>::new()
         );
     }
 
     #[test]
-    fn cluster_challenge_ips_come_from_running_caddy_machines() {
+    fn caddy_challenge_ips_come_from_running_caddy_machines() {
         let local = machine_with_endpoint("a", "192.0.2.1");
         let remote = machine_with_endpoint("b", "192.0.2.2");
         let mut caddy = observation(1, "caddy", Vec::new());
@@ -670,7 +658,7 @@ mod tests {
         down.service_name = ServiceName::parse("caddy").unwrap();
         down.runtime = ContainerRuntimeObservation::Exited { code: 1 };
         assert_eq!(
-            cluster_challenge_ips(&[local, remote], &[caddy, down]),
+            caddy_challenge_ips(&[local, remote], &[caddy, down]),
             BTreeSet::from([ip("192.0.2.1")])
         );
     }
