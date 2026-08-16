@@ -243,6 +243,23 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_connections_print_how_many_were_tried() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            source: crate::context::ConnectionSource::Context("prod".into()),
+            attempts: 3,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        let display = failure.to_string();
+        assert!(display.contains("3"), "{display}");
+        assert!(
+            !display.contains("Os {") && !display.contains("code: 111"),
+            "{display}"
+        );
+    }
+
+    #[test]
     fn connect_keeps_non_peeled_connect_error() {
         let failure = Failure::from(ConnectError::MissingMachineDetails);
         assert_eq!(

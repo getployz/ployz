@@ -240,6 +240,7 @@ fn spawn_ssh(program: &Path, args: &[String]) -> io::Result<SshIo> {
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
     let reader = child
@@ -380,21 +381,22 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
     request
 }
 
+/// Walk every connection and keep the first whose daemon answers.
+///
+/// A tunnel or lazy channel is not enough. Confirmation is one-shot so a down
+/// daemon cannot stall the walk or consume unary retries.
+///
+/// # Errors
+///
+/// Returns [`ConnectError::AllFailed`] after every connection is tried.
 pub async fn connect_selected_with(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
     let mut last_error = None;
     for connection in &selected.connections {
-        match connector.connect(connection).await {
-            Ok(channel) => {
-                return Ok(Client::new(
-                    channel,
-                    connection.clone(),
-                    selected.source.clone(),
-                    connector,
-                ));
-            }
+        match connect_one(connection, &selected.source, &connector).await {
+            Ok(client) => return Ok(client),
             Err(error) => last_error = Some(error),
         }
     }
@@ -403,6 +405,22 @@ pub async fn connect_selected_with(
         attempts: selected.connections.len(),
         last: last_error.map(Box::new),
     })
+}
+
+async fn connect_one(
+    connection: &Connection,
+    source: &ConnectionSource,
+    connector: &Arc<dyn Connector>,
+) -> Result<Client, ConnectError> {
+    let channel = connector.connect(connection).await?;
+    let client = Client::new(
+        channel,
+        connection.clone(),
+        source.clone(),
+        connector.clone(),
+    );
+    client.confirm_entry().await?;
+    Ok(client)
 }
 
 pub fn resolve_connections(
