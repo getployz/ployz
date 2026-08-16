@@ -24,6 +24,14 @@ _Avoid_: Machine Name, hostname
 A human-facing selector for a Machine that may be ambiguous. It is not an identity or a globally unique value.
 _Avoid_: Machine ID, unique hostname
 
+**Machine Target**:
+The unresolved name-or-ID text used to target one Machine. It is not a wildcard and is not a unique identity.
+_Avoid_: Fan-out Selector, unique hostname
+
+**Fan-out Selector**:
+A selection of every visible Machine or one Machine Target. `*` is the only wildcard spelling.
+_Avoid_: Machine Target, all
+
 **Local Machine Phase**:
 A Machine's own lifecycle phase: uninitialized, joining, participating, or resetting. Joining includes catching up unless a concrete behavior requires that stage to be distinguished.
 _Avoid_: Machine state, membership state, readiness
@@ -44,6 +52,10 @@ _Avoid_: Service Name
 A human-facing selector for a Service that may resolve to several Service IDs.
 _Avoid_: Service ID, unique service name
 
+**Service Selector**:
+The unresolved name-or-ID text used to select a Service.
+_Avoid_: Service Name as identity
+
 **Service Container**:
 A managed Docker container carrying the Resolved Service Spec from its creation. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
 _Avoid_: Replica, service record
@@ -55,6 +67,10 @@ _Avoid_: Service Container, sidecar
 **Container ID**:
 The durable runtime identity of one managed Docker container. Generated container names are display values, not identities.
 _Avoid_: Container name, replica identity
+
+**Container Selector**:
+The unresolved Container ID, display name, or ID prefix used to select one Container.
+_Avoid_: Container name as identity, replica identity
 
 **Container Runtime Observation**:
 A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unknown external state. Container observations do not combine into an authoritative Service state.

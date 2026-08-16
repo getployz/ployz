@@ -282,10 +282,105 @@ validated_string_newtype!(
     "a non-empty Machine Name or Machine ID",
     |value| !value.is_empty()
 );
+validated_string_newtype!(
+    /// Unresolved name-or-ID text that targets one Machine. It cannot be a wildcard.
+    MachineTarget,
+    "Machine Target",
+    "a non-empty Machine identity that is not a wildcard",
+    |value| !value.is_empty() && value != "*"
+);
+validated_string_newtype!(
+    /// Unresolved name-or-ID text used to select a Service.
+    ServiceSelector,
+    "Service Selector",
+    "a non-empty Service Name or Service ID",
+    |value| !value.is_empty()
+);
+validated_string_newtype!(
+    /// Unresolved Container ID, display name, or ID prefix used to select one Container.
+    ContainerSelector,
+    "Container Selector",
+    "a non-empty Container ID, display name, or ID prefix",
+    |value| !value.is_empty()
+);
 
 impl From<&MachineId> for MachineSelector {
     fn from(value: &MachineId) -> Self {
         Self(value.to_string())
+    }
+}
+
+impl From<&MachineId> for MachineTarget {
+    fn from(value: &MachineId) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<&MachineTarget> for MachineSelector {
+    fn from(value: &MachineTarget) -> Self {
+        Self(value.as_str().to_owned())
+    }
+}
+
+/// Fan-out selection of every visible Machine or one Machine Target.
+///
+/// `*` is the only wildcard spelling.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum FanoutSelector {
+    All,
+    One(MachineTarget),
+}
+
+impl FanoutSelector {
+    /// Parse `*` as [`FanoutSelector::All`], or a Machine Target as [`FanoutSelector::One`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` is empty.
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
+        let value = value.into();
+        if value == "*" {
+            Ok(Self::All)
+        } else {
+            MachineTarget::parse(value).map(Self::One)
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::All => "*",
+            Self::One(target) => target.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for FanoutSelector {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for FanoutSelector {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for FanoutSelector {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<FanoutSelector> for String {
+    fn from(value: FanoutSelector) -> Self {
+        value.as_str().to_owned()
     }
 }
 

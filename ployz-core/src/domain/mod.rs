@@ -1,9 +1,11 @@
 mod machine;
 mod observation;
+mod selector;
 mod spec;
 
 pub use machine::*;
 pub use observation::*;
+pub use selector::*;
 pub use spec::*;
 
 use serde::{Deserialize, Serialize};
