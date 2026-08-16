@@ -74,6 +74,47 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
 }
 
 #[test]
+fn global_named_volume_existing_on_every_machine_is_not_created() {
+    let mut requested = requested(ServiceMode::Global);
+    add_named_volume(&mut requested, "data");
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            volumes: vec![
+                ployz::deploy::ObservedDockerVolume {
+                    id: DockerVolumeId {
+                        machine_id: machine_id('1'),
+                        name: DockerVolumeName::parse("data").unwrap(),
+                    },
+                    driver: "local".into(),
+                    options: Default::default(),
+                },
+                ployz::deploy::ObservedDockerVolume {
+                    id: DockerVolumeId {
+                        machine_id: machine_id('2'),
+                        name: DockerVolumeName::parse("data").unwrap(),
+                    },
+                    driver: "local".into(),
+                    options: Default::default(),
+                },
+            ],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        plan.operations().as_slice(),
+        [
+            DeployOperation::RunContainer { .. },
+            DeployOperation::RunContainer { .. },
+        ]
+    ));
+}
+
+#[test]
 fn placement_seed_randomizes_equal_priority_round_robin_order() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),

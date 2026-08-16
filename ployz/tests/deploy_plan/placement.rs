@@ -311,6 +311,29 @@ fn missing_mounted_volume_is_created_before_replicas_on_one_machine() {
 }
 
 #[test]
+fn missing_named_volume_is_created_before_three_replicas() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(3).unwrap(),
+    });
+    add_named_volume(&mut requested, "auto_data");
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        plan.operations().first(),
+        Some(DeployOperation::CreateVolume { .. })
+    ));
+    assert_eq!(plan.operations().len(), 4);
+}
+
+#[test]
 fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
     let cases = [
         ("stateless", false, false, UpdateOrder::StartFirst),
@@ -394,4 +417,143 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
         [DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })]
             if spec.update.order == UpdateOrder::StopFirst
     ));
+}
+
+#[test]
+fn two_services_sharing_a_named_volume_create_it_once() {
+    let mut first = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    first.name = ServiceName::parse("first").unwrap();
+    add_named_volume(&mut first, "data");
+    let mut second = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    second.name = ServiceName::parse("second").unwrap();
+    add_named_volume(&mut second, "data");
+    let plan = plan_deploy(
+        [&first, &second],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(plan.volume_operations.len(), 1);
+}
+
+#[test]
+fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    add_named_volume(&mut requested, "multi_existing");
+    add_named_volume(&mut requested, "multi_missing");
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            volumes: vec![ployz::deploy::ObservedDockerVolume {
+                id: DockerVolumeId {
+                    machine_id: machine_id('1'),
+                    name: DockerVolumeName::parse("multi_existing").unwrap(),
+                },
+                driver: "local".into(),
+                options: Default::default(),
+            }],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        plan.operations().as_slice(),
+        [DeployOperation::CreateVolume { machine_id: volume_machine, volume }, rest @ ..]
+            if volume_machine == &machine_id('1')
+                && matches!(&volume.source, VolumeSource::Named { name, .. } if name.as_str() == "multi_missing")
+                && rest.iter().all(|operation| matches!(operation,
+                    DeployOperation::RunContainer { machine_id: container_machine, .. }
+                        if container_machine == &machine_id('1')))
+    ));
+}
+
+#[test]
+fn replicas_run_on_the_intersection_of_existing_named_volumes() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    add_named_volume(&mut requested, "intersect_a");
+    add_named_volume(&mut requested, "intersect_b");
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            volumes: vec![
+                ployz::deploy::ObservedDockerVolume {
+                    id: DockerVolumeId {
+                        machine_id: machine_id('1'),
+                        name: DockerVolumeName::parse("intersect_a").unwrap(),
+                    },
+                    driver: "local".into(),
+                    options: Default::default(),
+                },
+                ployz::deploy::ObservedDockerVolume {
+                    id: DockerVolumeId {
+                        machine_id: machine_id('1'),
+                        name: DockerVolumeName::parse("intersect_b").unwrap(),
+                    },
+                    driver: "local".into(),
+                    options: Default::default(),
+                },
+            ],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(plan.operations().len(), 2);
+    assert!(plan.operations().iter().all(|operation| matches!(
+        operation,
+        DeployOperation::RunContainer { machine_id: target, .. } if target == &machine_id('1')
+    )));
+}
+
+#[test]
+fn named_volumes_split_across_machines_return_no_eligible_machines() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    add_named_volume(&mut requested, "split_a");
+    add_named_volume(&mut requested, "split_b");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        volumes: vec![
+            ployz::deploy::ObservedDockerVolume {
+                id: DockerVolumeId {
+                    machine_id: machine_id('1'),
+                    name: DockerVolumeName::parse("split_a").unwrap(),
+                },
+                driver: "local".into(),
+                options: Default::default(),
+            },
+            ployz::deploy::ObservedDockerVolume {
+                id: DockerVolumeId {
+                    machine_id: machine_id('2'),
+                    name: DockerVolumeName::parse("split_b").unwrap(),
+                },
+                driver: "local".into(),
+                options: Default::default(),
+            },
+        ],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        plan_deploy([&requested], &snapshot, PlanOptions::default()),
+        Err(PlanError::NoEligibleMachines)
+    );
 }
