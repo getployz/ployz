@@ -238,7 +238,21 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     let missing = run_cli(&direct, &["dns", "show"]);
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("was not found"));
-    assert_eq!(hosted.requests().len(), before_release);
+    let after_release = hosted.requests();
+    assert_eq!(after_release.len(), before_release + 1);
+    let purge = after_release.last().unwrap();
+    assert!(
+        purge
+            .head
+            .starts_with("POST /domains/opaque.ployz.example/purgerecords HTTP/1.1\r\n")
+    );
+    assert!(
+        purge
+            .head
+            .to_ascii_lowercase()
+            .contains("authorization: bearer raw-token\r\n")
+    );
+    assert!(purge.body.is_empty());
 }
 
 fn poison_production_dns(cluster: &Cluster, index: usize) {
@@ -347,6 +361,8 @@ async fn fake_hosted_service() -> (u16, FakeHostedService) {
                     200,
                     json!({"name":"opaque.ployz.example","token":"raw-token"}),
                 )
+            } else if path == "/domains/opaque.ployz.example/purgerecords" {
+                (202, json!({"name":"opaque.ployz.example"}))
             } else {
                 assert_eq!(path, "/domains/opaque.ployz.example/records");
                 let body: Value = serde_json::from_slice(&request.body).unwrap();

@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use ployz_core::DnsRecord;
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -50,10 +51,11 @@ impl HostedDns {
     }
 
     pub(crate) async fn release_domain(&self, store: &ReplicatedStore) -> Result<String, Error> {
-        let name = self.domain(store).await?;
+        let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
+        // Hosted Uncloud DNS has no domain-delete; this action removes the Route53 answers.
+        self.purge_hosted_records(&reservation).await?;
         store.remove_domain_reservation().await?;
-        // TODO(UT-142): implement and call the Uncloud DNS endpoint to release/delete the domain.
-        Ok(name)
+        Ok(reservation.name)
     }
 
     pub(crate) async fn create_records(
@@ -77,6 +79,22 @@ impl HostedDns {
             name: response.name,
             token: response.token,
         })
+    }
+
+    async fn purge_hosted_records(&self, reservation: &Reservation) -> Result<(), Error> {
+        let response = self
+            .client
+            .post(endpoint_url(
+                &reservation.endpoint,
+                &["domains", &reservation.name, "purgerecords"],
+            )?)
+            .bearer_auth(&reservation.token)
+            .send()
+            .await?;
+        match hosted_body(response).await {
+            Ok(_) | Err(Error::AuthNoDomain) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     async fn submit_records(
@@ -123,6 +141,10 @@ fn endpoint_url(endpoint: &str, segments: &[&str]) -> Result<Url, Error> {
 }
 
 async fn decode<T: for<'de> Deserialize<'de>>(response: reqwest::Response) -> Result<T, Error> {
+    Ok(serde_json::from_slice(&hosted_body(response).await?)?)
+}
+
+async fn hosted_body(response: reqwest::Response) -> Result<Bytes, Error> {
     let status = response.status();
     let body = response.bytes().await?;
     if status == StatusCode::UNAUTHORIZED {
@@ -136,7 +158,7 @@ async fn decode<T: for<'de> Deserialize<'de>>(response: reqwest::Response) -> Re
     if !status.is_success() {
         return Err(Error::Status(status.as_u16()));
     }
-    Ok(serde_json::from_slice(&body)?)
+    Ok(body)
 }
 
 #[derive(Deserialize)]
@@ -299,6 +321,96 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&aaaa_request.body).unwrap(),
             serde_json::json!({"name":"*","type":"AAAA","values":["2001:db8::1"]})
         );
+    }
+
+    #[tokio::test]
+    async fn release_purges_hosted_records_even_when_the_domain_has_none() {
+        let (endpoint, requests) =
+            fake_server([(202, r#"{"name":"opaque.ployz.example"}"#)]).await;
+        let reservation = super::Reservation {
+            endpoint,
+            name: "opaque.ployz.example".into(),
+            token: "raw-token".into(),
+        };
+
+        HostedDns::new()
+            .purge_hosted_records(&reservation)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let requests = requests.lock().unwrap();
+        let [purge] = requests.as_slice() else {
+            panic!("expected one purge request");
+        };
+        assert!(
+            purge
+                .head
+                .starts_with("POST /v1/domains/opaque.ployz.example/purgerecords HTTP/1.1\r\n")
+        );
+        assert!(
+            purge
+                .head
+                .to_ascii_lowercase()
+                .contains("authorization: bearer raw-token\r\n")
+        );
+        assert!(purge.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn release_succeeds_when_the_hosted_domain_is_already_gone() {
+        let (endpoint, requests) = fake_server([(
+            401,
+            r#"{"status":401,"msg":"unauthorized","data":{"noDomain":true}}"#,
+        )])
+        .await;
+        let reservation = super::Reservation {
+            endpoint,
+            name: "gone.example".into(),
+            token: "expired".into(),
+        };
+
+        HostedDns::new()
+            .purge_hosted_records(&reservation)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn release_keeps_a_generic_authentication_failure() {
+        let (endpoint, _) = fake_server([(401, r#"{"status":401}"#)]).await;
+        let reservation = super::Reservation {
+            endpoint,
+            name: "opaque.ployz.example".into(),
+            token: "wrong".into(),
+        };
+
+        let error = HostedDns::new()
+            .purge_hosted_records(&reservation)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Authentication));
+    }
+
+    #[tokio::test]
+    async fn release_keeps_a_hosted_purge_failure() {
+        let (endpoint, _) = fake_server([(500, r#"{"error":"route53"}"#)]).await;
+        let reservation = super::Reservation {
+            endpoint,
+            name: "opaque.ployz.example".into(),
+            token: "raw-token".into(),
+        };
+
+        let error = HostedDns::new()
+            .purge_hosted_records(&reservation)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Status(500)));
     }
 
     #[tokio::test]
