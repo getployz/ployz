@@ -76,12 +76,33 @@ impl CertificateChallenge {
 }
 
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
-struct CertificateRow {
+pub struct CertificateRow {
     material: Option<CertificateMaterial>,
     challenge: Option<CertificateChallenge>,
 }
 
 impl CertificateRow {
+    #[must_use]
+    pub fn from_parts(
+        material: Option<CertificateMaterial>,
+        challenge: Option<CertificateChallenge>,
+    ) -> Self {
+        Self {
+            material,
+            challenge,
+        }
+    }
+
+    #[must_use]
+    pub fn material(&self) -> Option<&CertificateMaterial> {
+        self.material.as_ref()
+    }
+
+    #[must_use]
+    pub fn challenge(&self) -> Option<&CertificateChallenge> {
+        self.challenge.as_ref()
+    }
+
     fn decode(encoded: &str) -> Result<Self, Error> {
         if encoded.is_empty() {
             return Ok(Self::default());
@@ -505,18 +526,15 @@ impl ReplicatedStore {
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
-        Ok(self.certificate_state().await?.0)
+        Ok(self
+            .certificate_state()
+            .await?
+            .into_iter()
+            .filter_map(|(hostname, row)| row.material.map(|material| (hostname, material)))
+            .collect())
     }
 
-    pub async fn certificate_state(
-        &self,
-    ) -> Result<
-        (
-            BTreeMap<IngressHost, CertificateMaterial>,
-            BTreeMap<IngressHost, CertificateChallenge>,
-        ),
-        Error,
-    > {
+    pub async fn certificate_state(&self) -> Result<BTreeMap<IngressHost, CertificateRow>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -524,19 +542,15 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        let mut material = BTreeMap::new();
-        let mut challenges = BTreeMap::new();
+        let mut rows = BTreeMap::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
             let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
-            let row = CertificateRow::decode(text(&encoded, "certificate body")?)?;
-            if let Some(value) = row.material {
-                material.insert(hostname.clone(), value);
-            }
-            if let Some(value) = row.challenge {
-                challenges.insert(hostname, value);
-            }
+            rows.insert(
+                hostname,
+                CertificateRow::decode(text(&encoded, "certificate body")?)?,
+            );
         }
-        Ok((material, challenges))
+        Ok(rows)
     }
 
     pub(crate) async fn subscribe_certificate_changes(&self) -> Result<Subscription, Error> {

@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use super::{CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile, generate_caddyfile, reconcile};
-use crate::corrosion::{CertificateChallenge, CertificateMaterial};
+use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
 #[test]
 fn automatic_sites_match_the_frozen_caddyfile_contract() {
@@ -45,7 +45,6 @@ fn automatic_sites_match_the_frozen_caddyfile_contract() {
             &service_containers(observations),
             "TIMESTAMP",
             None,
-            &BTreeMap::new(),
             &BTreeMap::new(),
         ),
         format!(
@@ -99,7 +98,7 @@ fn https_site_with_material_pins_tls_paths() {
     )];
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateMaterial::new("CERT", "KEY").unwrap(),
+        CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
     )]);
 
     let caddyfile = automatic_caddyfile(
@@ -109,7 +108,6 @@ fn https_site_with_material_pins_tls_paths() {
         "TIMESTAMP",
         None,
         &certificates,
-        &BTreeMap::new(),
     );
 
     let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
@@ -158,9 +156,8 @@ fn changing_material_changes_the_pin_paths() {
         None,
         &BTreeMap::from([(
             IngressHost::parse("secure.example.com").unwrap(),
-            CertificateMaterial::new("CERT", "KEY").unwrap(),
+            CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
         )]),
-        &BTreeMap::new(),
     );
     let second = automatic_caddyfile(
         &local,
@@ -170,9 +167,8 @@ fn changing_material_changes_the_pin_paths() {
         None,
         &BTreeMap::from([(
             IngressHost::parse("secure.example.com").unwrap(),
-            CertificateMaterial::new("CERT-2", "KEY-2").unwrap(),
+            CertificateRow::from_parts(CertificateMaterial::new("CERT-2", "KEY-2"), None),
         )]),
-        &BTreeMap::new(),
     );
 
     assert_ne!(
@@ -199,11 +195,10 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
         "TIMESTAMP",
         None,
         &BTreeMap::new(),
-        &BTreeMap::new(),
     );
     let unused = BTreeMap::from([(
         IngressHost::parse("other.example.com").unwrap(),
-        CertificateMaterial::new("CERT", "KEY").unwrap(),
+        CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
     )]);
 
     assert_eq!(
@@ -214,20 +209,11 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
             "TIMESTAMP",
             None,
             &BTreeMap::new(),
-            &BTreeMap::new(),
         ),
         without
     );
     assert_eq!(
-        automatic_caddyfile(
-            &local,
-            "node-a",
-            &containers,
-            "TIMESTAMP",
-            None,
-            &unused,
-            &BTreeMap::new(),
-        ),
+        automatic_caddyfile(&local, "node-a", &containers, "TIMESTAMP", None, &unused,),
         without
     );
     assert!(!without.contains("tls "));
@@ -245,9 +231,9 @@ fn pending_challenge_is_answered_on_the_http_site() {
         Some([10, 210, 1, 2]),
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
-    let challenges = BTreeMap::from([(
+    let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateChallenge::new("tok", "tok.thumb").unwrap(),
+        CertificateRow::from_parts(None, CertificateChallenge::new("tok", "tok.thumb")),
     )]);
 
     let caddyfile = automatic_caddyfile(
@@ -256,8 +242,7 @@ fn pending_challenge_is_answered_on_the_http_site() {
         &service_containers(observations),
         "TIMESTAMP",
         None,
-        &BTreeMap::new(),
-        &challenges,
+        &certificates,
     );
 
     assert!(caddyfile.contains("auto_https off"));
@@ -302,7 +287,6 @@ fn automatic_sites_exclude_hook_containers() {
         &service_containers(observations),
         "TIMESTAMP",
         None,
-        &BTreeMap::new(),
         &BTreeMap::new(),
     );
     assert!(caddyfile.contains("reverse_proxy 10.210.1.2:80"));
@@ -355,7 +339,6 @@ fn automatic_sites_omit_unaddressed_host_and_unassigned_ports() {
         &service_containers(observations),
         "TIMESTAMP",
         None,
-        &BTreeMap::new(),
         &BTreeMap::new(),
     );
     assert!(caddyfile.contains(CADDY_VERIFY_PATH));
@@ -413,7 +396,6 @@ async fn custom_configs_exclude_hook_containers() {
         "node-a",
         &service_containers(observations),
         "TIMESTAMP",
-        &BTreeMap::new(),
         &BTreeMap::new(),
         Some(&FakeAdmin::default()),
     )
@@ -499,7 +481,6 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
         &service_containers(observations),
         "TIMESTAMP",
         &BTreeMap::new(),
-        &BTreeMap::new(),
         Some(&admin),
     )
     .await;
@@ -551,7 +532,6 @@ async fn unavailable_caddy_omits_every_custom_config() {
         &service_containers(observations),
         "TIME",
         &BTreeMap::new(),
-        &BTreeMap::new(),
         None::<&FakeAdmin>,
     )
     .await;
@@ -586,7 +566,6 @@ async fn broken_global_template_does_not_hide_valid_service_configs() {
         "node-a",
         &service_containers(observations),
         "TIME",
-        &BTreeMap::new(),
         &BTreeMap::new(),
         Some(&FakeAdmin::default()),
     )
@@ -624,16 +603,9 @@ async fn failed_load_preserves_the_last_caddyfile() {
     };
 
     assert!(
-        reconcile(
-            &machine,
-            &[],
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &path,
-            Some(&admin),
-        )
-        .await
-        .is_err()
+        reconcile(&machine, &[], &BTreeMap::new(), &path, Some(&admin),)
+            .await
+            .is_err()
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "last loaded");
     std::fs::remove_dir_all(directory).unwrap();
@@ -664,7 +636,7 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     )];
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateMaterial::new("CERT-BODY", "KEY-BODY").unwrap(),
+        CertificateRow::from_parts(CertificateMaterial::new("CERT-BODY", "KEY-BODY"), None),
     )]);
     let admin = FakeAdmin::default();
     let certs = directory.join("certs");
@@ -674,16 +646,9 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     std::fs::write(&stale_cert, "OLD").unwrap();
     std::fs::write(&stale_key, "OLD").unwrap();
 
-    reconcile(
-        &machine,
-        &observations,
-        &certificates,
-        &BTreeMap::new(),
-        &path,
-        Some(&admin),
-    )
-    .await
-    .unwrap();
+    reconcile(&machine, &observations, &certificates, &path, Some(&admin))
+        .await
+        .unwrap();
 
     let caddyfile = std::fs::read_to_string(&path).unwrap();
     let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");

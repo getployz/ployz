@@ -138,9 +138,9 @@ async fn issue_wanted(
 ) -> Result<(), Error> {
     let containers = store.containers().await?;
     let wanted = wanted_certificate_hosts(containers.observations.iter());
-    let (material, _) = store.certificate_state().await?;
+    let rows = store.certificate_state().await?;
     for hostname in wanted {
-        if material.contains_key(&hostname) {
+        if rows.get(&hostname).and_then(|row| row.material()).is_some() {
             continue;
         }
         if let Err(error) = obtain(store, &hostname, directory, account_dir).await {

@@ -22,7 +22,7 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateChallenge, CertificateMaterial, ReplicatedStore},
+    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
 };
 
@@ -141,9 +141,7 @@ pub async fn run(
             replicated.containers().await,
             replicated.certificate_state().await,
         ) {
-            (Ok(containers), Ok((certificates, challenges))) => {
-                Some((containers.observations, certificates, challenges))
-            }
+            (Ok(containers), Ok(certificates)) => Some((containers.observations, certificates)),
             (Err(error), _) | (_, Err(error)) => {
                 eprintln!("failed to rebuild Caddy projection: {error}");
                 None
@@ -159,7 +157,6 @@ pub async fn run(
                 &machine,
                 &snapshot.0,
                 &snapshot.1,
-                &snapshot.2,
                 &config_file,
                 admin.as_ref(),
             )
@@ -183,8 +180,7 @@ pub async fn run(
 async fn reconcile<A: CaddyAdmin>(
     machine: &Machine,
     observations: &[ContainerObservation],
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
-    challenges: &BTreeMap<IngressHost, CertificateChallenge>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
@@ -199,7 +195,6 @@ async fn reconcile<A: CaddyAdmin>(
         &containers,
         &timestamp,
         certificates,
-        challenges,
         admin,
     )
     .await;
@@ -214,14 +209,17 @@ async fn reconcile<A: CaddyAdmin>(
 
 fn write_certificate_files(
     config_file: &Path,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> Result<(), Error> {
     let directory = config_file
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
         .join(CERTS_DIR);
     prepare_directory(&directory)?;
-    for (hostname, material) in certificates {
+    for (hostname, row) in certificates {
+        let Some(material) = row.material() else {
+            continue;
+        };
         let stem = certificate_file_stem(hostname, material);
         let cert_path = directory.join(format!("{stem}.crt"));
         let key_path = directory.join(format!("{stem}.key"));
@@ -235,7 +233,7 @@ fn write_certificate_files(
 
 fn remove_stale_certificate_files(
     config_file: &Path,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> Result<(), Error> {
     let directory = config_file
         .parent()
@@ -246,10 +244,13 @@ fn remove_stale_certificate_files(
     }
     let keep: BTreeSet<String> = certificates
         .iter()
-        .flat_map(|(hostname, material)| {
-            let stem = certificate_file_stem(hostname, material);
-            [format!("{stem}.crt"), format!("{stem}.key")]
+        .filter_map(|(hostname, row)| {
+            row.material().map(|material| {
+                let stem = certificate_file_stem(hostname, material);
+                [format!("{stem}.crt"), format!("{stem}.key")]
+            })
         })
+        .flatten()
         .collect();
     for entry in fs::read_dir(&directory)? {
         let entry = entry?;
@@ -294,8 +295,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
-    challenges: &BTreeMap<IngressHost, CertificateChallenge>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
     admin: Option<&A>,
 ) -> String {
     let mut output = automatic_caddyfile(
@@ -305,7 +305,6 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         timestamp,
         None,
         certificates,
-        challenges,
     );
     let Some(admin) = admin else {
         output.push_str(
@@ -341,7 +340,6 @@ async fn generate_caddyfile<A: CaddyAdmin>(
                     timestamp,
                     Some(&rendered),
                     certificates,
-                    challenges,
                 );
                 // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
                 // candidates and may accept a configuration that /load rejects.
@@ -529,13 +527,10 @@ fn automatic_caddyfile(
     containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
-    challenges: &BTreeMap<IngressHost, CertificateChallenge>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> String {
     let containers = eligible_containers(local_machine, containers);
-
-    let mut http = BTreeMap::<&IngressHost, Vec<String>>::new();
-    let mut https = BTreeMap::<&IngressHost, Vec<String>>::new();
+    let mut sites = BTreeMap::<IngressHost, Site<'_>>::new();
     for container in containers {
         let observation = container.as_observation();
         let address = observation.address.expect("address was filtered above");
@@ -552,14 +547,17 @@ fn automatic_caddyfile(
                 continue;
             };
             let upstream = format!("{}:{container_port}", address.0);
+            let site = sites.entry(hostname.clone()).or_default();
             match http_protocol {
-                HttpProtocol::Http => http.entry(hostname).or_default().push(upstream),
-                HttpProtocol::Https => https.entry(hostname).or_default().push(upstream),
+                HttpProtocol::Http => site.http.push(upstream),
+                HttpProtocol::Https => site.https.push(upstream),
             }
         }
     }
-    for hostname in challenges.keys() {
-        http.entry(hostname).or_default();
+    for (hostname, row) in certificates {
+        let site = sites.entry(hostname.clone()).or_default();
+        site.challenge = row.challenge();
+        site.material = row.material();
     }
 
     let mut output = format!(
@@ -586,33 +584,44 @@ http:// {{\n\
 \tfail_duration 30s\n\
 }}\n"
     );
-    if !http.is_empty()
-        || https
-            .keys()
-            .any(|hostname| certificates.contains_key(hostname))
-    {
+    if sites.values().any(|site| {
+        !site.http.is_empty()
+            || site.challenge.is_some()
+            || (!site.https.is_empty() && site.material.is_some())
+    }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
-    for (hostname, upstreams) in http {
-        write_site(
-            &mut output,
-            "http",
-            hostname,
-            &upstreams,
-            "",
-            challenges.get(hostname),
-        );
-    }
-    for (hostname, upstreams) in https {
-        let Some(material) = certificates.get(hostname) else {
+    for (hostname, site) in &sites {
+        if !site.http.is_empty() || site.challenge.is_some() {
+            write_site(
+                &mut output,
+                "http",
+                hostname,
+                &site.http,
+                "",
+                site.challenge,
+            );
+        }
+        let Some(material) = site.material else {
             continue;
         };
+        if site.https.is_empty() {
+            continue;
+        }
         let stem = certificate_file_stem(hostname, material);
         let tls =
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
-        write_site(&mut output, "https", hostname, &upstreams, &tls, None);
+        write_site(&mut output, "https", hostname, &site.https, &tls, None);
     }
     output
+}
+
+#[derive(Default)]
+struct Site<'a> {
+    http: Vec<String>,
+    https: Vec<String>,
+    challenge: Option<&'a CertificateChallenge>,
+    material: Option<&'a CertificateMaterial>,
 }
 
 fn write_global_options(output: &mut String, global_config: Option<&str>) {
