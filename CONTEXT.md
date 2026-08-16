@@ -152,6 +152,10 @@ _Avoid_: Service registry record, membership-filtered endpoint set
 An Internal DNS selector that orders addresses from the observing Machine's subnet before other addresses. It expresses subnet locality, not measured reachability or latency.
 _Avoid_: closest Machine, available endpoint
 
+**Machine-Service DNS Selector**:
+An Internal DNS selector that names one Machine ID together with one Service Name. It is not a Service identity.
+_Avoid_: machine-qualified service name, replica address
+
 **Advertised Endpoint**:
 An endpoint a target Machine publishes as a way peers might reach it.
 _Avoid_: Selected Endpoint, current endpoint
