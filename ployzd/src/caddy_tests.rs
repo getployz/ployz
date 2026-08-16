@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use super::{CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile, generate_caddyfile, reconcile};
-use crate::corrosion::CertificateMaterial;
+use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
 #[test]
 fn automatic_sites_match_the_frozen_caddyfile_contract() {
@@ -52,6 +52,10 @@ fn automatic_sites_match_the_frozen_caddyfile_contract() {
 # Automatically updated on Service or health status changes.\n\
 # Docs: https://github.com/getployz/ployz2\n\
 \n\
+{{\n\
+\tauto_https off\n\
+}}\n\
+\n\
 # Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
 \thandle {CADDY_VERIFY_PATH} {{\n\
@@ -71,13 +75,6 @@ http:// {{\n\
 \n\
 http://example.com {{\n\
 \treverse_proxy 10.210.1.2:80 10.210.2.2:80 {{\n\
-\t\timport common_proxy\n\
-\t}}\n\
-\tlog\n\
-}}\n\
-\n\
-https://secure.example.com {{\n\
-\treverse_proxy 10.210.1.2:8443 {{\n\
 \t\timport common_proxy\n\
 \t}}\n\
 \tlog\n\
@@ -101,7 +98,7 @@ fn https_site_with_material_pins_tls_paths() {
     )];
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateMaterial::new("CERT", "KEY").unwrap(),
+        CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
     )]);
 
     let caddyfile = automatic_caddyfile(
@@ -159,7 +156,7 @@ fn changing_material_changes_the_pin_paths() {
         None,
         &BTreeMap::from([(
             IngressHost::parse("secure.example.com").unwrap(),
-            CertificateMaterial::new("CERT", "KEY").unwrap(),
+            CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
         )]),
     );
     let second = automatic_caddyfile(
@@ -170,7 +167,7 @@ fn changing_material_changes_the_pin_paths() {
         None,
         &BTreeMap::from([(
             IngressHost::parse("secure.example.com").unwrap(),
-            CertificateMaterial::new("CERT-2", "KEY-2").unwrap(),
+            CertificateRow::from_parts(CertificateMaterial::new("CERT-2", "KEY-2"), None),
         )]),
     );
 
@@ -201,7 +198,7 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
     );
     let unused = BTreeMap::from([(
         IngressHost::parse("other.example.com").unwrap(),
-        CertificateMaterial::new("CERT", "KEY").unwrap(),
+        CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None),
     )]);
 
     assert_eq!(
@@ -216,10 +213,48 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
         without
     );
     assert_eq!(
-        automatic_caddyfile(&local, "node-a", &containers, "TIMESTAMP", None, &unused),
+        automatic_caddyfile(&local, "node-a", &containers, "TIMESTAMP", None, &unused,),
         without
     );
     assert!(!without.contains("tls "));
+    assert!(!without.contains("https://secure.example.com"));
+    assert!(without.contains("auto_https off"));
+}
+
+#[test]
+fn pending_challenge_is_answered_on_the_http_site() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let certificates = BTreeMap::from([(
+        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateRow::from_parts(None, CertificateChallenge::new("tok", "tok.thumb")),
+    )]);
+
+    let caddyfile = automatic_caddyfile(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        None,
+        &certificates,
+    );
+
+    assert!(caddyfile.contains("auto_https off"));
+    assert!(caddyfile.contains(
+        "http://secure.example.com {\n\
+\thandle /.well-known/acme-challenge/tok {\n\
+\t\trespond \"tok.thumb\" 200\n\
+\t}\n\
+\tlog\n\
+}\n"
+    ));
+    assert!(!caddyfile.contains("https://secure.example.com"));
 }
 
 #[test]
@@ -456,7 +491,7 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
 # Docs: https://github.com/getployz/ployz2\n\
 \n\
 # User-defined global config from Service 'caddy'.\n\
-{\n\tadmin unix/10.210.1.2 10.210.2.2\n}\n\n"
+{\n\tauto_https off\n\tadmin unix/10.210.1.2 10.210.2.2\n}\n\n"
     ));
     assert!(caddyfile.contains(
         "# User-defined config for Service 'api'.\n\
@@ -568,7 +603,7 @@ async fn failed_load_preserves_the_last_caddyfile() {
     };
 
     assert!(
-        reconcile(&machine, &[], &BTreeMap::new(), &path, Some(&admin))
+        reconcile(&machine, &[], &BTreeMap::new(), &path, Some(&admin),)
             .await
             .is_err()
     );
@@ -601,7 +636,7 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     )];
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateMaterial::new("CERT-BODY", "KEY-BODY").unwrap(),
+        CertificateRow::from_parts(CertificateMaterial::new("CERT-BODY", "KEY-BODY"), None),
     )]);
     let admin = FakeAdmin::default();
     let certs = directory.join("certs");

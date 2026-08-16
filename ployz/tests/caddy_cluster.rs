@@ -209,9 +209,11 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
         }]
     }))
     .unwrap();
+    let service_id = api.service_id;
     create_and_start(&mut client, &first, api).await;
+    wait_running(&mut client, &service_id, 1).await;
     let before = wait_config(&mut client, &first, |config| {
-        config.contains("https://secure.example.test")
+        config.contains("auto_https off")
     })
     .await;
     assert!(

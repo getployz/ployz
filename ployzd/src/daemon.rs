@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::{service::Routes, transport::Server};
 
 use crate::{
-    caddy,
+    caddy, certificates,
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         RunningCorrosion, run_machine_publisher,
@@ -177,6 +177,8 @@ impl Daemon {
         let (participating, participating_rx) =
             watch::channel(local_record.phase == LocalMachinePhase::Participating);
         let (reset, reset_rx) = watch::channel(false);
+        let certificate_data_dir = config.data_dir.clone();
+        let acme_directory = certificates::directory_url();
         let caddyfile = caddy::caddyfile_path(&config.data_dir);
         let caddy_admin_socket = config
             .socket
@@ -299,6 +301,26 @@ impl Daemon {
                     }
                 }
             };
+            let certificates = async {
+                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                match replicated_store.clone() {
+                    Some(replicated) => {
+                        certificates::run(
+                            replicated,
+                            certificate_data_dir,
+                            acme_directory,
+                            shutdown.clone(),
+                        )
+                        .await
+                    }
+                    None => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
             let unregistry_refresh = {
                 let running = unregistry_for_refresh;
                 let shutdown = shutdown.clone();
@@ -324,6 +346,7 @@ impl Daemon {
                 observer,
                 dns,
                 caddy,
+                certificates,
                 unregistry_refresh,
             )
             .map(|_| ())

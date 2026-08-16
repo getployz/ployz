@@ -22,7 +22,7 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateMaterial, ReplicatedStore},
+    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
 };
 
@@ -139,7 +139,7 @@ pub async fn run(
     loop {
         let snapshot = match (
             replicated.containers().await,
-            replicated.certificates().await,
+            replicated.certificate_state().await,
         ) {
             (Ok(containers), Ok(certificates)) => Some((containers.observations, certificates)),
             (Err(error), _) | (_, Err(error)) => {
@@ -180,7 +180,7 @@ pub async fn run(
 async fn reconcile<A: CaddyAdmin>(
     machine: &Machine,
     observations: &[ContainerObservation],
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
@@ -209,14 +209,17 @@ async fn reconcile<A: CaddyAdmin>(
 
 fn write_certificate_files(
     config_file: &Path,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> Result<(), Error> {
     let directory = config_file
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
         .join(CERTS_DIR);
     prepare_directory(&directory)?;
-    for (hostname, material) in certificates {
+    for (hostname, row) in certificates {
+        let Some(material) = row.material() else {
+            continue;
+        };
         let stem = certificate_file_stem(hostname, material);
         let cert_path = directory.join(format!("{stem}.crt"));
         let key_path = directory.join(format!("{stem}.key"));
@@ -230,7 +233,7 @@ fn write_certificate_files(
 
 fn remove_stale_certificate_files(
     config_file: &Path,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> Result<(), Error> {
     let directory = config_file
         .parent()
@@ -241,10 +244,13 @@ fn remove_stale_certificate_files(
     }
     let keep: BTreeSet<String> = certificates
         .iter()
-        .flat_map(|(hostname, material)| {
-            let stem = certificate_file_stem(hostname, material);
-            [format!("{stem}.crt"), format!("{stem}.key")]
+        .filter_map(|(hostname, row)| {
+            row.material().map(|material| {
+                let stem = certificate_file_stem(hostname, material);
+                [format!("{stem}.crt"), format!("{stem}.key")]
+            })
         })
+        .flatten()
         .collect();
     for entry in fs::read_dir(&directory)? {
         let entry = entry?;
@@ -289,7 +295,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
     admin: Option<&A>,
 ) -> String {
     let mut output = automatic_caddyfile(
@@ -521,12 +527,10 @@ fn automatic_caddyfile(
     containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> String {
     let containers = eligible_containers(local_machine, containers);
-
-    let mut http = BTreeMap::<&IngressHost, Vec<String>>::new();
-    let mut https = BTreeMap::<&IngressHost, Vec<String>>::new();
+    let mut sites = BTreeMap::<IngressHost, Site<'_>>::new();
     for container in containers {
         let observation = container.as_observation();
         let address = observation.address.expect("address was filtered above");
@@ -543,11 +547,17 @@ fn automatic_caddyfile(
                 continue;
             };
             let upstream = format!("{}:{container_port}", address.0);
+            let site = sites.entry(hostname.clone()).or_default();
             match http_protocol {
-                HttpProtocol::Http => http.entry(hostname).or_default().push(upstream),
-                HttpProtocol::Https => https.entry(hostname).or_default().push(upstream),
+                HttpProtocol::Http => site.http.push(upstream),
+                HttpProtocol::Https => site.https.push(upstream),
             }
         }
+    }
+    for (hostname, row) in certificates {
+        let site = sites.entry(hostname.clone()).or_default();
+        site.challenge = row.challenge();
+        site.material = row.material();
     }
 
     let mut output = format!(
@@ -556,12 +566,7 @@ fn automatic_caddyfile(
 # Docs: https://github.com/getployz/ployz2\n\
 \n"
     );
-    if let Some(global_config) = global_config {
-        let _ = write!(
-            output,
-            "# User-defined global config from Service 'caddy'.\n{global_config}\n\n"
-        );
-    }
+    write_global_options(&mut output, global_config);
     let _ = write!(
         output,
         "# Health check endpoint to verify Caddy reachability on this Machine.\n\
@@ -579,22 +584,68 @@ http:// {{\n\
 \tfail_duration 30s\n\
 }}\n"
     );
-    if !http.is_empty() || !https.is_empty() {
+    if sites.values().any(|site| {
+        !site.http.is_empty()
+            || site.challenge.is_some()
+            || (!site.https.is_empty() && site.material.is_some())
+    }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
-    for (hostname, upstreams) in http {
-        write_site(&mut output, "http", hostname, &upstreams, "");
-    }
-    for (hostname, upstreams) in https {
-        let tls = if let Some(material) = certificates.get(hostname) {
-            let stem = certificate_file_stem(hostname, material);
-            format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n")
-        } else {
-            String::new()
+    for (hostname, site) in &sites {
+        if !site.http.is_empty() || site.challenge.is_some() {
+            write_site(
+                &mut output,
+                "http",
+                hostname,
+                &site.http,
+                "",
+                site.challenge,
+            );
+        }
+        let Some(material) = site.material else {
+            continue;
         };
-        write_site(&mut output, "https", hostname, &upstreams, &tls);
+        if site.https.is_empty() {
+            continue;
+        }
+        let stem = certificate_file_stem(hostname, material);
+        let tls =
+            format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
+        write_site(&mut output, "https", hostname, &site.https, &tls, None);
     }
     output
+}
+
+#[derive(Default)]
+struct Site<'a> {
+    http: Vec<String>,
+    https: Vec<String>,
+    challenge: Option<&'a CertificateChallenge>,
+    material: Option<&'a CertificateMaterial>,
+}
+
+fn write_global_options(output: &mut String, global_config: Option<&str>) {
+    // Caddy never issues certificates. The daemon pins material when it has any.
+    match global_config {
+        Some(user) => {
+            let _ = writeln!(output, "# User-defined global config from Service 'caddy'.");
+            output.push_str(&merge_auto_https(user));
+            output.push_str("\n\n");
+        }
+        None => output.push_str("{\n\tauto_https off\n}\n\n"),
+    }
+}
+
+fn merge_auto_https(user: &str) -> String {
+    let trimmed = user.trim();
+    if let Some(inner) = trimmed
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+    {
+        format!("{{\n\tauto_https off{inner}}}")
+    } else {
+        format!("{{\n\tauto_https off\n}}\n\n{user}")
+    }
 }
 
 fn write_site(
@@ -603,16 +654,28 @@ fn write_site(
     hostname: &IngressHost,
     upstreams: &[String],
     tls: &str,
+    challenge: Option<&CertificateChallenge>,
 ) {
+    let handle = challenge
+        .map(|challenge| {
+            format!(
+                "\thandle /.well-known/acme-challenge/{} {{\n\t\trespond \"{}\" 200\n\t}}\n",
+                challenge.token(),
+                challenge.response()
+            )
+        })
+        .unwrap_or_default();
+    let proxy = if upstreams.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n",
+            upstreams.join(" ")
+        )
+    };
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n\
-{tls}\treverse_proxy {} {{\n\
-\t\timport common_proxy\n\
-\t}}\n\
-\tlog\n\
-}}\n",
-        upstreams.join(" ")
+        "\n{protocol}://{hostname} {{\n{tls}{handle}{proxy}\tlog\n}}\n"
     );
 }
 
