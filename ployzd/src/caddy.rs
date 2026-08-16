@@ -586,11 +586,11 @@ http:// {{\n\
 \tfail_duration 30s\n\
 }}\n"
     );
-    let https_sites = https
-        .into_iter()
-        .filter(|(hostname, _)| certificates.contains_key(hostname))
-        .collect::<Vec<_>>();
-    if !http.is_empty() || !https_sites.is_empty() {
+    if !http.is_empty()
+        || https
+            .keys()
+            .any(|hostname| certificates.contains_key(hostname))
+    {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
     for (hostname, upstreams) in http {
@@ -603,10 +603,10 @@ http:// {{\n\
             challenges.get(hostname),
         );
     }
-    for (hostname, upstreams) in https_sites {
-        let material = certificates
-            .get(hostname)
-            .expect("https sites were filtered to pinned material");
+    for (hostname, upstreams) in https {
+        let Some(material) = certificates.get(hostname) else {
+            continue;
+        };
         let stem = certificate_file_stem(hostname, material);
         let tls =
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");

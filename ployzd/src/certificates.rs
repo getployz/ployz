@@ -52,16 +52,16 @@ pub(crate) enum Error {
     ChallengeNotServed,
     #[error("authorization for {hostname} is {status:?}")]
     Authorization {
-        hostname: String,
+        hostname: IngressHost,
         status: AuthorizationStatus,
     },
     #[error("order for {hostname} is {status:?}")]
     Order {
-        hostname: String,
+        hostname: IngressHost,
         status: OrderStatus,
     },
     #[error("no HTTP-01 challenge for {0}")]
-    NoHttp01(String),
+    NoHttp01(IngressHost),
 }
 
 /// Built-in directory, or `PLOYZ_ACME_DIRECTORY`. Empty disables issuance.
@@ -172,6 +172,10 @@ async fn obtain(
 }
 
 /// Order one certificate. `present` publishes the HTTP-01 answer before validation.
+///
+/// # Errors
+///
+/// Returns if the directory, account, challenge presentation, or issuance fails.
 pub(crate) async fn order_certificate<F, Fut>(
     hostname: &IngressHost,
     directory: &str,
@@ -198,14 +202,14 @@ where
             | AuthorizationStatus::Expired
             | AuthorizationStatus::Deactivated) => {
                 return Err(Error::Authorization {
-                    hostname: hostname.as_str().to_owned(),
+                    hostname: hostname.clone(),
                     status,
                 });
             }
         }
         let mut challenge = authz
             .challenge(ChallengeType::Http01)
-            .ok_or_else(|| Error::NoHttp01(hostname.as_str().to_owned()))?;
+            .ok_or_else(|| Error::NoHttp01(hostname.clone()))?;
         let presented = CertificateChallenge::new(
             challenge.token.clone(),
             challenge.key_authorization().as_str(),
@@ -217,7 +221,7 @@ where
     let status = order.poll_ready(&RetryPolicy::default()).await?;
     if status != OrderStatus::Ready {
         return Err(Error::Order {
-            hostname: hostname.as_str().to_owned(),
+            hostname: hostname.clone(),
             status,
         });
     }
@@ -443,6 +447,29 @@ mod tests {
         assert!(material.private_key().contains("BEGIN"));
         assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
         drop(http01);
+        let _ = std::fs::remove_dir_all(account_dir);
+    }
+
+    #[tokio::test]
+    async fn order_fails_when_the_directory_is_unreachable() {
+        let hostname = host("app.example.com");
+        let account_dir = std::env::temp_dir().join(format!(
+            "ployzd-acme-unreachable-{}-{}",
+            std::process::id(),
+            hostname
+        ));
+        let error = order_certificate(
+            &hostname,
+            "http://127.0.0.1:1/directory",
+            &account_dir,
+            |_| async { Ok(()) },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, super::Error::Acme(_) | super::Error::Http(_)),
+            "{error}"
+        );
         let _ = std::fs::remove_dir_all(account_dir);
     }
 

@@ -75,10 +75,32 @@ impl CertificateChallenge {
     }
 }
 
-#[derive(Default)]
-struct DecodedCertificate {
+#[derive(Clone, Default, Debug, Eq, PartialEq)]
+struct CertificateRow {
     material: Option<CertificateMaterial>,
     challenge: Option<CertificateChallenge>,
+}
+
+impl CertificateRow {
+    fn decode(encoded: &str) -> Result<Self, Error> {
+        if encoded.is_empty() {
+            return Ok(Self::default());
+        }
+        let body: CertificateBody = serde_json::from_str(encoded)?;
+        Ok(Self {
+            material: CertificateMaterial::new(body.certificate, body.private_key),
+            challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
+        })
+    }
+
+    fn encode(&self) -> Result<String, Error> {
+        Ok(serde_json::to_string(&json!({
+            "certificate": self.material.as_ref().map(CertificateMaterial::certificate).unwrap_or(""),
+            "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
+            "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
+            "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
+        }))?)
+    }
 }
 
 #[derive(Deserialize)]
@@ -418,18 +440,24 @@ impl ReplicatedStore {
         if self.certificate(hostname).await?.as_ref() == Some(material) {
             return Ok(());
         }
-        self.api
-            .execute([Statement::new(
-                "INSERT INTO certificates (hostname, body, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
-                [json!(hostname.as_str()), json!(serde_json::to_string(material)?)],
-            )])
-            .await
+        self.upsert_certificate(
+            hostname,
+            &CertificateRow {
+                material: Some(material.clone()),
+                challenge: None,
+            },
+        )
+        .await
     }
 
     pub async fn certificate(
         &self,
         hostname: &IngressHost,
     ) -> Result<Option<CertificateMaterial>, Error> {
+        Ok(self.certificate_row(hostname).await?.material)
+    }
+
+    async fn certificate_row(&self, hostname: &IngressHost) -> Result<CertificateRow, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -439,9 +467,22 @@ impl ReplicatedStore {
             .await?;
         let rows = query.rows(["body"])?;
         let Some([encoded]) = rows.first() else {
-            return Ok(None);
+            return Ok(CertificateRow::default());
         };
-        decode_certificate_body(text(encoded, "certificate body")?)
+        CertificateRow::decode(text(encoded, "certificate body")?)
+    }
+
+    async fn upsert_certificate(
+        &self,
+        hostname: &IngressHost,
+        row: &CertificateRow,
+    ) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO certificates (hostname, body, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+                [json!(hostname.as_str()), json!(row.encode()?)],
+            )])
+            .await
     }
 
     pub async fn publish_certificate_challenge(
@@ -449,33 +490,22 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         challenge: &CertificateChallenge,
     ) -> Result<(), Error> {
-        let (material, challenges) = self.certificate_state().await?;
-        if challenges.get(hostname) == Some(challenge) {
+        let row = self.certificate_row(hostname).await?;
+        if row.challenge.as_ref() == Some(challenge) {
             return Ok(());
         }
-        let material = material.get(hostname);
-        let body = json!({
-            "certificate": material.map(CertificateMaterial::certificate).unwrap_or(""),
-            "private_key": material.map(CertificateMaterial::private_key).unwrap_or(""),
-            "challenge_token": challenge.token(),
-            "challenge_response": challenge.response(),
-        });
-        self.api
-            .execute([Statement::new(
-                "INSERT INTO certificates (hostname, body, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
-                [json!(hostname.as_str()), json!(body.to_string())],
-            )])
-            .await
+        self.upsert_certificate(
+            hostname,
+            &CertificateRow {
+                material: row.material,
+                challenge: Some(challenge.clone()),
+            },
+        )
+        .await
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
         Ok(self.certificate_state().await?.0)
-    }
-
-    pub async fn certificate_challenges(
-        &self,
-    ) -> Result<BTreeMap<IngressHost, CertificateChallenge>, Error> {
-        Ok(self.certificate_state().await?.1)
     }
 
     pub async fn certificate_state(
@@ -498,7 +528,7 @@ impl ReplicatedStore {
         let mut challenges = BTreeMap::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
             let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
-            let row = decode_certificate_row(text(&encoded, "certificate body")?)?;
+            let row = CertificateRow::decode(text(&encoded, "certificate body")?)?;
             if let Some(value) = row.material {
                 material.insert(hostname.clone(), value);
             }
@@ -718,19 +748,9 @@ pub async fn run_machine_publisher(
     }
 }
 
+#[cfg(test)]
 fn decode_certificate_body(encoded: &str) -> Result<Option<CertificateMaterial>, Error> {
-    Ok(decode_certificate_row(encoded)?.material)
-}
-
-fn decode_certificate_row(encoded: &str) -> Result<DecodedCertificate, Error> {
-    if encoded.is_empty() {
-        return Ok(DecodedCertificate::default());
-    }
-    let body: CertificateBody = serde_json::from_str(encoded)?;
-    Ok(DecodedCertificate {
-        material: CertificateMaterial::new(body.certificate, body.private_key),
-        challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
-    })
+    Ok(CertificateRow::decode(encoded)?.material)
 }
 
 fn decode_observations<T: DeserializeOwned>(
@@ -922,7 +942,7 @@ mod tests {
 
     #[test]
     fn certificate_challenge_reads_from_the_row_body() {
-        let row = super::decode_certificate_row(
+        let row = super::CertificateRow::decode(
             r#"{"certificate":"","private_key":"","challenge_token":"tok","challenge_response":"tok.thumb"}"#,
         )
         .unwrap();
@@ -931,7 +951,7 @@ mod tests {
         assert_eq!(challenge.token(), "tok");
         assert_eq!(challenge.response(), "tok.thumb");
         assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
-        assert_eq!(super::decode_certificate_row("{}").unwrap().challenge, None);
+        assert_eq!(super::CertificateRow::decode("{}").unwrap().challenge, None);
     }
 
     fn participating_record() -> (Machine, LocalMachineRecord) {

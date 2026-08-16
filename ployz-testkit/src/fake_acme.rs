@@ -35,9 +35,7 @@ struct Inner {
     next_id: u64,
     nonces: HashSet<String>,
     accounts: HashMap<String, String>,
-    orders: HashMap<String, OrderRec>,
-    authz: HashMap<String, AuthzRec>,
-    challenges: HashMap<String, ChallRec>,
+    orders: HashMap<String, Order>,
     certs: HashMap<String, String>,
     ordered: Vec<String>,
     issuer: CertifiedIssuer<'static, KeyPair>,
@@ -47,24 +45,13 @@ struct Inner {
     validation_port: u16,
 }
 
-struct OrderRec {
+struct Order {
     hostname: String,
-    authz: String,
-    finalize: String,
-    certificate: Option<String>,
-    status: &'static str,
-}
-
-struct AuthzRec {
-    hostname: String,
-    challenge: String,
-    status: &'static str,
-}
-
-struct ChallRec {
-    hostname: String,
+    order_status: &'static str,
+    authz_status: &'static str,
     token: String,
     thumbprint: String,
+    certificate: Option<String>,
 }
 
 impl FakeCa {
@@ -81,8 +68,6 @@ impl FakeCa {
                 nonces: HashSet::new(),
                 accounts: HashMap::new(),
                 orders: HashMap::new(),
-                authz: HashMap::new(),
-                challenges: HashMap::new(),
                 certs: HashMap::new(),
                 ordered: Vec::new(),
                 issuer: fake_issuer(),
@@ -104,14 +89,9 @@ impl FakeCa {
             .route("/cert/{id}", post(cert))
             .with_state(ca.clone());
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            axum::serve(listener, app).await.expect("fake CA server");
         });
         Ok(ca)
-    }
-
-    #[must_use]
-    pub fn port(&self) -> u16 {
-        self.inner.lock().expect("fake CA lock").port
     }
 
     #[must_use]
@@ -142,12 +122,12 @@ impl FakeCa {
 /// Answer HTTP-01 on a local port for in-process issuance tests.
 #[must_use]
 pub fn serve_http01(answers: Arc<Mutex<BTreeMap<String, String>>>) -> (oneshot::Sender<()>, u16) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("HTTP-01 bind");
+    listener.set_nonblocking(true).expect("HTTP-01 nonblocking");
+    let port = listener.local_addr().expect("HTTP-01 port").port();
     let (stop, stopped) = oneshot::channel();
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).expect("HTTP-01 listener");
         tokio::select! {
             () = async {
                 loop {
@@ -164,6 +144,21 @@ pub fn serve_http01(answers: Arc<Mutex<BTreeMap<String, String>>>) -> (oneshot::
         }
     });
     (stop, port)
+}
+
+fn order_body(base: &str, id: &str, rec: &Order) -> Value {
+    let mut body = json!({
+        "status": rec.order_status,
+        "identifiers": [{"type":"dns","value": rec.hostname}],
+        "authorizations": [format!("{base}/authz/{id}")],
+        "finalize": format!("{base}/finalize/{id}"),
+    });
+    if let Some(certificate) = &rec.certificate
+        && let Some(object) = body.as_object_mut()
+    {
+        object.insert("certificate".into(), json!(certificate));
+    }
+    body
 }
 
 fn advertised_host(addr: &std::net::SocketAddr) -> String {
@@ -273,48 +268,24 @@ async fn new_order(State(ca): State<FakeCa>, request: Request<Body>) -> Response
     };
     let mut inner = ca.inner.lock().expect("fake CA lock");
     inner.next_id += 1;
-    let id = inner.next_id;
-    let order = format!("{}/order/{id}", inner.base);
-    let authz = format!("{}/authz/{id}", inner.base);
-    let chall = format!("{}/chall/{id}", inner.base);
-    let finalize_url = format!("{}/finalize/{id}", inner.base);
-    let token = format!("token{id}");
+    let id = inner.next_id.to_string();
+    let location = format!("{}/order/{id}", inner.base);
     inner.ordered.push(hostname.clone());
     inner.orders.insert(
-        id.to_string(),
-        OrderRec {
-            hostname: hostname.clone(),
-            authz: authz.clone(),
-            finalize: finalize_url.clone(),
-            certificate: None,
-            status: "pending",
-        },
-    );
-    inner.authz.insert(
-        id.to_string(),
-        AuthzRec {
-            hostname: hostname.clone(),
-            challenge: chall.clone(),
-            status: "pending",
-        },
-    );
-    inner.challenges.insert(
-        id.to_string(),
-        ChallRec {
+        id.clone(),
+        Order {
             hostname,
-            token,
+            order_status: "pending",
+            authz_status: "pending",
+            token: format!("token{id}"),
             thumbprint,
+            certificate: None,
         },
     );
-    let rec = inner.orders.get(&id.to_string()).unwrap();
-    let body = json!({
-        "status": rec.status,
-        "identifiers": [{"type":"dns","value": rec.hostname}],
-        "authorizations": [rec.authz],
-        "finalize": rec.finalize,
-    });
+    let rec = inner.orders.get(&id).expect("just inserted");
+    let body = order_body(&inner.base, &id, rec);
     drop(inner);
-    with_nonce(&ca, StatusCode::CREATED, Some(order), body)
+    with_nonce(&ca, StatusCode::CREATED, Some(location), body)
 }
 
 async fn order(
@@ -329,17 +300,7 @@ async fn order(
     let Some(rec) = inner.orders.get(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mut body = json!({
-        "status": rec.status,
-        "identifiers": [{"type":"dns","value": rec.hostname}],
-        "authorizations": [rec.authz],
-        "finalize": rec.finalize,
-    });
-    if let Some(certificate) = &rec.certificate
-        && let Some(object) = body.as_object_mut()
-    {
-        object.insert("certificate".into(), json!(certificate));
-    }
+    let body = order_body(&inner.base, &id, rec);
     drop(inner);
     with_nonce(&ca, StatusCode::OK, None, body)
 }
@@ -353,18 +314,17 @@ async fn authz(
         return bad_nonce(&ca);
     }
     let inner = ca.inner.lock().expect("fake CA lock");
-    let Some(rec) = inner.authz.get(&id) else {
+    let Some(rec) = inner.orders.get(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let chall = inner.challenges.get(&id).unwrap();
     let body = json!({
-        "status": rec.status,
+        "status": rec.authz_status,
         "identifier": {"type":"dns","value": rec.hostname},
         "challenges": [{
             "type": "http-01",
-            "url": rec.challenge,
-            "status": rec.status,
-            "token": chall.token,
+            "url": format!("{}/chall/{id}", inner.base),
+            "status": rec.authz_status,
+            "token": rec.token,
         }],
     });
     drop(inner);
@@ -381,13 +341,13 @@ async fn chall(
     }
     let (token, thumbprint, hostname, host, port) = {
         let inner = ca.inner.lock().expect("fake CA lock");
-        let Some(chall) = inner.challenges.get(&id) else {
+        let Some(rec) = inner.orders.get(&id) else {
             return StatusCode::NOT_FOUND.into_response();
         };
         (
-            chall.token.clone(),
-            chall.thumbprint.clone(),
-            chall.hostname.clone(),
+            rec.token.clone(),
+            rec.thumbprint.clone(),
+            rec.hostname.clone(),
             inner.validation_host.clone(),
             inner.validation_port,
         )
@@ -399,7 +359,7 @@ async fn chall(
         .no_proxy()
         .timeout(std::time::Duration::from_secs(2))
         .build()
-        .unwrap();
+        .expect("HTTP-01 client");
     let body = client
         .get(url)
         .header(reqwest::header::HOST, hostname)
@@ -412,23 +372,21 @@ async fn chall(
         None => String::new(),
     };
     let mut inner = ca.inner.lock().expect("fake CA lock");
+    let base = inner.base.clone();
+    let Some(rec) = inner.orders.get_mut(&id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     if got == expected {
-        if let Some(authz) = inner.authz.get_mut(&id) {
-            authz.status = "valid";
-        }
-        if let Some(order) = inner.orders.get_mut(&id) {
-            order.status = "ready";
-        }
-    } else if let Some(authz) = inner.authz.get_mut(&id) {
-        authz.status = "invalid";
+        rec.authz_status = "valid";
+        rec.order_status = "ready";
+    } else {
+        rec.authz_status = "invalid";
     }
-    let rec = inner.authz.get(&id).unwrap();
-    let chall = inner.challenges.get(&id).unwrap();
     let body = json!({
         "type": "http-01",
-        "url": rec.challenge,
-        "status": rec.status,
-        "token": chall.token,
+        "url": format!("{base}/chall/{id}"),
+        "status": rec.authz_status,
+        "token": rec.token,
     });
     drop(inner);
     with_nonce(&ca, StatusCode::OK, None, body)
@@ -451,13 +409,8 @@ async fn finalize(
     let Some(order) = inner.orders.get(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if order.status != "ready" {
-        let body = json!({
-            "status": order.status,
-            "identifiers": [{"type":"dns","value": order.hostname}],
-            "authorizations": [order.authz],
-            "finalize": order.finalize,
-        });
+    if order.order_status != "ready" {
+        let body = order_body(&inner.base, &id, order);
         drop(inner);
         return with_nonce(&ca, StatusCode::OK, None, body);
     }
@@ -466,17 +419,11 @@ async fn finalize(
     let cert_url = format!("{}/cert/{}", inner.base, inner.next_id);
     let cert_id = inner.next_id.to_string();
     inner.certs.insert(cert_id, issued);
-    let order = inner.orders.get_mut(&id).unwrap();
-    order.status = "valid";
-    order.certificate = Some(cert_url.clone());
-    let rec = inner.orders.get(&id).unwrap();
-    let body = json!({
-        "status": rec.status,
-        "identifiers": [{"type":"dns","value": rec.hostname}],
-        "authorizations": [rec.authz],
-        "finalize": rec.finalize,
-        "certificate": rec.certificate,
-    });
+    let order = inner.orders.get_mut(&id).expect("order still present");
+    order.order_status = "valid";
+    order.certificate = Some(cert_url);
+    let rec = inner.orders.get(&id).expect("order still present");
+    let body = order_body(&inner.base, &id, rec);
     drop(inner);
     with_nonce(&ca, StatusCode::OK, None, body)
 }
@@ -557,14 +504,14 @@ fn with_nonce(ca: &FakeCa, status: StatusCode, location: Option<String>, body: V
     };
     response
         .headers_mut()
-        .insert("Replay-Nonce", nonce.parse().unwrap());
+        .insert("Replay-Nonce", nonce.parse().expect("nonce header"));
     response
         .headers_mut()
-        .insert("Cache-Control", "no-store".parse().unwrap());
+        .insert("Cache-Control", "no-store".parse().expect("cache header"));
     if let Some(location) = location {
         response
             .headers_mut()
-            .insert("Location", location.parse().unwrap());
+            .insert("Location", location.parse().expect("location header"));
     }
     response
 }
@@ -578,19 +525,19 @@ fn next_nonce(ca: &FakeCa) -> String {
 }
 
 fn fake_issuer() -> CertifiedIssuer<'static, KeyPair> {
-    let key = KeyPair::generate().unwrap();
+    let key = KeyPair::generate().expect("fake CA key");
     let mut params = CertificateParams::default();
     params
         .distinguished_name
         .push(DnType::CommonName, "Ployz fake CA");
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    CertifiedIssuer::self_signed(params, key).unwrap()
+    CertifiedIssuer::self_signed(params, key).expect("fake CA issuer")
 }
 
 fn sign_csr(issuer: &CertifiedIssuer<'static, KeyPair>, csr: &[u8]) -> String {
-    let csr = CertificateSigningRequestParams::from_der(&csr.to_vec().into()).unwrap();
-    let cert = csr.signed_by(issuer).unwrap();
+    let csr = CertificateSigningRequestParams::from_der(&csr.to_vec().into()).expect("CSR DER");
+    let cert = csr.signed_by(issuer).expect("sign CSR");
     format!("{}{}", cert.pem(), issuer.pem())
 }
 
@@ -605,15 +552,7 @@ fn jwk_thumbprint(jwk: &Value) -> String {
 }
 
 fn b64url(input: &str) -> Option<Vec<u8>> {
-    URL_SAFE_NO_PAD.decode(input).ok().or_else(|| {
-        let mut padded = input.to_owned();
-        while !padded.len().is_multiple_of(4) {
-            padded.push('=');
-        }
-        base64::engine::general_purpose::URL_SAFE
-            .decode(padded)
-            .ok()
-    })
+    URL_SAFE_NO_PAD.decode(input).ok()
 }
 
 #[derive(Deserialize)]
