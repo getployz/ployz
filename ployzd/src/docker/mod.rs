@@ -177,19 +177,13 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         machine_id: &MachineId,
     ) -> Result<ContainerObservation, Error> {
-        let inspected = match self
-            .docker
-            .client
-            .inspect_container(container_id.as_str(), None)
-            .await
-        {
-            Ok(inspected) => RawContainerInspect::from_typed(&inspected)?,
-            Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
-                serde_json::from_str(&contents)?
-            }
-            Err(error) => return Err(docker_error(container_id, error)),
-        };
-        let address = container_address(&inspected);
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
         let labels = inspected
             .config
             .as_ref()
@@ -205,12 +199,7 @@ impl ContainerRuntime {
         Ok(ContainerObservation {
             container_id: *container_id,
             display_name: display_name(inspected.name.as_deref()),
-            created_at_unix_nanos: inspected
-                .created
-                .as_deref()
-                .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
-                .and_then(|created| created.timestamp_nanos_opt())
-                .unwrap_or_default(),
+            created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
             machine_id: *machine_id,
             service_id: managed.service_id,
             service_name: managed.service_name,
@@ -218,12 +207,25 @@ impl ContainerRuntime {
             runtime: runtime_observation(inspected.state.as_ref()),
             effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
             resolved_spec,
-            address,
+            address: container_address(&inspected),
             labels: labels
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
         })
+    }
+}
+
+fn decode_raw_inspect(
+    result: Result<ContainerInspectResponse, bollard::errors::Error>,
+    container_id: &ContainerId,
+) -> Result<RawContainerInspect, Error> {
+    match result {
+        Ok(inspected) => Ok(RawContainerInspect::from_typed(&inspected)?),
+        Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
+            Ok(serde_json::from_str(&contents)?)
+        }
+        Err(error) => Err(docker_error(container_id, error)),
     }
 }
 
@@ -312,38 +314,7 @@ struct RawContainerInspect {
 
 impl RawContainerInspect {
     fn from_typed(inspected: &ContainerInspectResponse) -> Result<Self, serde_json::Error> {
-        Ok(Self {
-            name: inspected.name.clone(),
-            created: inspected.created.clone(),
-            config: inspected.config.as_ref().map(|config| RawContainerConfig {
-                labels: config.labels.clone(),
-                healthcheck: config.healthcheck.clone(),
-            }),
-            state: inspected
-                .state
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()?,
-            network_settings: Some(RawNetworkSettings {
-                networks: inspected
-                    .network_settings
-                    .as_ref()
-                    .and_then(|settings| settings.networks.as_ref())
-                    .map(|networks| {
-                        networks
-                            .iter()
-                            .map(|(name, endpoint)| {
-                                (
-                                    name.clone(),
-                                    RawEndpointSettings {
-                                        ip_address: endpoint.ip_address.clone(),
-                                    },
-                                )
-                            })
-                            .collect()
-                    }),
-            }),
-        })
+        serde_json::from_value(serde_json::to_value(inspected)?)
     }
 }
 
@@ -361,9 +332,16 @@ struct RawNetworkSettings {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
 struct RawEndpointSettings {
+    #[serde(rename = "IPAddress")]
     ip_address: Option<String>,
+}
+
+fn created_at_unix_nanos(created: Option<&str>) -> i64 {
+    created
+        .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
+        .and_then(|created| created.timestamp_nanos_opt())
+        .unwrap_or_default()
 }
 
 struct ManagedLabels {
@@ -1215,5 +1193,152 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(effective_healthcheck(inherited.config.as_ref()), None);
+    }
+
+    fn inspect_json() -> serde_json::Value {
+        json!({
+            "Name": "/api-1",
+            "Created": "2024-03-15T12:34:56.123456789Z",
+            "Config": {
+                "Labels": { "ployz.managed": "1" },
+                "Healthcheck": {
+                    "Test": ["CMD", "true"],
+                    "Interval": 1_500_000,
+                    "Timeout": 2_000_000,
+                    "Retries": 4,
+                    "StartPeriod": 300_000_001,
+                    "StartInterval": 4_000_000
+                }
+            },
+            "State": {
+                "Status": "running",
+                "ExitCode": 0,
+                "Health": { "Status": "healthy" }
+            },
+            "NetworkSettings": {
+                "Networks": {
+                    "ployz": { "IPAddress": "10.210.0.5" }
+                }
+            }
+        })
+    }
+
+    fn projected(
+        inspected: &RawContainerInspect,
+    ) -> (
+        String,
+        i64,
+        ContainerRuntimeObservation,
+        Option<HealthcheckSpec>,
+        Option<ContainerAddress>,
+    ) {
+        (
+            display_name(inspected.name.as_deref()),
+            created_at_unix_nanos(inspected.created.as_deref()),
+            runtime_observation(inspected.state.as_ref()),
+            effective_healthcheck(inspected.config.as_ref()),
+            container_address(inspected),
+        )
+    }
+
+    fn expected_typed_projection() -> (
+        String,
+        i64,
+        ContainerRuntimeObservation,
+        Option<HealthcheckSpec>,
+        Option<ContainerAddress>,
+    ) {
+        (
+            "api-1".into(),
+            1_710_506_096_123_456_789,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            Some(HealthcheckSpec {
+                test: vec!["CMD".into(), "true".into()],
+                interval_millis: Some(2),
+                timeout_millis: Some(2),
+                start_period_millis: Some(301),
+                start_interval_millis: Some(4),
+                retries: Some(4),
+                disabled: false,
+            }),
+            Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 5))),
+        )
+    }
+
+    #[test]
+    fn typed_inspect_projects_address_runtime_and_created_nanos() {
+        let typed: ContainerInspectResponse = serde_json::from_value(inspect_json()).unwrap();
+        assert_eq!(
+            projected(&RawContainerInspect::from_typed(&typed).unwrap()),
+            expected_typed_projection()
+        );
+    }
+
+    #[test]
+    fn typed_and_raw_inspect_project_equivalent_observations() {
+        let value = inspect_json();
+        let typed: ContainerInspectResponse = serde_json::from_value(value.clone()).unwrap();
+        let from_typed = projected(&RawContainerInspect::from_typed(&typed).unwrap());
+        let from_raw = projected(&serde_json::from_value(value).unwrap());
+        assert_eq!(from_typed, from_raw);
+        assert_eq!(from_raw, expected_typed_projection());
+    }
+
+    #[test]
+    fn raw_inspect_reads_docker_ip_address_spelling() {
+        let inspected: RawContainerInspect = serde_json::from_value(json!({
+            "NetworkSettings": {
+                "Networks": {
+                    "ployz": { "IPAddress": "10.210.0.5" }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            container_address(&inspected),
+            Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 5)))
+        );
+    }
+
+    #[test]
+    fn raw_inspect_keeps_unknown_health_on_a_running_container() {
+        let inspected: RawContainerInspect = serde_json::from_value(json!({
+            "State": {
+                "Status": "running",
+                "Health": { "Status": "future-health" }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            runtime_observation(inspected.state.as_ref()),
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unrecognized("future-health".into())
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_unrelated_docker_fields_use_raw_fallback() {
+        let mut value = inspect_json();
+        value
+            .as_object_mut()
+            .expect("inspect fixture is an object")
+            .insert(
+                "HostConfig".into(),
+                json!({ "Isolation": "future-isolation" }),
+            );
+        assert!(serde_json::from_value::<ContainerInspectResponse>(value.clone()).is_err());
+        let inspected = decode_raw_inspect(
+            Err(bollard::errors::Error::JsonDataError {
+                message: "unknown variant `future-isolation`".into(),
+                contents: value.to_string(),
+                column: 1,
+            }),
+            &ContainerId::parse("a".repeat(64)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(projected(&inspected), expected_typed_projection());
     }
 }
