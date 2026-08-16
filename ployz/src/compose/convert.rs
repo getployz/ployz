@@ -5,10 +5,10 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerPath, ContainerResources, DeviceMapping, DeviceReservation, HealthcheckSpec,
-    LogDriver, MachinePath, MachineSelector, Placement, PortPublication, PullPolicy,
-    RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceName, Ulimit,
-    UpdateConfig, UpdateOrder,
+    ConfiguredHealthcheck, ContainerPath, ContainerResources, DeviceMapping, DeviceReservation,
+    HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath,
+    MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
+    ServiceContainerSpec, ServiceMode, ServiceName, Ulimit, UpdateConfig, UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -18,7 +18,7 @@ use super::{
     image::ImageState,
     model::{
         BuildSpec, ComposeError, ComposeProject, RawDeploy, RawDevice, RawDeviceRequest,
-        RawProject, RawService, RawStringList,
+        RawHealthcheck, RawProject, RawService, RawStringList,
     },
     mounts::volumes,
     ports::ports,
@@ -205,21 +205,7 @@ fn convert_service(
         environment: environment(&raw.environment)?,
         cap_add: raw.cap_add.clone(),
         cap_drop: raw.cap_drop.clone(),
-        healthcheck: raw
-            .healthcheck
-            .as_ref()
-            .map(|healthcheck| {
-                Ok(HealthcheckSpec {
-                    test: healthcheck.test.clone(),
-                    interval_millis: duration_millis(healthcheck.interval.as_deref())?,
-                    timeout_millis: duration_millis(healthcheck.timeout.as_deref())?,
-                    start_period_millis: duration_millis(healthcheck.start_period.as_deref())?,
-                    start_interval_millis: duration_millis(healthcheck.start_interval.as_deref())?,
-                    retries: healthcheck.retries,
-                    disabled: healthcheck.disable,
-                })
-            })
-            .transpose()?,
+        healthcheck: raw.healthcheck.as_ref().map(healthcheck).transpose()?,
         pull_policy: match raw.pull_policy.as_deref() {
             Some("always") => PullPolicy::Always,
             Some("never") => PullPolicy::Never,
@@ -478,6 +464,39 @@ fn device_request(
             .collect(),
         options: request.options.clone(),
     })
+}
+
+fn healthcheck(raw: &RawHealthcheck) -> Result<HealthcheckSpec, ComposeError> {
+    if raw.disable {
+        return Ok(HealthcheckSpec::Disabled);
+    }
+    let test = match &raw.test {
+        Value::Null => Vec::new(),
+        Value::String(value) => vec![value.clone()],
+        Value::Sequence(values) => values
+            .iter()
+            .map(|value| {
+                scalar(value).ok_or_else(|| invalid("healthcheck test values must be scalar"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Value::Bool(_) | Value::Number(_) | Value::Mapping(_) | Value::Tagged(_) => {
+            return Err(invalid("healthcheck test must be a string or list"));
+        }
+    };
+    if test
+        .first()
+        .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
+    {
+        return Ok(HealthcheckSpec::Disabled);
+    }
+    Ok(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+        test: HealthcheckCommand::parse(test).map_err(invalid)?,
+        interval_millis: duration_millis(raw.interval.as_deref())?,
+        timeout_millis: duration_millis(raw.timeout.as_deref())?,
+        start_period_millis: duration_millis(raw.start_period.as_deref())?,
+        start_interval_millis: duration_millis(raw.start_interval.as_deref())?,
+        retries: raw.retries,
+    }))
 }
 
 fn update(deploy: Option<&RawDeploy>) -> Result<UpdateConfig, ComposeError> {

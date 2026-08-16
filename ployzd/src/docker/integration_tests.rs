@@ -211,7 +211,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
             "environment": { "TOKEN": "secret" },
             "cap_add": ["CHOWN"],
             "cap_drop": ["NET_RAW"],
-            "healthcheck": { "test": ["CMD", "true"], "interval_millis": 1000 },
+            "healthcheck": { "state": "configured", "test": ["CMD", "true"], "interval_millis": 1000 },
             "pull_policy": "always",
             "init": true,
             "user": "0",
@@ -441,7 +441,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
             "image": "alpine:3.23.3",
             "command": ["sleep", "60"],
             "pull_policy": "missing",
-            "healthcheck": {"test":["CMD","true"],"interval_millis":1000,"timeout_millis":2000,"retries":3},
+            "healthcheck": {"state":"configured","test":["CMD","true"],"interval_millis":1000,"timeout_millis":2000,"retries":3},
             "log_driver": {"name":"local","options":{}},
             "config_mounts": [{"config_name":"settings","target":"/etc/ployz/settings","uid":1000,"gid":1001,"mode":288}]
         },

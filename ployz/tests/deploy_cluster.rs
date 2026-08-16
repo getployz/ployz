@@ -419,15 +419,14 @@ fn service_spec(service_id: &ServiceId, name: &str) -> ResolvedServiceSpec {
 }
 
 fn healthcheck(command: &str, retries: u32) -> ployz_core::HealthcheckSpec {
-    ployz_core::HealthcheckSpec {
-        test: vec!["CMD".into(), command.into()],
+    ployz_core::HealthcheckSpec::Configured(ployz_core::ConfiguredHealthcheck {
+        test: ployz_core::HealthcheckCommand::parse(["CMD", command]).unwrap(),
         interval_millis: Some(50),
         timeout_millis: Some(50),
         start_period_millis: None,
         start_interval_millis: None,
         retries: Some(retries),
-        disabled: false,
-    }
+    })
 }
 
 async fn wait_running(client: &mut Client, machine: &Machine, container_id: &ContainerId) {

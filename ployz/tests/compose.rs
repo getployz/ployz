@@ -163,7 +163,11 @@ configs:
         65_535
     );
     assert_eq!(
-        api.container.healthcheck.as_ref().unwrap().interval_millis,
+        api.container
+            .healthcheck
+            .as_ref()
+            .and_then(ployz_core::HealthcheckSpec::as_configured)
+            .and_then(|healthcheck| healthcheck.interval_millis),
         Some(90_000)
     );
     assert_eq!(api.container.log_driver.as_ref().unwrap().name, "local");
@@ -230,6 +234,24 @@ configs:
         service(&project, "caddy").caddy_config.as_deref(),
         Some("app.example { reverse_proxy :80 }")
     );
+}
+
+#[test]
+fn compose_maps_disabled_and_sentinel_healthchecks() {
+    for yaml in [
+        "services: {app: {image: app, healthcheck: {disable: true}}}",
+        "services: {app: {image: app, healthcheck: {disable: true, test: [CMD, true]}}}",
+        "services: {app: {image: app, healthcheck: {test: [NONE]}}}",
+        "services: {app: {image: app, healthcheck: {test: [NONE, CMD, true]}}}",
+        "services: {app: {image: app, healthcheck: {test: NONE}}}",
+    ] {
+        let project = parse_normalized(yaml, ".").unwrap();
+        assert_eq!(
+            service(&project, "app").container.healthcheck,
+            Some(ployz_core::HealthcheckSpec::Disabled),
+            "{yaml}"
+        );
+    }
 }
 
 #[test]
@@ -311,8 +333,12 @@ secrets:
             "cpus must be numeric",
         ),
         (
-            "services: {app: {image: app, healthcheck: {interval: eventually}}}",
+            "services: {app: {image: app, healthcheck: {test: [CMD, true], interval: eventually}}}",
             "invalid duration",
+        ),
+        (
+            "services: {app: {image: app, healthcheck: {interval: 10s}}}",
+            "non-empty command",
         ),
         (
             "services: {app: {image: app, volumes: [{type: tmpfs, target: /tmp, tmpfs: {size: huge}}]}}",

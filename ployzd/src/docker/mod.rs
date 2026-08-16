@@ -22,9 +22,10 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, ListImagesOptionsBuilder},
 };
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, HealthcheckSpec, ImageSummary, MachineId,
-    MachineImages, RpcErrorCode, ServiceId, ServiceName, ValueError,
+    ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation,
+    HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, RpcErrorCode,
+    ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -445,9 +446,14 @@ fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObs
 fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<HealthcheckSpec> {
     let healthcheck = config?.healthcheck.as_ref()?;
     let test = healthcheck.test.clone().unwrap_or_default();
-    Some(HealthcheckSpec {
-        disabled: test.first().is_some_and(|command| command == "NONE"),
-        test,
+    if test
+        .first()
+        .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
+    {
+        return Some(HealthcheckSpec::Disabled);
+    }
+    Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+        test: HealthcheckCommand::parse(test).ok()?,
         interval_millis: nanos_to_millis(healthcheck.interval),
         timeout_millis: nanos_to_millis(healthcheck.timeout),
         start_period_millis: nanos_to_millis(healthcheck.start_period),
@@ -456,7 +462,7 @@ fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<Healthch
             .retries
             .filter(|retries| *retries > 0)
             .and_then(|retries| u32::try_from(retries).ok()),
-    })
+    }))
 }
 
 fn nanos_to_millis(nanos: Option<i64>) -> Option<u64> {
@@ -680,7 +686,7 @@ mod tests {
                 "pull_policy": "missing",
                 "privileged": false,
                 "resources": { "memory_bytes": 1048576 },
-                "healthcheck": { "test": ["CMD", "true"], "interval_millis": 1000 }
+                "healthcheck": { "state": "configured", "test": ["CMD", "true"], "interval_millis": 1000 }
             },
             "ports": [{
                 "mode": "host",
@@ -1043,6 +1049,7 @@ mod tests {
         assert_eq!(udp.host_port.as_deref(), Some("5353"));
 
         let healthcheck = serde_json::from_value(serde_json::json!({
+            "state":"configured",
             "test":["CMD","true"],
             "interval_millis":1000,
             "timeout_millis":2000,
@@ -1059,14 +1066,11 @@ mod tests {
         assert_eq!(mapped.start_interval, Some(4_000_000_000));
         assert_eq!(mapped.retries, Some(5));
 
-        let disabled = ployz_core::HealthcheckSpec {
-            disabled: true,
-            ..healthcheck
-        };
-        assert_eq!(
-            docker_healthcheck(&disabled).unwrap().test.unwrap(),
-            ["NONE"]
-        );
+        let disabled = docker_healthcheck(&ployz_core::HealthcheckSpec::Disabled).unwrap();
+        assert_eq!(disabled.test.unwrap(), ["NONE"]);
+        assert_eq!(disabled.interval, None);
+        assert_eq!(disabled.timeout, None);
+        assert_eq!(disabled.retries, None);
     }
 
     #[test]
@@ -1187,15 +1191,29 @@ mod tests {
         ));
         assert_eq!(
             effective_healthcheck(inspected.config.as_ref()),
-            Some(HealthcheckSpec {
-                test: vec!["CMD".into(), "true".into()],
+            Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+                test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
                 interval_millis: Some(2),
                 timeout_millis: Some(2),
                 start_period_millis: Some(301),
                 start_interval_millis: Some(4),
                 retries: Some(4),
-                disabled: false,
-            })
+            }))
         );
+
+        let disabled: RawContainerInspect = serde_json::from_value(json!({
+            "Config": { "Healthcheck": { "Test": ["NONE"], "Interval": 1_000_000 } }
+        }))
+        .unwrap();
+        assert_eq!(
+            effective_healthcheck(disabled.config.as_ref()),
+            Some(HealthcheckSpec::Disabled)
+        );
+
+        let inherited: RawContainerInspect = serde_json::from_value(json!({
+            "Config": { "Healthcheck": { "Test": [] } }
+        }))
+        .unwrap();
+        assert_eq!(effective_healthcheck(inherited.config.as_ref()), None);
     }
 }

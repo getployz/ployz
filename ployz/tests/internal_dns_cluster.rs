@@ -41,6 +41,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
             "command": ["sh", "-c", "touch /tmp/healthy; sleep 300"],
             "pull_policy": "missing",
             "healthcheck": {
+                "state": "configured",
                 "test": ["CMD-SHELL", "test -f /tmp/healthy"],
                 "interval_millis": 100,
                 "timeout_millis": 100,

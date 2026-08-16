@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MachinePath, MachineSelector,
-    PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
+    PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -167,10 +167,85 @@ pub struct Placement {
     pub machines: Vec<MachineSelector>,
 }
 
+/// Docker's healthcheck disable token. Configured commands cannot begin with it.
+pub const HEALTHCHECK_DISABLE_SENTINEL: &str = "NONE";
+
+/// A present Healthcheck: explicitly disabled, or configured with a real command.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct HealthcheckSpec {
-    #[serde(default)]
-    pub test: Vec<String>,
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum HealthcheckSpec {
+    Disabled,
+    Configured(ConfiguredHealthcheck),
+}
+
+impl HealthcheckSpec {
+    /// Borrow the Configured payload, if this Healthcheck is Configured.
+    #[must_use]
+    pub fn as_configured(&self) -> Option<&ConfiguredHealthcheck> {
+        match self {
+            Self::Configured(configured) => Some(configured),
+            Self::Disabled => None,
+        }
+    }
+}
+
+/// A Healthcheck command that is non-empty and does not begin with Docker's disable sentinel.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct HealthcheckCommand(Vec<String>);
+
+impl HealthcheckCommand {
+    /// Parse a Healthcheck command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `test` is empty or begins with
+    /// [`HEALTHCHECK_DISABLE_SENTINEL`].
+    pub fn parse<I, S>(test: I) -> Result<Self, ValueError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let test = test.into_iter().map(Into::into).collect::<Vec<_>>();
+        if test.is_empty()
+            || test
+                .first()
+                .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
+        {
+            return Err(ValueError::new(
+                "healthcheck command",
+                test.join(" "),
+                "a non-empty command that does not begin with NONE",
+            ));
+        }
+        Ok(Self(test))
+    }
+
+    /// Borrow the command tokens.
+    #[must_use]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl From<HealthcheckCommand> for Vec<String> {
+    fn from(command: HealthcheckCommand) -> Self {
+        command.0
+    }
+}
+
+impl TryFrom<Vec<String>> for HealthcheckCommand {
+    type Error = ValueError;
+
+    fn try_from(test: Vec<String>) -> Result<Self, Self::Error> {
+        Self::parse(test)
+    }
+}
+
+/// Timing and command for a Configured Healthcheck.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConfiguredHealthcheck {
+    pub test: HealthcheckCommand,
     #[serde(default)]
     pub interval_millis: Option<u64>,
     #[serde(default)]
@@ -181,8 +256,6 @@ pub struct HealthcheckSpec {
     pub start_interval_millis: Option<u64>,
     #[serde(default)]
     pub retries: Option<u32>,
-    #[serde(default)]
-    pub disabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -577,4 +650,89 @@ fn same_multiset<T: PartialEq>(left: &[T], right: &[T]) -> bool {
                 true
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn configured(test: &[&str]) -> HealthcheckSpec {
+        HealthcheckSpec::Configured(ConfiguredHealthcheck {
+            test: HealthcheckCommand::parse(test.iter().copied()).unwrap(),
+            interval_millis: Some(1_000),
+            timeout_millis: Some(2_000),
+            start_period_millis: Some(3_000),
+            start_interval_millis: Some(4_000),
+            retries: Some(5),
+        })
+    }
+
+    #[test]
+    fn healthcheck_command_rejects_empty_and_disable_sentinel() {
+        assert!(HealthcheckCommand::parse(Vec::<String>::new()).is_err());
+        assert!(HealthcheckCommand::parse(["NONE"]).is_err());
+        assert!(HealthcheckCommand::parse(["NONE", "CMD", "true"]).is_err());
+        assert_eq!(
+            HealthcheckCommand::parse(["CMD", "true"])
+                .unwrap()
+                .as_slice(),
+            ["CMD", "true"]
+        );
+    }
+
+    #[test]
+    fn healthcheck_spec_serializes_disabled_and_configured() {
+        assert_eq!(
+            serde_json::to_value(HealthcheckSpec::Disabled).unwrap(),
+            json!({ "state": "disabled" })
+        );
+        assert_eq!(
+            serde_json::from_value::<HealthcheckSpec>(json!({ "state": "disabled" })).unwrap(),
+            HealthcheckSpec::Disabled
+        );
+        let configured = configured(&["CMD", "true"]);
+        let value = serde_json::to_value(&configured).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "state": "configured",
+                "test": ["CMD", "true"],
+                "interval_millis": 1000,
+                "timeout_millis": 2000,
+                "start_period_millis": 3000,
+                "start_interval_millis": 4000,
+                "retries": 5
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<HealthcheckSpec>(value).unwrap(),
+            configured
+        );
+    }
+
+    #[test]
+    fn healthcheck_spec_rejects_empty_configured_and_sentinel_command() {
+        for invalid in [
+            json!({ "state": "configured", "test": [] }),
+            json!({ "state": "configured", "test": ["NONE"] }),
+            json!({ "state": "configured", "test": ["NONE", "CMD", "true"] }),
+            json!({ "test": ["CMD", "true"], "disabled": true }),
+        ] {
+            assert!(
+                serde_json::from_value::<HealthcheckSpec>(invalid.clone()).is_err(),
+                "{invalid} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_healthchecks_compare_equal() {
+        let left: HealthcheckSpec = serde_json::from_value(json!({ "state": "disabled" })).unwrap();
+        let right: HealthcheckSpec =
+            serde_json::from_value(json!({ "state": "disabled", "interval_millis": 9 })).unwrap();
+        assert_eq!(left, right);
+        assert_eq!(left, HealthcheckSpec::Disabled);
+        assert_ne!(left, configured(&["CMD", "true"]));
+    }
 }

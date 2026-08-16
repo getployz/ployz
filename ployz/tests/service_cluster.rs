@@ -220,7 +220,7 @@ async fn assert_l3_062_full_spec(
             "environment": { "TOKEN": "secret" },
             "cap_add": ["CHOWN"],
             "cap_drop": ["NET_RAW"],
-            "healthcheck": { "test": ["CMD", "true"], "interval_millis": 1000 },
+            "healthcheck": { "state": "configured", "test": ["CMD", "true"], "interval_millis": 1000 },
             "pull_policy": "missing",
             "init": true,
             "user": "0",

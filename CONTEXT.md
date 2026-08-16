@@ -60,6 +60,18 @@ _Avoid_: Service Name as identity
 A managed Docker container carrying the Resolved Service Spec from its creation. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
 _Avoid_: Replica, service record
 
+**Healthcheck**:
+A present probe declaration on a Service Container. It is Disabled or Configured. Absence means the image's probe is inherited or that no probe is available, not a third kind of Healthcheck.
+_Avoid_: health check flag, disabled boolean plus command
+
+**Disabled Healthcheck**:
+An explicit Healthcheck that turns probing off. It is not an absent Healthcheck.
+_Avoid_: inherited healthcheck, missing healthcheck
+
+**Configured Healthcheck**:
+A Healthcheck with a non-empty command that probes the container.
+_Avoid_: enabled healthcheck
+
 **Hook Container**:
 A managed Docker container that executes a pre-deploy hook rather than serving as an instance of the Service. Its identity and runtime observation remain distinct from those of Service Containers.
 _Avoid_: Service Container, sidecar

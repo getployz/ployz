@@ -232,16 +232,19 @@ fn spec(
     spec
 }
 
-fn healthcheck() -> ployz_core::HealthcheckSpec {
-    ployz_core::HealthcheckSpec {
-        test: vec!["CMD".into(), "true".into()],
+fn configured_healthcheck() -> ployz_core::ConfiguredHealthcheck {
+    ployz_core::ConfiguredHealthcheck {
+        test: ployz_core::HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
         interval_millis: Some(1_000),
         timeout_millis: Some(1_000),
         start_period_millis: None,
         start_interval_millis: None,
         retries: Some(1),
-        disabled: false,
     }
+}
+
+fn healthcheck() -> ployz_core::HealthcheckSpec {
+    ployz_core::HealthcheckSpec::Configured(configured_healthcheck())
 }
 
 fn volume() -> ServiceVolume {

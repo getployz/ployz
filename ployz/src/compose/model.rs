@@ -200,7 +200,7 @@ pub(super) struct RawLogging {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(super) struct RawHealthcheck {
     #[serde(default)]
-    pub test: Vec<String>,
+    pub test: Value,
     pub interval: Option<String>,
     pub timeout: Option<String>,
     pub start_period: Option<String>,

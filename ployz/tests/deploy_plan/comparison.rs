@@ -136,3 +136,29 @@ fn spec_comparison_handles_resource_precedence_and_unordered_volumes() {
     mutable.container.cap_add.push("NET_ADMIN".into());
     assert_eq!(compare_specs(&current, &mutable), SpecChange::NeedsRecreate);
 }
+
+#[test]
+fn spec_comparison_treats_all_disabled_healthchecks_as_identical() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.container.healthcheck = Some(ployz_core::HealthcheckSpec::Disabled);
+    let mut current = container('b', '1', &requested, &service_id('a')).resolved_spec;
+    current.container.healthcheck = Some(ployz_core::HealthcheckSpec::Disabled);
+    assert_eq!(compare_specs(&current, &requested), SpecChange::UpToDate);
+
+    requested.container.healthcheck = Some(ployz_core::HealthcheckSpec::Configured(
+        ployz_core::ConfiguredHealthcheck {
+            test: ployz_core::HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+            interval_millis: Some(1_000),
+            timeout_millis: None,
+            start_period_millis: None,
+            start_interval_millis: None,
+            retries: None,
+        },
+    ));
+    assert_eq!(
+        compare_specs(&current, &requested),
+        SpecChange::NeedsRecreate
+    );
+}

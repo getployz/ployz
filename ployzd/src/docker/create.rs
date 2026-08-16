@@ -10,8 +10,9 @@ use bollard::models::{
     RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
-    BindRecursive, ContainerKind, HealthcheckSpec, HostBind, MachineGateway, MachineId,
-    PortPublication, ResolvedServiceSpec, ServiceVolume, TransportProtocol, VolumeSource,
+    BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec, HostBind,
+    MachineGateway, MachineId, PortPublication, ResolvedServiceSpec, ServiceVolume,
+    TransportProtocol, VolumeSource,
 };
 
 use super::{
@@ -114,7 +115,7 @@ pub(super) fn container_create_body(
         cmd: Some(hook.map_or_else(|| container.command.clone(), |hook| hook.command.clone())),
         healthcheck: if hook.is_some() {
             Some(HealthConfig {
-                test: Some(vec!["NONE".into()]),
+                test: Some(vec![HEALTHCHECK_DISABLE_SENTINEL.into()]),
                 ..Default::default()
             })
         } else {
@@ -154,18 +155,20 @@ fn docker_restart(policy: ployz_core::RestartPolicy) -> RestartPolicy {
 }
 
 pub(super) fn docker_healthcheck(spec: &HealthcheckSpec) -> Result<HealthConfig, Error> {
-    Ok(HealthConfig {
-        test: Some(if spec.disabled {
-            vec!["NONE".into()]
-        } else {
-            spec.test.clone()
+    match spec {
+        HealthcheckSpec::Disabled => Ok(HealthConfig {
+            test: Some(vec![HEALTHCHECK_DISABLE_SENTINEL.into()]),
+            ..Default::default()
         }),
-        interval: millis_to_nanos(spec.interval_millis)?,
-        timeout: millis_to_nanos(spec.timeout_millis)?,
-        retries: spec.retries.map(i64::from),
-        start_period: millis_to_nanos(spec.start_period_millis)?,
-        start_interval: millis_to_nanos(spec.start_interval_millis)?,
-    })
+        HealthcheckSpec::Configured(configured) => Ok(HealthConfig {
+            test: Some(configured.test.as_slice().to_vec()),
+            interval: millis_to_nanos(configured.interval_millis)?,
+            timeout: millis_to_nanos(configured.timeout_millis)?,
+            retries: configured.retries.map(i64::from),
+            start_period: millis_to_nanos(configured.start_period_millis)?,
+            start_interval: millis_to_nanos(configured.start_interval_millis)?,
+        }),
+    }
 }
 
 fn millis_to_nanos(value: Option<u64>) -> Result<Option<i64>, Error> {

@@ -7,7 +7,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
     let inherited = container('b');
     let early = container('c');
     let transient = container('d');
-    let mut inherited_healthcheck = healthcheck();
+    let mut inherited_healthcheck = configured_healthcheck();
     inherited_healthcheck.start_period_millis = Some(300_000);
     let plan = plan(vec![
         run(&machine, spec(Some(25), None, None), false),
@@ -38,7 +38,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
         observed_with_healthcheck(
             Call::Inspect(machine, inherited),
             starting(),
-            inherited_healthcheck,
+            ployz_core::HealthcheckSpec::Configured(inherited_healthcheck),
         ),
         observed(Call::Inspect(machine, inherited), healthy()),
         created(
@@ -151,5 +151,32 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
             .failed
             .is_none()
     );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn health_monitor_does_not_inherit_when_spec_disables_the_check() {
+    let machine = machine('1');
+    let new = container('a');
+    let mut inherited = configured_healthcheck();
+    inherited.start_period_millis = Some(300_000);
+    let plan = plan(vec![run(
+        &machine,
+        spec(Some(0), Some(ployz_core::HealthcheckSpec::Disabled), None),
+        false,
+    )]);
+    let client = Scripted::new(vec![
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed_with_healthcheck(
+            Call::Inspect(machine, new),
+            running(),
+            ployz_core::HealthcheckSpec::Configured(inherited),
+        ),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(outcome.failed.is_none());
     client.assert_done();
 }
