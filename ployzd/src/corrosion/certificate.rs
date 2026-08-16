@@ -60,6 +60,7 @@ impl CertificateChallenge {
     }
 }
 
+/// Certificate and pending HTTP-01 challenge for one Ingress Hostname.
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct CertificateRow {
     material: Option<CertificateMaterial>,
@@ -67,6 +68,7 @@ pub struct CertificateRow {
 }
 
 impl CertificateRow {
+    /// Stored snapshot for one hostname.
     #[must_use]
     pub fn from_parts(
         material: Option<CertificateMaterial>,
@@ -78,32 +80,39 @@ impl CertificateRow {
         }
     }
 
+    /// Row that holds newly issued material and no challenge.
+    #[must_use]
+    pub fn issued(material: CertificateMaterial) -> Self {
+        Self {
+            material: Some(material),
+            challenge: None,
+        }
+    }
+
+    /// Issued material, if any.
     #[must_use]
     pub fn material(&self) -> Option<&CertificateMaterial> {
         self.material.as_ref()
     }
 
+    /// Pending HTTP-01 challenge, if any.
     #[must_use]
     pub fn challenge(&self) -> Option<&CertificateChallenge> {
         self.challenge.as_ref()
     }
 
+    /// Take issued material out of the row.
     #[must_use]
     pub fn into_material(self) -> Option<CertificateMaterial> {
         self.material
     }
 
-    /// Last-write-wins is whole-row. A write that does not carry material must
-    /// not erase material another Machine just issued.
+    /// Keep existing material and set the pending challenge.
     #[must_use]
-    pub fn with_preserved_material(self, latest: &Self) -> Self {
-        if self.material.is_some() {
-            self
-        } else {
-            Self {
-                material: latest.material.clone(),
-                challenge: self.challenge,
-            }
+    pub fn with_challenge(&self, challenge: CertificateChallenge) -> Self {
+        Self {
+            material: self.material.clone(),
+            challenge: Some(challenge),
         }
     }
 
@@ -191,34 +200,20 @@ mod tests {
     }
 
     #[test]
-    fn failure_write_keeps_issued_material() {
-        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
-        let latest = CertificateRow::from_parts(Some(issued.clone()), None);
-        let failed = CertificateRow::from_parts(None, None);
-        let merged = failed.with_preserved_material(&latest);
-        assert_eq!(merged.material(), Some(&issued));
-        assert_eq!(merged.challenge(), None);
-    }
-
-    #[test]
     fn challenge_write_keeps_issued_material() {
         let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
         let latest = CertificateRow::from_parts(Some(issued.clone()), None);
         let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
-        let intended = CertificateRow::from_parts(None, Some(challenge.clone()));
-        let merged = intended.with_preserved_material(&latest);
-        assert_eq!(merged.material(), Some(&issued));
-        assert_eq!(merged.challenge(), Some(&challenge));
+        let row = latest.with_challenge(challenge.clone());
+        assert_eq!(row.material(), Some(&issued));
+        assert_eq!(row.challenge(), Some(&challenge));
     }
 
     #[test]
     fn issued_write_replaces_the_row() {
-        let previous = CertificateMaterial::new("OLD", "OLDKEY").unwrap();
         let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
-        let latest = CertificateRow::from_parts(Some(previous), None);
-        let intended = CertificateRow::from_parts(Some(issued.clone()), None);
-        let merged = intended.with_preserved_material(&latest);
-        assert_eq!(merged.material(), Some(&issued));
-        assert_eq!(merged.challenge(), None);
+        let row = CertificateRow::issued(issued.clone());
+        assert_eq!(row.material(), Some(&issued));
+        assert_eq!(row.challenge(), None);
     }
 }

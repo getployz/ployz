@@ -345,11 +345,8 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         material: &CertificateMaterial,
     ) -> Result<(), Error> {
-        self.commit_certificate_row(
-            hostname,
-            CertificateRow::from_parts(Some(material.clone()), None),
-        )
-        .await
+        self.commit_certificate_row(hostname, |_| CertificateRow::issued(material.clone()))
+            .await
     }
 
     pub async fn certificate(
@@ -392,20 +389,17 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         challenge: &CertificateChallenge,
     ) -> Result<(), Error> {
-        self.commit_certificate_row(
-            hostname,
-            CertificateRow::from_parts(None, Some(challenge.clone())),
-        )
-        .await
+        self.commit_certificate_row(hostname, |latest| latest.with_challenge(challenge.clone()))
+            .await
     }
 
     async fn commit_certificate_row(
         &self,
         hostname: &IngressHost,
-        intended: CertificateRow,
+        apply: impl FnOnce(&CertificateRow) -> CertificateRow,
     ) -> Result<(), Error> {
         let latest = self.certificate_row(hostname).await?;
-        let row = intended.with_preserved_material(&latest);
+        let row = apply(&latest);
         if row == latest {
             return Ok(());
         }

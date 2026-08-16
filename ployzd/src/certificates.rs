@@ -258,7 +258,12 @@ async fn issue_wanted(
             first_seen.remove(&hostname);
             continue;
         }
-        let seen = *first_seen.entry(hostname.clone()).or_insert(now);
+        let seen = if let Some(&seen) = first_seen.get(&hostname) {
+            seen
+        } else {
+            first_seen.insert(hostname.clone(), now);
+            now
+        };
         let elapsed = now.saturating_duration_since(seen);
         if issuance_action(row, rank, elapsed) == IssuanceAction::Order {
             to_order.push(hostname);
