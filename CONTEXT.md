@@ -85,20 +85,28 @@ The evidence produced by executing a Deploy Plan: its completed prefix, any fail
 _Avoid_: Bare deployment error, transaction result
 
 **Docker Volume**:
-A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine and is distinct from a future Managed ZFS Volume.
-_Avoid_: Cluster volume, replicated volume, Managed ZFS Volume
+A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine.
+_Avoid_: Cluster volume, replicated volume, CSI volume
+
+**Machine Pool**:
+A ZFS storage budget on one Machine, chosen when that Machine joins and not addable afterwards. Provisioned Volumes live on it. Docker's data-root, image layers, and build cache do not.
+_Avoid_: Cluster pool, auto-created pool, dedicated disk, Machine ZFS Pool, ZFS-enabled cluster
+
+**Provisioned Volume**:
+A Docker Volume backed by a dataset on a Machine Pool, with a maximum size declared in Compose under `x-volumes`. A name declared only under `volumes:` is not one and is unaffected.
+_Avoid_: Managed Volume, Managed ZFS Volume, cluster volume, storage class, CSI volume
 
 **Service Volume Reference**:
 A name used within one Service specification to refer to storage. It is not the Docker Volume name or a machine-independent storage identity.
 _Avoid_: Docker Volume name, cluster volume ID
 
 **Bind Mount**:
-A container mount whose source is a path on its Machine. It is distinct from a Docker Volume and tmpfs.
-_Avoid_: Docker Volume, cluster storage
+A container mount whose source is a path on its Machine. It is distinct from a Docker Volume, a Provisioned Volume, and tmpfs.
+_Avoid_: Docker Volume, Provisioned Volume, cluster storage
 
 **Tmpfs Mount**:
-An ephemeral memory-backed container mount. It is distinct from a Bind Mount and Docker Volume.
-_Avoid_: Docker Volume, persistent volume
+An ephemeral memory-backed container mount. It is distinct from a Bind Mount, Docker Volume, and Provisioned Volume.
+_Avoid_: Docker Volume, Provisioned Volume, persistent volume
 
 **Machine Subnet**:
 The IPv4 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
