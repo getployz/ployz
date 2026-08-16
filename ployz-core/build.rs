@@ -4,8 +4,8 @@ fn main() {
     macro_rules! build_service {
         (
             package $package:literal
-            unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty),)+ }
-            server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
+            unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
+            server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
         ) => {{
             let mut service = tonic_build::manual::Service::builder()
                 .name("MachineRpc")

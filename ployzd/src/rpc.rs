@@ -5,20 +5,10 @@ use std::{
 };
 
 use ployz_core::{
-    CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CREATE_DOMAIN_RECORDS_CAPABILITY,
-    CREATE_VOLUME_CAPABILITY, CaddyConfig, CapabilityName, ContainerChanged, ContainerDetails,
-    ContainerList, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, Domain, DomainRecords,
-    EXEC_CONTAINER_CAPABILITY, GET_CADDY_CONFIG_CAPABILITY, GET_DOMAIN_CAPABILITY,
-    INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY, JOIN_MACHINE_CAPABILITY,
-    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
-    LIST_VOLUMES_CAPABILITY, LocalMachinePhase, LogMetadata, LogOrigin, MACHINE_LOGS_CAPABILITY,
-    MACHINE_TOKEN_CAPABILITY, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR,
-    REGISTER_MACHINE_CAPABILITY, RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
-    REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, VolumeList, VolumeRemoved, op,
+    CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
+    ContractDescription, Domain, DomainRecords, LocalMachinePhase, LogMetadata, LogOrigin,
+    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -118,62 +108,16 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::DescribeContract>(request)?;
         let machine_id = self.local_record()?.id;
-        let mut capabilities = [
-            DESCRIBE_CONTRACT_CAPABILITY,
-            INSPECT_MACHINE_CAPABILITY,
-            MACHINE_TOKEN_CAPABILITY,
-            INITIALIZE_MACHINE_CAPABILITY,
-            REGISTER_MACHINE_CAPABILITY,
-            JOIN_MACHINE_CAPABILITY,
-            LIST_MACHINES_CAPABILITY,
-            UPDATE_MACHINE_CAPABILITY,
-            REMOVE_LOCAL_MACHINE_CAPABILITY,
-            REMOVE_MACHINE_CAPABILITY,
-            INSPECT_WIREGUARD_CAPABILITY,
-            RESET_MACHINE_CAPABILITY,
-        ]
-        .into_iter()
-        .map(|name| CapabilityName::parse(name).expect("static capability name is valid"))
-        .collect::<BTreeSet<_>>();
+        let mut capabilities: BTreeSet<_> =
+            CapabilityAdvertisement::Always.capabilities().collect();
         if self.local.containers().is_some() {
-            capabilities.extend(
-                [
-                    LIST_CONTAINERS_CAPABILITY,
-                    INSPECT_CONTAINER_CAPABILITY,
-                    CREATE_CONTAINER_CAPABILITY,
-                    START_CONTAINER_CAPABILITY,
-                    STOP_CONTAINER_CAPABILITY,
-                    REMOVE_CONTAINER_CAPABILITY,
-                    CREATE_VOLUME_CAPABILITY,
-                    LIST_VOLUMES_CAPABILITY,
-                    INSPECT_VOLUME_CAPABILITY,
-                    REMOVE_VOLUME_CAPABILITY,
-                    EXEC_CONTAINER_CAPABILITY,
-                    CONTAINER_LOGS_CAPABILITY,
-                    MACHINE_LOGS_CAPABILITY,
-                    LIST_IMAGES_CAPABILITY,
-                ]
-                .into_iter()
-                .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
-            );
+            capabilities.extend(CapabilityAdvertisement::Container.capabilities());
         }
         if self.caddyfile.is_some() {
-            capabilities.insert(
-                CapabilityName::parse(GET_CADDY_CONFIG_CAPABILITY)
-                    .expect("static capability name is valid"),
-            );
+            capabilities.extend(CapabilityAdvertisement::Caddy.capabilities());
         }
         if self.local.has_cluster() {
-            capabilities.extend(
-                [
-                    RESERVE_DOMAIN_CAPABILITY,
-                    GET_DOMAIN_CAPABILITY,
-                    RELEASE_DOMAIN_CAPABILITY,
-                    CREATE_DOMAIN_RECORDS_CAPABILITY,
-                ]
-                .into_iter()
-                .map(|name| CapabilityName::parse(name).expect("static capability name is valid")),
-            );
+            capabilities.extend(CapabilityAdvertisement::Cluster.capabilities());
         }
         respond(ContractDescription {
             machine_id,
