@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 use clap::ArgMatches;
 use ployz_core::{
     ContainerPath, ContainerResources, DockerVolumeName, MachineSelector, Placement,
-    PortPublication, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, RestartPolicy,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, Ulimit, UpdateConfig, VolumeSource,
+    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainerSpec,
+    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
+    Ulimit, UpdateConfig, VolumeSource,
 };
 
 use crate::{
@@ -14,25 +14,6 @@ use crate::{
 };
 
 use super::{Error, required, string_values};
-
-pub(super) fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSpec {
-    RequestedServiceSpec {
-        name: resolved.name.clone(),
-        mode: resolved.mode.clone(),
-        container: resolved.container.clone(),
-        placement: resolved.placement.clone(),
-        ports: resolved.ports.clone(),
-        volumes: resolved.volumes.clone(),
-        mounts: resolved.mounts.clone(),
-        configs: resolved.configs.clone(),
-        pre_deploy: resolved.pre_deploy.clone(),
-        caddy_config: resolved.caddy_config.clone(),
-        update: UpdateConfig {
-            order: Some(resolved.update.order),
-            monitor_millis: resolved.update.monitor_millis,
-        },
-    }
-}
 
 pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Error> {
     let image = with_default_tag(&required(matches, "image")?);

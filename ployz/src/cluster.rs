@@ -873,47 +873,5 @@ fn accept_stop_result(
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::Value;
-
-    use super::*;
-
-    #[test]
-    fn unspecified_or_negative_stop_timeout_has_no_rpc_deadline() {
-        assert_eq!(stop_rpc_timeout(Some(-1)), None);
-        assert_eq!(stop_rpc_timeout(None), None);
-        assert_eq!(
-            stop_rpc_timeout(Some(5)),
-            Some(TARGET_RPC_TIMEOUT + Duration::from_secs(5))
-        );
-    }
-
-    #[test]
-    fn remove_tolerates_a_missing_preliminary_stop_target() {
-        let missing = RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "gone".into(),
-            details: Value::Null,
-        };
-
-        assert!(accept_stop_result(ContainerAction::Remove, Err(missing.clone())).is_ok());
-        assert_eq!(
-            accept_stop_result(ContainerAction::Stop, Err(missing.clone()))
-                .unwrap_err()
-                .code,
-            RpcErrorCode::NotFound
-        );
-        assert_eq!(
-            accept_stop_result(
-                ContainerAction::Remove,
-                Err(RpcError {
-                    code: RpcErrorCode::Internal,
-                    ..missing
-                })
-            )
-            .unwrap_err()
-            .code,
-            RpcErrorCode::Internal
-        );
-    }
-}
+#[path = "cluster_tests.rs"]
+mod tests;

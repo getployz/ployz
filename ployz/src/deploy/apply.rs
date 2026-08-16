@@ -1,107 +1,135 @@
-use std::time::SystemTime;
-
-use ployz_core::{
-    ListMachinesRequest, PartialResult, PortPublication, RequestedServiceSpec, RpcError, ServiceId,
-    op,
+use std::{
+    io::{self, IsTerminal, Write},
+    num::NonZeroU32,
 };
-use tokio_util::sync::CancellationToken;
 
-use crate::{connect::Client, failure::Failure};
+use ployz_core::RequestedServiceSpec;
+
+use crate::{
+    compose::{BuildService, ComposeProject},
+    connect::Client,
+    context::Connection,
+    failure::Failure,
+};
 
 use super::{
-    DeployOperation, DeployOutcome, DeploySnapshot, ExecutionError, FailedOperation, PlanOptions,
-    ReplacementOperation, execute_operations, plan_deploy,
+    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
+    pipeline::{
+        DeployPreview, ObservationWarning, PushOutcome, execute_deploy, list_machines,
+        plan_options, plan_project, plan_scale, plan_spec, push_project_images,
+    },
 };
 
-pub(crate) async fn apply_requested(
+pub(crate) async fn deploy_spec(
     client: &mut Client,
     requested: &RequestedServiceSpec,
 ) -> Result<(), Failure> {
-    let machines = list_machines(client).await?;
-    let snapshot = take_snapshot(client, machines).await?;
-    let mut requested = requested.clone();
-    expand_ingress(client, std::iter::once(&mut requested)).await?;
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        ServiceId::random(),
-        plan_options(false, false),
-    )?;
-    render(plan.operations(), client.connection());
-    finish(execute_operations(plan.operations(), client, &CancellationToken::new()).await)
+    let preview = plan_spec(client, requested).await?;
+    print_warnings(&preview);
+    render(&preview.operations, client.connection());
+    finish(execute_deploy(client, &preview.operations).await)
 }
 
-pub(crate) async fn list_machines(
+pub(crate) use deploy_spec as apply_requested;
+
+pub(crate) async fn deploy_project(
     client: &mut Client,
-) -> Result<Vec<ployz_core::MachineObservation>, Failure> {
-    Ok(client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
-        .await?
-        .machines)
-}
-
-pub(crate) async fn take_snapshot(
-    client: &mut Client,
-    machines: Vec<ployz_core::MachineObservation>,
-) -> Result<DeploySnapshot, Failure> {
-    let gathered = client.deploy_snapshot(machines).await?;
-    report_observation_warnings("container", &gathered.containers);
-    report_observation_warnings("volume", &gathered.volumes);
-    Ok(gathered.snapshot)
-}
-
-fn report_observation_warnings<T>(kind: &str, result: &PartialResult<T, RpcError>) {
-    for failure in &result.failures {
-        eprintln!(
-            "WARNING: {kind} observation failed on {}: {}",
-            failure.machine_id, failure.error.message
-        );
-    }
-    for machine in &result.omissions {
-        eprintln!("WARNING: {kind} observation omitted {machine}");
-    }
-}
-
-pub(crate) async fn expand_ingress<'a>(
-    client: &mut Client,
-    specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
+    project: &mut ComposeProject,
+    builds: &[BuildService],
+    force_recreate: bool,
+    skip_health_monitor: bool,
+    auto_confirm: bool,
 ) -> Result<(), Failure> {
-    let specs: Vec<_> = specs.into_iter().collect();
-    if !specs.iter().any(|spec| needs_ingress_expansion(spec)) {
+    let options = plan_options(force_recreate, skip_health_monitor);
+    let machines = list_machines(client).await?;
+    let outcome = push_project_images(client, builds, &machines).await?;
+    print_pushed_images(&outcome);
+    if !outcome.failures.is_empty() {
+        return Err(Failure::usage(format!(
+            "image push failed: {}",
+            outcome.failures.join("; ")
+        )));
+    }
+    let preview = plan_project(client, project, machines, options).await?;
+    print_warnings(&preview);
+    if preview.operations.is_empty() {
+        println!("No changes.");
         return Ok(());
     }
-    let domain = client.domain_if_reserved().await?;
-    for spec in specs {
-        crate::dns::expand_ingress_ports(spec, domain.as_deref())?;
+    // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
+    confirm_and_execute(client, &preview.operations, auto_confirm).await
+}
+
+pub(crate) async fn deploy_scale(
+    client: &mut Client,
+    selector: &str,
+    replicas: NonZeroU32,
+    auto_confirm: bool,
+) -> Result<(), Failure> {
+    let preview = plan_scale(client, selector, replicas).await?;
+    print_warnings(&preview);
+    if preview.operations.is_empty() {
+        println!("No changes.");
+        return Ok(());
     }
-    Ok(())
+    confirm_and_execute(client, &preview.operations, auto_confirm).await
 }
 
-fn needs_ingress_expansion(requested: &RequestedServiceSpec) -> bool {
-    requested
-        .ports
-        .iter()
-        .any(|port| matches!(port, PortPublication::Ingress { .. }))
+async fn confirm_and_execute(
+    client: &mut Client,
+    operations: &[DeployOperation],
+    auto_confirm: bool,
+) -> Result<(), Failure> {
+    render(operations, client.connection());
+    if !auto_confirm && !confirm()? {
+        println!("Cancelled. No changes were made.");
+        return Ok(());
+    }
+    finish(execute_deploy(client, operations).await)
 }
 
-pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
-    PlanOptions {
-        force_recreate,
-        skip_health_monitor,
-        placement_seed: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos() as u64),
+fn print_pushed_images(outcome: &PushOutcome) {
+    for pushed in &outcome.pushed {
+        println!("Pushed {} to {}", pushed.image, pushed.machine_id);
     }
 }
 
-pub(crate) fn render(operations: &[DeployOperation], connection: &crate::context::Connection) {
+fn print_warnings(preview: &DeployPreview) {
+    for warning in &preview.warnings {
+        match warning {
+            ObservationWarning::Failed {
+                kind,
+                machine_id,
+                message,
+            } => eprintln!("WARNING: {kind} observation failed on {machine_id}: {message}"),
+            ObservationWarning::Omitted { kind, machine_id } => {
+                eprintln!("WARNING: {kind} observation omitted {machine_id}");
+            }
+        }
+    }
+}
+
+fn confirm() -> Result<bool, Failure> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(Failure::usage(
+            "confirmation requires a terminal; pass --yes to continue",
+        ));
+    }
+    print!("Continue? [y/N] ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
+}
+
+fn render(operations: &[DeployOperation], connection: &Connection) {
     println!("Plan for {connection}:");
     for operation in operations {
         println!("  {}", operation_summary(operation));
     }
 }
 
-pub(crate) fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Failure> {
+fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Failure> {
     println!("Completed {} operation(s).", outcome.completed.len());
     let Some(failed) = &outcome.failed else {
         return Ok(());

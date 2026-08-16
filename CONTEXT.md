@@ -80,6 +80,10 @@ _Avoid_: current cluster state, desired state, cluster snapshot
 The ephemeral sequence of operations calculated for one Deploy. It may complete only a prefix and is neither persisted nor generally rolled back.
 _Avoid_: Desired state, workflow
 
+**Deploy Preview**:
+The observer-relative plan-plus-warnings offered for confirmation before one Deploy executes. It is Live Observation shaped for a decision, not persisted state.
+_Avoid_: persisted plan, cluster decision record
+
 **Deploy Outcome**:
 The evidence produced by executing a Deploy Plan: its completed prefix, any failed operation, its unexecuted suffix, and any narrow replacement compensation attempted. It does not imply atomicity or general rollback.
 _Avoid_: Bare deployment error, transaction result

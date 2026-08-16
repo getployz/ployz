@@ -1,29 +1,16 @@
 use std::num::NonZeroU32;
 
 use clap::ArgMatches;
-#[cfg(test)]
-use ployz_core::{RequestedServiceSpec, ServiceId};
-use ployz_core::{ServiceMode, select_service};
-use tokio_util::sync::CancellationToken;
 
 use crate::{
     compose::{
         BuildOptions, BuildService, ComposeProject, LoadOptions, execute_build, load_project,
-        plan_build, plan_compose_deploy,
+        plan_build,
     },
-    connect::Client,
-    deploy::{
-        DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError, PlanOptions,
-        apply::{expand_ingress, finish, list_machines, plan_options, render, take_snapshot},
-        apply_requested, execute_operations, plan_deploy,
-    },
+    deploy::{deploy_project, deploy_scale, deploy_spec},
 };
 
-use super::{
-    Error,
-    build::{push_targets, report_push},
-    confirm, connect_client, leaf_matches, required, runtime, string_values,
-};
+use super::{Error, connect_client, leaf_matches, required, runtime, string_values};
 
 pub(super) use crate::deploy::apply_requested as deploy_requested;
 
@@ -33,7 +20,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        apply_requested(&mut client, &requested).await
+        deploy_spec(&mut client, &requested).await
     })
 }
 
@@ -47,14 +34,19 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         )
         .map(str::to_owned);
     let yes = matches.get_flag("yes");
-    let options = plan_options(
-        matches.get_flag("recreate"),
-        matches.get_flag("skip-health"),
-    );
+    let force_recreate = matches.get_flag("recreate");
+    let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
         let mut client = connect_client(root, context.as_deref()).await?;
-        let outcome = deploy_connected(&mut client, &mut project, &builds, options, yes).await?;
-        outcome.map_or(Ok(()), finish)
+        deploy_project(
+            &mut client,
+            &mut project,
+            &builds,
+            force_recreate,
+            skip_health_monitor,
+            yes,
+        )
+        .await
     })
 }
 
@@ -102,129 +94,13 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        let outcome = scale_connected(&mut client, &selector, replicas, yes).await?;
-        outcome.map_or(Ok(()), finish)
+        deploy_scale(&mut client, &selector, replicas, yes).await
     })
-}
-
-async fn push_image(
-    client: &mut Client,
-    service: &BuildService,
-    machines: &[ployz_core::MachineObservation],
-) -> Result<(), Error> {
-    let targets = push_targets(&[], &service.machines);
-    let result =
-        crate::image::push_using_machines(client, &service.image, None, &targets, machines)
-            .await
-            .map_err(|error| Error::usage(format!("{}: {error}", service.image)))?;
-    let failures = report_push(&service.image, result);
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::usage(failures.join("; ")))
-    }
-}
-
-async fn deploy_connected(
-    client: &mut Client,
-    project: &mut crate::compose::ComposeProject,
-    builds: &[BuildService],
-    options: PlanOptions,
-    auto_confirm: bool,
-) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
-    let machines = list_machines(client).await?;
-    let mut failures = Vec::new();
-    for service in builds {
-        if let Err(error) = push_image(client, service, &machines).await {
-            failures.push(error.to_string());
-        }
-    }
-    if !failures.is_empty() {
-        return Err(Error::usage(format!(
-            "image push failed: {}",
-            failures.join("; ")
-        )));
-    }
-    project.resolve_secrets()?;
-    let snapshot = take_snapshot(client, machines).await?;
-    expand_ingress(client, project.services.values_mut()).await?;
-    let compose = plan_compose_deploy(project, &snapshot, options)?;
-    // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    let operations = compose
-        .operations()
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    if operations.is_empty() {
-        println!("No changes.");
-        return Ok(None);
-    }
-    // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
-    confirm_and_execute(client, &operations, auto_confirm).await
-}
-
-fn scale_plan(
-    snapshot: &DeploySnapshot,
-    selector: &str,
-    replicas: NonZeroU32,
-) -> Result<Option<DeployPlan>, Error> {
-    let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
-    let service = select_service(&services, selector)?;
-    let observed_container = service
-        .containers
-        .first()
-        .ok_or_else(|| Error::usage("cannot scale a service without regular containers"))?;
-    match observed_container.resolved_spec.mode {
-        ServiceMode::Replicated { .. } => {}
-        ServiceMode::Global => return Err(Error::usage("global services cannot be scaled")),
-    }
-    if usize::try_from(replicas.get()) == Ok(service.containers.len()) {
-        return Ok(None);
-    }
-    // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
-    let mut requested = requested_from_resolved(&observed_container.resolved_spec);
-    requested.mode = ServiceMode::Replicated { replicas };
-    Ok(Some(plan_deploy(
-        &requested,
-        snapshot,
-        service.service_id,
-        plan_options(false, false),
-    )?))
-}
-
-async fn scale_connected(
-    client: &mut Client,
-    selector: &str,
-    replicas: NonZeroU32,
-    auto_confirm: bool,
-) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
-    let machines = list_machines(client).await?;
-    let snapshot = take_snapshot(client, machines).await?;
-    let Some(plan) = scale_plan(&snapshot, selector, replicas)? else {
-        println!("No changes.");
-        return Ok(None);
-    };
-    confirm_and_execute(client, plan.operations(), auto_confirm).await
-}
-
-async fn confirm_and_execute(
-    client: &mut Client,
-    operations: &[DeployOperation],
-    auto_confirm: bool,
-) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
-    render(operations, client.connection());
-    if !auto_confirm && !confirm()? {
-        println!("Cancelled. No changes were made.");
-        return Ok(None);
-    }
-    Ok(Some(
-        execute_operations(operations, client, &CancellationToken::new()).await,
-    ))
 }
 
 #[path = "deploy_input.rs"]
 mod input;
-use input::{parse_u32, requested_from_resolved, run_spec};
+use input::{parse_u32, run_spec};
 
 #[cfg(test)]
 #[path = "deploy_tests.rs"]
