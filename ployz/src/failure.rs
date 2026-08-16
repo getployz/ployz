@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt, io, process::ExitCode};
+use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
     CodecError, MachineSelectorError, MachineUpdateError, RpcError, ServiceSelectorError,
@@ -25,16 +25,36 @@ pub struct Failure {
     inner: Inner,
 }
 
-#[derive(Debug)]
 enum Inner {
-    Stderr(Cow<'static, str>),
+    Command(Box<dyn Error + Send + Sync>),
     Exit(u8),
 }
 
+impl fmt::Debug for Inner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Command(error) => f.debug_tuple("Command").field(&error.to_string()).finish(),
+            Self::Exit(code) => f.debug_tuple("Exit").field(code).finish(),
+        }
+    }
+}
+
+/// Operator copy. Later `capture_exception` skips this type.
+#[derive(Debug)]
+struct Usage(Cow<'static, str>);
+
+impl fmt::Display for Usage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for Usage {}
+
 impl Failure {
-    fn stderr(message: impl Into<Cow<'static, str>>) -> Self {
+    fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
-            inner: Inner::Stderr(message.into()),
+            inner: Inner::Command(Box::new(error)),
         }
     }
 
@@ -46,15 +66,24 @@ impl Failure {
     }
 
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::stderr(message)
+        Self::command(Usage(message.into()))
     }
 }
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Stderr(message) => f.write_str(message),
+            Inner::Command(error) => error.fmt(f),
             Inner::Exit(code) => write!(f, "exit {code}"),
+        }
+    }
+}
+
+impl Error for Failure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match &self.inner {
+            Inner::Command(error) => Some(error.as_ref()),
+            Inner::Exit(_) => None,
         }
     }
 }
@@ -73,17 +102,17 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
     }
 }
 
-macro_rules! from_stderr {
+macro_rules! from_error {
     ($($t:ty),+ $(,)?) => {
         $(impl From<$t> for Failure {
             fn from(error: $t) -> Self {
-                Self::stderr(error.to_string())
+                Self::command(error)
             }
         })+
     };
 }
 
-from_stderr!(
+from_error!(
     ValueError,
     ContextError,
     ConnectionError,
@@ -107,18 +136,19 @@ from_stderr!(
     AssignmentError,
     ProvisionError,
     CaddyImageError,
+    RpcError,
 );
 
 impl From<ConnectError> for Failure {
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "opaque Failure peels Display-changing wrappers; the rest stringify"
+        reason = "opaque Failure peels Display-changing wrappers; the rest keep the original error"
     )]
     fn from(error: ConnectError) -> Self {
         match error {
             ConnectError::Context(error) => error.into(),
             ConnectError::Value(error) => error.into(),
-            error => Self::stderr(error.to_string()),
+            error => Self::command(error),
         }
     }
 }
@@ -126,13 +156,13 @@ impl From<ConnectError> for Failure {
 impl From<OperatorError> for Failure {
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "opaque Failure peels Display-changing wrappers; the rest stringify"
+        reason = "opaque Failure peels Display-changing wrappers; the rest keep the original error"
     )]
     fn from(error: OperatorError) -> Self {
         match error {
             OperatorError::Connect(error) => error.into(),
             OperatorError::Protocol(error) => error.into(),
-            error => Self::stderr(error.to_string()),
+            error => Self::command(error),
         }
     }
 }
@@ -140,12 +170,12 @@ impl From<OperatorError> for Failure {
 impl From<DnsError> for Failure {
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "opaque Failure peels ConnectError; the rest stringify"
+        reason = "opaque Failure peels ConnectError; the rest keep the original error"
     )]
     fn from(error: DnsError) -> Self {
         match error {
             DnsError::Connect(error) => error.into(),
-            error => Self::stderr(error.to_string()),
+            error => Self::command(error),
         }
     }
 }
@@ -165,17 +195,20 @@ impl From<tonic::Status> for Failure {
     }
 }
 
-impl From<RpcError> for Failure {
-    fn from(error: RpcError) -> Self {
-        Self::stderr(error.message)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use ployz_core::MachineName;
+    use std::error::Error as StdError;
+
+    use ployz_core::{MachineName, RpcError, RpcErrorCode};
+    use serde_json::Value;
 
     use super::*;
+
+    fn source<E: StdError + 'static>(failure: &Failure) -> &E {
+        StdError::source(failure)
+            .and_then(|error| error.downcast_ref())
+            .expect("command Failure should keep the original error")
+    }
 
     #[test]
     fn missing_config_prints_the_no_config_string() {
@@ -184,6 +217,10 @@ mod tests {
             failure.to_string(),
             "no Ployz config or local daemon socket is available"
         );
+        assert!(matches!(
+            source::<ContextError>(&failure),
+            ContextError::NoConfig
+        ));
         assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
     }
 
@@ -193,6 +230,10 @@ mod tests {
         let failure = Failure::from(error);
         assert_eq!(
             failure.to_string(),
+            "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
+        );
+        assert_eq!(
+            source::<ValueError>(&failure).to_string(),
             "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
         );
         assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
@@ -207,12 +248,55 @@ mod tests {
             from_connect.to_string(),
             "no Ployz config or local daemon socket is available"
         );
+        assert!(matches!(
+            source::<ContextError>(&from_connect),
+            ContextError::NoConfig
+        ));
+        assert!(
+            StdError::source(&from_connect)
+                .unwrap()
+                .downcast_ref::<ConnectError>()
+                .is_none()
+        );
         assert_eq!(terminate(Err(from_connect)), ExitCode::FAILURE);
     }
 
     #[test]
+    fn connect_keeps_non_peeled_connect_error() {
+        let failure = Failure::from(ConnectError::MissingMachineDetails);
+        assert_eq!(
+            failure.to_string(),
+            "connection attempt failed: inspect response omitted Machine details"
+        );
+        assert!(matches!(
+            source::<ConnectError>(&failure),
+            ConnectError::MissingMachineDetails
+        ));
+    }
+
+    #[test]
+    fn rpc_error_keeps_the_rpc_error() {
+        let failure = Failure::from(RpcError {
+            code: RpcErrorCode::Internal,
+            message: "boom".into(),
+            details: Value::Null,
+        });
+        assert_eq!(failure.to_string(), "boom");
+        assert_eq!(source::<RpcError>(&failure).message, "boom");
+        assert_eq!(source::<RpcError>(&failure).code, RpcErrorCode::Internal);
+    }
+
+    #[test]
+    fn usage_is_not_a_library_error() {
+        let failure = Failure::usage("nope");
+        assert_eq!(failure.to_string(), "nope");
+        assert_eq!(source::<Usage>(&failure).to_string(), "nope");
+        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
+    }
+
+    #[test]
     fn exit_is_not_a_printed_command_failure() {
-        assert_eq!(Failure::usage("nope").to_string(), "nope");
+        assert!(StdError::source(&Failure::exit(3)).is_none());
         assert_eq!(terminate(Err(Failure::exit(3))), ExitCode::from(3));
         assert_eq!(terminate(Ok(())), ExitCode::SUCCESS);
         assert_eq!(terminate(Err(Failure::usage("nope"))), ExitCode::FAILURE);

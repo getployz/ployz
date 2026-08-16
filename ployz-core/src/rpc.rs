@@ -812,7 +812,8 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     Unauthenticated => "unauthenticated",
 });
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
+#[error("{message}")]
 pub struct RpcError {
     pub code: RpcErrorCode,
     pub message: String,
