@@ -1,26 +1,14 @@
 use std::{io, time::Duration};
 
-use prometheus::{Encoder, IntGaugeVec, Opts, Registry, TextEncoder};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
 use tokio_util::sync::CancellationToken;
 
-pub fn registry(version: &str) -> Result<Registry, prometheus::Error> {
-    let registry = Registry::new_custom(Some("ployz".to_owned()), None)?;
-    let build = IntGaugeVec::new(
-        Opts::new("ployzd_build_info", "Build information."),
-        &["version"],
-    )?;
-    build.with_label_values(&[version]).set(1);
-    registry.register(Box::new(build))?;
-    Ok(registry)
-}
-
 pub async fn serve(
     listener: TcpListener,
-    registry: Registry,
+    version: &str,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     loop {
@@ -37,7 +25,7 @@ pub async fn serve(
         };
         // ponytail: scrapes are serialized; spawn per connection if scrape concurrency matters.
         tokio::select! {
-            result = respond(&mut stream, &registry) => {
+            result = respond(&mut stream, version) => {
                 if let Err(error) = result {
                     eprintln!("metrics client {peer} failed: {error}");
                 }
@@ -47,18 +35,17 @@ pub async fn serve(
     }
 }
 
-async fn respond(stream: &mut tokio::net::TcpStream, registry: &Registry) -> io::Result<()> {
+async fn respond(stream: &mut tokio::net::TcpStream, version: &str) -> io::Result<()> {
     let mut request = [0; 1024];
     let read = stream.read(&mut request).await?;
     let (status, body) = if request
         .get(..read)
         .is_some_and(|request| request.starts_with(b"GET /metrics "))
     {
-        let mut body = Vec::new();
-        TextEncoder::new()
-            .encode(&registry.gather(), &mut body)
-            .map_err(io::Error::other)?;
-        ("200 OK", body)
+        (
+            "200 OK",
+            format!("ployz_ployzd_build_info{{version=\"{version}\"}} 1\n").into_bytes(),
+        )
     } else {
         ("404 Not Found", b"not found\n".to_vec())
     };

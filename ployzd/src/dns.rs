@@ -1,13 +1,12 @@
 use std::{
     collections::HashMap,
-    io,
+    fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, RwLock},
     time::Duration,
 };
 
 use async_trait::async_trait;
-use hickory_resolver::system_conf::read_system_conf;
 use hickory_server::proto::{
     op::{Header, HeaderCounts, Message, Metadata, ResponseCode},
     rr::{Name, RData, Record, RecordType, rdata::A},
@@ -314,18 +313,26 @@ fn configured_upstreams(
 }
 
 fn system_upstreams(listen_address: Ipv4Addr) -> Vec<SocketAddr> {
-    match read_system_conf() {
-        Ok((config, _)) => config
-            .name_servers()
-            .iter()
-            .filter(|server| server.ip != IpAddr::V4(listen_address))
-            .map(|server| SocketAddr::new(server.ip, PORT))
-            .collect(),
+    match fs::read_to_string("/etc/resolv.conf") {
+        Ok(text) => nameservers_from_resolv_conf(&text, listen_address),
         Err(error) => {
             eprintln!("failed to load DNS upstreams from /etc/resolv.conf: {error}");
             Vec::new()
         }
     }
+}
+
+fn nameservers_from_resolv_conf(text: &str, listen: Ipv4Addr) -> Vec<SocketAddr> {
+    text.lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            if words.next() != Some("nameserver") {
+                return None;
+            }
+            let ip: IpAddr = words.next()?.parse().ok()?;
+            (ip != IpAddr::V4(listen)).then_some(SocketAddr::new(ip, PORT))
+        })
+        .collect()
 }
 
 async fn forward_udp(request: &[u8], upstream: SocketAddr) -> io::Result<Message> {
@@ -657,6 +664,28 @@ mod tests {
         assert_eq!(
             configured_upstreams(Some(upstreams.clone()), Ipv4Addr::new(10, 210, 1, 1)),
             upstreams
+        );
+    }
+
+    #[test]
+    fn parses_resolv_conf_nameservers_skips_listen_and_junk() {
+        let text = "\
+# generated
+search internal example.test
+nameserver 192.0.2.53
+nameserver 10.210.1.1
+nameserver 2001:db8::53
+nameserver not-an-ip
+options ndots:1
+	nameserver 198.51.100.53 # trailing comment
+";
+        assert_eq!(
+            nameservers_from_resolv_conf(text, Ipv4Addr::new(10, 210, 1, 1)),
+            vec![
+                "192.0.2.53:53".parse().unwrap(),
+                "[2001:db8::53]:53".parse().unwrap(),
+                "198.51.100.53:53".parse().unwrap(),
+            ]
         );
     }
 
