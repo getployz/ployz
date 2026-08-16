@@ -73,176 +73,79 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
     }
 }
 
-impl From<ValueError> for Failure {
-    fn from(error: ValueError) -> Self {
-        Self::stderr(error.to_string())
-    }
+macro_rules! from_stderr {
+    ($($t:ty),+ $(,)?) => {
+        $(impl From<$t> for Failure {
+            fn from(error: $t) -> Self {
+                Self::stderr(error.to_string())
+            }
+        })+
+    };
 }
 
-impl From<ContextError> for Failure {
-    fn from(error: ContextError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<ConnectionError> for Failure {
-    fn from(error: ConnectionError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<MachineSelectorError> for Failure {
-    fn from(error: MachineSelectorError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<ServiceSelectorError> for Failure {
-    fn from(error: ServiceSelectorError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<ContainerSelectorError> for Failure {
-    fn from(error: ContainerSelectorError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<PlanError> for Failure {
-    fn from(error: PlanError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<ComposeError> for Failure {
-    fn from(error: ComposeError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<MachineUpdateError> for Failure {
-    fn from(error: MachineUpdateError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<DomainRequired> for Failure {
-    fn from(error: DomainRequired) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<NoReachableMachines> for Failure {
-    fn from(error: NoReachableMachines) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<StreamProtocolError> for Failure {
-    fn from(error: StreamProtocolError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
+from_stderr!(
+    ValueError,
+    ContextError,
+    ConnectionError,
+    MachineSelectorError,
+    ServiceSelectorError,
+    ContainerSelectorError,
+    PlanError,
+    ComposeError,
+    MachineUpdateError,
+    DomainRequired,
+    NoReachableMachines,
+    StreamProtocolError,
+    ConfigError,
+    io::Error,
+    serde_json::Error,
+    std::num::ParseIntError,
+    shell_words::ParseError,
+    PushError,
+    TransportError,
+    CodecError,
+    AssignmentError,
+    ProvisionError,
+    CaddyImageError,
+);
 
 impl From<ConnectError> for Failure {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "opaque Failure peels Display-changing wrappers; the rest stringify"
+    )]
     fn from(error: ConnectError) -> Self {
         match error {
             ConnectError::Context(error) => error.into(),
-            ConnectError::Connection(error) => error.into(),
             ConnectError::Value(error) => error.into(),
-            ConnectError::Config(error) => error.into(),
-            ConnectError::Attempt(_)
-            | ConnectError::Io(_)
-            | ConnectError::Dial(_)
-            | ConnectError::MissingMachineDetails
-            | ConnectError::SshProbe { .. }
-            | ConnectError::Routing(_)
-            | ConnectError::Join(_)
-            | ConnectError::ProxyUnsupported(_)
-            | ConnectError::UnsupportedNetwork(_)
-            | ConnectError::Path { .. }
-            | ConnectError::AllFailed { .. }
-            | ConnectError::Rpc(_)
-            | ConnectError::Codec(_)
-            | ConnectError::Remote(_)
-            | ConnectError::Framing(_) => Self::stderr(error.to_string()),
+            error => Self::stderr(error.to_string()),
         }
     }
 }
 
-impl From<ConfigError> for Failure {
-    fn from(error: ConfigError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<io::Error> for Failure {
-    fn from(error: io::Error) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<serde_json::Error> for Failure {
-    fn from(error: serde_json::Error) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<std::num::ParseIntError> for Failure {
-    fn from(error: std::num::ParseIntError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<shell_words::ParseError> for Failure {
-    fn from(error: shell_words::ParseError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<PushError> for Failure {
-    fn from(error: PushError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
 impl From<OperatorError> for Failure {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "opaque Failure peels Display-changing wrappers; the rest stringify"
+    )]
     fn from(error: OperatorError) -> Self {
         match error {
-            OperatorError::Container(error) => error.into(),
-            OperatorError::Protocol(error) => error.into(),
             OperatorError::Connect(error) => error.into(),
-            OperatorError::Selector(error) => error.into(),
-            OperatorError::MachineSelector(error) => error.into(),
-            OperatorError::Value(error) => error.into(),
-            OperatorError::Rpc(_)
-            | OperatorError::Codec(_)
-            | OperatorError::StreamClosed
-            | OperatorError::TtyRequiresStdin
-            | OperatorError::InvalidServiceSelector(_)
-            | OperatorError::InvalidTail(_)
-            | OperatorError::InvalidProxyPort
-            | OperatorError::InvalidLocalPort(_)
-            | OperatorError::InvalidRemotePort(_)
-            | OperatorError::NoHealthyContainer
-            | OperatorError::NoContainersOnMachines { .. }
-            | OperatorError::NoSelectedServices
-            | OperatorError::NoMachines
-            | OperatorError::SnapshotStale
-            | OperatorError::UnsupportedLogService { .. }
-            | OperatorError::OpenContainerLogs { .. }
-            | OperatorError::OpenMachineLogs { .. } => Self::stderr(error.to_string()),
+            OperatorError::Protocol(error) => error.into(),
+            error => Self::stderr(error.to_string()),
         }
     }
 }
 
 impl From<DnsError> for Failure {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "opaque Failure peels ConnectError; the rest stringify"
+    )]
     fn from(error: DnsError) -> Self {
         match error {
             DnsError::Connect(error) => error.into(),
-            DnsError::NoReachableMachines(error) => error.into(),
-            DnsError::Inspect { .. } | DnsError::Http(_) => Self::stderr(error.to_string()),
+            error => Self::stderr(error.to_string()),
         }
     }
 }
@@ -256,12 +159,6 @@ impl From<ServiceClientError> for Failure {
     }
 }
 
-impl From<TransportError> for Failure {
-    fn from(error: TransportError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
 impl From<tonic::Status> for Failure {
     fn from(status: tonic::Status) -> Self {
         TransportError::from(status).into()
@@ -271,30 +168,6 @@ impl From<tonic::Status> for Failure {
 impl From<RpcError> for Failure {
     fn from(error: RpcError) -> Self {
         Self::stderr(error.message)
-    }
-}
-
-impl From<CodecError> for Failure {
-    fn from(error: CodecError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<AssignmentError> for Failure {
-    fn from(error: AssignmentError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<ProvisionError> for Failure {
-    fn from(error: ProvisionError) -> Self {
-        Self::stderr(error.to_string())
-    }
-}
-
-impl From<CaddyImageError> for Failure {
-    fn from(error: CaddyImageError) -> Self {
-        Self::stderr(error.to_string())
     }
 }
 
