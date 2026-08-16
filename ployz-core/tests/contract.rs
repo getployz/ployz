@@ -872,236 +872,57 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
     );
 }
 
-struct FixtureMachineRpc;
+// Catalog-driven compile witness for MachineRpc. Exec is absent from the catalog
+// (bidirectional stream) and is wired by hand, same as ployz-core/build.rs.
+macro_rules! compile_fixture {
+    (
+        package $package:literal
+        unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
+    ) => {
+        struct CompileFixture;
+        type EmptyRpcStream =
+            tonic::codegen::tokio_stream::Empty<Result<OpaquePayload, tonic::Status>>;
 
-#[tonic::async_trait]
-impl MachineRpc for FixtureMachineRpc {
-    type ExecStream = tonic::codegen::tokio_stream::Empty<Result<OpaquePayload, tonic::Status>>;
-    type ContainerLogsStream =
-        tonic::codegen::tokio_stream::Empty<Result<OpaquePayload, tonic::Status>>;
-    type MachineLogsStream =
-        tonic::codegen::tokio_stream::Empty<Result<OpaquePayload, tonic::Status>>;
+        #[tonic::async_trait]
+        impl MachineRpc for CompileFixture {
+            type ExecStream = EmptyRpcStream;
+            // ponytail: ident concat is unstable; name each catalog stream type here.
+            type ContainerLogsStream = EmptyRpcStream;
+            type MachineLogsStream = EmptyRpcStream;
 
-    async fn describe_contract(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
+            $(
+                async fn $unary_name(
+                    &self,
+                    _request: tonic::Request<OpaquePayload>,
+                ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+                    unreachable!()
+                }
+            )+
 
-    async fn inspect(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
+            async fn exec(
+                &self,
+                _request: tonic::Request<tonic::Streaming<OpaquePayload>>,
+            ) -> Result<tonic::Response<Self::ExecStream>, tonic::Status> {
+                unreachable!()
+            }
 
-    async fn machine_token(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn initialize(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn register(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn join(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn list_machines(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn list_containers(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn create_volume(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn inspect_container(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn list_volumes(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn create_container(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn inspect_volume(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn start_container(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn remove_volume(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn stop_container(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn remove_container(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn exec(
-        &self,
-        _request: tonic::Request<tonic::Streaming<OpaquePayload>>,
-    ) -> Result<tonic::Response<Self::ExecStream>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn container_logs(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<Self::ContainerLogsStream>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn machine_logs(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<Self::MachineLogsStream>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn reset(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn update_machine(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn remove_local_machine(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn remove_machine(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn inspect_wireguard(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn list_images(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn get_caddy_config(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn reserve_domain(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn get_domain(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn release_domain(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
-
-    async fn create_domain_records(
-        &self,
-        _request: tonic::Request<OpaquePayload>,
-    ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-        unreachable!("compile-time service fixture")
-    }
+            $(
+                async fn $stream_name(
+                    &self,
+                    _request: tonic::Request<OpaquePayload>,
+                ) -> Result<tonic::Response<EmptyRpcStream>, tonic::Status> {
+                    unreachable!()
+                }
+            )+
+        }
+    };
 }
+
+ployz_core::rpc_catalog!(compile_fixture);
 
 #[test]
 fn tonic_generates_both_sides_of_the_machine_rpc_service() {
-    let _server = MachineRpcServer::new(FixtureMachineRpc);
+    let _server = MachineRpcServer::new(CompileFixture);
     let _client: Option<MachineRpcClient<tonic::transport::Channel>> = None;
 }
