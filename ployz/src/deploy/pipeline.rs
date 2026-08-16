@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use ployz_core::{
     MachineId, MachineObservation, PartialResult, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, RpcError, ServiceMode, UpdateConfig, select_service,
+    ResolvedServiceSpec, RpcError, ServiceMode, select_service,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -177,7 +177,7 @@ fn scale_plan(
         return Ok(None);
     }
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
-    let mut requested = requested_from_resolved(&observed_container.resolved_spec);
+    let mut requested = requested_from_resolved(&observed_container.resolved_spec)?;
     requested.mode = ServiceMode::Replicated { replicas };
     Ok(Some(plan_deploy(
         [&requested],
@@ -186,23 +186,10 @@ fn scale_plan(
     )?))
 }
 
-fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSpec {
-    RequestedServiceSpec {
-        name: resolved.name.clone(),
-        mode: resolved.mode.clone(),
-        container: resolved.container.clone(),
-        placement: resolved.placement.clone(),
-        ports: resolved.ports.clone(),
-        volumes: resolved.volumes.clone(),
-        mounts: resolved.mounts.clone(),
-        configs: resolved.configs.clone(),
-        pre_deploy: resolved.pre_deploy.clone(),
-        caddy_config: resolved.caddy_config.clone(),
-        update: UpdateConfig {
-            order: Some(resolved.update.order),
-            monitor_millis: resolved.update.monitor_millis,
-        },
-    }
+fn requested_from_resolved(
+    resolved: &ResolvedServiceSpec,
+) -> Result<RequestedServiceSpec, super::PlanError> {
+    resolved.to_requested().map_err(Into::into)
 }
 
 pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {

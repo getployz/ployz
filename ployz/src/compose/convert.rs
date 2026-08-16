@@ -8,7 +8,8 @@ use ployz_core::{
     ConfiguredHealthcheck, ContainerPath, ContainerResources, DeviceMapping, DeviceReservation,
     HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath,
     MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
-    ServiceContainerSpec, ServiceMode, ServiceName, Ulimit, UpdateConfig, UpdateOrder,
+    ServiceConfigGraph, ServiceContainerSpec, ServiceMode, ServiceName, ServiceVolumeGraph, Ulimit,
+    UpdateConfig, UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -182,7 +183,13 @@ fn convert_service(
         )));
     }
     let (volumes, mounts) = volumes(raw, root, project)?;
+    let (volumes, mounts) = ServiceVolumeGraph::parse(volumes, mounts)
+        .map_err(invalid)?
+        .into_parts();
     let (configs, config_mounts) = configs(raw, root, directory)?;
+    let (configs, config_mounts) = ServiceConfigGraph::parse(configs, config_mounts)
+        .map_err(invalid)?
+        .into_parts();
     let placement = Placement {
         machines: raw
             .machines

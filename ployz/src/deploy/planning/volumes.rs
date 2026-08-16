@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, RequestedServiceSpec,
-    ServiceMode, ServiceVolume, VolumeSource,
+    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, ServiceMode, ServiceVolume,
+    ServiceVolumeGraph, VolumeSource,
 };
+
+use super::ValidatedSpec;
 
 use crate::deploy::{
     DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
@@ -61,25 +63,19 @@ impl VolumePins {
 #[derive(Clone, Copy)]
 pub(super) struct NamedVolumeUse<'a> {
     service_name: &'a str,
-    service: &'a RequestedServiceSpec,
+    service: &'a ValidatedSpec,
     volume: &'a ServiceVolume,
     global: bool,
 }
 
 pub(super) fn named_volume_uses(
-    requested: &[RequestedServiceSpec],
+    requested: &[ValidatedSpec],
 ) -> BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>> {
     let mut uses = BTreeMap::<DockerVolumeName, Vec<NamedVolumeUse<'_>>>::new();
-    for service in requested {
-        let service_name = service.name.as_str();
-        for mount in &service.mounts {
-            let Some(volume) = service
-                .volumes
-                .iter()
-                .find(|volume| volume.reference == mount.volume)
-            else {
-                continue;
-            };
+    for spec in requested {
+        let service_name = spec.requested.name.as_str();
+        for mount in spec.volume_graph.mounts() {
+            let volume = spec.volume_graph.volume_for(mount);
             let VolumeSource::Named { name, .. } = &volume.source else {
                 continue;
             };
@@ -90,9 +86,9 @@ pub(super) fn named_volume_uses(
             {
                 uses.push(NamedVolumeUse {
                     service_name,
-                    service,
+                    service: spec,
                     volume,
-                    global: matches!(service.mode, ServiceMode::Global),
+                    global: matches!(spec.requested.mode, ServiceMode::Global),
                 });
             }
         }
@@ -231,13 +227,13 @@ fn pin_shared_component(
 }
 
 fn volume_eligible_machine_ids(
-    requested: &RequestedServiceSpec,
+    spec: &ValidatedSpec,
     snapshot: &DeploySnapshot,
     pins: &VolumePins,
     options: PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
-    let mut machines = super::eligible_machines(requested, snapshot, options);
-    volume_constraints(requested, snapshot, pins, &mut machines)?;
+    let mut machines = super::eligible_machines(&spec.requested, snapshot, options);
+    volume_constraints(spec, snapshot, pins, &mut machines)?;
     Ok(machines
         .into_iter()
         .map(|machine| machine.machine.id)
@@ -245,7 +241,7 @@ fn volume_eligible_machine_ids(
 }
 
 pub(super) fn plan_volume_operations(
-    requested: &RequestedServiceSpec,
+    spec: &ValidatedSpec,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
     machines: &mut Vec<&MachineObservation>,
@@ -253,10 +249,9 @@ pub(super) fn plan_volume_operations(
     // TODO(UT-001, UT-007, UT-008, UT-051, UT-052, UT-078): preserve the baseline
     // placement/pull ceiling: do not filter by memory, image platform, or local image presence,
     // and do not pull images from other Machines.
-    let (mounted_volumes, missing_volumes) =
-        volume_constraints(requested, snapshot, pins, machines)?;
+    let (mounted_volumes, missing_volumes) = volume_constraints(spec, snapshot, pins, machines)?;
     let mut operations = Vec::new();
-    match requested.mode {
+    match spec.requested.mode {
         ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {
             // TODO(UT-005): named-volume driver and label options remain part of planned creation;
             // revisit only if Ployz changes to externally managed volumes exclusively.
@@ -266,16 +261,19 @@ pub(super) fn plan_volume_operations(
                 .ok_or(PlanError::NoEligibleMachines)?;
             machines.retain(|machine| machine.machine.id == machine_id);
             for volume in missing_volumes {
-                pins.record_create(machine_id, &volume);
+                pins.record_create(machine_id, volume);
                 if let VolumeSource::Named { name, .. } = &volume.source {
                     pins.constrain(name.clone(), machine_id);
                 }
-                operations.push(DeployOperation::CreateVolume { machine_id, volume });
+                operations.push(DeployOperation::CreateVolume {
+                    machine_id,
+                    volume: volume.clone(),
+                });
             }
         }
         ServiceMode::Global => {
             for machine in machines.iter() {
-                for volume in &mounted_volumes {
+                for volume in mounted_volumes.iter().copied() {
                     if pins.observations(snapshot).any(|observed| {
                         observed.id.machine_id == machine.machine.id
                             && volume_matches(observed, volume)
@@ -295,18 +293,15 @@ pub(super) fn plan_volume_operations(
     Ok(operations)
 }
 
-fn volume_constraints(
-    requested: &RequestedServiceSpec,
+fn volume_constraints<'spec>(
+    spec: &'spec ValidatedSpec,
     snapshot: &DeploySnapshot,
     pins: &VolumePins,
     machines: &mut Vec<&MachineObservation>,
-) -> Result<(Vec<ServiceVolume>, Vec<ServiceVolume>), PlanError> {
-    let mounted_volumes = mounted_named_volumes(requested)?
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
+) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
+    let mounted_volumes = mounted_named_volumes(&spec.volume_graph)?;
     let mut missing_volumes = Vec::new();
-    for volume in &mounted_volumes {
+    for volume in mounted_volumes.iter().copied() {
         machines.retain(|machine| {
             !pins.observations(snapshot).any(|observed| {
                 observed.id.machine_id == machine.machine.id
@@ -314,7 +309,7 @@ fn volume_constraints(
                     && !volume_matches(observed, volume)
             })
         });
-        if matches!(requested.mode, ServiceMode::Replicated { .. }) {
+        if matches!(spec.requested.mode, ServiceMode::Replicated { .. }) {
             if let Some(anchor) = pins.anchor_for(volume) {
                 machines.retain(|machine| machine.machine.id == anchor);
                 continue;
@@ -327,7 +322,7 @@ fn volume_constraints(
             if !locations.is_empty() {
                 machines.retain(|machine| locations.contains(&machine.machine.id));
             } else {
-                missing_volumes.push(volume.clone());
+                missing_volumes.push(volume);
             }
         }
     }
@@ -356,18 +351,10 @@ fn volume_matches(observed: &ObservedDockerVolume, volume: &ServiceVolume) -> bo
         })
 }
 
-fn mounted_named_volumes(
-    requested: &RequestedServiceSpec,
-) -> Result<Vec<&ServiceVolume>, PlanError> {
+fn mounted_named_volumes(graph: &ServiceVolumeGraph) -> Result<Vec<&ServiceVolume>, PlanError> {
     let mut by_docker_name = BTreeMap::<DockerVolumeName, &ServiceVolume>::new();
-    for mount in &requested.mounts {
-        let Some(volume) = requested
-            .volumes
-            .iter()
-            .find(|volume| volume.reference == mount.volume)
-        else {
-            continue;
-        };
+    for mount in graph.mounts() {
+        let volume = graph.volume_for(mount);
         let VolumeSource::Named { name, .. } = &volume.source else {
             continue;
         };

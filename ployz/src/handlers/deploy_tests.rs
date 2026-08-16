@@ -36,6 +36,8 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
         spec.ports.first(),
         Some(PortPublication::Host { .. })
     ));
+    spec.to_volume_graph().unwrap();
+    spec.to_config_graph().unwrap();
     assert!(spec.mounts.first().is_some_and(|mount| mount.read_only));
     assert!(matches!(
         spec.volumes.get(1).map(|volume| &volume.source),

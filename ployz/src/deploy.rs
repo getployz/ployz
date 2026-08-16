@@ -1,7 +1,7 @@
 use ployz_core::{
     ContainerId, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
-    DockerVolumeName, MachineId, MachineObservation, ResolvedServiceSpec, ServiceId, ServiceVolume,
-    ServiceVolumeReference,
+    DockerVolumeName, MachineId, MachineObservation, ResolvedServiceSpec, ServiceConfigGraphError,
+    ServiceId, ServiceSpecGraphError, ServiceVolume, ServiceVolumeGraphError,
 };
 use thiserror::Error;
 
@@ -208,14 +208,10 @@ pub enum PlanError {
     AmbiguousService { matches: Vec<ServiceId> },
     #[error("service mode cannot be changed")]
     ServiceModeCannotChange,
-    #[error("duplicate Service Volume Reference: {reference}")]
-    DuplicateVolumeReference { reference: ServiceVolumeReference },
-    #[error("mount references an undeclared Service Volume: {reference}")]
-    UnknownVolumeReference { reference: ServiceVolumeReference },
-    #[error("duplicate config name: {name}")]
-    DuplicateConfigName { name: String },
-    #[error("config mount references an undeclared config: {name}")]
-    UnknownConfigName { name: String },
+    #[error(transparent)]
+    VolumeGraph(#[from] ServiceVolumeGraphError),
+    #[error(transparent)]
+    ConfigGraph(#[from] ServiceConfigGraphError),
     #[error("mounted Service Volumes disagree about Docker Volume {name}")]
     ConflictingDockerVolumeDefinitions { name: DockerVolumeName },
     #[error("plan service '{service}': {source}")]
@@ -232,4 +228,13 @@ pub enum PlanError {
         global: String,
         replicated: String,
     },
+}
+
+impl From<ServiceSpecGraphError> for PlanError {
+    fn from(error: ServiceSpecGraphError) -> Self {
+        match error {
+            ServiceSpecGraphError::Volume(error) => error.into(),
+            ServiceSpecGraphError::Config(error) => error.into(),
+        }
+    }
 }

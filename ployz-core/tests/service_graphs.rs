@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     ConfigMount, ConfigSpec, ContainerPath, DockerVolumeName, PullPolicy, RequestedServiceSpec,
-    ServiceConfigGraph, ServiceConfigGraphError, ServiceContainerSpec, ServiceMode, ServiceMount,
-    ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeGraphError,
-    ServiceVolumeReference, VolumeSource,
+    ResolvedUpdateConfig, ServiceConfigGraph, ServiceConfigGraphError, ServiceContainerSpec,
+    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceSpecGraphError, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeGraphError, ServiceVolumeReference, UpdateOrder, VolumeSource,
 };
 
 #[test]
@@ -69,6 +69,8 @@ fn legal_unused_definitions_repeated_mounts_and_volume_aliases_remain_representa
     )
     .unwrap();
 
+    assert_eq!(graph.volume_for(&first), &data);
+    assert_eq!(graph.volume_for(&alias_mount), &alias);
     assert_eq!(graph.volumes(), &[data, alias, unused]);
     assert_eq!(graph.mounts(), &[first, repeated, alias_mount]);
 
@@ -160,42 +162,109 @@ fn graph_deserialization_runs_the_same_validation() {
 }
 
 #[test]
-fn existing_spec_fields_still_accept_unvalidated_parallel_arrays() {
-    let requested = RequestedServiceSpec {
-        name: ServiceName::parse("api").unwrap(),
-        mode: ServiceMode::Global,
-        container: ServiceContainerSpec {
-            image: "ghcr.io/getployz/api:1".into(),
-            command: Vec::new(),
-            entrypoint: Vec::new(),
-            environment: BTreeMap::new(),
-            cap_add: Vec::new(),
-            cap_drop: Vec::new(),
-            healthcheck: None,
-            pull_policy: PullPolicy::Missing,
-            init: None,
-            user: None,
-            working_directory: None,
-            tty: false,
-            open_stdin: false,
-            privileged: false,
-            pid_mode: None,
-            log_driver: None,
-            resources: Default::default(),
-            stop_timeout_secs: None,
-            sysctls: BTreeMap::new(),
-            config_mounts: vec![config_mount("missing")],
-            restart: Default::default(),
-        },
-        placement: Default::default(),
-        ports: Vec::new(),
-        volumes: Vec::new(),
-        mounts: vec![mount("missing", "/missing")],
-        configs: Vec::new(),
-        pre_deploy: None,
-        caddy_config: None,
-        update: Default::default(),
+fn requested_and_resolved_conversions_preserve_graph_invariants() {
+    let requested = requested_with_graphs(
+        vec![
+            named_volume("data", "shared"),
+            named_volume("data-alias", "shared"),
+            named_volume("logs", "logs"),
+        ],
+        vec![
+            mount("data", "/var/data"),
+            mount("data", "/var/data"),
+            mount("data-alias", "/alias"),
+        ],
+        vec![
+            config("settings", b"port = 8080"),
+            config("unused", b"keep"),
+        ],
+        vec![config_mount("settings"), config_mount("settings")],
+    );
+    let volumes = requested.to_volume_graph().unwrap();
+    let configs = requested.to_config_graph().unwrap();
+    let update = ResolvedUpdateConfig {
+        order: UpdateOrder::StopFirst,
+        monitor_millis: Some(1_000),
     };
+
+    let resolved = requested
+        .to_resolved(ServiceId::random(), update.clone())
+        .unwrap();
+    assert_eq!(resolved.to_volume_graph().unwrap(), volumes);
+    assert_eq!(resolved.to_config_graph().unwrap(), configs);
+    assert_eq!(resolved.update, update);
+
+    let back = resolved.to_requested().unwrap();
+    assert_eq!(back.to_volume_graph().unwrap(), volumes);
+    assert_eq!(back.to_config_graph().unwrap(), configs);
+    assert_eq!(back.update.order, Some(UpdateOrder::StopFirst));
+    assert_eq!(back.update.monitor_millis, Some(1_000));
+}
+
+#[test]
+fn conversions_reject_invalid_graphs_with_domain_errors() {
+    let service_id = ServiceId::random();
+    let update = ResolvedUpdateConfig::default();
+    let mut dangling_volume = requested_with_graphs(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    dangling_volume.mounts.push(mount("missing", "/missing"));
+    assert_eq!(
+        dangling_volume.to_resolved(service_id, update.clone()),
+        Err(ServiceSpecGraphError::Volume(
+            ServiceVolumeGraphError::UnknownVolumeReference {
+                reference: reference("missing"),
+            }
+        ))
+    );
+
+    let mut dangling_config = requested_with_graphs(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    dangling_config
+        .container
+        .config_mounts
+        .push(config_mount("missing"));
+    assert_eq!(
+        dangling_config.to_resolved(service_id, update),
+        Err(ServiceSpecGraphError::Config(
+            ServiceConfigGraphError::UnknownConfigName {
+                name: "missing".into(),
+            }
+        ))
+    );
+
+    let mut resolved = requested_with_graphs(Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        .to_resolved(service_id, ResolvedUpdateConfig::default())
+        .unwrap();
+    resolved.mounts.push(mount("missing", "/missing"));
+    assert_eq!(
+        resolved.to_requested(),
+        Err(ServiceSpecGraphError::Volume(
+            ServiceVolumeGraphError::UnknownVolumeReference {
+                reference: reference("missing"),
+            }
+        ))
+    );
+    resolved.mounts.clear();
+    resolved
+        .container
+        .config_mounts
+        .push(config_mount("missing"));
+    assert_eq!(
+        resolved.to_requested(),
+        Err(ServiceSpecGraphError::Config(
+            ServiceConfigGraphError::UnknownConfigName {
+                name: "missing".into(),
+            }
+        ))
+    );
+}
+
+#[test]
+fn existing_spec_fields_still_accept_unvalidated_parallel_arrays() {
+    let requested = requested_with_graphs(
+        Vec::new(),
+        vec![mount("missing", "/missing")],
+        Vec::new(),
+        vec![config_mount("missing")],
+    );
 
     let json = serde_json::to_value(&requested).unwrap();
     let decoded = serde_json::from_value::<RequestedServiceSpec>(json).unwrap();
@@ -224,6 +293,49 @@ fn duplicate_first_item(value: &mut serde_json::Value, key: &str) {
 
 fn clear_array(value: &mut serde_json::Value, key: &str) {
     *value.get_mut(key).expect("serialized graph has the field") = serde_json::json!([]);
+}
+
+fn requested_with_graphs(
+    volumes: Vec<ServiceVolume>,
+    mounts: Vec<ServiceMount>,
+    configs: Vec<ConfigSpec>,
+    config_mounts: Vec<ConfigMount>,
+) -> RequestedServiceSpec {
+    RequestedServiceSpec {
+        name: ServiceName::parse("api").unwrap(),
+        mode: ServiceMode::Global,
+        container: ServiceContainerSpec {
+            image: "ghcr.io/getployz/api:1".into(),
+            command: Vec::new(),
+            entrypoint: Vec::new(),
+            environment: BTreeMap::new(),
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            healthcheck: None,
+            pull_policy: PullPolicy::Missing,
+            init: None,
+            user: None,
+            working_directory: None,
+            tty: false,
+            open_stdin: false,
+            privileged: false,
+            pid_mode: None,
+            log_driver: None,
+            resources: Default::default(),
+            stop_timeout_secs: None,
+            sysctls: BTreeMap::new(),
+            config_mounts,
+            restart: Default::default(),
+        },
+        placement: Default::default(),
+        ports: Vec::new(),
+        volumes,
+        mounts,
+        configs,
+        pre_deploy: None,
+        caddy_config: None,
+        update: Default::default(),
+    }
 }
 
 fn named_volume(volume: &str, name: &str) -> ServiceVolume {

@@ -218,6 +218,8 @@ configs:
         Some(0o640)
     );
     assert_eq!(api.volumes.len(), 3);
+    api.to_volume_graph().unwrap();
+    api.to_config_graph().unwrap();
     assert!(api.volumes.iter().any(|volume| matches!(
         &volume.source,
         VolumeSource::Named { name, no_copy: true, subpath: Some(subpath), .. }

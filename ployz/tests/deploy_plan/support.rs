@@ -13,10 +13,9 @@ pub(super) use ployz_core::{
     DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver, Machine, MachineId,
     MachineName, MachineObservation, MachinePath, MachineSelector, ManagementAddress,
     MembershipObservation, PidMode, Placement, PortPublication, PreDeployHook, PullPolicy,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig, UpdateOrder,
-    VolumeSource, WireGuardPublicKey,
+    RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
+    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -134,23 +133,15 @@ pub(super) fn container(
             health: HealthObservation::Healthy,
         },
         effective_healthcheck: None,
-        resolved_spec: ResolvedServiceSpec {
-            service_id: *service_id,
-            name: requested.name.clone(),
-            mode: requested.mode.clone(),
-            container: requested.container.clone(),
-            placement: requested.placement.clone(),
-            ports: requested.ports.clone(),
-            volumes: requested.volumes.clone(),
-            mounts: requested.mounts.clone(),
-            configs: requested.configs.clone(),
-            pre_deploy: requested.pre_deploy.clone(),
-            caddy_config: requested.caddy_config.clone(),
-            update: ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: requested.update.monitor_millis,
-            },
-        },
+        resolved_spec: requested
+            .to_resolved(
+                *service_id,
+                ResolvedUpdateConfig {
+                    order: UpdateOrder::StartFirst,
+                    monitor_millis: requested.update.monitor_millis,
+                },
+            )
+            .expect("test fixtures construct valid graphs"),
         address: None,
         labels: Default::default(),
     }

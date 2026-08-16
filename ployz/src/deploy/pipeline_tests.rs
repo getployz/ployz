@@ -122,11 +122,11 @@ fn resolved_scale_input_changes_only_replicas() {
         caddy_config: None,
         update: Default::default(),
     };
-    let mut scaled = requested_from_resolved(&resolved);
+    let mut scaled = requested_from_resolved(&resolved).unwrap();
     scaled.mode = ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),
     };
-    let mut expected = requested_from_resolved(&resolved);
+    let mut expected = requested_from_resolved(&resolved).unwrap();
     expected.mode = scaled.mode.clone();
     assert_eq!(scaled, expected);
 }

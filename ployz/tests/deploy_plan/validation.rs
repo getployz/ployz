@@ -13,9 +13,11 @@ fn missing_volume_and_config_references_are_rejected_before_placement() {
             &DeploySnapshot::default(),
             PlanOptions::default(),
         ),
-        Err(PlanError::UnknownVolumeReference {
-            reference: ServiceVolumeReference::parse("missing").unwrap(),
-        })
+        Err(PlanError::VolumeGraph(
+            ployz_core::ServiceVolumeGraphError::UnknownVolumeReference {
+                reference: ServiceVolumeReference::parse("missing").unwrap(),
+            }
+        ))
     );
 
     let mut missing_config = requested(ServiceMode::Global);
@@ -35,9 +37,11 @@ fn missing_volume_and_config_references_are_rejected_before_placement() {
             &DeploySnapshot::default(),
             PlanOptions::default(),
         ),
-        Err(PlanError::UnknownConfigName {
-            name: "missing".into(),
-        })
+        Err(PlanError::ConfigGraph(
+            ployz_core::ServiceConfigGraphError::UnknownConfigName {
+                name: "missing".into(),
+            }
+        ))
     );
 }
 
@@ -189,6 +193,41 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
             DeployOperation::CreateVolume { .. },
             DeployOperation::RunContainer { .. }
         ]
+    ));
+}
+
+#[test]
+fn unused_volume_definition_does_not_create_a_docker_volume() {
+    let mut requested = requested(ServiceMode::Global);
+    add_named_volume(&mut requested, "data");
+    requested.volumes.push(ServiceVolume {
+        reference: ServiceVolumeReference::parse("logs").unwrap(),
+        source: VolumeSource::Named {
+            name: DockerVolumeName::parse("logs").unwrap(),
+            external: false,
+            driver: None,
+            labels: Default::default(),
+            no_copy: false,
+            subpath: None,
+        },
+    });
+
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        plan.operations.as_slice(),
+        [
+            DeployOperation::CreateVolume { volume, .. },
+            DeployOperation::RunContainer { .. }
+        ] if volume.reference.as_str() == "data"
     ));
 }
 

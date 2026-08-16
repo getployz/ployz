@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, HostBind, MachineId,
     MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs, machine_matches_selector, same_service_mode_kind,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceVolumeGraph,
+    SpecChange, UpdateOrder, VolumeSource, compare_specs, machine_matches_selector,
+    same_service_mode_kind,
 };
 
 use super::{
@@ -17,6 +18,11 @@ use volumes::{
     VolumePins, named_volume_uses, plan_volume_operations, prepare_shared_replicated_volumes,
     reject_mixed_volume_modes,
 };
+
+struct ValidatedSpec {
+    requested: RequestedServiceSpec,
+    volume_graph: ServiceVolumeGraph,
+}
 
 pub fn plan_deploy<'a>(
     requested: impl IntoIterator<Item = &'a RequestedServiceSpec>,
@@ -38,7 +44,13 @@ pub fn plan_deploy<'a>(
     for spec in &requested {
         service_operations.extend(
             plan_one_service(spec, snapshot, &mut pins, &mut volume_creates, options).map_err(
-                |source| service_error(name_errors_with_service, spec.name.as_str(), source),
+                |source| {
+                    service_error(
+                        name_errors_with_service,
+                        spec.requested.name.as_str(),
+                        source,
+                    )
+                },
             )?,
         );
     }
@@ -48,19 +60,15 @@ pub fn plan_deploy<'a>(
 }
 
 fn plan_one_service(
-    requested: &RequestedServiceSpec,
+    spec: &ValidatedSpec,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
     volume_creates: &mut Vec<DeployOperation>,
     options: PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
+    let requested = &spec.requested;
     let mut machines = eligible_machines(requested, snapshot, options);
-    volume_creates.extend(plan_volume_operations(
-        requested,
-        snapshot,
-        pins,
-        &mut machines,
-    )?);
+    volume_creates.extend(plan_volume_operations(spec, snapshot, pins, &mut machines)?);
     let matching_service_ids = snapshot
         .containers
         .iter()
@@ -88,14 +96,14 @@ fn plan_one_service(
 
     let service_operations = match requested.mode {
         ServiceMode::Replicated { replicas } => plan_replicated(
-            requested,
+            spec,
             snapshot,
             &service_id,
             machines,
             replicas.get() as usize,
             options,
         ),
-        ServiceMode::Global => plan_global(requested, snapshot, &service_id, machines, options),
+        ServiceMode::Global => plan_global(spec, snapshot, &service_id, machines, options),
     };
     let mut operations =
         pre_deploy_operations(requested, snapshot, &service_id, &service_operations);
@@ -136,48 +144,19 @@ fn eligible_machines<'a>(
     machines
 }
 
-fn normalize_and_validate(
-    requested: &RequestedServiceSpec,
-) -> Result<RequestedServiceSpec, PlanError> {
-    let mut normalized = requested.clone();
-    normalized.caddy_config = normalized
+fn normalize_and_validate(requested: &RequestedServiceSpec) -> Result<ValidatedSpec, PlanError> {
+    let mut requested = requested.clone();
+    requested.caddy_config = requested
         .caddy_config
         .take()
         .map(|config| config.trim().to_owned())
         .filter(|config| !config.is_empty());
-
-    let mut volumes = BTreeSet::new();
-    for volume in &normalized.volumes {
-        if !volumes.insert(volume.reference.clone()) {
-            return Err(PlanError::DuplicateVolumeReference {
-                reference: volume.reference.clone(),
-            });
-        }
-    }
-    for mount in &normalized.mounts {
-        if !volumes.contains(&mount.volume) {
-            return Err(PlanError::UnknownVolumeReference {
-                reference: mount.volume.clone(),
-            });
-        }
-    }
-
-    let mut configs = BTreeSet::new();
-    for config in &normalized.configs {
-        if !configs.insert(config.name.as_str()) {
-            return Err(PlanError::DuplicateConfigName {
-                name: config.name.clone(),
-            });
-        }
-    }
-    for mount in &normalized.container.config_mounts {
-        if !configs.contains(mount.config_name.as_str()) {
-            return Err(PlanError::UnknownConfigName {
-                name: mount.config_name.clone(),
-            });
-        }
-    }
-    Ok(normalized)
+    let volume_graph = requested.to_volume_graph()?;
+    requested.to_config_graph()?;
+    Ok(ValidatedSpec {
+        requested,
+        volume_graph,
+    })
 }
 
 fn shuffle<T>(values: &mut [T], mut state: u64) {
@@ -245,21 +224,21 @@ fn pre_deploy_operations(
     operations
 }
 
-fn has_mounted_named_volume(requested: &RequestedServiceSpec) -> bool {
-    requested.mounts.iter().any(|mount| {
-        requested.volumes.iter().any(|volume| {
-            volume.reference == mount.volume && matches!(volume.source, VolumeSource::Named { .. })
-        })
-    })
+fn has_mounted_named_volume(graph: &ServiceVolumeGraph) -> bool {
+    graph
+        .mounts()
+        .iter()
+        .any(|mount| matches!(graph.volume_for(mount).source, VolumeSource::Named { .. }))
 }
 
 fn plan_global(
-    requested: &RequestedServiceSpec,
+    spec: &ValidatedSpec,
     snapshot: &DeploySnapshot,
     service_id: &ServiceId,
     machines: Vec<&MachineObservation>,
     options: PlanOptions,
 ) -> Vec<DeployOperation> {
+    let requested = &spec.requested;
     let current = service_containers(snapshot, service_id);
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
@@ -301,7 +280,7 @@ fn plan_global(
                     });
                 }
             }
-            let order = determine_update_order(container, requested);
+            let order = determine_update_order(container, spec);
             operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id: machine.machine.id,
                 old_container_id: container.container_id,
@@ -326,13 +305,14 @@ fn plan_global(
 }
 
 fn plan_replicated(
-    requested: &RequestedServiceSpec,
+    spec: &ValidatedSpec,
     snapshot: &DeploySnapshot,
     service_id: &ServiceId,
     mut machines: Vec<&MachineObservation>,
     replicas: usize,
     options: PlanOptions,
 ) -> Vec<DeployOperation> {
+    let requested = &spec.requested;
     let current = service_containers(snapshot, service_id);
     let mut by_machine = BTreeMap::<MachineId, Vec<(usize, &ContainerObservation)>>::new();
     for (index, container) in &current {
@@ -370,7 +350,7 @@ fn plan_replicated(
         match existing {
             Some(container) if is_up_to_date(container, requested, options) => {}
             Some(container) => {
-                let order = determine_update_order(container, requested);
+                let order = determine_update_order(container, spec);
                 operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                     machine_id: machine.machine.id,
                     old_container_id: container.container_id,
@@ -441,10 +421,8 @@ fn is_running(container: &ContainerObservation) -> bool {
     )
 }
 
-fn determine_update_order(
-    current: &ContainerObservation,
-    requested: &RequestedServiceSpec,
-) -> UpdateOrder {
+fn determine_update_order(current: &ContainerObservation, spec: &ValidatedSpec) -> UpdateOrder {
+    let requested = &spec.requested;
     if let Some(order) = requested.update.order {
         return order;
     }
@@ -461,7 +439,7 @@ fn determine_update_order(
             requested.mode,
             ServiceMode::Replicated { replicas } if replicas.get() == 1
         ))
-        && has_mounted_named_volume(requested)
+        && has_mounted_named_volume(&spec.volume_graph)
     {
         return UpdateOrder::StopFirst;
     }
@@ -505,27 +483,18 @@ fn binds_overlap(left: &HostBind, right: &HostBind) -> bool {
     }
 }
 
-#[must_use]
 fn resolve(
     requested: &RequestedServiceSpec,
     service_id: ServiceId,
     order: UpdateOrder,
 ) -> ResolvedServiceSpec {
-    ResolvedServiceSpec {
-        service_id,
-        name: requested.name.clone(),
-        mode: requested.mode.clone(),
-        container: requested.container.clone(),
-        placement: requested.placement.clone(),
-        ports: requested.ports.clone(),
-        volumes: requested.volumes.clone(),
-        mounts: requested.mounts.clone(),
-        configs: requested.configs.clone(),
-        pre_deploy: requested.pre_deploy.clone(),
-        caddy_config: requested.caddy_config.clone(),
-        update: ResolvedUpdateConfig {
-            order,
-            monitor_millis: requested.update.monitor_millis,
-        },
-    }
+    requested
+        .to_resolved(
+            service_id,
+            ResolvedUpdateConfig {
+                order,
+                monitor_millis: requested.update.monitor_millis,
+            },
+        )
+        .expect("normalize_and_validate accepted this spec")
 }
