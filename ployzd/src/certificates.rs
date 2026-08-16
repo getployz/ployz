@@ -252,13 +252,13 @@ async fn issue_wanted(
     let now = Instant::now();
     first_seen.retain(|hostname, _| wanted.contains(hostname));
     let mut to_order = Vec::new();
-    for hostname in wanted {
-        let row = rows.get(&hostname);
+    for hostname in &wanted {
+        let row = rows.get(hostname);
         if row.and_then(CertificateRow::material).is_some() {
-            first_seen.remove(&hostname);
+            first_seen.remove(hostname);
             continue;
         }
-        let seen = if let Some(&seen) = first_seen.get(&hostname) {
+        let seen = if let Some(&seen) = first_seen.get(hostname) {
             seen
         } else {
             first_seen.insert(hostname.clone(), now);

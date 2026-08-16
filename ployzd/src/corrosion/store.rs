@@ -345,7 +345,11 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         material: &CertificateMaterial,
     ) -> Result<(), Error> {
-        self.commit_certificate_row(hostname, |_| CertificateRow::issued(material.clone()))
+        let latest = self.certificate_row(hostname).await?;
+        if latest.material() == Some(material) && latest.challenge().is_none() {
+            return Ok(());
+        }
+        self.upsert_certificate(hostname, &CertificateRow::issued(material.clone()))
             .await
     }
 
@@ -389,21 +393,12 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         challenge: &CertificateChallenge,
     ) -> Result<(), Error> {
-        self.commit_certificate_row(hostname, |latest| latest.with_challenge(challenge.clone()))
-            .await
-    }
-
-    async fn commit_certificate_row(
-        &self,
-        hostname: &IngressHost,
-        apply: impl FnOnce(&CertificateRow) -> CertificateRow,
-    ) -> Result<(), Error> {
         let latest = self.certificate_row(hostname).await?;
-        let row = apply(&latest);
-        if row == latest {
+        if latest.challenge() == Some(challenge) {
             return Ok(());
         }
-        self.upsert_certificate(hostname, &row).await
+        self.upsert_certificate(hostname, &latest.with_challenge(challenge.clone()))
+            .await
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {

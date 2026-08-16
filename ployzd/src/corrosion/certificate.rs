@@ -109,9 +109,9 @@ impl CertificateRow {
 
     /// Keep existing material and set the pending challenge.
     #[must_use]
-    pub fn with_challenge(&self, challenge: CertificateChallenge) -> Self {
+    pub fn with_challenge(self, challenge: CertificateChallenge) -> Self {
         Self {
-            material: self.material.clone(),
+            material: self.material,
             challenge: Some(challenge),
         }
     }
