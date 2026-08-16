@@ -16,10 +16,10 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume,
-    DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineName, MachineObservation,
-    MachineRpc, MachineRpcServer, MachineSubnet, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
-    WireGuardPublicKey, op,
+    DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
+    MachineObservation, MachineRpc, MachineRpcServer, MachineSubnet, ManagementAddress,
+    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, VolumeList, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
@@ -248,7 +248,13 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        Ok(Response::new(
+            RpcResponse::from(MachineList {
+                machines: vec![machine('a', "one")],
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn list_containers(
@@ -484,6 +490,37 @@ async fn volume_listing_retains_successes_and_target_failures() {
     };
     assert_eq!(failure.machine_id, machine_id('b'));
     assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
+    server.abort();
+}
+
+#[tokio::test]
+async fn machines_returns_list_machines_membership_observations() {
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let description = ContractDescription {
+        machine_id: MachineId::random(),
+        protocol_major: PROTOCOL_MAJOR,
+        daemon_version: "test".into(),
+        capabilities: Default::default(),
+    };
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(DiscoveryService::new(description)))
+            .serve_with_incoming(TcpListenerStream::new(tcp)),
+    );
+    let mut client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::tcp(address)],
+        },
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+
+    let observed = client.machines().await.unwrap();
+
+    assert_eq!(observed, vec![machine('a', "one")]);
     server.abort();
 }
 

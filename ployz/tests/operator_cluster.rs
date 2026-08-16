@@ -2,11 +2,13 @@ use std::{collections::BTreeSet, path::Path, process, time::Duration};
 
 use futures_util::StreamExt;
 use ployz::operator::{
-    ExecMode, LogInput, ServiceArg, exec_options, merge_logs, select_exec_container,
+    ExecMode, LogInput, ServiceArg, exec_options, merge_logs, open_exec, open_machine_logs,
+    open_service_logs, select_exec_container,
 };
 use ployz_core::{
     ContainerAction, ContainerKind, ExecRequestFrame, ExecResponseFrame, LogEntry, LogOrigin,
-    LogsOptions, MachineLogService, ResolvedServiceSpec, ServiceId, select_service,
+    LogsOptions, MachineLogService, MachineSelector, ResolvedServiceSpec, ServiceId,
+    StartContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -33,12 +35,11 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
             .await
             .unwrap();
         client
-            .change_container(
-                machine.id,
-                container.container_id,
-                ContainerAction::Start,
-                None,
-                None,
+            .call::<op::StartContainer>(
+                StartContainerRequest {
+                    container_id: container.container_id,
+                },
+                Some(&MachineSelector::from(&machine.id)),
             )
             .await
             .unwrap();
@@ -47,16 +48,19 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     let observed = wait_for_service(&mut client, &service_id, 3).await;
 
     assert!(
-        client
-            .open_exec("missing", None, attached(["true"]))
+        open_exec(&mut client, "missing", None, attached(["true"]))
             .await
             .is_err()
     );
     assert!(
-        client
-            .open_exec(service_id.as_str(), Some("missing"), attached(["true"]))
-            .await
-            .is_err()
+        open_exec(
+            &mut client,
+            service_id.as_str(),
+            Some("missing"),
+            attached(["true"])
+        )
+        .await
+        .is_err()
     );
 
     let first = select_exec_container(&observed, None).unwrap();
@@ -150,23 +154,24 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
         [ExecResponseFrame::ExecId(_)]
     ));
     assert!(
-        client
-            .open_exec(
-                service_id.as_str(),
-                None,
-                detached(["command-that-does-not-exist"]),
-            )
-            .await
-            .is_err()
+        open_exec(
+            &mut client,
+            service_id.as_str(),
+            None,
+            detached(["command-that-does-not-exist"]),
+        )
+        .await
+        .is_err()
     );
 
     assert_service_logs(&mut client, &service_id, &observed, &machines).await;
     assert_machine_logs(&mut client, &machines).await;
 
+    let live = client.live_services().await.unwrap();
+    let service = select_service(&live.services, service_id.as_str()).unwrap();
     client
-        .change_service(service_id.as_str(), ContainerAction::Remove, None, None)
-        .await
-        .unwrap();
+        .change_observed_service(service, ContainerAction::Remove, None, None)
+        .await;
     assert_eq!(created.len(), 3);
 }
 
@@ -181,11 +186,17 @@ async fn assert_service_logs(
         containers: Vec::new(),
     }];
     let entries = collect_logs(
-        client
-            .open_service_logs(&args, &[], log_options(), false, CancellationToken::new())
-            .await
-            .unwrap()
-            .inputs,
+        open_service_logs(
+            client,
+            &args,
+            &[],
+            log_options(),
+            false,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .inputs,
     )
     .await;
     let actual = entries
@@ -231,38 +242,38 @@ async fn assert_service_logs(
         );
     }
 
-    let compose_opened = client
-        .open_service_logs(
-            &[
-                args[0].clone(),
-                ServiceArg {
-                    service: "disabled-but-undeployed".into(),
-                    containers: Vec::new(),
-                },
-            ],
+    let compose_opened = open_service_logs(
+        client,
+        &[
+            args[0].clone(),
+            ServiceArg {
+                service: "disabled-but-undeployed".into(),
+                containers: Vec::new(),
+            },
+        ],
+        &[],
+        log_options(),
+        true,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(compose_opened.skipped_services, ["disabled-but-undeployed"]);
+    assert_eq!(compose_opened.inputs.len(), 3);
+    assert!(
+        open_service_logs(
+            client,
+            &[ServiceArg {
+                service: "disabled-but-undeployed".into(),
+                containers: Vec::new(),
+            }],
             &[],
             log_options(),
             true,
             CancellationToken::new(),
         )
         .await
-        .unwrap();
-    assert_eq!(compose_opened.skipped_services, ["disabled-but-undeployed"]);
-    assert_eq!(compose_opened.inputs.len(), 3);
-    assert!(
-        client
-            .open_service_logs(
-                &[ServiceArg {
-                    service: "disabled-but-undeployed".into(),
-                    containers: Vec::new(),
-                }],
-                &[],
-                log_options(),
-                true,
-                CancellationToken::new(),
-            )
-            .await
-            .is_err()
+        .is_err()
     );
 
     let selected = observed.containers.first().unwrap();
@@ -271,59 +282,59 @@ async fn assert_service_logs(
         selected.display_name.clone(),
         selected.container_id.as_str()[..12].to_owned(),
     ] {
-        let inputs = client
-            .open_service_logs(
-                &[ServiceArg {
-                    service: service_id.to_string(),
-                    containers: vec![selector],
-                }],
-                &[],
-                log_options(),
-                false,
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap()
-            .inputs;
-        assert_eq!(inputs.len(), 1);
-    }
-    assert!(
-        client
-            .open_service_logs(
-                &[ServiceArg {
-                    service: service_id.to_string(),
-                    containers: vec!["missing".into()],
-                }],
-                &[],
-                log_options(),
-                false,
-                CancellationToken::new(),
-            )
-            .await
-            .is_err()
-    );
-    let selected_machine = client
-        .open_service_logs(
-            &args,
-            &[machines[0].name.to_string()],
+        let inputs = open_service_logs(
+            client,
+            &[ServiceArg {
+                service: service_id.to_string(),
+                containers: vec![selector],
+            }],
+            &[],
             log_options(),
             false,
             CancellationToken::new(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .inputs;
+        assert_eq!(inputs.len(), 1);
+    }
+    assert!(
+        open_service_logs(
+            client,
+            &[ServiceArg {
+                service: service_id.to_string(),
+                containers: vec!["missing".into()],
+            }],
+            &[],
+            log_options(),
+            false,
+            CancellationToken::new(),
+        )
+        .await
+        .is_err()
+    );
+    let selected_machine = open_service_logs(
+        client,
+        &args,
+        &[machines[0].name.to_string()],
+        log_options(),
+        false,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(selected_machine.inputs.len(), 2);
     assert!(
-        client
-            .open_service_logs(
-                &args,
-                &["missing".into()],
-                log_options(),
-                false,
-                CancellationToken::new(),
-            )
-            .await
-            .is_err()
+        open_service_logs(
+            client,
+            &args,
+            &["missing".into()],
+            log_options(),
+            false,
+            CancellationToken::new(),
+        )
+        .await
+        .is_err()
     );
 }
 
@@ -337,15 +348,15 @@ async fn assert_machine_logs(
         MachineLogService::Corrosion,
     ] {
         let entries = collect_logs(
-            client
-                .open_machine_logs(
-                    &[service.to_string()],
-                    &[],
-                    log_options(),
-                    CancellationToken::new(),
-                )
-                .await
-                .unwrap(),
+            open_machine_logs(
+                client,
+                &[service.to_string()],
+                &[],
+                log_options(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap(),
         )
         .await;
         let tagged = entries
@@ -366,29 +377,29 @@ async fn assert_machine_logs(
         );
     }
     assert!(
-        client
-            .open_machine_logs(
-                &["unsupported".into()],
-                &[],
-                log_options(),
-                CancellationToken::new(),
-            )
-            .await
-            .is_err()
-    );
-    let cancellation = CancellationToken::new();
-    let inputs = client
-        .open_machine_logs(
+        open_machine_logs(
+            client,
+            &["unsupported".into()],
             &[],
-            &[machines[0].name.to_string()],
-            LogsOptions {
-                follow: true,
-                ..log_options()
-            },
-            cancellation.clone(),
+            log_options(),
+            CancellationToken::new(),
         )
         .await
-        .unwrap();
+        .is_err()
+    );
+    let cancellation = CancellationToken::new();
+    let inputs = open_machine_logs(
+        client,
+        &[],
+        &[machines[0].name.to_string()],
+        LogsOptions {
+            follow: true,
+            ..log_options()
+        },
+        cancellation.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(inputs.len(), 1);
     let mut output = merge_logs(inputs, cancellation.clone());
     cancellation.cancel();
@@ -402,7 +413,7 @@ async fn run_exec(
     options: ployz_core::ExecOptions,
     input: Vec<ExecRequestFrame>,
 ) -> Result<Vec<ExecResponseFrame>, ployz::operator::OperatorError> {
-    let mut session = client.open_exec(service, container, options).await?;
+    let mut session = open_exec(client, service, container, options).await?;
     for frame in input {
         session.input.send(frame.encode()?).await.unwrap();
     }

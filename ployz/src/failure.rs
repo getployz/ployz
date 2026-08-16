@@ -15,7 +15,6 @@ use crate::{
     image::PushError,
     operator::{ContainerSelectorError, OperatorError},
     provisioning::ProvisionError,
-    service::ServiceClientError,
     volume::AssignmentError,
 };
 
@@ -171,16 +170,6 @@ impl From<DnsError> for Failure {
         }
     }
 }
-
-impl From<ServiceClientError> for Failure {
-    fn from(error: ServiceClientError) -> Self {
-        match error {
-            ServiceClientError::Connect(error) => error.into(),
-            ServiceClientError::Selector(error) => error.into(),
-        }
-    }
-}
-
 impl From<tonic::Status> for Failure {
     fn from(status: tonic::Status) -> Self {
         TransportError::from(status).into()

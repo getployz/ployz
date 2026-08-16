@@ -2,14 +2,16 @@ use std::time::Duration;
 
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, CreateVolumeRequest, HealthObservation, MachineId,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume, UpdateOrder, VolumeSource,
+    ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, HealthObservation,
+    InspectContainerRequest, MachineId, MachineSelector, RemoveContainerRequest,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume, StartContainerRequest,
+    StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use thiserror::Error;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::connect::Client;
+use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 
 use super::{
     DeployOperation, DeployOutcome, DeployPlan, ReplacementCompensation, ReplacementOperation,
@@ -158,7 +160,15 @@ impl MachineOperations for Client {
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
-        Client::create_container(self, *machine_id, kind, spec.clone()).await
+        self.invoke::<op::CreateContainer>(
+            CreateContainerRequest {
+                kind,
+                resolved_spec: spec.clone(),
+            },
+            &MachineSelector::from(machine_id),
+            None,
+        )
+        .await
     }
 
     async fn start_container(
@@ -166,15 +176,15 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<(), RpcError> {
-        Client::change_container(
-            self,
-            *machine_id,
-            *container_id,
-            ployz_core::ContainerAction::Start,
-            None,
-            None,
+        self.invoke::<op::StartContainer>(
+            StartContainerRequest {
+                container_id: *container_id,
+            },
+            &MachineSelector::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
         )
         .await
+        .map(|_| ())
     }
 
     async fn inspect_container(
@@ -182,7 +192,15 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerObservation, RpcError> {
-        Client::inspect_container(self, *machine_id, *container_id).await
+        self.invoke::<op::InspectContainer>(
+            InspectContainerRequest {
+                container_id: *container_id,
+            },
+            &MachineSelector::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map(|details| details.container)
     }
 
     async fn stop_container(
@@ -191,15 +209,17 @@ impl MachineOperations for Client {
         container_id: &ContainerId,
         grace_period_seconds: Option<i32>,
     ) -> Result<(), RpcError> {
-        Client::change_container(
-            self,
-            *machine_id,
-            *container_id,
-            ployz_core::ContainerAction::Stop,
-            None,
-            grace_period_seconds,
+        self.invoke::<op::StopContainer>(
+            StopContainerRequest {
+                container_id: *container_id,
+                signal: None,
+                grace_period_seconds,
+            },
+            &MachineSelector::from(machine_id),
+            stop_rpc_timeout(grace_period_seconds),
         )
         .await
+        .map(|_| ())
     }
 
     async fn remove_container(
@@ -207,7 +227,17 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<(), RpcError> {
-        Client::remove_container(self, *machine_id, *container_id).await
+        self.invoke::<op::RemoveContainer>(
+            RemoveContainerRequest {
+                container_id: *container_id,
+                remove_volumes: true,
+                force: false,
+            },
+            &MachineSelector::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map(|_| ())
     }
 }
 

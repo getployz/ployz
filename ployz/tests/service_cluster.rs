@@ -1,8 +1,9 @@
 use std::{process, time::Duration};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, ContainerRuntimeObservation, Machine,
-    ResolvedServiceSpec, ServiceId, select_service,
+    ContainerAction, ContainerId, ContainerKind, ContainerRuntimeObservation,
+    InspectContainerRequest, Machine, MachineId, MachineSelector, RemoveContainerRequest,
+    ResolvedServiceSpec, ServiceId, StopContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 
@@ -20,8 +21,8 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     )
     .await
     .unwrap();
-    assert_l3_061_default_spec(&cluster, &client, &machines[0]).await;
-    assert_l3_062_full_spec(&cluster, &client, &machines[0]).await;
+    assert_l3_061_default_spec(&cluster, &mut client, &machines[0]).await;
+    assert_l3_062_full_spec(&cluster, &mut client, &machines[0]).await;
 
     let service_id = ServiceId::random();
     let first = spec(&service_id, "shared", "v1");
@@ -131,19 +132,16 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     assert_eq!(removed.failures.len(), 2);
 
     cluster.remote_machine_api_rule(0, "--delete").unwrap();
+    let live = client.live_services().await.unwrap();
+    let service = select_service(&live.services, service_id.as_str()).unwrap();
     client
-        .change_service(service_id.as_str(), ContainerAction::Remove, None, Some(10))
-        .await
-        .unwrap();
+        .change_observed_service(service, ContainerAction::Remove, None, Some(10))
+        .await;
+    let live = client.live_services().await.unwrap();
+    let service = select_service(&live.services, collision_id.as_str()).unwrap();
     client
-        .change_service(
-            collision_id.as_str(),
-            ContainerAction::Remove,
-            None,
-            Some(10),
-        )
-        .await
-        .unwrap();
+        .change_observed_service(service, ContainerAction::Remove, None, Some(10))
+        .await;
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if client
@@ -162,7 +160,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
 
 async fn assert_l3_061_default_spec(
     cluster: &Cluster,
-    client: &ployz::connect::Client,
+    client: &mut ployz::connect::Client,
     machine: &Machine,
 ) {
     let service_id = ServiceId::random();
@@ -178,10 +176,7 @@ async fn assert_l3_061_default_spec(
         .await
         .unwrap();
 
-    let observed = client
-        .inspect_container(machine.id, created.container_id)
-        .await
-        .unwrap();
+    let observed = inspect_container(client, machine.id, created.container_id).await;
     assert_eq!(observed.resolved_spec, spec);
     let docker = docker_inspect(cluster, 0, &created.container_id);
     assert_eq!(
@@ -206,22 +201,13 @@ async fn assert_l3_061_default_spec(
     );
     assert_eq!(stored_spec(cluster, 0, &created.container_id), spec);
 
-    client
-        .change_container(
-            machine.id,
-            created.container_id,
-            ContainerAction::Remove,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+    remove_container(client, machine.id, created.container_id).await;
     assert_removed(cluster, 0, &created.container_id);
 }
 
 async fn assert_l3_062_full_spec(
     cluster: &Cluster,
-    client: &ployz::connect::Client,
+    client: &mut ployz::connect::Client,
     machine: &Machine,
 ) {
     let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
@@ -271,10 +257,7 @@ async fn assert_l3_062_full_spec(
         .await
         .unwrap();
 
-    let observed = client
-        .inspect_container(machine.id, created.container_id)
-        .await
-        .unwrap();
+    let observed = inspect_container(client, machine.id, created.container_id).await;
     assert_eq!(observed.resolved_spec, spec);
     let docker = docker_inspect(cluster, 0, &created.container_id);
     assert_eq!(
@@ -304,17 +287,52 @@ async fn assert_l3_062_full_spec(
     );
     assert_eq!(stored_spec(cluster, 0, &created.container_id), spec);
 
+    remove_container(client, machine.id, created.container_id).await;
+    assert_removed(cluster, 0, &created.container_id);
+}
+
+async fn inspect_container(
+    client: &mut ployz::connect::Client,
+    machine_id: MachineId,
+    container_id: ContainerId,
+) -> ployz_core::ContainerObservation {
     client
-        .change_container(
-            machine.id,
-            created.container_id,
-            ContainerAction::Remove,
-            None,
-            None,
+        .call::<op::InspectContainer>(
+            InspectContainerRequest { container_id },
+            Some(&MachineSelector::from(&machine_id)),
+        )
+        .await
+        .unwrap()
+        .container
+}
+
+async fn remove_container(
+    client: &mut ployz::connect::Client,
+    machine_id: MachineId,
+    container_id: ContainerId,
+) {
+    let target = MachineSelector::from(&machine_id);
+    let _ = client
+        .call::<op::StopContainer>(
+            StopContainerRequest {
+                container_id,
+                signal: None,
+                grace_period_seconds: None,
+            },
+            Some(&target),
+        )
+        .await;
+    client
+        .call::<op::RemoveContainer>(
+            RemoveContainerRequest {
+                container_id,
+                remove_volumes: true,
+                force: false,
+            },
+            Some(&target),
         )
         .await
         .unwrap();
-    assert_removed(cluster, 0, &created.container_id);
 }
 
 fn docker_inspect(

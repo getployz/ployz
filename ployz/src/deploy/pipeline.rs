@@ -9,9 +9,8 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    ListMachinesRequest, MachineId, MachineObservation, PartialResult, PortPublication,
-    RequestedServiceSpec, ResolvedServiceSpec, RpcError, ServiceMode, UpdateConfig, op,
-    select_service,
+    MachineId, MachineObservation, PartialResult, PortPublication, RequestedServiceSpec,
+    ResolvedServiceSpec, RpcError, ServiceMode, UpdateConfig, select_service,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -207,10 +206,7 @@ fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSp
 }
 
 pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {
-    Ok(client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
-        .await?
-        .machines)
+    Ok(client.machines().await?)
 }
 
 async fn gather_snapshot(

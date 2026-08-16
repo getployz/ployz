@@ -1,8 +1,9 @@
 use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerKind, DnsRecordRequest, DnsRecordType, HttpProtocol,
-    InspectRequest, Machine, MachineId, MachineSelector, PortPublication, RequestedServiceSpec, op,
+    CADDY_VERIFY_PATH, ContainerKind, CreateDomainRecordsRequest, DnsRecordRequest, DnsRecordType,
+    HttpProtocol, InspectRequest, Machine, MachineId, MachineSelector, PortPublication,
+    RequestedServiceSpec, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -107,8 +108,9 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     .collect::<Vec<_>>();
     let records = records_from_machines(&reachable)?;
     client
-        .create_domain_records(records)
+        .call::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
         .await
+        .map(drop)
         .map_err(Into::into)
 }
 

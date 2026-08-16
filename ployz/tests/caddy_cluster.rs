@@ -4,9 +4,10 @@ use std::{
 };
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerAction, ContainerKind, GetCaddyConfigRequest, ListMachinesRequest,
-    Machine, MachineSelector, MembershipObservation, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceId, op,
+    CADDY_VERIFY_PATH, ContainerAction, ContainerId, ContainerKind, GetCaddyConfigRequest,
+    ListMachinesRequest, Machine, MachineId, MachineSelector, MembershipObservation,
+    RequestedServiceSpec, ResolvedServiceSpec, ServiceId, StartContainerRequest,
+    StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use semver::Version;
@@ -90,7 +91,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     .unwrap();
     let mut api_containers = Vec::new();
     for machine in &machines {
-        api_containers.push(create_and_start(&client, machine, api.clone()).await);
+        api_containers.push(create_and_start(&mut client, machine, api.clone()).await);
     }
     let observations = wait_running(&mut client, &api_id, 3).await;
     for (index, machine) in machines.iter().enumerate() {
@@ -170,16 +171,14 @@ async fn assert_health_transition(
         .address
         .unwrap();
     for action in [ContainerAction::Stop, ContainerAction::Start] {
-        client
-            .change_container(
-                machines[1].id,
-                *containers.get(1).expect("three API containers"),
-                action,
-                None,
-                (action == ContainerAction::Stop).then_some(0),
-            )
-            .await
-            .unwrap();
+        change_container(
+            client,
+            machines[1].id,
+            *containers.get(1).expect("three API containers"),
+            action,
+            (action == ContainerAction::Stop).then_some(0),
+        )
+        .await;
         wait_config(client, &machines[0], |config| {
             config.contains(&format!("{}:8080", removed_address.0))
                 == (action == ContainerAction::Start)
@@ -247,7 +246,14 @@ async fn assert_failed_load_retry(
         "ok"
     );
     client
-        .change_container(machine.id, rejected, ContainerAction::Stop, None, Some(0))
+        .call::<op::StopContainer>(
+            StopContainerRequest {
+                container_id: rejected,
+                signal: None,
+                grace_period_seconds: Some(0),
+            },
+            Some(&MachineSelector::from(&machine.id)),
+        )
         .await
         .unwrap();
     wait_config(client, machine, |config| config != stable).await;
@@ -495,7 +501,7 @@ async fn wait_log_count(cluster: &Cluster, needle: &str, count: usize) {
 }
 
 async fn create_and_start(
-    client: &ployz::connect::Client,
+    client: &mut ployz::connect::Client,
     machine: &Machine,
     spec: ResolvedServiceSpec,
 ) -> ployz_core::ContainerId {
@@ -503,17 +509,48 @@ async fn create_and_start(
         .create_container(machine.id, ContainerKind::ServiceContainer, spec)
         .await
         .unwrap();
+    start_container(client, machine.id, created.container_id).await;
+    created.container_id
+}
+
+async fn start_container(
+    client: &mut ployz::connect::Client,
+    machine_id: MachineId,
+    container_id: ContainerId,
+) {
     client
-        .change_container(
-            machine.id,
-            created.container_id,
-            ContainerAction::Start,
-            None,
-            None,
+        .call::<op::StartContainer>(
+            StartContainerRequest { container_id },
+            Some(&MachineSelector::from(&machine_id)),
         )
         .await
         .unwrap();
-    created.container_id
+}
+
+async fn change_container(
+    client: &mut ployz::connect::Client,
+    machine_id: MachineId,
+    container_id: ContainerId,
+    action: ContainerAction,
+    grace_period_seconds: Option<i32>,
+) {
+    match action {
+        ContainerAction::Start => start_container(client, machine_id, container_id).await,
+        ContainerAction::Stop => {
+            client
+                .call::<op::StopContainer>(
+                    StopContainerRequest {
+                        container_id,
+                        signal: None,
+                        grace_period_seconds,
+                    },
+                    Some(&MachineSelector::from(&machine_id)),
+                )
+                .await
+                .unwrap();
+        }
+        ContainerAction::Remove => unreachable!("health transition only starts and stops"),
+    }
 }
 
 async fn wait_running(

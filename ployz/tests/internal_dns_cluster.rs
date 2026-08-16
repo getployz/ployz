@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, net::Ipv4Addr, process, time::Duration};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, Machine, MachineId, MembershipObservation, ResolvedServiceSpec, ServiceId,
+    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+    HealthObservation, Machine, MachineId, MachineSelector, MembershipObservation,
+    ResolvedServiceSpec, ServiceId, StartContainerRequest, StopContainerRequest, op,
     select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -54,16 +55,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
             .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
             .await
             .unwrap();
-        client
-            .change_container(
-                machine.id,
-                container.container_id,
-                ContainerAction::Start,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+        start_container(&mut client, machine.id, container.container_id).await;
         created.push(container.container_id);
     }
     let [_, second_container, third_container] = created.as_slice() else {
@@ -214,29 +206,11 @@ async fn assert_projection_changes(
         .unwrap();
     wait_for_health(client, second_container, HealthObservation::Healthy).await;
     probe.wait_addresses("dns-api.internal", expected).await;
-    client
-        .change_container(
-            second_machine.id,
-            *second_container,
-            ContainerAction::Stop,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+    stop_container(client, second_machine.id, *second_container).await;
     probe
         .wait_addresses("dns-api.internal", &without_second)
         .await;
-    client
-        .change_container(
-            second_machine.id,
-            *second_container,
-            ContainerAction::Start,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+    start_container(client, second_machine.id, *second_container).await;
     probe.wait_addresses("dns-api.internal", expected).await;
 }
 
@@ -427,6 +401,38 @@ fn dig_addresses(output: &str) -> Vec<Ipv4Addr> {
         .lines()
         .filter_map(|line| line.split_whitespace().last()?.parse().ok())
         .collect()
+}
+
+async fn start_container(
+    client: &mut ployz::connect::Client,
+    machine_id: MachineId,
+    container_id: ContainerId,
+) {
+    client
+        .call::<op::StartContainer>(
+            StartContainerRequest { container_id },
+            Some(&MachineSelector::from(&machine_id)),
+        )
+        .await
+        .unwrap();
+}
+
+async fn stop_container(
+    client: &mut ployz::connect::Client,
+    machine_id: MachineId,
+    container_id: ContainerId,
+) {
+    client
+        .call::<op::StopContainer>(
+            StopContainerRequest {
+                container_id,
+                signal: None,
+                grace_period_seconds: None,
+            },
+            Some(&MachineSelector::from(&machine_id)),
+        )
+        .await
+        .unwrap();
 }
 
 fn sorted(mut addresses: Vec<Ipv4Addr>) -> Vec<Ipv4Addr> {

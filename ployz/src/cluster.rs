@@ -1,39 +1,28 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
-    ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerLogsRequest,
-    ContainerObservation, CreateContainerRequest, CreateDomainRecordsRequest, DnsRecordRequest,
-    DockerVolume, ExecConfig, ExecOptions, ExecRequestFrame, FanoutOutcome, FanoutResponse,
-    GetDomainRequest, InspectContainerRequest, ListContainersRequest, ListImagesRequest,
-    ListMachinesRequest, ListVolumesRequest, LiveServices, LogsOptions, MachineFailure, MachineId,
-    MachineImages, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
+    ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
+    CreateContainerRequest, DockerVolume, FanoutOutcome, FanoutResponse, GetDomainRequest,
+    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
+    LiveServices, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
     MachineRpcClient, MachineSelector, MachineSuccess, MembershipObservation, OpaquePayload,
-    PartialResult, ReleaseDomainRequest, RemoveContainerRequest, ReserveDomainRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
-    StopContainerRequest, apply_many_targets, derive_live_services, op, select_service,
+    PartialResult, RemoveContainerRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
+    RpcResponseBody, StartContainerRequest, StopContainerRequest, apply_many_targets,
+    derive_live_services, op,
 };
 use serde_json::Value;
-use tokio::{sync::mpsc, task::JoinSet};
-use tokio_util::sync::CancellationToken;
+use tokio::task::JoinSet;
 use tonic::{Streaming, codec::ProstCodec, codegen::http::uri::PathAndQuery, transport::Channel};
 
 use crate::{
     connect::{
         BoxProxyStream, ConnectError, Connector, TARGET_RPC_TIMEOUT, TransportError,
         UNARY_RETRY_DELAYS, apply_timeout, decode_fanout_failure, is_unary_retryable, rpc_error,
-        target_request,
+        stop_rpc_timeout, target_request,
     },
     context::{Connection, ConnectionSource},
     deploy::{DeploySnapshot, ObservedDockerVolume},
-    operator::{
-        ExecSession, LogInput, OperatorError, ServiceArg, ServiceLogInputs, open_log_input,
-        select_exec_container, select_log_containers, select_machines, stream_input,
-    },
-    service::{ContainerOperationFailure, LifecycleResult, ServiceClientError},
+    service::ContainerOperationFailure,
 };
 
 #[derive(Clone)]
@@ -320,11 +309,20 @@ impl Client {
             .await
     }
 
+    /// Membership Observation of Machines visible from this entry Machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns a connection or remote RPC error from `ListMachines`.
+    pub async fn machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
+        self.call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await
+            .map(|list| list.machines)
+    }
+
     pub async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await?;
-        self.live_services_from(&machines.machines).await
+        let machines = self.machines().await?;
+        self.live_services_from(&machines).await
     }
 
     pub(crate) async fn live_services_from(
@@ -364,20 +362,6 @@ impl Client {
         Ok(derive_live_services(result))
     }
 
-    pub async fn inspect_container(
-        &self,
-        machine_id: MachineId,
-        container_id: ContainerId,
-    ) -> Result<ployz_core::ContainerObservation, RpcError> {
-        self.invoke::<op::InspectContainer>(
-            InspectContainerRequest { container_id },
-            &MachineSelector::from(&machine_id),
-            Some(TARGET_RPC_TIMEOUT),
-        )
-        .await
-        .map(|details| details.container)
-    }
-
     pub async fn create_container(
         &self,
         machine_id: MachineId,
@@ -393,55 +377,6 @@ impl Client {
             None,
         )
         .await
-    }
-
-    pub async fn change_container(
-        &self,
-        machine_id: MachineId,
-        container_id: ContainerId,
-        action: ContainerAction,
-        signal: Option<String>,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<(), RpcError> {
-        change_container_rpc(
-            self,
-            &machine_id,
-            &container_id,
-            action,
-            signal,
-            grace_period_seconds,
-        )
-        .await
-    }
-
-    pub(crate) async fn remove_container(
-        &self,
-        machine_id: MachineId,
-        container_id: ContainerId,
-    ) -> Result<(), RpcError> {
-        remove_container_rpc(self, &machine_id, &container_id).await
-    }
-
-    pub async fn change_service(
-        &mut self,
-        selector: &str,
-        action: ContainerAction,
-        signal: Option<String>,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<LifecycleResult, ServiceClientError> {
-        let live = self.live_services().await?;
-        let outcomes = self
-            .change_observed_service(
-                select_service(&live.services, selector)?,
-                action,
-                signal,
-                grace_period_seconds,
-            )
-            .await;
-        Ok(LifecycleResult {
-            observations: live.containers,
-            outcomes,
-        })
     }
 
     pub async fn change_observed_service(
@@ -501,201 +436,12 @@ impl Client {
         outcomes
     }
 
-    pub async fn open_exec(
-        &mut self,
-        service_selector: &str,
-        container_selector: Option<&str>,
-        options: ExecOptions,
-    ) -> Result<ExecSession, OperatorError> {
-        let live = self.live_services().await?;
-        let service = select_service(&live.services, service_selector)?;
-        let container = select_exec_container(service, container_selector)?;
-        let machine_id = container.machine_id;
-        let config = ExecRequestFrame::Config(ExecConfig {
-            container_id: container.container_id,
-            options,
-        })
-        .encode()?;
-        let (sender, receiver) = mpsc::channel(32);
-        sender
-            .send(config)
-            .await
-            .map_err(|_| OperatorError::StreamClosed)?;
-        let output = self
-            .exec_stream(
-                &MachineSelector::from(&machine_id),
-                tokio_stream::wrappers::ReceiverStream::new(receiver),
-            )
-            .await?;
-        Ok(ExecSession {
-            input: sender,
-            output,
-        })
-    }
-
-    pub async fn open_service_logs(
-        &mut self,
-        args: &[ServiceArg],
-        machine_selectors: &[String],
-        options: LogsOptions,
-        compose_selection: bool,
-        cancellation: CancellationToken,
-    ) -> Result<ServiceLogInputs, OperatorError> {
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await?
-            .machines;
-        let selected_machines = select_machines(&machines, machine_selectors)?;
-        let machine_ids = selected_machines
-            .iter()
-            .map(|machine| machine.machine.id)
-            .collect::<HashSet<_>>();
-        let live = self.live_services().await?;
-        let mut inputs = Vec::new();
-        let mut skipped_services = Vec::new();
-        for arg in args {
-            let service = match select_service(&live.services, &arg.service) {
-                Ok(service) => service,
-                Err(ployz_core::ServiceSelectorError::NotFound { .. }) if compose_selection => {
-                    skipped_services.push(arg.service.clone());
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
-            };
-            let containers = select_log_containers(service, &arg.containers)?;
-            let containers = containers
-                .into_iter()
-                .filter(|container| machine_ids.contains(&container.machine_id))
-                .collect::<Vec<_>>();
-            if containers.is_empty() {
-                return Err(OperatorError::NoContainersOnMachines {
-                    service: arg.service.clone(),
-                });
-            }
-            for container in containers {
-                let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                    container_id: container.container_id,
-                    options: options.clone(),
-                })
-                .encode()?;
-                let identity = format!("{}/{}", arg.service, container.display_name);
-                let target = MachineSelector::from(&container.machine_id);
-                // TODO(UT-082): earlier Container log streams intentionally survive until the
-                // parent cancellation token is cancelled.
-                if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
-                    self.container_logs_stream(&target, request)
-                        .await
-                        .map(|stream| stream_input(identity, stream))
-                })
-                .await
-                {
-                    return Err(OperatorError::OpenContainerLogs {
-                        container_id: container.container_id,
-                        machine_id: container.machine_id,
-                        source: Box::new(error.into()),
-                    });
-                }
-            }
-        }
-        if inputs.is_empty() {
-            return Err(OperatorError::NoSelectedServices);
-        }
-        Ok(ServiceLogInputs {
-            inputs,
-            skipped_services,
-        })
-    }
-
-    pub async fn open_machine_logs(
-        &mut self,
-        services: &[String],
-        machine_selectors: &[String],
-        options: LogsOptions,
-        cancellation: CancellationToken,
-    ) -> Result<Vec<LogInput>, OperatorError> {
-        let services = if services.is_empty() {
-            vec![MachineLogService::Ployz]
-        } else {
-            services
-                .iter()
-                .map(|service| {
-                    service.parse::<MachineLogService>().map_err(|expected| {
-                        OperatorError::UnsupportedLogService {
-                            service: service.clone(),
-                            expected,
-                        }
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await?
-            .machines;
-        let machines = select_machines(&machines, machine_selectors)?;
-        let mut inputs = Vec::new();
-        for service in services {
-            for machine in &machines {
-                let request = op::MachineLogs::into_request(MachineLogsRequest {
-                    service,
-                    options: options.clone(),
-                })
-                .encode()?;
-                let identity = format!("{service}@{}", machine.machine.name);
-                let target = MachineSelector::from(&machine.machine.id);
-                // TODO(UT-083): earlier Machine log streams intentionally survive until the
-                // parent cancellation token is cancelled.
-                if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
-                    self.machine_logs_stream(&target, request)
-                        .await
-                        .map(|stream| stream_input(identity, stream))
-                })
-                .await
-                {
-                    return Err(OperatorError::OpenMachineLogs {
-                        service,
-                        machine_name: machine.machine.name.clone(),
-                        source: Box::new(error.into()),
-                    });
-                }
-            }
-        }
-        Ok(inputs)
-    }
-
-    pub async fn reserve_domain(&mut self, endpoint: String) -> Result<String, ConnectError> {
-        self.call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
-            .await
-            .map(|domain| domain.name)
-    }
-
-    pub async fn domain(&mut self) -> Result<String, ConnectError> {
-        self.call::<op::GetDomain>(GetDomainRequest {}, None)
-            .await
-            .map(|domain| domain.name)
-    }
-
     pub async fn domain_if_reserved(&mut self) -> Result<Option<String>, ConnectError> {
-        match self.domain().await {
-            Ok(domain) => Ok(Some(domain)),
+        match self.call::<op::GetDomain>(GetDomainRequest {}, None).await {
+            Ok(domain) => Ok(Some(domain.name)),
             Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => Ok(None),
             Err(error) => Err(error),
         }
-    }
-
-    pub async fn release_domain(&mut self) -> Result<String, ConnectError> {
-        self.call::<op::ReleaseDomain>(ReleaseDomainRequest {}, None)
-            .await
-            .map(|domain| domain.name)
-    }
-
-    pub(crate) async fn create_domain_records(
-        &mut self,
-        records: Vec<DnsRecordRequest>,
-    ) -> Result<(), ConnectError> {
-        self.call::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
-            .await
-            .map(drop)
     }
 
     /// Gather an observer-relative Deploy Snapshot from the given Machines.
@@ -850,14 +596,6 @@ async fn remove_container_rpc(
         )
         .await
         .map(|_| ())
-}
-
-fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
-    match grace_period_seconds {
-        Some(seconds) if seconds < 0 => None,
-        Some(seconds) => Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64)),
-        None => None,
-    }
 }
 
 fn accept_stop_result(

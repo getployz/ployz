@@ -41,6 +41,14 @@ pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
 
 pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
+pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
+    match grace_period_seconds {
+        Some(seconds) if seconds < 0 => None,
+        Some(seconds) => Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64)),
+        None => None,
+    }
+}
+
 pub trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}
 
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> ProxyStream for T {}

@@ -18,8 +18,9 @@ use crate::{
     compose::{LoadOptions, load_project},
     context::Transport,
     operator::{
-        ProxyPorts, exec_options, merge_logs, parse_proxy_ports, parse_service_args, parse_tail,
-        select_proxy_container, service_logs_use_compose,
+        ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs, open_service_logs,
+        parse_proxy_ports, parse_service_args, parse_tail, select_proxy_container,
+        service_logs_use_compose,
     },
 };
 
@@ -49,9 +50,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let tty = options.tty;
             let detach = options.detach;
-            let mut session = client
-                .open_exec(&service, container.as_deref(), options)
-                .await?;
+            let mut session = open_exec(client, &service, container.as_deref(), options).await?;
             let _raw = tty.then(RawTerminal::enable).transpose()?;
             if tty {
                 send_terminal_size(&session.input).await?;
@@ -139,15 +138,15 @@ fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Err
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
-            let opened = client
-                .open_service_logs(
-                    &args,
-                    &machines,
-                    options,
-                    compose_selection,
-                    cancellation.clone(),
-                )
-                .await?;
+            let opened = open_service_logs(
+                client,
+                &args,
+                &machines,
+                options,
+                compose_selection,
+                cancellation.clone(),
+            )
+            .await?;
             for service in opened.skipped_services {
                 eprintln!("WARNING: Service {service:?} is not in the Cluster; skipping");
             }
@@ -169,9 +168,9 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
-            let inputs = client
-                .open_machine_logs(&services, &machines, options, cancellation.clone())
-                .await?;
+            let inputs =
+                open_machine_logs(client, &services, &machines, options, cancellation.clone())
+                    .await?;
             print_logs(merge_logs(inputs, cancellation), utc).await
         })
     })

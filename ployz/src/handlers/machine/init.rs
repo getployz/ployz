@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::{
-    InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, ResetRequest, op,
+    InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, ReserveDomainRequest,
+    ResetRequest, op,
 };
 
 use super::super::runtime;
@@ -108,8 +109,10 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                     .get_one::<String>("dns-endpoint")
                     .cloned()
                     .ok_or_else(|| Error::usage("dns-endpoint is required"))?;
-                let domain = ready.reserve_domain(endpoint).await?;
-                println!("Reserved Cluster domain: {domain}");
+                let domain = ready
+                    .call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
+                    .await?;
+                println!("Reserved Cluster domain: {}", domain.name);
             }
             if want_caddy {
                 let image = crate::caddy::latest_image().await?;

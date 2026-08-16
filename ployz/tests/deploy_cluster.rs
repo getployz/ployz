@@ -8,9 +8,10 @@ use ployz::{
     },
 };
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    DockerVolumeName, Machine, ResolvedServiceSpec, ServiceId, ServiceVolume,
-    ServiceVolumeReference, UpdateOrder, VolumeSource,
+    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineSelector,
+    RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceVolume, ServiceVolumeReference,
+    StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -202,16 +203,7 @@ async fn assert_replacement_health_compensation(
             )
             .await
             .unwrap();
-        client
-            .change_container(
-                machine.id,
-                old.container_id,
-                ContainerAction::Start,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+        start_container(client, machine.id, old.container_id).await;
         wait_running(client, machine, &old.container_id).await;
 
         let mut failing = old_spec;
@@ -457,11 +449,10 @@ fn healthcheck(command: &str, retries: u32) -> ployz_core::HealthcheckSpec {
     }
 }
 
-async fn wait_running(client: &Client, machine: &Machine, container_id: &ContainerId) {
+async fn wait_running(client: &mut Client, machine: &Machine, container_id: &ContainerId) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if client
-                .inspect_container(machine.id, *container_id)
+            if inspect_container(client, machine.id, *container_id)
                 .await
                 .is_ok_and(|container| {
                     matches!(
@@ -509,15 +500,14 @@ async fn wait_for_service(
 }
 
 async fn wait_for_runtime(
-    client: &Client,
+    client: &mut Client,
     machine: &Machine,
     container_id: &ContainerId,
     expected: ContainerRuntimeObservation,
 ) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if client
-                .inspect_container(machine.id, *container_id)
+            if inspect_container(client, machine.id, *container_id)
                 .await
                 .is_ok_and(|container| container.runtime == expected)
             {
@@ -530,19 +520,59 @@ async fn wait_for_runtime(
     .unwrap()
 }
 
-async fn remove_all(client: &Client, containers: Vec<ContainerObservation>) {
+async fn remove_all(client: &mut Client, containers: Vec<ContainerObservation>) {
     for container in containers {
-        client
-            .change_container(
-                container.machine_id,
-                container.container_id,
-                ContainerAction::Remove,
-                None,
-                Some(0),
-            )
-            .await
-            .unwrap();
+        remove_container(client, container.machine_id, container.container_id).await;
     }
+}
+
+async fn start_container(client: &mut Client, machine_id: MachineId, container_id: ContainerId) {
+    client
+        .call::<op::StartContainer>(
+            StartContainerRequest { container_id },
+            Some(&MachineSelector::from(&machine_id)),
+        )
+        .await
+        .unwrap();
+}
+
+async fn inspect_container(
+    client: &mut Client,
+    machine_id: MachineId,
+    container_id: ContainerId,
+) -> Result<ContainerObservation, ployz::connect::ConnectError> {
+    client
+        .call::<op::InspectContainer>(
+            InspectContainerRequest { container_id },
+            Some(&MachineSelector::from(&machine_id)),
+        )
+        .await
+        .map(|details| details.container)
+}
+
+async fn remove_container(client: &mut Client, machine_id: MachineId, container_id: ContainerId) {
+    let target = MachineSelector::from(&machine_id);
+    let _ = client
+        .call::<op::StopContainer>(
+            StopContainerRequest {
+                container_id,
+                signal: None,
+                grace_period_seconds: Some(0),
+            },
+            Some(&target),
+        )
+        .await;
+    client
+        .call::<op::RemoveContainer>(
+            RemoveContainerRequest {
+                container_id,
+                remove_volumes: true,
+                force: false,
+            },
+            Some(&target),
+        )
+        .await
+        .unwrap();
 }
 
 fn docker_exists(cluster: &Cluster, machine_index: usize, container_id: &ContainerId) -> bool {
