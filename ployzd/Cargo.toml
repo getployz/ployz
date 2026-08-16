@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait = "0.1.92"
+axum = "0.8.9"
 bollard = { version = "0.21.0", features = ["json_data_content"] }
 bytes = "1.12.1"
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
