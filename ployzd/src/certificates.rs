@@ -37,7 +37,8 @@ const CADDY_SERVICE: &str = "caddy";
 const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
-pub(crate) const RANK_STEP: Duration = Duration::from_secs(15);
+/// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
+pub(crate) const RANK_STEP: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IssuanceAction {
@@ -603,18 +604,25 @@ mod tests {
 
     #[test]
     fn only_rank_zero_orders_immediately() {
+        assert_eq!(RANK_STEP, Duration::from_secs(30));
         assert_eq!(
             issuance_action(None, 0, Duration::ZERO),
             IssuanceAction::Order
         );
         assert_eq!(
-            issuance_action(None, 1, RANK_STEP - Duration::from_millis(1)),
+            issuance_action(None, 1, Duration::from_secs(30) - Duration::from_millis(1)),
             IssuanceAction::Nothing
         );
-        assert_eq!(issuance_action(None, 1, RANK_STEP), IssuanceAction::Order);
-        assert_eq!(issuance_action(None, 2, RANK_STEP), IssuanceAction::Nothing);
         assert_eq!(
-            issuance_action(None, 2, RANK_STEP + RANK_STEP),
+            issuance_action(None, 1, Duration::from_secs(30)),
+            IssuanceAction::Order
+        );
+        assert_eq!(
+            issuance_action(None, 2, Duration::from_secs(30)),
+            IssuanceAction::Nothing
+        );
+        assert_eq!(
+            issuance_action(None, 2, Duration::from_secs(60)),
             IssuanceAction::Order
         );
     }
@@ -624,7 +632,7 @@ mod tests {
         let material = CertificateMaterial::new("CERT", "KEY").unwrap();
         let row = CertificateRow::from_parts(Some(material), None);
         assert_eq!(
-            issuance_action(Some(&row), 0, RANK_STEP + RANK_STEP),
+            issuance_action(Some(&row), 0, Duration::from_secs(60)),
             IssuanceAction::Nothing
         );
     }
