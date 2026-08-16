@@ -77,7 +77,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
         }
 
-        // TODO(UT-057): removal does not update hosted DNS or Caddy projections.
+        if let Err(error) = crate::dns::update_records_if_reserved(&mut client).await {
+            eprintln!("WARNING: hosted DNS refresh failed after removing the Machine: {error}.");
+            return Err(error.into());
+        }
         if let Some(context_name) = context_name {
             let mut config = options.load_config()?;
             let context = config

@@ -255,6 +255,98 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     assert!(purge.body.is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn hosted_dns_wildcard_follows_machine_membership() {
+    let plan = ClusterPlan::new(&format!("l3-dns-member-{}", process::id()), 2).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    let machines = cluster.initialize_two().await.unwrap();
+    let direct = cluster.api_address(0).unwrap();
+    for index in 0..machines.len() {
+        poison_production_dns(&cluster, index);
+    }
+
+    let first_ip = outer_ipv4(&cluster, 0);
+    let second_ip = outer_ipv4(&cluster, 1);
+    cluster
+        .update_machine(
+            0,
+            machines[0].id.as_str(),
+            MachineUpdate {
+                public_ip: PublicIpUpdate::Set(IpAddr::V4(first_ip)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    cluster
+        .update_machine(
+            0,
+            machines[1].id.as_str(),
+            MachineUpdate {
+                public_ip: PublicIpUpdate::Set(IpAddr::V4(second_ip)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_exact_caddy(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
+    wait_exact_caddy(IpAddr::V4(second_ip), machines[1].id.as_str().as_bytes()).await;
+
+    let (port, hosted) = fake_hosted_service().await;
+    let gateway = cluster
+        .machine_shell(0, "ip route show default | awk '{print $3; exit}'")
+        .unwrap();
+    let endpoint = format!("http://{}:{port}", gateway.trim());
+    cli(
+        &direct,
+        &["dns", "reserve", "--endpoint", endpoint.as_str()],
+    );
+    assert_eq!(
+        authoritative_wildcard_a(&hosted.requests()),
+        vec![first_ip.to_string(), second_ip.to_string()],
+    );
+
+    let mut client = ployz::connect::connect(
+        std::path::Path::new("/missing-ployz-test-config"),
+        Some(&direct),
+        None,
+    )
+    .await
+    .unwrap();
+    // Same refresh `machine add` runs after membership is saved, including when
+    // the add-time Caddy Deploy failed or was skipped.
+    let before_add_refresh = record_requests(&hosted.requests()).len();
+    ployz::dns::update_records_if_reserved(&mut client)
+        .await
+        .unwrap();
+    let after_add_refresh = hosted.requests();
+    assert_eq!(
+        record_requests(&after_add_refresh).len(),
+        before_add_refresh + 1
+    );
+    assert_eq!(
+        authoritative_wildcard_a(&after_add_refresh),
+        vec![first_ip.to_string(), second_ip.to_string()],
+        "last published * A at the authority must include a Machine that passes the Caddy probe"
+    );
+
+    let before_remove = record_requests(&after_add_refresh).len();
+    cli(
+        &direct,
+        &["machine", "rm", machines[1].id.as_str(), "--yes"],
+    );
+    let after_remove = hosted.requests();
+    assert_eq!(record_requests(&after_remove).len(), before_remove + 1);
+    assert_eq!(
+        authoritative_wildcard_a(&after_remove),
+        vec![first_ip.to_string()],
+        "last published * A at the authority must not include the removed Machine"
+    );
+}
+
 fn poison_production_dns(cluster: &Cluster, index: usize) {
     cluster
         .machine_shell(
@@ -468,6 +560,43 @@ fn record_request(requests: &[CapturedRequest], index: usize) -> &CapturedReques
         .filter(|request| request.head.contains("/records HTTP/1.1"))
         .nth(index)
         .unwrap()
+}
+
+fn authoritative_wildcard_a(requests: &[CapturedRequest]) -> Vec<String> {
+    record_requests(requests)
+        .into_iter()
+        .rev()
+        .find_map(|request| {
+            let body = serde_json::from_slice::<Value>(&request.body).ok()?;
+            if body.get("name")?.as_str()? != "*" || body.get("type")?.as_str()? != "A" {
+                return None;
+            }
+            Some(
+                body.get("values")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn fresh_never_cached_label_reads_the_last_published_wildcard_a() {
+    let older = CapturedRequest {
+        head: "POST /domains/opaque.ployz.example/records HTTP/1.1".into(),
+        body: br#"{"name":"*","type":"A","values":["192.0.2.1","198.51.100.1"]}"#.to_vec(),
+    };
+    let newer = CapturedRequest {
+        head: "POST /domains/opaque.ployz.example/records HTTP/1.1".into(),
+        body: br#"{"name":"*","type":"A","values":["192.0.2.1"]}"#.to_vec(),
+    };
+    assert_eq!(
+        authoritative_wildcard_a(&[older, newer]),
+        vec!["192.0.2.1".to_string()]
+    );
 }
 
 fn assert_record(request: &CapturedRequest, record_type: &str, values: &[String]) {
