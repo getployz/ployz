@@ -41,14 +41,12 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             resources: ContainerResources::default(),
             stop_timeout_secs: None,
             sysctls: Default::default(),
-            config_mounts: Vec::new(),
             restart: RestartPolicy::default(),
         },
         placement: Placement::default(),
         ports: Vec::new(),
-        volumes: Vec::new(),
-        mounts: Vec::new(),
-        configs: Vec::new(),
+        volume_graph: Default::default(),
+        config_graph: Default::default(),
         pre_deploy: None,
         caddy_config: None,
         update: UpdateConfig::default(),
@@ -88,7 +86,9 @@ pub(super) fn container_id(hex: char) -> ContainerId {
 
 pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {
     let reference = ServiceVolumeReference::parse(name).unwrap();
-    requested.volumes.push(ServiceVolume {
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mut mounts = requested.volume_graph.mounts().to_vec();
+    volumes.push(ServiceVolume {
         reference: reference.clone(),
         source: VolumeSource::Named {
             name: DockerVolumeName::parse(name).unwrap(),
@@ -99,11 +99,12 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
             subpath: None,
         },
     });
-    requested.mounts.push(ServiceMount {
+    mounts.push(ServiceMount {
         volume: reference,
         target: ContainerPath::parse(format!("/{name}")).unwrap(),
         read_only: false,
     });
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 }
 
 pub(super) fn host_port(port: u16) -> PortPublication {
@@ -133,15 +134,13 @@ pub(super) fn container(
             health: HealthObservation::Healthy,
         },
         effective_healthcheck: None,
-        resolved_spec: requested
-            .to_resolved(
-                *service_id,
-                ResolvedUpdateConfig {
-                    order: UpdateOrder::StartFirst,
-                    monitor_millis: requested.update.monitor_millis,
-                },
-            )
-            .expect("test fixtures construct valid graphs"),
+        resolved_spec: requested.to_resolved(
+            *service_id,
+            ResolvedUpdateConfig {
+                order: UpdateOrder::StartFirst,
+                monitor_millis: requested.update.monitor_millis,
+            },
+        ),
         address: None,
         labels: Default::default(),
     }

@@ -11,7 +11,7 @@ use bollard::models::{
 };
 use ployz_core::{
     BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec, HostBind,
-    MachineGateway, MachineId, PortPublication, ResolvedServiceSpec, ServiceVolume,
+    MachineGateway, MachineId, PortPublication, ResolvedServiceSpec, ServiceVolumeGraph,
     TransportProtocol, VolumeSource,
 };
 
@@ -48,7 +48,7 @@ pub(super) fn container_create_body(
     if hook.is_some() {
         labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
     }
-    let mounts = docker_mounts(&spec.volumes, &spec.mounts)?;
+    let mounts = docker_mounts(&spec.volume_graph)?;
     let interface_addresses = if hook.is_none()
         && spec.ports.iter().any(|port| {
             matches!(
@@ -283,17 +283,12 @@ pub(super) fn docker_resources(resources: &ployz_core::ContainerResources) -> Ho
     }
 }
 
-pub(super) fn docker_mounts(
-    volumes: &[ServiceVolume],
-    mounts: &[ployz_core::ServiceMount],
-) -> Result<Vec<Mount>, Error> {
-    mounts
+pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Error> {
+    graph
+        .mounts()
         .iter()
         .map(|mount| {
-            let volume = volumes
-                .iter()
-                .find(|volume| volume.reference == mount.volume)
-                .ok_or_else(|| Error::VolumeNotFound(mount.volume.to_string()))?;
+            let volume = graph.volume_for(mount);
             let mut translated = Mount {
                 target: Some(mount.target.to_string()),
                 read_only: Some(mount.read_only),

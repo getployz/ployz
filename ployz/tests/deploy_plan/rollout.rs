@@ -325,14 +325,16 @@ fn incompatible_volume_excludes_only_its_machine() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     add_named_volume(&mut requested, "data");
-    let VolumeSource::Named { driver, .. } = &mut requested.volumes.first_mut().unwrap().source
-    else {
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mounts = requested.volume_graph.mounts().to_vec();
+    let VolumeSource::Named { driver, .. } = &mut volumes.first_mut().unwrap().source else {
         unreachable!();
     };
     *driver = Some(ployz_core::VolumeDriver {
         name: "nfs".into(),
         options: Default::default(),
     });
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
     let plan = plan_deploy(
         [&requested],

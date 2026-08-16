@@ -56,9 +56,8 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         ));
     }
     let (volumes, mounts) = parse_volumes(&string_values(matches, "volume"))?;
-    let (volumes, mounts) = ServiceVolumeGraph::parse(volumes, mounts)
-        .map_err(|error| Error::usage(error.to_string()))?
-        .into_parts();
+    let volume_graph = ServiceVolumeGraph::parse(volumes, mounts)
+        .map_err(|error| Error::usage(error.to_string()))?;
     Ok(RequestedServiceSpec {
         name,
         mode,
@@ -106,7 +105,6 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
             },
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
-            config_mounts: Vec::new(),
             restart: RestartPolicy::No,
         },
         placement: Placement {
@@ -116,9 +114,8 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
                 .collect::<Result<_, _>>()?,
         },
         ports,
-        volumes,
-        mounts,
-        configs: Vec::new(),
+        volume_graph,
+        config_graph: Default::default(),
         pre_deploy: None,
         caddy_config,
         update: UpdateConfig::default(),

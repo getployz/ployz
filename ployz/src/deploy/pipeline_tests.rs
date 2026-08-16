@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, num::NonZeroU32};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSuccess,
-    ManagementAddress, MembershipObservation, PartialResult, RequestedServiceSpec,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceMode, WireGuardPublicKey,
+    ManagementAddress, MembershipObservation, PartialResult, RequestedServiceSpec, RpcError,
+    RpcErrorCode, ServiceId, ServiceMode, WireGuardPublicKey,
 };
 use serde_json::Value;
 
@@ -140,25 +140,12 @@ fn resolved_scale_input_changes_only_replicas() {
         "container": { "image": "alpine", "pull_policy": "missing" }
     }))
     .unwrap();
-    let resolved = ResolvedServiceSpec {
-        service_id: ServiceId::random(),
-        name: requested.name.clone(),
-        mode: requested.mode.clone(),
-        container: requested.container.clone(),
-        placement: requested.placement.clone(),
-        ports: requested.ports.clone(),
-        volumes: requested.volumes.clone(),
-        mounts: requested.mounts.clone(),
-        configs: requested.configs.clone(),
-        pre_deploy: None,
-        caddy_config: None,
-        update: Default::default(),
-    };
-    let mut scaled = requested_from_resolved(&resolved).unwrap();
+    let resolved = requested.to_resolved(ServiceId::random(), Default::default());
+    let mut scaled = resolved.to_requested();
     scaled.mode = ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),
     };
-    let mut expected = requested_from_resolved(&resolved).unwrap();
+    let mut expected = resolved.to_requested();
     expected.mode = scaled.mode.clone();
     assert_eq!(scaled, expected);
 }
@@ -226,20 +213,7 @@ fn observation(
         "container": { "image": image, "pull_policy": "missing" }
     }))
     .unwrap();
-    let resolved = ResolvedServiceSpec {
-        service_id: *service_id,
-        name: requested.name.clone(),
-        mode: requested.mode,
-        container: requested.container,
-        placement: requested.placement,
-        ports: requested.ports,
-        volumes: requested.volumes,
-        mounts: requested.mounts,
-        configs: requested.configs,
-        pre_deploy: None,
-        caddy_config: None,
-        update: Default::default(),
-    };
+    let resolved = requested.to_resolved(*service_id, Default::default());
     ContainerObservation {
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("api-{id}"),

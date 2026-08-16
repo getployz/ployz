@@ -1,47 +1,29 @@
 use super::support::*;
 #[test]
-fn missing_volume_and_config_references_are_rejected_before_placement() {
-    let mut missing_volume = requested(ServiceMode::Global);
-    missing_volume.mounts.push(ServiceMount {
-        volume: ServiceVolumeReference::parse("missing").unwrap(),
-        target: ContainerPath::parse("/missing").unwrap(),
-        read_only: false,
-    });
-    assert_eq!(
-        plan_deploy(
-            [&missing_volume],
-            &DeploySnapshot::default(),
-            PlanOptions::default(),
-        ),
-        Err(PlanError::VolumeGraph(
-            ployz_core::ServiceVolumeGraphError::UnknownVolumeReference {
-                reference: ServiceVolumeReference::parse("missing").unwrap(),
-            }
-        ))
+fn missing_volume_and_config_references_cannot_enter_a_requested_spec() {
+    let mut dangling_volume = serde_json::to_value(requested(ServiceMode::Global)).unwrap();
+    *dangling_volume
+        .get_mut("mounts")
+        .expect("serialized spec has mounts") =
+        serde_json::json!([{"volume":"missing","target":"/missing"}]);
+    assert!(
+        serde_json::from_value::<RequestedServiceSpec>(dangling_volume)
+            .unwrap_err()
+            .to_string()
+            .contains("undeclared Service Volume")
     );
 
-    let mut missing_config = requested(ServiceMode::Global);
-    missing_config
-        .container
-        .config_mounts
-        .push(ployz_core::ConfigMount {
-            config_name: "missing".into(),
-            target: None,
-            uid: None,
-            gid: None,
-            mode: None,
-        });
-    assert_eq!(
-        plan_deploy(
-            [&missing_config],
-            &DeploySnapshot::default(),
-            PlanOptions::default(),
-        ),
-        Err(PlanError::ConfigGraph(
-            ployz_core::ServiceConfigGraphError::UnknownConfigName {
-                name: "missing".into(),
-            }
-        ))
+    let mut dangling_config = serde_json::to_value(requested(ServiceMode::Global)).unwrap();
+    *dangling_config
+        .get_mut("container")
+        .and_then(|container| container.get_mut("config_mounts"))
+        .expect("serialized spec has config mounts") =
+        serde_json::json!([{"config_name":"missing"}]);
+    assert!(
+        serde_json::from_value::<RequestedServiceSpec>(dangling_config)
+            .unwrap_err()
+            .to_string()
+            .contains("undeclared config")
     );
 }
 
@@ -162,20 +144,21 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
 fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
-    requested
-        .mounts
-        .push(requested.mounts.first().unwrap().clone());
-    let source = requested.volumes.first().unwrap().source.clone();
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mut mounts = requested.volume_graph.mounts().to_vec();
+    mounts.push(mounts.first().unwrap().clone());
+    let source = volumes.first().unwrap().source.clone();
     let alias = ServiceVolumeReference::parse("data-alias").unwrap();
-    requested.volumes.push(ServiceVolume {
+    volumes.push(ServiceVolume {
         reference: alias.clone(),
         source,
     });
-    requested.mounts.push(ServiceMount {
+    mounts.push(ServiceMount {
         volume: alias,
         target: ContainerPath::parse("/alias").unwrap(),
         read_only: false,
     });
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
     let plan = plan_deploy(
         [&requested],
@@ -200,7 +183,9 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
 fn unused_volume_definition_does_not_create_a_docker_volume() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
-    requested.volumes.push(ServiceVolume {
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mounts = requested.volume_graph.mounts().to_vec();
+    volumes.push(ServiceVolume {
         reference: ServiceVolumeReference::parse("logs").unwrap(),
         source: VolumeSource::Named {
             name: DockerVolumeName::parse("logs").unwrap(),
@@ -211,6 +196,7 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
             subpath: None,
         },
     });
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
     let plan = plan_deploy(
         [&requested],
@@ -243,7 +229,9 @@ fn conflicting_named_volume_aliases_are_rejected() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
     let alias = ServiceVolumeReference::parse("data-alias").unwrap();
-    requested.volumes.push(ServiceVolume {
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mut mounts = requested.volume_graph.mounts().to_vec();
+    volumes.push(ServiceVolume {
         reference: alias.clone(),
         source: VolumeSource::Named {
             name: DockerVolumeName::parse("data").unwrap(),
@@ -257,11 +245,12 @@ fn conflicting_named_volume_aliases_are_rejected() {
             subpath: None,
         },
     });
-    requested.mounts.push(ServiceMount {
+    mounts.push(ServiceMount {
         volume: alias,
         target: ContainerPath::parse("/alias").unwrap(),
         read_only: false,
     });
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
     assert_eq!(
         plan_deploy(

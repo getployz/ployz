@@ -183,13 +183,9 @@ fn convert_service(
         )));
     }
     let (volumes, mounts) = volumes(raw, root, project)?;
-    let (volumes, mounts) = ServiceVolumeGraph::parse(volumes, mounts)
-        .map_err(invalid)?
-        .into_parts();
+    let volume_graph = ServiceVolumeGraph::parse(volumes, mounts).map_err(invalid)?;
     let (configs, config_mounts) = configs(raw, root, directory)?;
-    let (configs, config_mounts) = ServiceConfigGraph::parse(configs, config_mounts)
-        .map_err(invalid)?
-        .into_parts();
+    let config_graph = ServiceConfigGraph::parse(configs, config_mounts).map_err(invalid)?;
     let placement = Placement {
         machines: raw
             .machines
@@ -252,7 +248,6 @@ fn convert_service(
         stop_timeout_secs: duration_millis(raw.stop_grace_period.as_deref())?
             .map(|millis| (millis / 1_000) as i64),
         sysctls: raw.sysctls.clone(),
-        config_mounts,
         restart: raw
             .restart
             .as_deref()
@@ -268,9 +263,8 @@ fn convert_service(
             container,
             placement,
             ports,
-            volumes,
-            mounts,
-            configs,
+            volume_graph,
+            config_graph,
             pre_deploy: pre_deploy(raw.pre_deploy.as_ref())?,
             caddy_config,
             update: update(raw.deploy.as_ref())?,

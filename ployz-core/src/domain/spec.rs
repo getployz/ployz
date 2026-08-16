@@ -7,6 +7,7 @@ use std::{
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
+use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
     BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, IngressHost, MachinePath,
     MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
@@ -426,58 +427,278 @@ pub struct ServiceContainerSpec {
     #[serde(default)]
     pub sysctls: BTreeMap<String, String>,
     #[serde(default)]
-    pub config_mounts: Vec<ConfigMount>,
-    #[serde(default)]
     pub restart: RestartPolicy,
 }
 
 /// Normalized deploy input before placement and container-specific resolution.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    try_from = "RequestedServiceSpecWire",
+    into = "RequestedServiceSpecWire"
+)]
 pub struct RequestedServiceSpec {
     pub name: ServiceName,
     pub mode: ServiceMode,
     pub container: ServiceContainerSpec,
-    #[serde(default)]
     pub placement: Placement,
-    #[serde(default)]
     pub ports: Vec<PortPublication>,
-    #[serde(default)]
-    pub volumes: Vec<ServiceVolume>,
-    #[serde(default)]
-    pub mounts: Vec<ServiceMount>,
-    #[serde(default)]
-    pub configs: Vec<ConfigSpec>,
-    #[serde(default)]
+    pub volume_graph: ServiceVolumeGraph,
+    pub config_graph: ServiceConfigGraph,
     pub pre_deploy: Option<PreDeployHook>,
-    #[serde(default)]
     pub caddy_config: Option<String>,
-    #[serde(default)]
     pub update: UpdateConfig,
 }
 
 /// The exact, fully resolved Service Spec attached to one created container.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ResolvedServiceSpecWire", into = "ResolvedServiceSpecWire")]
 pub struct ResolvedServiceSpec {
     pub service_id: ServiceId,
     pub name: ServiceName,
     pub mode: ServiceMode,
     pub container: ServiceContainerSpec,
-    #[serde(default)]
     pub placement: Placement,
-    #[serde(default)]
     pub ports: Vec<PortPublication>,
-    #[serde(default)]
-    pub volumes: Vec<ServiceVolume>,
-    #[serde(default)]
-    pub mounts: Vec<ServiceMount>,
-    #[serde(default)]
-    pub configs: Vec<ConfigSpec>,
-    #[serde(default)]
+    pub volume_graph: ServiceVolumeGraph,
+    pub config_graph: ServiceConfigGraph,
     pub pre_deploy: Option<PreDeployHook>,
-    #[serde(default)]
     pub caddy_config: Option<String>,
-    #[serde(default)]
     pub update: ResolvedUpdateConfig,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ServiceContainerSpecWire {
+    #[serde(flatten)]
+    spec: ServiceContainerSpec,
+    #[serde(default)]
+    config_mounts: Vec<ConfigMount>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RequestedServiceSpecWire {
+    name: ServiceName,
+    mode: ServiceMode,
+    container: ServiceContainerSpecWire,
+    #[serde(default)]
+    placement: Placement,
+    #[serde(default)]
+    ports: Vec<PortPublication>,
+    #[serde(default)]
+    volumes: Vec<ServiceVolume>,
+    #[serde(default)]
+    mounts: Vec<ServiceMount>,
+    #[serde(default)]
+    configs: Vec<ConfigSpec>,
+    #[serde(default)]
+    pre_deploy: Option<PreDeployHook>,
+    #[serde(default)]
+    caddy_config: Option<String>,
+    #[serde(default)]
+    update: UpdateConfig,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ResolvedServiceSpecWire {
+    service_id: ServiceId,
+    name: ServiceName,
+    mode: ServiceMode,
+    container: ServiceContainerSpecWire,
+    #[serde(default)]
+    placement: Placement,
+    #[serde(default)]
+    ports: Vec<PortPublication>,
+    #[serde(default)]
+    volumes: Vec<ServiceVolume>,
+    #[serde(default)]
+    mounts: Vec<ServiceMount>,
+    #[serde(default)]
+    configs: Vec<ConfigSpec>,
+    #[serde(default)]
+    pre_deploy: Option<PreDeployHook>,
+    #[serde(default)]
+    caddy_config: Option<String>,
+    #[serde(default)]
+    update: ResolvedUpdateConfig,
+}
+
+impl TryFrom<RequestedServiceSpecWire> for RequestedServiceSpec {
+    type Error = ServiceSpecGraphError;
+
+    fn try_from(wire: RequestedServiceSpecWire) -> Result<Self, Self::Error> {
+        Ok(Self {
+            name: wire.name,
+            mode: wire.mode,
+            container: wire.container.spec,
+            placement: wire.placement,
+            ports: wire.ports,
+            volume_graph: ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
+            config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
+            pre_deploy: wire.pre_deploy,
+            caddy_config: wire.caddy_config,
+            update: wire.update,
+        })
+    }
+}
+
+impl From<RequestedServiceSpec> for RequestedServiceSpecWire {
+    fn from(spec: RequestedServiceSpec) -> Self {
+        let (volumes, mounts) = spec.volume_graph.into_parts();
+        let (configs, config_mounts) = spec.config_graph.into_parts();
+        Self {
+            name: spec.name,
+            mode: spec.mode,
+            container: ServiceContainerSpecWire {
+                spec: spec.container,
+                config_mounts,
+            },
+            placement: spec.placement,
+            ports: spec.ports,
+            volumes,
+            mounts,
+            configs,
+            pre_deploy: spec.pre_deploy,
+            caddy_config: spec.caddy_config,
+            update: spec.update,
+        }
+    }
+}
+
+impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
+    type Error = ServiceSpecGraphError;
+
+    fn try_from(wire: ResolvedServiceSpecWire) -> Result<Self, Self::Error> {
+        Ok(Self {
+            service_id: wire.service_id,
+            name: wire.name,
+            mode: wire.mode,
+            container: wire.container.spec,
+            placement: wire.placement,
+            ports: wire.ports,
+            volume_graph: ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
+            config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
+            pre_deploy: wire.pre_deploy,
+            caddy_config: wire.caddy_config,
+            update: wire.update,
+        })
+    }
+}
+
+impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
+    fn from(spec: ResolvedServiceSpec) -> Self {
+        let (volumes, mounts) = spec.volume_graph.into_parts();
+        let (configs, config_mounts) = spec.config_graph.into_parts();
+        Self {
+            service_id: spec.service_id,
+            name: spec.name,
+            mode: spec.mode,
+            container: ServiceContainerSpecWire {
+                spec: spec.container,
+                config_mounts,
+            },
+            placement: spec.placement,
+            ports: spec.ports,
+            volumes,
+            mounts,
+            configs,
+            pre_deploy: spec.pre_deploy,
+            caddy_config: spec.caddy_config,
+            update: spec.update,
+        }
+    }
+}
+
+impl RequestedServiceSpec {
+    /// Service Volume definitions in this spec's graph.
+    #[must_use]
+    pub fn volumes(&self) -> &[ServiceVolume] {
+        self.volume_graph.volumes()
+    }
+
+    /// Volume mounts in this spec's graph.
+    #[must_use]
+    pub fn mounts(&self) -> &[ServiceMount] {
+        self.volume_graph.mounts()
+    }
+
+    /// Config definitions in this spec's graph.
+    #[must_use]
+    pub fn configs(&self) -> &[ConfigSpec] {
+        self.config_graph.configs()
+    }
+
+    /// Config mounts in this spec's graph.
+    #[must_use]
+    pub fn config_mounts(&self) -> &[ConfigMount] {
+        self.config_graph.mounts()
+    }
+
+    /// Copy this spec onto a Service Container after placement.
+    #[must_use]
+    pub fn to_resolved(
+        &self,
+        service_id: ServiceId,
+        update: ResolvedUpdateConfig,
+    ) -> ResolvedServiceSpec {
+        ResolvedServiceSpec {
+            service_id,
+            name: self.name.clone(),
+            mode: self.mode.clone(),
+            container: self.container.clone(),
+            placement: self.placement.clone(),
+            ports: self.ports.clone(),
+            volume_graph: self.volume_graph.clone(),
+            config_graph: self.config_graph.clone(),
+            pre_deploy: self.pre_deploy.clone(),
+            caddy_config: self.caddy_config.clone(),
+            update,
+        }
+    }
+}
+
+impl ResolvedServiceSpec {
+    /// Service Volume definitions in this spec's graph.
+    #[must_use]
+    pub fn volumes(&self) -> &[ServiceVolume] {
+        self.volume_graph.volumes()
+    }
+
+    /// Volume mounts in this spec's graph.
+    #[must_use]
+    pub fn mounts(&self) -> &[ServiceMount] {
+        self.volume_graph.mounts()
+    }
+
+    /// Config definitions in this spec's graph.
+    #[must_use]
+    pub fn configs(&self) -> &[ConfigSpec] {
+        self.config_graph.configs()
+    }
+
+    /// Config mounts in this spec's graph.
+    #[must_use]
+    pub fn config_mounts(&self) -> &[ConfigMount] {
+        self.config_graph.mounts()
+    }
+
+    /// Rebuild the deploy input this resolved spec came from.
+    #[must_use]
+    pub fn to_requested(&self) -> RequestedServiceSpec {
+        RequestedServiceSpec {
+            name: self.name.clone(),
+            mode: self.mode.clone(),
+            container: self.container.clone(),
+            placement: self.placement.clone(),
+            ports: self.ports.clone(),
+            volume_graph: self.volume_graph.clone(),
+            config_graph: self.config_graph.clone(),
+            pre_deploy: self.pre_deploy.clone(),
+            caddy_config: self.caddy_config.clone(),
+            update: UpdateConfig {
+                order: Some(self.update.order),
+                monitor_millis: self.update.monitor_millis,
+            },
+        }
+    }
 }
 
 #[must_use]
@@ -508,9 +729,8 @@ fn immutable_service_fields_changed(
         container: current_container,
         placement: current_placement,
         ports: current_ports,
-        volumes: current_volumes,
-        mounts: current_mounts,
-        configs: current_configs,
+        volume_graph: current_volumes,
+        config_graph: current_configs,
         pre_deploy: _,
         caddy_config: current_caddy_config,
         update: _,
@@ -521,9 +741,8 @@ fn immutable_service_fields_changed(
         container: requested_container,
         placement: requested_placement,
         ports: requested_ports,
-        volumes: requested_volumes,
-        mounts: requested_mounts,
-        configs: requested_configs,
+        volume_graph: requested_volumes,
+        config_graph: requested_configs,
         pre_deploy: _,
         caddy_config: requested_caddy_config,
         update: _,
@@ -534,9 +753,10 @@ fn immutable_service_fields_changed(
         || immutable_container_fields_changed(current_container, requested_container)
         || current_placement != requested_placement
         || !same_multiset(current_ports, requested_ports)
-        || !same_multiset(current_volumes, requested_volumes)
-        || !same_multiset(current_mounts, requested_mounts)
-        || !same_multiset(current_configs, requested_configs)
+        || !same_multiset(current_volumes.volumes(), requested_volumes.volumes())
+        || !same_multiset(current_volumes.mounts(), requested_volumes.mounts())
+        || !same_multiset(current_configs.configs(), requested_configs.configs())
+        || !same_multiset(current_configs.mounts(), requested_configs.mounts())
         || current_caddy_config.as_deref().map(str::trim)
             != requested_caddy_config.as_deref().map(str::trim)
 }
@@ -565,7 +785,6 @@ fn immutable_container_fields_changed(
         resources: _,
         stop_timeout_secs: current_stop_timeout_secs,
         sysctls: current_sysctls,
-        config_mounts: current_config_mounts,
         restart: current_restart,
     } = current;
     let ServiceContainerSpec {
@@ -588,7 +807,6 @@ fn immutable_container_fields_changed(
         resources: _,
         stop_timeout_secs: requested_stop_timeout_secs,
         sysctls: requested_sysctls,
-        config_mounts: requested_config_mounts,
         restart: requested_restart,
     } = requested;
 
@@ -609,7 +827,6 @@ fn immutable_container_fields_changed(
         || current_log_driver != requested_log_driver
         || current_stop_timeout_secs != requested_stop_timeout_secs
         || current_sysctls != requested_sysctls
-        || !same_multiset(current_config_mounts, requested_config_mounts)
         || current_restart != requested_restart
 }
 

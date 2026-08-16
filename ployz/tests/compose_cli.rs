@@ -256,7 +256,7 @@ secrets:
         api.caddy_config.as_deref(),
         Some("api.example.test { reverse_proxy api:80 }")
     );
-    assert_eq!(api.configs.first().unwrap().content, b"setting=true\n");
+    assert_eq!(api.configs().first().unwrap().content, b"setting=true\n");
     project.resolve_secrets().unwrap();
     let environment = &project.services.get("api").unwrap().container.environment;
     assert_eq!(environment.get("FILE_SECRET").unwrap(), "file-value");

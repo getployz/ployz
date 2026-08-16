@@ -211,16 +211,11 @@ configs:
         api.pre_deploy.as_ref().unwrap().timeout_millis,
         Some(150_000)
     );
-    assert_eq!(api.configs.first().unwrap().content, b"enabled=true\n");
-    assert_eq!(api.configs.get(1).unwrap().content, b"hello");
-    assert_eq!(
-        api.container.config_mounts.first().unwrap().mode,
-        Some(0o640)
-    );
-    assert_eq!(api.volumes.len(), 3);
-    api.to_volume_graph().unwrap();
-    api.to_config_graph().unwrap();
-    assert!(api.volumes.iter().any(|volume| matches!(
+    assert_eq!(api.configs().first().unwrap().content, b"enabled=true\n");
+    assert_eq!(api.configs().get(1).unwrap().content, b"hello");
+    assert_eq!(api.config_mounts().first().unwrap().mode, Some(0o640));
+    assert_eq!(api.volumes().len(), 3);
+    assert!(api.volumes().iter().any(|volume| matches!(
         &volume.source,
         VolumeSource::Named { name, no_copy: true, subpath: Some(subpath), .. }
             if name.as_str() == "data" && subpath == "current"
@@ -432,7 +427,11 @@ volumes:
         ["two", "three"]
     );
     assert!(matches!(
-        service(&project, "scalar").volumes.first().unwrap().source,
+        service(&project, "scalar")
+            .volumes()
+            .first()
+            .unwrap()
+            .source,
         VolumeSource::Named {
             external: true,
             driver: None,
@@ -707,7 +706,7 @@ volumes: {data: {name: demo_data}}
 secrets: {token: {x-command: "printf resolved"}}
 "#;
     let project = parse_normalized(yaml, ".").unwrap();
-    let requested_volume = service(&project, "db").volumes.first().unwrap().clone();
+    let requested_volume = service(&project, "db").volumes().first().unwrap().clone();
     let snapshot = DeploySnapshot {
         machines: vec![machine('a', "one"), machine('b', "two")],
         ..Default::default()

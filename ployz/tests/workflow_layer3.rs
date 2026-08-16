@@ -208,7 +208,12 @@ volumes:
     assert_eq!(&api_container.machine_id, machine_2);
     assert!(!api.hook_containers.is_empty());
     assert_eq!(
-        api_container.resolved_spec.configs.first().unwrap().content,
+        api_container
+            .resolved_spec
+            .configs()
+            .first()
+            .unwrap()
+            .content,
         b"hello\n"
     );
     assert!(matches!(

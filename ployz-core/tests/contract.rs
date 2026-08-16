@@ -901,13 +901,6 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         },
         stop_timeout_secs: Some(10),
         sysctls: Default::default(),
-        config_mounts: vec![ConfigMount {
-            config_name: "settings".into(),
-            target: Some(ContainerPath::parse("/etc/api/settings.toml").unwrap()),
-            uid: Some(1000),
-            gid: Some(1000),
-            mode: Some(0o440),
-        }],
         restart: RestartPolicy::default(),
     };
     let reference = ServiceVolumeReference::parse("data").unwrap();
@@ -935,12 +928,25 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             machines: vec![MachineTarget::parse("edge").unwrap()],
         },
         ports: Vec::new(),
-        volumes: vec![volume.clone()],
-        mounts: vec![mount.clone()],
-        configs: vec![ConfigSpec {
-            name: "settings".into(),
-            content: b"port = 8080".to_vec(),
-        }],
+        volume_graph: ployz_core::ServiceVolumeGraph::parse(
+            vec![volume.clone()],
+            vec![mount.clone()],
+        )
+        .unwrap(),
+        config_graph: ployz_core::ServiceConfigGraph::parse(
+            vec![ConfigSpec {
+                name: "settings".into(),
+                content: b"port = 8080".to_vec(),
+            }],
+            vec![ConfigMount {
+                config_name: "settings".into(),
+                target: Some(ContainerPath::parse("/etc/api/settings.toml").unwrap()),
+                uid: Some(1000),
+                gid: Some(1000),
+                mode: Some(0o440),
+            }],
+        )
+        .unwrap(),
         pre_deploy: Some(PreDeployHook {
             command: vec!["migrate".into()],
             environment: Default::default(),
@@ -961,9 +967,8 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         container,
         placement: requested.placement.clone(),
         ports: Vec::new(),
-        volumes: vec![volume],
-        mounts: vec![mount],
-        configs: requested.configs.clone(),
+        volume_graph: requested.volume_graph.clone(),
+        config_graph: requested.config_graph.clone(),
         pre_deploy: requested.pre_deploy.clone(),
         caddy_config: requested.caddy_config.clone(),
         update: ployz_core::ResolvedUpdateConfig {
@@ -990,6 +995,21 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
     assert_eq!(
         serde_json::from_value::<ResolvedServiceSpec>(resolved_json).unwrap(),
         resolved
+    );
+
+    let mut dangling = serde_json::to_value(&resolved).unwrap();
+    *dangling
+        .get_mut("mounts")
+        .and_then(Value::as_array_mut)
+        .and_then(|mounts| mounts.first_mut())
+        .and_then(|mount| mount.get_mut("volume"))
+        .expect("fixture has a mount volume") = json!("missing");
+    assert!(
+        serde_json::from_value::<CreateContainerRequest>(json!({
+            "kind": "service_container",
+            "resolved_spec": dangling
+        }))
+        .is_err()
     );
 }
 

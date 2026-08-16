@@ -236,13 +236,9 @@ async fn docker_config_mounts(
     configs: &mut ConfigOperation<'_>,
     spec: &ResolvedServiceSpec,
 ) -> Result<Vec<Mount>, Error> {
-    let mut mounts = Vec::with_capacity(spec.container.config_mounts.len());
-    for mount in &spec.container.config_mounts {
-        let config = spec
-            .configs
-            .iter()
-            .find(|config| config.name == mount.config_name)
-            .ok_or_else(|| Error::ConfigNotFound(mount.config_name.clone()))?;
+    let mut mounts = Vec::with_capacity(spec.config_graph.mounts().len());
+    for mount in spec.config_graph.mounts() {
+        let config = spec.config_graph.config_for(mount);
         let target = mount
             .target
             .as_ref()

@@ -43,7 +43,7 @@ fn compose_maps_bind_recursive_disabled() {
         ".",
     )
     .unwrap();
-    assert!(app(&project).volumes.iter().any(|volume| matches!(
+    assert!(app(&project).volumes().iter().any(|volume| matches!(
         &volume.source,
         VolumeSource::Bind {
             recursive: Some(ployz_core::BindRecursive::Disabled),

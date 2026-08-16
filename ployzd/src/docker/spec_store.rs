@@ -207,12 +207,8 @@ fn referenced_config_names(connection: &Connection) -> Result<HashSet<String>, E
     let encoded = statement.query_map([], |row| row.get::<_, String>(0))?;
     for encoded in encoded {
         let spec: ResolvedServiceSpec = serde_json::from_str(&encoded?)?;
-        for mount in &spec.container.config_mounts {
-            let config = spec
-                .configs
-                .iter()
-                .find(|config| config.name == mount.config_name)
-                .ok_or_else(|| Error::InvalidConfig(format!("missing {:?}", mount.config_name)))?;
+        for mount in spec.config_graph.mounts() {
+            let config = spec.config_graph.config_for(mount);
             referenced.insert(config_identity(config, mount)?.0);
         }
     }
@@ -335,9 +331,8 @@ mod tests {
         let mut operation = store.config_operation().await;
         let config_path = operation
             .materialize_config(
-                spec.configs.first().expect("fixture has a config"),
-                spec.container
-                    .config_mounts
+                spec.configs().first().expect("fixture has a config"),
+                spec.config_mounts()
                     .first()
                     .expect("fixture has a config mount"),
             )
@@ -374,9 +369,8 @@ mod tests {
 
         operation
             .materialize_config(
-                spec.configs.first().expect("fixture has a config"),
-                spec.container
-                    .config_mounts
+                spec.configs().first().expect("fixture has a config"),
+                spec.config_mounts()
                     .first()
                     .expect("fixture has a config mount"),
             )

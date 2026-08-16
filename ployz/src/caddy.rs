@@ -93,7 +93,7 @@ pub fn service_spec(
         container_port: NonZeroU16::new(port).expect("Caddy ports are non-zero"),
         transport_protocol: protocol,
     };
-    let (volumes, mounts) = ServiceVolumeGraph::parse(
+    let volume_graph = ServiceVolumeGraph::parse(
         vec![
             ServiceVolume {
                 reference: volume.clone(),
@@ -121,8 +121,7 @@ pub fn service_spec(
             mount(&runtime, "/run/caddy"),
         ],
     )
-    .expect("static Caddy Volume graph is valid")
-    .into_parts();
+    .expect("static Caddy Volume graph is valid");
     RequestedServiceSpec {
         name: ServiceName::parse(SERVICE_NAME).expect("static Service Name is valid"),
         mode: ServiceMode::Global,
@@ -154,7 +153,6 @@ pub fn service_spec(
             resources: ContainerResources::default(),
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
-            config_mounts: Vec::new(),
             restart: RestartPolicy::default(),
         },
         placement: Placement { machines },
@@ -163,9 +161,8 @@ pub fn service_spec(
             host_port(443, TransportProtocol::Tcp),
             host_port(443, TransportProtocol::Udp),
         ],
-        volumes,
-        mounts,
-        configs: Vec::new(),
+        volume_graph,
+        config_graph: Default::default(),
         pre_deploy: None,
         caddy_config,
         update: UpdateConfig::default(),
@@ -263,9 +260,7 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(spec.mounts.len(), 3);
-        let volumes = spec.to_volume_graph().unwrap();
-        assert_eq!(volumes.mounts().len(), 3);
-        spec.to_config_graph().unwrap();
+        assert_eq!(spec.mounts().len(), 3);
+        assert!(spec.config_graph.mounts().is_empty());
     }
 }

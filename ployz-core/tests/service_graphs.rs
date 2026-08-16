@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     ConfigMount, ConfigSpec, ContainerPath, DockerVolumeName, PullPolicy, RequestedServiceSpec,
-    ResolvedUpdateConfig, ServiceConfigGraph, ServiceConfigGraphError, ServiceContainerSpec,
-    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceSpecGraphError, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeGraphError, ServiceVolumeReference, UpdateOrder, VolumeSource,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceConfigGraph, ServiceConfigGraphError,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceSpecGraphError,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeGraphError, ServiceVolumeReference,
+    UpdateOrder, VolumeSource,
 };
 
 #[test]
@@ -84,6 +85,8 @@ fn legal_unused_definitions_repeated_mounts_and_volume_aliases_remain_representa
     )
     .unwrap();
 
+    assert_eq!(configs.config_for(&first_mount), &settings);
+    assert_eq!(configs.config_for(&repeated_mount), &settings);
     assert_eq!(configs.configs(), &[settings, unused_config]);
     assert_eq!(configs.mounts(), &[first_mount, repeated_mount]);
 }
@@ -180,100 +183,81 @@ fn requested_and_resolved_conversions_preserve_graph_invariants() {
         ],
         vec![config_mount("settings"), config_mount("settings")],
     );
-    let volumes = requested.to_volume_graph().unwrap();
-    let configs = requested.to_config_graph().unwrap();
+    let volumes = requested.volume_graph.clone();
+    let configs = requested.config_graph.clone();
     let update = ResolvedUpdateConfig {
         order: UpdateOrder::StopFirst,
         monitor_millis: Some(1_000),
     };
 
-    let resolved = requested
-        .to_resolved(ServiceId::random(), update.clone())
-        .unwrap();
-    assert_eq!(resolved.to_volume_graph().unwrap(), volumes);
-    assert_eq!(resolved.to_config_graph().unwrap(), configs);
+    let resolved = requested.to_resolved(ServiceId::random(), update.clone());
+    assert_eq!(resolved.volume_graph, volumes);
+    assert_eq!(resolved.config_graph, configs);
     assert_eq!(resolved.update, update);
 
-    let back = resolved.to_requested().unwrap();
-    assert_eq!(back.to_volume_graph().unwrap(), volumes);
-    assert_eq!(back.to_config_graph().unwrap(), configs);
+    let back = resolved.to_requested();
+    assert_eq!(back.volume_graph, volumes);
+    assert_eq!(back.config_graph, configs);
     assert_eq!(back.update.order, Some(UpdateOrder::StopFirst));
     assert_eq!(back.update.monitor_millis, Some(1_000));
 }
 
 #[test]
-fn conversions_reject_invalid_graphs_with_domain_errors() {
-    let service_id = ServiceId::random();
-    let update = ResolvedUpdateConfig::default();
-    let mut dangling_volume = requested_with_graphs(Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    dangling_volume.mounts.push(mount("missing", "/missing"));
+fn persisted_and_rpc_decoded_specs_validate_graph_invariants_on_entry() {
+    let valid = requested_with_graphs(
+        vec![named_volume("data", "data")],
+        vec![mount("data", "/var/data")],
+        vec![config("settings", b"x")],
+        vec![config_mount("settings")],
+    );
+    let json = serde_json::to_value(&valid).unwrap();
+    let decoded = serde_json::from_value::<RequestedServiceSpec>(json.clone()).unwrap();
+    assert_eq!(decoded.volume_graph, valid.volume_graph);
+    assert_eq!(decoded.config_graph, valid.config_graph);
+
+    let mut dangling_volume = json.clone();
+    set_field(
+        &mut dangling_volume,
+        "mounts",
+        serde_json::json!([{"volume":"missing","target":"/missing"}]),
+    );
     assert_eq!(
-        dangling_volume.to_resolved(service_id, update.clone()),
-        Err(ServiceSpecGraphError::Volume(
-            ServiceVolumeGraphError::UnknownVolumeReference {
-                reference: reference("missing"),
-            }
-        ))
+        serde_json::from_value::<RequestedServiceSpec>(dangling_volume)
+            .unwrap_err()
+            .to_string(),
+        ServiceSpecGraphError::Volume(ServiceVolumeGraphError::UnknownVolumeReference {
+            reference: reference("missing"),
+        })
+        .to_string()
     );
 
-    let mut dangling_config = requested_with_graphs(Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    dangling_config
-        .container
-        .config_mounts
-        .push(config_mount("missing"));
+    let mut dangling_config = json;
+    *dangling_config
+        .get_mut("container")
+        .and_then(|container| container.get_mut("config_mounts"))
+        .expect("serialized spec has config mounts") =
+        serde_json::json!([{"config_name":"missing"}]);
     assert_eq!(
-        dangling_config.to_resolved(service_id, update),
-        Err(ServiceSpecGraphError::Config(
-            ServiceConfigGraphError::UnknownConfigName {
-                name: "missing".into(),
-            }
-        ))
+        serde_json::from_value::<RequestedServiceSpec>(dangling_config)
+            .unwrap_err()
+            .to_string(),
+        ServiceSpecGraphError::Config(ServiceConfigGraphError::UnknownConfigName {
+            name: "missing".into(),
+        })
+        .to_string()
     );
 
-    let mut resolved = requested_with_graphs(Vec::new(), Vec::new(), Vec::new(), Vec::new())
-        .to_resolved(service_id, ResolvedUpdateConfig::default())
-        .unwrap();
-    resolved.mounts.push(mount("missing", "/missing"));
+    let resolved = valid.to_resolved(ServiceId::random(), ResolvedUpdateConfig::default());
+    let mut resolved_json = serde_json::to_value(&resolved).unwrap();
+    set_field(&mut resolved_json, "volumes", serde_json::json!([]));
     assert_eq!(
-        resolved.to_requested(),
-        Err(ServiceSpecGraphError::Volume(
-            ServiceVolumeGraphError::UnknownVolumeReference {
-                reference: reference("missing"),
-            }
-        ))
-    );
-    resolved.mounts.clear();
-    resolved
-        .container
-        .config_mounts
-        .push(config_mount("missing"));
-    assert_eq!(
-        resolved.to_requested(),
-        Err(ServiceSpecGraphError::Config(
-            ServiceConfigGraphError::UnknownConfigName {
-                name: "missing".into(),
-            }
-        ))
-    );
-}
-
-#[test]
-fn existing_spec_fields_still_accept_unvalidated_parallel_arrays() {
-    let requested = requested_with_graphs(
-        Vec::new(),
-        vec![mount("missing", "/missing")],
-        Vec::new(),
-        vec![config_mount("missing")],
-    );
-
-    let json = serde_json::to_value(&requested).unwrap();
-    let decoded = serde_json::from_value::<RequestedServiceSpec>(json).unwrap();
-    assert_eq!(decoded.volumes, requested.volumes);
-    assert_eq!(decoded.mounts, requested.mounts);
-    assert_eq!(decoded.configs, requested.configs);
-    assert_eq!(
-        decoded.container.config_mounts,
-        requested.container.config_mounts
+        serde_json::from_value::<ResolvedServiceSpec>(resolved_json)
+            .unwrap_err()
+            .to_string(),
+        ServiceSpecGraphError::Volume(ServiceVolumeGraphError::UnknownVolumeReference {
+            reference: reference("data"),
+        })
+        .to_string()
     );
 }
 
@@ -292,7 +276,11 @@ fn duplicate_first_item(value: &mut serde_json::Value, key: &str) {
 }
 
 fn clear_array(value: &mut serde_json::Value, key: &str) {
-    *value.get_mut(key).expect("serialized graph has the field") = serde_json::json!([]);
+    set_field(value, key, serde_json::json!([]));
+}
+
+fn set_field(value: &mut serde_json::Value, key: &str, replacement: serde_json::Value) {
+    *value.get_mut(key).expect("serialized spec has the field") = replacement;
 }
 
 fn requested_with_graphs(
@@ -324,14 +312,12 @@ fn requested_with_graphs(
             resources: Default::default(),
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
-            config_mounts,
             restart: Default::default(),
         },
         placement: Default::default(),
         ports: Vec::new(),
-        volumes,
-        mounts,
-        configs,
+        volume_graph: ServiceVolumeGraph::parse(volumes, mounts).unwrap(),
+        config_graph: ServiceConfigGraph::parse(configs, config_mounts).unwrap(),
         pre_deploy: None,
         caddy_config: None,
         update: Default::default(),
