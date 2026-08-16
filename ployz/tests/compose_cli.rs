@@ -6,6 +6,7 @@ use std::{
 };
 
 use ployz::compose::{ComposeError, LoadOptions, load_project};
+use ployz_core::VolumeSource;
 
 #[test]
 fn compose_failures_probe_the_plugin_once_and_preserve_project_diagnostics() {
@@ -374,6 +375,67 @@ secrets:
             .unwrap()
             .contains("no Ployz config or local daemon socket is available")
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn real_compose_unescapes_literal_dollars_into_the_requested_spec() {
+    if !Path::new("/usr/bin/docker").is_file() {
+        eprintln!("skipping: /usr/bin/docker is unavailable");
+        return;
+    }
+    let root = test_dir("literal-dollars");
+    let compose = root.join("compose.yaml");
+    fs::write(
+        &compose,
+        r#"name: demo
+services:
+  a:
+    image: alpine:3.20
+    command: ["echo", "a$$b"]
+    entrypoint: ["/bin/sh", "-c", "echo a$$b"]
+    environment:
+      LITERAL: "a$$b"
+    volumes:
+      - type: volume
+        source: data
+        target: /data
+volumes:
+  data:
+    name: demo_data
+    labels:
+      tier: "a$$b"
+"#,
+    )
+    .unwrap();
+    let docker = executable(
+        &root,
+        "real-docker",
+        "#!/bin/sh\nexport DOCKER_HOST=tcp://127.0.0.1:1\nexec /usr/bin/docker \"$@\"\n",
+    );
+    let project = load_project(&LoadOptions {
+        command: "deploy".into(),
+        files: vec![compose],
+        working_dir: Some(root.clone()),
+        docker: Some(docker),
+        ..Default::default()
+    })
+    .unwrap();
+    let service = project.services.get("a").unwrap();
+    assert_eq!(
+        service
+            .container
+            .environment
+            .get("LITERAL")
+            .map(String::as_str),
+        Some("a$b")
+    );
+    assert_eq!(service.container.command, ["echo", "a$b"]);
+    assert_eq!(service.container.entrypoint, ["/bin/sh", "-c", "echo a$b"]);
+    let VolumeSource::Named { labels, .. } = &service.volumes().first().unwrap().source else {
+        panic!("expected a named volume");
+    };
+    assert_eq!(labels.get("tier").map(String::as_str), Some("a$b"));
     fs::remove_dir_all(root).unwrap();
 }
 

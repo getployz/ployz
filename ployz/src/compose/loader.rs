@@ -141,7 +141,9 @@ fn config_output(
 }
 
 fn parse_project(output: &Output) -> Result<RawProject, ComposeError> {
-    serde_norway::from_slice(&output.stdout)
+    // Compose `config` re-escapes every `$` as `$$` so the YAML can be fed back
+    // into Compose. Undo that before the values become a Requested Service Spec.
+    serde_norway::from_str(&String::from_utf8_lossy(&output.stdout).replace("$$", "$"))
         .map_err(|error| ComposeError::Invalid(error.to_string()))
 }
 
