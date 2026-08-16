@@ -15,8 +15,8 @@ pub use service::{
 };
 pub(crate) use store::LocalContainerSnapshot;
 pub use store::{
-    CertificateMaterial, ReplicatedObservations, ReplicatedStore, run_machine_publisher,
-    wait_for_catch_up,
+    CertificateChallenge, CertificateMaterial, ReplicatedObservations, ReplicatedStore,
+    run_machine_publisher, wait_for_catch_up,
 };
 
 use thiserror::Error;

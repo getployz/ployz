@@ -1,5 +1,6 @@
 //! Docker-in-Docker support for the ignored Layer 3 parity suite.
 
+pub mod fake_acme;
 mod machine_admin;
 
 use std::{
@@ -94,7 +95,10 @@ impl ClusterPlan {
                     api_port: reserve_loopback_port()?,
                     privileged: true,
                     labels: labels.clone(),
-                    environment: BTreeMap::new(),
+                    environment: BTreeMap::from([(
+                        "PLOYZ_ACME_DIRECTORY".to_owned(),
+                        String::new(),
+                    )]),
                     daemon_args: Vec::new(),
                 })
             })
@@ -178,6 +182,8 @@ impl Cluster {
                 machine.name.clone(),
                 "--network".to_owned(),
                 cluster.plan.network.clone(),
+                "--add-host".to_owned(),
+                "host.docker.internal:host-gateway".to_owned(),
             ]);
             for (key, value) in &machine.labels {
                 args.extend(["--label".to_owned(), format!("{key}={value}")]);
@@ -971,6 +977,9 @@ mod tests {
                 .iter()
                 .all(|machine| { machine.labels == plan.labels })
         );
+        assert!(plan.machines.iter().all(|machine| {
+            machine.environment.get("PLOYZ_ACME_DIRECTORY") == Some(&String::new())
+        }));
         assert_eq!(
             plan.teardown_filters(),
             [

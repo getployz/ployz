@@ -3,6 +3,7 @@
 mod docker_image;
 
 pub mod caddy;
+pub(crate) mod certificates;
 pub mod corrosion;
 pub mod daemon;
 pub mod diag;

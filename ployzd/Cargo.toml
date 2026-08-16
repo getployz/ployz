@@ -18,8 +18,10 @@ netlink-packet-wireguard = "=0.2.3"
 fs2 = "0.4.3"
 futures-util = { version = "0.3.34", features = ["sink"] }
 hickory-server = "0.26.1"
+http = "1.4.0"
 http-body = "1.1.0"
 http-body-util = "0.1.5"
+instant-acme = "0.8.5"
 ipnet = "2.12.1"
 ployz-core.workspace = true
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls", "stream"] }
