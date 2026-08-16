@@ -168,6 +168,10 @@ _Avoid_: empty hostname sentinel
 The certificate and private key held in cluster state for one Ingress Hostname. It is served as given; it is not an issuance request and not a local proxy store.
 _Avoid_: Caddy certificate, ACME certificate, cert secret
 
+**Certificate Policy**:
+The cluster-state values that steer certificate issuance: authority directory, external account binding, key type, renewal fraction, backoff bounds, and probe timeout. Absence means the daemon's built-in defaults. A challenge kind the daemon cannot perform is a refusal, not a default.
+_Avoid_: ACME config, daemon certificate constants, CA settings
+
 **Cluster DNS Verdict**:
 Whether an Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
 _Avoid_: DNS health, certificate gate, reachability

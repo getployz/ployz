@@ -14,12 +14,13 @@ use bytes::Bytes;
 use futures_util::future::join_all;
 use http_body_util::BodyExt;
 use instant_acme::{
-    Account, AccountCredentials, AuthorizationStatus, BytesResponse, ChallengeType, HttpClient,
-    Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
+    Account, AccountCredentials, AuthorizationStatus, BytesResponse, ChallengeType,
+    ExternalAccountKey, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
-    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, PortPublication,
+    CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
+    Machine, MachineId, PortPublication, resolve_certificate_policy,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -38,7 +39,7 @@ const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 /// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
-pub(crate) const RANK_STEP: Duration = Duration::from_secs(30);
+pub(crate) const RANK_STEP: Duration = CHALLENGE_WAIT;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IssuanceAction {
@@ -56,16 +57,20 @@ pub(crate) fn machine_rank<'id>(
 }
 
 /// Whether this Machine should order now.
+///
+/// `step` must cover the HTTP-01 probe wait so a later rank cannot start
+/// a competing order while an earlier rank is still presenting.
 #[must_use]
 pub(crate) fn issuance_action(
     row: Option<&CertificateRow>,
     rank: usize,
     elapsed: Duration,
+    step: Duration,
 ) -> IssuanceAction {
     if row.and_then(CertificateRow::material).is_some() {
         return IssuanceAction::Nothing;
     }
-    let delay = RANK_STEP.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX));
+    let delay = step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX));
     if elapsed < delay {
         IssuanceAction::Nothing
     } else {
@@ -150,6 +155,12 @@ pub(crate) enum Error {
     },
     #[error("no HTTP-01 challenge for {0}")]
     NoHttp01(IngressHost),
+    #[error("certificate key type {0} is not supported")]
+    UnsupportedKeyType(String),
+    #[error("certificate key: {0}")]
+    Key(String),
+    #[error("external account binding hmac_key is not base64")]
+    InvalidEab,
 }
 
 /// Built-in directory, or `PLOYZ_ACME_DIRECTORY`. Empty disables issuance.
@@ -195,14 +206,10 @@ pub(crate) fn wanted_certificate_hosts<'a>(
 pub(crate) async fn run(
     store: ReplicatedStore,
     data_dir: PathBuf,
-    directory: Option<String>,
+    directory_default: Option<String>,
     machine_id: MachineId,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let Some(directory) = directory else {
-        shutdown.cancelled().await;
-        return Ok(());
-    };
     let account_dir = data_dir.join("acme");
     let mut changes = store
         .subscribe_container_changes()
@@ -212,7 +219,7 @@ pub(crate) async fn run(
     loop {
         if let Err(error) = issue_wanted(
             &store,
-            &directory,
+            &directory_default,
             &account_dir,
             &machine_id,
             &mut first_seen,
@@ -236,11 +243,29 @@ pub(crate) async fn run(
 
 async fn issue_wanted(
     store: &ReplicatedStore,
-    directory: &str,
+    directory_default: &Option<String>,
     account_dir: &Path,
     machine_id: &MachineId,
     first_seen: &mut BTreeMap<IngressHost, Instant>,
 ) -> Result<(), Error> {
+    let policy = match resolve_certificate_policy(
+        store.certificate_policy().await?.as_deref(),
+        &CertificatePolicy::built_in(directory_default.clone()),
+    ) {
+        Ok(policy) => policy,
+        Err(refusal) => {
+            let containers = store.containers().await?;
+            for hostname in wanted_certificate_hosts(containers.observations.iter()) {
+                store
+                    .record_certificate_error(&hostname, refusal.reason())
+                    .await?;
+            }
+            return Ok(());
+        }
+    };
+    let Some(directory) = policy.directory_url() else {
+        return Ok(());
+    };
     let containers = store.containers().await?;
     let wanted = wanted_certificate_hosts(containers.observations.iter());
     let rows = store.certificate_state().await?;
@@ -265,18 +290,20 @@ async fn issue_wanted(
             now
         };
         let elapsed = now.saturating_duration_since(seen);
-        if issuance_action(row, rank, elapsed) == IssuanceAction::Order {
+        if issuance_action(row, rank, elapsed, RANK_STEP.max(policy.probe_timeout()))
+            == IssuanceAction::Order
+        {
             to_order.push(hostname);
         }
     }
     if to_order.is_empty() {
         return Ok(());
     }
-    account(directory, account_dir).await?;
+    account(directory, &policy, account_dir).await?;
     let results = join_all(
         to_order
             .iter()
-            .map(|hostname| obtain(store, hostname, directory, account_dir)),
+            .map(|hostname| obtain(store, hostname, &policy, account_dir)),
     )
     .await;
     for (hostname, result) in to_order.iter().zip(results) {
@@ -290,13 +317,14 @@ async fn issue_wanted(
 async fn obtain(
     store: &ReplicatedStore,
     hostname: &IngressHost,
-    directory: &str,
+    policy: &CertificatePolicy,
     account_dir: &Path,
 ) -> Result<(), Error> {
     if store.certificate(hostname).await?.is_some() {
         return Ok(());
     }
-    let material = order_certificate(hostname, directory, account_dir, |challenge| {
+    let probe_timeout = policy.probe_timeout();
+    let material = order_certificate(hostname, policy, account_dir, |challenge| {
         let store = store.clone();
         let hostname = hostname.clone();
         async move {
@@ -308,7 +336,7 @@ async fn obtain(
             let containers = store.containers().await?;
             let caddy_ips = caddy_challenge_ips(&machines.observations, &containers.observations);
             let addresses = challenge_probe_addresses(&resolved, &caddy_ips);
-            wait_for_http01(&hostname, &challenge, &addresses).await
+            wait_for_http01(&hostname, &challenge, &addresses, probe_timeout).await
         }
     })
     .await?;
@@ -323,7 +351,7 @@ async fn obtain(
 /// Returns if the directory, account, challenge presentation, or issuance fails.
 pub(crate) async fn order_certificate<F, Fut>(
     hostname: &IngressHost,
-    directory: &str,
+    policy: &CertificatePolicy,
     account_dir: &Path,
     mut present: F,
 ) -> Result<CertificateMaterial, Error>
@@ -331,7 +359,8 @@ where
     F: FnMut(CertificateChallenge) -> Fut,
     Fut: Future<Output = Result<(), Error>>,
 {
-    let account = account(directory, account_dir).await?;
+    let directory = policy.directory_url().ok_or(Error::MissingMaterial)?;
+    let account = account(directory, policy, account_dir).await?;
     let identifiers = [Identifier::Dns(hostname.as_str().to_owned())];
     let mut order = account
         .new_order(&NewOrder::new(identifiers.as_slice()))
@@ -370,21 +399,82 @@ where
             status,
         });
     }
-    let private_key = order.finalize().await?;
+    let private_key = match policy.key_type() {
+        CertificateKeyType::EcdsaP256 => order.finalize().await?,
+        key_type @ (CertificateKeyType::EcdsaP384
+        | CertificateKeyType::Rsa2048
+        | CertificateKeyType::Unrecognized(_)) => {
+            let (pem, csr) = certificate_request(hostname, key_type)?;
+            order.finalize_csr(&csr).await?;
+            pem
+        }
+    };
     let certificate = order.poll_certificate(&RetryPolicy::default()).await?;
     CertificateMaterial::new(certificate, private_key).ok_or(Error::MissingMaterial)
 }
 
-async fn account(directory: &str, account_dir: &Path) -> Result<Account, Error> {
+fn certificate_request(
+    hostname: &IngressHost,
+    key_type: &CertificateKeyType,
+) -> Result<(String, Vec<u8>), Error> {
+    let key = match key_type {
+        CertificateKeyType::EcdsaP256 => {
+            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
+        }
+        CertificateKeyType::EcdsaP384 => {
+            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384)
+        }
+        CertificateKeyType::Rsa2048 => rcgen::KeyPair::generate_for(&rcgen::PKCS_RSA_SHA256),
+        CertificateKeyType::Unrecognized(kind) => {
+            return Err(Error::UnsupportedKeyType(kind.clone()));
+        }
+    }
+    .map_err(|error| Error::Key(error.to_string()))?;
+    let mut params = rcgen::CertificateParams::new(vec![hostname.as_str().to_owned()])
+        .map_err(|error| Error::Key(error.to_string()))?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    let csr = params
+        .serialize_request(&key)
+        .map_err(|error| Error::Key(error.to_string()))?;
+    Ok((key.serialize_pem(), csr.der().as_ref().to_vec()))
+}
+
+fn eab_key(policy: &CertificatePolicy) -> Result<Option<ExternalAccountKey>, Error> {
+    let Some(eab) = policy.eab() else {
+        return Ok(None);
+    };
+    let key = eab.to_hmac_key_bytes().map_err(|_| Error::InvalidEab)?;
+    Ok(Some(ExternalAccountKey::new(eab.kid().to_owned(), &key)))
+}
+
+fn stored_directory(bytes: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Stored {
+        directory: Option<String>,
+    }
+    serde_json::from_slice::<Stored>(bytes)
+        .ok()
+        .and_then(|stored| stored.directory)
+}
+
+async fn account(
+    directory: &str,
+    policy: &CertificatePolicy,
+    account_dir: &Path,
+) -> Result<Account, Error> {
     let http: Box<dyn HttpClient> = Box::new(ReqwestAcmeClient::new()?);
     let path = account_dir.join(ACCOUNT_FILE);
     if path.exists() {
-        let credentials: AccountCredentials = serde_json::from_slice(&std::fs::read(&path)?)?;
-        return Ok(Account::builder_with_http(http)
-            .from_credentials(credentials)
-            .await?);
+        let bytes = std::fs::read(&path)?;
+        if stored_directory(&bytes).as_deref() == Some(directory) {
+            let credentials: AccountCredentials = serde_json::from_slice(&bytes)?;
+            return Ok(Account::builder_with_http(http)
+                .from_credentials(credentials)
+                .await?);
+        }
     }
     std::fs::create_dir_all(account_dir)?;
+    let eab = eab_key(policy)?;
     let (account, credentials) = Account::builder_with_http(http)
         .create(
             &NewAccount {
@@ -393,7 +483,7 @@ async fn account(directory: &str, account_dir: &Path) -> Result<Account, Error> 
                 only_return_existing: false,
             },
             directory.to_owned(),
-            None,
+            eab.as_ref(),
         )
         .await?;
     atomic_write(&path, &serde_json::to_vec(&credentials)?, 0o600)?;
@@ -412,6 +502,7 @@ async fn wait_for_http01(
     hostname: &IngressHost,
     challenge: &CertificateChallenge,
     addresses: &[SocketAddr],
+    probe_timeout: Duration,
 ) -> Result<(), Error> {
     if addresses.is_empty() {
         return Err(Error::ChallengeNotServed);
@@ -419,9 +510,9 @@ async fn wait_for_http01(
     let client = Client::builder()
         .redirect(Policy::none())
         .no_proxy()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(2).min(probe_timeout))
         .build()?;
-    let deadline = Instant::now() + CHALLENGE_WAIT;
+    let deadline = Instant::now() + probe_timeout;
     loop {
         let answered = join_all(addresses.iter().map(|address| {
             let client = &client;
@@ -527,18 +618,23 @@ mod tests {
     };
 
     use ployz_core::{
-        ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-        ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-        Machine, MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
+        CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
+        ContainerObservation, ContainerRuntimeObservation, HealthObservation, HttpProtocol,
+        IngressHost, IngressHostname, Machine, MachineId, PortPublication, ResolvedServiceSpec,
+        ServiceId, ServiceName, resolve_certificate_policy,
     };
     use serde_json::json;
 
     use super::{
-        IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
+        CHALLENGE_WAIT, IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
         directory_from_env, issuance_action, machine_rank, order_certificate, wait_for_http01,
         wanted_certificate_hosts,
     };
     use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
+
+    fn policy_for(directory: &str) -> CertificatePolicy {
+        CertificatePolicy::built_in(Some(directory.to_owned()))
+    }
 
     #[test]
     fn directory_empty_disables_issuance() {
@@ -611,24 +707,33 @@ mod tests {
     fn only_rank_zero_orders_immediately() {
         assert_eq!(RANK_STEP, Duration::from_secs(30));
         assert_eq!(
-            issuance_action(None, 0, Duration::ZERO),
+            issuance_action(None, 0, Duration::ZERO, RANK_STEP),
             IssuanceAction::Order
         );
         assert_eq!(
-            issuance_action(None, 1, Duration::from_secs(30) - Duration::from_millis(1)),
+            issuance_action(
+                None,
+                1,
+                Duration::from_secs(30) - Duration::from_millis(1),
+                RANK_STEP
+            ),
             IssuanceAction::Nothing
         );
         assert_eq!(
-            issuance_action(None, 1, Duration::from_secs(30)),
+            issuance_action(None, 1, Duration::from_secs(30), RANK_STEP),
             IssuanceAction::Order
         );
         assert_eq!(
-            issuance_action(None, 2, Duration::from_secs(30)),
+            issuance_action(None, 2, Duration::from_secs(30), RANK_STEP),
             IssuanceAction::Nothing
         );
         assert_eq!(
-            issuance_action(None, 2, Duration::from_secs(60)),
+            issuance_action(None, 2, Duration::from_secs(60), RANK_STEP),
             IssuanceAction::Order
+        );
+        assert_eq!(
+            issuance_action(None, 1, Duration::from_secs(30), Duration::from_secs(120)),
+            IssuanceAction::Nothing
         );
     }
 
@@ -637,7 +742,7 @@ mod tests {
         let material = CertificateMaterial::new("CERT", "KEY").unwrap();
         let row = CertificateRow::from_parts(Some(material), None);
         assert_eq!(
-            issuance_action(Some(&row), 0, Duration::from_secs(60)),
+            issuance_action(Some(&row), 0, Duration::from_secs(60), RANK_STEP),
             IssuanceAction::Nothing
         );
     }
@@ -694,6 +799,7 @@ mod tests {
                 SocketAddr::from(([127, 0, 0, 1], first_port)),
                 SocketAddr::from(([127, 0, 0, 1], second_port)),
             ],
+            CHALLENGE_WAIT,
         )
         .await
         .unwrap();
@@ -706,7 +812,7 @@ mod tests {
         let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
         let error = tokio::time::timeout(
             Duration::from_secs(1),
-            wait_for_http01(&hostname, &challenge, &[]),
+            wait_for_http01(&hostname, &challenge, &[], CHALLENGE_WAIT),
         )
         .await
         .unwrap()
@@ -726,23 +832,77 @@ mod tests {
         ca.set_validation("127.0.0.1", validation_port);
         let account_dir =
             std::env::temp_dir().join(format!("ployzd-acme-{}-{}", std::process::id(), hostname));
-        let material =
-            order_certificate(&hostname, &ca.directory_url(), &account_dir, |challenge| {
-                let answers = std::sync::Arc::clone(&answers);
-                async move {
-                    answers.lock().unwrap().insert(
-                        challenge.token().to_owned(),
-                        challenge.response().to_owned(),
-                    );
-                    Ok(())
-                }
-            })
-            .await
-            .unwrap();
+        let policy = resolve_certificate_policy(
+            Some(&format!(r#"{{"directory_url":"{}"}}"#, ca.directory_url())),
+            &CertificatePolicy::built_in(None),
+        )
+        .unwrap();
+        let material = order_certificate(&hostname, &policy, &account_dir, |challenge| {
+            let answers = std::sync::Arc::clone(&answers);
+            async move {
+                answers.lock().unwrap().insert(
+                    challenge.token().to_owned(),
+                    challenge.response().to_owned(),
+                );
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
 
         assert!(material.certificate().contains("BEGIN CERTIFICATE"));
         assert!(material.private_key().contains("BEGIN"));
         assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
+        drop(http01);
+        let _ = std::fs::remove_dir_all(account_dir);
+    }
+
+    #[tokio::test]
+    async fn policy_key_type_and_eab_issue_against_a_fake_ca() {
+        let hostname = host("rsa.example.com");
+        let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let (http01, validation_port) =
+            ployz_testkit::fake_acme::serve_http01(std::sync::Arc::clone(&answers));
+        let ca = ployz_testkit::fake_acme::FakeCa::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        ca.set_validation("127.0.0.1", validation_port);
+        let account_dir = std::env::temp_dir().join(format!(
+            "ployzd-acme-policy-{}-{}",
+            std::process::id(),
+            hostname
+        ));
+        let policy = resolve_certificate_policy(
+            Some(&format!(
+                r#"{{
+                    "directory_url":"{}",
+                    "eab":{{"kid":"kid-1","hmac_key":"dGVzdA"}},
+                    "key_type":"ecdsa-p384",
+                    "probe_timeout":5
+                }}"#,
+                ca.directory_url()
+            )),
+            &CertificatePolicy::built_in(None),
+        )
+        .unwrap();
+        assert_eq!(policy.key_type(), &CertificateKeyType::EcdsaP384);
+        assert_eq!(policy.eab().unwrap().kid(), "kid-1");
+        let material = order_certificate(&hostname, &policy, &account_dir, |challenge| {
+            let answers = std::sync::Arc::clone(&answers);
+            async move {
+                answers.lock().unwrap().insert(
+                    challenge.token().to_owned(),
+                    challenge.response().to_owned(),
+                );
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(material.certificate().contains("BEGIN CERTIFICATE"));
+        assert!(material.private_key().contains("BEGIN"));
+        assert_eq!(ca.ordered(), vec!["rsa.example.com".to_owned()]);
         drop(http01);
         let _ = std::fs::remove_dir_all(account_dir);
     }
@@ -757,7 +917,7 @@ mod tests {
         ));
         let error = order_certificate(
             &hostname,
-            "http://127.0.0.1:1/directory",
+            &policy_for("http://127.0.0.1:1/directory"),
             &account_dir,
             |_| async { Ok(()) },
         )

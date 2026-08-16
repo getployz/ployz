@@ -55,10 +55,14 @@ macro_rules! define_capabilities {
         /// Bidirectional exec is outside the unary catalog.
         pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
 
+        /// The daemon can take a Certificate Policy from cluster state.
+        pub const CERTIFICATE_POLICY_CAPABILITY: &str = "ployz.certificates.policy.v1";
+
         const CATALOGUED_CAPABILITIES: &[(&str, CapabilityAdvertisement)] = &[
             $(($unary_capability, CapabilityAdvertisement::$unary_advertisement),)+
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
             (EXEC_CONTAINER_CAPABILITY, CapabilityAdvertisement::Container),
+            (CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement::Always),
         ];
     };
 }

@@ -678,8 +678,8 @@ mod tests {
     use tokio::net::UnixListener;
 
     use ployz_core::{
-        DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, LIST_CONTAINERS_CAPABILITY,
-        MachineRpcClient, ResetRequest, op,
+        CERTIFICATE_POLICY_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest,
+        LIST_CONTAINERS_CAPABILITY, MachineRpcClient, ResetRequest, op,
     };
     use tonic::transport::Endpoint;
 
@@ -771,6 +771,7 @@ mod tests {
         let daemon = Daemon::start(config).await.unwrap();
         let description = describe(&socket).await;
         assert!(description.supports(DESCRIBE_CONTRACT_CAPABILITY));
+        assert!(description.supports(CERTIFICATE_POLICY_CAPABILITY));
         assert!(!description.supports(LIST_CONTAINERS_CAPABILITY));
         daemon.request_stop();
         daemon.wait().await.unwrap();

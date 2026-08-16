@@ -65,6 +65,7 @@ impl CertificateChallenge {
 pub struct CertificateRow {
     material: Option<CertificateMaterial>,
     challenge: Option<CertificateChallenge>,
+    last_error: Option<String>,
 }
 
 impl CertificateRow {
@@ -77,6 +78,7 @@ impl CertificateRow {
         Self {
             material,
             challenge,
+            last_error: None,
         }
     }
 
@@ -86,6 +88,7 @@ impl CertificateRow {
         Self {
             material: Some(material),
             challenge: None,
+            last_error: None,
         }
     }
 
@@ -101,6 +104,12 @@ impl CertificateRow {
         self.challenge.as_ref()
     }
 
+    /// Last recorded refusal or issuance error, if any.
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
     /// Take issued material out of the row.
     #[must_use]
     pub fn into_material(self) -> Option<CertificateMaterial> {
@@ -113,6 +122,17 @@ impl CertificateRow {
         Self {
             material: self.material,
             challenge: Some(challenge),
+            last_error: self.last_error,
+        }
+    }
+
+    /// Keep existing material and challenge and record a refusal reason.
+    #[must_use]
+    pub fn with_error(self, reason: impl Into<String>) -> Self {
+        Self {
+            material: self.material,
+            challenge: self.challenge,
+            last_error: Some(reason.into()),
         }
     }
 
@@ -124,6 +144,7 @@ impl CertificateRow {
         Ok(Self {
             material: CertificateMaterial::new(body.certificate, body.private_key),
             challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
+            last_error: (!body.last_error.is_empty()).then_some(body.last_error),
         })
     }
 
@@ -133,6 +154,7 @@ impl CertificateRow {
             "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
             "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
             "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
+            "last_error": self.last_error.as_deref().unwrap_or(""),
         }))?)
     }
 }
@@ -147,6 +169,8 @@ struct CertificateBody {
     challenge_token: String,
     #[serde(default)]
     challenge_response: String,
+    #[serde(default)]
+    last_error: String,
 }
 
 #[cfg(test)]
@@ -177,12 +201,25 @@ mod tests {
 
     #[test]
     fn certificate_material_reads_known_fields_and_ignores_the_rest() {
-        let material =
-            decode_material(r#"{"certificate":"CERT","private_key":"KEY","last_error":"later"}"#)
-                .unwrap()
-                .unwrap();
+        let row = CertificateRow::decode(
+            r#"{"certificate":"CERT","private_key":"KEY","last_error":"refused","future":1}"#,
+        )
+        .unwrap();
+        let material = row.material().unwrap();
         assert_eq!(material.certificate(), "CERT");
         assert_eq!(material.private_key(), "KEY");
+        assert_eq!(row.last_error(), Some("refused"));
+    }
+
+    #[test]
+    fn certificate_row_round_trips_last_error() {
+        let row = CertificateRow::default().with_error(
+            "certificate policy names challenge kind dns-01 which this daemon cannot perform",
+        );
+        let encoded = row.encode().unwrap();
+        let decoded = CertificateRow::decode(&encoded).unwrap();
+        assert_eq!(decoded.last_error(), row.last_error());
+        assert_eq!(CertificateRow::decode("{}").unwrap().last_error(), None);
     }
 
     #[test]
@@ -215,5 +252,14 @@ mod tests {
         let row = CertificateRow::issued(issued.clone());
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.challenge(), None);
+        assert_eq!(row.last_error(), None);
+    }
+
+    #[test]
+    fn error_write_keeps_issued_material() {
+        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let row = CertificateRow::issued(issued.clone()).with_error("refused");
+        assert_eq!(row.material(), Some(&issued));
+        assert_eq!(row.last_error(), Some("refused"));
     }
 }

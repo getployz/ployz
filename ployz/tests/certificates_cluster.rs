@@ -5,8 +5,8 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerKind, GetCaddyConfigRequest, Machine, MachineTarget, ResolvedServiceSpec, ServiceId,
-    StartContainerRequest, StopContainerRequest, op,
+    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerKind, GetCaddyConfigRequest, Machine, MachineTarget,
+    ResolvedServiceSpec, ServiceId, StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
@@ -15,10 +15,11 @@ use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
-    let cluster = Cluster::create(plan_with_ca("l3-acme", 1, &ca)).unwrap();
+    let cluster = Cluster::create(plan("l3-acme", 1)).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let first = cluster.initialize_first().await.unwrap();
     wait_machine_count(&cluster, 0, 1).await;
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let ip = cluster.endpoint(0).unwrap().0.ip();
     ca.set_validation(validation_host(ip), 80);
     point_hostname(&cluster, [0], "app.example.com", &[ip]);
@@ -93,8 +94,9 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
 async fn several_machines_order_once_and_every_machine_answers() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
-    let cluster = Cluster::create(plan_with_ca("l3-acme-multi", 2, &ca)).unwrap();
+    let cluster = Cluster::create(plan("l3-acme-multi", 2)).unwrap();
     let [first, second] = cluster.initialize_two().await.unwrap();
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let first_ip = cluster.endpoint(0).unwrap().0.ip();
     let second_ip = cluster.endpoint(1).unwrap().0.ip();
     let other = if first.id < second.id { 1 } else { 0 };
@@ -164,8 +166,9 @@ async fn several_machines_order_once_and_every_machine_answers() {
 async fn down_machine_does_not_block_ordering() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
-    let cluster = Cluster::create(plan_with_ca("l3-acme-down", 2, &ca)).unwrap();
+    let cluster = Cluster::create(plan("l3-acme-down", 2)).unwrap();
     let [first, second] = cluster.initialize_two().await.unwrap();
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let (living_index, living, down_index) = if first.id < second.id {
         (1, &second, 0)
     } else {
@@ -212,10 +215,11 @@ async fn down_machine_does_not_block_ordering() {
 async fn joining_machine_serves_existing_certificate() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
-    let cluster = Cluster::create(plan_with_ca("l3-acme-join", 2, &ca)).unwrap();
+    let cluster = Cluster::create(plan("l3-acme-join", 2)).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let first = cluster.initialize_first().await.unwrap();
     wait_machine_count(&cluster, 0, 1).await;
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let ip = cluster.endpoint(0).unwrap().0.ip();
     ca.set_validation(validation_host(ip), 80);
     point_hostname(&cluster, [0], "app.example.com", &[ip]);
@@ -258,14 +262,18 @@ async fn joining_machine_serves_existing_certificate() {
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
 }
 
-fn plan_with_ca(name: &str, machines: usize, ca: &FakeCa) -> ClusterPlan {
-    let mut plan = ClusterPlan::new(&format!("{name}-{}", process::id()), machines).unwrap();
-    for machine in &mut plan.machines {
-        machine
-            .environment
-            .insert("PLOYZ_ACME_DIRECTORY".to_owned(), ca.directory_url());
-    }
-    plan
+fn plan(name: &str, machines: usize) -> ClusterPlan {
+    ClusterPlan::new(&format!("{name}-{}", process::id()), machines).unwrap()
+}
+
+fn publish_certificate_policy(cluster: &Cluster, index: usize, directory_url: &str) {
+    let body = serde_json::json!({ "directory_url": directory_url }).to_string();
+    let payload = serde_json::to_string(&serde_json::json!([{
+        "query": "INSERT INTO cluster (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        "params": [CERTIFICATE_POLICY_CLUSTER_KEY, body],
+    }]))
+    .unwrap();
+    corrosion_exec(cluster, index, "v1/transactions", &payload);
 }
 
 fn point_hostname(

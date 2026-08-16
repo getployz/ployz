@@ -7,7 +7,8 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerId, ContainerObservation, IngressHost, LocalMachinePhase, Machine, MachineId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, IngressHost,
+    LocalMachinePhase, Machine, MachineId,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -399,6 +400,35 @@ impl ReplicatedStore {
         }
         self.upsert_certificate(hostname, &latest.with_challenge(challenge.clone()))
             .await
+    }
+
+    pub async fn record_certificate_error(
+        &self,
+        hostname: &IngressHost,
+        reason: &str,
+    ) -> Result<(), Error> {
+        let latest = self.certificate_row(hostname).await?;
+        if latest.last_error() == Some(reason) {
+            return Ok(());
+        }
+        self.upsert_certificate(hostname, &latest.with_error(reason))
+            .await
+    }
+
+    pub async fn certificate_policy(&self) -> Result<Option<String>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = ?",
+                [json!(CERTIFICATE_POLICY_CLUSTER_KEY)],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Ok(None);
+        };
+        let encoded = text(value, "certificate policy")?;
+        Ok((!encoded.is_empty()).then(|| encoded.to_owned()))
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
