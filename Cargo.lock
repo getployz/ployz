@@ -1848,7 +1848,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "ployz"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "chrono",
@@ -1879,7 +1879,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "ipnet",
@@ -1894,7 +1894,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-testkit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ployz-core",
  "rusqlite",
@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum",

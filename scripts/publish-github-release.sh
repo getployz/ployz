@@ -29,21 +29,29 @@ release_assets() {
 
 release_notes() {
     local tag=$1
+    local changes=${2:-}
+    local version=${tag#v}
+    printf '## %s\n\n' "$tag"
+    if [ -n "$changes" ]; then
+        printf '%s\n\n' "$changes"
+    fi
     cat <<EOF
-## $tag
+## Install
 
-First stable Ployz reconstruction release from https://github.com/getployz/ployz2.
-
-This replaces the older \`getployz/ployz\` implementation as a **clean break** with manual transition. There is no in-place compatibility promise, configuration converter, or stored-state migration.
-
-Install the CLI:
-
-\`\`\`
+\`\`\`sh
 curl -fsSL https://raw.githubusercontent.com/getployz/ployz2/$tag/install.sh | sh
-curl -fsSL https://raw.githubusercontent.com/getployz/ployz2/$tag/install.sh | sh -s ${tag#v}
+curl -fsSL https://raw.githubusercontent.com/getployz/ployz2/$tag/install.sh | sh -s $version
 brew install getployz/ployz/ployz
 \`\`\`
+
+This is a **clean break** with manual transition. There is no in-place compatibility promise, configuration converter, or stored-state migration.
 EOF
+}
+
+generated_changelog() {
+    local tag=$1
+    local repo=${GITHUB_REPOSITORY:-getployz/ployz2}
+    gh api "repos/${repo}/releases/generate-notes" -f tag_name="$tag" --jq .body
 }
 
 if [ "${PLOYZ_RELEASE_TEST_ONLY:-false}" != true ]; then
@@ -51,5 +59,5 @@ if [ "${PLOYZ_RELEASE_TEST_ONLY:-false}" != true ]; then
     [ -n "$tag" ] || { echo "usage: $0 <tag>" >&2; exit 1; }
     dist=${DIST:-"$ROOT/dist"}
     mapfile -t assets < <(release_assets "$dist")
-    gh release create "$tag" --title "$tag" --notes "$(release_notes "$tag")" "${assets[@]}"
+    gh release create "$tag" --title "$tag" --notes "$(release_notes "$tag" "$(generated_changelog "$tag")")" "${assets[@]}"
 fi
