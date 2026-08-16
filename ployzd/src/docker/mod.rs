@@ -35,6 +35,7 @@ use observe::ObservationSink;
 
 pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
+pub(crate) use unregistry::unregistry_gateway;
 pub use unregistry::{RunningUnregistry, unregistry_matches};
 
 #[cfg(test)]

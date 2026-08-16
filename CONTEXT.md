@@ -169,7 +169,7 @@ The certificate and private key held in cluster state for one Ingress Hostname. 
 _Avoid_: Caddy certificate, ACME certificate, cert secret
 
 **Cluster DNS Verdict**:
-Whether a custom Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
+Whether an Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
 _Avoid_: DNS health, certificate gate, reachability
 
 **Nearest DNS Selector**:

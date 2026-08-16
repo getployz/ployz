@@ -18,11 +18,19 @@ permissions:
 jobs:
   workspace:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - run: cargo fmt --all -- --check
       - run: scripts/check-evidence-inventories.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -45,97 +53,82 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
       - run: cargo check --package ployz --all-targets --locked
 
-  layer3-image:
+  layer3-image-amd64:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: ./.github/actions/build-testkit-image
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+          arch: amd64
+
+  layer3-image-arm64:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-testkit-image
         with:
-          context: .
-          file: ployz-testkit/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ghcr.io/getployz/ployz2-testkit:main
-          cache-from: type=gha,scope=ployz-testkit
-          cache-to: type=gha,mode=max,scope=ployz-testkit
-      - name: Inspect the manifest and boot both image architectures
-        env:
-          IMAGE: ghcr.io/getployz/ployz2-testkit:main
-        run: |
-          platforms=$(docker buildx imagetools inspect --raw "$IMAGE" | jq -r '.manifests[] | select(.platform.os == "linux") | "\(.platform.os)/\(.platform.architecture)"' | sort)
-          test "$platforms" = $'linux/amd64\nlinux/arm64'
-          container=
-          trap 'test -z "$container" || docker rm --force --volumes "$container"' EXIT
-          for arch in amd64 arm64; do
-            container=$(docker run --detach --privileged --platform "linux/$arch" "$IMAGE")
-            for attempt in $(seq 1 60); do
-              if docker exec "$container" docker info >/dev/null 2>&1 \
-                && docker exec "$container" docker image inspect ghcr.io/unlabs-dev/corrosion:2026.6.15 >/dev/null 2>&1 \
-                && docker exec "$container" docker image inspect alpine:3.23.3 >/dev/null 2>&1 \
-                && docker exec "$container" docker image inspect ghcr.io/psviderski/unregistry:0.4.1 >/dev/null 2>&1 \
-                && docker exec "$container" sh -c 'test -s /run/ployzd.pid && kill -0 "$(cat /run/ployzd.pid)"'
-              then
-                break
-              fi
-              test "$attempt" -lt 60
-              sleep 1
-            done
-            docker exec "$container" ployzd version
-            docker exec "$container" wg --version
-            docker rm --force --volumes "$container"
-            container=
-          done
+          arch: arm64
 
   layer3:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    needs: layer3-image
+    needs: layer3-image-amd64
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
+      actions: write
+    env:
+      PLOYZ_TESTKIT_IMAGE: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-amd64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Run ignored Cluster suite, retrying one failed attempt
+        run: bash scripts/run-layer3-tests.sh
+
+  layer3-manifest:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [layer3-image-amd64, layer3-image-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the multi-arch manifest
+        env:
+          AMD64: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-amd64
+          ARM64: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-arm64
+          SHA: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}
+          MAIN: ghcr.io/getployz/ployz2-testkit:main
         run: |
-          retry_once() { "$@" || "$@"; }
-
-          attempts=0
-          fail_once() { attempts=$((attempts + 1)); test "$attempts" -eq 2; }
-          retry_once fail_once
-          test "$attempts" -eq 2
-
-          attempts=0
-          always_fail() { attempts=$((attempts + 1)); return 1; }
-          if retry_once always_fail; then
-            exit 1
+          docker buildx imagetools create -t "$SHA" "$AMD64" "$ARM64"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            docker buildx imagetools create -t "$MAIN" "$AMD64" "$ARM64"
           fi
-          test "$attempts" -eq 2
-
-          retry_once cargo test --package ployz --test build_layer3 --locked -- --ignored
-
-          mapfile -t scenarios < <(cargo test --package ployz-testkit --test cluster --locked -- --ignored --list | sed -n 's/: test$//p')
-          test "${#scenarios[@]}" -gt 0
-          for scenario in "${scenarios[@]}"; do
-            retry_once cargo test --package ployz-testkit --test cluster --locked "$scenario" -- --ignored --exact
-          done
-          for suite in service_cluster internal_dns_cluster caddy_cluster deploy_cluster operator_cluster volume_layer3 workflow_layer3 hosted_dns_cluster; do
-            retry_once cargo test --package ployz --test "$suite" --locked -- --ignored
-          done
-          retry_once cargo test --package ployzd --lib corrosion::integration_tests::replicated_store_preserves_partial_and_contradictory_observations --locked -- --ignored --exact
+          platforms=$(docker buildx imagetools inspect --raw "$SHA" | jq -r '.manifests[] | select(.platform.os == "linux") | "\(.platform.os)/\(.platform.architecture)"' | sort)
+          test "$platforms" = $'linux/amd64\nlinux/arm64'

@@ -170,13 +170,11 @@ fn deploy_warning_display_is_the_cli_line_body() {
     }))
     .unwrap();
     let warning =
-        crate::dns::ingress_dns_warnings([&spec], None, &["192.0.2.1".parse().unwrap()], |_| {
-            Vec::new()
-        })
-        .into_iter()
-        .map(DeployWarning::IngressHostname)
-        .next()
-        .expect("unresolved custom hostname warns");
+        crate::dns::ingress_dns_warnings([&spec], &["192.0.2.1".parse().unwrap()], |_| Vec::new())
+            .into_iter()
+            .map(DeployWarning::IngressHostname)
+            .next()
+            .expect("unresolved Ingress Hostname warns");
     assert_eq!(
         warning.to_string(),
         "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
