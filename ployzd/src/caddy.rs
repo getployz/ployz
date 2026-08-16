@@ -496,9 +496,8 @@ mod tests {
     use ployz_core::{
         AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
         ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind,
-        HttpProtocol, Machine, MachineId, MachineName, MachineSubnet, ManagementAddress,
-        PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
-        WireGuardPublicKey,
+        HttpProtocol, Machine, MachineId, MachineName, ManagementAddress, PortPublication,
+        ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -782,7 +781,7 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
         let machine = Machine {
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("node-a").unwrap(),
-            subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
+            subnet: "10.210.1.0/24".parse().unwrap(),
             management_address: ManagementAddress("fdcc::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,

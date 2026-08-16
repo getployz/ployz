@@ -129,7 +129,7 @@ An ephemeral memory-backed container mount. It is distinct from a Bind Mount, Do
 _Avoid_: Docker Volume, Provisioned Volume, persistent volume
 
 **Machine Subnet**:
-The IPv4 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
+The IPv4 /24 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
 _Avoid_: Reserved subnet, globally allocated subnet
 
 **Management Address**:

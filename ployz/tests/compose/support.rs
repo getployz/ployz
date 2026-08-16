@@ -5,8 +5,8 @@ use ployz::{
     deploy::{DeployPlan, DeploySnapshot, PlanError, PlanOptions, plan_deploy},
 };
 use ployz_core::{
-    AdvertisedEndpoint, Machine, MachineId, MachineName, MachineObservation, MachineSubnet,
-    ManagementAddress, MembershipObservation, WireGuardPublicKey,
+    AdvertisedEndpoint, Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
+    MembershipObservation, WireGuardPublicKey,
 };
 
 pub(super) fn plan_compose(
@@ -27,11 +27,9 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
         machine: Machine {
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
-            subnet: MachineSubnet(
-                format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
-                    .parse()
-                    .unwrap(),
-            ),
+            subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
+                .parse()
+                .unwrap(),
             management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,

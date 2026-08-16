@@ -29,7 +29,6 @@ use crate::{
     docker::{ContainerRuntime, Error as DockerError},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
-    network::machine_gateway,
 };
 
 #[derive(Clone)]
@@ -284,8 +283,7 @@ impl MachineRpc for MachineService {
             .machine
             .as_ref()
             .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
-        let gateway =
-            machine_gateway(machine.subnet).map_err(|error| Status::internal(error.to_string()))?;
+        let gateway = machine.subnet.gateway();
         match containers
             .create(&record.id, gateway, request.kind, &request.resolved_spec)
             .await

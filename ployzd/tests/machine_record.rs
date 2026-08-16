@@ -10,7 +10,7 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, InspectRequest, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineRuntime, MachineSubnet, MachineUpdate, PublicIpUpdate, SelectedEndpoint,
+    MachineRuntime, MachineUpdate, PublicIpUpdate, SelectedEndpoint,
 };
 use ployzd::machine::{
     LocalMachine, LocalMachineError, LocalMachineRecord, LocalMachineStore, StoreError,
@@ -89,7 +89,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     let assigned = Machine {
         id: MachineId::random(),
         name: MachineName::parse("second").unwrap(),
-        subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
+        subnet: "10.210.1.0/24".parse().unwrap(),
         management_address: ployzd::network::management_address(public_key),
         public_key,
         public_ip: None,

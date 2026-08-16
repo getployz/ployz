@@ -71,7 +71,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
         .iter()
         .find(|observation| observation.machine_id == first_machine.id)
         .unwrap();
-    let gateway = Ipv4Addr::from(u32::from(first_machine.subnet.0.network()) + 1);
+    let gateway = first_machine.subnet.gateway().0;
     let probe = DnsProbe {
         cluster: &cluster,
         container_id: &probe_observation.container_id,
@@ -111,7 +111,7 @@ fn assert_managed_container_dns(
 ) {
     for (index, (container_id, machine)) in container_ids.iter().zip(machines).enumerate() {
         let docker = docker_inspect(cluster, index, container_id);
-        let gateway = Ipv4Addr::from(u32::from(machine.subnet.0.network()) + 1).to_string();
+        let gateway = machine.subnet.gateway().0.to_string();
         assert_eq!(
             docker.pointer("/HostConfig/Dns"),
             Some(&serde_json::json!([gateway]))

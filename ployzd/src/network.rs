@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv6Addr},
     process::{Command, Output},
     time::{Duration, SystemTime},
 };
@@ -7,8 +7,8 @@ use std::{
 use ipnet::{IpNet, Ipv4Net};
 pub use ployz_core::UNREGISTRY_PORT;
 use ployz_core::{
-    AdvertisedEndpoint, Machine, MachineGateway, MachineId, MachineSubnet, ManagementAddress,
-    SelectedEndpoint, WireGuardPublicKey,
+    AdvertisedEndpoint, Machine, MachineId, MachineSubnet, ManagementAddress, SelectedEndpoint,
+    WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -68,8 +68,6 @@ impl std::fmt::Debug for WireGuardPrivateKey {
 
 #[derive(Debug, Error)]
 pub enum NetworkError {
-    #[error("Machine Subnet must be an IPv4 /24")]
-    InvalidMachineSubnet,
     #[error("cluster IPv4 pool must contain /24 subnets")]
     InvalidClusterNetwork,
     #[error("cluster IPv4 pool has no free /24 in this observation")]
@@ -101,15 +99,6 @@ pub fn default_cluster_network() -> Ipv4Net {
     "10.210.0.0/16".parse().expect("static network is valid")
 }
 
-pub fn machine_gateway(subnet: MachineSubnet) -> Result<MachineGateway, NetworkError> {
-    if subnet.0.prefix_len() != 24 {
-        return Err(NetworkError::InvalidMachineSubnet);
-    }
-    Ok(MachineGateway(Ipv4Addr::from(
-        u32::from(subnet.0.network()) + 1,
-    )))
-}
-
 #[must_use]
 pub fn management_address(public_key: WireGuardPublicKey) -> ManagementAddress {
     let mut address = [0_u8; 16];
@@ -127,13 +116,11 @@ pub fn allocate_machine_subnet(
         .subnets(24)
         .map_err(|_| NetworkError::InvalidClusterNetwork)?;
     candidates
-        .map(MachineSubnet)
-        .find(|candidate| {
-            claimed.iter().all(|claimed| {
-                !candidate.0.contains(&claimed.0.network())
-                    && !claimed.0.contains(&candidate.0.network())
-            })
+        .map(|candidate| {
+            MachineSubnet::try_from(candidate)
+                .expect("cluster /24 candidates are valid Machine Subnets")
         })
+        .find(|candidate| !claimed.contains(candidate))
         .ok_or(NetworkError::NoFreeSubnet)
 }
 
@@ -156,7 +143,7 @@ pub fn peers_for(observer_id: &MachineId, machines: &[Machine]) -> Vec<MeshPeer>
             allowed_ips: [
                 IpNet::new(IpAddr::V6(machine.management_address.0), 128)
                     .expect("IPv6 /128 is valid"),
-                IpNet::V4(machine.subnet.0),
+                machine.subnet.into(),
             ],
             advertised_endpoints: machine.advertised_endpoints.clone(),
         })

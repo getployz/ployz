@@ -26,8 +26,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     DOCKER_NETWORK_NAME, EndpointSelection, MACHINE_API_PORT, MeshPeer, NetworkError,
     WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
-    checked_command, firewall::remove_firewall_rules, machine_gateway, management_address,
-    peers_for,
+    checked_command, firewall::remove_firewall_rules, management_address, peers_for,
 };
 use crate::{
     corrosion::{ReplicatedObservations, ReplicatedStore},
@@ -111,7 +110,6 @@ impl NetworkPlane {
         if management_address(machine.public_key) != machine.management_address {
             return Err(NetworkError::ManagementAddressMismatch);
         }
-        machine_gateway(machine.subnet)?;
 
         let docker = Docker::connect_with_socket_defaults()?;
         let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
@@ -229,7 +227,7 @@ impl NetworkPlane {
                 MACHINE_API_PORT,
             ),
             SocketAddr::new(
-                IpAddr::V4(machine_gateway(self.machine.subnet)?.0),
+                IpAddr::V4(self.machine.subnet.gateway().0),
                 MACHINE_API_PORT,
             ),
         ])
@@ -322,7 +320,7 @@ impl NetworkPlane {
                 mtu: Some(self.mtu),
             })?;
         self.wireguard.configure_peer_routing(&wg_peers)?;
-        let gateway = machine_gateway(self.machine.subnet)?.0.to_string();
+        let gateway = self.machine.subnet.gateway().0.to_string();
         for peer in peers {
             for route in &peer.allowed_ips {
                 replace_route(*route, route.addr().is_ipv4().then_some(&gateway))?;
@@ -377,8 +375,8 @@ impl NetworkPlane {
     }
 
     async fn ensure_docker_network(&self) -> Result<bool, NetworkError> {
-        let subnet = self.machine.subnet.0.to_string();
-        let gateway = machine_gateway(self.machine.subnet)?.0.to_string();
+        let subnet = self.machine.subnet.to_string();
+        let gateway = self.machine.subnet.gateway().0.to_string();
         let required_options = HashMap::from([
             (
                 "com.docker.network.bridge.name".into(),

@@ -3,24 +3,18 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use ipnet::{IpNet, Ipv4Net};
+use ipnet::IpNet;
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineName, MachineSubnet, ManagementAddress,
     PublicIpDiscovery, SelectedEndpoint, WireGuardPublicKey,
 };
 use ployzd::network::{
     EndpointSelection, PeerStatus, WIREGUARD_KEEPALIVE_SECONDS, allocate_machine_subnet,
-    default_cluster_network, discover_network, machine_gateway, management_address, peers_for,
+    default_cluster_network, discover_network, management_address, peers_for,
 };
 
 #[test]
-fn address_math_and_management_address_match_the_network_contract() {
-    let subnet = MachineSubnet("10.210.7.0/24".parse().unwrap());
-    assert_eq!(
-        machine_gateway(subnet).unwrap().0,
-        Ipv4Addr::new(10, 210, 7, 1)
-    );
-
+fn management_address_matches_the_network_contract() {
     let key = WireGuardPublicKey([
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0xee,
         0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -34,10 +28,10 @@ fn address_math_and_management_address_match_the_network_contract() {
 #[test]
 fn allocation_uses_only_the_supplied_stale_snapshot() {
     let pool = default_cluster_network();
-    let claimed = [MachineSubnet("10.210.0.0/24".parse().unwrap())];
+    let claimed = ["10.210.0.0/24".parse().unwrap()];
     assert_eq!(
         allocate_machine_subnet(pool, claimed).unwrap(),
-        MachineSubnet("10.210.1.0/24".parse().unwrap())
+        "10.210.1.0/24".parse().unwrap()
     );
 
     let stale_snapshot: [MachineSubnet; 0] = [];
@@ -63,7 +57,7 @@ fn every_machine_table_rebuild_is_a_complete_directed_mesh() {
         peer.allowed_ips,
         [
             IpNet::new(IpAddr::V6(machines[1].management_address.0), 128).unwrap(),
-            IpNet::V4(machines[1].subnet.0),
+            machines[1].subnet.into(),
         ]
     );
     assert_eq!(WIREGUARD_KEEPALIVE_SECONDS, 25);
@@ -141,7 +135,7 @@ fn machine(seed: u8) -> Machine {
     Machine {
         id: MachineId::parse(format!("{seed:032x}")).unwrap(),
         name: MachineName::parse(format!("machine-{seed}")).unwrap(),
-        subnet: MachineSubnet(Ipv4Net::new(Ipv4Addr::new(10, 210, seed, 0), 24).unwrap()),
+        subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
         management_address: ManagementAddress(Ipv6Addr::from([
             0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, seed,
         ])),

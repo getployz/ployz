@@ -225,8 +225,8 @@ fn caddy_follow_on_warning(error: &str) -> String {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, MachineSubnet,
-        ManagementAddress, MembershipObservation, WireGuardPublicKey,
+        LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
+        MembershipObservation, WireGuardPublicKey,
     };
 
     use super::*;
@@ -316,7 +316,7 @@ mod tests {
         Machine {
             id: MachineId::parse(seed.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
-            subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
+            subnet: "10.210.1.0/24".parse().unwrap(),
             management_address: ManagementAddress("::1".parse().unwrap()),
             public_key: WireGuardPublicKey([seed as u8; 32]),
             public_ip: None,

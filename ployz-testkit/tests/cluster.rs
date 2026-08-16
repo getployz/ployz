@@ -296,7 +296,7 @@ async fn updates_removes_and_inspects_machine_network_state() {
                 .iter()
                 .any(|address| address.to_string() == format!("{}/128", peer.management_address.0))
         );
-        assert!(wireguard_peer.allowed_ips.contains(&peer.subnet.0.into()));
+        assert!(wireguard_peer.allowed_ips.contains(&peer.subnet.into()));
     }
     let unknown = WireGuardPublicKey([9; 32]);
     cluster.inject_wireguard_peer(0, unknown).unwrap();
@@ -555,8 +555,7 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
             .unwrap();
     }
     let machines = cluster.initialize_two().await.unwrap();
-    let gateway =
-        std::net::Ipv4Addr::from(u32::from(machines.first().unwrap().subnet.0.network()) + 1);
+    let gateway = machines.first().unwrap().subnet.gateway().0;
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let ready = cluster
@@ -704,8 +703,7 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
     }
     let disabled = Cluster::create(disabled).unwrap();
     let disabled_machines = disabled.initialize_two().await.unwrap();
-    let disabled_gateway =
-        std::net::Ipv4Addr::from(u32::from(disabled_machines[0].subnet.0.network()) + 1);
+    let disabled_gateway = disabled_machines[0].subnet.gateway().0;
     assert!(!disabled.images(0, None).await.unwrap().containerd_store);
     assert!(
         disabled
@@ -739,8 +737,7 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
     }
     let missing = Cluster::create(missing).unwrap();
     let missing_machines = missing.initialize_two().await.unwrap();
-    let missing_gateway =
-        std::net::Ipv4Addr::from(u32::from(missing_machines[0].subnet.0.network()) + 1);
+    let missing_gateway = missing_machines[0].subnet.gateway().0;
     assert!(missing.images(0, None).await.unwrap().containerd_store);
     assert!(missing.shell(0, "docker inspect ployz-unregistry").is_err());
     assert!(

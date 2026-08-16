@@ -35,9 +35,7 @@ use crate::{
     filesystem::set_ployz_group,
     machine::{LocalMachineStore, StoreError},
     metrics,
-    network::{
-        CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane, machine_gateway,
-    },
+    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
     proxy::MachineProxy,
     rpc::MachineService,
 };
@@ -148,8 +146,7 @@ impl Daemon {
             local_record
                 .machine
                 .as_ref()
-                .map(|machine| machine_gateway(machine.subnet).map(|gateway| gateway.0))
-                .transpose()?
+                .map(|machine| machine.subnet.gateway().0)
         } else {
             None
         };

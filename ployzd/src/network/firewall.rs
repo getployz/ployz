@@ -6,7 +6,7 @@ use crate::dns;
 
 use super::{
     CORROSION_GOSSIP_PORT, DOCKER_NETWORK_NAME, MACHINE_API_PORT, NetworkError, UNREGISTRY_PORT,
-    WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked_command, machine_gateway,
+    WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked_command,
 };
 
 const INPUT_CHAIN: &str = "PLOYZ-INPUT";
@@ -39,7 +39,7 @@ pub fn apply_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
                 "-i",
                 WIREGUARD_INTERFACE_NAME,
                 "-d",
-                &machine_gateway(subnet)?.0.to_string(),
+                &subnet.gateway().0.to_string(),
                 "-p",
                 "tcp",
                 "--dport",
@@ -58,7 +58,7 @@ pub fn apply_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
                 "-i",
                 DOCKER_NETWORK_NAME,
                 "-d",
-                &machine_gateway(subnet)?.0.to_string(),
+                &subnet.gateway().0.to_string(),
                 "-p",
                 protocol,
                 "--dport",
@@ -102,7 +102,7 @@ pub fn apply_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
     )?;
     let nat_rule = [
         "-s",
-        &subnet.0.to_string(),
+        &subnet.to_string(),
         "-o",
         WIREGUARD_INTERFACE_NAME,
         "-j",
@@ -141,7 +141,7 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
         "POSTROUTING",
         &[
             "-s",
-            &subnet.0.to_string(),
+            &subnet.to_string(),
             "-o",
             WIREGUARD_INTERFACE_NAME,
             "-j",

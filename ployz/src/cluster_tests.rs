@@ -3,8 +3,7 @@ use std::net::Ipv6Addr;
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    HealthObservation, Machine, MachineSubnet, ManagementAddress, ServiceId, ServiceName,
-    WireGuardPublicKey,
+    HealthObservation, Machine, ManagementAddress, ServiceId, ServiceName, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -95,11 +94,9 @@ fn machine(hex: char) -> MachineObservation {
         machine: Machine {
             id: machine_id(hex),
             name: MachineName::parse(format!("machine-{hex}")).unwrap(),
-            subnet: MachineSubnet(
-                format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
-                    .parse()
-                    .unwrap(),
-            ),
+            subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
+                .parse()
+                .unwrap(),
             management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,

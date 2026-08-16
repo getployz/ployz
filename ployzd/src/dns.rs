@@ -28,10 +28,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    corrosion::{ReplicatedStore, Subscription},
-    network::machine_gateway,
-};
+use crate::corrosion::{ReplicatedStore, Subscription};
 
 mod query;
 
@@ -267,7 +264,7 @@ pub async fn run(
     upstreams: Option<Vec<SocketAddr>>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let gateway = machine_gateway(machine.subnet).map_err(io::Error::other)?.0;
+    let gateway = machine.subnet.gateway().0;
     let listen_address = SocketAddr::new(IpAddr::V4(gateway), PORT);
     let mut changes = replicated
         .subscribe_container_changes()
@@ -279,7 +276,7 @@ pub async fn run(
     )));
     let handler = Handler {
         projection: Arc::clone(&projection),
-        local_subnet: machine.subnet.0,
+        local_subnet: machine.subnet.into(),
         upstreams: configured_upstreams(upstreams, gateway),
     };
     let udp = UdpSocket::bind(listen_address).await?;

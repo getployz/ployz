@@ -17,9 +17,9 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume,
     DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
-    MachineObservation, MachineRpc, MachineRpcServer, MachineSubnet, ManagementAddress,
-    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, VolumeList, WireGuardPublicKey, op,
+    MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
+    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
+    WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
@@ -529,11 +529,9 @@ fn machine(hex: char, name: &str) -> MachineObservation {
         machine: Machine {
             id: machine_id(hex),
             name: MachineName::parse(name).unwrap(),
-            subnet: MachineSubnet(
-                format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
-                    .parse()
-                    .unwrap(),
-            ),
+            subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
+                .parse()
+                .unwrap(),
             management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,

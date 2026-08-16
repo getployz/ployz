@@ -11,9 +11,9 @@ pub(super) use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
     ContainerResources, ContainerRuntimeObservation, DeviceMapping, DeviceReservation,
     DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver, Machine, MachineId,
-    MachineName, MachineObservation, MachinePath, MachineSelector, MachineSubnet,
-    ManagementAddress, MembershipObservation, PidMode, Placement, PortPublication, PreDeployHook,
-    PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
+    MachineName, MachineObservation, MachinePath, MachineSelector, ManagementAddress,
+    MembershipObservation, PidMode, Placement, PortPublication, PreDeployHook, PullPolicy,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
     ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig, UpdateOrder,
     VolumeSource, WireGuardPublicKey,
@@ -61,11 +61,9 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
         machine: Machine {
             id: machine_id(hex),
             name: MachineName::parse(name).unwrap(),
-            subnet: MachineSubnet(
-                format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
-                    .parse()
-                    .unwrap(),
-            ),
+            subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
+                .parse()
+                .unwrap(),
             management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
             public_key: WireGuardPublicKey([hex as u8; 32]),
             public_ip: None,

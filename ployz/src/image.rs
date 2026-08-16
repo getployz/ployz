@@ -1,7 +1,6 @@
 use std::{
     ffi::OsStr,
     future::Future,
-    net::Ipv4Addr,
     pin::Pin,
     process::{Output, Stdio},
 };
@@ -73,8 +72,6 @@ pub enum PushError {
     },
     #[error("Docker is not using the required containerd image store")]
     UnsupportedImageStore,
-    #[error("unsupported Machine subnet {0}")]
-    UnsupportedSubnet(String),
     #[error("image-push cleanup failed: {0}")]
     Cleanup(String),
     #[error("{primary}; cleanup: {cleanup}")]
@@ -220,12 +217,7 @@ async fn push_to_machine(
     if !store.value.images.containerd_store {
         return Err(PushError::UnsupportedImageStore);
     }
-    let network = machine.subnet.0;
-    if network.prefix_len() != 24 {
-        return Err(PushError::UnsupportedSubnet(network.to_string()));
-    }
-    let gateway = Ipv4Addr::from(u32::from(network.network()) + 1);
-    let remote = format!("{gateway}:{UNREGISTRY_PORT}");
+    let remote = format!("{}:{UNREGISTRY_PORT}", machine.subnet.gateway().0);
     cancellation
         .race(client.dial_proxy("tcp", &remote))
         .await?
@@ -454,8 +446,8 @@ fn not_found(output: &Output) -> bool {
 mod tests {
     use super::*;
     use ployz_core::{
-        MachineId, MachineName, MachineObservation, MachineSubnet, ManagementAddress,
-        MembershipObservation, WireGuardPublicKey,
+        MachineId, MachineName, MachineObservation, ManagementAddress, MembershipObservation,
+        WireGuardPublicKey,
     };
 
     fn machine(seed: u8) -> MachineObservation {
@@ -463,7 +455,7 @@ mod tests {
             machine: Machine {
                 id: MachineId::parse(format!("{seed:032x}")).unwrap(),
                 name: MachineName::parse(format!("machine-{seed}")).unwrap(),
-                subnet: MachineSubnet(format!("10.210.{seed}.0/24").parse().unwrap()),
+                subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
                 management_address: ManagementAddress("fd00::1".parse().unwrap()),
                 public_key: WireGuardPublicKey([seed; 32]),
                 public_ip: None,

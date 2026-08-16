@@ -4,7 +4,6 @@ use std::{
     process::{Child, ChildStdout, Command, Stdio},
 };
 
-use ployz_core::MachineSubnet;
 use ployzd::network::apply_firewall_rules;
 
 const TEST_NAME: &str = "mesh_routing_preserves_container_source_and_internet_nat";
@@ -13,7 +12,7 @@ const TEST_NAME: &str = "mesh_routing_preserves_container_source_and_internet_na
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
 fn mesh_routing_preserves_container_source_and_internet_nat() {
     if let Ok(subnet) = env::var("PLOYZ_FIREWALL_SUBNET") {
-        apply_firewall_rules(MachineSubnet(subnet.parse().unwrap())).unwrap();
+        apply_firewall_rules(subnet.parse().unwrap()).unwrap();
         return;
     }
 

@@ -10,8 +10,8 @@ use std::{
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use ployz_core::{
-    FanoutOutcome, FanoutResponse, Machine, MachineId, MachineName, MachineSubnet,
-    ManagementAddress, WireGuardPublicKey, encode_grpc_frame, grpc_frames,
+    FanoutOutcome, FanoutResponse, Machine, MachineId, MachineName, ManagementAddress,
+    WireGuardPublicKey, encode_grpc_frame, grpc_frames,
 };
 use ployzd::{
     corrosion::{CorrosionConfig, ReplicatedStore},
@@ -262,11 +262,9 @@ fn machine(id: char, name: &str, address: &str) -> Machine {
     Machine {
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
-        subnet: MachineSubnet(
-            format!("10.210.{}.0/24", id.to_digit(10).unwrap())
-                .parse()
-                .unwrap(),
-        ),
+        subnet: format!("10.210.{}.0/24", id.to_digit(10).unwrap())
+            .parse()
+            .unwrap(),
         management_address: ManagementAddress(address.parse().unwrap()),
         public_key: WireGuardPublicKey([id as u8; 32]),
         public_ip: None,

@@ -999,13 +999,13 @@ mod tests {
 
     #[test]
     fn models_unfenced_registration_before_join_without_compensation() {
-        use ployz_core::{MachineId, MachineSubnet, ManagementAddress, WireGuardPublicKey};
+        use ployz_core::{MachineId, ManagementAddress, WireGuardPublicKey};
 
         fn machine(name: &str, key: u8) -> Machine {
             Machine {
                 id: MachineId::random(),
                 name: MachineName::parse(name).unwrap(),
-                subnet: MachineSubnet(format!("10.210.{key}.0/24").parse().unwrap()),
+                subnet: format!("10.210.{key}.0/24").parse().unwrap(),
                 management_address: ManagementAddress(format!("fdcc::{key}").parse().unwrap()),
                 public_key: WireGuardPublicKey([key; 32]),
                 public_ip: None,

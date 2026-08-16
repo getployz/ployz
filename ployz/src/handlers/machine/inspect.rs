@@ -6,7 +6,7 @@ use std::{
 use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSelector,
-    MachineSubnet, MachineSuccess, PartialResult, RttObservation, RttStatistics, WireGuardPeer, op,
+    MachineSuccess, PartialResult, RttObservation, RttStatistics, WireGuardPeer, op,
 };
 use serde::Serialize;
 
@@ -22,7 +22,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                 let machines = machines
                     .iter()
                     .map(|observation| MachineObservationOutput {
-                        gateway: gateway(observation.machine.subnet),
+                        gateway: observation.machine.subnet.gateway().0,
                         observation,
                     })
                     .collect::<Vec<_>>();
@@ -39,8 +39,8 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                     machine.id,
                     machine.name,
                     observed.membership.as_str(),
-                    machine.subnet.0,
-                    gateway(machine.subnet),
+                    machine.subnet,
+                    machine.subnet.gateway().0,
                     machine
                         .public_ip
                         .map_or_else(|| "-".into(), |ip| ip.to_string()),
@@ -68,10 +68,6 @@ struct MachineObservationOutput<'a> {
     #[serde(flatten)]
     observation: &'a MachineObservation,
     gateway: Ipv4Addr,
-}
-
-fn gateway(network: MachineSubnet) -> Ipv4Addr {
-    Ipv4Addr::from(u32::from(network.0.network()).saturating_add(1))
 }
 
 pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
@@ -366,7 +362,7 @@ mod tests {
             machine: ployz_core::Machine {
                 id: "0".repeat(32).parse().unwrap(),
                 name: "node-a".parse().unwrap(),
-                subnet: MachineSubnet("10.210.7.0/24".parse().unwrap()),
+                subnet: "10.210.7.0/24".parse().unwrap(),
                 management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
                 public_key: ployz_core::WireGuardPublicKey([7; 32]),
                 public_ip: None,
@@ -377,7 +373,7 @@ mod tests {
             selected_endpoint: None,
         };
         let output = serde_json::to_value(MachineObservationOutput {
-            gateway: gateway(observation.machine.subnet),
+            gateway: observation.machine.subnet.gateway().0,
             observation: &observation,
         })
         .unwrap();

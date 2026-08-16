@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, net::IpAddr};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContainerSelector, ContainerSelectorError, FanoutSelector,
-    Machine, MachineId, MachineName, MachineRuntime, MachineSelector, MachineSubnet, MachineTarget,
+    Machine, MachineId, MachineName, MachineRuntime, MachineSelector, MachineTarget,
     ManagementAddress, NameMatches, ServiceId, ServiceName, ServiceSelector, WireGuardPublicKey,
     derive_services, resolve_container_selector, resolve_machine_selector, select_service,
 };
@@ -208,7 +208,7 @@ fn machine(id: char, name: &str, seed: u8) -> Machine {
     Machine {
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
-        subnet: MachineSubnet(format!("10.210.{seed}.0/24").parse().unwrap()),
+        subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
         management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
         public_key: WireGuardPublicKey([seed; 32]),
         public_ip: Some(IpAddr::from([192, 0, 2, seed])),

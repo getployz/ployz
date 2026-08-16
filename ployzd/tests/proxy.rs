@@ -4,9 +4,8 @@ use std::net::Ipv6Addr;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use ipnet::Ipv4Net;
 use ployz_core::{
-    FanoutOutcome, FanoutResponse, Machine, MachineId, MachineName, MachineSelector, MachineSubnet,
+    FanoutOutcome, FanoutResponse, Machine, MachineId, MachineName, MachineSelector,
     ManagementAddress, WireGuardPublicKey, encode_grpc_frame, grpc_frames,
 };
 use ployzd::proxy::{
@@ -243,7 +242,7 @@ fn machine(id: char, name: &str, subnet: u8) -> Machine {
     Machine {
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
-        subnet: MachineSubnet(Ipv4Net::new([10, 210, subnet, 0].into(), 24).unwrap()),
+        subnet: format!("10.210.{subnet}.0/24").parse().unwrap(),
         management_address: ManagementAddress(Ipv6Addr::from([
             0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, subnet,
         ])),
