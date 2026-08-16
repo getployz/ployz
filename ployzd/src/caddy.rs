@@ -1,13 +1,14 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
-    HttpProtocol, IngressHostname, Machine, MachineId, PortPublication, ServiceContainer,
-    ServiceName, service_containers,
+    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, PortPublication,
+    ServiceContainer, ServiceName, service_containers,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
     future::Future,
@@ -21,11 +22,13 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::ReplicatedStore,
+    corrosion::{CertificateMaterial, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
 };
 
 pub const CONFIG_FILE: &str = "Caddyfile";
+const CERTS_DIR: &str = "certs";
+const CONTAINER_CERTS_DIR: &str = "/config/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
@@ -124,37 +127,51 @@ pub async fn run(
             .parent()
             .ok_or_else(|| io::Error::other("Caddy admin socket has no parent"))?,
     )?;
-    let mut changes = replicated
+    let mut container_changes = replicated
         .subscribe_container_changes()
+        .await
+        .map_err(io::Error::other)?;
+    let mut certificate_changes = replicated
+        .subscribe_certificate_changes()
         .await
         .map_err(io::Error::other)?;
     let mut last_applied = None;
     loop {
-        match replicated.containers().await {
-            Ok(containers) if last_applied.as_ref() != Some(&containers.observations) => {
-                let admin = AdminClient::connect_if_available(&admin_socket)
-                    .await
-                    .map_err(io::Error::other)?;
-                match reconcile(
-                    &machine,
-                    &containers.observations,
-                    &config_file,
-                    admin.as_ref(),
-                )
+        let snapshot = match (
+            replicated.containers().await,
+            replicated.certificates().await,
+        ) {
+            (Ok(containers), Ok(certificates)) => Some((containers.observations, certificates)),
+            (Err(error), _) | (_, Err(error)) => {
+                eprintln!("failed to rebuild Caddy projection: {error}");
+                None
+            }
+        };
+        if let Some(snapshot) = snapshot
+            && last_applied.as_ref() != Some(&snapshot)
+        {
+            let admin = AdminClient::connect_if_available(&admin_socket)
                 .await
-                {
-                    Ok(()) => last_applied = Some(containers.observations),
-                    Err(error) => {
-                        last_applied = None;
-                        eprintln!("failed to update Caddy configuration: {error}");
-                    }
+                .map_err(io::Error::other)?;
+            match reconcile(
+                &machine,
+                &snapshot.0,
+                &snapshot.1,
+                &config_file,
+                admin.as_ref(),
+            )
+            .await
+            {
+                Ok(()) => last_applied = Some(snapshot),
+                Err(error) => {
+                    last_applied = None;
+                    eprintln!("failed to update Caddy configuration: {error}");
                 }
             }
-            Ok(_) => {}
-            Err(error) => eprintln!("failed to rebuild Caddy projection: {error}"),
         }
         tokio::select! {
-            changed = changes.changed() => changed.map_err(io::Error::other)?,
+            changed = container_changes.changed() => changed.map_err(io::Error::other)?,
+            changed = certificate_changes.changed() => changed.map_err(io::Error::other)?,
             () = shutdown.cancelled() => return Ok(()),
         }
     }
@@ -163,11 +180,13 @@ pub async fn run(
 async fn reconcile<A: CaddyAdmin>(
     machine: &Machine,
     observations: &[ContainerObservation],
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
     // TODO(UT-116): keep the Caddy projection membership-blind until the membership model is
     // intentionally changed across replicated projections.
+    write_certificate_files(config_file, certificates)?;
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let containers = service_containers(observations.iter().cloned());
     let caddyfile = generate_caddyfile(
@@ -175,6 +194,7 @@ async fn reconcile<A: CaddyAdmin>(
         machine.name.as_str(),
         &containers,
         &timestamp,
+        certificates,
         admin,
     )
     .await;
@@ -183,7 +203,69 @@ async fn reconcile<A: CaddyAdmin>(
         admin.load(&json).await?;
     }
     write_caddyfile(config_file, &caddyfile)?;
+    remove_stale_certificate_files(config_file, certificates)?;
     Ok(())
+}
+
+fn write_certificate_files(
+    config_file: &Path,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+) -> Result<(), Error> {
+    let directory = config_file
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
+        .join(CERTS_DIR);
+    prepare_directory(&directory)?;
+    for (hostname, material) in certificates {
+        let stem = certificate_file_stem(hostname, material);
+        let cert_path = directory.join(format!("{stem}.crt"));
+        let key_path = directory.join(format!("{stem}.key"));
+        atomic_write(&cert_path, material.certificate().as_bytes(), 0o644)?;
+        set_ployz_group(&cert_path)?;
+        atomic_write(&key_path, material.private_key().as_bytes(), 0o600)?;
+        set_ployz_group(&key_path)?;
+    }
+    Ok(())
+}
+
+fn remove_stale_certificate_files(
+    config_file: &Path,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+) -> Result<(), Error> {
+    let directory = config_file
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
+        .join(CERTS_DIR);
+    if !directory.exists() {
+        return Ok(());
+    }
+    let keep: BTreeSet<String> = certificates
+        .iter()
+        .flat_map(|(hostname, material)| {
+            let stem = certificate_file_stem(hostname, material);
+            [format!("{stem}.crt"), format!("{stem}.key")]
+        })
+        .collect();
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !keep.contains(name) {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn certificate_file_stem(hostname: &IngressHost, material: &CertificateMaterial) -> String {
+    let mut digest = Sha256::new();
+    digest.update((material.certificate().len() as u64).to_le_bytes());
+    digest.update(material.certificate().as_bytes());
+    digest.update((material.private_key().len() as u64).to_le_bytes());
+    digest.update(material.private_key().as_bytes());
+    format!("{hostname}-{:x}", digest.finalize())
 }
 
 fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
@@ -207,9 +289,17 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
     admin: Option<&A>,
 ) -> String {
-    let mut output = automatic_caddyfile(local_machine, machine_name, containers, timestamp, None);
+    let mut output = automatic_caddyfile(
+        local_machine,
+        machine_name,
+        containers,
+        timestamp,
+        None,
+        certificates,
+    );
     let Some(admin) = admin else {
         output.push_str(
             "\n# User-defined Caddy configs are unavailable because Caddy's admin API is not reachable.\n\
@@ -243,6 +333,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
                     containers,
                     timestamp,
                     Some(&rendered),
+                    certificates,
                 );
                 // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
                 // candidates and may accept a configuration that /load rejects.
@@ -430,11 +521,12 @@ fn automatic_caddyfile(
     containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
 ) -> String {
     let containers = eligible_containers(local_machine, containers);
 
-    let mut http = BTreeMap::<&str, Vec<String>>::new();
-    let mut https = BTreeMap::<&str, Vec<String>>::new();
+    let mut http = BTreeMap::<&IngressHost, Vec<String>>::new();
+    let mut https = BTreeMap::<&IngressHost, Vec<String>>::new();
     for container in containers {
         let observation = container.as_observation();
         let address = observation.address.expect("address was filtered above");
@@ -450,7 +542,6 @@ fn automatic_caddyfile(
                 // the supported path. Assignment from the Cluster Domain is resolved before Caddy.
                 continue;
             };
-            let hostname = hostname.as_str();
             let upstream = format!("{}:{container_port}", address.0);
             match http_protocol {
                 HttpProtocol::Http => http.entry(hostname).or_default().push(upstream),
@@ -491,21 +582,38 @@ http:// {{\n\
     if !http.is_empty() || !https.is_empty() {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
-    for (protocol, sites) in [("http", http), ("https", https)] {
-        for (hostname, upstreams) in sites {
-            let _ = write!(
-                output,
-                "\n{protocol}://{hostname} {{\n\
-\treverse_proxy {} {{\n\
+    for (hostname, upstreams) in http {
+        write_site(&mut output, "http", hostname, &upstreams, "");
+    }
+    for (hostname, upstreams) in https {
+        let tls = if let Some(material) = certificates.get(hostname) {
+            let stem = certificate_file_stem(hostname, material);
+            format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n")
+        } else {
+            String::new()
+        };
+        write_site(&mut output, "https", hostname, &upstreams, &tls);
+    }
+    output
+}
+
+fn write_site(
+    output: &mut String,
+    protocol: &str,
+    hostname: &IngressHost,
+    upstreams: &[String],
+    tls: &str,
+) {
+    let _ = write!(
+        output,
+        "\n{protocol}://{hostname} {{\n\
+{tls}\treverse_proxy {} {{\n\
 \t\timport common_proxy\n\
 \t}}\n\
 \tlog\n\
 }}\n",
-                upstreams.join(" ")
-            );
-        }
-    }
-    output
+        upstreams.join(" ")
+    );
 }
 
 #[cfg(test)]

@@ -164,6 +164,10 @@ _Avoid_: Service registry record, membership-filtered endpoint set
 The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
 _Avoid_: empty hostname sentinel
 
+**Certificate Material**:
+The certificate and private key held in cluster state for one Ingress Hostname. It is served as given; it is not an issuance request and not a local proxy store.
+_Avoid_: Caddy certificate, ACME certificate, cert secret
+
 **Cluster DNS Verdict**:
 Whether a custom Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
 _Avoid_: DNS health, certificate gate, reachability

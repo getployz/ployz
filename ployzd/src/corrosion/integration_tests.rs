@@ -8,15 +8,15 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, ContainerObservation, LocalMachinePhase, Machine, MachineId, MachineName,
-    ManagementAddress, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerObservation, IngressHost, LocalMachinePhase, Machine, MachineId,
+    MachineName, ManagementAddress, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ApiClient, CorrosionConfig, ReplicatedStore, Statement, run_machine_publisher,
-    wait_for_catch_up,
+    ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
+    run_machine_publisher, wait_for_catch_up,
 };
 use crate::machine::{LocalMachineRecord, LocalMachineStore};
 
@@ -233,6 +233,63 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(persisted.phase, LocalMachinePhase::Joining);
     assert_eq!(persisted.min_store_version, target);
     assert!(!*participating_rx.borrow());
+
+    running.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires Docker and the pinned Corrosion image"]
+async fn certificates_round_trip_and_notify_on_change() {
+    let root = TestRoot::new();
+    let mut running = CorrosionConfig::new(
+        root.0.join("data"),
+        root.0.join("run"),
+        unused_address(),
+        unused_address(),
+        format!("ployz-corrosion-certs-{}", MachineId::random()),
+    )
+    .start()
+    .await
+    .unwrap();
+    let store = running.store().clone();
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let material = CertificateMaterial::new("CERT", "KEY").unwrap();
+    let mut changes = store.subscribe_certificate_changes().await.unwrap();
+
+    store
+        .publish_certificate(&hostname, &material)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.certificate(&hostname).await.unwrap().as_ref(),
+        Some(&material)
+    );
+    assert_eq!(
+        store.certificates().await.unwrap().get(&hostname),
+        Some(&material)
+    );
+
+    store
+        .publish_certificate(&hostname, &material)
+        .await
+        .unwrap();
+    let updated = CertificateMaterial::new("CERT-2", "KEY-2").unwrap();
+    store
+        .publish_certificate(&hostname, &updated)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.certificate(&hostname).await.unwrap().as_ref(),
+        Some(&updated)
+    );
 
     running.cleanup().await.unwrap();
 }

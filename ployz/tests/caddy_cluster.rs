@@ -158,6 +158,123 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     assert_invalid_template(&mut client, &machines[0]).await;
 }
 
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn certificate_material_in_cluster_state_is_served_without_restart() {
+    let plan = ClusterPlan::new(&format!("l3-certs-{}", process::id()), 2).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let first = cluster.initialize_first().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if cluster
+                .machines(0)
+                .await
+                .is_ok_and(|machines| machines.len() == 1)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = ployz::connect::connect(
+        std::path::Path::new("/missing-ployz-test-config"),
+        Some(&direct),
+        None,
+    )
+    .await
+    .unwrap();
+
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "caddy", 1).await;
+
+    let api: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+        "service_id": ServiceId::random(),
+        "name": "api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": {
+            "image": "alpine:3.23.3",
+            "command": ["sh", "-c", "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n' | nc -l -p 8080; done"],
+            "pull_policy": "missing"
+        },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": { "kind": "explicit", "hostname": "secure.example.test" },
+            "load_balancer_port": 443,
+            "container_port": 8080,
+            "http_protocol": "https"
+        }]
+    }))
+    .unwrap();
+    create_and_start(&mut client, &first, api).await;
+    let before = wait_config(&mut client, &first, |config| {
+        config.contains("https://secure.example.test")
+    })
+    .await;
+    assert!(
+        !before.contains("tls /config/certs/secure.example.test"),
+        "{before}"
+    );
+
+    let (first_cert, first_key) = self_signed_material("secure.example.test", "first");
+    publish_certificate_row(&cluster, 0, "secure.example.test", &first_cert, &first_key);
+    wait_config(&mut client, &first, |config| {
+        config.contains("tls /config/certs/secure.example.test-")
+    })
+    .await;
+    assert_eq!(curl_https(&cluster, 0, &first_cert).trim(), "ok");
+
+    let (second_cert, second_key) = self_signed_material("secure.example.test", "second");
+    publish_certificate_row(
+        &cluster,
+        0,
+        "secure.example.test",
+        &second_cert,
+        &second_key,
+    );
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if curl_https(&cluster, 0, &second_cert).trim() == "ok" {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(curl_https(&cluster, 0, &first_cert).trim() != "ok");
+
+    let second = cluster.add_machine(0, 1, "machine-2").await.unwrap();
+    cli(
+        &direct,
+        &[
+            "caddy",
+            "deploy",
+            "--image",
+            "caddy:2.10.2",
+            "--machine",
+            second.id.as_str(),
+        ],
+    );
+    wait_config(&mut client, &second, |config| {
+        config.contains("tls /config/certs/secure.example.test-")
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if curl_https(&cluster, 1, &second_cert).trim() == "ok" {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 async fn assert_health_transition(
     client: &mut ployz::connect::Client,
     machines: &[Machine; 3],
@@ -625,4 +742,78 @@ async fn wait_config(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+fn self_signed_material(hostname: &str, label: &str) -> (String, String) {
+    let root = std::env::temp_dir().join(format!(
+        "ployz-l3-cert-{hostname}-{label}-{}",
+        process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let cert = root.join("cert.pem");
+    let key = root.join("key.pem");
+    let status = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            key.to_str().unwrap(),
+            "-out",
+            cert.to_str().unwrap(),
+            "-days",
+            "1",
+            "-nodes",
+            "-subj",
+            &format!("/CN={label}.{hostname}"),
+            "-addext",
+            &format!("subjectAltName=DNS:{hostname}"),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "openssl failed for {label}");
+    (
+        std::fs::read_to_string(cert).unwrap(),
+        std::fs::read_to_string(key).unwrap(),
+    )
+}
+
+fn publish_certificate_row(
+    cluster: &Cluster,
+    index: usize,
+    hostname: &str,
+    certificate: &str,
+    private_key: &str,
+) {
+    let body = serde_json::json!({
+        "certificate": certificate,
+        "private_key": private_key,
+    });
+    let payload = serde_json::to_string(&serde_json::json!([{
+        "query": "INSERT INTO certificates (hostname, body, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+        "params": [hostname, body.to_string()],
+    }]))
+    .unwrap();
+    let quoted = format!("'{}'", payload.replace('\'', "'\"'\"'"));
+    cluster
+        .machine_shell(
+            index,
+            &format!(
+                r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary {quoted} http://127.0.0.1:51002/v1/transactions"#
+            ),
+        )
+        .unwrap();
+}
+
+fn curl_https(cluster: &Cluster, index: usize, certificate: &str) -> String {
+    let quoted_cert = format!("'{}'", certificate.replace('\'', "'\"'\"'"));
+    cluster
+        .machine_shell(
+            index,
+            &format!(
+                r#"printf %s {quoted_cert} > /tmp/expected.crt; curl -fsS --cacert /tmp/expected.crt --resolve secure.example.test:443:127.0.0.1 https://secure.example.test || true"#
+            ),
+        )
+        .unwrap_or_default()
 }
