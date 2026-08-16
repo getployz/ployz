@@ -83,7 +83,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     .unwrap()
     .unwrap();
     let image = mixed
-        .operations()
+        .operations
         .iter()
         .find_map(|operation| match operation {
             DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {

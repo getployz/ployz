@@ -9,7 +9,6 @@ use ployz_core::{
 
 use super::{
     DeployOperation, DeployPlan, DeploySnapshot, PlanError, PlanOptions, ReplacementOperation,
-    ServicePlan,
 };
 
 mod volumes;
@@ -32,29 +31,31 @@ pub fn plan_deploy<'a>(
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::default();
-    let mut volume_operations =
+    let mut volume_creates =
         prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, options)?;
     let name_errors_with_service = requested.len() > 1;
-    let mut service_plans = Vec::with_capacity(requested.len());
+    let mut service_operations = Vec::new();
     for spec in &requested {
-        service_plans.push(
-            plan_one_service(spec, snapshot, &mut pins, &mut volume_operations, options).map_err(
+        service_operations.extend(
+            plan_one_service(spec, snapshot, &mut pins, &mut volume_creates, options).map_err(
                 |source| service_error(name_errors_with_service, spec.name.as_str(), source),
             )?,
         );
     }
-    Ok(DeployPlan::new(volume_operations, service_plans))
+    let mut operations = volume_creates;
+    operations.extend(service_operations);
+    Ok(DeployPlan::new(operations))
 }
 
 fn plan_one_service(
     requested: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
-    volume_operations: &mut Vec<DeployOperation>,
+    volume_creates: &mut Vec<DeployOperation>,
     options: PlanOptions,
-) -> Result<ServicePlan, PlanError> {
+) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options);
-    volume_operations.extend(plan_volume_operations(
+    volume_creates.extend(plan_volume_operations(
         requested,
         snapshot,
         pins,
@@ -66,27 +67,22 @@ fn plan_one_service(
         .filter(|container| container.service_name == requested.name)
         .map(|container| container.service_id)
         .collect::<BTreeSet<_>>();
-    let (service_id, is_new_service) = match matching_service_ids.len() {
-        0 => (ServiceId::random(), true),
-        1 => (
-            matching_service_ids
-                .into_iter()
-                .next()
-                .ok_or(PlanError::NoEligibleMachines)?,
-            false,
-        ),
+    let service_id = match matching_service_ids.len() {
+        0 => ServiceId::random(),
+        1 => matching_service_ids
+            .into_iter()
+            .next()
+            .expect("one matching Service ID"),
         _ => {
             return Err(PlanError::AmbiguousService {
                 matches: matching_service_ids.into_iter().collect(),
             });
         }
     };
-    if !is_new_service
-        && snapshot.containers.iter().any(|container| {
-            container.service_id == service_id
-                && !same_service_mode_kind(&container.resolved_spec.mode, &requested.mode)
-        })
-    {
+    if snapshot.containers.iter().any(|container| {
+        container.service_id == service_id
+            && !same_service_mode_kind(&container.resolved_spec.mode, &requested.mode)
+    }) {
         return Err(PlanError::ServiceModeCannotChange);
     }
 
@@ -104,11 +100,7 @@ fn plan_one_service(
     let mut operations =
         pre_deploy_operations(requested, snapshot, &service_id, &service_operations);
     operations.extend(service_operations);
-    Ok(ServicePlan {
-        service_id,
-        is_new_service,
-        operations,
-    })
+    Ok(operations)
 }
 
 fn service_error(name_errors_with_service: bool, service: &str, source: PlanError) -> PlanError {

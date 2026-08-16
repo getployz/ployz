@@ -47,45 +47,18 @@ pub struct PlanOptions {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServicePlan {
-    pub service_id: ServiceId,
-    pub is_new_service: bool,
-    pub operations: Vec<DeployOperation>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeployPlan {
-    pub volume_operations: Vec<DeployOperation>,
-    pub service_plans: Vec<ServicePlan>,
+    pub operations: Vec<DeployOperation>,
 }
 
 impl DeployPlan {
     #[must_use]
-    pub fn new(volume_operations: Vec<DeployOperation>, service_plans: Vec<ServicePlan>) -> Self {
-        Self {
-            volume_operations,
-            service_plans,
-        }
-    }
-
-    #[must_use]
-    pub fn operations(&self) -> Vec<&DeployOperation> {
-        self.volume_operations
-            .iter()
-            .chain(
-                self.service_plans
-                    .iter()
-                    .flat_map(|plan| plan.operations.iter()),
-            )
-            .collect()
-    }
-
-    fn cloned_operations(&self) -> Vec<DeployOperation> {
-        self.operations().into_iter().cloned().collect()
+    pub fn new(operations: Vec<DeployOperation>) -> Self {
+        Self { operations }
     }
 
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
-        Self::failure_outcome_from(&self.cloned_operations(), completed_count, error)
+        Self::failure_outcome_from(&self.operations, completed_count, error)
     }
 
     pub(super) fn failure_outcome_from<E>(
@@ -112,7 +85,7 @@ impl DeployPlan {
         compensation: ReplacementCompensation<E>,
     ) -> Option<DeployOutcome<E>> {
         Self::replacement_health_failure_outcome_from(
-            &self.cloned_operations(),
+            &self.operations,
             completed_count,
             error,
             compensation,
@@ -144,7 +117,7 @@ impl DeployPlan {
     #[must_use]
     pub fn success_outcome<E>(&self) -> DeployOutcome<E> {
         DeployOutcome {
-            completed: self.cloned_operations(),
+            completed: self.operations.clone(),
             failed: None,
             unexecuted: Vec::new(),
         }

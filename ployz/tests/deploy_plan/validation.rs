@@ -64,7 +64,7 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations().as_slice(),
+        plan.operations.as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: target, .. },
             DeployOperation::RunContainer { .. },
@@ -106,7 +106,7 @@ fn global_named_volume_existing_on_every_machine_is_not_created() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations().as_slice(),
+        plan.operations.as_slice(),
         [
             DeployOperation::RunContainer { .. },
             DeployOperation::RunContainer { .. },
@@ -137,7 +137,7 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
             },
         )
         .unwrap()
-        .operations()
+        .operations
         .iter()
         .map(|operation| match operation {
             DeployOperation::RunContainer { machine_id, .. } => *machine_id,
@@ -184,7 +184,7 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations().as_slice(),
+        plan.operations.as_slice(),
         [
             DeployOperation::CreateVolume { .. },
             DeployOperation::RunContainer { .. }
@@ -196,9 +196,7 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
 fn empty_spec_iterator_returns_an_empty_plan() {
     let plan = plan_deploy([], &DeploySnapshot::default(), PlanOptions::default()).unwrap();
 
-    assert!(plan.volume_operations.is_empty());
-    assert!(plan.service_plans.is_empty());
-    assert!(plan.operations().is_empty());
+    assert!(plan.operations.is_empty());
 }
 
 #[test]

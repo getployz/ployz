@@ -5,7 +5,7 @@ use ployz_core::{
     VolumeSource,
 };
 
-use crate::deploy::{FailedOperation, ServicePlan};
+use crate::deploy::FailedOperation;
 
 use super::*;
 
@@ -157,14 +157,7 @@ mod hooks;
 mod replacement;
 
 fn plan(operations: Vec<DeployOperation>) -> DeployPlan {
-    DeployPlan::new(
-        Vec::new(),
-        vec![ServicePlan {
-            service_id: service_id(),
-            is_new_service: true,
-            operations,
-        }],
-    )
+    DeployPlan::new(operations)
 }
 
 fn run(

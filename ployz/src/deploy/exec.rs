@@ -272,7 +272,7 @@ async fn execute_with<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(plan.operations(), client, cancellation).await
+    execute_operation_sequence(&plan.operations, client, cancellation).await
 }
 
 async fn execute_operation_sequence<C: MachineOperations>(
