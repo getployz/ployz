@@ -17,6 +17,7 @@ EOF
 chmod 0755 "$TMP/ployzd"
 tar -czf "$TMP/release/ployzd_linux_amd64.tar.gz" \
     -C "$TMP" ployzd -C "$ROOT/scripts" --transform='s|uninstall.sh|ployz-uninstall|' uninstall.sh
+printf 'v1.2.3\n' > "$TMP/release/stable"
 
 cat > "$TMP/bin/uname" <<'EOF'
 #!/bin/sh
@@ -24,13 +25,12 @@ case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac
 EOF
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/bash
-for argument in "$@"; do
-    case "$argument" in *'%{url_effective}'*) echo 'https://example.invalid/releases/tag/v1.2.3'; exit ;; esac
-done
 while [ "$#" -gt 0 ]; do
     if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi
 done
-cp "$FAKE_RELEASE/${url##*/}" "$output"
+src="$FAKE_RELEASE/${url##*/}"
+[ -f "$src" ] || exit 1
+cp "$src" "$output"
 EOF
 cat > "$TMP/bin/install" <<'EOF'
 #!/bin/bash

@@ -3,6 +3,7 @@
 set -eu
 
 PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz2}
+PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-latest}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 
@@ -35,11 +36,40 @@ verify_checksum() {
     fi
 }
 
+channel_version_from_file() {
+    version=$(tr -d ' \t\r\n' < "$1")
+    echo "$version" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$' || return 1
+    echo "$version"
+}
+
+resolve_install() {
+    requested=${1#v}
+    name=
+    case "$requested" in
+        latest | stable | '') name=stable ;;
+        beta) name=beta ;;
+        *)
+            printf '%s\n' "$requested"
+            return 0
+            ;;
+    esac
+    dest=$(mktemp)
+    if ! curl -fsSL -o "$dest" "$PLOYZ_CHANNEL_URL/$name" || ! resolved=$(channel_version_from_file "$dest"); then
+        rm -f "$dest"
+        error "$name channel is unavailable"
+    fi
+    rm -f "$dest"
+    printf '%s\n' "${resolved#v}"
+}
+
 install_cli() {
-    version=${PLOYZ_VERSION#v}
-    [ "$version" != nightly ] || error "nightly is not a supported release channel"
+    tmp_dir=$(mktemp -d)
+    trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
+    requested=${PLOYZ_VERSION#v}
+    [ "$requested" != nightly ] || error "nightly is not a supported release channel"
+    version=$(resolve_install "$requested")
     case "$version" in
-        latest|[0-9A-Za-z]* ) ;;
+        [0-9A-Za-z]*) ;;
         *) error "Invalid version: $PLOYZ_VERSION" ;;
     esac
     case "$version" in
@@ -48,14 +78,8 @@ install_cli() {
 
     archive=$(cli_archive "$(uname -s)" "$(uname -m)") || \
         error "Unsupported platform: $(uname -s) $(uname -m)"
-    if [ "$version" = latest ]; then
-        base_url="$PLOYZ_GITHUB_URL/releases/latest/download"
-    else
-        base_url="$PLOYZ_GITHUB_URL/releases/download/v$version"
-    fi
+    base_url="$PLOYZ_GITHUB_URL/releases/download/v$version"
 
-    tmp_dir=$(mktemp -d)
-    trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
     curl -fsSL -o "$tmp_dir/$archive" "$base_url/$archive" || error "Failed to download $archive"
     curl -fsSL -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt" || error "Failed to download checksums.txt"
     verify_checksum "$archive" "$tmp_dir/checksums.txt" "$tmp_dir" || error "Checksum verification failed"

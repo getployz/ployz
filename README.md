@@ -2,6 +2,15 @@
 
 Ployz runs containerized Services across a Cluster of your own Docker Machines.
 
+## Install
+
+```sh
+curl -fsSL https://ployz.sh | sh
+brew install getployz/ployz/ployz
+```
+
+Release process: [docs/RELEASE.md](docs/RELEASE.md).
+
 ## Workspace
 
 - `ployz-core`: domain and wire contracts shared by both binaries

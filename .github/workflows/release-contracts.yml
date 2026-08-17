@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .github/workflows/release-published.yml
       - .github/workflows/release-contracts.yml
       - .goreleaser.yaml
       - install.sh
@@ -20,6 +21,9 @@ on:
       - scripts/release-artifacts-needed.sh
       - scripts/publish-github-release.sh
       - scripts/check-release-tag.sh
+      - scripts/release-tag.sh
+      - scripts/homebrew-formula.sh
+      - scripts/promote-release.sh
       - scripts/test-release-contracts.sh
       - scripts/test-cli-installer.sh
       - scripts/test-daemon-lifecycle.sh

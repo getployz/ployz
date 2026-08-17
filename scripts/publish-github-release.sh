@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# shellcheck source=scripts/release-tag.sh
+source "$ROOT/scripts/release-tag.sh"
 
 release_assets() {
     local dist=$1 name
@@ -27,10 +29,19 @@ release_assets() {
     done <<< "$expected"
 }
 
+release_create_flags() {
+    local tag=$1
+    printf '%s\n' --draft
+    if beta_release_tag "$tag"; then
+        printf '%s\n' --prerelease
+    fi
+}
+
 release_notes() {
     local tag=$1
     local changes=${2:-}
     local version=${tag#v}
+    printf '## Notes\n\n'
     printf '## %s\n\n' "$tag"
     if [ -n "$changes" ]; then
         printf '%s\n\n' "$changes"
@@ -39,10 +50,12 @@ release_notes() {
 ## Install
 
 \`\`\`sh
-curl -fsSL https://raw.githubusercontent.com/getployz/ployz2/$tag/install.sh | sh
-curl -fsSL https://raw.githubusercontent.com/getployz/ployz2/$tag/install.sh | sh -s $version
+curl -fsSL https://ployz.sh | sh
+curl -fsSL https://ployz.sh | sh -s $version
 brew install getployz/ployz/ployz
 \`\`\`
+
+Homebrew tracks stable only. Beta: \`curl -fsSL https://ployz.sh | sh -s beta\`.
 
 This is a **clean break** with manual transition. There is no in-place compatibility promise, configuration converter, or stored-state migration.
 EOF
@@ -59,5 +72,6 @@ if [ "${PLOYZ_RELEASE_TEST_ONLY:-false}" != true ]; then
     [ -n "$tag" ] || { echo "usage: $0 <tag>" >&2; exit 1; }
     dist=${DIST:-"$ROOT/dist"}
     mapfile -t assets < <(release_assets "$dist")
-    gh release create "$tag" --title "$tag" --notes "$(release_notes "$tag" "$(generated_changelog "$tag")")" "${assets[@]}"
+    mapfile -t flags < <(release_create_flags "$tag")
+    gh release create "$tag" "${flags[@]}" --title "$tag" --notes "$(release_notes "$tag" "$(generated_changelog "$tag")")" "${assets[@]}"
 fi

@@ -1,4 +1,5 @@
 /target/
-/docs/
+/docs/*
+!/docs/RELEASE.md
 /.claude/
 ployz-testkit/prebuilt/

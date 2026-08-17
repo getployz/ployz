@@ -34,6 +34,8 @@ assert_contains "$ROOT/.github/workflows/release.yml" "release --clean --skip=pu
 assert_contains "$ROOT/.github/workflows/release.yml" "publish-github-release.sh"
 assert_contains "$ROOT/.github/workflows/release.yml" "uses: ./.github/workflows/release-contracts.yml"
 assert_contains "$ROOT/.github/workflows/release.yml" "needs: [tag, artifacts]"
+assert_contains "$ROOT/.github/workflows/release-published.yml" "promote-release.sh"
+assert_contains "$ROOT/.github/workflows/release-published.yml" "types: [published]"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh macos"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh linux"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh artifacts"
@@ -57,6 +59,13 @@ fi
 manifest=$(mktemp)
 printf 'version = "1.2.3"\n' > "$manifest"
 "$ROOT/scripts/check-release-tag.sh" v1.2.3 "$manifest"
+printf 'version = "1.2.3-beta.1"\n' > "$manifest"
+"$ROOT/scripts/check-release-tag.sh" v1.2.3-beta.1 "$manifest"
+if "$ROOT/scripts/check-release-tag.sh" v1.2.3 "$manifest" >/dev/null 2>&1; then
+    echo "stable tag was accepted against a beta workspace version" >&2
+    exit 1
+fi
+printf 'version = "1.2.3"\n' > "$manifest"
 if "$ROOT/scripts/check-release-tag.sh" v1.2.4 "$manifest" >/dev/null 2>&1; then
     echo "mismatched workspace version was accepted" >&2
     exit 1
@@ -66,7 +75,11 @@ if "$ROOT/scripts/check-release-tag.sh" nightly "$manifest" >/dev/null 2>&1; the
     exit 1
 fi
 if "$ROOT/scripts/check-release-tag.sh" v1.2.3-rc.1 "$manifest" >/dev/null 2>&1; then
-    echo "prerelease tag was accepted" >&2
+    echo "rc tag was accepted" >&2
+    exit 1
+fi
+if "$ROOT/scripts/check-release-tag.sh" v1.2.3-beta "$manifest" >/dev/null 2>&1; then
+    echo "beta tag without N was accepted" >&2
     exit 1
 fi
 if "$ROOT/scripts/check-release-tag.sh" v1.2 "$manifest" >/dev/null 2>&1; then
@@ -84,8 +97,18 @@ done
 : > "$release_dist/ployz.rb"
 assert_eq "$(release_assets "$release_dist" | xargs -n1 basename | sort)" \
     "$(printf '%s\n' checksums.txt ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz | sort)"
+assert_eq "$(release_create_flags v1.2.3 | tr '\n' ' ')" "--draft "
+assert_eq "$(release_create_flags v1.2.3-beta.1 | tr '\n' ' ')" "--draft --prerelease "
 if ! printf '%s\n' "$(release_notes v1.2.3)" | grep -Fq "clean break"; then
     echo "release notes omit the clean-break statement" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$(release_notes v1.2.3)" | grep -Fq "https://ployz.sh"; then
+    echo "release notes omit ployz.sh install" >&2
+    exit 1
+fi
+if printf '%s\n' "$(release_notes v1.2.3)" | grep -Fq "raw.githubusercontent.com"; then
+    echo "release notes still point at raw.githubusercontent.com" >&2
     exit 1
 fi
 : > "$release_dist/ployz_windows_amd64.tar.gz"
@@ -117,6 +140,35 @@ assert_contains "$tap/README.md" "clean break"
 assert_contains "$tap/README.md" "getployz/ployz2"
 rm -rf "$tap" "$formula"
 
+PLOYZ_PROMOTE_TEST_ONLY=true source "$ROOT/scripts/promote-release.sh"
+assert_eq "$(channel_name_for_tag v1.2.3)" stable
+assert_eq "$(channel_name_for_tag v1.2.3-beta.2)" beta
+if channel_name_for_tag v1.2.3-rc.1 >/dev/null 2>&1; then
+    echo "rc tag was accepted as a channel" >&2
+    exit 1
+fi
+channels=$(mktemp -d)
+write_channel_file "$channels" v1.2.3
+assert_eq "$(cat "$channels/stable")" v1.2.3
+write_channel_file "$channels" v1.2.3-beta.1
+assert_eq "$(cat "$channels/beta")" v1.2.3-beta.1
+assert_eq "$(cat "$channels/stable")" v1.2.3
+checksums=$(mktemp)
+printf '%s  %s\n' aaa ployz_linux_amd64.tar.gz bbb ployz_linux_arm64.tar.gz ccc ployz_macos_amd64.tar.gz ddd ployz_macos_arm64.tar.gz > "$checksums"
+tap=$(mktemp -d)
+formula=$(mktemp)
+write_homebrew_formula_from_checksums "$checksums" "$formula" 9.9.9 v9.9.9 getployz/ployz2
+repoint_homebrew_tap "$tap" "$formula"
+assert_contains "$tap/Formula/ployz.rb" "version \"9.9.9\""
+assert_contains "$tap/Formula/ployz.rb" "releases/download/v9.9.9/ployz_linux_amd64.tar.gz"
+assert_contains "$tap/Formula/ployz.rb" aaa
+if stable_release_tag v9.9.9-beta.1; then
+    echo "beta tag was classified stable" >&2
+    exit 1
+fi
+rm -rf "$channels" "$tap"
+rm -f "$checksums" "$formula"
+
 PLOYZ_INSTALL_TEST_ONLY=true source "$ROOT/scripts/install.sh"
 assert_eq "$(daemon_archive x86_64)" "ployzd_linux_amd64.tar.gz"
 assert_eq "$(daemon_archive aarch64)" "ployzd_linux_arm64.tar.gz"
@@ -124,11 +176,11 @@ if daemon_archive riscv64 >/dev/null 2>&1; then
     echo "unsupported daemon architecture was accepted" >&2
     exit 1
 fi
-assert_eq "$(daemon_action 1.2.3 latest 1.2.3)" "keep"
-assert_eq "$(daemon_action 1.2.2 latest 1.2.3)" "replace"
-assert_eq "$(daemon_action 1.2.4 latest 1.2.3)" "keep"
-assert_eq "$(daemon_action 1.2.3 1.2.2 '')" "replace"
-assert_eq "$(daemon_action 1.2.2 1.2.3 '')" "replace"
+assert_eq "$(daemon_action 1.2.3 1.2.3 floating)" "keep"
+assert_eq "$(daemon_action 1.2.2 1.2.3 floating)" "replace"
+assert_eq "$(daemon_action 1.2.4 1.2.3 floating)" "keep"
+assert_eq "$(daemon_action 1.2.3 1.2.2 pin)" "replace"
+assert_eq "$(daemon_action 1.2.2 1.2.3 pin)" "replace"
 
 PLOYZ_CLI_INSTALL_TEST_ONLY=true source "$ROOT/install.sh"
 assert_eq "$(cli_archive Linux x86_64)" "ployz_linux_amd64.tar.gz"
@@ -139,6 +191,17 @@ if cli_archive FreeBSD x86_64 >/dev/null 2>&1; then
     echo "unsupported CLI platform was accepted" >&2
     exit 1
 fi
+channel_file=$(mktemp)
+printf 'v1.2.3\n' > "$channel_file"
+assert_eq "$(channel_version_from_file "$channel_file")" v1.2.3
+printf '0.2.0-beta.1\n' > "$channel_file"
+assert_eq "$(channel_version_from_file "$channel_file")" 0.2.0-beta.1
+printf 'not-a-version\n' > "$channel_file"
+if channel_version_from_file "$channel_file" >/dev/null 2>&1; then
+    echo "non-version channel file was accepted" >&2
+    exit 1
+fi
+rm -f "$channel_file"
 
 PLOYZ_UNINSTALL_TEST_ONLY=true source "$ROOT/scripts/uninstall.sh"
 assert_eq "$(uninstall_disposition docker)" "retain"
@@ -155,6 +218,8 @@ assert_eq "$(release_artifacts_needed pull_request install.sh scripts/install.sh
 assert_eq "$(release_artifacts_needed pull_request .goreleaser.yaml)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/verify-release.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/pack-release.sh)" true
+assert_eq "$(release_artifacts_needed pull_request scripts/homebrew-formula.sh)" true
+assert_eq "$(release_artifacts_needed pull_request scripts/release-tag.sh)" false
 assert_eq "$(release_artifacts_needed pull_request .github/workflows/release-contracts.yml)" true
 
 pack_dist=$(mktemp -d)

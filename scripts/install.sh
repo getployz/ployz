@@ -8,6 +8,7 @@ INSTALL_ONLY=${INSTALL_ONLY:-false}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 INSTALL_SYSTEMD_DIR=${INSTALL_SYSTEMD_DIR:-/etc/systemd/system}
 PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz2}
+PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 PLOYZ_VERSION=${PLOYZ_VERSION:-latest}
 PLOYZ_VERSION=${PLOYZ_VERSION#v}
 PLOYZ_USER=ployz
@@ -28,6 +29,32 @@ warning() { echo "WARNING: $1" >&2; }
 error() { echo "ERROR: $1" >&2; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+channel_version_from_file() {
+    local version
+    version=$(tr -d ' \t\r\n' < "$1")
+    echo "$version" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$' || return 1
+    echo "$version"
+}
+
+resolve_install() {
+    local requested=${1#v} dest resolved name
+    case "$requested" in
+        latest | stable | '') name=stable ;;
+        beta) name=beta ;;
+        *)
+            printf '%s\n' "$requested"
+            return 0
+            ;;
+    esac
+    dest=$(mktemp)
+    if ! curl -fsSL -o "$dest" "$PLOYZ_CHANNEL_URL/$name" || ! resolved=$(channel_version_from_file "$dest"); then
+        rm -f "$dest"
+        error "$name channel is unavailable"
+    fi
+    rm -f "$dest"
+    printf '%s\n' "${resolved#v}"
+}
+
 daemon_archive() {
     case "$1" in
         x86_64) echo ployzd_linux_amd64.tar.gz ;;
@@ -37,17 +64,17 @@ daemon_archive() {
 }
 
 daemon_action() {
-    local installed=$1 requested=$2 latest=${3:-}
+    local installed=$1 target=$2 mode=$3
     if [ -z "$installed" ]; then
         echo replace
-    elif [ "$requested" != latest ]; then
-        [ "$installed" = "$requested" ] && echo keep || echo replace
-    elif [ -z "$latest" ] || [ "$installed" = "$latest" ]; then
-        [ -z "$latest" ] && echo replace || echo keep
+    elif [ "$mode" = pin ]; then
+        [ "$installed" = "$target" ] && echo keep || echo replace
+    elif [ "$installed" = "$target" ]; then
+        echo keep
     else
         local newest
-        newest=$(printf '%s\n%s\n' "${installed//-/\~}" "$latest" | sort -V | tail -n1)
-        [ "$newest" = "$latest" ] && echo replace || echo keep
+        newest=$(printf '%s\n%s\n' "${installed//-/\~}" "$target" | sort -V | tail -n1)
+        [ "$newest" = "$target" ] && echo replace || echo keep
     fi
 }
 
@@ -96,31 +123,22 @@ create_user_and_directories() {
 }
 
 install_binaries() {
-    local archive installed_version latest_version action base_url tmp_dir
+    local archive installed_version target action base_url tmp_dir requested mode
     archive=$(daemon_archive "$(uname -m)") || error "Unsupported architecture: $(uname -m)"
+    requested=$PLOYZ_VERSION
+    case "$requested" in
+        latest | stable | beta | '') mode=floating ;;
+        *) mode=pin ;;
+    esac
+    target=$(resolve_install "$requested")
     installed_version=""
     if [ -x "$INSTALL_BIN_DIR/ployzd" ]; then
         installed_version=$("$INSTALL_BIN_DIR/ployzd" version 2>/dev/null || true)
     fi
 
-    latest_version=""
-    if [ "$PLOYZ_VERSION" = latest ]; then
-        local latest_url
-        latest_url=$(curl -sLI -o /dev/null -w '%{url_effective}' "$PLOYZ_GITHUB_URL/releases/latest" 2>/dev/null || true)
-        latest_version=${latest_url##*/}
-        latest_version=${latest_version#v}
-        if [ -z "$latest_version" ] || [ "$latest_version" = latest ]; then
-            warning "Could not resolve the latest release; using GitHub's redirect"
-            latest_version=""
-            base_url="$PLOYZ_GITHUB_URL/releases/latest/download"
-        else
-            base_url="$PLOYZ_GITHUB_URL/releases/download/v$latest_version"
-        fi
-    else
-        base_url="$PLOYZ_GITHUB_URL/releases/download/v$PLOYZ_VERSION"
-    fi
+    base_url="$PLOYZ_GITHUB_URL/releases/download/v$target"
 
-    action=$(daemon_action "$installed_version" "$PLOYZ_VERSION" "$latest_version")
+    action=$(daemon_action "$installed_version" "$target" "$mode")
     if [ "$action" = keep ]; then
         log "ployzd ${installed_version} retained"
         return
