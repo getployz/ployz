@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     io,
     net::{IpAddr, SocketAddr},
     process::Command,
@@ -24,8 +24,8 @@ use ployz_core::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    DOCKER_NETWORK_NAME, EndpointSelection, MACHINE_API_PORT, MeshPeer, NetworkError,
-    WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
+    DOCKER_NETWORK_NAME, MACHINE_API_PORT, MeshPeer, NetworkError, WIREGUARD_INTERFACE_NAME,
+    WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey, attach_peer_selections,
     checked_command, firewall::remove_firewall_rules, management_address, peers_for,
 };
 use crate::{
@@ -84,7 +84,6 @@ pub struct NetworkPlane {
     wireguard: WGApi<Kernel>,
     mtu: u32,
     routes: BTreeSet<IpNet>,
-    selections: BTreeMap<MachineId, EndpointSelection>,
     bootstrap_peers: Vec<MeshPeer>,
     peers: Vec<MeshPeer>,
 }
@@ -115,18 +114,12 @@ impl NetworkPlane {
         let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
         wireguard.create_interface()?;
         let now = SystemTime::now();
-        let peers = peers_for(&machine.id, &record.bootstrap_machines);
-        let selections = peers
-            .iter()
-            .filter_map(|peer| {
-                let selection = EndpointSelection::new(
-                    &peer.advertised_endpoints,
-                    record.selected_endpoints.get(&peer.machine_id).copied(),
-                    now,
-                );
-                selection.selected().map(|_| (peer.machine_id, selection))
-            })
-            .collect();
+        let (peers, _) = attach_peer_selections(
+            peers_for(&machine.id, &record.bootstrap_machines),
+            Vec::new(),
+            &record.selected_endpoints,
+            now,
+        );
         let mut plane = Self {
             machine,
             private_key,
@@ -134,7 +127,6 @@ impl NetworkPlane {
             wireguard,
             mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
             routes: BTreeSet::new(),
-            selections,
             bootstrap_peers: peers.clone(),
             peers: peers.clone(),
         };
@@ -291,31 +283,10 @@ impl NetworkPlane {
                     .cloned(),
             );
         }
-        let live_ids = planned
-            .iter()
-            .map(|peer| peer.machine_id)
-            .collect::<BTreeSet<_>>();
-        self.selections
-            .retain(|machine_id, _| live_ids.contains(machine_id));
-        for peer in &planned {
-            if let Some(selection) = self.selections.get_mut(&peer.machine_id) {
-                if let Some(endpoint) = selection.replace_candidates(
-                    &peer.advertised_endpoints,
-                    selected.get(&peer.machine_id).copied(),
-                    now,
-                ) {
-                    persist_selection(local, peer.machine_id, endpoint);
-                }
-            } else {
-                let persisted = selected.get(&peer.machine_id).copied();
-                let selection = EndpointSelection::new(&peer.advertised_endpoints, persisted, now);
-                if persisted.is_none()
-                    && let Some(endpoint) = selection.selected()
-                {
-                    persist_selection(local, peer.machine_id, endpoint);
-                }
-                self.selections.insert(peer.machine_id, selection);
-            }
+        let previous = std::mem::take(&mut self.peers);
+        let (planned, newly_selected) = attach_peer_selections(planned, previous, &selected, now);
+        for (machine_id, endpoint) in newly_selected {
+            persist_selection(local, machine_id, endpoint);
         }
         self.apply_peers(&planned)?;
         self.peers = planned;
@@ -325,14 +296,7 @@ impl NetworkPlane {
     fn apply_peers(&mut self, peers: &[MeshPeer]) -> Result<(), NetworkError> {
         let wg_peers = peers
             .iter()
-            .map(|peer| {
-                wireguard_peer(
-                    peer,
-                    self.selections
-                        .get(&peer.machine_id)
-                        .and_then(EndpointSelection::selected),
-                )
-            })
+            .map(|peer| wireguard_peer(peer, peer.selected()))
             .collect::<Vec<_>>();
         let desired_routes = peers
             .iter()
@@ -375,10 +339,7 @@ impl NetworkPlane {
         for peer in &mut self.peers {
             let key = Key::new(peer.public_key.0);
             let device = host.peers.get(&key);
-            let Some(selection) = self.selections.get_mut(&peer.machine_id) else {
-                continue;
-            };
-            let Some(endpoint) = selection.poll(
+            let Some(endpoint) = peer.poll(
                 now,
                 device.and_then(|peer| peer.last_handshake),
                 device.and_then(|peer| peer.endpoint),

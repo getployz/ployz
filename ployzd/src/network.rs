@@ -1,5 +1,6 @@
 use std::{
-    net::{IpAddr, Ipv6Addr},
+    collections::BTreeMap,
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     process::{Command, Output},
     time::{Duration, SystemTime},
 };
@@ -129,7 +130,23 @@ pub struct MeshPeer {
     pub machine_id: MachineId,
     pub public_key: WireGuardPublicKey,
     pub allowed_ips: [IpNet; 2],
-    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
+    selection: EndpointSelection,
+}
+
+impl MeshPeer {
+    #[must_use]
+    pub fn selected(&self) -> Option<SelectedEndpoint> {
+        self.selection.selected()
+    }
+
+    pub fn poll(
+        &mut self,
+        now: SystemTime,
+        last_handshake: Option<SystemTime>,
+        device_endpoint: Option<SocketAddr>,
+    ) -> Option<SelectedEndpoint> {
+        self.selection.poll(now, last_handshake, device_endpoint)
+    }
 }
 
 #[must_use]
@@ -145,9 +162,45 @@ pub fn peers_for(observer_id: &MachineId, machines: &[Machine]) -> Vec<MeshPeer>
                     .expect("IPv6 /128 is valid"),
                 machine.subnet.into(),
             ],
-            advertised_endpoints: machine.advertised_endpoints.clone(),
+            selection: EndpointSelection::from_advertised(machine.advertised_endpoints.clone()),
         })
         .collect()
+}
+
+fn attach_peer_selections(
+    planned: Vec<MeshPeer>,
+    previous: Vec<MeshPeer>,
+    persisted: &BTreeMap<MachineId, SelectedEndpoint>,
+    now: SystemTime,
+) -> (Vec<MeshPeer>, Vec<(MachineId, SelectedEndpoint)>) {
+    let mut previous = previous
+        .into_iter()
+        .map(|peer| (peer.machine_id, peer.selection))
+        .collect::<BTreeMap<_, _>>();
+    let mut newly_selected = Vec::new();
+    let peers = planned
+        .into_iter()
+        .map(|mut peer| {
+            let persisted = persisted.get(&peer.machine_id).copied();
+            if let Some(mut selection) = previous.remove(&peer.machine_id) {
+                if let Some(endpoint) =
+                    selection.replace_candidates(&peer.selection.candidates, persisted, now)
+                {
+                    newly_selected.push((peer.machine_id, endpoint));
+                }
+                peer.selection = selection;
+            } else {
+                peer.selection.bind(persisted, now);
+                if persisted.is_none()
+                    && let Some(endpoint) = peer.selection.selected()
+                {
+                    newly_selected.push((peer.machine_id, endpoint));
+                }
+            }
+            peer
+        })
+        .collect();
+    (peers, newly_selected)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -174,6 +227,17 @@ enum EndpointState {
 }
 
 impl EndpointSelection {
+    fn from_advertised(candidates: Vec<AdvertisedEndpoint>) -> Self {
+        Self {
+            candidates,
+            state: EndpointState::Unselected,
+        }
+    }
+
+    fn bind(&mut self, selected: Option<SelectedEndpoint>, now: SystemTime) {
+        self.state = initial_endpoint_state(&self.candidates, selected, now);
+    }
+
     #[must_use]
     pub fn new(
         candidates: &[AdvertisedEndpoint],
@@ -323,5 +387,84 @@ fn checked_command(program: &str, args: &[&str]) -> Result<Output, NetworkError>
             program: program.into(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        net::{Ipv6Addr, SocketAddr},
+    };
+
+    use ployz_core::{MachineName, MachineRuntime};
+
+    use super::*;
+
+    fn endpoint(seed: u8) -> AdvertisedEndpoint {
+        AdvertisedEndpoint(SocketAddr::from(([192, 0, 2, seed], 51820)))
+    }
+
+    fn machine(seed: u8, advertised: Vec<AdvertisedEndpoint>) -> Machine {
+        Machine {
+            id: MachineId::parse(format!("{seed:032x}")).unwrap(),
+            name: MachineName::parse(format!("machine-{seed}")).unwrap(),
+            subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+            management_address: ManagementAddress(Ipv6Addr::from([
+                0xfd, 0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, seed,
+            ])),
+            public_key: WireGuardPublicKey([seed; 32]),
+            public_ip: None,
+            advertised_endpoints: advertised,
+            runtime: MachineRuntime::default(),
+        }
+    }
+
+    #[test]
+    fn start_and_rebuild_keep_unselected_peers() {
+        let now = SystemTime::UNIX_EPOCH;
+        let observer = machine(1, vec![endpoint(1)]);
+        let silent = machine(2, vec![]);
+        let machines = [observer.clone(), silent.clone()];
+        let planned = peers_for(&observer.id, &machines);
+
+        let (started, start_persist) =
+            attach_peer_selections(planned, Vec::new(), &BTreeMap::new(), now);
+        let started_peer = started.first().expect("start keeps the Unselected peer");
+        assert_eq!(started_peer.machine_id, silent.id);
+        assert_eq!(started_peer.selected(), None);
+        assert!(start_persist.is_empty());
+
+        let planned = peers_for(&observer.id, &machines);
+        let (rebuilt, rebuild_persist) =
+            attach_peer_selections(planned, started, &BTreeMap::new(), now);
+        let rebuilt_peer = rebuilt.first().expect("rebuild keeps the Unselected peer");
+        assert_eq!(rebuilt_peer.machine_id, silent.id);
+        assert_eq!(rebuilt_peer.selected(), None);
+        assert!(rebuild_persist.is_empty());
+    }
+
+    #[test]
+    fn rebuild_selects_when_an_unselected_peer_gains_advertised_endpoints() {
+        let now = SystemTime::UNIX_EPOCH;
+        let observer = machine(1, vec![endpoint(1)]);
+        let silent = machine(2, vec![]);
+        let planned = peers_for(&observer.id, &[observer.clone(), silent]);
+        let (started, _) = attach_peer_selections(planned, Vec::new(), &BTreeMap::new(), now);
+        let speaking = machine(2, vec![endpoint(2)]);
+        let speaking_id = speaking.id;
+        let planned = peers_for(&observer.id, &[observer.clone(), speaking]);
+        let (rebuilt, persist) = attach_peer_selections(planned, started, &BTreeMap::new(), now);
+        assert_eq!(
+            rebuilt
+                .first()
+                .expect("peer remains after advertised endpoints appear")
+                .selected(),
+            Some(SelectedEndpoint(endpoint(2).0))
+        );
+        assert_eq!(
+            persist,
+            vec![(speaking_id, SelectedEndpoint(endpoint(2).0))]
+        );
     }
 }
