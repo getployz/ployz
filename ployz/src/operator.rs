@@ -12,9 +12,8 @@ use ployz_core::{
     ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
     ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry, LogStream, LogsOptions,
     MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
-    MachineTarget, MembershipObservation, OpaquePayload, ServiceContainer, ServiceObservation,
-    ServiceSelector, StreamProtocolError, op, resolve_container_selector,
-    resolve_machine_selectors, select_service,
+    MachineTarget, OpaquePayload, ServiceContainer, ServiceObservation, ServiceSelector,
+    StreamProtocolError, op, resolve_container_selector, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -511,12 +510,7 @@ pub(crate) fn select_machines<'a>(
 ) -> Result<Vec<&'a MachineObservation>, OperatorError> {
     let eligible = machines
         .iter()
-        .filter(|machine| {
-            matches!(
-                machine.membership,
-                MembershipObservation::Up | MembershipObservation::Suspect
-            )
-        })
+        .filter(|machine| machine.membership.invites_rpc())
         .collect::<Vec<_>>();
     if selectors.is_empty() {
         if eligible.is_empty() {

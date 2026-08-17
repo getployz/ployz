@@ -101,11 +101,12 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 ))),
                 NameMatches::One(mut volume) => {
                     volume.volume = client
-                        .call::<op::InspectVolume>(
+                        .invoke::<op::InspectVolume>(
                             InspectVolumeRequest {
                                 name: volume.volume.id.name.clone(),
                             },
-                            Some(&MachineTarget::from(&volume.volume.id.machine_id)),
+                            &MachineTarget::from(&volume.volume.id.machine_id),
+                            Some(TARGET_RPC_TIMEOUT),
                         )
                         .await?;
                     println!("{}", serde_json::to_string_pretty(&volume)?);

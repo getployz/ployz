@@ -13,15 +13,12 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     let reference = leaf.get_one::<String>("image").cloned();
     let json = leaf.get_one::<String>("output").map(String::as_str) == Some("json");
     let result = runtime()?.block_on(async {
-        let client = connect_client(
+        let mut client = connect_client(
             matches,
             leaf.get_one::<String>("context").map(String::as_str),
         )
         .await?;
-        client
-            .list_images(reference, &targets)
-            .await
-            .map_err(Error::from)
+        Ok::<_, Error>(crate::image::list(&mut client, reference, &targets).await?)
     })?;
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);

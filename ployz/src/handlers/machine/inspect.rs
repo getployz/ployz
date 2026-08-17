@@ -6,12 +6,15 @@ use std::{
 use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSuccess,
-    MachineTarget, PartialResult, RttObservation, RttStatistics, WireGuardPeer, op,
+    MachineTarget, PartialResult, RpcError, RttObservation, RttStatistics, WireGuardPeer, op,
 };
 use serde::Serialize;
 
 use super::{machine_list, with_client};
-use crate::handlers::{Error, leaf_matches};
+use crate::{
+    connect::TARGET_RPC_TIMEOUT,
+    handlers::{Error, leaf_matches},
+};
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     let output = leaf_matches(root).get_one::<String>("output").cloned();
@@ -81,12 +84,19 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
             };
             for observed in machines {
                 let id = observed.machine.id;
+                if !observed.membership.invites_rpc() {
+                    result.omissions.push(id);
+                    continue;
+                }
                 let selector = MachineTarget::from(&id);
                 let request = InspectRequest {
                     include_rtts: true,
                     ..Default::default()
                 };
-                match client.call::<op::Inspect>(request, Some(&selector)).await {
+                match client
+                    .invoke::<op::Inspect>(request, &selector, Some(TARGET_RPC_TIMEOUT))
+                    .await
+                {
                     Ok(details) => result.successes.push(MachineSuccess {
                         machine_id: id,
                         value: details.rtts,
@@ -118,9 +128,7 @@ fn wg_rtt_line(rtt: Option<&RttStatistics>) -> Option<String> {
 }
 
 #[must_use]
-fn format_rtt_table(
-    result: &PartialResult<Vec<RttObservation>, crate::connect::ConnectError>,
-) -> String {
+fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, RpcError>) -> String {
     let mut table = String::from("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
     for success in &result.successes {
         for observation in &success.value {
@@ -139,13 +147,16 @@ fn format_rtt_table(
     table
 }
 
-fn print_rtts(result: &PartialResult<Vec<RttObservation>, crate::connect::ConnectError>) {
+fn print_rtts(result: &PartialResult<Vec<RttObservation>, RpcError>) {
     print!("{}", format_rtt_table(result));
     for failure in &result.failures {
         eprintln!(
             "WARNING: RTT inspection failed for {}: {}",
             failure.machine_id, failure.error
         );
+    }
+    for machine_id in &result.omissions {
+        eprintln!("WARNING: RTT inspection omitted for {machine_id}");
     }
 }
 
@@ -154,10 +165,24 @@ pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error
     with_client(root, |client| {
         Box::pin(async move {
             let target = selector.map(MachineTarget::parse).transpose()?;
-            let device = client
-                .call::<op::InspectWireguard>(InspectWireGuardRequest {}, target.as_ref())
-                .await?
-                .device;
+            let device = match target.as_ref() {
+                None => {
+                    client
+                        .call::<op::InspectWireguard>(InspectWireGuardRequest {}, None)
+                        .await?
+                        .device
+                }
+                Some(target) => {
+                    client
+                        .invoke::<op::InspectWireguard>(
+                            InspectWireGuardRequest {},
+                            target,
+                            Some(TARGET_RPC_TIMEOUT),
+                        )
+                        .await?
+                        .device
+                }
+            };
             println!("interface: {}", device.interface_name);
             println!("public key: {}", device.public_key);
             println!("listening port: {}", device.listen_port);

@@ -6,9 +6,9 @@ use ployz_core::{
     FanoutSelector, GetDomainRequest, ListContainersRequest, ListImagesRequest,
     ListMachinesRequest, ListVolumesRequest, LiveServices, MachineFailure, MachineId,
     MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
-    MachineTarget, MembershipObservation, OpaquePayload, PartialResult, RemoveContainerRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
-    StopContainerRequest, apply_many_targets, derive_live_services, op,
+    MachineTarget, OpaquePayload, PartialResult, RemoveContainerRequest, ResolvedServiceSpec, Rpc,
+    RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
+    apply_many_targets, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -224,7 +224,7 @@ impl Client {
         let mut requests = JoinSet::new();
         let mut omissions = Vec::new();
         for (index, machine) in machines.iter().enumerate() {
-            if !invites_rpc(&machine.membership) {
+            if !machine.membership.invites_rpc() {
                 omissions.push(machine.machine.id);
                 continue;
             }
@@ -354,7 +354,7 @@ impl Client {
         for machine in machines {
             // TODO(UT-102): the entry Machine's observer-relative Membership Observation is the
             // current trust boundary; it can be stale and is not an authority or freshness proof.
-            if invites_rpc(&machine.membership) {
+            if machine.membership.invites_rpc() {
                 tasks.spawn(list_on_machine(self.clone(), machine.machine.id));
             } else {
                 omissions.push(machine.machine.id);
@@ -501,13 +501,6 @@ pub(crate) fn snapshot_from_partial(
             })
             .collect(),
     }
-}
-
-fn invites_rpc(membership: &MembershipObservation) -> bool {
-    matches!(
-        membership,
-        MembershipObservation::Up | MembershipObservation::Suspect
-    )
 }
 
 async fn list_volumes_on_machine(
