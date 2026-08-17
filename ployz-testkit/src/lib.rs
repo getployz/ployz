@@ -62,25 +62,34 @@ pub fn image_targets() -> [ImageTarget; 2] {
     ]
 }
 
+/// Per-Machine knobs that are not derived from the Cluster name.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MachinePlan {
-    pub name: String,
     pub api_port: u16,
-    pub privileged: bool,
-    pub labels: BTreeMap<String, String>,
     pub environment: BTreeMap<String, String>,
     pub daemon_args: Vec<String>,
 }
 
+/// Planned Docker-in-Docker Cluster.
+///
+/// Network name, labels, Machine container names, and privileged are derived
+/// from the Cluster name. [`Cluster`] is the running Cluster and tears it down
+/// on [`Drop`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClusterPlan {
-    pub name: String,
-    pub network: String,
-    pub labels: BTreeMap<String, String>,
+    name: String,
     pub machines: Vec<MachinePlan>,
 }
 
 impl ClusterPlan {
+    /// Plan a Cluster whose Docker identity is derived from `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestkitError::InvalidClusterName`] when `name` is empty or
+    /// contains a byte that is not ASCII alphanumeric or `-`.
+    /// Returns [`TestkitError::PortAllocation`] when a Machine API port cannot
+    /// be reserved.
     pub fn new(name: &str, machine_count: usize) -> Result<Self, TestkitError> {
         if name.is_empty()
             || !name
@@ -89,14 +98,10 @@ impl ClusterPlan {
         {
             return Err(TestkitError::InvalidClusterName(name.to_owned()));
         }
-        let labels = labels(name);
         let machines = (0..machine_count)
-            .map(|index| {
+            .map(|_| {
                 Ok(MachinePlan {
-                    name: format!("ployz-testkit-{name}-{index}"),
                     api_port: reserve_loopback_port()?,
-                    privileged: true,
-                    labels: labels.clone(),
                     environment: BTreeMap::from([(
                         "PLOYZ_ACME_DIRECTORY".to_owned(),
                         String::new(),
@@ -108,10 +113,32 @@ impl ClusterPlan {
             .map_err(TestkitError::PortAllocation)?;
         Ok(Self {
             name: name.to_owned(),
-            network: format!("ployz-testkit-{name}"),
-            labels,
             machines,
         })
+    }
+
+    /// Cluster name the rest of the Docker identity is derived from.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Docker network name: `ployz-testkit-{name}`.
+    #[must_use]
+    pub fn network(&self) -> String {
+        format!("ployz-testkit-{}", self.name)
+    }
+
+    /// Owner and Cluster labels derived from the Cluster name.
+    #[must_use]
+    pub fn labels(&self) -> BTreeMap<String, String> {
+        labels(&self.name)
+    }
+
+    /// Docker container name for the Machine at `index`: `ployz-testkit-{name}-{index}`.
+    #[must_use]
+    pub fn machine_name(&self, index: usize) -> String {
+        format!("ployz-testkit-{}-{index}", self.name)
     }
 
     #[must_use]
@@ -166,28 +193,29 @@ pub struct Cluster {
 
 impl Cluster {
     pub fn create(plan: ClusterPlan) -> Result<Self, TestkitError> {
+        let labels = plan.labels();
+        let network = plan.network();
         let mut network_args = vec!["network".to_owned(), "create".to_owned()];
-        for (key, value) in &plan.labels {
+        for (key, value) in &labels {
             network_args.extend(["--label".to_owned(), format!("{key}={value}")]);
         }
-        network_args.push(plan.network.clone());
+        network_args.push(network.clone());
         docker(network_args)?;
         let cluster = Self { plan };
         let image = std::env::var("PLOYZ_TESTKIT_IMAGE").unwrap_or_else(|_| IMAGE.into());
-        for machine in &cluster.plan.machines {
-            let mut args = vec!["run".to_owned(), "--detach".to_owned()];
-            if machine.privileged {
-                args.push("--privileged".to_owned());
-            }
-            args.extend([
+        for (index, machine) in cluster.plan.machines.iter().enumerate() {
+            let mut args = vec![
+                "run".to_owned(),
+                "--detach".to_owned(),
+                "--privileged".to_owned(),
                 "--name".to_owned(),
-                machine.name.clone(),
+                cluster.plan.machine_name(index),
                 "--network".to_owned(),
-                cluster.plan.network.clone(),
+                network.clone(),
                 "--add-host".to_owned(),
                 "host.docker.internal:host-gateway".to_owned(),
-            ]);
-            for (key, value) in &machine.labels {
+            ];
+            for (key, value) in &labels {
                 args.extend(["--label".to_owned(), format!("{key}={value}")]);
             }
             for (key, value) in &machine.environment {
@@ -227,9 +255,7 @@ impl Cluster {
                     break;
                 }
                 if Instant::now() >= deadline {
-                    return Err(TestkitError::ReadinessTimeout(
-                        self.machine(index)?.name.clone(),
-                    ));
+                    return Err(TestkitError::ReadinessTimeout(self.container_name(index)?));
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
@@ -481,7 +507,7 @@ impl Cluster {
             "token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H \"Authorization: Bearer $token\" -H 'Content-Type: application/json' --data-binary {} http://127.0.0.1:51002/{path}",
             shell_quote(payload)
         );
-        let output = docker_output(["exec", &self.machine(index)?.name, "sh", "-c", &script])?;
+        let output = docker_output(["exec", &self.container_name(index)?, "sh", "-c", &script])?;
         if output.status.success() {
             Ok(output)
         } else {
@@ -492,7 +518,7 @@ impl Cluster {
     fn gossip_rule(&self, index: usize, action: &str) -> Result<(), TestkitError> {
         docker([
             "exec",
-            &self.machine(index)?.name,
+            &self.container_name(index)?,
             "ip6tables",
             action,
             "OUTPUT",
@@ -521,7 +547,7 @@ impl Cluster {
     ) -> Result<(), TestkitError> {
         docker([
             "exec",
-            &self.machine(index)?.name,
+            &self.container_name(index)?,
             "sh",
             "-c",
             &format!(
@@ -533,7 +559,7 @@ impl Cluster {
     }
 
     pub fn stop(&self, index: usize) -> Result<(), TestkitError> {
-        docker(["stop", &self.machine(index)?.name])
+        docker(["stop", &self.container_name(index)?])
     }
 
     pub fn api_socket_address(&self, index: usize) -> Result<std::net::SocketAddr, TestkitError> {
@@ -544,7 +570,7 @@ impl Cluster {
         let path = shell_quote(path);
         docker([
             "exec",
-            &self.machine(index)?.name,
+            &self.container_name(index)?,
             "sh",
             "-c",
             &format!(
@@ -561,7 +587,7 @@ impl Cluster {
     ) -> Result<(), TestkitError> {
         docker([
             "exec",
-            &self.machine(index)?.name,
+            &self.container_name(index)?,
             "docker",
             "start",
             container_id.as_str(),
@@ -576,7 +602,7 @@ impl Cluster {
     ) -> Result<String, TestkitError> {
         let output = docker_output([
             "exec",
-            &self.machine(index)?.name,
+            &self.container_name(index)?,
             "docker",
             "exec",
             container_id.as_str(),
@@ -620,19 +646,15 @@ impl Cluster {
     }
 
     pub fn docker(&self, index: usize, args: &[&str]) -> Result<(), TestkitError> {
-        let mut command = vec!["exec", self.machine(index)?.name.as_str(), "docker"];
+        let name = self.container_name(index)?;
+        let mut command = vec!["exec", name.as_str(), "docker"];
         command.extend_from_slice(args);
         docker(command)
     }
 
     pub fn shell(&self, index: usize, script: &str) -> Result<Output, TestkitError> {
-        let output = docker_output([
-            "exec",
-            self.machine(index)?.name.as_str(),
-            "sh",
-            "-c",
-            script,
-        ])?;
+        let name = self.container_name(index)?;
+        let output = docker_output(["exec", name.as_str(), "sh", "-c", script])?;
         if output.status.success() {
             Ok(output)
         } else {
@@ -647,7 +669,7 @@ impl Cluster {
     ) -> Result<String, TestkitError> {
         let output = docker_output([
             "exec",
-            &self.machine(index)?.name,
+            &self.container_name(index)?,
             "docker",
             "inspect",
             "--format",
@@ -668,7 +690,7 @@ impl Cluster {
     ) -> Result<(), TestkitError> {
         docker([
             "exec",
-            &self.machine(index)?.name,
+            &self.container_name(index)?,
             "docker",
             "rm",
             "--force",
@@ -677,7 +699,8 @@ impl Cluster {
     }
 
     pub fn logs(&self, index: usize) -> Result<String, TestkitError> {
-        let output = docker_output(["logs", self.machine(index)?.name.as_str()])?;
+        let name = self.container_name(index)?;
+        let output = docker_output(["logs", name.as_str()])?;
         Ok(format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
@@ -686,7 +709,7 @@ impl Cluster {
     }
 
     pub fn restart(&self, index: usize) -> Result<(), TestkitError> {
-        docker(["restart", &self.machine(index)?.name])
+        docker(["restart", &self.container_name(index)?])
     }
 
     pub fn remote_machine_api_rule(
@@ -696,7 +719,7 @@ impl Cluster {
     ) -> Result<(), TestkitError> {
         docker([
             "exec",
-            &self.machine(entry_index)?.name,
+            &self.container_name(entry_index)?,
             "ip6tables",
             action,
             "OUTPUT",
@@ -714,7 +737,7 @@ impl Cluster {
     }
 
     pub fn machine_shell(&self, index: usize, script: &str) -> Result<String, TestkitError> {
-        let output = docker_output(["exec", &self.machine(index)?.name, "sh", "-c", script])?;
+        let output = docker_output(["exec", &self.container_name(index)?, "sh", "-c", script])?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
@@ -751,9 +774,7 @@ impl Cluster {
                 return Ok(details);
             }
             if Instant::now() >= deadline {
-                return Err(TestkitError::ReadinessTimeout(
-                    self.machine(index)?.name.clone(),
-                ));
+                return Err(TestkitError::ReadinessTimeout(self.container_name(index)?));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -776,9 +797,7 @@ impl Cluster {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(TestkitError::ReadinessTimeout(
-                    self.machine(index)?.name.clone(),
-                ));
+                return Err(TestkitError::ReadinessTimeout(self.container_name(index)?));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -800,9 +819,7 @@ impl Cluster {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(TestkitError::ReadinessTimeout(
-                    self.machine(index)?.name.clone(),
-                ));
+                return Err(TestkitError::ReadinessTimeout(self.container_name(index)?));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -830,12 +847,12 @@ impl Cluster {
     }
 
     pub fn endpoint(&self, index: usize) -> Result<AdvertisedEndpoint, TestkitError> {
-        let machine = self.machine(index)?;
+        let name = self.container_name(index)?;
         let output = docker_output([
             "inspect",
             "--format",
             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-            &machine.name,
+            &name,
         ])?;
         if !output.status.success() {
             return Err(command_error(output));
@@ -856,6 +873,11 @@ impl Cluster {
             .ok_or(TestkitError::MachineIndex(index))
     }
 
+    fn container_name(&self, index: usize) -> Result<String, TestkitError> {
+        self.machine(index)?;
+        Ok(self.plan.machine_name(index))
+    }
+
     pub fn teardown(&self) -> Result<(), TestkitError> {
         let filters = self.plan.teardown_filters();
         let listed = docker_output([
@@ -870,7 +892,8 @@ impl Cluster {
         for id in String::from_utf8_lossy(&listed.stdout).split_whitespace() {
             docker(["rm", "--force", "--volumes", id])?;
         }
-        match docker_output(["network", "rm", &self.plan.network]) {
+        let network = self.plan.network();
+        match docker_output(["network", "rm", &network]) {
             Ok(output)
                 if output.status.success()
                     || String::from_utf8_lossy(&output.stderr).contains("not found") =>
@@ -986,24 +1009,21 @@ mod tests {
     #[test]
     fn plans_two_isolated_privileged_machines() {
         let plan = ClusterPlan::new("l3-001", 2).unwrap();
+        assert_eq!(plan.name(), "l3-001");
+        assert_eq!(plan.network(), "ployz-testkit-l3-001");
+        assert_eq!(plan.machine_name(0), "ployz-testkit-l3-001-0");
+        assert_eq!(plan.machine_name(1), "ployz-testkit-l3-001-1");
         assert_eq!(plan.machines.len(), 2);
         let [first, second] = plan.machines.as_slice() else {
             panic!("expected two Machines")
         };
-        assert_ne!(first.name, second.name);
         assert_ne!(first.api_port, second.api_port);
-        assert!(plan.machines.iter().all(|machine| machine.privileged));
         assert_eq!(
-            plan.labels,
+            plan.labels(),
             BTreeMap::from([
                 (OWNER_LABEL.to_owned(), "true".to_owned()),
                 (CLUSTER_LABEL.to_owned(), "l3-001".to_owned()),
             ])
-        );
-        assert!(
-            plan.machines
-                .iter()
-                .all(|machine| { machine.labels == plan.labels })
         );
         assert!(plan.machines.iter().all(|machine| {
             machine.environment.get("PLOYZ_ACME_DIRECTORY") == Some(&String::new())
@@ -1081,5 +1101,17 @@ mod tests {
         assert_eq!(join.registration.assigned_machine, second);
         assert_eq!(join.registration.visible_peers, vec![first]);
         assert_eq!(join.registration.target_versions.get("actor"), Some(&7));
+    }
+
+    #[test]
+    fn rejects_an_invalid_cluster_name() {
+        assert!(matches!(
+            ClusterPlan::new("", 1),
+            Err(TestkitError::InvalidClusterName(name)) if name.is_empty()
+        ));
+        assert!(matches!(
+            ClusterPlan::new("has space", 1),
+            Err(TestkitError::InvalidClusterName(name)) if name == "has space"
+        ));
     }
 }

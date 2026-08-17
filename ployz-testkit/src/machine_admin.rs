@@ -187,7 +187,7 @@ impl Cluster {
     ) -> Result<(), TestkitError> {
         docker([
             "exec",
-            &self.machine(index)?.name,
+            &self.container_name(index)?,
             "wg",
             "set",
             "ployz-wg",
