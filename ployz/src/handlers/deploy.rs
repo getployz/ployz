@@ -5,29 +5,29 @@ use ployz_core::ServiceSelector;
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, ComposeProject, LoadOptions, execute_build, load_project,
-        plan_build,
+        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, execute_build,
+        load_project, plan_build,
     },
-    deploy::{deploy_project, deploy_scale, deploy_spec},
+    deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec},
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime, string_values};
-
-pub(super) use crate::deploy::apply_requested as deploy_requested;
 
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let requested = run_spec(matches)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
+    let force_recreate = matches.get_flag("recreate");
+    let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        deploy_spec(&mut client, &requested).await
+        deploy_spec(&mut client, &requested, force_recreate, skip_health_monitor).await
     })
 }
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (mut project, builds) = prepare_deploy(matches)?;
+    let (mut project, builds, apply) = prepare_deploy(matches)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -43,6 +43,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             &mut client,
             &mut project,
             &builds,
+            apply,
             force_recreate,
             skip_health_monitor,
             yes,
@@ -51,7 +52,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn prepare_deploy(matches: &ArgMatches) -> Result<(ComposeProject, Vec<BuildService>), Error> {
+fn prepare_deploy(
+    matches: &ArgMatches,
+) -> Result<(ComposeProject, Vec<BuildService>, Vec<ServiceAttempt>), Error> {
     let load = LoadOptions {
         command: "deploy".into(),
         files: string_values(matches, "file")
@@ -80,8 +83,35 @@ fn prepare_deploy(matches: &ArgMatches) -> Result<(ComposeProject, Vec<BuildServ
     } else {
         execute_build(&builds, &build_options, &load)?;
     }
-    let project = project.select_services(&selected)?;
-    Ok((project, builds))
+    let apply = apply_attempts(&project, &selected)?;
+    Ok((project, builds, apply))
+}
+
+fn apply_attempts(
+    project: &ComposeProject,
+    selected: &[String],
+) -> Result<Vec<ServiceAttempt>, Error> {
+    if selected.is_empty() {
+        return Ok(project
+            .services
+            .values()
+            .map(|spec| ServiceAttempt {
+                name: spec.name.clone(),
+            })
+            .collect());
+    }
+    selected
+        .iter()
+        .map(|name| {
+            project
+                .services
+                .get(name)
+                .map(|spec| ServiceAttempt {
+                    name: spec.name.clone(),
+                })
+                .ok_or_else(|| ComposeError::Invalid(format!("undefined service '{name}'")).into())
+        })
+        .collect()
 }
 
 pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
@@ -92,10 +122,11 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
         .ok_or_else(|| Error::usage("replicas must be greater than zero"))?;
     let selector = ServiceSelector::parse(required(matches, "service")?)?;
     let yes = matches.get_flag("yes");
+    let skip_health_monitor = matches.get_flag("skip-health");
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        deploy_scale(&mut client, &selector, replicas, yes).await
+        deploy_scale(&mut client, &selector, replicas, skip_health_monitor, yes).await
     })
 }
 

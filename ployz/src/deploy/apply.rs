@@ -14,6 +14,7 @@ use crate::{
 
 use super::{
     DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
+    ServiceAttempt,
     pipeline::{
         DeployPreview, PushOutcome, execute_deploy, list_machines, plan_options, plan_project,
         plan_scale, plan_spec, push_project_images,
@@ -23,19 +24,32 @@ use super::{
 pub(crate) async fn deploy_spec(
     client: &mut Client,
     requested: &RequestedServiceSpec,
+    force_recreate: bool,
+    skip_health_monitor: bool,
 ) -> Result<(), Failure> {
-    let preview = plan_spec(client, requested).await?;
+    let preview = plan_spec(
+        client,
+        requested,
+        plan_options(force_recreate, skip_health_monitor),
+    )
+    .await?;
     print_warnings(&preview);
     render(&preview.operations, client.connection());
     finish(execute_deploy(client, &preview.operations).await)
 }
 
-pub(crate) use deploy_spec as apply_requested;
+pub(crate) async fn apply_requested(
+    client: &mut Client,
+    requested: &RequestedServiceSpec,
+) -> Result<(), Failure> {
+    deploy_spec(client, requested, false, false).await
+}
 
 pub(crate) async fn deploy_project(
     client: &mut Client,
     project: &mut ComposeProject,
     builds: &[BuildService],
+    apply: Vec<ServiceAttempt>,
     force_recreate: bool,
     skip_health_monitor: bool,
     auto_confirm: bool,
@@ -50,7 +64,7 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    let preview = plan_project(client, project, machines, options).await?;
+    let preview = plan_project(client, project, machines, apply, options).await?;
     print_warnings(&preview);
     if preview.operations.is_empty() {
         println!("No changes.");
@@ -64,9 +78,16 @@ pub(crate) async fn deploy_scale(
     client: &mut Client,
     selector: &ServiceSelector,
     replicas: NonZeroU32,
+    skip_health_monitor: bool,
     auto_confirm: bool,
 ) -> Result<(), Failure> {
-    let preview = plan_scale(client, selector, replicas).await?;
+    let preview = plan_scale(
+        client,
+        selector,
+        replicas,
+        plan_options(false, skip_health_monitor),
+    )
+    .await?;
     print_warnings(&preview);
     if preview.operations.is_empty() {
         println!("No changes.");

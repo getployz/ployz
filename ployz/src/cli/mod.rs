@@ -165,7 +165,9 @@ fn caddy() -> Command {
             base("deploy", "Deploy Caddy")
                 .arg(value("caddyfile", None).value_hint(ValueHint::FilePath))
                 .arg(value("image", None))
-                .arg(many("machine", Some('m'))),
+                .arg(many("machine", Some('m')))
+                .arg(switch("recreate", None))
+                .arg(switch("skip-health", None)),
         )
         .subcommand(log_flags(base("logs", "Show Caddy logs"), false).visible_alias("log"))
 }
@@ -380,6 +382,8 @@ fn run(name: &'static str) -> Command {
         .arg(value("replicas", None).default_value("1"))
         .arg(value("shm-size", None))
         .arg(many("ulimit", None))
+        .arg(switch("recreate", None))
+        .arg(switch("skip-health", None))
         .arg(value("user", Some('u')))
         .arg(many("volume", Some('v')))
         .arg(positional("image", true))
@@ -388,6 +392,7 @@ fn run(name: &'static str) -> Command {
 
 fn scale(name: &'static str) -> Command {
     base(name, "Scale a service")
+        .arg(switch("skip-health", None))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
         .arg(positional("service", true))
         .arg(positional("replicas", true))

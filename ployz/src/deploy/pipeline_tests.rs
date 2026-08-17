@@ -22,7 +22,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     };
 
     assert_eq!(
-        scale_plan(
+        choose_scale_spec(
             &snapshot(vec![observation(
                 &service_id,
                 ServiceMode::Global,
@@ -41,7 +41,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
         replicas: replicas(1),
     };
     assert!(
-        scale_plan(
+        choose_scale_spec(
             &snapshot(vec![observation(
                 &service_id,
                 replicated.clone(),
@@ -56,7 +56,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     );
 
     assert!(
-        scale_plan(
+        choose_scale_spec(
             &snapshot(vec![observation(
                 &service_id,
                 ServiceMode::Replicated {
@@ -72,15 +72,22 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
         .is_some()
     );
 
-    let mixed = scale_plan(
-        &snapshot(vec![
-            observation(&service_id, replicated.clone(), "v1", '1'),
-            observation(&service_id, replicated, "v2", '2'),
-        ]),
+    let mixed_snapshot = snapshot(vec![
+        observation(&service_id, replicated.clone(), "v1", '1'),
+        observation(&service_id, replicated, "v2", '2'),
+    ]);
+    let requested = choose_scale_spec(
+        &mixed_snapshot,
         &ServiceSelector::parse("api").unwrap(),
         replicas(3),
     )
     .unwrap()
+    .unwrap();
+    assert_eq!(requested.container.image, "v1");
+    let mixed = plan_deploy(
+        &DeployIntent::apply_one(requested, PlanOptions::default()),
+        &mixed_snapshot,
+    )
     .unwrap();
     let image = mixed
         .operations
@@ -116,7 +123,7 @@ fn scale_plan_accepts_only_service_containers() {
     };
 
     assert_eq!(
-        scale_plan(
+        choose_scale_spec(
             &snapshot(vec![hook.clone()]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(2),
@@ -126,7 +133,7 @@ fn scale_plan_accepts_only_service_containers() {
         "cannot scale a service without regular containers"
     );
     assert!(
-        scale_plan(
+        choose_scale_spec(
             &snapshot(vec![observation(&service_id, replicated, "v1", '1'), hook]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(1),

@@ -4,9 +4,18 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    DeployOperation, DeploySnapshot, FailedOperation, PlanError, PlanOptions,
-    ReplacementCompensation, ReplacementOperation, RestartAttempt, compare_specs, plan_deploy,
+    DeployIntent, DeployOperation, DeploySnapshot, FailedOperation, PlanError, PlanOptions,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, compare_specs,
 };
+
+pub(super) fn plan_deploy<'a>(
+    requested: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+    snapshot: &DeploySnapshot,
+    options: PlanOptions,
+) -> Result<ployz::deploy::DeployPlan, PlanError> {
+    ployz::deploy::plan_deploy(&DeployIntent::apply_all(requested, options), snapshot)
+}
+
 pub(super) use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
     ContainerResources, ContainerRuntimeObservation, DeviceMapping, DeviceReservation,

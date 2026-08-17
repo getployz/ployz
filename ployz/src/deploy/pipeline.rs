@@ -25,8 +25,8 @@ use crate::{
 };
 
 use super::{
-    DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError, PlanOptions,
-    exec::execute_operations, plan_deploy,
+    DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, ExecutionError, PlanOptions,
+    ServiceAttempt, exec::execute_operations, plan_deploy,
 };
 
 /// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
@@ -96,17 +96,12 @@ impl Display for DeployWarning {
 pub(super) async fn plan_spec(
     client: &mut Client,
     requested: &RequestedServiceSpec,
+    options: PlanOptions,
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
-    let (snapshot, mut warnings) = gather_snapshot(client, machines).await?;
-    let mut requested = requested.clone();
-    expand_ingress(client, std::iter::once(&mut requested)).await?;
-    warnings.extend(hostname_warnings([&requested], &snapshot.machines).await);
-    let plan = plan_deploy([&requested], &snapshot, plan_options(false, false))?;
-    Ok(DeployPreview {
-        operations: plan.operations,
-        warnings,
-    })
+    let (snapshot, warnings) = gather_snapshot(client, machines).await?;
+    let mut intent = DeployIntent::apply_one(requested.clone(), options);
+    prepare_intent(client, snapshot, warnings, &mut intent).await
 }
 
 pub(super) async fn push_project_images(
@@ -132,33 +127,46 @@ pub(super) async fn plan_project(
     client: &mut Client,
     project: &mut ComposeProject,
     machines: Vec<MachineObservation>,
+    apply: Vec<ServiceAttempt>,
     options: PlanOptions,
 ) -> Result<DeployPreview, Failure> {
     project.resolve_secrets()?;
-    let (snapshot, mut warnings) = gather_snapshot(client, machines).await?;
-    expand_ingress(client, project.services.values_mut()).await?;
-    warnings.extend(hostname_warnings(project.services.values(), &snapshot.machines).await);
-    let plan = plan_deploy(project.dependency_order()?, &snapshot, options)?;
-    // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    Ok(DeployPreview {
-        operations: plan.operations,
-        warnings,
-    })
+    let (snapshot, warnings) = gather_snapshot(client, machines).await?;
+    let mut intent =
+        DeployIntent::from_named_specs(&project.services, &project.dependencies, apply, options);
+    prepare_intent(client, snapshot, warnings, &mut intent).await
 }
 
 pub(super) async fn plan_scale(
     client: &mut Client,
     selector: &ServiceSelector,
     replicas: NonZeroU32,
+    options: PlanOptions,
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    let operations = match scale_plan(&snapshot, selector, replicas)? {
-        Some(plan) => plan.operations,
-        None => Vec::new(),
+    let Some(requested) = choose_scale_spec(&snapshot, selector, replicas)? else {
+        return Ok(DeployPreview {
+            operations: Vec::new(),
+            warnings,
+        });
     };
+    let mut intent = DeployIntent::apply_one(requested, options);
+    prepare_intent(client, snapshot, warnings, &mut intent).await
+}
+
+async fn prepare_intent(
+    client: &mut Client,
+    snapshot: DeploySnapshot,
+    mut warnings: Vec<DeployWarning>,
+    intent: &mut DeployIntent,
+) -> Result<DeployPreview, Failure> {
+    expand_ingress(client, intent.target.iter_mut()).await?;
+    warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
+    let plan = plan_deploy(intent, &snapshot)?;
+    // TODO(UT-085): services absent from this finite project are intentionally not removed.
     Ok(DeployPreview {
-        operations,
+        operations: plan.operations,
         warnings,
     })
 }
@@ -180,11 +188,11 @@ pub(super) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> P
     }
 }
 
-fn scale_plan(
+fn choose_scale_spec(
     snapshot: &DeploySnapshot,
     selector: &ServiceSelector,
     replicas: NonZeroU32,
-) -> Result<Option<DeployPlan>, Failure> {
+) -> Result<Option<RequestedServiceSpec>, Failure> {
     let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
     let service = select_service(&services, selector)?;
     let observed_container = service
@@ -202,11 +210,7 @@ fn scale_plan(
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
     let mut requested = observed_container.resolved_spec.to_requested();
     requested.mode = ServiceMode::Replicated { replicas };
-    Ok(Some(plan_deploy(
-        [&requested],
-        snapshot,
-        plan_options(false, false),
-    )?))
+    Ok(Some(requested))
 }
 
 pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {

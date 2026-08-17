@@ -76,6 +76,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "compose-diagnostics-source".to_owned(),
             "compose-plugin-scope".to_owned(),
             "compose-prerequisite-errors".to_owned(),
+            "deploy-intent-flags".to_owned(),
             "direct-push-reference-boundary".to_owned(),
             "fixed-wireguard-port".to_owned(),
             "images-json-output".to_owned(),
@@ -166,6 +167,30 @@ fn reference_shape(
                 env: None,
             },
         );
+    }
+    if deviations.contains("deploy-intent-flags") {
+        let skip_health = Flag {
+            short: None,
+            default: None,
+            env: None,
+        };
+        match command_path.as_str() {
+            "ployz run" | "ployz service run" | "ployz caddy deploy" => {
+                flags.insert("skip-health".into(), skip_health);
+                flags.insert(
+                    "recreate".into(),
+                    Flag {
+                        short: None,
+                        default: None,
+                        env: None,
+                    },
+                );
+            }
+            "ployz scale" | "ployz service scale" => {
+                flags.insert("skip-health".into(), skip_health);
+            }
+            _ => {}
+        }
     }
     let positionals = reference_positionals(markdown, &command_path, deviations);
     (command_path, flags, positionals)

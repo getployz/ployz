@@ -45,6 +45,8 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .into_iter()
         .map(MachineTarget::parse)
         .collect::<Result<Vec<_>, _>>()?;
+    let force_recreate = matches.get_flag("recreate");
+    let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
         let image = match image {
             Some(image) => image,
@@ -52,7 +54,8 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         };
         let requested = crate::caddy::service_spec(image, machines, caddy_config);
         let mut client = connect_client(root, None).await?;
-        super::deploy::deploy_requested(&mut client, &requested).await?;
+        crate::deploy::deploy_spec(&mut client, &requested, force_recreate, skip_health_monitor)
+            .await?;
         crate::dns::update_records_if_reserved(&mut client).await?;
         Ok(())
     })

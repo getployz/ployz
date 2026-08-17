@@ -564,12 +564,14 @@ async fn deploy(
         volumes: Vec::new(),
     };
     let plan = ployz::deploy::plan_deploy(
-        [requested],
+        &ployz::deploy::DeployIntent::apply_all(
+            [requested],
+            ployz::deploy::PlanOptions {
+                skip_health_monitor: true,
+                ..Default::default()
+            },
+        ),
         &snapshot,
-        ployz::deploy::PlanOptions {
-            skip_health_monitor: true,
-            ..Default::default()
-        },
     )
     .unwrap();
     let outcome = ployz::deploy::execute_plan(&plan, client, &CancellationToken::new()).await;

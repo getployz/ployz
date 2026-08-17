@@ -56,6 +56,10 @@ _Avoid_: Service ID, unique service name
 The unresolved name-or-ID text used to select a Service.
 _Avoid_: Service Name as identity
 
+**Service Attempt**:
+One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists.
+_Avoid_: selected-service list as a prune flag
+
 **Service Container**:
 A managed Docker container carrying the Resolved Service Spec from its creation. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
 _Avoid_: Replica, service record
@@ -99,6 +103,10 @@ _Avoid_: Current service spec, canonical service spec
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow.
 _Avoid_: Deployment resource, reconciliation loop
+
+**Deploy Intent**:
+The complete desired Services for one Deploy together with which of those Services this command applies. Services in the target that are not applied are unchanged.
+_Avoid_: leftover filtered Compose project, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
 **Deploy Snapshot**:
 The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy. It is Live Observation for a bounded command, not Cluster truth.
