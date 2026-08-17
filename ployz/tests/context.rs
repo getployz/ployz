@@ -1,8 +1,11 @@
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, str::FromStr};
+use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf, str::FromStr};
 
 use ployz::{
     connect::resolve_connections,
-    context::{Config, Connection, ConnectionSource, Context, SshDestination, select_connections},
+    context::{
+        Config, Connection, ConnectionSource, Context, ContextError, SshDestination,
+        select_connections,
+    },
 };
 use ployz_core::MachineId;
 
@@ -21,7 +24,7 @@ fn config_round_trips_ordered_connections_with_private_permissions() {
     ];
     let expected = Config::new(
         &path,
-        "prod",
+        Some("prod".into()),
         BTreeMap::from([("prod".into(), Context { connections })]),
     );
 
@@ -92,7 +95,7 @@ fn connection_sources_follow_direct_context_and_local_precedence() {
     let dev = Connection::tcp("127.0.0.1:51001".parse().unwrap());
     let config = Config::new(
         "/tmp/config.yaml",
-        "prod",
+        Some("prod".into()),
         BTreeMap::from([
             (
                 "dev".into(),
@@ -148,7 +151,7 @@ fn connection_sources_follow_direct_context_and_local_precedence() {
     assert!(
         select_connections(
             None,
-            Some(&Config::new("/tmp/empty.yaml", "", BTreeMap::new())),
+            Some(&Config::new("/tmp/empty.yaml", None, BTreeMap::new())),
             None,
             true,
             "/run/ployz/ployz.sock",
@@ -291,7 +294,7 @@ fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
     fs::remove_file(&config).unwrap();
     Config::new(
         &config,
-        "prod",
+        Some("prod".into()),
         BTreeMap::from([
             (
                 "dev".into(),
@@ -311,7 +314,10 @@ fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
     .unwrap();
     let overridden = resolve_connections(&config, None, Some("dev"), &socket).unwrap();
     assert_eq!(overridden.source, ConnectionSource::Context("dev".into()));
-    assert_eq!(Config::load(&config).unwrap().current_context, "prod");
+    assert_eq!(
+        Config::load(&config).unwrap().current_context(),
+        Some("prod")
+    );
 
     fs::remove_file(&config).unwrap();
     let fallback = resolve_connections(&config, None, None, &socket).unwrap();
@@ -327,4 +333,102 @@ fn ssh_machine(host: &str, seed: char) -> Connection {
 
 fn machine_id(seed: char) -> MachineId {
     MachineId::parse(seed.to_string().repeat(32)).unwrap()
+}
+
+#[test]
+fn config_cannot_store_current_context_as_empty_string() {
+    let root = std::env::temp_dir().join(format!("ployz-blank-current-{}", std::process::id()));
+    let path = root.join("config.yaml");
+    let _ = fs::remove_dir_all(&root);
+
+    Config::new(&path, Some(String::new()), BTreeMap::new())
+        .save()
+        .unwrap();
+    let yaml = fs::read_to_string(&path).unwrap();
+    assert!(
+        !yaml.contains("current_context:"),
+        "empty current context was stored: {yaml}"
+    );
+    assert_eq!(Config::load(&path).unwrap().current_context(), None);
+
+    let mut config = Config::load(&path).unwrap();
+    config.set_current_context(Some(String::new()));
+    config.save().unwrap();
+    let yaml = fs::read_to_string(&path).unwrap();
+    assert!(
+        !yaml.contains("current_context:"),
+        "empty current context was stored: {yaml}"
+    );
+    assert_eq!(config.current_context(), None);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn empty_current_context_yaml_loads_as_none() {
+    let root =
+        std::env::temp_dir().join(format!("ployz-empty-current-yaml-{}", std::process::id()));
+    let path = root.join("config.yaml");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(&path, "current_context: \"\"\n").unwrap();
+
+    assert_eq!(Config::load(&path).unwrap().current_context(), None);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_or_empty_with_no_file_has_no_current_context() {
+    let path =
+        std::env::temp_dir().join(format!("ployz-missing-config-{}.yaml", std::process::id()));
+    let _ = fs::remove_file(&path);
+
+    let config = Config::load_or_empty(&path).unwrap();
+    assert_eq!(config.current_context(), None);
+}
+
+#[test]
+fn selecting_connections_with_no_current_context_is_no_current_context() {
+    let prod = Connection::tcp("127.0.0.1:51000".parse().unwrap());
+    let path = PathBuf::from("/tmp/config.yaml");
+    let config = Config::new(
+        &path,
+        None,
+        BTreeMap::from([(
+            "prod".into(),
+            Context {
+                connections: vec![prod],
+            },
+        )]),
+    );
+
+    assert_eq!(
+        select_connections(None, Some(&config), None, true, "/run/ployz/ployz.sock"),
+        Err(ContextError::NoCurrentContext(path))
+    );
+}
+
+#[test]
+fn selecting_connections_with_a_missing_name_is_context_not_found() {
+    let prod = Connection::tcp("127.0.0.1:51000".parse().unwrap());
+    let path = PathBuf::from("/tmp/config.yaml");
+    let config = Config::new(
+        &path,
+        Some("gone".into()),
+        BTreeMap::from([(
+            "prod".into(),
+            Context {
+                connections: vec![prod],
+            },
+        )]),
+    );
+
+    assert_eq!(
+        select_connections(None, Some(&config), None, true, "/run/ployz/ployz.sock"),
+        Err(ContextError::ContextNotFound {
+            name: "gone".into(),
+            path,
+        })
+    );
 }

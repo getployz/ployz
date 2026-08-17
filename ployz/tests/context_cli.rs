@@ -9,7 +9,7 @@ fn context_commands_list_show_and_persist_an_explicit_selection() {
     let _ = fs::remove_dir_all(&root);
     Config::new(
         &path,
-        "prod",
+        Some("prod".into()),
         BTreeMap::from([
             (
                 "dev".into(),
@@ -43,7 +43,7 @@ fn context_commands_list_show_and_persist_an_explicit_selection() {
         "{}",
         String::from_utf8_lossy(&selected.stderr)
     );
-    assert_eq!(Config::load(&path).unwrap().current_context, "dev");
+    assert_eq!(Config::load(&path).unwrap().current_context(), Some("dev"));
 
     let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["ctx", "ls", "--ployz-config", path.to_str().unwrap()])
@@ -80,7 +80,7 @@ fn ctx_connection_shows_the_current_default_without_a_terminal() {
     let _ = fs::remove_dir_all(&root);
     let before = Config::new(
         &path,
-        "prod",
+        Some("prod".into()),
         BTreeMap::from([(
             "prod".into(),
             Context {
@@ -126,7 +126,7 @@ fn ctx_connection_selects_and_persists_across_invocations() {
     let _ = fs::remove_dir_all(&root);
     Config::new(
         &path,
-        "prod",
+        Some("prod".into()),
         BTreeMap::from([(
             "prod".into(),
             Context {
@@ -200,7 +200,7 @@ fn ctx_connection_rejects_an_unknown_connection_without_mutating() {
     let _ = fs::remove_dir_all(&root);
     let before = Config::new(
         &path,
-        "prod",
+        Some("prod".into()),
         BTreeMap::from([(
             "prod".into(),
             Context {
@@ -269,10 +269,12 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
             },
         ),
     ]);
-    Config::new(&flag_path, "prod", contexts.clone())
+    Config::new(&flag_path, Some("prod".into()), contexts.clone())
         .save()
         .unwrap();
-    Config::new(&env_path, "prod", contexts).save().unwrap();
+    Config::new(&env_path, Some("prod".into()), contexts)
+        .save()
+        .unwrap();
 
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
@@ -290,8 +292,14 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
         "{}",
         String::from_utf8_lossy(&selected.stderr)
     );
-    assert_eq!(Config::load(&flag_path).unwrap().current_context, "dev");
-    assert_eq!(Config::load(&env_path).unwrap().current_context, "prod");
+    assert_eq!(
+        Config::load(&flag_path).unwrap().current_context(),
+        Some("dev")
+    );
+    assert_eq!(
+        Config::load(&env_path).unwrap().current_context(),
+        Some("prod")
+    );
 
     let before = Config::load(&flag_path).unwrap();
     for args in [vec!["ctx"], vec!["ctx", "use"]] {
@@ -314,7 +322,7 @@ fn a_filename_only_config_override_saves_in_the_current_directory() {
     let _ = fs::remove_dir_all(&root);
     Config::new(
         &path,
-        "prod",
+        Some("prod".into()),
         BTreeMap::from([
             ("dev".into(), Context::default()),
             ("prod".into(), Context::default()),
@@ -334,6 +342,6 @@ fn a_filename_only_config_override_saves_in_the_current_directory() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(Config::load(&path).unwrap().current_context, "dev");
+    assert_eq!(Config::load(&path).unwrap().current_context(), Some("dev"));
     fs::remove_dir_all(root).unwrap();
 }

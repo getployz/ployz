@@ -91,7 +91,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>((machine, connection))
     })?;
 
-    config.current_context = context_name.clone();
+    config.set_current_context(Some(context_name.clone()));
     config.contexts.insert(
         context_name,
         Context {

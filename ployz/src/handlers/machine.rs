@@ -50,16 +50,15 @@ impl ConnectionOptions {
 
     pub(super) fn active_config(&self) -> Result<(Config, String), Error> {
         let config = self.load_config()?;
-        let name = self
-            .context
-            .clone()
-            .unwrap_or_else(|| config.current_context.clone());
-        if name.is_empty() {
+        let Some(name) = config
+            .context_name(self.context.as_deref())
+            .map(str::to_owned)
+        else {
             return Err(Error::usage(format!(
                 "current context is not set in Ployz config {}",
                 config.path().display()
             )));
-        }
+        };
         if !config.contexts.contains_key(&name) {
             return Err(Error::usage(format!("context {name:?} not found")));
         }

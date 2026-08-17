@@ -34,7 +34,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     }
     println!("NAME\tCURRENT\tCONNECTIONS");
     for (name, context) in &config.contexts {
-        let current = if name == &config.current_context {
+        let current = if Some(name.as_str()) == config.current_context() {
             "*"
         } else {
             ""
@@ -47,7 +47,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
 pub(super) fn show(matches: &ArgMatches) -> Result<(), Error> {
     let config = config(matches)?;
     if !config.contexts.is_empty() {
-        println!("{}", config.current_context);
+        println!("{}", config.current_context().unwrap_or(""));
     }
     Ok(())
 }
@@ -69,7 +69,7 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
                 names.iter().map(|name| name.as_str()),
                 names
                     .iter()
-                    .position(|name| name.as_str() == config.current_context),
+                    .position(|name| Some(name.as_str()) == config.current_context()),
             )?;
             names
                 .get(index)
@@ -80,7 +80,7 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
     if !config.contexts.contains_key(&selected) {
         return Err(Error::usage(format!("context {selected:?} not found")));
     }
-    config.current_context = selected.clone();
+    config.set_current_context(Some(selected.clone()));
     config.save()?;
     println!("Current context is now {selected:?}.");
     Ok(())
@@ -88,7 +88,12 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
 
 pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Result<(), Error> {
     let mut config = config(matches)?;
-    let name = config.current_context.clone();
+    let Some(name) = config.current_context().map(str::to_owned) else {
+        return Err(Error::usage(format!(
+            "current context is not set in Ployz config {}",
+            config.path().display()
+        )));
+    };
     let context = config
         .contexts
         .get_mut(&name)
