@@ -2,4 +2,5 @@
 /docs/*
 !/docs/RELEASE.md
 /.claude/
+/.scratch/
 ployz-testkit/prebuilt/
