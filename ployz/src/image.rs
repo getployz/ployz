@@ -7,13 +7,18 @@ use std::{
 
 use oci_spec::distribution::Reference;
 use ployz_core::{
-    FanoutSelector, ListMachinesRequest, Machine, MachineFailure, MachineId, MachineSuccess,
-    PartialResult, RpcError, UNREGISTRY_PORT, op, resolve_machine_selectors,
+    EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason,
+    ListMachinesRequest, Machine, MachineFailure, MachineId, MachineImages, MachineSuccess,
+    MachineTarget, PartialResult, PullImageFromMachineRequest, PullPolicy, RpcError, op,
+    resolve_machine_selectors,
 };
 use thiserror::Error;
 use tokio::process::{Child, Command};
 
-use crate::{cluster::MachineImagesObservation, connect::Client};
+use crate::{
+    cluster::MachineImagesObservation,
+    connect::{Client, rpc_error},
+};
 
 use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 
@@ -54,10 +59,10 @@ pub enum PushError {
     Selector(#[from] ployz_core::MachineSelectorError),
     #[error("Cluster operation failed: {0}")]
     Cluster(#[from] crate::connect::ConnectError),
-    #[error("Cluster operation failed: check image store: {0}")]
-    CheckImageStore(crate::connect::ConnectError),
-    #[error("Cluster operation failed: {0}")]
-    ImageStore(String),
+    #[error("Cluster operation failed: image ingest: {0}")]
+    ImageIngest(RpcError),
+    #[error("Cluster operation failed: peer image pull: {0}")]
+    PeerPull(RpcError),
     #[error("Cluster operation failed: reach unregistry: {0}")]
     Unregistry(crate::connect::ConnectError),
     #[error("Docker {action}: {diagnostic}")]
@@ -153,20 +158,31 @@ pub(crate) async fn push_using_machines(
         failures: Vec::new(),
         omissions: Vec::new(),
     };
+    let mut source = None;
     for machine in targets {
-        match push_to_machine(client, image, platform, &machine, mode, &mut cancellation).await {
+        let outcome = match source {
+            None => push_to_machine(client, image, platform, &machine, mode, &mut cancellation)
+                .await
+                .map(|destination| {
+                    source = Some(destination);
+                }),
+            Some(destination) => {
+                pull_on_machine(client, image, &machine, destination, &mut cancellation).await
+            }
+        };
+        match outcome {
             Ok(()) => result.successes.push(MachineSuccess {
                 machine_id: machine.id,
                 value: (),
             }),
-            Err(source) if source.is_cancellation() => {
-                return Err(source);
+            Err(error) if error.is_cancellation() => {
+                return Err(error);
             }
-            Err(source) => result.failures.push(MachineFailure {
+            Err(error) => result.failures.push(MachineFailure {
                 machine_id: machine.id,
                 error: PushError::Machine {
                     machine: machine.name.to_string(),
-                    source: Box::new(source),
+                    source: Box::new(error),
                 },
             }),
         }
@@ -251,29 +267,141 @@ async fn push_to_machine(
     machine: &Machine,
     mode: ProxyMode,
     cancellation: &mut Cancellation,
-) -> Result<(), PushError> {
-    let store = cancellation
-        .race(client.list_images(Some(image.into()), &[machine.id.to_string()]))
+) -> Result<ImageIngestDestination, PushError> {
+    let opened = cancellation
+        .race(client.invoke::<op::EnsureImageIngest>(
+            EnsureImageIngestRequest {},
+            &MachineTarget::from(&machine.id),
+            None,
+        ))
         .await?
-        .map_err(PushError::CheckImageStore)?;
-    let store = store.successes.first().ok_or_else(|| {
-        PushError::ImageStore(
-            store
-                .failures
-                .first()
-                .map(|failure| failure.error.message.clone())
-                .unwrap_or_else(|| "target returned no image-store result".into()),
-        )
-    })?;
-    if !store.value.images.containerd_store {
-        return Err(PushError::UnsupportedImageStore);
-    }
-    let remote = format!("{}:{UNREGISTRY_PORT}", machine.subnet.gateway().0);
+        .map_err(ingest_error)?;
+    let remote = format!(
+        "{}:{}",
+        opened.destination.gateway.0, opened.destination.port
+    );
     cancellation
         .race(client.dial_proxy("tcp", &remote))
         .await?
         .map_err(PushError::Unregistry)?;
-    PushSession::run(client, remote, mode, image, platform, cancellation).await
+    PushSession::run(client, remote, mode, image, platform, cancellation).await?;
+    Ok(opened.destination)
+}
+
+async fn pull_on_machine(
+    client: &Client,
+    image: &str,
+    machine: &Machine,
+    source: ImageIngestDestination,
+    cancellation: &mut Cancellation,
+) -> Result<(), PushError> {
+    cancellation
+        .race(client.invoke::<op::PullImageFromMachine>(
+            PullImageFromMachineRequest {
+                image: image.to_owned(),
+                source,
+            },
+            &MachineTarget::from(&machine.id),
+            None,
+        ))
+        .await?
+        .map(|_| ())
+        .map_err(PushError::PeerPull)
+}
+
+/// Pull a missing image from a cluster peer that already has it.
+///
+/// `Always` leaves the registry pull to the destination Machine. `Missing` and
+/// `Never` pull from a peer when one has the image. `Missing` without a peer
+/// leaves the registry pull to the destination. `Never` without a peer leaves
+/// the destination to fail if the image is absent.
+///
+/// # Errors
+///
+/// Returns when listing, opening ingest on the source, or the peer pull fails.
+pub(crate) async fn ensure_cluster_image(
+    client: &Client,
+    dest: &MachineId,
+    image: &str,
+    policy: PullPolicy,
+) -> Result<(), RpcError> {
+    match policy {
+        PullPolicy::Always => return Ok(()),
+        PullPolicy::Missing | PullPolicy::Never => {}
+    }
+    let listings = client
+        .list_images(Some(image.to_owned()), &[])
+        .await
+        .map_err(rpc_error)?;
+    if destination_has_image(dest, &listings.successes, image) {
+        return Ok(());
+    }
+    let Some(peer) = peer_with_image(dest, &listings.successes, image) else {
+        return Ok(());
+    };
+    let opened = client
+        .invoke::<op::EnsureImageIngest>(
+            EnsureImageIngestRequest {},
+            &MachineTarget::from(&peer),
+            None,
+        )
+        .await?;
+    client
+        .invoke::<op::PullImageFromMachine>(
+            PullImageFromMachineRequest {
+                image: image.to_owned(),
+                source: opened.destination,
+            },
+            &MachineTarget::from(dest),
+            None,
+        )
+        .await
+        .map(|_| ())
+}
+
+fn destination_has_image(
+    dest: &MachineId,
+    listings: &[MachineSuccess<MachineImagesObservation>],
+    image: &str,
+) -> bool {
+    listings
+        .iter()
+        .any(|success| success.machine_id == *dest && image_present(&success.value.images, image))
+}
+
+fn peer_with_image(
+    dest: &MachineId,
+    listings: &[MachineSuccess<MachineImagesObservation>],
+    image: &str,
+) -> Option<MachineId> {
+    listings.iter().find_map(|success| {
+        (success.machine_id != *dest && image_present(&success.value.images, image))
+            .then_some(success.machine_id)
+    })
+}
+
+fn image_present(images: &MachineImages, image: &str) -> bool {
+    images.images.iter().any(|summary| {
+        summary.repo_tags.iter().any(|tag| {
+            tag == image
+                || tag
+                    .strip_suffix(image)
+                    .is_some_and(|prefix| prefix.ends_with('/'))
+        })
+    })
+}
+
+fn ingest_error(error: RpcError) -> PushError {
+    match ImageIngestReason::from_details(&error.details) {
+        Some(ImageIngestReason::UnsupportedContainerdStore) => PushError::UnsupportedImageStore,
+        Some(
+            ImageIngestReason::NotParticipating
+            | ImageIngestReason::DockerUnavailable
+            | ImageIngestReason::ContainerdSocketMissing
+            | ImageIngestReason::StartFailed,
+        )
+        | None => PushError::ImageIngest(error),
+    }
 }
 
 struct PushSession {
@@ -497,9 +625,11 @@ fn not_found(output: &Output) -> bool {
 mod tests {
     use super::*;
     use ployz_core::{
-        MachineId, MachineName, MachineObservation, ManagementAddress, MembershipObservation,
+        EnsureImageIngestRequest, ImageSummary, ListImagesRequest, MachineId, MachineImages,
+        MachineName, MachineObservation, ManagementAddress, MembershipObservation, RpcErrorCode,
         WireGuardPublicKey,
     };
+    use serde_json::Value;
 
     fn machine(seed: u8) -> MachineObservation {
         MachineObservation {
@@ -619,5 +749,83 @@ mod tests {
             }
             .is_cancellation()
         );
+    }
+
+    #[test]
+    fn ingest_errors_keep_unsupported_store_distinct() {
+        let unsupported = ImageIngestReason::UnsupportedContainerdStore
+            .rpc_error("Docker is not using the containerd image store");
+        assert!(matches!(
+            ingest_error(unsupported),
+            PushError::UnsupportedImageStore
+        ));
+        for reason in [
+            ImageIngestReason::NotParticipating,
+            ImageIngestReason::DockerUnavailable,
+            ImageIngestReason::ContainerdSocketMissing,
+            ImageIngestReason::StartFailed,
+        ] {
+            assert!(matches!(
+                ingest_error(reason.rpc_error("ingest unavailable")),
+                PushError::ImageIngest(_)
+            ));
+        }
+        assert!(matches!(
+            ingest_error(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "ingest unavailable".into(),
+                details: Value::Null,
+            }),
+            PushError::ImageIngest(_)
+        ));
+    }
+
+    #[test]
+    fn image_push_opens_ingest_instead_of_listing_images() {
+        let ingest = op::EnsureImageIngest::into_request(EnsureImageIngestRequest {});
+        let list = op::ListImages::into_request(ListImagesRequest { reference: None });
+        assert_eq!(ingest.body.command(), "ensure_image_ingest");
+        assert_eq!(list.body.command(), "list_images");
+        assert_ne!(ingest.body.command(), list.body.command());
+    }
+
+    fn listing(seed: u8, tags: &[&str]) -> MachineSuccess<MachineImagesObservation> {
+        MachineSuccess {
+            machine_id: machine(seed).machine.id,
+            value: MachineImagesObservation {
+                machine_name: MachineName::parse(format!("machine-{seed}")).unwrap(),
+                images: MachineImages {
+                    containerd_store: true,
+                    images: vec![ImageSummary {
+                        id: format!("sha256:{seed}"),
+                        repo_tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+                        created: 0,
+                        size: 0,
+                        containers: 0,
+                        platforms: Vec::new(),
+                    }],
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn missing_image_selects_a_peer_that_already_has_it() {
+        let dest = machine(1).machine.id;
+        let listings = [
+            listing(1, &[]),
+            listing(2, &["docker.io/library/busybox:1.37.0"]),
+        ];
+        assert!(!destination_has_image(&dest, &listings, "busybox:1.37.0"));
+        assert_eq!(
+            peer_with_image(&dest, &listings, "busybox:1.37.0"),
+            Some(machine(2).machine.id)
+        );
+        assert!(destination_has_image(
+            &machine(2).machine.id,
+            &listings,
+            "busybox:1.37.0"
+        ));
+        assert_eq!(peer_with_image(&dest, &listings, "missing:tag"), None);
     }
 }

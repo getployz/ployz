@@ -5,14 +5,16 @@ use ployz_core::{
     ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome, FanoutResponse,
-    FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, HttpProtocol, ImageSummary, IngressHost, IngressHostname,
-    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure,
-    MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
-    MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
-    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
-    Placement, PortPublication, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
+    DnsRecordType, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest,
+    FanoutFailure, FanoutOutcome, FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY,
+    GetCaddyConfigRequest, HealthObservation, HealthcheckCommand, HealthcheckSpec, HttpProtocol,
+    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageSummary,
+    IngressHost, IngressHostname, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
+    ListImagesRequest, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
+    MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess,
+    MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
+    PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy,
     RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
@@ -47,6 +49,8 @@ fn response_kinds_match_the_frozen_wire_contract() {
         (ResponseKind::VolumeList, "volume_list"),
         (ResponseKind::VolumeRemoved, "volume_removed"),
         (ResponseKind::MachineImages, "machine_images"),
+        (ResponseKind::ImageIngestOpened, "image_ingest_opened"),
+        (ResponseKind::ImagePulled, "image_pulled"),
         (ResponseKind::CaddyConfig, "caddy_config"),
         (ResponseKind::Domain, "domain"),
         (ResponseKind::DomainRecords, "domain_records"),
@@ -445,6 +449,103 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
         images
     );
     assert_eq!(LIST_IMAGES_CAPABILITY, "ployz.image.list.v1");
+    assert_eq!(request.body.command(), "list_images");
+    assert_ne!(request.body.command(), "ensure_image_ingest");
+}
+
+#[test]
+fn image_ingest_contract_returns_the_machine_gateway_destination() {
+    let request = op::EnsureImageIngest::into_request(EnsureImageIngestRequest {});
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+
+    let opened = ImageIngestOpened {
+        destination: ImageIngestDestination {
+            gateway: MachineGateway(Ipv4Addr::new(10, 210, 7, 1)),
+            port: 51500,
+        },
+    };
+    let response = RpcResponse::from(opened);
+    assert_eq!(
+        response
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::EnsureImageIngest>()
+            .unwrap(),
+        opened
+    );
+    assert_eq!(
+        ENSURE_IMAGE_INGEST_CAPABILITY,
+        "ployz.image.ingest.ensure.v1"
+    );
+    assert_eq!(request.body.command(), "ensure_image_ingest");
+    assert_ne!(request.body.command(), "list_images");
+    assert_eq!(opened.destination.port, ployz_core::UNREGISTRY_PORT);
+
+    let frozen = [
+        (ImageIngestReason::NotParticipating, "not_participating"),
+        (ImageIngestReason::DockerUnavailable, "docker_unavailable"),
+        (
+            ImageIngestReason::UnsupportedContainerdStore,
+            "unsupported_containerd_store",
+        ),
+        (
+            ImageIngestReason::ContainerdSocketMissing,
+            "containerd_socket_missing",
+        ),
+        (ImageIngestReason::StartFailed, "start_failed"),
+    ];
+    for (reason, wire) in frozen {
+        assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
+        let error = reason.rpc_error("ingest unavailable");
+        assert_eq!(
+            ImageIngestReason::from_details(&error.details),
+            Some(reason)
+        );
+        assert_eq!(error.details, json!({ "reason": wire }));
+    }
+    assert_eq!(
+        ImageIngestReason::from_details(&json!({
+            "reason": "docker_unavailable",
+            "extra": 1
+        })),
+        Some(ImageIngestReason::DockerUnavailable)
+    );
+    assert_eq!(ImageIngestReason::from_details(&Value::Null), None);
+}
+
+#[test]
+fn peer_image_pull_contract_names_the_source_gateway_destination() {
+    let source = ImageIngestDestination {
+        gateway: MachineGateway(Ipv4Addr::new(10, 210, 7, 1)),
+        port: 51500,
+    };
+    let request = op::PullImageFromMachine::into_request(PullImageFromMachineRequest {
+        image: "busybox:1.37.0".into(),
+        source,
+    });
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    assert_eq!(request.body.command(), "pull_image_from_machine");
+    assert_ne!(request.body.command(), "ensure_image_ingest");
+    assert_eq!(
+        PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+        "ployz.image.pull-from-machine.v1"
+    );
+
+    let pulled = ImagePulled {};
+    let response = RpcResponse::from(pulled);
+    assert_eq!(
+        response
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::PullImageFromMachine>()
+            .unwrap(),
+        pulled
+    );
+    assert_eq!(source.port, ployz_core::UNREGISTRY_PORT);
 }
 
 #[test]

@@ -244,9 +244,8 @@ pub(super) fn plan_volume_operations(
     pins: &mut VolumePins,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<Vec<DeployOperation>, PlanError> {
-    // TODO(UT-001, UT-007, UT-008, UT-051, UT-052, UT-078): preserve the baseline
-    // placement/pull ceiling: do not filter by memory, image platform, or local image presence,
-    // and do not pull images from other Machines.
+    // TODO(UT-001, UT-051, UT-052, UT-078): preserve the baseline
+    // placement ceiling: do not filter by memory, image platform, or local image presence.
     let (mounted_volumes, missing_volumes) = volume_constraints(spec, snapshot, pins, machines)?;
     let mut operations = Vec::new();
     match spec.mode {

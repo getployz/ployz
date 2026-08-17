@@ -6,17 +6,18 @@ use std::{
 
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
-    ContractDescription, Domain, DomainRecords, LocalMachinePhase, LogMetadata, LogOrigin,
-    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
+    ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled, LocalMachinePhase,
+    LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
-    docker::{ContainerRuntime, Error as DockerError},
+    docker::{ContainerRuntime, Error as DockerError, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
 };
@@ -26,6 +27,7 @@ pub struct MachineService {
     local: LocalMachine,
     hosted_dns: crate::hosted_dns::HostedDns,
     caddyfile: Option<PathBuf>,
+    ingest: Arc<ImageIngest>,
 }
 
 impl MachineService {
@@ -44,6 +46,7 @@ impl MachineService {
             local: LocalMachine::new(store, restart).with_cluster(cluster),
             hosted_dns: crate::hosted_dns::HostedDns::new(),
             caddyfile: None,
+            ingest: ImageIngest::new(None, CancellationToken::new(), None),
         }
     }
 
@@ -61,6 +64,13 @@ impl MachineService {
     #[must_use]
     pub fn with_caddyfile(mut self, path: PathBuf) -> Self {
         self.caddyfile = Some(path);
+        self
+    }
+
+    /// Image ingest started on first Ensure and stopped with the daemon.
+    #[must_use]
+    pub fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
+        self.ingest = ingest;
         self
     }
 
@@ -481,6 +491,48 @@ impl MachineRpc for MachineService {
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
         respond(images)
+    }
+
+    async fn ensure_image_ingest(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::EnsureImageIngest>(request)?;
+        let record = self.local_record()?;
+        let Some(machine) = record
+            .machine
+            .as_ref()
+            .filter(|_| record.phase == LocalMachinePhase::Participating)
+        else {
+            return respond(
+                ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
+            );
+        };
+        match self.ingest.open(machine.subnet.gateway()).await {
+            Ok(opened) => respond(opened),
+            Err(error) => respond(error),
+        }
+    }
+
+    async fn pull_image_from_machine(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PullImageFromMachine>(request)?;
+        if request.image.is_empty() {
+            return respond(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "image is required".into(),
+                details: Value::Null,
+            });
+        }
+        if self.containers().is_err() {
+            return respond(unavailable("Docker is not available"));
+        }
+        match crate::docker::pull_from_ingest(&request.image, request.source).await {
+            Ok(()) => respond(ImagePulled {}),
+            Err(error) => respond(docker_rpc_error(error)),
+        }
     }
 
     async fn get_caddy_config(

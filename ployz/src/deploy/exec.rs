@@ -162,6 +162,13 @@ impl MachineOperations for Client {
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
+        crate::image::ensure_cluster_image(
+            self,
+            machine_id,
+            &spec.container.image,
+            spec.container.pull_policy,
+        )
+        .await?;
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
                 kind,

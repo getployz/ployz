@@ -57,6 +57,8 @@ macro_rules! rpc_catalog {
                 InspectVolume: (inspect_volume, "InspectVolume", InspectVolumeRequest, "inspect_volume", DockerVolume, INSPECT_VOLUME_CAPABILITY, "ployz.volume.inspect.v1", Container),
                 RemoveVolume: (remove_volume, "RemoveVolume", RemoveVolumeRequest, "remove_volume", VolumeRemoved, REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1", Container),
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container),
+                EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),
+                PullImageFromMachine: (pull_image_from_machine, "PullImageFromMachine", PullImageFromMachineRequest, "pull_image_from_machine", ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container),
                 GetCaddyConfig: (get_caddy_config, "GetCaddyConfig", GetCaddyConfigRequest, "get_caddy_config", CaddyConfig, GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1", Caddy),
                 ReserveDomain: (reserve_domain, "ReserveDomain", ReserveDomainRequest, "reserve_domain", Domain, RESERVE_DOMAIN_CAPABILITY, "ployz.dns.reserve.v1", Cluster),
                 GetDomain: (get_domain, "GetDomain", GetDomainRequest, "get_domain", Domain, GET_DOMAIN_CAPABILITY, "ployz.dns.show.v1", Cluster),
