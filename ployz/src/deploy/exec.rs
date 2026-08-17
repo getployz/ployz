@@ -638,11 +638,12 @@ async fn monitor_container<C: MachineOperations>(
     }
 
     let monitor_deadline = started + monitor;
-    // A crash loop can report healthy at the deadline during a restart window.
+    // A crash loop can report success at 1s poll boundaries. One extra poll
+    // still completed the Layer 3 crash cases; hold a second poll.
     let healthy_until = if monitor.is_zero() {
         monitor_deadline
     } else {
-        monitor_deadline + POLL_INTERVAL
+        monitor_deadline + POLL_INTERVAL * 2
     };
     loop {
         if cancellation.is_cancelled() {
@@ -692,7 +693,13 @@ fn classify_health(
         }
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
-        } if health_deadline.is_none() => HealthPoll::Complete,
+        } if health_deadline.is_none() => {
+            if now >= healthy_until {
+                HealthPoll::Complete
+            } else {
+                HealthPoll::PendingUntil(healthy_until)
+            }
+        }
         ContainerRuntimeObservation::Exited { code: 0 } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health:
