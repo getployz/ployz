@@ -167,10 +167,10 @@ mod tests {
     };
 
     use super::{
-        issuance_backoff, issuance_failure_clock, issuance_gate, issuance_refusal_reason,
-        IssuanceClock, IssuanceFailure, IssuanceGate,
+        IssuanceClock, IssuanceFailure, IssuanceGate, issuance_backoff, issuance_failure_clock,
+        issuance_gate, issuance_refusal_reason,
     };
-    use crate::{ClusterDnsVerdict, IngressHost, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP};
+    use crate::{ClusterDnsVerdict, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP, IngressHost};
 
     #[test]
     fn empty_row_orders_when_dns_points_at_the_cluster() {
