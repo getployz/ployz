@@ -24,6 +24,7 @@ use thiserror::Error;
 pub const IMAGE: &str = "ghcr.io/getployz/ployz2-testkit:main";
 pub const CORROSION_IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
+pub const CADDY_IMAGE: &str = "caddy:2.10.2";
 pub const UNREGISTRY_IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
@@ -35,7 +36,7 @@ static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageTarget {
     pub platform: &'static str,
-    pub requires: [&'static str; 6],
+    pub requires: [&'static str; 7],
 }
 
 #[must_use]
@@ -46,6 +47,7 @@ pub fn image_targets() -> [ImageTarget; 2] {
         "wg",
         CORROSION_IMAGE,
         SERVICE_CONTAINER_IMAGE,
+        CADDY_IMAGE,
         UNREGISTRY_IMAGE,
     ];
     [
@@ -263,7 +265,7 @@ impl Cluster {
             .expect("checked length"))
     }
 
-    async fn initialize_all(&self) -> Result<Vec<Machine>, TestkitError> {
+    async fn prepare_entry_machine(&self) -> Result<Machine, TestkitError> {
         self.wait_ready(Duration::from_secs(30)).await?;
         let initialized = self.initialize_first().await?;
         let first = self
@@ -278,25 +280,51 @@ impl Cluster {
         }
         self.wait_machine_count(0, 1, Duration::from_secs(60))
             .await?;
-        self.seed_observation(0)?;
-        let mut machines = vec![first.clone()];
+        Ok(first)
+    }
+
+    async fn initialize_all(&self) -> Result<Vec<Machine>, TestkitError> {
+        let first = self.prepare_entry_machine().await?;
+        let mut machines = vec![first];
         for index in 1..self.plan.machines.len() {
-            let token = self
-                .machine_token(index, vec![self.endpoint(index)?])
-                .await?;
-            let registered = self
-                .register_machine(0, &format!("machine-{}", index + 1), token)
-                .await?;
-            self.gossip_rule(index, "--insert")?;
-            self.join(index, join_request(&first, &registered)).await?;
-            self.wait_for_join_barrier(index, &registered).await?;
-            machines.push(registered.assigned_machine);
+            machines.push(
+                self.add_machine(0, index, &format!("machine-{}", index + 1))
+                    .await?,
+            );
             for entry in 0..=index {
                 self.wait_machine_count(entry, index + 1, Duration::from_secs(60))
                     .await?;
             }
         }
         Ok(machines)
+    }
+
+    /// Initialize two Machines and prove a joining Machine does not serve
+    /// store-dependent data below its frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the Cluster is not two Machines, a join RPC fails, or the
+    /// frontier barrier is violated.
+    pub async fn initialize_two_with_join_barrier(&self) -> Result<[Machine; 2], TestkitError> {
+        if self.plan.machines.len() != 2 {
+            return Err(TestkitError::MachineCount {
+                expected: 2,
+                actual: self.plan.machines.len(),
+            });
+        }
+        let first = self.prepare_entry_machine().await?;
+        self.seed_observation(0)?;
+        let token = self.machine_token(1, vec![self.endpoint(1)?]).await?;
+        let registered = self.register_machine(0, "machine-2", token).await?;
+        self.gossip_rule(1, "--insert")?;
+        self.join(1, join_request(&first, &registered)).await?;
+        self.wait_for_join_barrier(1, &registered).await?;
+        self.wait_machine_count(0, 2, Duration::from_secs(60))
+            .await?;
+        self.wait_machine_count(1, 2, Duration::from_secs(60))
+            .await?;
+        Ok([first, registered.assigned_machine])
     }
 
     async fn wait_for_join_barrier(
@@ -1001,9 +1029,24 @@ mod tests {
                     "wg",
                     CORROSION_IMAGE,
                     SERVICE_CONTAINER_IMAGE,
+                    CADDY_IMAGE,
                     UNREGISTRY_IMAGE,
                 ]
         }));
+    }
+
+    #[tokio::test]
+    async fn join_barrier_init_rejects_the_wrong_machine_count() {
+        let cluster = Cluster {
+            plan: ClusterPlan::new("l3-barrier", 1).unwrap(),
+        };
+        assert!(matches!(
+            cluster.initialize_two_with_join_barrier().await,
+            Err(TestkitError::MachineCount {
+                expected: 2,
+                actual: 1
+            })
+        ));
     }
 
     #[test]
