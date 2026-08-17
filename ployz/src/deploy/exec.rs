@@ -638,13 +638,6 @@ async fn monitor_container<C: MachineOperations>(
     }
 
     let monitor_deadline = started + monitor;
-    // A crash loop can report success at 1s poll boundaries. One extra poll
-    // still completed the Layer 3 crash cases; hold a second poll.
-    let healthy_until = if monitor.is_zero() {
-        monitor_deadline
-    } else {
-        monitor_deadline + POLL_INTERVAL * 2
-    };
     loop {
         if cancellation.is_cancelled() {
             return Err(health_error(container_id, HealthFailure::Cancelled));
@@ -653,17 +646,12 @@ async fn monitor_container<C: MachineOperations>(
         let now = Instant::now();
         let health_deadline =
             health_deadline_for(spec.container.healthcheck.as_ref(), &observed, started);
-        let wake_deadline = match classify_health(
-            &observed.runtime,
-            now,
-            monitor_deadline,
-            health_deadline,
-            healthy_until,
-        ) {
-            HealthPoll::Complete => return Ok(()),
-            HealthPoll::PendingUntil(deadline) => deadline,
-            HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
-        };
+        let wake_deadline =
+            match classify_health(&observed.runtime, now, monitor_deadline, health_deadline) {
+                HealthPoll::Complete => return Ok(()),
+                HealthPoll::PendingUntil(deadline) => deadline,
+                HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
+            };
         let wake = std::cmp::min(now + POLL_INTERVAL, wake_deadline);
         tokio::select! {
             () = cancellation.cancelled() => {
@@ -674,28 +662,19 @@ async fn monitor_container<C: MachineOperations>(
     }
 }
 
-fn hold_until(now: Instant, until: Instant) -> HealthPoll {
-    if now >= until {
-        HealthPoll::Complete
-    } else {
-        HealthPoll::PendingUntil(until)
-    }
-}
-
 fn classify_health(
     runtime: &ContainerRuntimeObservation,
     now: Instant,
     monitor_deadline: Instant,
     health_deadline: Option<Instant>,
-    healthy_until: Instant,
 ) -> HealthPoll {
     match runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
-        } => hold_until(now, healthy_until),
+        } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
-        } if health_deadline.is_none() => hold_until(now, healthy_until),
+        } if health_deadline.is_none() => HealthPoll::Complete,
         ContainerRuntimeObservation::Exited { code: 0 } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health:
