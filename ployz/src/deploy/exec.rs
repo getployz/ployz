@@ -674,6 +674,14 @@ async fn monitor_container<C: MachineOperations>(
     }
 }
 
+fn hold_until(now: Instant, until: Instant) -> HealthPoll {
+    if now >= until {
+        HealthPoll::Complete
+    } else {
+        HealthPoll::PendingUntil(until)
+    }
+}
+
 fn classify_health(
     runtime: &ContainerRuntimeObservation,
     now: Instant,
@@ -684,22 +692,10 @@ fn classify_health(
     match runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
-        } => {
-            if now >= healthy_until {
-                HealthPoll::Complete
-            } else {
-                HealthPoll::PendingUntil(healthy_until)
-            }
-        }
+        } => hold_until(now, healthy_until),
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
-        } if health_deadline.is_none() => {
-            if now >= healthy_until {
-                HealthPoll::Complete
-            } else {
-                HealthPoll::PendingUntil(healthy_until)
-            }
-        }
+        } if health_deadline.is_none() => hold_until(now, healthy_until),
         ContainerRuntimeObservation::Exited { code: 0 } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health:
