@@ -91,15 +91,19 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
         crashing.container.healthcheck = healthcheck;
         crashing.update.monitor_millis = Some(1_000);
         let plan = deploy_plan(vec![run_with_health_monitor(machine, &crashing)]);
-        assert!(matches!(
-            execute_plan(&plan, client, &CancellationToken::new())
-                .await
-                .failed,
-            Some(FailedOperation::Operation {
-                error: ExecutionError::Health { .. },
-                ..
-            })
-        ));
+        let failed = execute_plan(&plan, client, &CancellationToken::new())
+            .await
+            .failed;
+        assert!(
+            matches!(
+                failed,
+                Some(FailedOperation::Operation {
+                    error: ExecutionError::Health { .. },
+                    ..
+                })
+            ),
+            "{failed:?}"
+        );
         let retained = wait_for_service(client, &service_id, 1).await;
         wait_for_runtime(
             client,
