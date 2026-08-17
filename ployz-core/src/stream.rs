@@ -285,14 +285,6 @@ pub struct LogMetadata {
     pub machine_name: MachineName,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LogStream {
-    Stdout,
-    Stderr,
-    Heartbeat,
-    Error,
-}
-
 /// One log frame: stdout bytes, stderr bytes, a heartbeat, or an error string.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LogBody {

@@ -8,15 +8,17 @@ use bollard::{
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use futures_util::StreamExt;
 use ployz_core::{
-    ContainerLogsRequest, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogStream,
-    LogsOptions, MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
+    ContainerLogsRequest, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
+    MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
 };
 use serde_json::Value;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
 use super::{ContainerRuntime, docker_error};
-use crate::logs::{JournalError, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space};
+use crate::logs::{
+    JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
+};
 
 impl ContainerRuntime {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
@@ -240,10 +242,10 @@ fn docker_status(error: super::Error) -> Status {
 
 fn parse_log_output(output: LogOutput) -> RawLogEntry {
     let (stream, bytes) = match output {
-        LogOutput::StdErr { message } => (LogStream::Stderr, message),
+        LogOutput::StdErr { message } => (LogLineStream::Stderr, message),
         LogOutput::StdOut { message }
         | LogOutput::StdIn { message }
-        | LogOutput::Console { message } => (LogStream::Stdout, message),
+        | LogOutput::Console { message } => (LogLineStream::Stdout, message),
     };
     let (timestamp_unix_nanos, message) = split_timestamp(&bytes);
     RawLogEntry {
@@ -359,7 +361,7 @@ mod tests {
                 message: Bytes::from_static(b"2026-08-14T09:10:11.123456789Z \xff\n"),
             }),
             RawLogEntry {
-                stream: LogStream::Stderr,
+                stream: LogLineStream::Stderr,
                 timestamp_unix_nanos: 1_786_698_611_123_456_789,
                 message: b"\xff\n".to_vec(),
             }

@@ -6,7 +6,7 @@ use std::{
 };
 
 use futures_util::{Stream, StreamExt};
-use ployz_core::{LogBody, LogEntry, LogMetadata, LogStream, LogsOptions, OpaquePayload};
+use ployz_core::{LogBody, LogEntry, LogMetadata, LogsOptions, OpaquePayload};
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -34,9 +34,16 @@ pub enum JournalError {
 pub type LogSource = Pin<Box<dyn Stream<Item = Result<RawLogEntry, JournalError>> + Send>>;
 pub type RpcStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
+/// Journal or Docker line stream: stdout or stderr, never a control frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogLineStream {
+    Stdout,
+    Stderr,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RawLogEntry {
-    pub stream: LogStream,
+    pub stream: LogLineStream,
     pub timestamp_unix_nanos: i64,
     pub message: Vec<u8>,
 }
@@ -59,12 +66,8 @@ pub fn serve_logs(mut source: LogSource, metadata: LogMetadata, follow: bool) ->
                             metadata: metadata.clone(),
                             timestamp_unix_nanos: entry.timestamp_unix_nanos,
                             body: match entry.stream {
-                                LogStream::Stdout => LogBody::Stdout(entry.message),
-                                LogStream::Stderr => LogBody::Stderr(entry.message),
-                                LogStream::Heartbeat => LogBody::Heartbeat,
-                                LogStream::Error => LogBody::Error(
-                                    String::from_utf8_lossy(&entry.message).into_owned(),
-                                ),
+                                LogLineStream::Stdout => LogBody::Stdout(entry.message),
+                                LogLineStream::Stderr => LogBody::Stderr(entry.message),
                             },
                         };
                         if send_entry(&sender, entry).await.is_err() {
@@ -169,7 +172,7 @@ fn parse_journal_entry(line: &[u8]) -> RawLogEntry {
         .and_then(|(timestamp, message)| parse_short_unix(timestamp).map(|time| (time, message)))
         .unwrap_or((0, line));
     RawLogEntry {
-        stream: LogStream::Stdout,
+        stream: LogLineStream::Stdout,
         timestamp_unix_nanos: timestamp,
         message: message.to_vec(),
     }
@@ -198,6 +201,8 @@ fn system_time_nanos(time: SystemTime) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::{LogOrigin, MachineId, MachineLogService, MachineName};
+
     use super::*;
 
     #[test]
@@ -205,10 +210,85 @@ mod tests {
         assert_eq!(
             parse_journal_entry(b"1758193407.686964 systemd[1]: \xff\n"),
             RawLogEntry {
-                stream: LogStream::Stdout,
+                stream: LogLineStream::Stdout,
                 timestamp_unix_nanos: 1_758_193_407_686_964_000,
                 message: b"systemd[1]: \xff\n".to_vec(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn serve_logs_maps_line_streams_and_source_errors_to_log_bodies() {
+        let (sender, receiver) = mpsc::channel(4);
+        let mut stream = serve_logs(
+            Box::pin(ReceiverStream::new(receiver)),
+            test_metadata(),
+            false,
+        );
+        sender
+            .send(Ok(RawLogEntry {
+                stream: LogLineStream::Stdout,
+                timestamp_unix_nanos: 1,
+                message: b"out\n".to_vec(),
+            }))
+            .await
+            .unwrap();
+        sender
+            .send(Ok(RawLogEntry {
+                stream: LogLineStream::Stderr,
+                timestamp_unix_nanos: 2,
+                message: b"err\n".to_vec(),
+            }))
+            .await
+            .unwrap();
+        sender
+            .send(Err(JournalError::Docker("docker died".into())))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            decode_next(&mut stream).await.body,
+            LogBody::Stdout(b"out\n".to_vec())
+        );
+        assert_eq!(
+            decode_next(&mut stream).await.body,
+            LogBody::Stderr(b"err\n".to_vec())
+        );
+        assert_eq!(
+            decode_next(&mut stream).await.body,
+            LogBody::Error("docker died".into())
+        );
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn serve_logs_emits_heartbeat_bodies_while_following() {
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut stream = serve_logs(
+            Box::pin(ReceiverStream::new(receiver)),
+            test_metadata(),
+            true,
+        );
+        let payload = tokio::time::timeout(HEARTBEAT_INTERVAL * 4, stream.next())
+            .await
+            .expect("heartbeat within a few intervals")
+            .unwrap()
+            .unwrap();
+        assert_eq!(LogEntry::decode(&payload).unwrap().body, LogBody::Heartbeat);
+    }
+
+    async fn decode_next(stream: &mut RpcStream) -> LogEntry {
+        let payload = stream.next().await.unwrap().unwrap();
+        LogEntry::decode(&payload).unwrap()
+    }
+
+    fn test_metadata() -> LogMetadata {
+        LogMetadata {
+            origin: LogOrigin::Machine {
+                service: MachineLogService::Ployz,
+            },
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            machine_name: MachineName::parse("machine").unwrap(),
+        }
     }
 }
