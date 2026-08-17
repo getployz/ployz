@@ -3,7 +3,7 @@ use std::{process, time::Duration};
 use ployz::{
     connect::Client,
     deploy::{
-        DeployOperation, DeployPlan, ExecutionError, FailedOperation, HookFailure,
+        DeployOperation, DeployOutcome, DeployPlan, ExecutionError, FailedOperation, HookFailure,
         ReplacementCompensation, ReplacementOperation, execute_plan,
     },
 };
@@ -45,7 +45,10 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
     healthy.update.monitor_millis = Some(3_000);
     let healthy_plan = deploy_plan(vec![run_with_health_monitor(machine, &healthy)]);
     let healthy_outcome = execute_plan(&healthy_plan, client, &CancellationToken::new()).await;
-    assert!(healthy_outcome.failed.is_none());
+    assert!(matches!(
+        healthy_outcome,
+        ployz::deploy::DeployOutcome::Success { .. }
+    ));
     let healthy_containers = wait_for_service(client, &healthy_id, 1).await;
     assert!(matches!(
         healthy_containers.first().unwrap().runtime,
@@ -61,13 +64,14 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
     unhealthy.update.monitor_millis = Some(1_000);
     let unhealthy_plan = deploy_plan(vec![run_with_health_monitor(machine, &unhealthy)]);
     assert!(matches!(
-        execute_plan(&unhealthy_plan, client, &CancellationToken::new())
-            .await
-            .failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Health { .. },
+        execute_plan(&unhealthy_plan, client, &CancellationToken::new()).await,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Health { .. },
+                ..
+            },
             ..
-        })
+        }
     ));
     let unhealthy_containers = wait_for_service(client, &unhealthy_id, 1).await;
     wait_for_runtime(
@@ -91,18 +95,19 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
         crashing.container.healthcheck = healthcheck;
         crashing.update.monitor_millis = Some(1_000);
         let plan = deploy_plan(vec![run_with_health_monitor(machine, &crashing)]);
-        let failed = execute_plan(&plan, client, &CancellationToken::new())
-            .await
-            .failed;
+        let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
         assert!(
             matches!(
-                failed,
-                Some(FailedOperation::Operation {
-                    error: ExecutionError::Health { .. },
+                outcome,
+                DeployOutcome::Failed {
+                    failed: FailedOperation::Operation {
+                        error: ExecutionError::Health { .. },
+                        ..
+                    },
                     ..
-                })
+                }
             ),
-            "{failed:?}"
+            "{outcome:?}"
         );
         let retained = wait_for_service(client, &service_id, 1).await;
         wait_for_runtime(
@@ -130,7 +135,10 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &Client, machine:
 
     let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(
+        outcome,
+        ployz::deploy::DeployOutcome::Success { .. }
+    ));
     assert!(
         cluster
             .machine_shell(1, "docker volume inspect ployz-l3-deploy-data")
@@ -167,15 +175,23 @@ async fn assert_unreachable_middle_keeps_prefix(
     let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
 
     cluster.remote_machine_api_rule(0, "--delete").unwrap();
-    assert_eq!(outcome.completed, operations.get(..1).unwrap());
+    let DeployOutcome::Failed {
+        completed,
+        failed,
+        unexecuted,
+    } = &outcome
+    else {
+        panic!("expected unreachable-middle failure: {outcome:?}");
+    };
+    assert_eq!(completed, operations.get(..1).unwrap());
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Machine { ref error, .. },
+        failed,
+        FailedOperation::Operation {
+            error: ExecutionError::Machine { error, .. },
             ..
-        }) if error.code == ployz_core::RpcErrorCode::Unavailable
+        } if error.code == ployz_core::RpcErrorCode::Unavailable
     ));
-    assert_eq!(outcome.unexecuted, operations.get(2..).unwrap());
+    assert_eq!(unexecuted, operations.get(2..).unwrap());
     let containers = wait_for_service(client, &service_id, 1).await;
     assert_eq!(containers.len(), 1);
     assert_eq!(containers.first().unwrap().machine_id, machines[0].id);
@@ -219,31 +235,35 @@ async fn assert_replacement_health_compensation(
 
         let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
 
-        let failed_new = match &outcome.failed {
-            Some(FailedOperation::ReplacementHealth {
-                error: ExecutionError::Health { container_id, .. },
-                compensation,
-                ..
-            }) => {
-                assert!(match (order, compensation) {
-                    (
-                        UpdateOrder::StartFirst,
-                        ReplacementCompensation::StartFirst { stop_new_container },
-                    ) => stop_new_container.is_ok(),
-                    (
-                        UpdateOrder::StopFirst,
-                        ReplacementCompensation::StopFirst {
-                            stop_new_container,
-                            restart_old_container: ployz::deploy::RestartAttempt::Attempted(restart),
-                        },
-                    ) => stop_new_container.is_ok() && restart.is_ok(),
-                    _ => false,
-                });
-                *container_id
-            }
-            failed => panic!("unexpected replacement failure: {failed:?}"),
+        let DeployOutcome::Failed {
+            failed:
+                FailedOperation::ReplacementHealth {
+                    error: ExecutionError::Health { container_id, .. },
+                    compensation,
+                    ..
+                },
+            unexecuted,
+            ..
+        } = &outcome
+        else {
+            panic!("unexpected replacement failure: {outcome:?}");
         };
-        assert_eq!(outcome.unexecuted, operations.get(1..).unwrap());
+        assert!(match (order, compensation) {
+            (
+                UpdateOrder::StartFirst,
+                ReplacementCompensation::StartFirst { stop_new_container },
+            ) => stop_new_container.is_ok(),
+            (
+                UpdateOrder::StopFirst,
+                ReplacementCompensation::StopFirst {
+                    stop_new_container,
+                    restart_old_container: ployz::deploy::RestartAttempt::Attempted(restart),
+                },
+            ) => stop_new_container.is_ok() && restart.is_ok(),
+            _ => false,
+        });
+        assert_eq!(unexecuted, operations.get(1..).unwrap());
+        let failed_new = *container_id;
         assert!(docker_running(cluster, 0, &old.container_id));
         assert!(!docker_running(cluster, 0, &failed_new));
         assert!(
@@ -303,17 +323,22 @@ async fn assert_failed_hooks_are_retained_and_rerun(
     });
     let timeout_plan = deploy_plan(vec![hook(machine, &timeout), suffix]);
     let timed_out = execute_plan(&timeout_plan, client, &CancellationToken::new()).await;
-    let timed_out_id = match timed_out.failed {
-        Some(FailedOperation::Operation {
-            error:
-                ExecutionError::Hook {
-                    container_id,
-                    failure: HookFailure::TimedOut { stop_error: None },
-                },
-            ..
-        }) => container_id,
-        failed => panic!("unexpected timed-out hook outcome: {failed:?}"),
+    let DeployOutcome::Failed {
+        failed:
+            FailedOperation::Operation {
+                error:
+                    ExecutionError::Hook {
+                        container_id,
+                        failure: HookFailure::TimedOut { stop_error: None },
+                    },
+                ..
+            },
+        ..
+    } = timed_out
+    else {
+        panic!("unexpected timed-out hook outcome: {timed_out:?}");
     };
+    let timed_out_id = container_id;
     assert!(docker_exists(cluster, 0, &timed_out_id));
     assert!(!docker_running(cluster, 0, &timed_out_id));
 
@@ -332,12 +357,10 @@ async fn assert_unhealthy_service_is_not_repaired(
     let mut spec = service_spec(&service_id, "no-repair");
     spec.container.healthcheck = Some(healthcheck("false", 1));
     let plan = deploy_plan(vec![run_without_health_monitor(&machines[0], &spec)]);
-    assert!(
-        execute_plan(&plan, client, &CancellationToken::new())
-            .await
-            .failed
-            .is_none()
-    );
+    assert!(matches!(
+        execute_plan(&plan, client, &CancellationToken::new()).await,
+        DeployOutcome::Success { .. }
+    ));
     let before = wait_for_service(client, &service_id, 1).await;
     let id = before.first().unwrap().container_id;
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -352,18 +375,24 @@ fn failed_hook_id(
     outcome: &ployz::deploy::DeployOutcome<ExecutionError>,
     suffix: &DeployOperation,
 ) -> ContainerId {
-    assert_eq!(outcome.unexecuted, vec![suffix.clone()]);
-    match &outcome.failed {
-        Some(FailedOperation::Operation {
-            error:
-                ExecutionError::Hook {
-                    container_id,
-                    failure: HookFailure::Exit(7),
-                },
-            ..
-        }) => *container_id,
-        failed => panic!("unexpected hook outcome: {failed:?}"),
-    }
+    let DeployOutcome::Failed {
+        failed:
+            FailedOperation::Operation {
+                error:
+                    ExecutionError::Hook {
+                        container_id,
+                        failure: HookFailure::Exit(7),
+                    },
+                ..
+            },
+        unexecuted,
+        ..
+    } = outcome
+    else {
+        panic!("unexpected hook outcome: {outcome:?}");
+    };
+    assert_eq!(unexecuted, &vec![suffix.clone()]);
+    *container_id
 }
 
 fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPlan {

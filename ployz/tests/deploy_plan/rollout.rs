@@ -89,13 +89,17 @@ fn sequence_failure_keeps_completed_failed_and_unexecuted_operations_exact() {
     let outcome = plan.failure_outcome(1, "container failed").unwrap();
 
     let operations = &plan.operations;
-    assert_eq!(outcome.completed.as_slice(), operations.get(..1).unwrap());
-    assert!(matches!(
-        outcome.failed.as_ref(),
-        Some(FailedOperation::Operation { operation, error })
-            if operation == operations.get(1).unwrap() && *error == "container failed"
-    ));
-    assert_eq!(outcome.unexecuted.as_slice(), operations.get(2..).unwrap());
+    assert_eq!(
+        outcome,
+        DeployOutcome::Failed {
+            completed: operations.get(..1).unwrap().to_vec(),
+            failed: FailedOperation::Operation {
+                operation: operations.get(1).unwrap().clone(),
+                error: "container failed",
+            },
+            unexecuted: operations.get(2..).unwrap().to_vec(),
+        }
+    );
 }
 
 #[test]
@@ -242,15 +246,17 @@ fn replacement_failure_can_record_its_only_allowed_compensation() {
         .unwrap();
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::ReplacementHealth {
-            error: "health failed",
-            compensation: actual,
-            ..
-        }) if actual == compensation
+        outcome,
+        DeployOutcome::Failed {
+            completed,
+            failed: FailedOperation::ReplacementHealth {
+                error: "health failed",
+                compensation: actual,
+                ..
+            },
+            unexecuted,
+        } if completed.is_empty() && unexecuted.is_empty() && actual == compensation
     ));
-    assert!(outcome.completed.is_empty());
-    assert!(outcome.unexecuted.is_empty());
 }
 
 #[test]
@@ -286,14 +292,17 @@ fn stop_first_failure_can_record_that_a_stopped_old_container_was_not_restarted(
         .unwrap();
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::ReplacementHealth {
-            compensation: ReplacementCompensation::StopFirst {
-                restart_old_container: RestartAttempt::NotAttempted,
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::ReplacementHealth {
+                compensation: ReplacementCompensation::StopFirst {
+                    restart_old_container: RestartAttempt::NotAttempted,
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
 }
 
@@ -454,9 +463,10 @@ fn successful_outcome_has_no_failed_or_unexecuted_operation() {
         PlanOptions::default(),
     )
     .unwrap();
-    let outcome = plan.success_outcome::<&str>();
-
-    assert_eq!(outcome.completed, plan.operations);
-    assert!(outcome.failed.is_none());
-    assert!(outcome.unexecuted.is_empty());
+    assert_eq!(
+        plan.success_outcome::<&str>(),
+        DeployOutcome::Success {
+            completed: plan.operations.clone(),
+        }
+    );
 }

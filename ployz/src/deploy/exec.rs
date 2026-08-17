@@ -420,10 +420,8 @@ async fn execute_operation_sequence<C: MachineOperations>(
             }
         }
     }
-    DeployOutcome {
+    DeployOutcome::Success {
         completed: operations,
-        failed: None,
-        unexecuted: Vec::new(),
     }
 }
 

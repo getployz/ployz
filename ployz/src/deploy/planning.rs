@@ -46,27 +46,18 @@ pub fn plan_deploy(
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::default();
-    let mut volume_creates =
-        prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, options)?;
+    prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, options)?;
     let name_errors_with_service = requested.len() > 1;
     let services = derive_services(snapshot.containers.iter().cloned());
     let mut service_operations = Vec::new();
     for spec in &requested {
         service_operations.extend(
-            plan_one_service(
-                spec,
-                snapshot,
-                &services,
-                &mut pins,
-                &mut volume_creates,
-                options,
-            )
-            .map_err(|source| {
+            plan_one_service(spec, snapshot, &services, &mut pins, options).map_err(|source| {
                 service_error(name_errors_with_service, spec.name.as_str(), source)
             })?,
         );
     }
-    let mut operations = volume_creates;
+    let mut operations = pins.into_creates();
     operations.extend(service_operations);
     Ok(DeployPlan::new(operations))
 }
@@ -171,16 +162,10 @@ fn plan_one_service(
     snapshot: &DeploySnapshot,
     services: &[ServiceObservation],
     pins: &mut VolumePins,
-    volume_creates: &mut Vec<DeployOperation>,
     options: PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options);
-    volume_creates.extend(plan_volume_operations(
-        requested,
-        snapshot,
-        pins,
-        &mut machines,
-    )?);
+    plan_volume_operations(requested, snapshot, pins, &mut machines)?;
     let matching = services
         .iter()
         .filter(|service| service.has_name(requested.name.as_str()))

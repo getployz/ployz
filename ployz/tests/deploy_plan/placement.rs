@@ -432,6 +432,41 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
 }
 
 #[test]
+fn two_global_services_sharing_a_missing_volume_create_it_once_per_machine() {
+    let mut first = requested(ServiceMode::Global);
+    first.name = ServiceName::parse("first").unwrap();
+    add_named_volume(&mut first, "data");
+    let mut second = requested(ServiceMode::Global);
+    second.name = ServiceName::parse("second").unwrap();
+    add_named_volume(&mut second, "data");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        ..Default::default()
+    };
+    let before = snapshot.clone();
+
+    let plan = plan_deploy([&first, &second], &snapshot, PlanOptions::default()).unwrap();
+
+    assert_eq!(snapshot, before);
+    let created_on = plan
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::CreateVolume { machine_id, .. } => Some(*machine_id),
+            DeployOperation::RunContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(created_on.len(), 2);
+    assert!(created_on.contains(&machine_id('1')));
+    assert!(created_on.contains(&machine_id('2')));
+}
+
+#[test]
 fn two_services_sharing_a_named_volume_create_it_once() {
     let mut first = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
@@ -443,16 +478,14 @@ fn two_services_sharing_a_named_volume_create_it_once() {
     });
     second.name = ServiceName::parse("second").unwrap();
     add_named_volume(&mut second, "data");
-    let plan = plan_deploy(
-        [&first, &second],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first"), machine('2', "second")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        ..Default::default()
+    };
+    let before = snapshot.clone();
+    let plan = plan_deploy([&first, &second], &snapshot, PlanOptions::default()).unwrap();
 
+    assert_eq!(snapshot, before);
     assert_eq!(
         plan.operations
             .iter()

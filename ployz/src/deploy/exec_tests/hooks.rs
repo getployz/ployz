@@ -23,7 +23,11 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
             Step(Call::Inspect(machine, hook_id), reply),
         ]);
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
-        assert_eq!(outcome.unexecuted, vec![stop(&machine, &suffix)]);
+        assert!(matches!(
+            &outcome,
+            DeployOutcome::Failed { unexecuted, .. }
+                if unexecuted == &vec![stop(&machine, &suffix)]
+        ));
         client.assert_done();
     }
 
@@ -43,12 +47,10 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
         observed(Call::Inspect(machine, hook_id), exited(0)),
         ok(Call::Stop(machine, suffix)),
     ]);
-    assert!(
-        execute_with(&plan, &client, &CancellationToken::new())
-            .await
-            .failed
-            .is_none()
-    );
+    assert!(matches!(
+        execute_with(&plan, &client, &CancellationToken::new()).await,
+        DeployOutcome::Success { .. }
+    ));
     client.assert_done();
 }
 
@@ -68,14 +70,17 @@ async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
     ]);
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Hook {
-                failure: HookFailure::TimedOut { stop_error: None },
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Hook {
+                    failure: HookFailure::TimedOut { stop_error: None },
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 
@@ -96,16 +101,19 @@ async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
     });
     let outcome = execute_with(&plan, &client, &cancellation).await;
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Hook {
-                failure: HookFailure::Cancelled {
-                    stop_error: Some(_)
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Hook {
+                    failure: HookFailure::Cancelled {
+                        stop_error: Some(_)
+                    },
+                    ..
                 },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }
@@ -125,17 +133,13 @@ async fn executing_the_same_plan_twice_runs_a_fresh_hook_each_time() {
         observed(Call::Inspect(machine, second), exited(0)),
     ]);
 
-    assert!(
-        execute_with(&plan, &client, &CancellationToken::new())
-            .await
-            .failed
-            .is_none()
-    );
-    assert!(
-        execute_with(&plan, &client, &CancellationToken::new())
-            .await
-            .failed
-            .is_none()
-    );
+    assert!(matches!(
+        execute_with(&plan, &client, &CancellationToken::new()).await,
+        DeployOutcome::Success { .. }
+    ));
+    assert!(matches!(
+        execute_with(&plan, &client, &CancellationToken::new()).await,
+        DeployOutcome::Success { .. }
+    ));
     client.assert_done();
 }

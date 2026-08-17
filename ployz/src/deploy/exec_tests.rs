@@ -5,7 +5,7 @@ use ployz_core::{
     VolumeSource,
 };
 
-use crate::deploy::FailedOperation;
+use crate::deploy::{DeployOutcome, FailedOperation};
 
 use super::*;
 

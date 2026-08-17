@@ -66,7 +66,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -83,7 +83,7 @@ async fn health_monitor_accepts_a_clean_exit_instead_of_failing_as_restarting() 
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -105,7 +105,7 @@ async fn health_monitor_succeeds_on_the_first_healthy_probe() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -122,7 +122,7 @@ async fn health_monitor_accepts_running_without_a_healthcheck_after_the_monitor(
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -147,14 +147,17 @@ async fn health_monitor_fails_restarting_without_waiting_out_the_monitor_window(
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Health {
-                failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Health {
+                    failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }
@@ -176,14 +179,17 @@ async fn health_monitor_still_fails_a_restart_loop() {
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Health {
-                failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Health {
+                    failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }
@@ -205,11 +211,14 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
         ]);
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
         assert!(matches!(
-            outcome.failed,
-            Some(FailedOperation::Operation {
-                error: ExecutionError::Health { .. },
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Health { .. },
+                    ..
+                },
                 ..
-            })
+            }
         ));
         client.assert_done();
     }
@@ -225,12 +234,10 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
     ]);
-    assert!(
-        execute_with(&plan, &client, &CancellationToken::new())
-            .await
-            .failed
-            .is_none()
-    );
+    assert!(matches!(
+        execute_with(&plan, &client, &CancellationToken::new()).await,
+        DeployOutcome::Success { .. }
+    ));
     client.assert_done();
 }
 
@@ -257,6 +264,6 @@ async fn health_monitor_does_not_inherit_when_spec_disables_the_check() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }

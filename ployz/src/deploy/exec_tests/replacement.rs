@@ -22,13 +22,13 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
         assert!(matches!(
-            outcome.failed,
-            Some(FailedOperation::ReplacementHealth {
+            outcome,
+            DeployOutcome::Failed { failed: FailedOperation::ReplacementHealth {
                 compensation: ReplacementCompensation::StartFirst {
                     stop_new_container,
                 },
                 ..
-            }) if stop_new_container.is_ok() == stop_succeeds
+            }, .. } if stop_new_container.is_ok() == stop_succeeds
         ));
         client.assert_done();
     }
@@ -52,13 +52,16 @@ async fn replacement_compensation_tolerates_a_missing_new_container() {
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::ReplacementHealth {
-            compensation: ReplacementCompensation::StartFirst {
-                stop_new_container: Ok(()),
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::ReplacementHealth {
+                compensation: ReplacementCompensation::StartFirst {
+                    stop_new_container: Ok(()),
+                },
+                ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }
@@ -78,14 +81,17 @@ async fn replacement_inspect_failure_runs_no_health_compensation() {
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Machine {
-                action: MachineAction::InspectContainer,
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Machine {
+                    action: MachineAction::InspectContainer,
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }
@@ -121,14 +127,14 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
         assert!(matches!(
-            outcome.failed,
-            Some(FailedOperation::ReplacementHealth {
+            outcome,
+            DeployOutcome::Failed { failed: FailedOperation::ReplacementHealth {
                 compensation: ReplacementCompensation::StopFirst {
                     stop_new_container,
                     restart_old_container: RestartAttempt::Attempted(restart),
                 },
                 ..
-            }) if stop_new_container.is_ok() == stop_succeeds
+            }, .. } if stop_new_container.is_ok() == stop_succeeds
                 && restart.is_ok() == restart_succeeds
         ));
         client.assert_done();
@@ -152,14 +158,17 @@ async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::ReplacementHealth {
-            compensation: ReplacementCompensation::StopFirst {
-                restart_old_container: RestartAttempt::NotAttempted,
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::ReplacementHealth {
+                compensation: ReplacementCompensation::StopFirst {
+                    restart_old_container: RestartAttempt::NotAttempted,
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }
@@ -187,14 +196,17 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
         assert!(matches!(
-            outcome.failed,
-            Some(FailedOperation::ReplacementHealth {
-                compensation: ReplacementCompensation::StopFirst {
-                    restart_old_container: RestartAttempt::Attempted(Ok(())),
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::ReplacementHealth {
+                    compensation: ReplacementCompensation::StopFirst {
+                        restart_old_container: RestartAttempt::Attempted(Ok(())),
+                        ..
+                    },
                     ..
                 },
                 ..
-            })
+            }
         ));
         client.assert_done();
     }
@@ -219,7 +231,7 @@ async fn stop_first_tolerates_disappearance_between_inspect_and_stop() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -255,7 +267,7 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
 
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-        assert!(outcome.failed.is_none());
+        assert!(matches!(outcome, DeployOutcome::Success { .. }));
         client.assert_done();
     }
 }
@@ -290,12 +302,10 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
         steps.push(ok(Call::Remove(machine, old)));
         let client = Scripted::new(steps);
 
-        assert!(
-            execute_with(&plan, &client, &CancellationToken::new())
-                .await
-                .failed
-                .is_none()
-        );
+        assert!(matches!(
+            execute_with(&plan, &client, &CancellationToken::new()).await,
+            DeployOutcome::Success { .. }
+        ));
         client.assert_done();
     }
 }
@@ -327,8 +337,11 @@ async fn stop_first_create_or_start_failure_runs_no_compensation() {
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
         assert!(matches!(
-            outcome.failed,
-            Some(FailedOperation::Operation { .. })
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation { .. },
+                ..
+            }
         ));
         client.assert_done();
     }

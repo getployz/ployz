@@ -163,12 +163,12 @@ impl DeployPlan {
     ) -> Option<DeployOutcome<E>> {
         let completed = operations.get(..completed_count)?;
         let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
-        Some(DeployOutcome {
+        Some(DeployOutcome::Failed {
             completed: completed.to_vec(),
-            failed: Some(FailedOperation::Operation {
+            failed: FailedOperation::Operation {
                 operation: failed.clone(),
                 error,
-            }),
+            },
             unexecuted: unexecuted.to_vec(),
         })
     }
@@ -198,32 +198,41 @@ impl DeployPlan {
         let DeployOperation::ReplaceContainer(operation) = failed else {
             return None;
         };
-        Some(DeployOutcome {
+        Some(DeployOutcome::Failed {
             completed: completed.to_vec(),
-            failed: Some(FailedOperation::ReplacementHealth {
+            failed: FailedOperation::ReplacementHealth {
                 operation: operation.clone(),
                 error,
                 compensation,
-            }),
+            },
             unexecuted: unexecuted.to_vec(),
         })
     }
 
     #[must_use]
     pub fn success_outcome<E>(&self) -> DeployOutcome<E> {
-        DeployOutcome {
+        DeployOutcome::Success {
             completed: self.operations.clone(),
-            failed: None,
-            unexecuted: Vec::new(),
         }
     }
 }
 
+/// Evidence from executing a Deploy Plan: every operation completed, or the
+/// completed prefix plus the failed operation and the unexecuted rest.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeployOutcome<E> {
-    pub completed: Vec<DeployOperation>,
-    pub failed: Option<FailedOperation<E>>,
-    pub unexecuted: Vec<DeployOperation>,
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Failed must own the named op and unexecuted rest; boxing would not change the states"
+)]
+pub enum DeployOutcome<E> {
+    /// Every planned operation completed.
+    Success { completed: Vec<DeployOperation> },
+    /// Execution stopped at `failed`; `unexecuted` is the rest of the plan.
+    Failed {
+        completed: Vec<DeployOperation>,
+        failed: FailedOperation<E>,
+        unexecuted: Vec<DeployOperation>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

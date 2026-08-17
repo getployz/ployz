@@ -575,7 +575,10 @@ async fn deploy(
     )
     .unwrap();
     let outcome = ployz::deploy::execute_plan(&plan, client, &CancellationToken::new()).await;
-    assert!(outcome.failed.is_none(), "{outcome:?}");
+    assert!(
+        matches!(outcome, ployz::deploy::DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
     plan.operations
         .iter()
         .find_map(|operation| match operation {

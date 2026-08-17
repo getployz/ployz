@@ -16,7 +16,7 @@ async fn start_lost_to_a_daemon_restart_starts_the_created_container() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -37,7 +37,7 @@ async fn start_lost_to_a_daemon_restart_accepts_a_container_that_is_already_runn
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -68,7 +68,7 @@ async fn two_consecutive_run_containers_each_survive_a_target_restart() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -89,7 +89,7 @@ async fn inspect_lost_to_a_daemon_restart_is_waited_out() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }
 
@@ -105,14 +105,17 @@ async fn create_unavailable_is_not_retried() {
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Machine {
-                action: MachineAction::CreateContainer,
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Machine {
+                    action: MachineAction::CreateContainer,
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }
@@ -135,14 +138,17 @@ async fn start_unavailable_stops_waiting_when_cancelled() {
     let outcome = execute_with(&plan, &client, &cancellation).await;
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Machine {
-                action: MachineAction::StartContainer,
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Machine {
+                    action: MachineAction::StartContainer,
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }

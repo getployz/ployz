@@ -142,16 +142,25 @@ fn render(operations: &[DeployOperation], connection: &Connection) {
 }
 
 fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Failure> {
-    println!("Completed {} operation(s).", outcome.completed.len());
-    let Some(failed) = &outcome.failed else {
-        return Ok(());
-    };
-    Err(Failure::usage(format!(
-        "Deploy stopped; completed: [{}]; failed: {}; unexecuted: [{}]",
-        operation_list(&outcome.completed),
-        failed_summary(failed),
-        operation_list(&outcome.unexecuted),
-    )))
+    match outcome {
+        DeployOutcome::Success { completed } => {
+            println!("Completed {} operation(s).", completed.len());
+            Ok(())
+        }
+        DeployOutcome::Failed {
+            completed,
+            failed,
+            unexecuted,
+        } => {
+            println!("Completed {} operation(s).", completed.len());
+            Err(Failure::usage(format!(
+                "Deploy stopped; completed: [{}]; failed: {}; unexecuted: [{}]",
+                operation_list(&completed),
+                failed_summary(&failed),
+                operation_list(&unexecuted),
+            )))
+        }
+    }
 }
 
 fn failed_summary(failed: &FailedOperation<ExecutionError>) -> String {

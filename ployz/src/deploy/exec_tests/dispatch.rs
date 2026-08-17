@@ -84,9 +84,12 @@ async fn dispatches_the_complete_algebra() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert_eq!(outcome.completed, operations);
-    assert!(outcome.failed.is_none());
-    assert!(outcome.unexecuted.is_empty());
+    assert_eq!(
+        outcome,
+        DeployOutcome::Success {
+            completed: operations,
+        }
+    );
     client.assert_done();
 }
 
@@ -120,18 +123,23 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
         let client = Scripted::new(steps);
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-        assert_eq!(outcome.completed, operations.get(..failed_index).unwrap());
+        let DeployOutcome::Failed {
+            completed,
+            failed,
+            unexecuted,
+        } = &outcome
+        else {
+            panic!("expected failure at {failed_index}");
+        };
+        assert_eq!(completed, operations.get(..failed_index).unwrap());
         assert!(matches!(
-            outcome.failed,
-            Some(FailedOperation::Operation {
+            failed,
+            FailedOperation::Operation {
                 operation: DeployOperation::StopContainer { .. },
-                error: ExecutionError::Machine { ref error, .. },
-            }) if error.message == "boom"
+                error: ExecutionError::Machine { error, .. },
+            } if error.message == "boom"
         ));
-        assert_eq!(
-            outcome.unexecuted,
-            operations.get(failed_index + 1..).unwrap()
-        );
+        assert_eq!(unexecuted, operations.get(failed_index + 1..).unwrap());
         client.assert_done();
     }
 }
@@ -152,14 +160,17 @@ async fn create_then_start_failure_keeps_the_container_without_cleanup() {
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(matches!(
-        outcome.failed,
-        Some(FailedOperation::Operation {
-            error: ExecutionError::Machine {
-                action: MachineAction::StartContainer,
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Machine {
+                    action: MachineAction::StartContainer,
+                    ..
+                },
                 ..
             },
             ..
-        })
+        }
     ));
     client.assert_done();
 }
@@ -192,6 +203,6 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
     client.assert_done();
 }

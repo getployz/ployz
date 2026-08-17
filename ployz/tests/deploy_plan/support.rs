@@ -4,8 +4,9 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    DeployIntent, DeployOperation, DeploySnapshot, FailedOperation, PlanError, PlanOptions,
-    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, compare_specs,
+    DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, FailedOperation, PlanError,
+    PlanOptions, ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
+    compare_specs,
 };
 
 pub(super) fn plan_deploy<'a>(
