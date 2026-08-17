@@ -28,7 +28,6 @@ use crate::{
 
 #[derive(Clone)]
 pub struct Client {
-    rpc: MachineRpcClient<Channel>,
     channel: Channel,
     connection: Connection,
     source: ConnectionSource,
@@ -55,7 +54,6 @@ impl Client {
         connector: Arc<dyn Connector>,
     ) -> Self {
         Self {
-            rpc: MachineRpcClient::new(channel.clone()),
             channel,
             connection,
             source,
@@ -133,9 +131,7 @@ impl Client {
         redial: bool,
     ) -> Result<T::Response, ConnectError> {
         if redial {
-            let channel = self.connector.connect(&self.connection).await?;
-            self.rpc = MachineRpcClient::new(channel.clone());
-            self.channel = channel;
+            self.channel = self.connector.connect(&self.connection).await?;
         }
         self.call_once::<T>(payload, target).await
     }
@@ -154,12 +150,16 @@ impl Client {
         apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
     }
 
+    fn machine_rpc(&self) -> MachineRpcClient<Channel> {
+        MachineRpcClient::new(self.channel.clone())
+    }
+
     pub(crate) async fn exec_stream(
         &self,
         target: &MachineTarget,
         input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.rpc.clone();
+        let mut rpc = self.machine_rpc();
         Ok(rpc
             .exec(target_request(input, Some(target)))
             .await?
@@ -171,7 +171,7 @@ impl Client {
         target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.rpc.clone();
+        let mut rpc = self.machine_rpc();
         Ok(rpc
             .container_logs(target_request(request, Some(target)))
             .await?
@@ -183,7 +183,7 @@ impl Client {
         target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.rpc.clone();
+        let mut rpc = self.machine_rpc();
         Ok(rpc
             .machine_logs(target_request(request, Some(target)))
             .await?
