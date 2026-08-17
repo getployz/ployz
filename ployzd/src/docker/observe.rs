@@ -138,7 +138,7 @@ impl ContainerRuntime {
             .lock()
             .map_err(|_| Error::LocalStorePoisoned)?
             .record()
-            .id;
+            .id();
         let inventory = self.docker.managed_container_ids().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
@@ -159,7 +159,7 @@ impl ContainerRuntime {
             .map_err(|_| Error::LocalStorePoisoned)?
             .record()
             .clone();
-        if local.phase != LocalMachinePhase::Participating || local.id != machine_id {
+        if local.phase() != LocalMachinePhase::Participating || local.id() != machine_id {
             return Ok(());
         }
         let existing = publication.local_containers(&machine_id).await?;

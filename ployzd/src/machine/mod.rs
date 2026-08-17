@@ -34,24 +34,239 @@ const PENDING_RESET_FILE_NAME: &str = ".machine.reset.pending";
 const LOCK_FILE_NAME: &str = ".ployzd.lock";
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// On-disk Local Machine Phase. Each variant owns only that phase's fields.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum LocalMachineBody {
+    Uninitialized {
+        id: MachineId,
+    },
+    Joining {
+        machine: Machine,
+        bootstrap: Vec<Machine>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        min_store_version: BTreeMap<String, i64>,
+    },
+    Participating {
+        machine: Machine,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cluster_network: Option<Ipv4Net>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bootstrap: Vec<Machine>,
+    },
+    Resetting {
+        prior: Box<LocalMachinePrior>,
+    },
+}
+
+/// Live body wrapped by Resetting. Cannot itself be Resetting.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum LocalMachinePrior {
+    Uninitialized {
+        id: MachineId,
+    },
+    Joining {
+        machine: Machine,
+        bootstrap: Vec<Machine>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        min_store_version: BTreeMap<String, i64>,
+    },
+    Participating {
+        machine: Machine,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cluster_network: Option<Ipv4Net>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bootstrap: Vec<Machine>,
+    },
+}
+
+/// Persisted local Machine record: a phase-tagged body plus the key material
+/// every phase requires.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LocalMachineRecord {
-    pub id: MachineId,
-    pub phase: LocalMachinePhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub machine: Option<Machine>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wireguard_private_key: Option<WireGuardPrivateKey>,
+    /// Phase-tagged lifecycle body.
+    pub body: LocalMachineBody,
+    /// WireGuard private key; required in every phase.
+    pub wireguard_private_key: WireGuardPrivateKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cluster_network: Option<Ipv4Net>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bootstrap_machines: Vec<Machine>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub min_store_version: BTreeMap<String, i64>,
+}
+
+static EMPTY_STORE_VERSION: BTreeMap<String, i64> = BTreeMap::new();
+
+impl LocalMachinePrior {
+    fn id(&self) -> MachineId {
+        match self {
+            Self::Uninitialized { id } => *id,
+            Self::Joining { machine, .. } | Self::Participating { machine, .. } => machine.id,
+        }
+    }
+
+    fn machine(&self) -> Option<&Machine> {
+        match self {
+            Self::Uninitialized { .. } => None,
+            Self::Joining { machine, .. } | Self::Participating { machine, .. } => Some(machine),
+        }
+    }
+
+    fn cluster_network(&self) -> Option<Ipv4Net> {
+        match self {
+            Self::Participating {
+                cluster_network, ..
+            } => *cluster_network,
+            Self::Uninitialized { .. } | Self::Joining { .. } => None,
+        }
+    }
+
+    fn bootstrap(&self) -> &[Machine] {
+        match self {
+            Self::Uninitialized { .. } => &[],
+            Self::Joining { bootstrap, .. } | Self::Participating { bootstrap, .. } => bootstrap,
+        }
+    }
+
+    fn min_store_version(&self) -> &BTreeMap<String, i64> {
+        match self {
+            Self::Joining {
+                min_store_version, ..
+            } => min_store_version,
+            Self::Uninitialized { .. } | Self::Participating { .. } => &EMPTY_STORE_VERSION,
+        }
+    }
+}
+
+impl LocalMachineBody {
+    fn id(&self) -> MachineId {
+        match self {
+            Self::Uninitialized { id } => *id,
+            Self::Joining { machine, .. } | Self::Participating { machine, .. } => machine.id,
+            Self::Resetting { prior } => prior.id(),
+        }
+    }
+
+    fn phase(&self) -> LocalMachinePhase {
+        match self {
+            Self::Uninitialized { .. } => LocalMachinePhase::Uninitialized,
+            Self::Joining { .. } => LocalMachinePhase::Joining,
+            Self::Participating { .. } => LocalMachinePhase::Participating,
+            Self::Resetting { .. } => LocalMachinePhase::Resetting,
+        }
+    }
+
+    fn machine(&self) -> Option<&Machine> {
+        match self {
+            Self::Uninitialized { .. } => None,
+            Self::Joining { machine, .. } | Self::Participating { machine, .. } => Some(machine),
+            Self::Resetting { prior } => prior.machine(),
+        }
+    }
+
+    fn cluster_network(&self) -> Option<Ipv4Net> {
+        match self {
+            Self::Participating {
+                cluster_network, ..
+            } => *cluster_network,
+            Self::Resetting { prior } => prior.cluster_network(),
+            Self::Uninitialized { .. } | Self::Joining { .. } => None,
+        }
+    }
+
+    fn bootstrap(&self) -> &[Machine] {
+        match self {
+            Self::Uninitialized { .. } => &[],
+            Self::Joining { bootstrap, .. } | Self::Participating { bootstrap, .. } => bootstrap,
+            Self::Resetting { prior } => prior.bootstrap(),
+        }
+    }
+
+    fn min_store_version(&self) -> &BTreeMap<String, i64> {
+        match self {
+            Self::Joining {
+                min_store_version, ..
+            } => min_store_version,
+            Self::Resetting { prior } => prior.min_store_version(),
+            Self::Uninitialized { .. } | Self::Participating { .. } => &EMPTY_STORE_VERSION,
+        }
+    }
+
+    fn into_prior(self) -> LocalMachinePrior {
+        match self {
+            Self::Uninitialized { id } => LocalMachinePrior::Uninitialized { id },
+            Self::Joining {
+                machine,
+                bootstrap,
+                min_store_version,
+            } => LocalMachinePrior::Joining {
+                machine,
+                bootstrap,
+                min_store_version,
+            },
+            Self::Participating {
+                machine,
+                cluster_network,
+                bootstrap,
+            } => LocalMachinePrior::Participating {
+                machine,
+                cluster_network,
+                bootstrap,
+            },
+            Self::Resetting { .. } => {
+                unreachable!("prepare_reset rejects an already resetting Machine")
+            }
+        }
+    }
+}
+
+impl LocalMachineRecord {
+    /// Durable identity of this local Machine.
+    #[must_use]
+    pub fn id(&self) -> MachineId {
+        self.body.id()
+    }
+
+    /// Local Machine Phase of this record.
+    #[must_use]
+    pub fn phase(&self) -> LocalMachinePhase {
+        self.body.phase()
+    }
+
+    /// Advertised Machine when this phase owns one.
+    #[must_use]
+    pub fn machine(&self) -> Option<&Machine> {
+        self.body.machine()
+    }
+
+    /// Cluster IPv4 pool when this participating Machine has one.
+    #[must_use]
+    pub fn cluster_network(&self) -> Option<Ipv4Net> {
+        self.body.cluster_network()
+    }
+
+    /// Bootstrap Machines persisted for join and catch-up.
+    #[must_use]
+    pub fn bootstrap(&self) -> &[Machine] {
+        self.body.bootstrap()
+    }
+
+    /// Minimum store versions this joiner must reach before participating.
+    #[must_use]
+    pub fn min_store_version(&self) -> &BTreeMap<String, i64> {
+        self.body.min_store_version()
+    }
+
+    fn into_resetting(self) -> Self {
+        Self {
+            body: LocalMachineBody::Resetting {
+                prior: Box::new(self.body.into_prior()),
+            },
+            wireguard_private_key: self.wireguard_private_key,
+            wireguard_mtu: self.wireguard_mtu,
+            selected_endpoints: self.selected_endpoints,
+        }
+    }
 }
 
 pub struct LocalMachineStore {
@@ -130,15 +345,12 @@ impl LocalMachineStore {
                     Err(error) => return Err(error.into()),
                 }
                 let record = LocalMachineRecord {
-                    id: MachineId::random(),
-                    phase: LocalMachinePhase::Uninitialized,
-                    machine: None,
-                    wireguard_private_key: Some(WireGuardPrivateKey::generate()),
+                    body: LocalMachineBody::Uninitialized {
+                        id: MachineId::random(),
+                    },
+                    wireguard_private_key: WireGuardPrivateKey::generate(),
                     wireguard_mtu: None,
-                    cluster_network: None,
-                    bootstrap_machines: Vec::new(),
                     selected_endpoints: BTreeMap::new(),
-                    min_store_version: BTreeMap::new(),
                 };
                 save(&data_dir, &record)?;
                 record
@@ -146,23 +358,12 @@ impl LocalMachineStore {
             Err(error) => return Err(error.into()),
         };
 
-        if matches!(record.phase, LocalMachinePhase::Unrecognized(_)) {
-            return Err(StoreError::InvalidPhase);
-        }
-        if record
-            .machine
-            .as_ref()
-            .is_some_and(|machine| machine.id != record.id)
-        {
-            return Err(StoreError::MachineIdMismatch);
-        }
-
         let mut store = Self {
             data_dir,
             record,
             _lock: lock,
         };
-        if store.record.phase == LocalMachinePhase::Resetting {
+        if store.record.phase() == LocalMachinePhase::Resetting {
             let data_dir = store.data_dir.clone();
             store.complete_reset()?;
             drop(store);
@@ -178,19 +379,25 @@ impl LocalMachineStore {
     }
 
     fn refresh_runtime(&mut self) -> Result<(), StoreError> {
-        let Some(machine) = &self.record.machine else {
-            return Ok(());
-        };
         let runtime = local_runtime();
-        if machine.runtime == runtime {
+        let stale = match &self.record.body {
+            LocalMachineBody::Joining { machine, .. }
+            | LocalMachineBody::Participating { machine, .. } => machine.runtime != runtime,
+            LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+                return Ok(());
+            }
+        };
+        if !stale {
             return Ok(());
         }
         let mut refreshed = self.record.clone();
-        refreshed
-            .machine
-            .as_mut()
-            .expect("Machine presence was checked")
-            .runtime = runtime;
+        match &mut refreshed.body {
+            LocalMachineBody::Joining { machine, .. }
+            | LocalMachineBody::Participating { machine, .. } => machine.runtime = runtime,
+            LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+                return Ok(());
+            }
+        }
         save(&self.data_dir, &refreshed)?;
         self.record = refreshed;
         Ok(())
@@ -202,11 +409,10 @@ impl LocalMachineStore {
     }
 
     pub(crate) fn prepare_reset(&self) -> Result<PreparedReset, StoreError> {
-        if self.record.phase == LocalMachinePhase::Resetting {
+        if self.record.phase() == LocalMachinePhase::Resetting {
             return Err(StoreError::AlreadyResetting);
         }
-        let mut resetting = self.record.clone();
-        resetting.phase = LocalMachinePhase::Resetting;
+        let resetting = self.record.clone().into_resetting();
         write_record(&self.data_dir.join(PENDING_RESET_FILE_NAME), &resetting)?;
         File::open(&self.data_dir)?.sync_all()?;
         Ok(PreparedReset {
@@ -228,14 +434,9 @@ impl LocalMachineStore {
         if advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
-        let private_key = self
-            .record
-            .wireguard_private_key
-            .clone()
-            .ok_or(StoreError::MissingPrivateKey)?;
-        let public_key = private_key.public_key();
+        let public_key = self.record.wireguard_private_key.public_key();
         let machine = Machine {
-            id: self.record.id,
+            id: self.record.id(),
             name,
             subnet: allocate_machine_subnet(cluster_network, [])
                 .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
@@ -246,10 +447,12 @@ impl LocalMachineStore {
             runtime: local_runtime(),
         };
         let mut initialized = self.record.clone();
-        initialized.phase = LocalMachinePhase::Participating;
-        initialized.machine = Some(machine.clone());
+        initialized.body = LocalMachineBody::Participating {
+            machine: machine.clone(),
+            cluster_network: Some(cluster_network),
+            bootstrap: Vec::new(),
+        };
         initialized.wireguard_mtu = wireguard_mtu;
-        initialized.cluster_network = Some(cluster_network);
         save(&self.data_dir, &initialized)?;
         self.record = initialized;
         Ok(machine)
@@ -266,22 +469,17 @@ impl LocalMachineStore {
         if visible_peers.is_empty() {
             return Err(StoreError::MissingPeers);
         }
-        let private_key = self
-            .record
-            .wireguard_private_key
-            .clone()
-            .ok_or(StoreError::MissingPrivateKey)?;
-        if private_key.public_key() != assigned_machine.public_key {
+        if self.record.wireguard_private_key.public_key() != assigned_machine.public_key {
             return Err(StoreError::KeyMismatch);
         }
         assigned_machine.runtime = local_runtime();
         let mut joining = self.record.clone();
-        joining.id = assigned_machine.id;
-        joining.phase = LocalMachinePhase::Joining;
-        joining.machine = Some(assigned_machine);
+        joining.body = LocalMachineBody::Joining {
+            machine: assigned_machine,
+            bootstrap: visible_peers,
+            min_store_version: target_versions,
+        };
         joining.wireguard_mtu = wireguard_mtu;
-        joining.bootstrap_machines = visible_peers;
-        joining.min_store_version = target_versions;
         save(&self.data_dir, &joining)?;
         self.record = joining;
         Ok(())
@@ -292,24 +490,19 @@ impl LocalMachineStore {
         update: MachineUpdate,
         visible: &[Machine],
     ) -> Result<Machine, StoreError> {
-        if self.record.phase != LocalMachinePhase::Participating {
-            return Err(StoreError::NotParticipating);
-        }
-        let machine = self
-            .record
-            .machine
-            .as_ref()
-            .ok_or(StoreError::InvalidPhase)?;
-        let updated = apply_machine_update(machine, visible, update)?;
         let mut record = self.record.clone();
-        record.machine = Some(updated.clone());
+        let LocalMachineBody::Participating { machine, .. } = &mut record.body else {
+            return Err(StoreError::NotParticipating);
+        };
+        let updated = apply_machine_update(machine, visible, update)?;
+        *machine = updated.clone();
         save(&self.data_dir, &record)?;
         self.record = record;
         Ok(updated)
     }
 
     fn require_uninitialized(&self) -> Result<(), StoreError> {
-        if self.record.phase == LocalMachinePhase::Uninitialized {
+        if matches!(self.record.body, LocalMachineBody::Uninitialized { .. }) {
             Ok(())
         } else {
             Err(StoreError::AlreadyInitialized)
@@ -317,12 +510,18 @@ impl LocalMachineStore {
     }
 
     pub fn complete_catch_up(&mut self) -> Result<(), StoreError> {
-        if self.record.phase != LocalMachinePhase::Joining {
-            return Err(StoreError::NotJoining);
-        }
         let mut participating = self.record.clone();
-        participating.phase = LocalMachinePhase::Participating;
-        participating.min_store_version.clear();
+        let LocalMachineBody::Joining {
+            machine, bootstrap, ..
+        } = participating.body
+        else {
+            return Err(StoreError::NotJoining);
+        };
+        participating.body = LocalMachineBody::Participating {
+            machine,
+            cluster_network: None,
+            bootstrap,
+        };
         save(&self.data_dir, &participating)?;
         self.record = participating;
         Ok(())
@@ -341,7 +540,7 @@ impl LocalMachineStore {
     }
 
     pub fn complete_reset(&self) -> Result<(), StoreError> {
-        if self.record.phase != LocalMachinePhase::Resetting {
+        if self.record.phase() != LocalMachinePhase::Resetting {
             return Err(StoreError::NotResetting);
         }
         let persisted: LocalMachineRecord =
@@ -493,12 +692,8 @@ pub enum StoreError {
     Io(#[from] io::Error),
     #[error("local Machine record JSON is invalid: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("local Machine record contains an unrecognized phase")]
-    InvalidPhase,
     #[error("machine is not participating")]
     NotParticipating,
-    #[error("local Machine identity does not match its advertised record")]
-    MachineIdMismatch,
     #[error("machine is already resetting")]
     AlreadyResetting,
     #[error("machine is not resetting")]
@@ -511,8 +706,6 @@ pub enum StoreError {
     MissingEndpoints,
     #[error("at least one visible peer is required to join")]
     MissingPeers,
-    #[error("local WireGuard private key is missing")]
-    MissingPrivateKey,
     #[error("assigned public key does not match this Machine")]
     KeyMismatch,
     #[error("invalid Cluster network: {0}")]
@@ -544,7 +737,7 @@ mod tests {
         let mut store = LocalMachineStore::open(&data_dir).unwrap();
         let prepared = store.prepare_reset().unwrap();
 
-        assert_eq!(store.record().phase, LocalMachinePhase::Uninitialized);
+        assert_eq!(store.record().phase(), LocalMachinePhase::Uninitialized);
         assert!(data_dir.join(PENDING_RESET_FILE_NAME).exists());
         drop(prepared);
         assert!(!data_dir.join(PENDING_RESET_FILE_NAME).exists());
@@ -552,7 +745,7 @@ mod tests {
         let missing = store.prepare_reset().unwrap();
         fs::remove_file(data_dir.join(PENDING_RESET_FILE_NAME)).unwrap();
         assert!(missing.commit(&mut store).is_err());
-        assert_eq!(store.record().phase, LocalMachinePhase::Uninitialized);
+        assert_eq!(store.record().phase(), LocalMachinePhase::Uninitialized);
 
         let prepared = store.prepare_reset().unwrap();
         store
@@ -562,7 +755,7 @@ mod tests {
             )
             .unwrap();
         prepared.commit(&mut store).unwrap();
-        assert_eq!(store.record().phase, LocalMachinePhase::Resetting);
+        assert_eq!(store.record().phase(), LocalMachinePhase::Resetting);
         drop(store);
         fs::remove_dir_all(data_dir).unwrap();
     }

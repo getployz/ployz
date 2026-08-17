@@ -91,7 +91,7 @@ impl MachineService {
         let participating = self
             .local_record()
             .map_err(|error| unavailable(error.message()))?
-            .phase
+            .phase()
             == LocalMachinePhase::Participating;
         if !participating {
             return Err(unavailable("Machine is not participating"));
@@ -117,7 +117,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::DescribeContract>(request)?;
-        let machine_id = self.local_record()?.id;
+        let machine_id = self.local_record()?.id();
         let mut capabilities: BTreeSet<_> =
             CapabilityAdvertisement::Always.capabilities().collect();
         if self.local.containers().is_some() {
@@ -193,7 +193,7 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        let machine_id = self.local_record()?.id;
+        let machine_id = self.local_record()?.id();
         match containers.list_managed(&machine_id).await {
             Ok(observations) => respond(ContainerList {
                 containers: observations,
@@ -211,7 +211,7 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        let machine_id = self.local_record()?.id;
+        let machine_id = self.local_record()?.id();
         match containers
             .inspect_managed(&request.container_id, &machine_id)
             .await
@@ -234,12 +234,11 @@ impl MachineRpc for MachineService {
         };
         let record = self.local_record()?;
         let machine = record
-            .machine
-            .as_ref()
+            .machine()
             .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
         let gateway = machine.subnet.gateway();
         match containers
-            .create(&record.id, gateway, request.kind, &request.resolved_spec)
+            .create(&record.id(), gateway, request.kind, &request.resolved_spec)
             .await
         {
             Ok(created) => respond(created),
@@ -313,7 +312,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::CreateVolume>(request)?;
-        let machine_id = self.local_record()?.id;
+        let machine_id = self.local_record()?.id();
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -329,7 +328,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::ListVolumes>(request)?;
-        let machine_id = self.local_record()?.id;
+        let machine_id = self.local_record()?.id();
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -345,7 +344,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::InspectVolume>(request)?;
-        let machine_id = self.local_record()?.id;
+        let machine_id = self.local_record()?.id();
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -395,10 +394,10 @@ impl MachineRpc for MachineService {
             .map_err(|error| Status::unavailable(error.message))?;
         let record = self.local_record()?;
         let machine = record
-            .machine
+            .machine()
             .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
         containers
-            .container_logs(&record.id, &machine.name, request)
+            .container_logs(&record.id(), &machine.name, request)
             .await
             .map(Response::new)
     }
@@ -411,13 +410,14 @@ impl MachineRpc for MachineService {
             op::MachineLogs::from_request_body(request_body(request)?).map_err(invalid_request)?;
         let record = self.local_record()?;
         let machine = record
-            .machine
+            .machine()
+            .cloned()
             .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
         let metadata = LogMetadata {
             origin: LogOrigin::Machine {
                 service: request.service,
             },
-            machine_id: record.id,
+            machine_id: record.id(),
             machine_name: machine.name,
         };
         let source = match request.service {
@@ -500,9 +500,8 @@ impl MachineRpc for MachineService {
         expect::<op::EnsureImageIngest>(request)?;
         let record = self.local_record()?;
         let Some(machine) = record
-            .machine
-            .as_ref()
-            .filter(|_| record.phase == LocalMachinePhase::Participating)
+            .machine()
+            .filter(|_| record.phase() == LocalMachinePhase::Participating)
         else {
             return respond(
                 ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
@@ -724,7 +723,6 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::NotParticipating => RpcErrorCode::Conflict,
         StoreError::MissingEndpoints
         | StoreError::MissingPeers
-        | StoreError::MissingPrivateKey
         | StoreError::KeyMismatch
         | StoreError::InvalidNetwork(_) => RpcErrorCode::InvalidArgument,
         StoreError::MachineUpdate(ployz_core::MachineUpdateError::DuplicateName) => {
@@ -735,8 +733,6 @@ fn store_error(error: StoreError) -> RpcError {
         }
         StoreError::Io(_)
         | StoreError::Json(_)
-        | StoreError::InvalidPhase
-        | StoreError::MachineIdMismatch
         | StoreError::NotResetting
         | StoreError::NotJoining
         | StoreError::AlreadyRunning(_)

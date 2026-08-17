@@ -33,7 +33,7 @@ async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
     let store = Arc::new(Mutex::new(
         LocalMachineStore::open(root.join("data")).unwrap(),
     ));
-    let machine_id = store.lock().unwrap().record().id;
+    let machine_id = store.lock().unwrap().record().id();
     let (reset, _) = watch::channel(false);
     let service = MachineService::new(store, reset);
     let tcp = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();

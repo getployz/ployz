@@ -33,7 +33,7 @@ use crate::{
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
-    machine::{LocalMachineStore, StoreError},
+    machine::{LocalMachineBody, LocalMachineStore, StoreError},
     metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
     proxy::MachineProxy,
@@ -111,6 +111,9 @@ impl Daemon {
             .map_err(|_| Error::StorePoisoned)?
             .record()
             .clone();
+        let local_id = local_record.id();
+        let local_phase = local_record.phase();
+        let local_machine = local_record.machine().cloned();
         let mut network = NetworkPlane::start(&local_record).await?;
         let machine_api_listeners = if config.machine_api_address.is_none()
             && let Some(network) = &network
@@ -157,7 +160,7 @@ impl Daemon {
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
         let (participating, participating_rx) =
-            watch::channel(local_record.phase == LocalMachinePhase::Participating);
+            watch::channel(local_phase == LocalMachinePhase::Participating);
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
@@ -179,7 +182,7 @@ impl Daemon {
         .with_image_ingest(Arc::clone(&ingest));
         let proxy = MachineProxy::new(
             Routes::new(MachineRpcServer::new(service)),
-            local_record.id,
+            local_id,
             MACHINE_API_PORT,
             replicated_store.clone(),
         );
@@ -252,7 +255,7 @@ impl Daemon {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                match (local_record.machine.clone(), replicated_store.clone()) {
+                match (local_machine.clone(), replicated_store.clone()) {
                     (Some(machine), Some(replicated)) => {
                         dns::run(machine, replicated, dns_upstreams, shutdown.clone()).await
                     }
@@ -266,7 +269,7 @@ impl Daemon {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                match (local_record.machine.clone(), replicated_store.clone()) {
+                match (local_machine.clone(), replicated_store.clone()) {
                     (Some(machine), Some(replicated)) => {
                         caddy::run(
                             machine,
@@ -293,7 +296,7 @@ impl Daemon {
                             replicated,
                             certificate_data_dir,
                             acme_directory,
-                            local_record.id,
+                            local_id,
                             shutdown.clone(),
                         )
                         .await
@@ -324,7 +327,7 @@ impl Daemon {
             return Err(error.into());
         }
         tracing::info!(
-            phase = local_record.phase.as_str(),
+            phase = local_phase.as_str(),
             version = env!("CARGO_PKG_VERSION"),
             "started"
         );
@@ -380,7 +383,7 @@ impl Daemon {
         };
         notify(NotifyState::Stopping);
         let resetting = match self.store.lock() {
-            Ok(store) => store.record().phase == LocalMachinePhase::Resetting,
+            Ok(store) => store.record().phase() == LocalMachinePhase::Resetting,
             Err(_) => {
                 errors.push("local Machine record lock poisoned".into());
                 false
@@ -520,22 +523,23 @@ async fn start_corrosion(
         .map_err(|_| Error::StorePoisoned)?
         .record()
         .clone();
-    let phase = record.phase;
-    if !matches!(
-        phase,
-        LocalMachinePhase::Joining | LocalMachinePhase::Participating
-    ) {
-        return Ok(None);
-    }
-    let Some(machine) = record.machine else {
-        return Ok(None);
+    let (machine, bootstrap) = match record.body {
+        LocalMachineBody::Joining {
+            machine, bootstrap, ..
+        }
+        | LocalMachineBody::Participating {
+            machine, bootstrap, ..
+        } => (machine, bootstrap),
+        LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+            return Ok(None);
+        }
     };
     let run_dir = config
         .socket
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
         .join("corrosion");
-    let bootstrap = record.bootstrap_machines.iter().map(|machine| {
+    let bootstrap = bootstrap.iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address.0),
             CORROSION_GOSSIP_PORT,

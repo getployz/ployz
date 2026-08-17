@@ -129,19 +129,15 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Store`] when the WireGuard private key is missing,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned,
     /// [`Error::Network`] when endpoint discovery fails, [`Error::Cluster`]
     /// when store version or RTT lookup fails, and [`Error::ClusterUnavailable`]
     /// when RTTs are requested without a Cluster.
     pub async fn inspect(&self, request: InspectRequest) -> Result<MachineDetails, Error> {
         let record = self.record()?;
-        let Some(private_key) = record.wireguard_private_key.as_ref() else {
-            return Err(StoreError::MissingPrivateKey.into());
-        };
         let advertised_endpoints = if !request.advertised_endpoints.is_empty() {
             request.advertised_endpoints
-        } else if let Some(machine) = &record.machine {
+        } else if let Some(machine) = record.machine() {
             machine.advertised_endpoints.clone()
         } else {
             discover_network(
@@ -157,17 +153,17 @@ impl LocalMachine {
             Some(cluster) => cluster.replicated.version().await?,
             None => BTreeMap::new(),
         };
-        let rtts = if request.include_rtts && record.phase == LocalMachinePhase::Participating {
+        let rtts = if request.include_rtts && record.phase() == LocalMachinePhase::Participating {
             let cluster = self.cluster.as_ref().ok_or(Error::ClusterUnavailable)?;
             machine_rtts(&cluster.admin, &cluster.replicated).await?
         } else {
             Vec::new()
         };
         Ok(MachineDetails {
-            id: record.id,
-            phase: record.phase,
-            machine: record.machine,
-            public_key: private_key.public_key(),
+            id: record.id(),
+            phase: record.phase(),
+            machine: record.machine().cloned(),
+            public_key: record.wireguard_private_key.public_key(),
             advertised_endpoints,
             store_version,
             rtts,
@@ -178,14 +174,11 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Store`] when the WireGuard private key is missing,
-    /// [`Error::LockPoisoned`] when the local record lock is poisoned, and
-    /// [`Error::Network`] when endpoint discovery fails.
+    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
+    /// and [`Error::Network`] when endpoint discovery fails.
     pub async fn machine_token(&self, request: MachineTokenRequest) -> Result<MachineToken, Error> {
         let record = self.record()?;
-        let Some(private_key) = record.wireguard_private_key else {
-            return Err(StoreError::MissingPrivateKey.into());
-        };
+        let private_key = record.wireguard_private_key;
         let discovered = discover_network(request.wireguard_port, request.public_ip).await?;
         Ok(MachineToken {
             public_key: private_key.public_key(),
@@ -272,7 +265,7 @@ impl LocalMachine {
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
         }
-        if self.record()?.phase != LocalMachinePhase::Participating {
+        if self.record()?.phase() != LocalMachinePhase::Participating {
             return Err(Error::NotParticipating);
         }
         let replicated = self.replicated()?;
@@ -331,8 +324,7 @@ impl LocalMachine {
         )?;
         let machine = store
             .record()
-            .machine
-            .as_ref()
+            .machine()
             .expect("join persisted the assigned Machine");
         tracing::info!(
             name = machine.name.as_str(),
@@ -354,7 +346,7 @@ impl LocalMachine {
     /// poisoned, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn list_machines(&self) -> Result<MachineList, Error> {
         let local = self.record()?;
-        if local.phase != LocalMachinePhase::Participating {
+        if local.phase() != LocalMachinePhase::Participating {
             return Err(Error::NotParticipating);
         }
         let replicated = self.replicated()?;
@@ -372,7 +364,7 @@ impl LocalMachine {
                 IpAddr::V4(_) => None,
             })
             .collect();
-        let mut observations = synthesize_membership(machines, &local.id, &states);
+        let mut observations = synthesize_membership(machines, &local.id(), &states);
         for observation in &mut observations {
             observation.selected_endpoint = local
                 .selected_endpoints
@@ -423,7 +415,7 @@ impl LocalMachine {
             .remove_machine(&request.machine_id)
             .await?;
         let local = self.record()?;
-        if local.id == request.machine_id && local.phase == LocalMachinePhase::Resetting {
+        if local.id() == request.machine_id && local.phase() == LocalMachinePhase::Resetting {
             self.restart.send_replace(true);
         }
         Ok(MachineRemoved {})
@@ -443,13 +435,13 @@ impl LocalMachine {
         &self,
         request: RemoveLocalMachineRequest,
     ) -> Result<LocalMachineRemoved, Error> {
-        let machine_id = self.record()?.id;
+        let machine_id = self.record()?.id();
         let replicated = self.replicated()?;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let publication = replicated.machine_publication().await;
         let prepared_reset = {
             let store = self.lock_store()?;
-            if store.record().phase == LocalMachinePhase::Resetting {
+            if store.record().phase() == LocalMachinePhase::Resetting {
                 None
             } else {
                 Some(store.prepare_reset()?)

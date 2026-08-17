@@ -30,7 +30,7 @@ use super::{
 };
 use crate::{
     corrosion::{ReplicatedObservations, ReplicatedStore},
-    machine::{LocalMachineRecord, LocalMachineStore},
+    machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore},
 };
 
 const NETWORK_MTU: u32 = 1420;
@@ -90,19 +90,18 @@ pub struct NetworkPlane {
 
 impl NetworkPlane {
     pub async fn start(record: &LocalMachineRecord) -> Result<Option<Self>, NetworkError> {
-        if !matches!(
-            record.phase,
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating
-        ) {
-            return Ok(None);
-        }
-        let Some(machine) = record.machine.clone() else {
-            return Ok(None);
+        let (machine, bootstrap) = match &record.body {
+            LocalMachineBody::Joining {
+                machine, bootstrap, ..
+            }
+            | LocalMachineBody::Participating {
+                machine, bootstrap, ..
+            } => (machine.clone(), bootstrap.as_slice()),
+            LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+                return Ok(None);
+            }
         };
-        let private_key = record
-            .wireguard_private_key
-            .clone()
-            .ok_or(NetworkError::MissingPrivateKey)?;
+        let private_key = record.wireguard_private_key.clone();
         if private_key.public_key() != machine.public_key {
             return Err(NetworkError::KeyMismatch);
         }
@@ -115,7 +114,7 @@ impl NetworkPlane {
         wireguard.create_interface()?;
         let now = SystemTime::now();
         let (peers, _) = attach_peer_selections(
-            peers_for(&machine.id, &record.bootstrap_machines),
+            peers_for(&machine.id, bootstrap),
             Vec::new(),
             &record.selected_endpoints,
             now,
@@ -181,7 +180,7 @@ impl NetworkPlane {
                         .lock()
                         .map_err(|_| io::Error::other("local Machine record lock poisoned"))?
                         .record()
-                        .phase
+                        .phase()
                         == LocalMachinePhase::Resetting;
                     if resetting {
                         self.cleanup().await.map_err(io::Error::other)?;
@@ -266,7 +265,7 @@ impl NetworkPlane {
                 .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
             (
                 local.record().selected_endpoints.clone(),
-                local.record().phase == LocalMachinePhase::Joining,
+                local.record().phase() == LocalMachinePhase::Joining,
             )
         };
         let now = SystemTime::now();

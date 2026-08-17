@@ -18,7 +18,8 @@ use super::{
     ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
     run_machine_publisher, wait_for_catch_up,
 };
-use crate::machine::{LocalMachineRecord, LocalMachineStore};
+use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
+use crate::network::WireGuardPrivateKey;
 
 #[tokio::test]
 #[ignore = "requires Docker and the pinned Corrosion image"]
@@ -156,19 +157,18 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     write_record(
         &local_dir,
         &LocalMachineRecord {
-            id: published.id,
-            phase: LocalMachinePhase::Joining,
-            machine: Some(published.clone()),
-            wireguard_private_key: None,
+            body: LocalMachineBody::Joining {
+                machine: published.clone(),
+                bootstrap: Vec::new(),
+                min_store_version: store.version().await.unwrap(),
+            },
+            wireguard_private_key: WireGuardPrivateKey::generate(),
             wireguard_mtu: None,
-            cluster_network: None,
-            bootstrap_machines: Vec::new(),
             selected_endpoints: BTreeMap::new(),
-            min_store_version: store.version().await.unwrap(),
         },
     );
     let local = Arc::new(Mutex::new(LocalMachineStore::open(&local_dir).unwrap()));
-    let published = local.lock().unwrap().record().machine.clone().unwrap();
+    let published = local.lock().unwrap().record().machine().cloned().unwrap();
     let shutdown = CancellationToken::new();
     let (participating, participating_rx) = tokio::sync::watch::channel(false);
     let publisher = tokio::spawn(run_machine_publisher(
@@ -191,8 +191,8 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     publisher.await.unwrap().unwrap();
     let persisted: LocalMachineRecord =
         serde_json::from_slice(&fs::read(local_dir.join("machine.json")).unwrap()).unwrap();
-    assert_eq!(persisted.phase, LocalMachinePhase::Participating);
-    assert!(persisted.min_store_version.is_empty());
+    assert_eq!(persisted.phase(), LocalMachinePhase::Participating);
+    assert!(persisted.min_store_version().is_empty());
     assert!(*participating_rx.borrow());
 
     let interrupted_dir = root.0.join("interrupted-machine");
@@ -200,15 +200,14 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     write_record(
         &interrupted_dir,
         &LocalMachineRecord {
-            id: MachineId::random(),
-            phase: LocalMachinePhase::Joining,
-            machine: None,
-            wireguard_private_key: None,
+            body: LocalMachineBody::Joining {
+                machine: machine("interrupted", 4),
+                bootstrap: Vec::new(),
+                min_store_version: target.clone(),
+            },
+            wireguard_private_key: WireGuardPrivateKey::generate(),
             wireguard_mtu: None,
-            cluster_network: None,
-            bootstrap_machines: Vec::new(),
             selected_endpoints: BTreeMap::new(),
-            min_store_version: target.clone(),
         },
     );
     let interrupted = Arc::new(Mutex::new(
@@ -230,8 +229,8 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     publisher.await.unwrap().unwrap();
     let persisted: LocalMachineRecord =
         serde_json::from_slice(&fs::read(interrupted_dir.join("machine.json")).unwrap()).unwrap();
-    assert_eq!(persisted.phase, LocalMachinePhase::Joining);
-    assert_eq!(persisted.min_store_version, target);
+    assert_eq!(persisted.phase(), LocalMachinePhase::Joining);
+    assert_eq!(persisted.min_store_version(), &target);
     assert!(!*participating_rx.borrow());
 
     running.cleanup().await.unwrap();
