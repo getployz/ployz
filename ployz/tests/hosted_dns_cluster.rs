@@ -258,9 +258,9 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
 async fn hosted_dns_wildcard_follows_machine_membership() {
-    let plan = ClusterPlan::new(&format!("l3-dns-member-{}", process::id()), 2).unwrap();
+    let plan = ClusterPlan::new(&format!("l3-dns-member-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();
-    let machines = cluster.initialize_two().await.unwrap();
+    let machines = cluster.initialize_three().await.unwrap();
     let direct = cluster.api_address(0).unwrap();
     for index in 0..machines.len() {
         poison_production_dns(&cluster, index);
@@ -268,32 +268,25 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
 
     let first_ip = outer_ipv4(&cluster, 0);
     let second_ip = outer_ipv4(&cluster, 1);
-    cluster
-        .update_machine(
-            0,
-            machines[0].id.as_str(),
-            MachineUpdate {
-                public_ip: PublicIpUpdate::Set(IpAddr::V4(first_ip)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    cluster
-        .update_machine(
-            0,
-            machines[1].id.as_str(),
-            MachineUpdate {
-                public_ip: PublicIpUpdate::Set(IpAddr::V4(second_ip)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+    let third_ip = outer_ipv4(&cluster, 2);
+    for (machine, address) in machines.iter().zip([first_ip, second_ip, third_ip]) {
+        cluster
+            .update_machine(
+                0,
+                machine.id.as_str(),
+                MachineUpdate {
+                    public_ip: PublicIpUpdate::Set(IpAddr::V4(address)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
 
     cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
     wait_exact_caddy(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
     wait_exact_caddy(IpAddr::V4(second_ip), machines[1].id.as_str().as_bytes()).await;
+    wait_exact_caddy(IpAddr::V4(third_ip), machines[2].id.as_str().as_bytes()).await;
 
     let (port, hosted) = fake_hosted_service().await;
     let gateway = cluster
@@ -306,7 +299,11 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
     );
     assert_eq!(
         authoritative_wildcard_a(&hosted.requests()),
-        vec![first_ip.to_string(), second_ip.to_string()],
+        vec![
+            first_ip.to_string(),
+            second_ip.to_string(),
+            third_ip.to_string()
+        ],
     );
 
     let mut client = ployz::connect::connect(
@@ -329,7 +326,11 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
     );
     assert_eq!(
         authoritative_wildcard_a(&after_add_refresh),
-        vec![first_ip.to_string(), second_ip.to_string()],
+        vec![
+            first_ip.to_string(),
+            second_ip.to_string(),
+            third_ip.to_string()
+        ],
         "last published * A at the authority must include a Machine that passes the Caddy probe"
     );
 
@@ -342,7 +343,7 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
     assert_eq!(record_requests(&after_remove).len(), before_remove + 1);
     assert_eq!(
         authoritative_wildcard_a(&after_remove),
-        vec![first_ip.to_string()],
+        vec![first_ip.to_string(), third_ip.to_string()],
         "last published * A at the authority must not include the removed Machine"
     );
 }

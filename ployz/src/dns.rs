@@ -7,7 +7,7 @@ use std::{
 
 use ployz_core::{
     CADDY_VERIFY_PATH, ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
-    HttpProtocol, IngressHost, IngressHostname, InspectRequest, Machine, MachineId, MachineTarget,
+    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, MachineObservation,
     PortPublication, RequestedServiceSpec, cluster_dns_verdict, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::{
     caddy::SERVICE_NAME,
-    connect::{Client, ConnectError, TARGET_RPC_TIMEOUT},
+    connect::{Client, ConnectError},
 };
 
 const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -24,12 +24,6 @@ const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum Error {
     #[error(transparent)]
     Connect(#[from] ConnectError),
-    #[error("inspect Caddy Machine {machine_id}: {source}")]
-    Inspect {
-        machine_id: MachineId,
-        #[source]
-        source: ConnectError,
-    },
     #[error("build hosted-DNS reachability client: {0}")]
     Http(#[from] reqwest::Error),
     #[error(transparent)]
@@ -57,6 +51,11 @@ fn protocol_label(protocol: &HttpProtocol) -> &'static str {
     }
 }
 
+/// Publish Caddy wildcard records when a Cluster domain is reserved.
+///
+/// # Errors
+///
+/// Returns a connection, hosted-DNS, or reachability error from the Caddy refresh.
 pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error> {
     match client.domain_if_reserved().await? {
         Some(_) => update_records_for_caddy(client).await,
@@ -64,8 +63,41 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
     }
 }
 
+/// Publish remaining member public IPs after a Machine leaves.
+///
+/// Uses the pre-removal membership snapshot so refresh does not Inspect over a
+/// reconverging mesh. Caddy filtering would need that mesh, so this path keeps
+/// every remaining public IP.
+///
+/// # Errors
+///
+/// Returns a connection or hosted-DNS error. An unreserved domain is success.
+pub(crate) async fn update_records_after_removal(
+    client: &mut Client,
+    members: Vec<MachineObservation>,
+    removed: &MachineId,
+) -> Result<(), Error> {
+    if client.domain_if_reserved().await?.is_none() {
+        return Ok(());
+    }
+    let remaining = remaining_members(
+        members.into_iter().map(|observation| observation.machine),
+        removed,
+    );
+    if remaining.is_empty() {
+        return Ok(());
+    }
+    publish_records(client, records_from_machines(&remaining)?).await
+}
+
+/// Publish wildcard records for reachable Caddy Machines.
+///
+/// # Errors
+///
+/// Returns a connection, hosted-DNS, or [`NoReachableMachines`] error.
 pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> {
-    let live = client.live_services().await?;
+    let observations = client.machines().await?;
+    let live = client.live_services_from(&observations).await?;
     let caddy_machines = live
         .services
         .iter()
@@ -77,40 +109,36 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
         return Ok(());
     }
 
-    let mut machines = Vec::new();
-    for machine_id in caddy_machines {
-        let target = MachineTarget::from(&machine_id);
-        let details = client
-            .invoke::<op::Inspect>(InspectRequest::default(), &target, Some(TARGET_RPC_TIMEOUT))
-            .await
-            .map_err(|source| Error::Inspect {
-                machine_id,
-                source: ConnectError::Remote(source),
-            })?;
-        let machine = details.machine.ok_or_else(|| Error::Inspect {
-            machine_id,
-            source: ConnectError::MissingMachineDetails,
-        })?;
-        if machine.public_ip.is_some() {
-            machines.push(machine);
-        }
-    }
+    // ponytail: ListMachines already has public_ip; Inspect during mesh reconvergence is how #248 fails
+    let machines = observations
+        .into_iter()
+        .map(|observation| observation.machine)
+        .filter(|machine| caddy_machines.contains(&machine.id) && machine.public_ip.is_some())
+        .collect::<Vec<_>>();
+    let records = records_from_machines(&probe_machines(machines).await?)?;
+    publish_records(client, records).await
+}
 
+async fn probe_machines(machines: Vec<Machine>) -> Result<Vec<Machine>, Error> {
     let http = HttpClient::builder()
         .no_proxy()
         .redirect(Policy::none())
         .timeout(REACHABILITY_TIMEOUT)
         .build()
         .map_err(Error::from)?;
-    let reachable = futures_util::future::join_all(machines.into_iter().map(|machine| {
-        let http = &http;
-        async move { probe_machine(http, &machine).await.then_some(machine) }
-    }))
-    .await
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    let records = records_from_machines(&reachable)?;
+    Ok(
+        futures_util::future::join_all(machines.into_iter().map(|machine| {
+            let http = &http;
+            async move { probe_machine(http, &machine).await.then_some(machine) }
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect(),
+    )
+}
+
+async fn publish_records(client: &mut Client, records: Vec<DnsRecord>) -> Result<(), Error> {
     client
         .call::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
         .await
@@ -137,6 +165,16 @@ async fn probe_machine(http: &HttpClient, machine: &Machine) -> bool {
 
 fn reachability_matches(machine_id: &MachineId, status: u16, body: Option<&[u8]>) -> bool {
     status == 200 && body == Some(machine_id.as_str().as_bytes())
+}
+
+fn remaining_members(
+    members: impl IntoIterator<Item = Machine>,
+    removed: &MachineId,
+) -> Vec<Machine> {
+    members
+        .into_iter()
+        .filter(|machine| machine.id != *removed && machine.public_ip.is_some())
+        .collect()
 }
 
 fn records_from_machines(machines: &[Machine]) -> Result<Vec<DnsRecord>, NoReachableMachines> {
@@ -369,7 +407,7 @@ mod tests {
 
     use super::{
         DomainRequired, NoReachableMachines, expand_ingress_ports, ingress_dns_warnings,
-        reachability_matches, records_from_machines, resolve_ingress_addresses,
+        reachability_matches, records_from_machines, remaining_members, resolve_ingress_addresses,
     };
 
     #[test]
@@ -409,6 +447,27 @@ mod tests {
             ]
         );
         assert_eq!(records_from_machines(&[]), Err(NoReachableMachines));
+    }
+
+    #[test]
+    fn remaining_members_drop_the_removed_machine_from_a_three_machine_wildcard() {
+        let remaining = remaining_members(
+            [
+                machine('1', "192.0.2.1"),
+                machine('2', "198.51.100.1"),
+                machine('3', "203.0.113.1"),
+            ],
+            &MachineId::parse("2".repeat(32)).unwrap(),
+        );
+        let records = records_from_machines(&remaining).unwrap();
+        assert_eq!(
+            records,
+            vec![DnsRecord {
+                name: "*".into(),
+                record_type: DnsRecordType::A,
+                values: vec!["192.0.2.1".into(), "203.0.113.1".into()],
+            }]
+        );
     }
 
     #[test]
