@@ -217,6 +217,15 @@ configs:
     assert_eq!(api.volumes().len(), 3);
     assert!(api.volumes().iter().any(|volume| matches!(
         &volume.source,
+        VolumeSource::Bind {
+            create_machine_path: true,
+            propagation: Some(ployz_core::BindPropagation::Rprivate),
+            recursive: Some(ployz_core::BindRecursive::Disabled),
+            ..
+        }
+    )));
+    assert!(api.volumes().iter().any(|volume| matches!(
+        &volume.source,
         VolumeSource::Named { name, no_copy: true, subpath: Some(subpath), .. }
             if name.as_str() == "data" && subpath == "current"
     )));

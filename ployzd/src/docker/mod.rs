@@ -531,8 +531,6 @@ pub enum Error {
     ContainerNotFound(ContainerId),
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
-    #[error("invalid bind propagation: {0}")]
-    InvalidMountPropagation(String),
     #[error("container duration exceeds Docker's range")]
     DurationOverflow,
     #[error("container size exceeds Docker's range")]
@@ -562,7 +560,6 @@ impl Error {
                 ..
             }) => RpcErrorCode::Conflict,
             Self::MissingPreDeployHook
-            | Self::InvalidMountPropagation(_)
             | Self::DurationOverflow
             | Self::SizeOverflow
             | Self::InvalidContainerConfig(_)
@@ -883,6 +880,56 @@ mod tests {
                 ),
                 expected
             );
+        }
+
+        for (propagation, expected) in [
+            (
+                ployz_core::BindPropagation::Private,
+                Some(bollard::models::MountBindOptionsPropagationEnum::PRIVATE),
+            ),
+            (
+                ployz_core::BindPropagation::Rprivate,
+                Some(bollard::models::MountBindOptionsPropagationEnum::RPRIVATE),
+            ),
+            (
+                ployz_core::BindPropagation::Shared,
+                Some(bollard::models::MountBindOptionsPropagationEnum::SHARED),
+            ),
+            (
+                ployz_core::BindPropagation::Rshared,
+                Some(bollard::models::MountBindOptionsPropagationEnum::RSHARED),
+            ),
+            (
+                ployz_core::BindPropagation::Slave,
+                Some(bollard::models::MountBindOptionsPropagationEnum::SLAVE),
+            ),
+            (
+                ployz_core::BindPropagation::Rslave,
+                Some(bollard::models::MountBindOptionsPropagationEnum::RSLAVE),
+            ),
+        ] {
+            let mut propagation_spec = spec.clone();
+            let mut volumes = propagation_spec.volume_graph.volumes().to_vec();
+            let mounts = propagation_spec.volume_graph.mounts().to_vec();
+            let ployz_core::VolumeSource::Bind {
+                propagation: setting,
+                ..
+            } = &mut volumes
+                .first_mut()
+                .expect("fixture has a bind volume")
+                .source
+            else {
+                panic!("expected bind volume")
+            };
+            *setting = Some(propagation);
+            propagation_spec.volume_graph =
+                ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+            let translated = docker_mounts(&propagation_spec.volume_graph)
+                .unwrap()
+                .remove(0)
+                .bind_options
+                .unwrap();
+            assert_eq!(translated.propagation, expected);
         }
         assert_eq!(named_mount.typ, Some(MountType::VOLUME));
         assert_eq!(named_mount.source.as_deref(), Some("database"));

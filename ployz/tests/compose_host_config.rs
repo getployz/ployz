@@ -27,6 +27,10 @@ fn compose_rejects_invalid_restart_pid_and_bind_recursive() {
             "services: {app: {image: app, volumes: [{type: bind, source: /srv, target: /host, bind: {recursive: enabled}}]}}",
             "bind recursive",
         ),
+        (
+            "services: {app: {image: app, volumes: [{type: bind, source: /srv, target: /host, bind: {propagation: enabled}}]}}",
+            "bind propagation",
+        ),
     ] {
         let error = parse_normalized(yaml, ".").unwrap_err().to_string();
         assert!(
@@ -47,6 +51,22 @@ fn compose_maps_bind_recursive_disabled() {
         &volume.source,
         VolumeSource::Bind {
             recursive: Some(ployz_core::BindRecursive::Disabled),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn compose_maps_bind_propagation_rprivate() {
+    let project = parse_normalized(
+        "services: {app: {image: app, volumes: [{type: bind, source: /srv, target: /host, bind: {propagation: rprivate}}]}}",
+        ".",
+    )
+    .unwrap();
+    assert!(app(&project).volumes().iter().any(|volume| matches!(
+        &volume.source,
+        VolumeSource::Bind {
+            propagation: Some(ployz_core::BindPropagation::Rprivate),
             ..
         }
     )));

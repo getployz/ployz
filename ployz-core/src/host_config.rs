@@ -72,6 +72,37 @@ impl FromStr for BindRecursive {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindPropagation {
+    Private,
+    Rprivate,
+    Shared,
+    Rshared,
+    Slave,
+    Rslave,
+}
+
+impl FromStr for BindPropagation {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "private" => Ok(Self::Private),
+            "rprivate" => Ok(Self::Rprivate),
+            "shared" => Ok(Self::Shared),
+            "rshared" => Ok(Self::Rshared),
+            "slave" => Ok(Self::Slave),
+            "rslave" => Ok(Self::Rslave),
+            _ => Err(ValueError::new(
+                "bind propagation",
+                value,
+                "private, rprivate, shared, rshared, slave, or rslave",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum PidMode {
@@ -171,5 +202,24 @@ mod tests {
             BindRecursive::Writable
         );
         assert!(serde_json::from_value::<BindRecursive>(json!("enabled")).is_err());
+    }
+
+    #[test]
+    fn bind_propagation_accepts_docker_modes_and_rejects_unknown_strings() {
+        assert_eq!(
+            serde_json::from_value::<BindPropagation>(json!("rprivate")).unwrap(),
+            BindPropagation::Rprivate
+        );
+        assert_eq!("private".parse(), Ok(BindPropagation::Private));
+        assert_eq!("shared".parse(), Ok(BindPropagation::Shared));
+        assert_eq!("rshared".parse(), Ok(BindPropagation::Rshared));
+        assert_eq!("slave".parse(), Ok(BindPropagation::Slave));
+        assert_eq!("rslave".parse(), Ok(BindPropagation::Rslave));
+        for invalid in ["", "enabled", "unbindable", "r_private"] {
+            assert!(
+                invalid.parse::<BindPropagation>().is_err(),
+                "{invalid} should be rejected"
+            );
+        }
     }
 }

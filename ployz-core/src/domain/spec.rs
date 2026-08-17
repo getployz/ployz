@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
-    BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, IngressHost, MachinePath,
-    MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
-    ValueError,
+    BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, IngressHost,
+    MachinePath, MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceName,
+    ServiceVolumeReference, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -94,7 +94,7 @@ pub enum VolumeSource {
         #[serde(default)]
         create_machine_path: bool,
         #[serde(default)]
-        propagation: Option<String>,
+        propagation: Option<BindPropagation>,
         #[serde(default)]
         recursive: Option<BindRecursive>,
     },

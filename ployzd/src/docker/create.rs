@@ -5,13 +5,13 @@ use std::{
 
 use bollard::models::{
     ContainerCreateBody, DeviceMapping as DockerDeviceMapping, DeviceRequest, HealthConfig,
-    HostConfig, HostConfigLogConfig, Mount, MountBindOptions, MountTmpfsOptions, MountType,
-    MountVolumeOptions, MountVolumeOptionsDriverConfig, PortBinding, PortMap, ResourcesUlimits,
-    RestartPolicy, RestartPolicyNameEnum,
+    HostConfig, HostConfigLogConfig, Mount, MountBindOptions, MountBindOptionsPropagationEnum,
+    MountTmpfsOptions, MountType, MountVolumeOptions, MountVolumeOptionsDriverConfig, PortBinding,
+    PortMap, ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
-    BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec, HostBind,
-    MachineGateway, MachineId, PortPublication, ResolvedServiceSpec, ServiceVolumeGraph,
+    BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
+    HostBind, MachineGateway, MachineId, PortPublication, ResolvedServiceSpec, ServiceVolumeGraph,
     TransportProtocol, VolumeSource,
 };
 
@@ -311,11 +311,14 @@ pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Er
                             None => (None, None, None),
                         };
                     translated.bind_options = Some(MountBindOptions {
-                        propagation: propagation
-                            .as_deref()
-                            .map(str::parse)
-                            .transpose()
-                            .map_err(Error::InvalidMountPropagation)?,
+                        propagation: propagation.map(|propagation| match propagation {
+                            BindPropagation::Private => MountBindOptionsPropagationEnum::PRIVATE,
+                            BindPropagation::Rprivate => MountBindOptionsPropagationEnum::RPRIVATE,
+                            BindPropagation::Shared => MountBindOptionsPropagationEnum::SHARED,
+                            BindPropagation::Rshared => MountBindOptionsPropagationEnum::RSHARED,
+                            BindPropagation::Slave => MountBindOptionsPropagationEnum::SLAVE,
+                            BindPropagation::Rslave => MountBindOptionsPropagationEnum::RSLAVE,
+                        }),
                         create_mountpoint: create_machine_path.then_some(true),
                         non_recursive,
                         read_only_non_recursive,
