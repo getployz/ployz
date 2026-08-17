@@ -6,7 +6,7 @@ use std::{
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ExecConfig, ExecOptions, ExecRequestFrame,
-    ExecResponseFrame, LogEntry, LogStream, LogsOptions, MachineId, MachineName, MachineRpcClient,
+    ExecResponseFrame, LogBody, LogEntry, LogsOptions, MachineId, MachineName, MachineRpcClient,
     MachineRpcServer, OpaquePayload, op,
 };
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
@@ -165,12 +165,12 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     assert_eq!(
         entries
             .iter()
-            .filter(|entry| matches!(entry.stream, LogStream::Stdout | LogStream::Stderr))
-            .map(|entry| (entry.stream, entry.message.clone()))
+            .filter(|entry| matches!(entry.body, LogBody::Stdout(_) | LogBody::Stderr(_)))
+            .map(|entry| entry.body.clone())
             .collect::<Vec<_>>(),
         [
-            (LogStream::Stdout, b"container-out\n".to_vec()),
-            (LogStream::Stderr, b"container-err\n".to_vec()),
+            LogBody::Stdout(b"container-out\n".to_vec()),
+            LogBody::Stderr(b"container-err\n".to_vec()),
         ]
     );
 

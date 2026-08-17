@@ -7,7 +7,7 @@ use ployz::operator::{
 };
 use ployz_core::{
     ContainerAction, ContainerKind, ContainerSelector, ExecRequestFrame, ExecResponseFrame,
-    FanoutSelector, LogEntry, LogOrigin, LogsOptions, MachineLogService, MachineTarget,
+    FanoutSelector, LogBody, LogEntry, LogOrigin, LogsOptions, MachineLogService, MachineTarget,
     ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -208,10 +208,7 @@ async fn assert_service_logs(
         .iter()
         .filter_map(|entry| match &entry.metadata.origin {
             LogOrigin::Service { container_id, .. }
-                if matches!(
-                    entry.stream,
-                    ployz_core::LogStream::Stdout | ployz_core::LogStream::Stderr
-                ) =>
+                if matches!(entry.body, LogBody::Stdout(_) | LogBody::Stderr(_)) =>
             {
                 Some(*container_id)
             }
@@ -223,21 +220,18 @@ async fn assert_service_logs(
             .iter()
             .filter_map(|entry| match &entry.metadata.origin {
                 LogOrigin::Service { container_id, .. }
-                    if *container_id == container.as_observation().container_id
-                        && matches!(
-                            entry.stream,
-                            ployz_core::LogStream::Stdout | ployz_core::LogStream::Stderr
-                        ) =>
+                    if *container_id == container.as_observation().container_id =>
                 {
-                    Some(entry.stream)
+                    match &entry.body {
+                        LogBody::Stdout(_) => Some("stdout"),
+                        LogBody::Stderr(_) => Some("stderr"),
+                        LogBody::Heartbeat | LogBody::Error(_) => None,
+                    }
                 }
                 LogOrigin::Service { .. } | LogOrigin::Machine { .. } => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            streams,
-            [ployz_core::LogStream::Stdout, ployz_core::LogStream::Stderr]
-        );
+        assert_eq!(streams, ["stdout", "stderr"]);
         assert_eq!(
             actual
                 .iter()

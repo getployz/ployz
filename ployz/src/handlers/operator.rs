@@ -8,8 +8,8 @@ use clap::ArgMatches;
 use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
-    ContainerSelector, ExecRequestFrame, ExecResponseFrame, FanoutSelector, LogEntry, LogOrigin,
-    LogStream, LogsOptions, ServiceSelector, select_service,
+    ContainerSelector, ExecRequestFrame, ExecResponseFrame, FanoutSelector, LogBody, LogEntry,
+    LogOrigin, LogsOptions, ServiceSelector, select_service,
 };
 use tokio::io::copy_bidirectional;
 use tokio_util::sync::CancellationToken;
@@ -324,16 +324,27 @@ async fn print_logs(
             "{timestamp} {} {}/{}{}{} | ",
             entry.metadata.machine_name, service_name, service_id, container, hook,
         );
-        let output: &mut dyn Write = if entry.stream == LogStream::Stderr {
+        let Some((message, stderr)) = printable_log_bytes(&entry.body) else {
+            continue;
+        };
+        let output: &mut dyn Write = if stderr {
             &mut std::io::stderr()
         } else {
             &mut std::io::stdout()
         };
         output
             .write_all(prefix.as_bytes())
-            .and_then(|()| output.write_all(&entry.message))?;
+            .and_then(|()| output.write_all(message))?;
     }
     Ok(())
+}
+
+fn printable_log_bytes(body: &LogBody) -> Option<(&[u8], bool)> {
+    match body {
+        LogBody::Stdout(bytes) => Some((bytes, false)),
+        LogBody::Stderr(bytes) => Some((bytes, true)),
+        LogBody::Heartbeat | LogBody::Error(_) => None,
+    }
 }
 
 fn timestamp(entry: &LogEntry, utc: bool) -> String {
@@ -471,6 +482,20 @@ mod tests {
 
         assert!(output.buffer().is_empty());
         assert_eq!(output.get_ref(), b"ready");
+    }
+
+    #[test]
+    fn print_logs_never_writes_heartbeat_or_error_as_stdout() {
+        assert_eq!(
+            printable_log_bytes(&LogBody::Stdout(b"out".to_vec())),
+            Some((b"out".as_slice(), false))
+        );
+        assert_eq!(
+            printable_log_bytes(&LogBody::Stderr(b"err".to_vec())),
+            Some((b"err".as_slice(), true))
+        );
+        assert_eq!(printable_log_bytes(&LogBody::Heartbeat), None);
+        assert_eq!(printable_log_bytes(&LogBody::Error("nope".into())), None);
     }
 
     #[test]

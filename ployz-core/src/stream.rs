@@ -293,13 +293,20 @@ pub enum LogStream {
     Error,
 }
 
+/// One log frame: stdout bytes, stderr bytes, a heartbeat, or an error string.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LogBody {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Heartbeat,
+    Error(String),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogEntry {
     pub metadata: LogMetadata,
-    pub stream: LogStream,
     pub timestamp_unix_nanos: i64,
-    pub message: Vec<u8>,
-    pub error: Option<String>,
+    pub body: LogBody,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -315,10 +322,8 @@ impl LogEntry {
     pub fn error(metadata: LogMetadata, message: impl Into<String>) -> Self {
         Self {
             metadata,
-            stream: LogStream::Error,
             timestamp_unix_nanos: 0,
-            message: Vec::new(),
-            error: Some(message.into()),
+            body: LogBody::Error(message.into()),
         }
     }
 
@@ -326,53 +331,37 @@ impl LogEntry {
     pub fn heartbeat(metadata: LogMetadata, timestamp_unix_nanos: i64) -> Self {
         Self {
             metadata,
-            stream: LogStream::Heartbeat,
             timestamp_unix_nanos,
-            message: Vec::new(),
-            error: None,
+            body: LogBody::Heartbeat,
         }
     }
 
     pub fn encode(&self) -> Result<OpaquePayload, StreamProtocolError> {
-        let kind = match self.stream {
-            LogStream::Stdout => StreamKind::LogStdout,
-            LogStream::Stderr => StreamKind::LogStderr,
-            LogStream::Heartbeat => StreamKind::LogHeartbeat,
-            LogStream::Error => StreamKind::LogError,
+        let (kind, error, message) = match &self.body {
+            LogBody::Stdout(message) => (StreamKind::LogStdout, None, message.as_slice()),
+            LogBody::Stderr(message) => (StreamKind::LogStderr, None, message.as_slice()),
+            LogBody::Heartbeat => (StreamKind::LogHeartbeat, None, [].as_slice()),
+            LogBody::Error(error) => (StreamKind::LogError, Some(error.clone()), [].as_slice()),
         };
         let header = json(
             &LogHeader {
                 metadata: self.metadata.clone(),
                 timestamp_unix_nanos: self.timestamp_unix_nanos,
-                error: self.error.clone(),
+                error,
             },
             "log header",
         )?;
         let header_length = u32::try_from(header.len())
             .map_err(|_| StreamProtocolError::PayloadTooLarge(header.len()))?;
-        let mut payload = Vec::with_capacity(4 + header.len() + self.message.len());
+        let mut payload = Vec::with_capacity(4 + header.len() + message.len());
         payload.extend_from_slice(&header_length.to_be_bytes());
         payload.extend_from_slice(&header);
-        payload.extend_from_slice(&self.message);
+        payload.extend_from_slice(message);
         StreamFrame { kind, payload }.encode()
     }
 
     pub fn decode(payload: &OpaquePayload) -> Result<Self, StreamProtocolError> {
         let frame = StreamFrame::decode(payload)?;
-        let stream = match frame.kind {
-            StreamKind::LogStdout => LogStream::Stdout,
-            StreamKind::LogStderr => LogStream::Stderr,
-            StreamKind::LogHeartbeat => LogStream::Heartbeat,
-            StreamKind::LogError => LogStream::Error,
-            actual @ (StreamKind::ExecConfig
-            | StreamKind::ExecStdin
-            | StreamKind::ExecResize
-            | StreamKind::ExecId
-            | StreamKind::ExecStdout
-            | StreamKind::ExecStderr
-            | StreamKind::ExecExit
-            | StreamKind::ExecError) => return Err(unexpected("log entry", actual)),
-        };
         if frame.payload.len() < size_of::<u32>() {
             return Err(invalid("log entry", "truncated metadata length"));
         }
@@ -387,12 +376,36 @@ impl LogEntry {
         }
         let (header, message) = rest.split_at(header_length);
         let header: LogHeader = decode_json(header, "log header")?;
+        let body = match (frame.kind, header.error, message.is_empty()) {
+            (StreamKind::LogStdout, None, _) => LogBody::Stdout(message.to_vec()),
+            (StreamKind::LogStderr, None, _) => LogBody::Stderr(message.to_vec()),
+            (StreamKind::LogHeartbeat, None, true) => LogBody::Heartbeat,
+            (StreamKind::LogError, Some(error), _) => LogBody::Error(error),
+            (
+                StreamKind::LogStdout
+                | StreamKind::LogStderr
+                | StreamKind::LogHeartbeat
+                | StreamKind::LogError,
+                _,
+                _,
+            ) => return Err(invalid("log entry", "desynced kind and header")),
+            (
+                actual @ (StreamKind::ExecConfig
+                | StreamKind::ExecStdin
+                | StreamKind::ExecResize
+                | StreamKind::ExecId
+                | StreamKind::ExecStdout
+                | StreamKind::ExecStderr
+                | StreamKind::ExecExit
+                | StreamKind::ExecError),
+                _,
+                _,
+            ) => return Err(unexpected("log entry", actual)),
+        };
         Ok(Self {
             metadata: header.metadata,
-            stream,
             timestamp_unix_nanos: header.timestamp_unix_nanos,
-            message: message.to_vec(),
-            error: header.error,
+            body,
         })
     }
 }

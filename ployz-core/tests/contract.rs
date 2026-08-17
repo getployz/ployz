@@ -749,30 +749,103 @@ fn streaming_requests_keep_typed_control_options_outside_raw_frames() {
 }
 
 #[test]
-fn log_frames_keep_identity_outside_untouched_message_bytes() {
-    use ployz_core::{LogEntry, LogMetadata, LogOrigin, LogStream};
+fn log_frames_round_trip_each_body_and_keep_wire_kind_bytes() {
+    use ployz_core::{LogBody, LogEntry};
 
-    let entry = LogEntry {
-        metadata: LogMetadata {
-            origin: LogOrigin::Service {
-                service_id: ployz_core::ServiceId::parse("1".repeat(32)).unwrap(),
-                service_name: ployz_core::ServiceName::parse("api").unwrap(),
-                container_id: ployz_core::ContainerId::parse("b".repeat(64)).unwrap(),
-                hook: Some("pre-deploy".into()),
-            },
-            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
-            machine_name: MachineName::parse("machine-a").unwrap(),
-        },
-        stream: LogStream::Stderr,
+    let metadata = log_frame_metadata();
+    let stdout = LogEntry {
+        metadata: metadata.clone(),
         timestamp_unix_nanos: 1_765_000_000_123_456_789,
-        message: vec![0, 0xff, b'\n'],
-        error: None,
+        body: LogBody::Stdout(vec![0, 0xff, b'\n']),
     };
-    let encoded = entry.encode().unwrap();
-    let decoded = LogEntry::decode(&encoded).unwrap();
+    let stderr = LogEntry {
+        metadata: metadata.clone(),
+        timestamp_unix_nanos: 1_765_000_000_123_456_789,
+        body: LogBody::Stderr(vec![0, 0xff, b'\n']),
+    };
+    let heartbeat = LogEntry::heartbeat(metadata.clone(), 1_765_000_000_123_456_789);
+    let error = LogEntry::error(metadata, "remote failed");
 
-    assert_eq!(decoded, entry);
-    assert_eq!(decoded.message, vec![0, 0xff, b'\n']);
+    for (entry, kind) in [
+        (&stdout, 0x10),
+        (&stderr, 0x11),
+        (&heartbeat, 0x12),
+        (&error, 0x13),
+    ] {
+        let encoded = entry.encode().unwrap();
+        assert_eq!(encoded.json.first().copied(), Some(kind));
+        assert_eq!(LogEntry::decode(&encoded).unwrap(), *entry);
+    }
+}
+
+#[test]
+fn log_frames_reject_desynced_kind_and_header() {
+    use ployz_core::{LogBody, LogEntry, StreamProtocolError};
+
+    let metadata = log_frame_metadata();
+    let stdout = LogEntry {
+        metadata: metadata.clone(),
+        timestamp_unix_nanos: 1,
+        body: LogBody::Stdout(vec![b'x']),
+    };
+    let error = LogEntry::error(metadata, "remote failed");
+
+    for kind in [0x10, 0x11, 0x12] {
+        let mut desynced = error.encode().unwrap();
+        *desynced
+            .json
+            .first_mut()
+            .expect("encoded log frames start with a kind byte") = kind;
+        assert!(
+            matches!(
+                LogEntry::decode(&desynced),
+                Err(StreamProtocolError::InvalidPayload {
+                    kind: "log entry",
+                    ..
+                })
+            ),
+            "{kind:#04x}"
+        );
+    }
+    let mut missing_error = stdout.encode().unwrap();
+    *missing_error
+        .json
+        .first_mut()
+        .expect("encoded log frames start with a kind byte") = 0x13;
+    assert!(matches!(
+        LogEntry::decode(&missing_error),
+        Err(StreamProtocolError::InvalidPayload {
+            kind: "log entry",
+            ..
+        })
+    ));
+    let mut heartbeat_with_message = stdout.encode().unwrap();
+    *heartbeat_with_message
+        .json
+        .first_mut()
+        .expect("encoded log frames start with a kind byte") = 0x12;
+    assert!(matches!(
+        LogEntry::decode(&heartbeat_with_message),
+        Err(StreamProtocolError::InvalidPayload {
+            kind: "log entry",
+            ..
+        })
+    ));
+}
+
+fn log_frame_metadata() -> ployz_core::LogMetadata {
+    use ployz_core::{LogMetadata, LogOrigin};
+
+    LogMetadata {
+        origin: LogOrigin::Service {
+            service_id: ployz_core::ServiceId::parse("1".repeat(32)).unwrap(),
+            service_name: ployz_core::ServiceName::parse("api").unwrap(),
+            container_id: ployz_core::ContainerId::parse("b".repeat(64)).unwrap(),
+            hook: Some("pre-deploy".into()),
+        },
+        machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+        machine_name: MachineName::parse("machine-a").unwrap(),
+    }
 }
 
 #[test]

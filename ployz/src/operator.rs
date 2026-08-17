@@ -10,9 +10,9 @@ use std::{
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
-    ExecRequestFrame, FanoutSelector, LogEntry, LogStream, LogsOptions, MachineId,
-    MachineLogService, MachineLogsRequest, MachineName, MachineObservation, MachineTarget,
-    OpaquePayload, ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
+    ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
+    MachineLogsRequest, MachineName, MachineObservation, MachineTarget, OpaquePayload,
+    ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
     resolve_container_selector, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
@@ -672,13 +672,13 @@ fn merge_logs_with_options(
                         }
                         match entry {
                             Err(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
-                            Ok(entry) if entry.stream == LogStream::Error => {
-                                let error = entry.error.clone().unwrap_or_else(|| "log stream failed".into());
-                                if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return }
-                            }
-                            Ok(entry) => {
-                                source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
-                                if matches!(entry.stream, LogStream::Stdout | LogStream::Stderr) {
+                            Ok(entry) => match &entry.body {
+                                LogBody::Error(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                                LogBody::Heartbeat => {
+                                    source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
+                                }
+                                LogBody::Stdout(_) | LogBody::Stderr(_) => {
+                                    source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
                                     if entry.timestamp_unix_nanos == 0 {
                                         if output_sender.send(Ok(entry)).await.is_err() { return }
                                     } else {

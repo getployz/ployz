@@ -6,7 +6,7 @@ use std::{
 };
 
 use futures_util::{Stream, StreamExt};
-use ployz_core::{LogEntry, LogMetadata, LogStream, LogsOptions, OpaquePayload};
+use ployz_core::{LogBody, LogEntry, LogMetadata, LogStream, LogsOptions, OpaquePayload};
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -57,10 +57,15 @@ pub fn serve_logs(mut source: LogSource, metadata: LogMetadata, follow: bool) ->
                         last_sent = Some(tokio::time::Instant::now());
                         let entry = LogEntry {
                             metadata: metadata.clone(),
-                            stream: entry.stream,
                             timestamp_unix_nanos: entry.timestamp_unix_nanos,
-                            message: entry.message,
-                            error: None,
+                            body: match entry.stream {
+                                LogStream::Stdout => LogBody::Stdout(entry.message),
+                                LogStream::Stderr => LogBody::Stderr(entry.message),
+                                LogStream::Heartbeat => LogBody::Heartbeat,
+                                LogStream::Error => LogBody::Error(
+                                    String::from_utf8_lossy(&entry.message).into_owned(),
+                                ),
+                            },
                         };
                         if send_entry(&sender, entry).await.is_err() {
                             return;

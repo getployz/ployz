@@ -9,8 +9,8 @@ use std::{
 use futures_util::stream;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    ContainerSelector, FanoutSelector, HealthObservation, HookContainer, LogMetadata, LogOrigin,
-    MachineId, MachineName, MembershipObservation, ResolvedServiceSpec, RestartPolicy,
+    ContainerSelector, FanoutSelector, HealthObservation, HookContainer, LogBody, LogMetadata,
+    LogOrigin, MachineId, MachineName, MembershipObservation, ResolvedServiceSpec, RestartPolicy,
     ServiceContainer, ServiceId, ServiceName, ServiceSelector,
 };
 
@@ -223,7 +223,7 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
     assert_eq!(
         entries
             .iter()
-            .map(|entry| entry.message.clone())
+            .map(|entry| output_bytes(entry).to_vec())
             .collect::<Vec<_>>(),
         [b"one".to_vec(), b"raw".to_vec(), b"two".to_vec()]
     );
@@ -249,7 +249,10 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         Duration::from_millis(2),
     );
     assert!(stalled.recv().await.unwrap().unwrap_err().contains("quiet"));
-    assert_eq!(stalled.recv().await.unwrap().unwrap().message, b"released");
+    assert_eq!(
+        output_bytes(&stalled.recv().await.unwrap().unwrap()),
+        b"released"
+    );
     cancel.cancel();
 
     let mut stalled_then_closed = merge_logs_with_options(
@@ -276,7 +279,7 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
             .contains("quiet")
     );
     assert_eq!(
-        stalled_then_closed.recv().await.unwrap().unwrap().message,
+        output_bytes(&stalled_then_closed.recv().await.unwrap().unwrap()),
         b"nine"
     );
     assert!(stalled_then_closed.recv().await.is_none());
@@ -314,6 +317,15 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
             .contains("remote failed")
     );
 
+    let mut empty_error = merge_logs(
+        vec![input(
+            "broken",
+            vec![Ok(LogEntry::error(metadata("broken"), ""))],
+        )],
+        CancellationToken::new(),
+    );
+    assert_eq!(empty_error.recv().await.unwrap().unwrap_err(), "broken: ");
+
     let mut closing = merge_logs(
         vec![
             input("buffered", vec![Ok(log(metadata("buffered"), 9, b"nine"))]),
@@ -321,7 +333,10 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
         ],
         CancellationToken::new(),
     );
-    assert_eq!(closing.recv().await.unwrap().unwrap().message, b"nine");
+    assert_eq!(
+        output_bytes(&closing.recv().await.unwrap().unwrap()),
+        b"nine"
+    );
     assert!(closing.recv().await.is_none());
 }
 
@@ -390,10 +405,15 @@ fn input(identity: &str, entries: Vec<Result<LogEntry, LogError>>) -> LogInput {
 fn log(metadata: LogMetadata, timestamp: i64, message: &[u8]) -> LogEntry {
     LogEntry {
         metadata,
-        stream: LogStream::Stdout,
         timestamp_unix_nanos: timestamp,
-        message: message.to_vec(),
-        error: None,
+        body: LogBody::Stdout(message.to_vec()),
+    }
+}
+
+fn output_bytes(entry: &LogEntry) -> &[u8] {
+    match &entry.body {
+        LogBody::Stdout(bytes) | LogBody::Stderr(bytes) => bytes,
+        LogBody::Heartbeat | LogBody::Error(_) => panic!("expected output body, got {entry:?}"),
     }
 }
 
