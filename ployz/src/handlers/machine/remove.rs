@@ -143,4 +143,13 @@ mod tests {
             .is_unreachable()
         );
     }
+
+    #[test]
+    fn deadline_exceeded_is_retryable_not_unreachable() {
+        let error = ConnectError::Rpc(crate::connect::TransportError::from(
+            tonic::Status::deadline_exceeded("timed out"),
+        ));
+        assert!(error.is_retryable());
+        assert!(!error.is_unreachable());
+    }
 }

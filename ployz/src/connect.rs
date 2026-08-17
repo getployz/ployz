@@ -564,9 +564,7 @@ impl ConnectError {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("{display}")]
 pub struct TransportError {
-    code: RpcErrorCode,
-    retryable: bool,
-    unavailable: bool,
+    code: tonic::Code,
     message: String,
     display: String,
     details: Value,
@@ -580,23 +578,26 @@ impl TransportError {
 
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        self.retryable
+        matches!(
+            self.code,
+            tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
+        )
     }
 
     #[must_use]
     pub fn is_unavailable(&self) -> bool {
-        self.unavailable
+        self.code == tonic::Code::Unavailable
     }
 
     #[must_use]
     pub fn is_not_found(&self) -> bool {
-        self.code == RpcErrorCode::NotFound
+        self.code == tonic::Code::NotFound
     }
 
     #[must_use]
     pub fn to_rpc_error(&self) -> RpcError {
         RpcError {
-            code: self.code.clone(),
+            code: rpc_error_code(self.code),
             message: self.message.clone(),
             details: self.details.clone(),
         }
@@ -605,14 +606,8 @@ impl TransportError {
 
 impl From<tonic::Status> for TransportError {
     fn from(status: tonic::Status) -> Self {
-        let grpc = status.code();
         Self {
-            code: rpc_error_code(grpc),
-            retryable: matches!(
-                grpc,
-                tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
-            ),
-            unavailable: grpc == tonic::Code::Unavailable,
+            code: status.code(),
             message: status.message().to_owned(),
             display: status.to_string(),
             details: if status.details().is_empty() {
@@ -720,6 +715,50 @@ mod tests {
         assert_eq!(error.code, RpcErrorCode::Internal);
         assert_eq!(error.message, "Docker failed");
         assert_eq!(error.details, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn fanout_deadline_exceeded_still_maps_to_unavailable() {
+        let error = decode_fanout_failure(FanoutFailure {
+            code: tonic::Code::DeadlineExceeded as u32,
+            message: "deadline".into(),
+            details: Vec::new(),
+        });
+
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.message, "deadline");
+    }
+
+    #[test]
+    fn transport_predicates_follow_the_grpc_code() {
+        #[rustfmt::skip]
+        let cases = [
+            (tonic::Code::Ok,                 false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::Cancelled,          false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::Unknown,            false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::InvalidArgument,    false, false, false, RpcErrorCode::InvalidArgument),
+            (tonic::Code::DeadlineExceeded,   true,  false, false, RpcErrorCode::Unavailable),
+            (tonic::Code::NotFound,           false, false, true,  RpcErrorCode::NotFound),
+            (tonic::Code::AlreadyExists,      false, false, false, RpcErrorCode::Conflict),
+            (tonic::Code::PermissionDenied,   false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::ResourceExhausted,  false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::FailedPrecondition, false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::Aborted,            false, false, false, RpcErrorCode::Conflict),
+            (tonic::Code::OutOfRange,         false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::Unimplemented,      false, false, false, RpcErrorCode::Unsupported),
+            (tonic::Code::Internal,           false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::Unavailable,        true,  true,  false, RpcErrorCode::Unavailable),
+            (tonic::Code::DataLoss,           false, false, false, RpcErrorCode::Internal),
+            (tonic::Code::Unauthenticated,    false, false, false, RpcErrorCode::Unauthenticated),
+        ];
+
+        for (code, retryable, unavailable, not_found, rpc) in cases {
+            let error = TransportError::from(tonic::Status::new(code, "x"));
+            assert_eq!(error.is_retryable(), retryable, "{code:?}");
+            assert_eq!(error.is_unavailable(), unavailable, "{code:?}");
+            assert_eq!(error.is_not_found(), not_found, "{code:?}");
+            assert_eq!(error.to_rpc_error().code, rpc, "{code:?}");
+        }
     }
 
     #[tokio::test]
