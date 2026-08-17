@@ -13,6 +13,10 @@ if [ ! -f /root/.ssh/id_ed25519 ]; then
 fi
 ssh-keygen -A
 /usr/sbin/sshd
+mkdir -p /var/lib/docker
+if [ -f /opt/ployz/docker-graph.tar ] && [ -z "$(ls -A /var/lib/docker)" ]; then
+  tar -C /var/lib/docker -xf /opt/ployz/docker-graph.tar
+fi
 # ponytail: Corrosion uses host networking; enable a bridge when workload tests need one.
 dockerd --bridge=none --iptables=false --ip6tables=false >/var/log/dockerd.log 2>&1 &
 deadline=60
@@ -26,13 +30,20 @@ if iptables -t filter -L >/dev/null 2>&1 \
   iptables -t filter -N DOCKER-USER
 fi
 
-docker load --input /opt/ployz/images/corrosion.tar >/dev/null
-docker load --input /opt/ployz/images/alpine.tar >/dev/null
-docker load --input /opt/ployz/images/caddy.tar >/dev/null
+if [ ! -f /opt/ployz/docker-graph.tar ]; then
+  for tar in /opt/ployz/images/*.tar; do
+    docker load --input "$tar" >/dev/null
+  done
+fi
 if [ -n "${PLOYZ_TESTKIT_HOST_API_PORT:-}" ]; then
   socat TCP-LISTEN:"$PLOYZ_TESTKIT_HOST_API_PORT",bind=0.0.0.0,reuseaddr,fork UNIX-CONNECT:/run/ployz/ployz.sock &
 fi
-docker load --input /opt/ployz/images/unregistry.tar >/dev/null
+if [ "${PLOYZ_TESTKIT_PRIME:-}" = 1 ]; then
+  kill "$(cat /var/run/docker.pid)" 2>/dev/null || killall dockerd 2>/dev/null || true
+  wait || true
+  tar -C /var/lib/docker -cf /opt/ployz/docker-graph.tar .
+  exit 0
+fi
 while :; do
   ployzd --machine-api-address '[::]:51000' "$@" &
   ployzd_pid=$!

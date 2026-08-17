@@ -3,16 +3,31 @@ set -euo pipefail
 
 retry_once() { "$@" || "$@"; }
 
-cargo test --locked --no-run --workspace --all-targets
+cargo test --locked --no-run \
+    --package ployz \
+    --package ployz-testkit \
+    --package ployzd \
+    --tests \
+    --lib
 
-retry_once cargo test --package ployz --test build_layer3 --locked -- --ignored
+retry_once cargo test --locked \
+    --package ployz \
+    --test build_layer3 \
+    --test service_cluster \
+    --test internal_dns_cluster \
+    --test caddy_cluster \
+    --test deploy_cluster \
+    --test operator_cluster \
+    --test volume_layer3 \
+    --test workflow_layer3 \
+    --test hosted_dns_cluster \
+    -- --ignored --test-threads=1
 
-mapfile -t scenarios < <(cargo test --package ployz-testkit --test cluster --locked -- --ignored --list | sed -n 's/: test$//p')
-test "${#scenarios[@]}" -gt 0
-for scenario in "${scenarios[@]}"; do
-    retry_once cargo test --package ployz-testkit --test cluster --locked "$scenario" -- --ignored --exact
-done
-for suite in service_cluster internal_dns_cluster caddy_cluster deploy_cluster operator_cluster volume_layer3 workflow_layer3 hosted_dns_cluster; do
-    retry_once cargo test --package ployz --test "$suite" --locked -- --ignored
-done
-retry_once cargo test --package ployzd --lib corrosion::integration_tests::replicated_store_preserves_partial_and_contradictory_observations --locked -- --ignored --exact
+retry_once cargo test --locked \
+    --package ployz-testkit \
+    --test cluster \
+    -- --ignored --test-threads=1
+
+retry_once cargo test --locked --package ployzd --lib \
+    corrosion::integration_tests::replicated_store_preserves_partial_and_contradictory_observations \
+    -- --ignored --exact --test-threads=1

@@ -32,31 +32,16 @@ runs:
         context: ${{ github.workspace }}
         file: ployz-testkit/Dockerfile
         platforms: linux/${{ inputs.arch }}
-        push: true
+        push: false
+        load: true
         provenance: false
         tags: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-${{ inputs.arch }}
         cache-from: type=registry,ref=ghcr.io/getployz/ployz2-testkit:main
         cache-to: type=inline
-    - name: Boot the native image
+    - name: Prime and push the native image
       shell: bash
       env:
         IMAGE: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-${{ inputs.arch }}
       run: |
-        container=
-        trap 'test -z "$container" || docker rm --force --volumes "$container"' EXIT
-        docker pull "$IMAGE"
-        container=$(docker run --detach --privileged "$IMAGE")
-        for attempt in $(seq 1 60); do
-          if docker exec "$container" docker info >/dev/null 2>&1 \
-            && docker exec "$container" docker image inspect ghcr.io/unlabs-dev/corrosion:2026.6.15 >/dev/null 2>&1 \
-            && docker exec "$container" docker image inspect alpine:3.23.3 >/dev/null 2>&1 \
-            && docker exec "$container" docker image inspect ghcr.io/psviderski/unregistry:0.4.1 >/dev/null 2>&1 \
-            && docker exec "$container" sh -c 'test -s /run/ployzd.pid && kill -0 "$(cat /run/ployzd.pid)"'
-          then
-            break
-          fi
-          test "$attempt" -lt 60
-          sleep 1
-        done
-        docker exec "$container" ployzd version
-        docker exec "$container" wg --version
+        bash scripts/prime-testkit-image.sh
+        docker push "$IMAGE"
