@@ -93,6 +93,12 @@ fn membership_is_responder_relative_and_keeps_duplicate_names() {
     assert_eq!(up.membership, MembershipObservation::Up);
     assert_eq!(suspect.membership, MembershipObservation::Suspect);
     assert_eq!(down.membership, MembershipObservation::Down);
+    assert!(local.membership.invites_rpc());
+    assert!(up.membership.invites_rpc());
+    assert!(suspect.membership.invites_rpc());
+    assert!(!down.membership.invites_rpc());
+    assert!(!MembershipObservation::Unknown.invites_rpc());
+    assert!(!MembershipObservation::Unrecognized("gone".into()).invites_rpc());
     assert_eq!(
         observations
             .iter()

@@ -3,7 +3,8 @@ use std::net::Ipv6Addr;
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    HealthObservation, Machine, ManagementAddress, ServiceId, ServiceName, WireGuardPublicKey,
+    HealthObservation, Machine, ManagementAddress, MembershipObservation, ServiceId, ServiceName,
+    WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 

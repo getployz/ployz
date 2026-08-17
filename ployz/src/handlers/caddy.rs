@@ -4,6 +4,7 @@ use clap::ArgMatches;
 use ployz_core::{GetCaddyConfigRequest, MachineTarget, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
+use crate::connect::TARGET_RPC_TIMEOUT;
 
 pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -11,9 +12,22 @@ pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let mut client = connect_client(root, None).await?;
         let target = selector.map(MachineTarget::parse).transpose()?;
-        let caddyfile = client
-            .call::<op::GetCaddyConfig>(GetCaddyConfigRequest {}, target.as_ref())
-            .await?;
+        let caddyfile = match target.as_ref() {
+            None => {
+                client
+                    .call::<op::GetCaddyConfig>(GetCaddyConfigRequest {}, None)
+                    .await?
+            }
+            Some(target) => {
+                client
+                    .invoke::<op::GetCaddyConfig>(
+                        GetCaddyConfigRequest {},
+                        target,
+                        Some(TARGET_RPC_TIMEOUT),
+                    )
+                    .await?
+            }
+        };
         print!("{}", caddyfile.caddyfile);
         Ok(())
     })

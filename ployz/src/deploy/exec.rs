@@ -628,7 +628,7 @@ async fn monitor_container<C: MachineOperations>(
     let monitor = spec
         .update
         .monitor_millis
-        .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis);
+        .map_or_else(default_health_monitor, Duration::from_millis);
     let started = Instant::now();
 
     if !matches!(
@@ -645,13 +645,6 @@ async fn monitor_container<C: MachineOperations>(
     }
 
     let monitor_deadline = started + monitor;
-    // A crash loop can report success at 1s poll boundaries. One extra poll
-    // still completed the Layer 3 crash cases; hold a second poll.
-    let healthy_until = if monitor.is_zero() {
-        monitor_deadline
-    } else {
-        monitor_deadline + POLL_INTERVAL * 2
-    };
     loop {
         if cancellation.is_cancelled() {
             return Err(health_error(container_id, HealthFailure::Cancelled));
@@ -660,17 +653,12 @@ async fn monitor_container<C: MachineOperations>(
         let now = Instant::now();
         let health_deadline =
             health_deadline_for(spec.container.healthcheck.as_ref(), &observed, started);
-        let wake_deadline = match classify_health(
-            &observed.runtime,
-            now,
-            monitor_deadline,
-            health_deadline,
-            healthy_until,
-        ) {
-            HealthPoll::Complete => return Ok(()),
-            HealthPoll::PendingUntil(deadline) => deadline,
-            HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
-        };
+        let wake_deadline =
+            match classify_health(&observed.runtime, now, monitor_deadline, health_deadline) {
+                HealthPoll::Complete => return Ok(()),
+                HealthPoll::PendingUntil(deadline) => deadline,
+                HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
+            };
         let wake = std::cmp::min(now + POLL_INTERVAL, wake_deadline);
         tokio::select! {
             () = cancellation.cancelled() => {
@@ -681,28 +669,19 @@ async fn monitor_container<C: MachineOperations>(
     }
 }
 
-fn hold_until(now: Instant, until: Instant) -> HealthPoll {
-    if now >= until {
-        HealthPoll::Complete
-    } else {
-        HealthPoll::PendingUntil(until)
-    }
-}
-
 fn classify_health(
     runtime: &ContainerRuntimeObservation,
     now: Instant,
     monitor_deadline: Instant,
     health_deadline: Option<Instant>,
-    healthy_until: Instant,
 ) -> HealthPoll {
     match runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
-        } => hold_until(now, healthy_until),
+        } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
-        } if health_deadline.is_none() => hold_until(now, healthy_until),
+        } if health_deadline.is_none() => HealthPoll::Complete,
         ContainerRuntimeObservation::Exited { code: 0 } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health:
@@ -908,6 +887,24 @@ fn health_deadline_for(
                 .then(|| started + healthcheck_timeout(None))
             }),
     }
+}
+
+fn default_health_monitor() -> Duration {
+    std::env::var(crate::cli::env::HEALTH_MONITOR_PERIOD)
+        .ok()
+        .and_then(|value| parse_monitor_period(&value))
+        .unwrap_or(DEFAULT_HEALTH_MONITOR)
+}
+
+fn parse_monitor_period(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if value == "0" {
+        return Some(Duration::ZERO);
+    }
+    crate::compose::duration_millis(Some(value))
+        .ok()
+        .flatten()
+        .map(Duration::from_millis)
 }
 
 fn healthcheck_timeout(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {

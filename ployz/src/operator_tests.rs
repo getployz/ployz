@@ -10,8 +10,8 @@ use futures_util::stream;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     ContainerSelector, FanoutSelector, HookContainer, LogMetadata, LogOrigin, MachineId,
-    MachineName, ResolvedServiceSpec, RestartPolicy, ServiceContainer, ServiceId, ServiceName,
-    ServiceSelector,
+    MachineName, MembershipObservation, ResolvedServiceSpec, RestartPolicy, ServiceContainer,
+    ServiceId, ServiceName, ServiceSelector,
 };
 
 use super::*;
@@ -394,6 +394,18 @@ fn machine_selection_treats_star_as_all_and_all_as_a_name() {
         "all"
     );
     assert!(select_machines(&machines, &[FanoutSelector::parse("missing").unwrap()]).is_err());
+    let mut down = machine_observation(3, "down");
+    down.membership = MembershipObservation::Down;
+    let mut unknown = machine_observation(4, "unknown");
+    unknown.membership = MembershipObservation::Unknown;
+    let mixed = [
+        machine_observation(1, "edge"),
+        machine_observation(2, "all"),
+        down,
+        unknown,
+    ];
+    assert_eq!(select_machines(&mixed, &[]).unwrap().len(), 2);
+    assert!(select_machines(&mixed, &[FanoutSelector::parse("down").unwrap()]).is_err());
 }
 
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {

@@ -618,6 +618,55 @@ async fn volume_listing_retains_successes_and_target_failures() {
 }
 
 #[tokio::test]
+async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
+    let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
+        machine_id: MachineId::random(),
+        protocol_major: PROTOCOL_MAJOR,
+        daemon_version: "test".into(),
+        capabilities: Default::default(),
+    }))
+    .await;
+    let mut client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::tcp(address)],
+        },
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+
+    let mut down = machine('e', "down");
+    down.membership = MembershipObservation::Down;
+    let mut unknown = machine('c', "unknown");
+    unknown.membership = MembershipObservation::Unknown;
+    let mut suspect = machine('b', "suspect");
+    suspect.membership = MembershipObservation::Suspect;
+    let result = client
+        .list_volumes(&[machine('a', "one"), down, unknown, suspect])
+        .await;
+
+    assert_eq!(
+        result
+            .successes
+            .iter()
+            .map(|success| success.machine_id)
+            .collect::<Vec<_>>(),
+        vec![machine_id('a')]
+    );
+    assert_eq!(
+        result
+            .failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .collect::<Vec<_>>(),
+        vec![machine_id('b')]
+    );
+    assert_eq!(result.omissions, vec![machine_id('e'), machine_id('c')]);
+    server.abort();
+}
+
+#[tokio::test]
 async fn machines_returns_list_machines_membership_observations() {
     let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
         machine_id: MachineId::random(),

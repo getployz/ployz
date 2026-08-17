@@ -259,7 +259,7 @@ fn deploy(
         .args(["--connect", &format!("tcp://{address}"), "deploy"])
         .args(["--file", file])
         .args(recreate.then_some("--recreate"))
-        .args(["--no-build"])
+        .args(["--no-build", "--skip-health"])
         .args(yes.then_some("--yes"))
         .current_dir(root)
         .env_remove("PLOYZ_AUTO_CONFIRM");
@@ -446,6 +446,7 @@ fn ployz<const N: usize>(address: std::net::SocketAddr, args: [&str; N]) -> std:
     Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["--connect", &format!("tcp://{address}")])
         .args(args)
+        .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
         .output()
         .unwrap()
 }

@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::{
     caddy::SERVICE_NAME,
-    connect::{Client, ConnectError},
+    connect::{Client, ConnectError, TARGET_RPC_TIMEOUT},
 };
 
 const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -81,9 +81,12 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     for machine_id in caddy_machines {
         let target = MachineTarget::from(&machine_id);
         let details = client
-            .call::<op::Inspect>(InspectRequest::default(), Some(&target))
+            .invoke::<op::Inspect>(InspectRequest::default(), &target, Some(TARGET_RPC_TIMEOUT))
             .await
-            .map_err(|source| Error::Inspect { machine_id, source })?;
+            .map_err(|source| Error::Inspect {
+                machine_id,
+                source: ConnectError::Remote(source),
+            })?;
         let machine = details.machine.ok_or_else(|| Error::Inspect {
             machine_id,
             source: ConnectError::MissingMachineDetails,

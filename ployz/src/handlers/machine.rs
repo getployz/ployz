@@ -9,7 +9,10 @@ use ployz_core::{
     MachineUpdate, PublicIpUpdate, UpdateMachineRequest, op,
 };
 
-use crate::{connect::Client, context::Config};
+use crate::{
+    connect::{Client, TARGET_RPC_TIMEOUT},
+    context::Config,
+};
 
 use super::{Error, leaf_matches, string_values, with_client};
 
@@ -112,7 +115,11 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
     with_client(root, |client| {
         Box::pin(async move {
             let machine = client
-                .call::<op::UpdateMachine>(UpdateMachineRequest { update }, Some(&selector))
+                .invoke::<op::UpdateMachine>(
+                    UpdateMachineRequest { update },
+                    &selector,
+                    Some(TARGET_RPC_TIMEOUT),
+                )
                 .await?;
             println!(
                 "Updated Machine {} ({})",

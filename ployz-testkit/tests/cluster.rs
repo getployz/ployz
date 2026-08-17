@@ -23,7 +23,7 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
     let plan = ClusterPlan::new(&format!("l3-001-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan.clone()).unwrap();
     let expected = cluster
-        .initialize_two()
+        .initialize_two_with_join_barrier()
         .await
         .unwrap()
         .map(|machine| machine.id)

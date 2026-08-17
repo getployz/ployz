@@ -369,3 +369,11 @@ crate::value::open_string_enum!(MembershipObservation, Unrecognized {
     Suspect => "suspect",
     Down => "down",
 });
+
+impl MembershipObservation {
+    /// Up and Suspect invite one peer RPC. Down, Unknown, and Unrecognized do not.
+    #[must_use]
+    pub fn invites_rpc(&self) -> bool {
+        matches!(self, Self::Up | Self::Suspect)
+    }
+}

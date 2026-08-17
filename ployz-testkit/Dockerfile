@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 # Host binaries: cargo build --locked --release --package ployz --package ployzd
 # then install them to ployz-testkit/prebuilt/{ployz,ployzd}.
+# After docker build, prime the nested Docker graph into a tarball:
+#   IMAGE=<tag> scripts/prime-testkit-image.sh
 # Runtime glibc must match GitHub-hosted Ubuntu 24.04 (host cargo --release).
 FROM docker:29.1.3-dind AS docker-bin
 
@@ -24,5 +26,10 @@ RUN chmod +x /usr/local/bin/ployz-testkit-entrypoint /usr/local/bin/journalctl \
  && dockerd --version \
  && wg --version \
  && ployzd version
-VOLUME ["/var/lib/docker", "/var/lib/ployz"]
+VOLUME ["/var/lib/ployz"]
+# Nested overlay cannot use a Docker graph committed into the image: snapshot
+# dirs split across image/container layers and `docker create` fails with
+# "overlay ... invalid argument". Keep the graph on one filesystem (this
+# volume). Prime writes /opt/ployz/docker-graph.tar; entrypoint extracts it.
+VOLUME ["/var/lib/docker"]
 ENTRYPOINT ["ployz-testkit-entrypoint"]

@@ -21,6 +21,30 @@ fi
 assert_contains "$dockerfile" "FROM ubuntu:24.04"
 assert_contains "$dockerfile" "COPY ployz-testkit/prebuilt/ployz /usr/local/bin/ployz"
 assert_contains "$dockerfile" "COPY ployz-testkit/prebuilt/ployzd /usr/local/bin/ployzd"
+assert_contains "$dockerfile" 'VOLUME ["/var/lib/ployz"]'
+assert_contains "$dockerfile" 'VOLUME ["/var/lib/docker"]'
+
+entrypoint="$ROOT/ployz-testkit/entrypoint.sh"
+assert_contains "$entrypoint" "docker load --input"
+assert_contains "$entrypoint" "/opt/ployz/docker-graph.tar"
+assert_contains "$entrypoint" "! -f /opt/ployz/docker-graph.tar"
+assert_contains "$entrypoint" "/opt/ployz/images/*.tar"
+
+prime="$ROOT/scripts/prime-testkit-image.sh"
+assert_contains "$prime" "docker commit"
+assert_contains "$prime" "PLOYZ_TESTKIT_PRIME=1"
+assert_contains "$prime" "ENV PLOYZ_TESTKIT_PRIME=0"
+assert_contains "$entrypoint" "PLOYZ_TESTKIT_PRIME"
+assert_contains "$action" "scripts/prime-testkit-image.sh"
+assert_contains "$action" "docker push"
+assert_contains "$action" "load: true"
+
+layer3="$ROOT/scripts/run-layer3-tests.sh"
+assert_contains "$layer3" "--test-threads=1"
+if grep -Fq "for scenario" "$layer3"; then
+    echo "$layer3 still isolates cluster scenarios" >&2
+    exit 1
+fi
 
 assert_contains "$action" "Swatinem/rust-cache@v2"
 assert_contains "$action" "shared-key: testkit-release"

@@ -15,7 +15,10 @@ use ployz_core::{
 use thiserror::Error;
 use tokio::process::{Child, Command};
 
-use crate::connect::{Client, MachineImagesObservation, rpc_error};
+use crate::{
+    cluster::MachineImagesObservation,
+    connect::{Client, rpc_error},
+};
 
 use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 
@@ -187,12 +190,63 @@ pub(crate) async fn push_using_machines(
     Ok(result)
 }
 
-fn select_targets(
+pub(crate) struct ImageListSelection {
+    pub targets: Vec<Machine>,
+    pub omissions: Vec<MachineId>,
+}
+
+pub(crate) fn list_selection(
+    observations: &[ployz_core::MachineObservation],
+    selectors: &[String],
+) -> Result<ImageListSelection, PushError> {
+    let targets = match select_targets(observations, selectors) {
+        Ok(targets) => targets,
+        Err(PushError::Selector(ployz_core::MachineSelectorError::NoVisibleMachines)) => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let omissions = if selectors.is_empty() {
+        observations
+            .iter()
+            .filter(|observation| !observation.membership.invites_rpc())
+            .map(|observation| observation.machine.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(ImageListSelection { targets, omissions })
+}
+
+pub(crate) async fn list(
+    client: &mut Client,
+    reference: Option<String>,
+    selectors: &[String],
+) -> Result<PartialResult<MachineImagesObservation, RpcError>, PushError> {
+    let machines = client.machines().await?;
+    let selection = list_selection(&machines, selectors)?;
+    if selection.targets.is_empty() {
+        return Ok(PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: selection.omissions,
+        });
+    }
+    let ids = selection
+        .targets
+        .iter()
+        .map(|machine| machine.id.to_string())
+        .collect::<Vec<_>>();
+    let mut result = client.list_images(reference, &ids).await?;
+    result.omissions.extend(selection.omissions);
+    Ok(result)
+}
+
+pub(crate) fn select_targets(
     observations: &[ployz_core::MachineObservation],
     selectors: &[String],
 ) -> Result<Vec<Machine>, PushError> {
     let machines = observations
         .iter()
+        .filter(|observation| observation.membership.invites_rpc())
         .map(|observation| observation.machine.clone())
         .collect::<Vec<_>>();
     let selectors = if selectors.is_empty() {
@@ -650,6 +704,19 @@ mod tests {
             "all"
         );
         assert!(select_targets(&machines, &["missing".into()]).is_err());
+        let mut down = machine(3);
+        down.membership = MembershipObservation::Down;
+        let mut unknown = machine(4);
+        unknown.membership = MembershipObservation::Unknown;
+        let mixed = [machine(1), machine(2), down.clone(), unknown];
+        assert_eq!(select_targets(&mixed, &[]).unwrap().len(), 2);
+        assert!(select_targets(&mixed, &[down.machine.name.to_string()]).is_err());
+        let broadcast = list_selection(&mixed, &[]).unwrap();
+        assert_eq!(broadcast.targets.len(), 2);
+        assert_eq!(broadcast.omissions.len(), 2);
+        let named = list_selection(&mixed, &["machine-1".into()]).unwrap();
+        assert_eq!(named.targets.len(), 1);
+        assert!(named.omissions.is_empty());
         assert_eq!(proxy::mode_for(false, false), ProxyMode::Native);
         assert_eq!(proxy::mode_for(false, true), ProxyMode::Rootless);
         assert_eq!(proxy::mode_for(true, false), ProxyMode::Vm);
