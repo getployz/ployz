@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf
 use ployz::{
     connect::resolve_connections,
     context::{
-        Config, Connection, ConnectionSource, Context, ContextError, SshDestination,
+        Config, ConfigError, Connection, ConnectionSource, Context, ContextError, SshDestination,
         select_connections,
     },
 };
@@ -365,7 +365,7 @@ fn config_cannot_store_current_context_as_empty_string() {
 }
 
 #[test]
-fn empty_current_context_yaml_loads_as_none() {
+fn empty_current_context_yaml_fails_to_load() {
     let root =
         std::env::temp_dir().join(format!("ployz-empty-current-yaml-{}", std::process::id()));
     let path = root.join("config.yaml");
@@ -373,6 +373,26 @@ fn empty_current_context_yaml_loads_as_none() {
     fs::create_dir_all(&root).unwrap();
     fs::write(&path, "current_context: \"\"\n").unwrap();
 
+    let error = Config::load(&path).unwrap_err();
+    assert!(
+        matches!(error, ConfigError::EmptyCurrentContext(ref error_path) if error_path == &path),
+        "{error}"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn absent_or_null_current_context_yaml_loads_as_none() {
+    let root = std::env::temp_dir().join(format!("ployz-null-current-yaml-{}", std::process::id()));
+    let path = root.join("config.yaml");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+
+    fs::write(&path, "contexts: {}\n").unwrap();
+    assert_eq!(Config::load(&path).unwrap().current_context(), None);
+
+    fs::write(&path, "current_context: null\n").unwrap();
     assert_eq!(Config::load(&path).unwrap().current_context(), None);
 
     fs::remove_dir_all(root).unwrap();

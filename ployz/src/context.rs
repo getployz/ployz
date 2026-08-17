@@ -65,7 +65,13 @@ impl Config {
                 path: path.clone(),
                 source,
             })?;
-        config.current_context = none_if_empty(config.current_context);
+        if config
+            .current_context
+            .as_ref()
+            .is_some_and(String::is_empty)
+        {
+            return Err(ConfigError::EmptyCurrentContext(path));
+        }
         config.path = path;
         Ok(config)
     }
@@ -552,6 +558,8 @@ pub enum ConfigError {
         path: PathBuf,
         source: serde_norway::Error,
     },
+    #[error("current context cannot be empty in Ployz config {0}")]
+    EmptyCurrentContext(PathBuf),
     #[error("could not encode Ployz config: {0}")]
     Encode(serde_norway::Error),
     #[error("could not create Ployz config directory {path}: {source}")]
