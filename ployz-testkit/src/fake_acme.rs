@@ -49,11 +49,35 @@ struct Inner {
 
 struct Order {
     hostname: String,
-    order_status: &'static str,
-    authz_status: &'static str,
+    status: OrderStatus,
     token: String,
     thumbprint: String,
-    certificate: Option<String>,
+}
+
+enum OrderStatus {
+    Pending,
+    Ready,
+    Valid { url: String },
+    Invalid,
+}
+
+impl OrderStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::Valid { .. } => "valid",
+            Self::Invalid => "invalid",
+        }
+    }
+
+    fn authorization_status(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready | Self::Valid { .. } => "valid",
+            Self::Invalid => "invalid",
+        }
+    }
 }
 
 impl FakeCa {
@@ -158,15 +182,15 @@ pub fn serve_http01(answers: Arc<Mutex<BTreeMap<String, String>>>) -> (oneshot::
 
 fn order_body(base: &str, id: &str, rec: &Order) -> Value {
     let mut body = json!({
-        "status": rec.order_status,
+        "status": rec.status.as_str(),
         "identifiers": [{"type":"dns","value": rec.hostname}],
         "authorizations": [format!("{base}/authz/{id}")],
         "finalize": format!("{base}/finalize/{id}"),
     });
-    if let Some(certificate) = &rec.certificate
+    if let OrderStatus::Valid { url } = &rec.status
         && let Some(object) = body.as_object_mut()
     {
-        object.insert("certificate".into(), json!(certificate));
+        object.insert("certificate".into(), json!(url));
     }
     body
 }
@@ -285,11 +309,9 @@ async fn new_order(State(ca): State<FakeCa>, request: Request<Body>) -> Response
         id.clone(),
         Order {
             hostname,
-            order_status: "pending",
-            authz_status: "pending",
+            status: OrderStatus::Pending,
             token: format!("token{id}"),
             thumbprint,
-            certificate: None,
         },
     );
     let rec = inner.orders.get(&id).expect("just inserted");
@@ -328,12 +350,12 @@ async fn authz(
         return StatusCode::NOT_FOUND.into_response();
     };
     let body = json!({
-        "status": rec.authz_status,
+        "status": rec.status.authorization_status(),
         "identifier": {"type":"dns","value": rec.hostname},
         "challenges": [{
             "type": "http-01",
             "url": format!("{}/chall/{id}", inner.base),
-            "status": rec.authz_status,
+            "status": rec.status.authorization_status(),
             "token": rec.token,
         }],
     });
@@ -386,16 +408,15 @@ async fn chall(
     let Some(rec) = inner.orders.get_mut(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if got == expected {
-        rec.authz_status = "valid";
-        rec.order_status = "ready";
+    rec.status = if got == expected {
+        OrderStatus::Ready
     } else {
-        rec.authz_status = "invalid";
-    }
+        OrderStatus::Invalid
+    };
     let body = json!({
         "type": "http-01",
         "url": format!("{base}/chall/{id}"),
-        "status": rec.authz_status,
+        "status": rec.status.authorization_status(),
         "token": rec.token,
     });
     drop(inner);
@@ -419,7 +440,7 @@ async fn finalize(
     let Some(order) = inner.orders.get(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if order.order_status != "ready" {
+    if !matches!(order.status, OrderStatus::Ready) {
         let body = order_body(&inner.base, &id, order);
         drop(inner);
         return with_nonce(&ca, StatusCode::OK, None, body);
@@ -430,8 +451,7 @@ async fn finalize(
     let cert_id = inner.next_id.to_string();
     inner.certs.insert(cert_id, issued);
     let order = inner.orders.get_mut(&id).expect("order still present");
-    order.order_status = "valid";
-    order.certificate = Some(cert_url);
+    order.status = OrderStatus::Valid { url: cert_url };
     let rec = inner.orders.get(&id).expect("order still present");
     let body = order_body(&inner.base, &id, rec);
     drop(inner);
@@ -601,4 +621,181 @@ struct Protected {
     nonce: Option<String>,
     jwk: Option<Value>,
     kid: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use base64::Engine;
+    use serde_json::{Value, json};
+
+    use super::{
+        CertificateParams, FakeCa, KeyPair, URL_SAFE_NO_PAD, jwk_thumbprint, serve_http01,
+    };
+
+    struct Acme {
+        http: reqwest::Client,
+        nonce: String,
+        kid: Option<String>,
+        directory: Value,
+    }
+
+    impl Acme {
+        async fn open(directory_url: &str) -> Self {
+            let http = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap();
+            let response = http.get(directory_url).send().await.unwrap();
+            let nonce = header(&response, "replay-nonce");
+            let directory = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            Self {
+                http,
+                nonce,
+                kid: None,
+                directory,
+            }
+        }
+
+        async fn post(&mut self, url: &str, payload: Value) -> (Option<String>, Value) {
+            let mut protected = serde_json::Map::from_iter([
+                ("alg".into(), json!("ES256")),
+                ("nonce".into(), json!(self.nonce)),
+                ("url".into(), json!(url)),
+            ]);
+            match &self.kid {
+                Some(kid) => protected.insert("kid".into(), json!(kid)),
+                None => protected.insert("jwk".into(), jwk()),
+            };
+            let payload = if payload.is_null() {
+                String::new()
+            } else {
+                URL_SAFE_NO_PAD.encode(payload.to_string())
+            };
+            let response = self
+                .http
+                .post(url)
+                .header("content-type", "application/json")
+                .body(
+                    json!({
+                        "protected": URL_SAFE_NO_PAD.encode(Value::Object(protected).to_string()),
+                        "payload": payload,
+                        "signature": "e30",
+                    })
+                    .to_string(),
+                )
+                .send()
+                .await
+                .unwrap();
+            self.nonce = header(&response, "replay-nonce");
+            let location = response
+                .headers()
+                .get("location")
+                .map(|value| value.to_str().unwrap().to_owned());
+            let body = response.bytes().await.unwrap();
+            (
+                location,
+                serde_json::from_slice(&body).unwrap_or(Value::Null),
+            )
+        }
+
+        async fn register_and_order(&mut self, hostname: &str) -> (String, Value) {
+            let new_account = json_str(&self.directory, "/newAccount").to_owned();
+            let new_order = json_str(&self.directory, "/newOrder").to_owned();
+            let (kid, _) = self.post(&new_account, json!({})).await;
+            self.kid = Some(kid.unwrap());
+            let (location, body) = self
+                .post(
+                    &new_order,
+                    json!({"identifiers":[{"type":"dns","value": hostname}]}),
+                )
+                .await;
+            (location.unwrap(), body)
+        }
+    }
+
+    fn jwk() -> Value {
+        json!({"crv":"P-256","kty":"EC","x":"x","y":"y"})
+    }
+
+    fn json_str<'a>(value: &'a Value, pointer: &str) -> &'a str {
+        value.pointer(pointer).and_then(Value::as_str).unwrap()
+    }
+
+    fn header(response: &reqwest::Response, name: &str) -> String {
+        response
+            .headers()
+            .get(name)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn csr(hostname: &str) -> String {
+        let key = KeyPair::generate().unwrap();
+        let params = CertificateParams::new(vec![hostname.to_owned()]).unwrap();
+        URL_SAFE_NO_PAD.encode(params.serialize_request(&key).unwrap().der())
+    }
+
+    #[tokio::test]
+    async fn failed_http01_sets_the_order_invalid() {
+        let ca = FakeCa::bind("127.0.0.1:0").await.unwrap();
+        let mut acme = Acme::open(&ca.directory_url()).await;
+        let (order_url, order) = acme.register_and_order("app.example.com").await;
+        let authz_url = json_str(&order, "/authorizations/0").to_owned();
+        let (_, authz) = acme.post(&authz_url, Value::Null).await;
+        let chall_url = json_str(&authz, "/challenges/0/url").to_owned();
+
+        acme.post(&chall_url, Value::Null).await;
+        let (_, order) = acme.post(&order_url, Value::Null).await;
+        let (_, authz) = acme.post(&authz_url, Value::Null).await;
+
+        assert_eq!(json_str(&order, "/status"), "invalid");
+        assert!(order.get("certificate").is_none());
+        assert_eq!(json_str(&authz, "/status"), "invalid");
+        assert_eq!(json_str(&authz, "/challenges/0/status"), "invalid");
+    }
+
+    #[tokio::test]
+    async fn successful_challenge_reaches_ready_then_valid_with_a_url() {
+        let answers = Arc::new(Mutex::new(BTreeMap::new()));
+        let (http01, port) = serve_http01(Arc::clone(&answers));
+        let ca = FakeCa::bind("127.0.0.1:0").await.unwrap();
+        ca.set_validation("127.0.0.1", port);
+        let mut acme = Acme::open(&ca.directory_url()).await;
+        let (order_url, order) = acme.register_and_order("app.example.com").await;
+        let (_, authz) = acme
+            .post(json_str(&order, "/authorizations/0"), Value::Null)
+            .await;
+        let token = json_str(&authz, "/challenges/0/token");
+        let chall_url = json_str(&authz, "/challenges/0/url").to_owned();
+        let key_authorization = format!("{token}.{}", jwk_thumbprint(&jwk()));
+        answers
+            .lock()
+            .unwrap()
+            .insert(token.to_owned(), key_authorization);
+
+        acme.post(&chall_url, Value::Null).await;
+        let (_, order) = acme.post(&order_url, Value::Null).await;
+        assert_eq!(json_str(&order, "/status"), "ready");
+        assert!(order.get("certificate").is_none());
+
+        acme.post(
+            json_str(&order, "/finalize"),
+            json!({"csr": csr("app.example.com")}),
+        )
+        .await;
+        let (_, order) = acme.post(&order_url, Value::Null).await;
+        assert_eq!(json_str(&order, "/status"), "valid");
+        assert!(json_str(&order, "/certificate").contains("/cert/"));
+        drop(http01);
+    }
 }
