@@ -722,7 +722,7 @@ pub(super) fn file_mode(value: &Value) -> Option<u32> {
         .or_else(|| value.parse().ok())
 }
 
-pub(super) fn duration_millis(value: Option<&str>) -> Result<Option<u64>, ComposeError> {
+pub(crate) fn duration_millis(value: Option<&str>) -> Result<Option<u64>, ComposeError> {
     let Some(mut remaining) = value else {
         return Ok(None);
     };

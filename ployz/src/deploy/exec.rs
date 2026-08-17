@@ -621,7 +621,7 @@ async fn monitor_container<C: MachineOperations>(
     let monitor = spec
         .update
         .monitor_millis
-        .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis);
+        .map_or_else(default_health_monitor, Duration::from_millis);
     let started = Instant::now();
 
     if !matches!(
@@ -880,6 +880,24 @@ fn health_deadline_for(
                 .then(|| started + healthcheck_timeout(None))
             }),
     }
+}
+
+fn default_health_monitor() -> Duration {
+    std::env::var(crate::cli::env::HEALTH_MONITOR_PERIOD)
+        .ok()
+        .and_then(|value| parse_monitor_period(&value))
+        .unwrap_or(DEFAULT_HEALTH_MONITOR)
+}
+
+fn parse_monitor_period(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if value == "0" {
+        return Some(Duration::ZERO);
+    }
+    crate::compose::duration_millis(Some(value))
+        .ok()
+        .flatten()
+        .map(Duration::from_millis)
 }
 
 fn healthcheck_timeout(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {

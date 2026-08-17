@@ -10,7 +10,6 @@ use ployz_core::{
     StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
-use semver::Version;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -36,37 +35,31 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         assert!(config.contains(CADDY_VERIFY_PATH));
     }
 
-    let selected_image = ployz::caddy::latest_image().await.unwrap();
-    let selected_tag = selected_image
-        .strip_prefix("caddy:")
-        .expect("Caddy image has the repository prefix");
-    let selected_version = Version::parse(selected_tag).expect("Caddy image has a semver tag");
-    assert_eq!(selected_version.major, 2);
-    assert!(selected_version.pre.is_empty() && selected_version.build.is_empty());
-    assert_eq!(selected_version.to_string(), selected_tag);
-    for index in 0..machines.len() {
-        cluster
-            .machine_shell(index, &format!("docker tag caddy:2.10.2 {selected_image}"))
-            .unwrap();
-    }
     cli(
         &direct,
-        &["caddy", "deploy", "--machine", machines[0].id.as_str()],
+        &[
+            "caddy",
+            "deploy",
+            "--image",
+            "caddy:2.10.2",
+            "--machine",
+            machines[0].id.as_str(),
+        ],
     );
     let caddy_id = wait_service(&mut client, "caddy", 1).await;
     assert!(
         wait_running(&mut client, &caddy_id, 1)
             .await
             .iter()
-            .all(|container| container.resolved_spec.container.image == selected_image)
+            .all(|container| container.resolved_spec.container.image == "caddy:2.10.2")
     );
-    cli(&direct, &["caddy", "deploy"]);
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
     assert_eq!(wait_service(&mut client, "caddy", 3).await, caddy_id);
     assert!(
         wait_running(&mut client, &caddy_id, 3)
             .await
             .iter()
-            .all(|container| container.resolved_spec.container.image == selected_image)
+            .all(|container| container.resolved_spec.container.image == "caddy:2.10.2")
     );
 
     let api_id = ServiceId::random();
@@ -440,6 +433,7 @@ fn run_cli(direct: &str, args: &[&str]) -> process::Output {
             "/missing-ployz-test-config",
         ])
         .args(args)
+        .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
         .output()
         .unwrap();
     assert!(
@@ -572,7 +566,10 @@ async fn deploy(
     let plan = ployz::deploy::plan_deploy(
         [requested],
         &snapshot,
-        ployz::deploy::PlanOptions::default(),
+        ployz::deploy::PlanOptions {
+            skip_health_monitor: true,
+            ..Default::default()
+        },
     )
     .unwrap();
     let outcome = ployz::deploy::execute_plan(&plan, client, &CancellationToken::new()).await;

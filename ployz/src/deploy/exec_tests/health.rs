@@ -1,5 +1,13 @@
 use super::*;
 
+#[test]
+fn parse_monitor_period_accepts_zero_and_seconds() {
+    assert_eq!(parse_monitor_period("0"), Some(Duration::ZERO));
+    assert_eq!(parse_monitor_period("0s"), Some(Duration::ZERO));
+    assert_eq!(parse_monitor_period("10s"), Some(Duration::from_secs(10)));
+    assert_eq!(parse_monitor_period("bogus"), None);
+}
+
 #[tokio::test(start_paused = true)]
 async fn health_monitor_accepts_running_no_check_inherited_starting_and_transient_unhealthy() {
     let machine = machine('1');
