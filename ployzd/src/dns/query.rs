@@ -18,7 +18,7 @@ pub(super) struct InternalQuery {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Target {
     Empty,
-    ServiceId { id: ServiceId, name: ServiceName },
+    ServiceId(ServiceId),
     ServiceName(ServiceName),
     MachineService(MachineServiceTarget),
 }
@@ -66,11 +66,7 @@ fn parse_target(selector: &str) -> Target {
         });
     }
     if let Ok(id) = ServiceId::parse(selector) {
-        return Target::ServiceId {
-            id,
-            // A Service ID is also a valid Service Name; ID index wins when present.
-            name: ServiceName::parse(selector).expect("a Service ID is a DNS-label Service Name"),
-        };
+        return Target::ServiceId(id);
     }
     ServiceName::parse(selector).map_or(Target::Empty, Target::ServiceName)
 }
@@ -96,13 +92,7 @@ mod tests {
         let id = ServiceId::parse("b".repeat(32)).unwrap();
         assert_eq!(
             query(&format!("{id}.internal.")),
-            internal(
-                Target::ServiceId {
-                    id,
-                    name: ServiceName::parse(id.as_str()).unwrap(),
-                },
-                false,
-            )
+            internal(Target::ServiceId(id), false)
         );
     }
 

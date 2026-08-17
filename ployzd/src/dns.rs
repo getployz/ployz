@@ -47,6 +47,12 @@ enum ResponsePlan {
     },
 }
 
+/// ID-index lookup. [`Known`] empty is NXDOMAIN; [`Unknown`] falls back to names.
+enum ServiceIdIndex<'index> {
+    Known(&'index [Ipv4Addr]),
+    Unknown,
+}
+
 struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
     names: HashMap<ServiceName, Vec<Ipv4Addr>>,
@@ -61,6 +67,7 @@ impl Projection {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut names = HashMap::<ServiceName, Vec<Ipv4Addr>>::new();
         let mut machine_services = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
+        // Known IDs enter the index even with no serving addresses so empty ≠ missing.
         for container in &containers {
             service_ids
                 .entry(container.as_observation().service_id)
@@ -140,18 +147,30 @@ impl Projection {
     fn addresses(&self, target: &Target) -> Vec<Ipv4Addr> {
         match target {
             Target::Empty => Vec::new(),
-            Target::ServiceId { id, name } => self
-                .service_ids
-                .get(id)
-                .or_else(|| self.names.get(name))
-                .cloned()
-                .unwrap_or_default(),
+            Target::ServiceId(id) => match self.service_id_index(id) {
+                ServiceIdIndex::Known(addresses) => addresses.to_vec(),
+                ServiceIdIndex::Unknown => self
+                    .names
+                    .get(
+                        &ServiceName::parse(id.as_str())
+                            .expect("a Service ID is a DNS-label Service Name"),
+                    )
+                    .cloned()
+                    .unwrap_or_default(),
+            },
             Target::ServiceName(name) => self.names.get(name).cloned().unwrap_or_default(),
             Target::MachineService(target) => self
                 .machine_services
                 .get(target)
                 .cloned()
                 .unwrap_or_default(),
+        }
+    }
+
+    fn service_id_index(&self, id: &ServiceId) -> ServiceIdIndex<'_> {
+        match self.service_ids.get(id) {
+            Some(addresses) => ServiceIdIndex::Known(addresses),
+            None => ServiceIdIndex::Unknown,
         }
     }
 }
@@ -686,6 +705,32 @@ mod tests {
                 answers,
             } if answers.is_empty()
         ));
+    }
+
+    #[test]
+    fn unknown_service_id_falls_back_to_the_name_index() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let missing_id = ServiceId::parse("b".repeat(32)).unwrap();
+        let other_id = ServiceId::parse("c".repeat(32)).unwrap();
+        let colliding_name = ServiceName::parse(missing_id.to_string()).unwrap();
+        let projection = Projection::from_observations(&[observation(
+            1,
+            &machine,
+            &other_id,
+            &colliding_name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 3]),
+        )]);
+
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii(format!("{missing_id}.internal.")).unwrap(),
+                RecordType::A,
+                "10.210.1.0/24".parse().unwrap(),
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 3)]
+        );
     }
 
     #[test]
