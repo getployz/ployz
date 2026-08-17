@@ -9,9 +9,9 @@ use std::{
 use futures_util::stream;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    ContainerSelector, FanoutSelector, HookContainer, LogMetadata, LogOrigin, MachineId,
-    MachineName, MembershipObservation, ResolvedServiceSpec, RestartPolicy, ServiceContainer,
-    ServiceId, ServiceName, ServiceSelector,
+    ContainerSelector, FanoutSelector, HealthObservation, HookContainer, LogMetadata, LogOrigin,
+    MachineId, MachineName, MembershipObservation, ResolvedServiceSpec, RestartPolicy,
+    ServiceContainer, ServiceId, ServiceName, ServiceSelector,
 };
 
 use super::*;

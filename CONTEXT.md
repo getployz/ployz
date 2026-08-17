@@ -156,6 +156,10 @@ _Avoid_: Management Address, ingress gateway
 The address assigned to one container within its Machine Subnet. Its apparent cluster-wide uniqueness depends on optimistic Machine Subnet allocation.
 _Avoid_: Management Address, globally unique container address
 
+**Serving Container**:
+A Service Container that is healthy and has a Container Address. It is observer-derived eligibility to receive traffic, not a replica identity.
+_Avoid_: replica, endpoint, upstream
+
 **Internal DNS Answer**:
 An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations. It is not persisted and is not authoritative Cluster state even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, membership-filtered endpoint set

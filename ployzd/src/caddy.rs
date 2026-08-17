@@ -1,8 +1,8 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
-    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, PortPublication,
-    ServiceContainer, ServiceName, service_containers,
+    CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, IngressHostname, Machine,
+    MachineId, PortPublication, ServiceContainer, ServiceName, service_containers,
+    serving_replicas,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -409,10 +409,9 @@ fn eligible_containers<'a>(
     local_machine: &MachineId,
     containers: &'a [ServiceContainer],
 ) -> Vec<&'a ServiceContainer> {
-    healthy_containers(local_machine, containers)
-        .into_iter()
-        .filter(|container| container.as_observation().address.is_some())
-        .collect()
+    let mut containers = serving_replicas(containers);
+    containers.sort_by_key(|container| caddy_container_order(local_machine, container));
+    containers
 }
 
 fn healthy_containers<'a>(
@@ -421,25 +420,23 @@ fn healthy_containers<'a>(
 ) -> Vec<&'a ServiceContainer> {
     let mut containers = containers
         .iter()
-        .filter(|container| {
-            matches!(
-                container.as_observation().runtime,
-                ContainerRuntimeObservation::Running {
-                    health: HealthObservation::Healthy | HealthObservation::NotConfigured
-                }
-            )
-        })
+        .filter(|container| container.as_observation().runtime.is_healthy())
         .collect::<Vec<_>>();
-    containers.sort_by_key(|container| {
-        let observation = container.as_observation();
-        (
-            observation.machine_id != *local_machine,
-            observation.service_name.as_str(),
-            observation.created_at_unix_nanos,
-            observation.container_id.as_str(),
-        )
-    });
+    containers.sort_by_key(|container| caddy_container_order(local_machine, container));
     containers
+}
+
+fn caddy_container_order<'a>(
+    local_machine: &MachineId,
+    container: &'a ServiceContainer,
+) -> (bool, &'a str, i64, &'a str) {
+    let observation = container.as_observation();
+    (
+        observation.machine_id != *local_machine,
+        observation.service_name.as_str(),
+        observation.created_at_unix_nanos,
+        observation.container_id.as_str(),
+    )
 }
 
 fn creation_key(container: &ServiceContainer) -> (i64, &str) {

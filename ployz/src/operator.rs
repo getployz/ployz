@@ -10,10 +10,10 @@ use std::{
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
-    ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry, LogStream, LogsOptions,
-    MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
-    MachineTarget, OpaquePayload, ServiceContainer, ServiceObservation, ServiceSelector,
-    StreamProtocolError, op, resolve_container_selector, resolve_machine_selectors, select_service,
+    ExecRequestFrame, FanoutSelector, LogEntry, LogStream, LogsOptions, MachineId,
+    MachineLogService, MachineLogsRequest, MachineName, MachineObservation, MachineTarget,
+    OpaquePayload, ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
+    resolve_container_selector, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -257,14 +257,7 @@ pub fn select_proxy_container(
     service
         .containers
         .iter()
-        .find(|container| {
-            matches!(
-                container.as_observation().runtime,
-                ployz_core::ContainerRuntimeObservation::Running {
-                    health: HealthObservation::Healthy | HealthObservation::NotConfigured
-                }
-            )
-        })
+        .find(|container| container.as_observation().runtime.is_healthy())
         .ok_or(OperatorError::NoHealthyContainer)
 }
 

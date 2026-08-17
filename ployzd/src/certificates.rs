@@ -18,10 +18,10 @@ use instant_acme::{
     ExternalAccountKey, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-    IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication, cluster_dns_verdict,
-    issuance_failure_clock, issuance_gate, issuance_refusal_reason, resolve_certificate_policy,
+    CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation, HttpProtocol,
+    IngressHost, IngressHostname, IssuanceFailure, IssuanceGate, Machine, MachineId,
+    PortPublication, cluster_dns_verdict, issuance_failure_clock, issuance_gate,
+    issuance_refusal_reason, resolve_certificate_policy,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -222,7 +222,7 @@ fn caddy_challenge_ips(
     let caddy: BTreeSet<_> = observations
         .iter()
         .filter(|observation| observation.service_name.as_str() == CADDY_SERVICE)
-        .filter(|observation| caddy_is_running(observation))
+        .filter(|observation| observation.runtime.is_healthy())
         .map(|observation| observation.machine_id)
         .collect();
     machines
@@ -230,15 +230,6 @@ fn caddy_challenge_ips(
         .filter(|machine| caddy.contains(&machine.id))
         .flat_map(machine_challenge_ips)
         .collect()
-}
-
-fn caddy_is_running(observation: &ContainerObservation) -> bool {
-    matches!(
-        observation.runtime,
-        ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy | HealthObservation::NotConfigured
-        }
-    )
 }
 
 fn machine_challenge_ips(machine: &Machine) -> impl Iterator<Item = IpAddr> {

@@ -127,6 +127,20 @@ pub fn service_containers(
         .collect()
 }
 
+/// Serving Containers: Service Containers that are healthy and have a Container Address.
+#[must_use]
+pub fn serving_replicas<'a>(
+    containers: impl IntoIterator<Item = &'a ServiceContainer>,
+) -> Vec<&'a ServiceContainer> {
+    containers
+        .into_iter()
+        .filter(|container| {
+            let observation = container.as_observation();
+            observation.runtime.is_healthy() && observation.address.is_some()
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "error")]
 pub enum ServiceSelectorError {
@@ -182,11 +196,96 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        ContainerId, ContainerKind, ContainerObservation, ContainerRef,
-        ContainerRuntimeObservation, MachineFailure, MachineId, MachineSuccess, PartialResult,
-        ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceContainer, ServiceId, ServiceName,
-        ServiceSelector,
+        ContainerAddress, ContainerId, ContainerKind, ContainerObservation, ContainerRef,
+        ContainerRuntimeObservation, HealthObservation, MachineFailure, MachineId, MachineSuccess,
+        PartialResult, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceContainer, ServiceId,
+        ServiceName, ServiceSelector,
     };
+
+    #[test]
+    fn serving_replicas_are_healthy_addressed_service_containers() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let healthy = serving_observation(
+            '1',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            Some([10, 210, 1, 2]),
+        );
+        let not_configured = serving_observation(
+            '2',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::NotConfigured,
+            },
+            Some([10, 210, 1, 3]),
+        );
+        let hook = serving_observation(
+            '3',
+            &service_id,
+            ContainerKind::PreDeployHook,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            Some([10, 210, 1, 4]),
+        );
+        let starting = serving_observation(
+            '4',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Starting,
+            },
+            Some([10, 210, 1, 5]),
+        );
+        let unhealthy = serving_observation(
+            '5',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            },
+            Some([10, 210, 1, 6]),
+        );
+        let no_address = serving_observation(
+            '6',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            None,
+        );
+        let exited = serving_observation(
+            '7',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Exited { code: 0 },
+            Some([10, 210, 1, 7]),
+        );
+
+        let containers = super::service_containers([
+            healthy.clone(),
+            not_configured.clone(),
+            hook,
+            starting,
+            unhealthy,
+            no_address,
+            exited,
+        ]);
+        let serving = super::serving_replicas(&containers);
+
+        assert_eq!(
+            serving
+                .into_iter()
+                .map(ServiceContainer::as_observation)
+                .collect::<Vec<_>>(),
+            vec![&healthy, &not_configured]
+        );
+    }
 
     #[test]
     fn mixed_wire_observations_convert_to_service_containers_without_hooks() {
@@ -529,6 +628,19 @@ mod tests {
         assert_eq!(changed.successes.len(), 1);
         assert_eq!(changed.failures.len(), 1);
         assert!(!changed.all_targets_succeeded());
+    }
+
+    fn serving_observation(
+        id: char,
+        service_id: &ServiceId,
+        kind: ContainerKind,
+        runtime: ContainerRuntimeObservation,
+        address: Option<[u8; 4]>,
+    ) -> ContainerObservation {
+        let mut observation = observation(id, service_id, "api", kind, "api");
+        observation.runtime = runtime;
+        observation.address = address.map(|octets| ContainerAddress(octets.into()));
+        observation
     }
 
     fn observation(

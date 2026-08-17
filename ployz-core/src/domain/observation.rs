@@ -27,6 +27,19 @@ pub enum ContainerRuntimeObservation {
     Unknown { raw: Value },
 }
 
+impl ContainerRuntimeObservation {
+    /// Running with health Healthy or NotConfigured.
+    #[must_use]
+    pub fn is_healthy(&self) -> bool {
+        matches!(
+            self,
+            Self::Running {
+                health: HealthObservation::Healthy | HealthObservation::NotConfigured,
+            }
+        )
+    }
+}
+
 impl Serialize for ContainerRuntimeObservation {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -330,9 +343,55 @@ mod tests {
 
     use super::{
         Container, ContainerKind, ContainerObservation, ContainerRoleError,
-        ContainerRuntimeObservation, HookContainer, ServiceContainer,
+        ContainerRuntimeObservation, HealthObservation, HookContainer, ServiceContainer,
     };
     use crate::{ContainerId, MachineId, ResolvedServiceSpec, ServiceId, ServiceName};
+
+    #[test]
+    fn is_healthy_is_running_with_healthy_or_not_configured() {
+        assert!(
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            }
+            .is_healthy()
+        );
+        assert!(
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::NotConfigured,
+            }
+            .is_healthy()
+        );
+        assert!(
+            !ContainerRuntimeObservation::Running {
+                health: HealthObservation::Starting,
+            }
+            .is_healthy()
+        );
+        assert!(
+            !ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            }
+            .is_healthy()
+        );
+        assert!(
+            !ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unrecognized("degraded".into()),
+            }
+            .is_healthy()
+        );
+        assert!(!ContainerRuntimeObservation::Created.is_healthy());
+        assert!(!ContainerRuntimeObservation::Paused.is_healthy());
+        assert!(!ContainerRuntimeObservation::Restarting.is_healthy());
+        assert!(!ContainerRuntimeObservation::Exited { code: 0 }.is_healthy());
+        assert!(!ContainerRuntimeObservation::Removing.is_healthy());
+        assert!(!ContainerRuntimeObservation::Dead.is_healthy());
+        assert!(
+            !ContainerRuntimeObservation::Unknown {
+                raw: json!({ "state": "future" })
+            }
+            .is_healthy()
+        );
+    }
 
     #[test]
     fn mixed_observation_converts_to_exactly_one_role_proven_view() {
