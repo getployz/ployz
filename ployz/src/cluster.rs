@@ -212,43 +212,41 @@ impl Client {
         response.decode::<T>().map_err(ConnectError::Codec)
     }
 
+    /// List Docker Volumes on each Machine that invites an RPC.
+    ///
+    /// Down, Unknown, and Unrecognized are omitted. Up and Suspect get one
+    /// `invoke` — `call` retries are for the entry connection, not peer fan-out.
+    /// UT-028: keep each probed target's success or typed failure.
     pub async fn list_volumes(
         &mut self,
         machines: &[MachineObservation],
     ) -> PartialResult<Vec<DockerVolume>, RpcError> {
-        // UT-028: keep every target's success or typed failure instead of warning and omitting it.
-        let mut requests = tokio::task::JoinSet::new();
+        let mut requests = JoinSet::new();
+        let mut omissions = Vec::new();
         for (index, machine) in machines.iter().enumerate() {
+            if !invites_rpc(&machine.membership) {
+                omissions.push(machine.machine.id);
+                continue;
+            }
             let machine_id = machine.machine.id;
-            let mut client = self.clone();
-            requests.spawn(async move {
-                let target = MachineTarget::from(&machine_id);
-                let outcome = client
-                    .call::<op::ListVolumes>(ListVolumesRequest {}, Some(&target))
-                    .await;
-                (index, machine_id, outcome)
-            });
+            let client = self.clone();
+            requests
+                .spawn(async move { (index, list_volumes_on_machine(client, machine_id).await) });
         }
-        let mut outcomes = Vec::with_capacity(machines.len());
+        let mut outcomes = Vec::with_capacity(requests.len());
         while let Some(outcome) = requests.join_next().await {
             outcomes.push(outcome.expect("Volume listing task does not panic"));
         }
-        outcomes.sort_by_key(|(index, _, _)| *index);
+        outcomes.sort_by_key(|(index, _)| *index);
         let mut result = PartialResult {
             successes: Vec::new(),
             failures: Vec::new(),
-            omissions: Vec::new(),
+            omissions,
         };
-        for (_, machine_id, outcome) in outcomes {
+        for (_, outcome) in outcomes {
             match outcome {
-                Ok(volumes) => result.successes.push(MachineSuccess {
-                    machine_id,
-                    value: volumes.volumes,
-                }),
-                Err(error) => result.failures.push(MachineFailure {
-                    machine_id,
-                    error: rpc_error(error),
-                }),
+                Ok(success) => result.successes.push(success),
+                Err(failure) => result.failures.push(failure),
             }
         }
         result
@@ -356,15 +354,10 @@ impl Client {
         for machine in machines {
             // TODO(UT-102): the entry Machine's observer-relative Membership Observation is the
             // current trust boundary; it can be stale and is not an authority or freshness proof.
-            match machine.membership {
-                MembershipObservation::Up | MembershipObservation::Suspect => {
-                    tasks.spawn(list_on_machine(self.clone(), machine.machine.id));
-                }
-                MembershipObservation::Down
-                | MembershipObservation::Unknown
-                | MembershipObservation::Unrecognized(_) => {
-                    omissions.push(machine.machine.id);
-                }
+            if invites_rpc(&machine.membership) {
+                tasks.spawn(list_on_machine(self.clone(), machine.machine.id));
+            } else {
+                omissions.push(machine.machine.id);
             }
         }
         let mut result = PartialResult {
@@ -508,6 +501,31 @@ pub(crate) fn snapshot_from_partial(
             })
             .collect(),
     }
+}
+
+fn invites_rpc(membership: &MembershipObservation) -> bool {
+    matches!(
+        membership,
+        MembershipObservation::Up | MembershipObservation::Suspect
+    )
+}
+
+async fn list_volumes_on_machine(
+    client: Client,
+    machine_id: MachineId,
+) -> Result<MachineSuccess<Vec<DockerVolume>>, MachineFailure<RpcError>> {
+    client
+        .invoke::<op::ListVolumes>(
+            ListVolumesRequest {},
+            &MachineTarget::from(&machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map(|list| MachineSuccess {
+            machine_id,
+            value: list.volumes,
+        })
+        .map_err(|error| MachineFailure { machine_id, error })
 }
 
 async fn list_on_machine(
