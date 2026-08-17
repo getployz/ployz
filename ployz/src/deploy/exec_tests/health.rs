@@ -52,12 +52,14 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
         observed(Call::Inspect(machine, early), healthy()),
         observed(Call::Inspect(machine, early), healthy()),
         observed(Call::Inspect(machine, early), healthy()),
+        observed(Call::Inspect(machine, early), healthy()),
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
             &transient,
         ),
         ok(Call::Start(machine, transient)),
         observed(Call::Inspect(machine, transient), unhealthy()),
+        observed(Call::Inspect(machine, transient), healthy()),
         observed(Call::Inspect(machine, transient), healthy()),
         observed(Call::Inspect(machine, transient), healthy()),
     ]);
@@ -82,6 +84,41 @@ async fn health_monitor_accepts_a_clean_exit_instead_of_failing_as_restarting() 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(outcome.failed.is_none());
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn health_monitor_fails_a_restart_after_healthy_at_the_monitor_deadline() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = plan(vec![run(
+        &machine,
+        spec(Some(1_000), Some(healthcheck()), None),
+        false,
+    )]);
+    let client = Scripted::new(vec![
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(Call::Inspect(machine, new), starting()),
+        observed(Call::Inspect(machine, new), healthy()),
+        observed(
+            Call::Inspect(machine, new),
+            ContainerRuntimeObservation::Restarting,
+        ),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::Operation {
+            error: ExecutionError::Health {
+                failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+                ..
+            },
+            ..
+        })
+    ));
     client.assert_done();
 }
 

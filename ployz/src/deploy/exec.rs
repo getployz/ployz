@@ -638,6 +638,12 @@ async fn monitor_container<C: MachineOperations>(
     }
 
     let monitor_deadline = started + monitor;
+    // A crash loop can report healthy at the deadline during a restart window.
+    let healthy_until = if monitor.is_zero() {
+        monitor_deadline
+    } else {
+        monitor_deadline + POLL_INTERVAL
+    };
     loop {
         if cancellation.is_cancelled() {
             return Err(health_error(container_id, HealthFailure::Cancelled));
@@ -646,12 +652,17 @@ async fn monitor_container<C: MachineOperations>(
         let now = Instant::now();
         let health_deadline =
             health_deadline_for(spec.container.healthcheck.as_ref(), &observed, started);
-        let wake_deadline =
-            match classify_health(&observed.runtime, now, monitor_deadline, health_deadline) {
-                HealthPoll::Complete => return Ok(()),
-                HealthPoll::PendingUntil(deadline) => deadline,
-                HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
-            };
+        let wake_deadline = match classify_health(
+            &observed.runtime,
+            now,
+            monitor_deadline,
+            health_deadline,
+            healthy_until,
+        ) {
+            HealthPoll::Complete => return Ok(()),
+            HealthPoll::PendingUntil(deadline) => deadline,
+            HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
+        };
         let wake = std::cmp::min(now + POLL_INTERVAL, wake_deadline);
         tokio::select! {
             () = cancellation.cancelled() => {
@@ -667,17 +678,16 @@ fn classify_health(
     now: Instant,
     monitor_deadline: Instant,
     health_deadline: Option<Instant>,
+    healthy_until: Instant,
 ) -> HealthPoll {
     match runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         } => {
-            // A crash loop can report healthy during a brief restart window.
-            // Hold until the monitor deadline so a later Restarting inspect fails.
-            if now >= monitor_deadline {
+            if now >= healthy_until {
                 HealthPoll::Complete
             } else {
-                HealthPoll::PendingUntil(monitor_deadline)
+                HealthPoll::PendingUntil(healthy_until)
             }
         }
         ContainerRuntimeObservation::Running {
