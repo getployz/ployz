@@ -6,10 +6,7 @@ use ployz_core::{
 
 use super::super::{connect_client, runtime};
 use super::{ConnectionOptions, helpers, machine_list, target};
-use crate::{
-    context::ConnectionSource,
-    handlers::{Error, leaf_matches},
-};
+use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
@@ -19,10 +16,6 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let yes = matches.get_flag("yes");
     runtime()?.block_on(async {
         let mut client = connect_client(matches, options.context()).await?;
-        let context_name = match client.connection_source() {
-            ConnectionSource::Context(name) => Some(name.clone()),
-            ConnectionSource::Direct | ConnectionSource::LocalSocket => None,
-        };
         let machines = machine_list(&mut client).await?;
         let selected = select_machine(&machines, &selector)?;
         let selected_target = MachineTarget::from(&selected.id);
@@ -77,26 +70,22 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
         }
 
+        // Drop the local connection before DNS refresh. A refresh failure
+        // must not leave the removed Machine named in the context (#249).
+        let mut config = options.load_or_empty_config()?;
+        let context_name = options
+            .context()
+            .map(str::to_owned)
+            .unwrap_or_else(|| config.current_context.clone());
+        if let Some(context) = config.contexts.get_mut(&context_name) {
+            context.drop_machine(&selected.id);
+            config.save()?;
+        }
         if let Err(error) =
             crate::dns::update_records_after_removal(&mut client, machines, &selected.id).await
         {
             eprintln!("WARNING: hosted DNS refresh failed after removing the Machine: {error}.");
             return Err(error.into());
-        }
-        if let Some(context_name) = context_name {
-            let mut config = options.load_config()?;
-            let context = config
-                .contexts
-                .get_mut(&context_name)
-                .ok_or_else(|| Error::usage(format!("context {context_name:?} not found")))?;
-            if let Some(index) = context
-                .connections
-                .iter()
-                .position(|connection| connection.machine_id() == Some(&selected.id))
-            {
-                context.connections.remove(index);
-            }
-            config.save()?;
         }
         println!("Removed Machine {} ({})", selected.name, selected.id);
         Ok::<_, Error>(())

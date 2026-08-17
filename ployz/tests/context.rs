@@ -210,6 +210,65 @@ fn selecting_a_connection_moves_only_that_entry_to_the_front() {
 }
 
 #[test]
+fn dropping_a_machine_leaves_only_the_remaining_connections() {
+    let mut context = Context {
+        connections: vec![
+            ssh_machine("ord1.example.com", '1'),
+            ssh_machine("ord2.example.com", '2'),
+            ssh_machine("ord3.example.com", '3'),
+        ],
+    };
+
+    context.drop_machine(&machine_id('2'));
+
+    assert_eq!(
+        context
+            .connections
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["ssh://root@ord1.example.com", "ssh://root@ord3.example.com",]
+    );
+}
+
+#[test]
+fn dropping_the_default_machine_leaves_the_next_connection_as_default() {
+    let mut context = Context {
+        connections: vec![
+            ssh_machine("ord1.example.com", '1'),
+            ssh_machine("ord2.example.com", '2'),
+            ssh_machine("ord3.example.com", '3'),
+        ],
+    };
+
+    context.drop_machine(&machine_id('1'));
+
+    assert_eq!(
+        context
+            .connections
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["ssh://root@ord2.example.com", "ssh://root@ord3.example.com",]
+    );
+}
+
+#[test]
+fn dropping_a_machine_the_context_never_named_is_a_no_op() {
+    let mut context = Context {
+        connections: vec![
+            ssh_machine("ord1.example.com", '1'),
+            Connection::ssh(SshDestination::parse("root@manual.example.com").unwrap()),
+        ],
+    };
+    let before = context.clone();
+
+    context.drop_machine(&machine_id('9'));
+
+    assert_eq!(context, before);
+}
+
+#[test]
 fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
     let root = std::env::temp_dir().join(format!("ployz-resolution-{}", std::process::id()));
     let config = root.join("config.yaml");
@@ -259,4 +318,13 @@ fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
     assert_eq!(fallback.source, ConnectionSource::LocalSocket);
 
     fs::remove_dir_all(root).unwrap();
+}
+
+fn ssh_machine(host: &str, seed: char) -> Connection {
+    Connection::ssh(SshDestination::parse(format!("root@{host}")).unwrap())
+        .with_machine_id(machine_id(seed))
+}
+
+fn machine_id(seed: char) -> MachineId {
+    MachineId::parse(seed.to_string().repeat(32)).unwrap()
 }

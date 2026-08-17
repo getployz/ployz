@@ -162,6 +162,15 @@ impl Context {
         prefix.rotate_right(1);
         true
     }
+
+    /// Drop the connection that names `machine_id`, if any.
+    ///
+    /// Remaining connections keep their order, so the first remaining entry
+    /// stays the default. A Machine this context never named is a no-op.
+    pub fn drop_machine(&mut self, machine_id: &MachineId) {
+        self.connections
+            .retain(|connection| connection.machine_id() != Some(machine_id));
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
