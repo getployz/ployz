@@ -131,13 +131,11 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         crate::dns::update_records_if_reserved(&mut entry).await?;
         Ok::<_, Error>(())
     });
-    if let Err(error) = &dns_result {
-        eprintln!("WARNING: hosted DNS refresh failed after adding the Machine: {error}.");
-    }
     if let Some(error) = caddy_error {
         return Err(Error::usage(caddy_follow_on_error(&error)));
     }
     dns_result
+        .map_err(|error| Error::warned("hosted DNS refresh failed after adding the Machine", error))
 }
 
 async fn wait_machine_up(entry: &mut Client, machine_id: &MachineId) -> Result<(), Error> {

@@ -59,6 +59,11 @@ impl Failure {
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
         Self::command(Usage(message.into()))
     }
+
+    /// One product line for a follow-on failure. `terminate` prints it once.
+    pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
+        Self::usage(format!("WARNING: {context}: {cause}."))
+    }
 }
 
 impl fmt::Display for Failure {
@@ -290,6 +295,27 @@ mod tests {
         assert_eq!(failure.to_string(), "nope");
         assert_eq!(source::<Usage>(&failure).to_string(), "nope");
         assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn warned_follow_on_is_one_line_and_fails() {
+        let cause =
+            "inspect Caddy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out";
+        let add = Failure::warned("hosted DNS refresh failed after adding the Machine", cause);
+        let remove = Failure::warned(
+            "hosted DNS refresh failed after removing the Machine",
+            cause,
+        );
+        assert_eq!(
+            add.to_string(),
+            "WARNING: hosted DNS refresh failed after adding the Machine: inspect Caddy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
+        );
+        assert_eq!(
+            remove.to_string(),
+            "WARNING: hosted DNS refresh failed after removing the Machine: inspect Caddy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
+        );
+        assert_eq!(add.to_string().matches(cause).count(), 1);
+        assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
     }
 
     #[test]
