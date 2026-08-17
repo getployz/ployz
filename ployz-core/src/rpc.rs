@@ -308,6 +308,75 @@ pub struct ListImagesRequest {
     pub reference: Option<String>,
 }
 
+/// Empty payload of the command that returns this Machine's image-ingest TCP destination.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EnsureImageIngestRequest {}
+
+/// Named failure in `RpcError.details.reason` when image ingest cannot be opened.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageIngestReason {
+    NotParticipating,
+    DockerUnavailable,
+    UnsupportedContainerdStore,
+    ContainerdSocketMissing,
+    StartFailed,
+}
+
+impl ImageIngestReason {
+    /// The `reason` field of an ingest RPC error, if it is one of the frozen names.
+    #[must_use]
+    pub fn from_details(details: &Value) -> Option<Self> {
+        details
+            .get("reason")
+            .and_then(|reason| Self::deserialize(reason).ok())
+    }
+
+    /// An RPC error that carries this reason in `details`.
+    #[must_use]
+    pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
+        RpcError {
+            code: self.rpc_code(),
+            message: message.into(),
+            details: serde_json::json!({ "reason": self }),
+        }
+    }
+
+    const fn rpc_code(self) -> RpcErrorCode {
+        match self {
+            Self::UnsupportedContainerdStore => RpcErrorCode::Unsupported,
+            Self::StartFailed => RpcErrorCode::Internal,
+            Self::NotParticipating | Self::DockerUnavailable | Self::ContainerdSocketMissing => {
+                RpcErrorCode::Unavailable
+            }
+        }
+    }
+}
+
+/// Machine Gateway TCP bind that accepts `docker push` and peer `docker pull`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageIngestDestination {
+    pub gateway: crate::MachineGateway,
+    pub port: u16,
+}
+
+/// Successful `EnsureImageIngest` payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageIngestOpened {
+    pub destination: ImageIngestDestination,
+}
+
+/// Pull one image from another Machine's image-ingest TCP destination.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PullImageFromMachineRequest {
+    pub image: String,
+    pub source: ImageIngestDestination,
+}
+
+/// Successful `PullImageFromMachine` payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImagePulled {}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetCaddyConfigRequest {}
 
@@ -705,6 +774,8 @@ define_responses! {
     VolumeList(VolumeList) => "volume_list";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     MachineImages(MachineImages) => "machine_images";
+    ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
+    ImagePulled(ImagePulled) => "image_pulled";
     CaddyConfig(CaddyConfig) => "caddy_config";
     Domain(Domain) => "domain";
     DomainRecords(DomainRecords) => "domain_records";

@@ -2,6 +2,7 @@ mod create;
 mod lifecycle;
 mod managed_service;
 mod observe;
+mod peer_pull;
 mod spec_store;
 mod stream;
 mod unregistry;
@@ -10,11 +11,7 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 
-use std::{
-    collections::HashMap,
-    net::Ipv4Addr,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf};
 
 use bollard::{
     Docker,
@@ -34,9 +31,9 @@ use thiserror::Error;
 use observe::ObservationSink;
 
 pub(crate) use managed_service::ManagedService;
+pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
-pub(crate) use unregistry::unregistry_gateway;
-pub use unregistry::{RunningUnregistry, unregistry_matches};
+pub use unregistry::{ImageIngest, unregistry_matches};
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
@@ -67,7 +64,7 @@ impl LocalDocker {
         })
     }
 
-    pub async fn uses_containerd_store(&self) -> Result<bool, Error> {
+    async fn uses_containerd_store(&self) -> Result<bool, Error> {
         Ok(self
             .client
             .info()
@@ -146,14 +143,9 @@ impl ContainerRuntime {
         })
     }
 
-    pub async fn start_unregistry(
-        &self,
-        gateway: Ipv4Addr,
-        configured_socket: Option<&Path>,
-    ) -> Result<Option<RunningUnregistry>, Error> {
-        self.docker
-            .start_unregistry(gateway, configured_socket)
-            .await
+    #[must_use]
+    pub(crate) fn local_docker(&self) -> LocalDocker {
+        self.docker.clone()
     }
 
     pub async fn list_managed(
@@ -551,6 +543,8 @@ pub enum Error {
     LocalStorePoisoned,
     #[error("system clock cannot be represented for Docker event replay: {0}")]
     Clock(String),
+    #[error("peer image pull failed: {0}")]
+    PeerPull(String),
 }
 
 impl Error {
@@ -584,7 +578,8 @@ impl Error {
             | Self::ReplicatedStore(_)
             | Self::EventStreamClosed
             | Self::LocalStorePoisoned
-            | Self::Clock(_) => RpcErrorCode::Internal,
+            | Self::Clock(_)
+            | Self::PeerPull(_) => RpcErrorCode::Internal,
         }
     }
 }
