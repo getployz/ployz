@@ -571,12 +571,17 @@ struct LogEvent {
     entry: Option<Result<LogEntry, LogError>>,
 }
 
-struct LogState {
+enum LogState {
+    Live,
+    Stalled,
+    Closed,
+}
+
+struct LogInputState {
     identity: String,
     watermark: i64,
     last_activity: tokio::time::Instant,
-    closed: bool,
-    stalled: bool,
+    state: LogState,
 }
 
 struct QueuedLog {
@@ -627,16 +632,15 @@ fn merge_logs_with_options(
         return output;
     }
     let now = tokio::time::Instant::now();
-    let mut states = Vec::with_capacity(inputs.len());
+    let mut sources = Vec::with_capacity(inputs.len());
     let mut events: stream::SelectAll<Pin<Box<dyn Stream<Item = LogEvent> + Send>>> =
         stream::select_all(Vec::new());
     for (index, input) in inputs.into_iter().enumerate() {
-        states.push(LogState {
+        sources.push(LogInputState {
             identity: input.identity,
             watermark: 0,
             last_activity: now,
-            closed: false,
-            stalled: false,
+            state: LogState::Live,
         });
         events.push(Box::pin(
             input
@@ -658,17 +662,20 @@ fn merge_logs_with_options(
                 () = cancellation.cancelled() => return,
                 event = events.next() => match event {
                     Some(LogEvent { index, entry: Some(entry) }) => {
-                        let Some(state) = states.get_mut(index) else { continue };
-                        state.last_activity = tokio::time::Instant::now();
-                        state.stalled = false;
+                        let Some(source) = sources.get_mut(index) else { continue };
+                        source.last_activity = tokio::time::Instant::now();
+                        match source.state {
+                            LogState::Closed => {}
+                            LogState::Live | LogState::Stalled => source.state = LogState::Live,
+                        }
                         match entry {
-                            Err(error) => if output_sender.send(Err(format!("{}: {error}", state.identity))).await.is_err() { return },
+                            Err(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
                             Ok(entry) if entry.stream == LogStream::Error => {
                                 let error = entry.error.clone().unwrap_or_else(|| "log stream failed".into());
-                                if output_sender.send(Err(format!("{}: {error}", state.identity))).await.is_err() { return }
+                                if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return }
                             }
                             Ok(entry) => {
-                                state.watermark = state.watermark.max(entry.timestamp_unix_nanos);
+                                source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
                                 if matches!(entry.stream, LogStream::Stdout | LogStream::Stderr) {
                                     if entry.timestamp_unix_nanos == 0 {
                                         if output_sender.send(Ok(entry)).await.is_err() { return }
@@ -679,12 +686,15 @@ fn merge_logs_with_options(
                                 }
                             }
                         }
-                        if flush_ready(&states, &mut queue, &output_sender).await.is_err() { return }
+                        if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
                     }
                     Some(LogEvent { index, entry: None }) => {
-                        if let Some(state) = states.get_mut(index) { state.closed = true; }
-                        if flush_ready(&states, &mut queue, &output_sender).await.is_err() { return }
-                        if states.iter().all(|state| state.closed) {
+                        if let Some(source) = sources.get_mut(index) { source.state = LogState::Closed; }
+                        if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
+                        if sources.iter().all(|source| match source.state {
+                            LogState::Closed => true,
+                            LogState::Live | LogState::Stalled => false,
+                        }) {
                             while let Some(queued) = queue.pop() {
                                 if output_sender.send(Ok(queued.entry)).await.is_err() { return }
                             }
@@ -694,13 +704,15 @@ fn merge_logs_with_options(
                     None => return,
                 },
                 now = ticker.tick() => {
-                    for state in &mut states {
-                        if !state.closed && !state.stalled && now.duration_since(state.last_activity) > stall_timeout {
-                            state.stalled = true;
-                            if output_sender.send(Err(format!("log stream {} stalled", state.identity))).await.is_err() { return }
+                    for source in &mut sources {
+                        if let LogState::Live = source.state
+                            && now.duration_since(source.last_activity) > stall_timeout
+                        {
+                            source.state = LogState::Stalled;
+                            if output_sender.send(Err(format!("log stream {} stalled", source.identity))).await.is_err() { return }
                         }
                     }
-                    if flush_ready(&states, &mut queue, &output_sender).await.is_err() { return }
+                    if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
                 }
             }
         }
@@ -709,14 +721,17 @@ fn merge_logs_with_options(
 }
 
 async fn flush_ready(
-    states: &[LogState],
+    sources: &[LogInputState],
     queue: &mut BinaryHeap<QueuedLog>,
     output: &mpsc::Sender<Result<LogEntry, String>>,
 ) -> Result<(), ()> {
-    let watermark = states
+    let watermark = sources
         .iter()
-        .filter(|state| !state.closed && !state.stalled)
-        .map(|state| state.watermark)
+        .filter(|source| match source.state {
+            LogState::Live => true,
+            LogState::Stalled | LogState::Closed => false,
+        })
+        .map(|source| source.watermark)
         .min();
     let Some(watermark) = watermark else {
         while let Some(queued) = queue.pop() {

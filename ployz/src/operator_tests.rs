@@ -251,6 +251,35 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
     assert!(stalled.recv().await.unwrap().unwrap_err().contains("quiet"));
     assert_eq!(stalled.recv().await.unwrap().unwrap().message, b"released");
     cancel.cancel();
+
+    let mut stalled_then_closed = merge_logs_with_options(
+        vec![
+            LogInput {
+                identity: "quiet".into(),
+                stream: Box::pin(stream::unfold((), |()| async {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    None::<(Result<LogEntry, LogError>, ())>
+                })),
+            },
+            input("buffered", vec![Ok(log(metadata("buffered"), 9, b"nine"))]),
+        ],
+        CancellationToken::new(),
+        Duration::from_millis(15),
+        Duration::from_millis(2),
+    );
+    assert!(
+        stalled_then_closed
+            .recv()
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("quiet")
+    );
+    assert_eq!(
+        stalled_then_closed.recv().await.unwrap().unwrap().message,
+        b"nine"
+    );
+    assert!(stalled_then_closed.recv().await.is_none());
 }
 
 #[tokio::test]
