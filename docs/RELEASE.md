@@ -34,7 +34,7 @@ Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. Nightly, `-rc`, and oth
 - Writes a one-line file (`v0.2.0`) on the `channels` branch: `stable` or `beta`.
 - Stable only: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
 
-Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel updates use `GITHUB_TOKEN`.
+Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel updates use `GITHUB_TOKEN`. Publish then dispatches `ployz.sh`, which deploys `install.sh` plus the `channels` branch files to Cloudflare Pages.
 
 ## Install
 
@@ -53,13 +53,15 @@ Artifacts stay on GitHub Releases. `ployz.sh` is the pointer plus CLI installer.
 
 ## Cloudflare
 
-Point the zone:
+`.github/workflows/ployz-sh.yml` Direct-Uploads the staged site to the existing `ployz-sh` Pages project. Installer changes on `main` deploy immediately. Pointer updates deploy because Publish dispatches this workflow (`channels` has no workflow file, so a push there cannot). Production always uses `--branch=main`.
 
 | URL | Body |
 | --- | --- |
 | `https://ployz.sh` | `install.sh` from this repo |
 | `https://ployz.sh/stable` | `channels` branch file `stable` |
 | `https://ployz.sh/beta` | `channels` branch file `beta` |
+
+Needs repo secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (same Pages project as before). Disable the rust repo's `ployz-sh` workflow so it cannot overwrite this deploy.
 
 Apex and channel URLs must serve these bodies. The installer does not detect or tolerate the old v1 script.
 

@@ -54,6 +54,11 @@ push_channel_file() {
     rm -rf "$work"
 }
 
+dispatch_ployz_sh_site() {
+    # channels has no workflow file, so a push there cannot deploy Pages.
+    gh workflow run ployz-sh.yml --ref main
+}
+
 push_homebrew_tap() {
     local tag=$1 checksums=$2
     local token=${HOMEBREW_TAP_TOKEN:-}
@@ -77,6 +82,7 @@ push_homebrew_tap() {
 promote_published_release() {
     local tag=$1 checksums_dir
     push_channel_file "$tag"
+    dispatch_ployz_sh_site
     if ! stable_release_tag "$tag"; then
         return 0
     fi

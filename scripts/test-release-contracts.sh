@@ -36,6 +36,28 @@ assert_contains "$ROOT/.github/workflows/release.yml" "uses: ./.github/workflows
 assert_contains "$ROOT/.github/workflows/release.yml" "needs: [tag, artifacts]"
 assert_contains "$ROOT/.github/workflows/release-published.yml" "promote-release.sh"
 assert_contains "$ROOT/.github/workflows/release-published.yml" "types: [published]"
+assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "branches: [main]"
+assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "workflow_dispatch"
+assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "stage-ployz-sh-site.sh"
+assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "ref: \${{ github.event.repository.default_branch }}"
+assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "PLOYZ_SH_CHANNELS_DIR"
+assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "pages deploy dist/ployz-sh-site --project-name=ployz-sh --branch=main"
+assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "secrets.CLOUDFLARE_API_TOKEN"
+assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "secrets.CLOUDFLARE_ACCOUNT_ID"
+assert_contains "$ROOT/.github/workflows/release-published.yml" "actions: write"
+assert_contains "$ROOT/scripts/promote-release.sh" "gh workflow run ployz-sh.yml --ref main"
+if grep -Fq 'scripts/ployz.sh' "$ROOT/.github/workflows/ployz-sh.yml"; then
+    echo "ployz.sh workflow still stages the rust installer" >&2
+    exit 1
+fi
+if grep -Eq 'branches:.*channels' "$ROOT/.github/workflows/ployz-sh.yml"; then
+    echo "ployz.sh workflow still pretends a channels-branch push can deploy" >&2
+    exit 1
+fi
+if grep -Fq 'channels/alpha.env' "$ROOT/.github/workflows/ployz-sh.yml" "$ROOT/scripts/stage-ployz-sh-site.sh" "$ROOT/site/_headers"; then
+    echo "ployz.sh site still uses rust channel files" >&2
+    exit 1
+fi
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh macos"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh linux"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh artifacts"
@@ -241,5 +263,34 @@ if DIST="$pack_dist" bash "$ROOT/scripts/verify-release.sh" linux >/dev/null 2>&
     exit 1
 fi
 rm -rf "$pack_dist" "$pack_bin"
+
+site=$(mktemp -d)
+channels=$(mktemp -d)
+printf 'v1.2.3\n' > "$channels/stable"
+printf 'v1.2.3-beta.1\n' > "$channels/beta"
+printf 'PLOYZ_RELEASE_TAG=v0.0.1\n' > "$channels/alpha.env"
+PLOYZ_SH_SITE_DIR="$site" PLOYZ_SH_CHANNELS_DIR="$channels" bash "$ROOT/scripts/stage-ployz-sh-site.sh"
+assert_eq "$(cat "$site/index.html")" "$(cat "$ROOT/install.sh")"
+assert_eq "$(cat "$site/install.sh")" "$(cat "$ROOT/install.sh")"
+assert_eq "$(cat "$site/stable")" v1.2.3
+assert_eq "$(cat "$site/beta")" v1.2.3-beta.1
+if [ -e "$site/alpha.env" ] || [ -e "$site/channels/alpha.env" ]; then
+    echo "staged site included rust channel files" >&2
+    exit 1
+fi
+assert_contains "$site/_headers" "text/x-shellscript"
+assert_contains "$site/_headers" "/stable"
+assert_contains "$site/_headers" "/beta"
+assert_contains "$site/_headers" "text/plain"
+rm -rf "$site" "$channels"
+
+site=$(mktemp -d)
+PLOYZ_SH_SITE_DIR="$site" bash "$ROOT/scripts/stage-ployz-sh-site.sh"
+assert_eq "$(cat "$site/index.html")" "$(cat "$ROOT/install.sh")"
+if [ -e "$site/stable" ] || [ -e "$site/beta" ]; then
+    echo "staged site invented channel files" >&2
+    exit 1
+fi
+rm -rf "$site"
 
 echo "release contracts passed"

@@ -1,0 +1,44 @@
+name: ployz.sh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - scripts/stage-ployz-sh-site.sh
+      - site/**
+      - .github/workflows/ployz-sh.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ployz-sh-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: cloudflare-pages
+      url: https://ployz.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Fetch channel pointers
+        run: |
+          mkdir -p dist/channels-src
+          if git ls-remote --heads origin channels | grep -q .; then
+            git fetch --depth 1 origin channels
+            git archive origin/channels | tar -x -C dist/channels-src
+          fi
+      - name: Stage ployz.sh site
+        run: PLOYZ_SH_CHANNELS_DIR=dist/channels-src bash scripts/stage-ployz-sh-site.sh
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist/ployz-sh-site --project-name=ployz-sh --branch=main
