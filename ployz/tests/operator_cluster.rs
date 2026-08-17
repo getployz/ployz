@@ -102,16 +102,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
         .unwrap()
         .contains(&ExecResponseFrame::Exit(127))
     );
-    let defaults = exec_options(
-        Vec::new(),
-        ExecMode {
-            detach: false,
-            no_tty: true,
-            stdout_terminal: false,
-            stdin_terminal: false,
-        },
-    )
-    .unwrap();
+    let defaults = exec_options(Vec::new(), ExecMode::Attached { tty: false });
     assert!(
         run_exec(
             &mut client,
@@ -474,40 +465,22 @@ async fn wait_for_service(
 fn attached<const N: usize>(command: [&str; N]) -> ployz_core::ExecOptions {
     exec_options(
         command.into_iter().map(ToOwned::to_owned).collect(),
-        ExecMode {
-            detach: false,
-            no_tty: true,
-            stdout_terminal: false,
-            stdin_terminal: false,
-        },
+        ExecMode::Attached { tty: false },
     )
-    .unwrap()
 }
 
 fn tty<const N: usize>(command: [&str; N]) -> ployz_core::ExecOptions {
     exec_options(
         command.into_iter().map(ToOwned::to_owned).collect(),
-        ExecMode {
-            detach: false,
-            no_tty: false,
-            stdout_terminal: true,
-            stdin_terminal: true,
-        },
+        ExecMode::Attached { tty: true },
     )
-    .unwrap()
 }
 
 fn detached<const N: usize>(command: [&str; N]) -> ployz_core::ExecOptions {
     exec_options(
         command.into_iter().map(ToOwned::to_owned).collect(),
-        ExecMode {
-            detach: true,
-            no_tty: false,
-            stdout_terminal: true,
-            stdin_terminal: true,
-        },
+        ExecMode::Detached,
     )
-    .unwrap()
 }
 
 fn log_options() -> LogsOptions {

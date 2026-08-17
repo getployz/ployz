@@ -61,12 +61,47 @@ pub struct ProxyPorts {
     pub remote: u16,
 }
 
+/// Detached exec, or attached exec with an optional TTY.
+///
+/// Detach cannot request a TTY; resolve CLI `--detach`/`-T` through
+/// [`ExecMode::resolve`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExecMode {
-    pub detach: bool,
-    pub no_tty: bool,
-    pub stdout_terminal: bool,
-    pub stdin_terminal: bool,
+pub enum ExecMode {
+    Detached,
+    Attached { tty: bool },
+}
+
+impl ExecMode {
+    /// Collapse CLI `--detach`/`-T` and terminal probes into a mode that cannot
+    /// request a TTY while detached.
+    ///
+    /// `-T` is ignored when `detach` is set. Attached TTY still requires
+    /// terminal stdin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperatorError::TtyRequiresStdin`] when an attached TTY is
+    /// requested without terminal stdin.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "CLI detach/-T plus stdin/stdout terminal probes collapse into ExecMode"
+    )]
+    pub fn resolve(
+        detach: bool,
+        no_tty: bool,
+        stdout_terminal: bool,
+        stdin_terminal: bool,
+    ) -> Result<Self, OperatorError> {
+        if detach {
+            return Ok(Self::Detached);
+        }
+        // TODO(UT-039): preserve the Compose-style stdout-driven TTY rule.
+        let tty = stdout_terminal && !no_tty;
+        if tty && !stdin_terminal {
+            return Err(OperatorError::TtyRequiresStdin);
+        }
+        Ok(Self::Attached { tty })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -146,27 +181,31 @@ impl From<TransportError> for OperatorError {
     }
 }
 
-pub fn exec_options(command: Vec<String>, mode: ExecMode) -> Result<ExecOptions, OperatorError> {
-    // TODO(UT-039): preserve the Compose-style stdout-driven TTY rule.
-    let tty = !mode.detach && mode.stdout_terminal && !mode.no_tty;
-    if tty && !mode.stdin_terminal {
-        return Err(OperatorError::TtyRequiresStdin);
-    }
-    Ok(ExecOptions {
-        command: if command.is_empty() {
-            DEFAULT_EXEC_COMMAND
-                .iter()
-                .map(ToString::to_string)
-                .collect()
-        } else {
-            command
-        },
-        attach_stdin: !mode.detach,
-        attach_stdout: !mode.detach,
-        attach_stderr: !mode.detach,
+/// Translate [`ExecMode`] into wire [`ExecOptions`].
+///
+/// Detached does not attach stdin/stdout/stderr and never sets `tty`.
+#[must_use]
+pub fn exec_options(command: Vec<String>, mode: ExecMode) -> ExecOptions {
+    let command = if command.is_empty() {
+        DEFAULT_EXEC_COMMAND
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    } else {
+        command
+    };
+    let (attach, tty, detach) = match mode {
+        ExecMode::Detached => (false, false, true),
+        ExecMode::Attached { tty } => (true, tty, false),
+    };
+    ExecOptions {
+        command,
+        attach_stdin: attach,
+        attach_stdout: attach,
+        attach_stderr: attach,
         tty,
-        detach: mode.detach,
-    })
+        detach,
+    }
 }
 
 pub fn select_exec_container<'a>(

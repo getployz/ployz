@@ -111,47 +111,58 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         Err(OperatorError::Container(ployz_core::ContainerSelectorError::Ambiguous { selector, .. }))
             if selector.as_str() == "api-one"
     ));
-    let options = exec_options(
-        Vec::new(),
-        ExecMode {
-            detach: false,
-            no_tty: false,
-            stdout_terminal: true,
-            stdin_terminal: true,
-        },
-    )
-    .unwrap();
+}
+
+#[test]
+fn exec_mode_resolves_cli_flags_without_detach_plus_tty() {
     assert_eq!(
-        options.command,
+        ExecMode::resolve(true, false, true, true).unwrap(),
+        ExecMode::Detached
+    );
+    assert_eq!(
+        ExecMode::resolve(true, true, true, true).unwrap(),
+        ExecMode::Detached
+    );
+    let detached = exec_options(vec!["true".into()], ExecMode::Detached);
+    assert!(!detached.tty);
+    assert!(!detached.attach_stdin);
+    assert!(!detached.attach_stdout);
+    assert!(!detached.attach_stderr);
+    assert!(detached.detach);
+
+    assert!(matches!(
+        ExecMode::resolve(false, false, true, false),
+        Err(OperatorError::TtyRequiresStdin)
+    ));
+
+    let attached = exec_options(vec!["true".into()], ExecMode::Attached { tty: false });
+    assert!(!attached.tty);
+    assert!(attached.attach_stdin && attached.attach_stdout && attached.attach_stderr);
+    assert!(!attached.detach);
+
+    let tty = exec_options(Vec::new(), ExecMode::Attached { tty: true });
+    assert_eq!(
+        tty.command,
         DEFAULT_EXEC_COMMAND
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
     );
-    assert!(options.tty && options.attach_stdin && options.attach_stdout);
-    assert!(
-        exec_options(
-            Vec::new(),
-            ExecMode {
-                detach: false,
-                no_tty: false,
-                stdout_terminal: true,
-                stdin_terminal: false,
-            },
-        )
-        .is_err()
+    assert!(tty.tty && tty.attach_stdin && tty.attach_stdout && tty.attach_stderr);
+    assert!(!tty.detach);
+
+    assert_eq!(
+        ExecMode::resolve(false, true, true, true).unwrap(),
+        ExecMode::Attached { tty: false }
     );
-    let detached = exec_options(
-        vec!["true".into()],
-        ExecMode {
-            detach: true,
-            no_tty: false,
-            stdout_terminal: true,
-            stdin_terminal: true,
-        },
-    )
-    .unwrap();
-    assert!(!detached.tty && !detached.attach_stdin && detached.detach);
+    assert_eq!(
+        ExecMode::resolve(false, false, false, false).unwrap(),
+        ExecMode::Attached { tty: false }
+    );
+    assert_eq!(
+        ExecMode::resolve(false, false, true, true).unwrap(),
+        ExecMode::Attached { tty: true }
+    );
 }
 
 #[test]

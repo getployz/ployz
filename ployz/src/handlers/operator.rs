@@ -18,9 +18,9 @@ use crate::{
     compose::{LoadOptions, load_project},
     context::Transport,
     operator::{
-        ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs, open_service_logs,
-        parse_proxy_ports, parse_service_args, parse_tail, select_proxy_container,
-        service_logs_use_compose,
+        ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
+        open_service_logs, parse_proxy_ports, parse_service_args, parse_tail,
+        select_proxy_container, service_logs_use_compose,
     },
 };
 
@@ -44,13 +44,13 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         .unwrap_or_default();
     let options = exec_options(
         command,
-        crate::operator::ExecMode {
-            detach: leaf.get_flag("detach"),
-            no_tty: leaf.get_flag("no-tty"),
-            stdout_terminal: std::io::stdout().is_terminal(),
-            stdin_terminal: std::io::stdin().is_terminal(),
-        },
-    )?;
+        ExecMode::resolve(
+            leaf.get_flag("detach"),
+            leaf.get_flag("no-tty"),
+            std::io::stdout().is_terminal(),
+            std::io::stdin().is_terminal(),
+        )?,
+    );
     with_client_context(root, None, |client| {
         Box::pin(async move {
             let tty = options.tty;
