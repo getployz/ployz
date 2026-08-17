@@ -1,6 +1,8 @@
 /target/
 /docs/*
 !/docs/RELEASE.md
+!/docs/adr/
+!/docs/adr/**
 /.claude/
 /.scratch/
 ployz-testkit/prebuilt/

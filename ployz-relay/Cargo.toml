@@ -1,0 +1,23 @@
+[package]
+name = "ployz-relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+ployz-core.workspace = true
+prost = "0.13.5"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["net", "rt", "sync"] }
+tokio-stream = { version = "0.1.19", features = ["net"] }
+tonic = { version = "0.13.1", features = ["transport"] }
+
+[build-dependencies]
+tonic-build = { version = "0.13.1", default-features = false, features = ["transport"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

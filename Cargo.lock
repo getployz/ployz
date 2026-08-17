@@ -2055,6 +2055,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-relay"
+version = "0.1.2-beta.2"
+dependencies = [
+ "ployz-core",
+ "prost",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "ployz-testkit"
 version = "0.1.2-beta.2"
 dependencies = [

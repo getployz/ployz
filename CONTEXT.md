@@ -209,8 +209,20 @@ The hosted byte pipe a Machine dials out to and holds open so Cloud can reach it
 _Avoid_: Machine Proxy, tunnel binary, control plane
 
 **Cloud Pairing**:
-The cluster-scoped grant of a Cloud Relay endpoint and bearer that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, and not proof any Machine is currently connected.
+The cluster-scoped grant of a Cloud Relay endpoint and Pairing Credential that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, and not proof any Machine is currently connected.
 _Avoid_: per-Machine credential, login, daemon authn
+
+**Pairing Credential**:
+The bearer Cloud Pairing grants a Machine to authenticate Register. It is rejected on Dial.
+_Avoid_: Dial Credential, per-Machine JWT
+
+**Dial Credential**:
+The bearer Cloud presents on Dial. It is not the Pairing Credential and does not authenticate Register.
+_Avoid_: Pairing Credential, cluster credential
+
+**Tunnel ID**:
+The Relay-issued identity of one opaque splice, carried on Open and Attach. It is not a Machine ID.
+_Avoid_: session id, connection id, stream id
 
 **Live Observation**:
 Data obtained by directly querying a Machine at a point in time. It may still be incomplete, entry-relative, or obsolete immediately after collection.

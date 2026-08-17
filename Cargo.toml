@@ -1,6 +1,6 @@
 [workspace]
-members = ["ployz-core", "ployz", "ployzd", "ployz-testkit"]
-default-members = ["ployz-core", "ployz", "ployzd"]
+members = ["ployz-core", "ployz", "ployz-relay", "ployzd", "ployz-testkit"]
+default-members = ["ployz-core", "ployz", "ployz-relay", "ployzd"]
 resolver = "3"
 
 [workspace.package]

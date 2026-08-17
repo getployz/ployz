@@ -179,6 +179,12 @@ hex_id_newtype!(
     "32 lowercase hexadecimal characters"
 );
 hex_id_newtype!(
+    TunnelId,
+    "Tunnel ID",
+    32,
+    "32 lowercase hexadecimal characters"
+);
+hex_id_newtype!(
     ContainerId,
     "Container ID",
     64,
@@ -196,6 +202,16 @@ impl MachineId {
 }
 
 impl ServiceId {
+    #[must_use]
+    pub fn random() -> Self {
+        let mut hex = [0_u8; 32];
+        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
+        Self(hex)
+    }
+}
+
+impl TunnelId {
+    /// Generate a 32-character lowercase hexadecimal Tunnel ID.
     #[must_use]
     pub fn random() -> Self {
         let mut hex = [0_u8; 32];
