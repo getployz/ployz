@@ -7,15 +7,17 @@ use std::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
-    HealthObservation, HttpProtocol, IngressHost, IngressHostname, Machine, MachineId,
-    PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, resolve_certificate_policy,
+    HealthObservation, HttpProtocol, IngressHost, IngressHostname, IssuanceClock, IssuanceFailure,
+    IssuanceGate, Machine, MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
+    resolve_certificate_policy,
 };
 use serde_json::json;
 
 use super::{
     CHALLENGE_WAIT, IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
-    directory_from_env, issuance_action, machine_jitter, machine_rank, material_validity,
-    order_certificate, poll_wait, renewal_window, wait_for_http01, wanted_certificate_hosts,
+    contacts_authority, directory_from_env, issuance_action, machine_jitter, machine_rank,
+    material_validity, order_certificate, poll_wait, renewal_window, wait_for_http01,
+    wanted_certificate_hosts,
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
@@ -133,6 +135,35 @@ fn only_rank_zero_orders_immediately() {
         ),
         IssuanceAction::Nothing
     );
+}
+
+#[test]
+fn renew_does_not_contact_the_authority_when_dns_refuses() {
+    let clock = IssuanceClock::new(1, UNIX_EPOCH, IssuanceFailure::ResolvesElsewhere);
+    assert!(!contacts_authority(
+        IssuanceAction::Renew,
+        IssuanceGate::Refuse(clock)
+    ));
+    assert!(!contacts_authority(
+        IssuanceAction::Order,
+        IssuanceGate::Refuse(clock)
+    ));
+    assert!(!contacts_authority(
+        IssuanceAction::Renew,
+        IssuanceGate::Nothing
+    ));
+    assert!(contacts_authority(
+        IssuanceAction::Renew,
+        IssuanceGate::Order
+    ));
+    assert!(contacts_authority(
+        IssuanceAction::Order,
+        IssuanceGate::Order
+    ));
+    assert!(!contacts_authority(
+        IssuanceAction::Nothing,
+        IssuanceGate::Order
+    ));
 }
 
 #[test]

@@ -20,7 +20,8 @@ use instant_acme::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-    Machine, MachineId, PortPublication, resolve_certificate_policy,
+    IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication, cluster_dns_verdict,
+    issuance_failure_clock, issuance_gate, issuance_refusal_reason, resolve_certificate_policy,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -395,6 +396,7 @@ async fn issue_wanted(
     }
     let mut rows = store.certificate_state().await?;
     let machines = store.machines().await?;
+    let cluster = cluster_addresses(&machines.observations);
     let rank = machine_rank(
         machine_id,
         machines.observations.iter().map(|machine| &machine.id),
@@ -419,9 +421,40 @@ async fn issue_wanted(
                 now.saturating_duration_since(seen)
             }
         };
-        match issuance_action(row, rank, elapsed, wall, machine_id, &policy) {
-            IssuanceAction::Order | IssuanceAction::Renew => to_order.push(hostname),
-            IssuanceAction::Nothing => {}
+        let due = issuance_action(row, rank, elapsed, wall, machine_id, &policy);
+        if row.and_then(CertificateRow::material).is_some()
+            && !matches!(due, IssuanceAction::Order | IssuanceAction::Renew)
+        {
+            continue;
+        }
+        let resolved = resolve_host(hostname).await;
+        let verdict = cluster_dns_verdict(&resolved, &cluster);
+        let gate = issuance_gate(
+            row.and_then(CertificateRow::clock),
+            verdict,
+            wall,
+            policy.backoff_base(),
+            policy.backoff_cap(),
+        );
+        match gate {
+            IssuanceGate::Nothing => continue,
+            IssuanceGate::Refuse(clock) => {
+                first_seen.remove(hostname);
+                if rank == 0 && row.and_then(CertificateRow::material).is_none() {
+                    let reason = issuance_refusal_reason(hostname, &resolved, &cluster);
+                    if let Err(error) = store
+                        .record_certificate_failure(hostname, reason, clock)
+                        .await
+                    {
+                        eprintln!("failed to record certificate refusal for {hostname}: {error}");
+                    }
+                }
+                continue;
+            }
+            IssuanceGate::Order => {}
+        }
+        if contacts_authority(due, gate) {
+            to_order.push(hostname);
         }
     }
     if !to_order.is_empty() {
@@ -435,6 +468,21 @@ async fn issue_wanted(
         for (hostname, result) in to_order.iter().zip(results) {
             if let Err(error) = result {
                 eprintln!("failed to obtain certificate for {hostname}: {error}");
+                let clock = issuance_failure_clock(
+                    rows.get(*hostname).and_then(CertificateRow::clock),
+                    IssuanceFailure::Authority,
+                    wall,
+                    policy.backoff_base(),
+                    policy.backoff_cap(),
+                );
+                if let Err(record_error) = store
+                    .record_certificate_failure(hostname, error.to_string(), clock)
+                    .await
+                {
+                    eprintln!(
+                        "failed to record certificate authority failure for {hostname}: {record_error}"
+                    );
+                }
             }
         }
         rows = store.certificate_state().await?;
@@ -452,6 +500,22 @@ async fn issue_wanted(
         })
         .min()
         .unwrap_or(RETRY_INTERVAL))
+}
+
+/// Contact the CA only when the scheduler wants work and DNS says the hostname can validate.
+#[must_use]
+pub(crate) fn contacts_authority(due: IssuanceAction, gate: IssuanceGate) -> bool {
+    matches!(due, IssuanceAction::Order | IssuanceAction::Renew)
+        && matches!(gate, IssuanceGate::Order)
+}
+
+fn cluster_addresses(machines: &[Machine]) -> Vec<IpAddr> {
+    machines
+        .iter()
+        .filter_map(|machine| machine.public_ip)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 async fn obtain(

@@ -1,5 +1,9 @@
 //! Certificate row body held in the replicated store.
 
+use std::time::SystemTime;
+
+use chrono::{DateTime, SecondsFormat, Utc};
+use ployz_core::{IssuanceClock, IssuanceFailure};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -60,12 +64,19 @@ impl CertificateChallenge {
     }
 }
 
-/// Certificate and pending HTTP-01 challenge for one Ingress Hostname.
+/// Operator-visible reason, with a shared clock only when issuance is backing off.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RecordedRefusal {
+    reason: String,
+    clock: Option<IssuanceClock>,
+}
+
+/// Replicated certificate row for one Ingress Hostname.
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct CertificateRow {
     material: Option<CertificateMaterial>,
     challenge: Option<CertificateChallenge>,
-    last_error: Option<String>,
+    refusal: Option<RecordedRefusal>,
 }
 
 impl CertificateRow {
@@ -78,7 +89,7 @@ impl CertificateRow {
         Self {
             material,
             challenge,
-            last_error: None,
+            refusal: None,
         }
     }
 
@@ -88,7 +99,23 @@ impl CertificateRow {
         Self {
             material: Some(material),
             challenge: None,
-            last_error: None,
+            refusal: None,
+        }
+    }
+
+    /// Attach a complete refusal clock, or leave the row unchanged if the text is empty.
+    #[must_use]
+    pub fn with_backoff(self, last_error: impl Into<String>, clock: IssuanceClock) -> Self {
+        let reason = last_error.into();
+        if reason.is_empty() {
+            return self;
+        }
+        Self {
+            refusal: Some(RecordedRefusal {
+                reason,
+                clock: Some(clock),
+            }),
+            ..self
         }
     }
 
@@ -107,7 +134,13 @@ impl CertificateRow {
     /// Last recorded refusal or issuance error, if any.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+        self.refusal.as_ref().map(|refusal| refusal.reason.as_str())
+    }
+
+    /// Shared backoff clock, if a complete refusal has been recorded.
+    #[must_use]
+    pub fn clock(&self) -> Option<IssuanceClock> {
+        self.refusal.as_ref().and_then(|refusal| refusal.clock)
     }
 
     /// Take issued material out of the row.
@@ -120,9 +153,8 @@ impl CertificateRow {
     #[must_use]
     pub fn with_challenge(self, challenge: CertificateChallenge) -> Self {
         Self {
-            material: self.material,
             challenge: Some(challenge),
-            last_error: self.last_error,
+            ..self
         }
     }
 
@@ -130,9 +162,11 @@ impl CertificateRow {
     #[must_use]
     pub fn with_error(self, reason: impl Into<String>) -> Self {
         Self {
-            material: self.material,
-            challenge: self.challenge,
-            last_error: Some(reason.into()),
+            refusal: Some(RecordedRefusal {
+                reason: reason.into(),
+                clock: None,
+            }),
+            ..self
         }
     }
 
@@ -141,10 +175,14 @@ impl CertificateRow {
             return Ok(Self::default());
         }
         let body: CertificateBody = serde_json::from_str(encoded)?;
+        let clock = decode_clock(&body.next_attempt_at, body.failures, &body.last_failure);
         Ok(Self {
             material: CertificateMaterial::new(body.certificate, body.private_key),
             challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
-            last_error: (!body.last_error.is_empty()).then_some(body.last_error),
+            refusal: (!body.last_error.is_empty()).then_some(RecordedRefusal {
+                reason: body.last_error,
+                clock,
+            }),
         })
     }
 
@@ -154,7 +192,10 @@ impl CertificateRow {
             "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
             "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
             "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
-            "last_error": self.last_error.as_deref().unwrap_or(""),
+            "last_error": self.last_error().unwrap_or(""),
+            "next_attempt_at": self.clock().map(|clock| encode_attempt(clock.next_attempt_at())).unwrap_or_default(),
+            "failures": self.clock().map(|clock| clock.failures()).unwrap_or(0),
+            "last_failure": encode_failure(self.clock().map(|clock| clock.last_failure())),
         }))?)
     }
 }
@@ -171,14 +212,61 @@ struct CertificateBody {
     challenge_response: String,
     #[serde(default)]
     last_error: String,
+    #[serde(default)]
+    next_attempt_at: String,
+    #[serde(default)]
+    failures: u32,
+    #[serde(default)]
+    last_failure: String,
+}
+
+fn encode_attempt(time: SystemTime) -> String {
+    DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn decode_attempt(text: &str) -> Option<SystemTime> {
+    if text.is_empty() {
+        return None;
+    }
+    DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|time| SystemTime::from(time.with_timezone(&Utc)))
+}
+
+fn decode_clock(next_attempt_at: &str, failures: u32, last_failure: &str) -> Option<IssuanceClock> {
+    let last_failure = decode_failure(last_failure)?;
+    let next_attempt_at = decode_attempt(next_attempt_at)?;
+    Some(IssuanceClock::new(failures, next_attempt_at, last_failure))
+}
+
+fn encode_failure(failure: Option<IssuanceFailure>) -> &'static str {
+    match failure {
+        Some(IssuanceFailure::DoesNotResolve) => "does_not_resolve",
+        Some(IssuanceFailure::ResolvesElsewhere) => "resolves_elsewhere",
+        Some(IssuanceFailure::Authority) => "authority",
+        None => "",
+    }
+}
+
+fn decode_failure(text: &str) -> Option<IssuanceFailure> {
+    match text {
+        "does_not_resolve" => Some(IssuanceFailure::DoesNotResolve),
+        "resolves_elsewhere" => Some(IssuanceFailure::ResolvesElsewhere),
+        "authority" => Some(IssuanceFailure::Authority),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use ployz_core::{IssuanceClock, IssuanceFailure};
+
     use super::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
     fn decode_material(encoded: &str) -> Result<Option<CertificateMaterial>, super::Error> {
-        Ok(CertificateRow::decode(encoded)?.material)
+        Ok(CertificateRow::decode(encoded)?.into_material())
     }
 
     #[test]
@@ -228,12 +316,41 @@ mod tests {
             r#"{"certificate":"","private_key":"","challenge_token":"tok","challenge_response":"tok.thumb"}"#,
         )
         .unwrap();
-        assert_eq!(row.material, None);
-        let challenge = row.challenge.unwrap();
+        assert_eq!(row.material(), None);
+        let challenge = row.challenge().unwrap();
         assert_eq!(challenge.token(), "tok");
         assert_eq!(challenge.response(), "tok.thumb");
         assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
-        assert_eq!(CertificateRow::decode("{}").unwrap().challenge, None);
+        assert_eq!(CertificateRow::decode("{}").unwrap().challenge(), None);
+    }
+
+    #[test]
+    fn certificate_row_round_trips_refusal_clock() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let clock = IssuanceClock::new(3, at, IssuanceFailure::DoesNotResolve);
+        let row = CertificateRow::from_parts(None, None).with_backoff(
+            "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
+            clock,
+        );
+        let encoded = row.encode().unwrap();
+        let decoded = CertificateRow::decode(&encoded).unwrap();
+        assert_eq!(decoded.last_error(), row.last_error());
+        assert_eq!(decoded.clock(), Some(clock));
+        assert_eq!(
+            CertificateRow::decode(
+                r#"{"certificate":"","private_key":"","last_error":"later","next_attempt_at":"2023-11-14T22:13:20Z","failures":2,"last_failure":"resolves_elsewhere"}"#
+            )
+            .unwrap()
+            .clock()
+            .map(|clock| clock.last_failure()),
+            Some(IssuanceFailure::ResolvesElsewhere)
+        );
+        assert_eq!(
+            CertificateRow::decode(r#"{"last_failure":"authority"}"#)
+                .unwrap()
+                .clock(),
+            None
+        );
     }
 
     #[test]
@@ -253,6 +370,7 @@ mod tests {
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.challenge(), None);
         assert_eq!(row.last_error(), None);
+        assert_eq!(row.clock(), None);
     }
 
     #[test]
@@ -261,5 +379,17 @@ mod tests {
         let row = CertificateRow::issued(issued.clone()).with_error("refused");
         assert_eq!(row.material(), Some(&issued));
         assert_eq!(row.last_error(), Some("refused"));
+        assert_eq!(row.clock(), None);
+    }
+
+    #[test]
+    fn error_write_clears_a_previous_clock() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let clock = IssuanceClock::new(3, at, IssuanceFailure::DoesNotResolve);
+        let row = CertificateRow::from_parts(None, None)
+            .with_backoff("does not resolve", clock)
+            .with_error("policy refused");
+        assert_eq!(row.last_error(), Some("policy refused"));
+        assert_eq!(row.clock(), None);
     }
 }

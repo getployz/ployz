@@ -613,7 +613,28 @@ http:// {{\n\
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
         write_site(&mut output, "https", hostname, &site.https, &tls, None);
     }
+    write_certificate_errors(&mut output, certificates);
     output
+}
+
+fn write_certificate_errors(
+    output: &mut String,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
+) {
+    let mut header = false;
+    for (hostname, row) in certificates {
+        if row.material().is_some() {
+            continue;
+        }
+        let Some(error) = row.last_error().filter(|error| !error.is_empty()) else {
+            continue;
+        };
+        if !header {
+            output.push_str("\n# Skipped certificate issuance:\n");
+            header = true;
+        }
+        let _ = writeln!(output, "# - {hostname}: {error}");
+    }
 }
 
 #[derive(Default)]

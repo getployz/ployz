@@ -6,7 +6,8 @@ use std::{
 
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, ContainerKind, GetCaddyConfigRequest, Machine, MachineTarget,
-    ResolvedServiceSpec, ServiceId, StartContainerRequest, StopContainerRequest, op,
+    MachineUpdate, PublicIpUpdate, ResolvedServiceSpec, ServiceId, StartContainerRequest,
+    StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
@@ -21,6 +22,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     wait_machine_count(&cluster, 0, 1).await;
     publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let ip = cluster.endpoint(0).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, ip).await;
     ca.set_validation(validation_host(ip), 80);
     point_hostname(&cluster, [0], "app.example.com", &[ip]);
 
@@ -44,6 +46,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(ca.ordered(), Vec::<String>::new());
 
+    point_dns(&cluster, "app.example.com", ip);
     let custom_id = ServiceId::random();
     let custom = create_and_start(
         &mut client,
@@ -99,6 +102,8 @@ async fn several_machines_order_once_and_every_machine_answers() {
     publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let first_ip = cluster.endpoint(0).unwrap().0.ip();
     let second_ip = cluster.endpoint(1).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, first_ip).await;
+    publish_public_ip(&cluster, 0, &second, second_ip).await;
     let other = if first.id < second.id { 1 } else { 0 };
     ca.set_validation(validation_host(cluster.endpoint(other).unwrap().0.ip()), 80);
     point_hostname(&cluster, [0, 1], "app.example.com", &[first_ip, second_ip]);
@@ -176,6 +181,7 @@ async fn down_machine_does_not_block_ordering() {
     };
     cluster.stop(down_index).unwrap();
     let living_ip = cluster.endpoint(living_index).unwrap().0.ip();
+    publish_public_ip(&cluster, living_index, living, living_ip).await;
     ca.set_validation(validation_host(living_ip), 80);
     point_hostname(&cluster, [living_index], "app.example.com", &[living_ip]);
 
@@ -223,6 +229,7 @@ async fn certificate_renews_before_expiry_without_restart() {
     wait_machine_count(&cluster, 0, 1).await;
     publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let ip = cluster.endpoint(0).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, ip).await;
     ca.set_validation(validation_host(ip), 80);
     point_hostname(&cluster, [0], "app.example.com", &[ip]);
 
@@ -269,6 +276,8 @@ async fn machines_holding_the_same_certificate_renew_once() {
     publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let first_ip = cluster.endpoint(0).unwrap().0.ip();
     let second_ip = cluster.endpoint(1).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, first_ip).await;
+    publish_public_ip(&cluster, 0, &second, second_ip).await;
     let other = if first.id < second.id { 1 } else { 0 };
     ca.set_validation(validation_host(cluster.endpoint(other).unwrap().0.ip()), 80);
     point_hostname(&cluster, [0, 1], "app.example.com", &[first_ip, second_ip]);
@@ -322,6 +331,7 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
     wait_machine_count(&cluster, 0, 1).await;
     publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let ip = cluster.endpoint(0).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, ip).await;
     ca.set_validation(validation_host(ip), 80);
     point_hostname(&cluster, [0], "app.example.com", &[ip]);
 
@@ -368,6 +378,7 @@ async fn joining_machine_serves_existing_certificate() {
     wait_machine_count(&cluster, 0, 1).await;
     publish_certificate_policy(&cluster, 0, &ca.directory_url());
     let ip = cluster.endpoint(0).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, ip).await;
     ca.set_validation(validation_host(ip), 80);
     point_hostname(&cluster, [0], "app.example.com", &[ip]);
 
@@ -448,6 +459,83 @@ fn count_orders(ordered: &[String], hostname: &str) -> usize {
         .iter()
         .filter(|name| name.as_str() == hostname)
         .count()
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_here() {
+    let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
+    ca.set_advertised_host("host.docker.internal");
+    let cluster = Cluster::create(plan("l3-acme-refuse", 1)).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let first = cluster.initialize_first().await.unwrap();
+    wait_machine_count(&cluster, 0, 1).await;
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
+    let ip = cluster.endpoint(0).unwrap().0.ip();
+    publish_public_ip(&cluster, 0, &first, ip).await;
+    ca.set_validation(validation_host(ip), 80);
+
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = connect(&direct).await;
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "caddy", 1).await;
+
+    point_dns(
+        &cluster,
+        "outside.example.com",
+        "198.51.100.10".parse().unwrap(),
+    );
+    let outside_id = ServiceId::random();
+    create_and_start(
+        &mut client,
+        &first,
+        service(outside_id, "api", "outside.example.com", 443, "https"),
+    )
+    .await;
+    wait_running(&mut client, &outside_id, 1).await;
+    wait_config(&mut client, &first, |config| {
+        config.contains("# Skipped certificate issuance:")
+            && config.contains("outside.example.com")
+            && config.contains("198.51.100.10")
+            && config.contains(&ip.to_string())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(ca.ordered(), Vec::<String>::new());
+    assert!(
+        certificate_bodies(&cluster, 0).contains("198.51.100.10"),
+        "{}",
+        certificate_bodies(&cluster, 0)
+    );
+
+    point_dns(&cluster, "outside.example.com", ip);
+    wait_config(&mut client, &first, |config| {
+        config.contains("tls /config/certs/outside.example.com-")
+    })
+    .await;
+    assert_eq!(ca.ordered(), vec!["outside.example.com".to_owned()]);
+    assert!(certificate_bodies(&cluster, 0).contains("BEGIN CERTIFICATE"));
+}
+
+async fn publish_public_ip(cluster: &Cluster, entry: usize, machine: &Machine, ip: IpAddr) {
+    cluster
+        .update_machine(
+            entry,
+            machine.id.as_str(),
+            MachineUpdate {
+                public_ip: PublicIpUpdate::Set(ip),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+}
+
+fn point_dns(cluster: &Cluster, hostname: &str, ip: IpAddr) {
+    let script = format!(
+        "if grep -q ' {hostname}$' /etc/hosts; then sed -i 's/^.* {hostname}$/{ip} {hostname}/' /etc/hosts; else echo '{ip} {hostname}' >> /etc/hosts; fi"
+    );
+    cluster.machine_shell(0, &script).unwrap();
 }
 
 fn validation_host(ip: IpAddr) -> String {
