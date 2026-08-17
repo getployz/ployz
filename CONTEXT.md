@@ -192,6 +192,14 @@ _Avoid_: Selected Endpoint, current endpoint
 The endpoint one observing Machine currently selects for reaching a target Machine. Different observers may select different endpoints for the same target.
 _Avoid_: Advertised Endpoint, globally current endpoint
 
+**Cloud Relay**:
+The hosted byte pipe a Machine dials out to and holds open so Cloud can reach it without an inbound route. It carries opaque streams and interprets none of them. It is not a Machine, not a mesh peer, and holds no Cluster observation.
+_Avoid_: Machine Proxy, tunnel binary, control plane
+
+**Cloud Pairing**:
+The cluster-scoped grant of a Cloud Relay endpoint and bearer that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, and not proof any Machine is currently connected.
+_Avoid_: per-Machine credential, login, daemon authn
+
 **Live Observation**:
 Data obtained by directly querying a Machine at a point in time. It may still be incomplete, entry-relative, or obsolete immediately after collection.
 _Avoid_: Current truth, complete state, authoritative state
