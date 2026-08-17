@@ -361,7 +361,10 @@ impl ReplicatedStore {
         Ok(self.certificate_row(hostname).await?.into_material())
     }
 
-    async fn certificate_row(&self, hostname: &IngressHost) -> Result<CertificateRow, Error> {
+    pub(crate) async fn certificate_row(
+        &self,
+        hostname: &IngressHost,
+    ) -> Result<CertificateRow, Error> {
         let query = self
             .api
             .query(Statement::new(

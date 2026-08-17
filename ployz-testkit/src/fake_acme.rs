@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     sync::{Arc, Mutex},
+    time::{Duration, SystemTime},
 };
 
 use axum::{
@@ -43,6 +44,7 @@ struct Inner {
     port: u16,
     validation_host: String,
     validation_port: u16,
+    certificate_lifetime: Option<Duration>,
 }
 
 struct Order {
@@ -75,6 +77,7 @@ impl FakeCa {
                 port,
                 validation_host: "127.0.0.1".into(),
                 validation_port: 0,
+                certificate_lifetime: None,
             })),
         };
         let app = Router::new()
@@ -111,6 +114,13 @@ impl FakeCa {
         let mut inner = self.inner.lock().expect("fake CA lock");
         inner.validation_host = host.into();
         inner.validation_port = port;
+    }
+
+    pub fn set_certificate_lifetime(&self, lifetime: Duration) {
+        self.inner
+            .lock()
+            .expect("fake CA lock")
+            .certificate_lifetime = Some(lifetime);
     }
 
     #[must_use]
@@ -414,7 +424,7 @@ async fn finalize(
         drop(inner);
         return with_nonce(&ca, StatusCode::OK, None, body);
     }
-    let issued = sign_csr(&inner.issuer, &csr);
+    let issued = sign_csr(&inner.issuer, &csr, inner.certificate_lifetime);
     inner.next_id += 1;
     let cert_url = format!("{}/cert/{}", inner.base, inner.next_id);
     let cert_id = inner.next_id.to_string();
@@ -535,10 +545,35 @@ fn fake_issuer() -> CertifiedIssuer<'static, KeyPair> {
     CertifiedIssuer::self_signed(params, key).expect("fake CA issuer")
 }
 
-fn sign_csr(issuer: &CertifiedIssuer<'static, KeyPair>, csr: &[u8]) -> String {
-    let csr = CertificateSigningRequestParams::from_der(&csr.to_vec().into()).expect("CSR DER");
+fn sign_csr(
+    issuer: &CertifiedIssuer<'static, KeyPair>,
+    csr: &[u8],
+    lifetime: Option<Duration>,
+) -> String {
+    let mut csr = CertificateSigningRequestParams::from_der(&csr.to_vec().into()).expect("CSR DER");
+    if let Some(lifetime) = lifetime {
+        let now = time::OffsetDateTime::now_utc();
+        csr.params.not_before = now;
+        csr.params.not_after =
+            now + time::Duration::try_from(lifetime).unwrap_or(time::Duration::MAX);
+    }
     let cert = csr.signed_by(issuer).expect("sign CSR");
     format!("{}{}", cert.pem(), issuer.pem())
+}
+
+/// Self-signed certificate and key with an exact validity window.
+#[must_use]
+pub fn self_signed_material(
+    hostname: &str,
+    not_before: SystemTime,
+    not_after: SystemTime,
+) -> (String, String) {
+    let key = KeyPair::generate().expect("test key");
+    let mut params = CertificateParams::new(vec![hostname.to_owned()]).expect("test params");
+    params.not_before = time::OffsetDateTime::from(not_before);
+    params.not_after = time::OffsetDateTime::from(not_after);
+    let cert = params.self_signed(&key).expect("test certificate");
+    (cert.pem(), key.serialize_pem())
 }
 
 fn jwk_thumbprint(jwk: &Value) -> String {

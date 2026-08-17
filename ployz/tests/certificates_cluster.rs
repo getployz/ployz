@@ -212,6 +212,153 @@ async fn down_machine_does_not_block_ordering() {
 
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn certificate_renews_before_expiry_without_restart() {
+    let lifetime = Duration::from_secs(90);
+    let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
+    ca.set_advertised_host("host.docker.internal");
+    ca.set_certificate_lifetime(lifetime);
+    let cluster = Cluster::create(plan("l3-acme-renew", 1)).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let first = cluster.initialize_first().await.unwrap();
+    wait_machine_count(&cluster, 0, 1).await;
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
+    let ip = cluster.endpoint(0).unwrap().0.ip();
+    ca.set_validation(validation_host(ip), 80);
+    point_hostname(&cluster, [0], "app.example.com", &[ip]);
+
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = connect(&direct).await;
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "caddy", 1).await;
+    let app_id = ServiceId::random();
+    create_and_start(
+        &mut client,
+        &first,
+        service(app_id, "api", "app.example.com", 443, "https"),
+    )
+    .await;
+    wait_running(&mut client, &app_id, 1).await;
+    wait_config(&mut client, &first, |config| {
+        config.contains("tls /config/certs/app.example.com-")
+    })
+    .await;
+    assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
+    wait_https(&cluster, 0, "app.example.com").await;
+    let issued = certificate_bodies(&cluster, 0);
+
+    wait_until(Duration::from_secs(180), || {
+        count_orders(&ca.ordered(), "app.example.com") >= 2
+    })
+    .await;
+    wait_until(Duration::from_secs(60), || {
+        certificate_bodies(&cluster, 0) != issued
+    })
+    .await;
+    wait_https(&cluster, 0, "app.example.com").await;
+    assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 2);
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn machines_holding_the_same_certificate_renew_once() {
+    let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
+    ca.set_advertised_host("host.docker.internal");
+    ca.set_certificate_lifetime(Duration::from_secs(180));
+    let cluster = Cluster::create(plan("l3-acme-renew-multi", 2)).unwrap();
+    let [first, second] = cluster.initialize_two().await.unwrap();
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
+    let first_ip = cluster.endpoint(0).unwrap().0.ip();
+    let second_ip = cluster.endpoint(1).unwrap().0.ip();
+    let other = if first.id < second.id { 1 } else { 0 };
+    ca.set_validation(validation_host(cluster.endpoint(other).unwrap().0.ip()), 80);
+    point_hostname(&cluster, [0, 1], "app.example.com", &[first_ip, second_ip]);
+
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = connect(&direct).await;
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "caddy", 2).await;
+    let app_id = ServiceId::random();
+    create_and_start(
+        &mut client,
+        &first,
+        service(app_id, "api", "app.example.com", 443, "https"),
+    )
+    .await;
+    wait_running(&mut client, &app_id, 1).await;
+    wait_config(&mut client, &first, |config| {
+        config.contains("tls /config/certs/app.example.com-")
+    })
+    .await;
+    wait_config(&mut client, &second, |config| {
+        config.contains("tls /config/certs/app.example.com-")
+    })
+    .await;
+    assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 1);
+    let issued = certificate_bodies(&cluster, 0);
+
+    wait_until(Duration::from_secs(180), || {
+        count_orders(&ca.ordered(), "app.example.com") >= 2
+    })
+    .await;
+    wait_until(Duration::from_secs(60), || {
+        certificate_bodies(&cluster, 0) != issued
+    })
+    .await;
+    wait_https(&cluster, 0, "app.example.com").await;
+    wait_https(&cluster, 1, "app.example.com").await;
+    tokio::time::sleep(Duration::from_secs(35)).await;
+    assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 2);
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn failed_renewal_keeps_serving_the_existing_certificate() {
+    let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
+    ca.set_advertised_host("host.docker.internal");
+    ca.set_certificate_lifetime(Duration::from_secs(90));
+    let cluster = Cluster::create(plan("l3-acme-renew-fail", 1)).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let first = cluster.initialize_first().await.unwrap();
+    wait_machine_count(&cluster, 0, 1).await;
+    publish_certificate_policy(&cluster, 0, &ca.directory_url());
+    let ip = cluster.endpoint(0).unwrap().0.ip();
+    ca.set_validation(validation_host(ip), 80);
+    point_hostname(&cluster, [0], "app.example.com", &[ip]);
+
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = connect(&direct).await;
+    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "caddy", 1).await;
+    let app_id = ServiceId::random();
+    create_and_start(
+        &mut client,
+        &first,
+        service(app_id, "api", "app.example.com", 443, "https"),
+    )
+    .await;
+    wait_running(&mut client, &app_id, 1).await;
+    wait_config(&mut client, &first, |config| {
+        config.contains("tls /config/certs/app.example.com-")
+    })
+    .await;
+    wait_https(&cluster, 0, "app.example.com").await;
+    let issued = certificate_bodies(&cluster, 0);
+    ca.set_validation("127.0.0.1", 1);
+
+    tokio::time::sleep(Duration::from_secs(95)).await;
+    assert_eq!(certificate_bodies(&cluster, 0), issued);
+    wait_https(&cluster, 0, "app.example.com").await;
+
+    ca.set_validation(validation_host(ip), 80);
+    wait_until(Duration::from_secs(180), || {
+        certificate_bodies(&cluster, 0) != issued
+    })
+    .await;
+    wait_https(&cluster, 0, "app.example.com").await;
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
 async fn joining_machine_serves_existing_certificate() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
@@ -481,6 +628,19 @@ async fn wait_config(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+async fn wait_until(timeout: Duration, ready: impl Fn() -> bool) {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if ready() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 async fn wait_https(cluster: &Cluster, index: usize, hostname: &str) {
