@@ -82,6 +82,36 @@ services:
     .unwrap();
     assert!(none.is_empty());
 
+    let listed = parse_normalized(
+        r#"
+name: listed
+services:
+  base: {build: .}
+  api:
+    build:
+      context: ./api
+      additional_contexts:
+        - base=service:base
+"#,
+        ".",
+    )
+    .unwrap();
+    let listed_plan = plan_build(
+        &listed,
+        &BuildOptions {
+            services: vec!["api".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        listed_plan
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<Vec<_>>(),
+        ["api", "base"]
+    );
+
     let cycle = parse_normalized(
         "name: cycle\nservices:\n  a: {build: {context: ., additional_contexts: {b: service:b}}}\n  b: {build: {context: ., additional_contexts: {a: service:a}}}\n",
         ".",
@@ -159,6 +189,7 @@ fn compose_build_receives_resolved_images_and_builder_flags() {
     let override_yaml = fs::read_to_string(captured).unwrap();
     assert!(override_yaml.contains("api"));
     assert!(override_yaml.contains("example.test/api:version2"));
+    assert!(override_yaml.contains("./api"));
     assert!(!override_yaml.contains("runtime"));
     fs::remove_dir_all(root).unwrap();
 }

@@ -231,13 +231,18 @@ configs:
     )));
     assert!(api.container.image.starts_with("registry.example/api:"));
     assert_eq!(
-        project.builds.get("api").unwrap().dockerfile.as_deref(),
+        project
+            .builds
+            .get("api")
+            .unwrap()
+            .raw
+            .as_mapping()
+            .and_then(|map| {
+                map.get(serde_norway::Value::String("dockerfile".into()))
+                    .and_then(serde_norway::Value::as_str)
+            }),
         Some("Dockerfile.release")
     );
-    assert!(matches!(
-        project.builds.get("api").unwrap().raw,
-        serde_norway::Value::Mapping(_)
-    ));
     assert_eq!(
         service(&project, "caddy").caddy_config.as_deref(),
         Some("app.example { reverse_proxy :80 }")
@@ -327,6 +332,22 @@ secrets:
         (
             "services: {app: {image: app}}\nsecrets: {bad: {driver: vault, driver_opts: {key: x}}}",
             "unsupported driver",
+        ),
+        (
+            "services: {app: {image: app}}\nsecrets: {bad: {file: a, environment: B}}",
+            "must define exactly one of file or environment",
+        ),
+        (
+            "services: {app: {image: app}}\nsecrets: {bad: {file: a, x-command: printf x}}",
+            "x-command cannot be combined with file or environment",
+        ),
+        (
+            "services: {app: {image: app}}\nsecrets: {bad: {x-command: printf x, driver: exec, driver_opts: {command: printf y}}}",
+            "x-command cannot be combined with driver or driver_opts",
+        ),
+        (
+            "services: {app: {image: app}}\nsecrets: {bad: {file: a, driver: exec, driver_opts: {command: printf x}}}",
+            "a secret using a driver cannot also define file or environment",
         ),
         (
             "services: {app: {image: app, x-pre_deploy: {user: root}}}",

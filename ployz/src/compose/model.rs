@@ -5,12 +5,25 @@ use serde::Deserialize;
 use serde_norway::Value;
 use thiserror::Error;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// A Compose build held as the raw spec. Additional contexts are read from `raw`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct BuildSpec {
-    pub context: Option<String>,
-    pub dockerfile: Option<String>,
-    pub additional_services: Vec<String>,
     pub raw: Value,
+}
+
+/// A project secret after validate: one source, or the resolved value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ProjectSecret {
+    Unresolved(SecretSource),
+    Resolved(String),
+}
+
+/// How an unresolved project secret is obtained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SecretSource {
+    File(String),
+    Environment(String),
+    Command(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -22,9 +35,8 @@ pub struct ComposeProject {
     pub builds: BTreeMap<String, BuildSpec>,
     pub dependencies: BTreeMap<String, Vec<String>>,
     pub warnings: Vec<String>,
-    pub(super) secrets: BTreeMap<String, RawSecret>,
+    pub(super) secrets: BTreeMap<String, ProjectSecret>,
     pub(super) environment: BTreeMap<String, String>,
-    pub(super) resolved_secrets: BTreeMap<String, String>,
 }
 
 impl ComposeProject {

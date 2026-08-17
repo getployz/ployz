@@ -23,7 +23,7 @@ use super::{
     },
     mounts::volumes,
     ports::ports,
-    secrets::validate_secret,
+    secrets::convert_secrets,
 };
 
 pub fn parse_normalized(
@@ -51,6 +51,7 @@ pub(super) fn convert_raw_project(
         }
     }
     validate_definitions(&raw)?;
+    let secrets = convert_secrets(std::mem::take(&mut raw.secrets))?;
     let working_dir = working_dir.into();
     let name = raw.name.clone().unwrap_or_else(|| {
         working_dir
@@ -96,9 +97,8 @@ pub(super) fn convert_raw_project(
         builds,
         dependencies,
         warnings,
-        secrets: raw.secrets,
+        secrets,
         environment,
-        resolved_secrets: BTreeMap::new(),
     })
 }
 
@@ -149,7 +149,10 @@ fn convert_service(
     directory: &Path,
     images: &ImageState,
 ) -> Result<(RequestedServiceSpec, Option<BuildSpec>), ComposeError> {
-    let build = raw.build.as_ref().map(build_spec);
+    let build = raw
+        .build
+        .as_ref()
+        .map(|value| BuildSpec { raw: value.clone() });
     let image = images.image(project, name, raw.image.as_deref(), build.is_some())?;
     let mode = match raw
         .deploy
@@ -271,51 +274,6 @@ fn convert_service(
         },
         build,
     ))
-}
-
-fn build_spec(value: &Value) -> BuildSpec {
-    match value {
-        Value::String(context) => BuildSpec {
-            context: Some(context.clone()),
-            raw: value.clone(),
-            ..Default::default()
-        },
-        Value::Mapping(map) => BuildSpec {
-            context: mapping_string(map, "context"),
-            dockerfile: mapping_string(map, "dockerfile"),
-            additional_services: map
-                .get(Value::String("additional_contexts".into()))
-                .into_iter()
-                .flat_map(additional_contexts)
-                .collect(),
-            raw: value.clone(),
-        },
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Sequence(_) | Value::Tagged(_) => {
-            BuildSpec {
-                raw: value.clone(),
-                ..Default::default()
-            }
-        }
-    }
-}
-
-fn additional_contexts(value: &Value) -> Vec<String> {
-    let values = match value {
-        Value::Mapping(map) => map.values().filter_map(Value::as_str).collect(),
-        Value::Sequence(values) => values
-            .iter()
-            .filter_map(Value::as_str)
-            .filter_map(|value| value.split_once('=').map(|(_, context)| context))
-            .collect(),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {
-            Vec::new()
-        }
-    };
-    values
-        .into_iter()
-        .filter_map(|context| context.strip_prefix("service:"))
-        .map(str::to_owned)
-        .collect()
 }
 
 fn resources(raw: &RawService) -> Result<ContainerResources, ComposeError> {
@@ -566,9 +524,6 @@ fn validate_definitions(project: &RawProject) -> Result<(), ComposeError> {
         }
         // TODO(UT-003, UT-004): config labels and environment sources remain ignored.
         let _ = (&config.labels, &config.environment);
-    }
-    for (name, secret) in &project.secrets {
-        validate_secret(name, secret)?;
     }
     Ok(())
 }

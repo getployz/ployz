@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use super::{
     convert::{invalid, is_external},
-    model::{ComposeError, ComposeProject, RawSecret},
+    model::{ComposeError, ComposeProject, ProjectSecret, RawSecret, SecretSource},
 };
 
 const SECRET_PREFIX: &str = "secret://";
@@ -40,22 +40,23 @@ impl ComposeProject {
             })
             .collect::<Vec<_>>();
         for (_, _, name) in &references {
-            if self.resolved_secrets.contains_key(name) {
-                continue;
-            }
-            let secret = self.secrets.get(name).ok_or_else(|| {
-                invalid(format!(
+            let Some(secret) = self.secrets.get_mut(name) else {
+                return Err(invalid(format!(
                     "secret '{name}' referenced via '{SECRET_PREFIX}{name}' is not defined"
-                ))
-            })?;
-            let value = resolve_secret(name, secret, &self.working_dir, &self.environment)?;
-            self.resolved_secrets.insert(name.clone(), value);
+                )));
+            };
+            let value = match secret {
+                ProjectSecret::Resolved(_) => continue,
+                ProjectSecret::Unresolved(source) => {
+                    resolve_secret(name, source, &self.working_dir, &self.environment)?
+                }
+            };
+            *secret = ProjectSecret::Resolved(value);
         }
         for (service, key, name) in references {
-            let resolved = self
-                .resolved_secrets
-                .get(&name)
-                .ok_or_else(|| invalid(format!("secret '{name}' was not resolved")))?;
+            let Some(ProjectSecret::Resolved(resolved)) = self.secrets.get(&name) else {
+                return Err(invalid(format!("secret '{name}' was not resolved")));
+            };
             self.services
                 .get_mut(&service)
                 .and_then(|spec| spec.container.environment.get_mut(&key))
@@ -66,7 +67,18 @@ impl ComposeProject {
     }
 }
 
-pub(super) fn validate_secret(name: &str, secret: &RawSecret) -> Result<(), ComposeError> {
+pub(super) fn convert_secrets(
+    secrets: BTreeMap<String, RawSecret>,
+) -> Result<BTreeMap<String, ProjectSecret>, ComposeError> {
+    secrets
+        .into_iter()
+        .map(|(name, secret)| {
+            secret_source(&name, &secret).map(|source| (name, ProjectSecret::Unresolved(source)))
+        })
+        .collect()
+}
+
+fn secret_source(name: &str, secret: &RawSecret) -> Result<SecretSource, ComposeError> {
     if is_external(&secret.external) {
         return Err(invalid(format!(
             "secret '{name}': external secrets are not supported"
@@ -88,7 +100,7 @@ pub(super) fn validate_secret(name: &str, secret: &RawSecret) -> Result<(), Comp
                 "secret '{name}': x-command cannot be combined with file or environment"
             )));
         }
-        return Ok(());
+        return Ok(SecretSource::Command(command.clone()));
     }
     if let Some(driver) = &secret.driver {
         if driver != "exec" {
@@ -96,52 +108,55 @@ pub(super) fn validate_secret(name: &str, secret: &RawSecret) -> Result<(), Comp
                 "secret '{name}': unsupported driver '{driver}'"
             )));
         }
-        if secret
+        let command = secret
             .driver_opts
             .get("command")
-            .is_none_or(String::is_empty)
-        {
+            .filter(|command| !command.is_empty());
+        let Some(command) = command else {
             return Err(invalid(format!(
                 "secret '{name}': exec driver requires driver_opts.command"
             )));
-        }
+        };
         if secret.file.is_some() || secret.environment.is_some() {
             return Err(invalid(format!(
                 "secret '{name}': a secret using a driver cannot also define file or environment"
             )));
         }
-        return Ok(());
+        return Ok(SecretSource::Command(command.clone()));
     }
-    if usize::from(secret.file.is_some()) + usize::from(secret.environment.is_some()) != 1 {
-        return Err(invalid(format!(
+    match (&secret.file, &secret.environment) {
+        (Some(file), None) => Ok(SecretSource::File(file.clone())),
+        (None, Some(variable)) => Ok(SecretSource::Environment(variable.clone())),
+        (Some(_), Some(_)) | (None, None) => Err(invalid(format!(
             "secret '{name}' must define exactly one of file or environment"
-        )));
+        ))),
     }
-    Ok(())
 }
 
 fn resolve_secret(
     name: &str,
-    secret: &RawSecret,
+    source: &SecretSource,
     directory: &Path,
     environment: &BTreeMap<String, String>,
 ) -> Result<String, ComposeError> {
-    if let Some(file) = &secret.file {
-        return fs::read_to_string(directory.join(file)).map_err(|error| {
+    match source {
+        SecretSource::File(file) => fs::read_to_string(directory.join(file)).map_err(|error| {
             ComposeError::Io(format!("read secret '{name}' file '{file}': {error}"))
-        });
-    }
-    if let Some(variable) = &secret.environment {
-        return environment
+        }),
+        SecretSource::Environment(variable) => environment
             .get(variable)
             .cloned()
-            .ok_or_else(|| invalid(format!("environment variable '{variable}' is not set")));
+            .ok_or_else(|| invalid(format!("environment variable '{variable}' is not set"))),
+        SecretSource::Command(line) => resolve_command_secret(name, line, directory, environment),
     }
-    let line = secret
-        .command
-        .as_ref()
-        .or_else(|| secret.driver_opts.get("command"))
-        .ok_or_else(|| invalid(format!("secret '{name}' has no source")))?;
+}
+
+fn resolve_command_secret(
+    name: &str,
+    line: &str,
+    directory: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Result<String, ComposeError> {
     let args = shell_words::split(line).map_err(|error| invalid(error.to_string()))?;
     let (program, args) = args
         .split_first()
