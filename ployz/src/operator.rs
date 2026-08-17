@@ -322,7 +322,8 @@ pub async fn open_exec(
     options: ExecOptions,
 ) -> Result<ExecSession, OperatorError> {
     let live = client.live_services().await?;
-    let service = select_service(&live.services, service_selector)?;
+    let services = live.services();
+    let service = select_service(&services, service_selector)?;
     let container = select_exec_container(service, container_selector)?.as_observation();
     let machine_id = container.machine_id;
     let config = ExecRequestFrame::Config(ExecConfig {
@@ -362,10 +363,11 @@ pub async fn open_service_logs(
         .map(|machine| machine.machine.id)
         .collect::<HashSet<_>>();
     let live = client.live_services().await?;
+    let services = live.services();
     let mut inputs = Vec::new();
     let mut skipped_services = Vec::new();
     for arg in args {
-        let service = match select_service(&live.services, &arg.service) {
+        let service = match select_service(&services, &arg.service) {
             Ok(service) => service,
             Err(ployz_core::ServiceSelectorError::NotFound { .. }) if compose_selection => {
                 skipped_services.push(arg.service.clone());

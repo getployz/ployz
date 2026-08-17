@@ -172,7 +172,8 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     assert_machine_logs(&mut client, &machines).await;
 
     let live = client.live_services().await.unwrap();
-    let service = select_service(&live.services, &ServiceSelector::from(&service_id)).unwrap();
+    let services = live.services();
+    let service = select_service(&services, &ServiceSelector::from(&service_id)).unwrap();
     client
         .change_observed_service(service, ContainerAction::Remove, None, None)
         .await;
@@ -448,12 +449,13 @@ async fn wait_for_service(
 ) -> ployz_core::ServiceObservation {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Ok(live) = client.live_services().await
-                && let Ok(service) =
-                    select_service(&live.services, &ServiceSelector::from(service_id))
-                && service.containers.len() == containers
-            {
-                return service.clone();
+            if let Ok(live) = client.live_services().await {
+                let services = live.services();
+                if let Ok(service) = select_service(&services, &ServiceSelector::from(service_id))
+                    && service.containers.len() == containers
+                {
+                    return service.clone();
+                }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

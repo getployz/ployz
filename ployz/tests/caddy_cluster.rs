@@ -449,7 +449,7 @@ async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: us
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let live = client.live_services().await.unwrap();
-            if let Some(service) = live.services.iter().find(|service| {
+            if let Some(service) = live.services().into_iter().find(|service| {
                 service.containers.first().is_some_and(|container| {
                     container.as_observation().service_name.as_str() == name
                 }) && service.containers.len() == count
@@ -688,8 +688,8 @@ async fn wait_running(
     loop {
         let live = client.live_services().await.unwrap();
         if let Some(service) = live
-            .services
-            .iter()
+            .services()
+            .into_iter()
             .find(|service| service.service_id == *service_id)
         {
             let running = service

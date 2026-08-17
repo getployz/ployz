@@ -98,8 +98,8 @@ pub(crate) async fn update_records_after_removal(
 pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> {
     let observations = client.machines().await?;
     let live = client.live_services_from(&observations).await?;
-    let caddy_machines = live
-        .services
+    let services = live.services();
+    let caddy_machines = services
         .iter()
         .flat_map(|service| &service.containers)
         .filter(|container| container.as_observation().service_name.as_str() == SERVICE_NAME)

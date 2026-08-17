@@ -208,7 +208,8 @@ async fn run_proxy(
         )));
     }
     let live = client.live_services().await?;
-    let service = select_service(&live.services, service_selector)?;
+    let services = live.services();
+    let service = select_service(&services, service_selector)?;
     let container = select_proxy_container(service)?.as_observation();
     let address = container.address.ok_or_else(|| {
         Error::usage(format!(

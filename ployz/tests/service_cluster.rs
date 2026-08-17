@@ -53,7 +53,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .unwrap();
 
     let live = wait_for_services(&mut client, 1, 4).await;
-    let observed = select_service(&live.services, &ServiceSelector::from(&service_id))
+    let observed = select_service(&live.services(), &ServiceSelector::from(&service_id))
         .unwrap()
         .clone();
     assert_eq!(observed.containers.len(), 2);
@@ -83,9 +83,9 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .await
         .unwrap();
     let live = wait_for_services(&mut client, 2, 5).await;
-    assert!(select_service(&live.services, &ServiceSelector::parse("shared").unwrap()).is_err());
+    assert!(select_service(&live.services(), &ServiceSelector::parse("shared").unwrap()).is_err());
     assert_eq!(
-        select_service(&live.services, &ServiceSelector::from(&collision_id))
+        select_service(&live.services(), &ServiceSelector::from(&collision_id))
             .unwrap()
             .service_id,
         collision_id
@@ -95,7 +95,6 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     let partial = client.live_services().await.unwrap();
     assert_eq!(partial.containers.successes.len(), 1);
     assert_eq!(partial.containers.failures.len(), 1);
-    assert!(!partial.complete);
 
     let started = client
         .change_observed_service(&observed, ContainerAction::Start, None, None)
@@ -109,11 +108,9 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             .all(|hook| hook.as_observation().container_id != success.value)
     }));
     let local_after_start = client.live_services().await.unwrap();
-    let local_service = select_service(
-        &local_after_start.services,
-        &ServiceSelector::from(&service_id),
-    )
-    .unwrap();
+    let local_services = local_after_start.services();
+    let local_service =
+        select_service(&local_services, &ServiceSelector::from(&service_id)).unwrap();
     assert!(matches!(
         local_service
             .hook_containers
@@ -152,12 +149,14 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
 
     cluster.remote_machine_api_rule(0, "--delete").unwrap();
     let live = client.live_services().await.unwrap();
-    let service = select_service(&live.services, &ServiceSelector::from(&service_id)).unwrap();
+    let services = live.services();
+    let service = select_service(&services, &ServiceSelector::from(&service_id)).unwrap();
     client
         .change_observed_service(service, ContainerAction::Remove, None, Some(10))
         .await;
     let live = client.live_services().await.unwrap();
-    let service = select_service(&live.services, &ServiceSelector::from(&collision_id)).unwrap();
+    let services = live.services();
+    let service = select_service(&services, &ServiceSelector::from(&collision_id)).unwrap();
     client
         .change_observed_service(service, ContainerAction::Remove, None, Some(10))
         .await;
@@ -166,7 +165,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             if client
                 .live_services()
                 .await
-                .is_ok_and(|live| live.services.is_empty())
+                .is_ok_and(|live| live.services().is_empty())
             {
                 break;
             }
@@ -409,7 +408,7 @@ async fn wait_for_services(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Ok(live) = client.live_services().await
-                && live.services.len() == service_count
+                && live.services().len() == service_count
                 && live
                     .containers
                     .successes

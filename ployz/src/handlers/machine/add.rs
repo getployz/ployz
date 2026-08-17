@@ -41,8 +41,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let visible = machine_list(&mut entry).await?;
         let caddy_settings = if deploy_caddy {
             let live = entry.live_services().await?;
+            let services = live.services();
             crate::caddy::newest_existing_settings(
-                live.services.iter().flat_map(|service| &service.containers),
+                services.iter().flat_map(|service| &service.containers),
             )
         } else {
             None

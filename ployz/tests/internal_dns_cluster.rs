@@ -324,26 +324,27 @@ async fn wait_for_dns_observations(
 ) -> Vec<ContainerObservation> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Ok(live) = client.live_services().await
-                && let Ok(service) =
-                    select_service(&live.services, &ServiceSelector::from(service_id))
-                && service.containers.len() == count
-                && service.containers.iter().all(|container| {
-                    let observation = container.as_observation();
-                    observation.address.is_some()
-                        && matches!(
-                            &observation.runtime,
-                            ContainerRuntimeObservation::Running {
-                                health: HealthObservation::Healthy
-                            }
-                        )
-                })
-            {
-                return service
-                    .containers
-                    .iter()
-                    .map(|container| container.as_observation().clone())
-                    .collect();
+            if let Ok(live) = client.live_services().await {
+                let services = live.services();
+                if let Ok(service) = select_service(&services, &ServiceSelector::from(service_id))
+                    && service.containers.len() == count
+                    && service.containers.iter().all(|container| {
+                        let observation = container.as_observation();
+                        observation.address.is_some()
+                            && matches!(
+                                &observation.runtime,
+                                ContainerRuntimeObservation::Running {
+                                    health: HealthObservation::Healthy
+                                }
+                            )
+                    })
+                {
+                    return service
+                        .containers
+                        .iter()
+                        .map(|container| container.as_observation().clone())
+                        .collect();
+                }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

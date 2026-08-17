@@ -14,7 +14,7 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
             let live = client.live_services().await?;
             print_observation_warning(&live);
             println!("SERVICE ID\tNAME\tCONTAINERS\tHOOKS");
-            for service in &live.services {
+            for service in live.services() {
                 let name = service
                     .service_name()
                     .map(|name| name.as_str())
@@ -42,8 +42,8 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             let live = client.live_services().await?;
             print_observation_warning(&live);
             println!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
-            let mut containers = live
-                .services
+            let services = live.services();
+            let mut containers = services
                 .iter()
                 .flat_map(ployz_core::ServiceObservation::members)
                 .collect::<Vec<_>>();
@@ -148,7 +148,8 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let live = client.live_services().await?;
             print_observation_warning(&live);
-            let service = select_service(&live.services, &selector)?;
+            let services = live.services();
+            let service = select_service(&services, &selector)?;
             println!("{}", serde_json::to_string_pretty(service)?);
             Ok(())
         })
@@ -167,7 +168,8 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
         Box::pin(async move {
             let live = client.live_services().await?;
             print_observation_warning(&live);
-            let services = select_services(&live.services, &selectors)?;
+            let observed = live.services();
+            let services = select_services(&observed, &selectors)?;
             let mut partial = false;
             for service in services {
                 let outcomes = client
@@ -231,21 +233,35 @@ fn stop_options(
 }
 
 fn print_observation_warning(live: &LiveServices<RpcError>) {
-    eprintln!("WARNING: Live Observation is observer-relative and not globally complete");
-    for failure in &live.containers.failures {
-        eprintln!(
+    for line in observation_warning_lines(live) {
+        eprintln!("{line}");
+    }
+}
+
+fn observation_warning_lines(live: &LiveServices<RpcError>) -> Vec<String> {
+    let mut lines =
+        vec!["WARNING: Live Observation is observer-relative and not globally complete".into()];
+    lines.extend(live.containers.failures.iter().map(|failure| {
+        format!(
             "WARNING: Machine {} failed: {}",
             failure.machine_id, failure.error.message
-        );
-    }
-    for machine_id in &live.containers.omissions {
-        eprintln!("WARNING: Machine {machine_id} was omitted");
-    }
+        )
+    }));
+    lines.extend(
+        live.containers
+            .omissions
+            .iter()
+            .map(|machine_id| format!("WARNING: Machine {machine_id} was omitted")),
+    );
+    lines
 }
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{HookContainer, MachineId, ServiceContainer, ServiceId, ServiceName};
+    use ployz_core::{
+        HookContainer, MachineFailure, MachineId, PartialResult, RpcError, RpcErrorCode,
+        ServiceContainer, ServiceId, ServiceName, derive_live_services,
+    };
     use serde_json::json;
 
     use super::*;
@@ -315,6 +331,35 @@ mod tests {
         assert_eq!(
             stop_options(leaf_matches(&matches), ContainerAction::Stop).unwrap(),
             (Some("SIGTERM".into()), Some(10))
+        );
+    }
+
+    #[test]
+    fn observation_warnings_come_from_partial_result_failures_and_omissions() {
+        let failed_id = MachineId::parse("2".repeat(32)).unwrap();
+        let omitted_id = MachineId::parse("3".repeat(32)).unwrap();
+        let live =
+            derive_live_services(PartialResult::<Vec<ployz_core::ContainerObservation>, _> {
+                successes: Vec::new(),
+                failures: vec![MachineFailure {
+                    machine_id: failed_id,
+                    error: RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "offline".into(),
+                        details: serde_json::Value::Null,
+                    },
+                }],
+                omissions: vec![omitted_id],
+            });
+
+        assert_eq!(
+            observation_warning_lines(&live),
+            vec![
+                "WARNING: Live Observation is observer-relative and not globally complete"
+                    .to_string(),
+                format!("WARNING: Machine {failed_id} failed: offline"),
+                format!("WARNING: Machine {omitted_id} was omitted"),
+            ]
         );
     }
 

@@ -463,7 +463,7 @@ async fn wait_for_service(
         loop {
             if let Ok(live) = client.live_services().await
                 && let Some(service) = live
-                    .services
+                    .services()
                     .into_iter()
                     .find(|service| service.service_id == *service_id)
             {

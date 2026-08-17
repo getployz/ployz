@@ -65,30 +65,31 @@ pub enum ContainerAction {
     Remove,
 }
 
-/// Entry-relative Live Observations and the Machine outcomes that produced them.
+/// Entry-relative Live Observations: the container PartialResult.
+/// Service grouping is derived on demand; there is no completeness flag.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LiveServices<E> {
-    pub services: Vec<ServiceObservation>,
     pub containers: PartialResult<Vec<ContainerObservation>, E>,
-    /// Live Observation is never a proof of global completeness.
-    pub complete: bool,
+}
+
+impl<E> LiveServices<E> {
+    /// Observer-derived Service groupings from successful container observations.
+    #[must_use]
+    pub fn services(&self) -> Vec<ServiceObservation> {
+        derive_services(
+            self.containers
+                .successes
+                .iter()
+                .flat_map(|success| success.value.iter().cloned()),
+        )
+    }
 }
 
 #[must_use]
 pub fn derive_live_services<E>(
     containers: PartialResult<Vec<ContainerObservation>, E>,
 ) -> LiveServices<E> {
-    let services = derive_services(
-        containers
-            .successes
-            .iter()
-            .flat_map(|success| success.value.iter().cloned()),
-    );
-    LiveServices {
-        services,
-        containers,
-        complete: false,
-    }
+    LiveServices { containers }
 }
 
 #[must_use]
@@ -473,11 +474,11 @@ mod tests {
         };
 
         let live = super::derive_live_services(partial);
+        let services = live.services();
 
-        assert!(!live.complete);
-        assert_eq!(live.services.len(), 1);
+        assert_eq!(services.len(), 1);
         assert_eq!(
-            live.services
+            services
                 .first()
                 .unwrap()
                 .containers
@@ -492,6 +493,85 @@ mod tests {
             failed_id
         );
         assert_eq!(live.containers.omissions, vec![omitted_id]);
+    }
+
+    #[test]
+    fn mutating_containers_updates_derived_services() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let first = observation(
+            '1',
+            &service_id,
+            "api",
+            ContainerKind::ServiceContainer,
+            "v1",
+        );
+        let second = observation(
+            '2',
+            &service_id,
+            "api",
+            ContainerKind::ServiceContainer,
+            "v2",
+        );
+        let mut live = super::derive_live_services::<()>(PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: first.machine_id,
+                value: vec![first.clone()],
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+
+        assert_eq!(live.services().len(), 1);
+        assert_eq!(live.services().first().unwrap().containers.len(), 1);
+
+        live.containers
+            .successes
+            .first_mut()
+            .unwrap()
+            .value
+            .push(second.clone());
+
+        let services = live.services();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services.first().unwrap().containers.len(), 2);
+        assert_eq!(
+            services
+                .first()
+                .unwrap()
+                .containers
+                .get(1)
+                .unwrap()
+                .as_observation()
+                .container_id,
+            second.container_id
+        );
+
+        live.containers.successes.clear();
+        assert!(live.services().is_empty());
+    }
+
+    #[test]
+    fn live_services_json_has_no_completeness_flag_when_every_target_succeeds() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let live = super::derive_live_services::<()>(PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: MachineId::parse("1".repeat(32)).unwrap(),
+                value: vec![observation(
+                    '1',
+                    &service_id,
+                    "api",
+                    ContainerKind::ServiceContainer,
+                    "v1",
+                )],
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+
+        assert!(live.containers.all_targets_succeeded());
+        let json = serde_json::to_value(&live).unwrap();
+        assert_eq!(json.get("complete"), None);
+        assert_eq!(json.get("services"), None);
     }
 
     #[test]

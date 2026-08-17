@@ -81,8 +81,8 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
             .all(|container| &container.as_observation().machine_id == machine_1)
     );
     let generated_global = initial_run
-        .services
-        .iter()
+        .services()
+        .into_iter()
         .find(|service| {
             service.containers.first().is_some_and(|container| {
                 container
@@ -273,7 +273,7 @@ async fn assert_machine_rename_preserves_containers(
     initial: &ployz_core::LiveServices<ployz_core::RpcError>,
 ) {
     let initial_ids = initial
-        .services
+        .services()
         .iter()
         .flat_map(|service| &service.containers)
         .map(|container| container.as_observation().container_id)
@@ -291,7 +291,7 @@ async fn assert_machine_rename_preserves_containers(
     let after_rename = wait_for_services(client, &["scaled-workflow"], 3).await;
     assert_eq!(
         after_rename
-            .services
+            .services()
             .iter()
             .flat_map(|service| &service.containers)
             .map(|container| container.as_observation().container_id)
@@ -305,12 +305,12 @@ async fn assert_machine_rename_preserves_containers(
     wait_for_machine_name(client, machine_id, "machine-1").await;
 }
 
-fn observed_service<'a, E>(
-    live: &'a ployz_core::LiveServices<E>,
+fn observed_service<E>(
+    live: &ployz_core::LiveServices<E>,
     name: &str,
-) -> &'a ployz_core::ServiceObservation {
-    live.services
-        .iter()
+) -> ployz_core::ServiceObservation {
+    live.services()
+        .into_iter()
         .find(|service| service.has_name(name))
         .unwrap()
 }
@@ -321,14 +321,13 @@ async fn wait_for_services(
     regular_containers: usize,
 ) -> ployz_core::LiveServices<ployz_core::RpcError> {
     wait_for_live(client, |live| {
-        let observed = live
-            .services
+        let services = live.services();
+        let observed = services
             .iter()
             .flat_map(|service| &service.containers)
             .map(|container| container.as_observation().service_name.as_str())
             .collect::<BTreeSet<_>>();
-        let count = live
-            .services
+        let count = services
             .iter()
             .map(|service| service.containers.len())
             .sum::<usize>();
@@ -343,7 +342,7 @@ async fn wait_for_hook_only(
     name: &str,
 ) -> ployz_core::ServiceObservation {
     wait_for_live(client, |live| {
-        live.services.into_iter().find(|service| {
+        live.services().into_iter().find(|service| {
             service.containers.is_empty()
                 && service.hook_containers.first().is_some_and(|container| {
                     container.as_observation().service_name.as_str() == name
@@ -364,7 +363,7 @@ fn service_ids_from(
     live: ployz_core::LiveServices<ployz_core::RpcError>,
     names: &[&str],
 ) -> BTreeMap<String, BTreeSet<String>> {
-    live.services
+    live.services()
         .into_iter()
         .filter_map(|service| {
             let name = service
