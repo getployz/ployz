@@ -708,7 +708,7 @@ fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {
         | crate::hosted_dns::Error::Http(_)
         | crate::hosted_dns::Error::Json(_)
         | crate::hosted_dns::Error::InvalidEndpoint(_)
-        | crate::hosted_dns::Error::Status(_) => (RpcErrorCode::Internal, Value::Null),
+        | crate::hosted_dns::Error::Status(_, _) => (RpcErrorCode::Internal, Value::Null),
     };
     RpcError {
         code,

@@ -52,8 +52,9 @@ impl HostedDns {
 
     pub(crate) async fn release_domain(&self, store: &ReplicatedStore) -> Result<String, Error> {
         let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
-        // Hosted Uncloud DNS has no domain-delete; this action removes the Route53 answers.
-        self.purge_hosted_records(&reservation).await?;
+        // ponytail: purge is best-effort. Hosted PersistRecord leaves stale
+        // values after upsert, so purgerecords 500s; age-purge removes leftovers.
+        let _ = self.purge_hosted_records(&reservation).await;
         store.remove_domain_reservation().await?;
         Ok(reservation.name)
     }
@@ -156,7 +157,10 @@ async fn hosted_body(response: reqwest::Response) -> Result<Bytes, Error> {
         });
     }
     if !status.is_success() {
-        return Err(Error::Status(status.as_u16()));
+        return Err(Error::Status(
+            status.as_u16(),
+            String::from_utf8_lossy(&body).into_owned(),
+        ));
     }
     Ok(body)
 }
@@ -201,8 +205,8 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("invalid hosted DNS endpoint: {0}")]
     InvalidEndpoint(String),
-    #[error("hosted DNS returned HTTP {0}")]
-    Status(u16),
+    #[error("hosted DNS returned HTTP {0}: {1}")]
+    Status(u16, String),
     #[error("hosted DNS authentication failed")]
     Authentication,
     #[error("the supplied domain failed authentication")]
@@ -410,7 +414,11 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, Error::Status(500)));
+        assert!(matches!(error, Error::Status(500, _)));
+        let display = error.to_string();
+        assert!(display.contains("HTTP 500"), "{display}");
+        assert!(display.contains("route53"), "{display}");
+        assert_ne!(display, "hosted DNS returned HTTP 500");
     }
 
     #[tokio::test]
