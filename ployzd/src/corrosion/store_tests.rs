@@ -153,6 +153,12 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
     let store = ReplicatedStore::new(ApiClient::new(address, &"a".repeat(64)).unwrap());
     assert!(store.certificate_rows().await.is_err());
     assert!(RuntimeWatchSnapshot::from_store(&store).await.is_err());
+    assert!(store.subscribe_runtime_watch_changes().await.is_err());
+    assert!(
+        crate::runtime_watch::serve_replicated_runtime_watch(store, MachineId::random())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

@@ -1,31 +1,29 @@
-//! Assemble one complete Runtime Watch frame from replicated observations.
+//! Assemble and stream complete Runtime Watch frames from replicated observations.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Watch stream (#318) is the only production caller"
-    )
-)]
-
-use std::{collections::BTreeMap, time::SystemTime};
+use std::{collections::BTreeMap, future::Future, time::SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use futures_util::{Stream, StreamExt};
 use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, RttStatistics,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, derive_services,
+    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
+    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, derive_services,
 };
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::Status;
 
 use crate::{
     corrosion::{CertificateRow, Error, ReplicatedObservations, ReplicatedStore},
     hosted_dns::Reservation,
+    logs::RpcStream,
 };
 
 /// Replicated observations used to assemble one Runtime Watch frame.
 ///
 /// Loaded from the store. Never from live Machine RPC or Docker fan-out.
+#[derive(Clone)]
 pub(crate) struct RuntimeWatchSnapshot {
     pub machines: ReplicatedObservations<Machine, MachineId>,
     pub containers: ReplicatedObservations<ContainerObservation, ContainerId>,
@@ -59,6 +57,106 @@ impl RuntimeWatchSnapshot {
             hosted_dns: store.domain_reservation().await?,
         })
     }
+}
+
+/// Serve complete Runtime Watch frames from the replicated store.
+///
+/// Subscribes first, then yields one complete frame immediately. Later frames
+/// are assembled on store wakeups; the notification payload is not the
+/// observation. Unchanged observations do not yield. Store failure ends the
+/// stream. `observed_at` is frozen for the stream. Membership/RTT sampling is #319.
+///
+/// # Errors
+///
+/// Returns if store subscriptions cannot be opened.
+pub(crate) async fn serve_replicated_runtime_watch(
+    store: ReplicatedStore,
+    entry_id: MachineId,
+) -> Result<RpcStream, Error> {
+    let changes = store.subscribe_runtime_watch_changes().await?;
+    Ok(serve_runtime_watch(
+        entry_id,
+        rfc3339(SystemTime::now()),
+        move || {
+            let store = store.clone();
+            async move { RuntimeWatchSnapshot::from_store(&store).await }
+        },
+        changes,
+    ))
+}
+
+/// Serve complete Runtime Watch frames from replicated store reads.
+///
+/// Yields one complete frame immediately, then another when a store
+/// notification wakes assembly and the assembled observation changed.
+fn serve_runtime_watch<L, Fut, C>(
+    entry_id: MachineId,
+    observed_at: String,
+    load: L,
+    changes: C,
+) -> RpcStream
+where
+    L: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<RuntimeWatchSnapshot, Error>> + Send,
+    C: Stream<Item = Result<(), Error>> + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel(8);
+    tokio::spawn(async move {
+        let mut changes = std::pin::pin!(changes);
+        let mut last = None;
+        loop {
+            match load().await {
+                Ok(snapshot) => {
+                    let frame = assemble_runtime_watch_frame(
+                        snapshot,
+                        &entry_id,
+                        None,
+                        observed_at.clone(),
+                    );
+                    if last.as_ref() != Some(&frame) {
+                        let payload = match OpaquePayload::from_json(&frame) {
+                            Ok(payload) => payload,
+                            Err(error) => {
+                                let _ = sender.send(Err(Status::internal(error.to_string()))).await;
+                                return;
+                            }
+                        };
+                        if sender.send(Ok(payload)).await.is_err() {
+                            return;
+                        }
+                        last = Some(frame);
+                    }
+                }
+                Err(error) => {
+                    let _ = sender
+                        .send(Err(Status::unavailable(error.to_string())))
+                        .await;
+                    return;
+                }
+            }
+            match tokio::select! {
+                () = sender.closed() => return,
+                changed = changes.next() => changed,
+            } {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    let _ = sender
+                        .send(Err(Status::unavailable(error.to_string())))
+                        .await;
+                    return;
+                }
+                None => {
+                    let _ = sender
+                        .send(Err(Status::unavailable(
+                            "Runtime Watch store subscription ended",
+                        )))
+                        .await;
+                    return;
+                }
+            }
+        }
+    });
+    ReceiverStream::new(receiver)
 }
 
 /// Assemble one complete Runtime Watch frame.
@@ -177,11 +275,13 @@ fn rfc3339(time: SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
     use std::{
         collections::BTreeMap,
         time::{Duration, SystemTime},
     };
 
+    use futures_util::StreamExt;
     use ployz_core::{
         AdvertisedEndpoint, CertificateAvailability, CertificateBackoff, CertificateFailureKind,
         CertificateObservation, ContainerId, ContainerKind, ContainerObservation,
@@ -193,11 +293,16 @@ mod tests {
     };
     use serde_json::{Value, json};
 
-    use super::{RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame};
+    use super::{
+        RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame,
+        serve_runtime_watch,
+    };
     use crate::corrosion::{
-        CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedObservations,
+        CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
     };
     use crate::hosted_dns::Reservation;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
 
     const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
     const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
@@ -590,6 +695,195 @@ mod tests {
                 !text.contains(forbidden),
                 "{forbidden} must not appear on the Watch frame"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn watch_stream_yields_the_first_complete_frame_immediately() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let volume = volume_on(ENTRY_ID, "data");
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone()], vec![volume.clone()]));
+        let (_wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(frame.volumes, vec![volume]);
+        let machine = frame.machines.first().expect("entry Machine");
+        assert_eq!(machine.membership, MembershipObservation::Up);
+        assert_eq!(machine.rtt, None);
+        assert_eq!(frame.observed_at, OBSERVED_AT);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stream.next())
+                .await
+                .is_err(),
+            "first yield must not wait for a timer or a store change"
+        );
+    }
+
+    #[tokio::test]
+    async fn store_notification_yields_when_the_assembled_observation_changes() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let first = volume_on(ENTRY_ID, "data");
+        let second = volume_on(ENTRY_ID, "logs");
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone()], vec![first.clone()]));
+        let (wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(frame.volumes, vec![first.clone()]);
+
+        fixture.set(snapshot(
+            vec![entry.clone()],
+            vec![first.clone(), second.clone()],
+        ));
+        wake.send(Ok(())).await.unwrap();
+
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(frame.volumes, vec![first, second]);
+    }
+
+    #[tokio::test]
+    async fn unchanged_assembled_observation_does_not_yield() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let volume = volume_on(ENTRY_ID, "data");
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone()], vec![volume]));
+        let (wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+        let _first = next_frame(&mut stream).await;
+        wake.send(Ok(())).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stream.next())
+                .await
+                .is_err(),
+            "a store wake whose reassembled observation is unchanged must not yield"
+        );
+    }
+
+    #[tokio::test]
+    async fn store_failure_ends_the_stream() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+        let (wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+        let _first = next_frame(&mut stream).await;
+        fixture.fail("store closed");
+        wake.send(Ok(())).await.unwrap();
+
+        let error = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("failure must end the stream")
+            .expect("stream item")
+            .expect_err("store failure is a stream error");
+        assert_eq!(error.code(), tonic::Code::Unavailable);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stream.next())
+                .await
+                .expect("ended stream")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_stream_cancels_watch() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+        let (wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+        let _first = next_frame(&mut stream).await;
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(1), wake.closed())
+            .await
+            .expect("dropping the Watch stream must cancel the store subscription");
+    }
+
+    #[tokio::test]
+    async fn reconnect_yields_a_fresh_complete_frame() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let first = volume_on(ENTRY_ID, "data");
+        let replacement = volume_on(ENTRY_ID, "scratch");
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone()], vec![first.clone()]));
+        let (_wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+        let first_frame = next_frame(&mut stream).await;
+        assert_eq!(first_frame.volumes, vec![first]);
+        drop(stream);
+
+        fixture.set(snapshot(vec![entry.clone()], vec![replacement.clone()]));
+        let (_wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+        let reconnect = next_frame(&mut stream).await;
+        assert_eq!(reconnect.volumes, vec![replacement]);
+        assert_eq!(reconnect.machines.len(), 1);
+    }
+
+    #[derive(Clone)]
+    struct WatchFixture {
+        snapshot: Arc<Mutex<Result<RuntimeWatchSnapshot, String>>>,
+    }
+
+    impl WatchFixture {
+        fn new(snapshot: RuntimeWatchSnapshot) -> Self {
+            Self {
+                snapshot: Arc::new(Mutex::new(Ok(snapshot))),
+            }
+        }
+
+        fn set(&self, snapshot: RuntimeWatchSnapshot) {
+            *self.snapshot.lock().unwrap() = Ok(snapshot);
+        }
+
+        fn fail(&self, message: &str) {
+            *self.snapshot.lock().unwrap() = Err(message.into());
+        }
+
+        async fn load(&self) -> Result<RuntimeWatchSnapshot, Error> {
+            match &*self.snapshot.lock().unwrap() {
+                Ok(snapshot) => Ok(snapshot.clone()),
+                Err(message) => Err(Error::Protocol(message.clone())),
+            }
+        }
+    }
+
+    fn serve_fixture(
+        entry_id: MachineId,
+        fixture: &WatchFixture,
+        changes: mpsc::Receiver<Result<(), Error>>,
+    ) -> crate::logs::RpcStream {
+        let fixture = fixture.clone();
+        serve_runtime_watch(
+            entry_id,
+            OBSERVED_AT.into(),
+            move || {
+                let fixture = fixture.clone();
+                async move { fixture.load().await }
+            },
+            ReceiverStream::new(changes),
+        )
+    }
+
+    async fn next_frame(stream: &mut crate::logs::RpcStream) -> ployz_core::RuntimeWatchFrame {
+        let payload = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("Watch frame")
+            .expect("open stream")
+            .expect("Watch status");
+        payload.decode_json().unwrap()
+    }
+
+    fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchSnapshot {
+        RuntimeWatchSnapshot {
+            machines: observations(machines),
+            containers: observations(Vec::new()),
+            volumes: observations(volumes),
+            certificates: ReplicatedObservations {
+                observations: Vec::new(),
+                incomplete_ids: Vec::new(),
+            },
+            hosted_dns: None,
         }
     }
 }

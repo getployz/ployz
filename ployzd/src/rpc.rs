@@ -20,6 +20,7 @@ use crate::{
     docker::{ContainerRuntime, Error as DockerError, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
+    runtime_watch::serve_replicated_runtime_watch,
 };
 
 #[derive(Clone)]
@@ -439,11 +440,18 @@ impl MachineRpc for MachineService {
 
     async fn runtime_watch(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
-        Err(Status::unimplemented(
-            "Runtime Watch is catalogued and not served by this daemon yet",
-        ))
+        op::RuntimeWatch::from_request_body(request_body(request)?).map_err(invalid_request)?;
+        let store = self
+            .ready_replicated()
+            .map_err(|error| Status::unavailable(error.message))?
+            .clone();
+        let entry_id = self.local_record()?.id();
+        let stream = serve_replicated_runtime_watch(store, entry_id)
+            .await
+            .map_err(|error| Status::unavailable(error.to_string()))?;
+        Ok(Response::new(stream))
     }
 
     async fn update_machine(
@@ -797,9 +805,12 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::store_error;
-    use crate::machine::StoreError;
-    use ployz_core::RpcErrorCode;
+    use super::{MachineService, store_error};
+    use crate::machine::{LocalMachineStore, StoreError};
+    use ployz_core::{MachineRpc, RpcErrorCode, RuntimeWatchRequest, op};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::watch;
+    use tonic::{Code, Request};
 
     #[test]
     fn non_participating_update_is_a_typed_conflict() {
@@ -807,5 +818,26 @@ mod tests {
             store_error(StoreError::NotParticipating).code,
             RpcErrorCode::Conflict
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_watch_without_a_cluster_store_is_unavailable() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "ployzd-runtime-watch-{}",
+            ployz_core::MachineId::random()
+        ));
+        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+        let (restart, _) = watch::channel(false);
+        let service = MachineService::new(store, restart);
+        let error = service
+            .runtime_watch(Request::new(
+                op::RuntimeWatch::into_request(RuntimeWatchRequest {})
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Code::Unavailable);
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }
