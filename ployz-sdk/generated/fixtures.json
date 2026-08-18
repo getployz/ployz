@@ -62,6 +62,86 @@
     },
     "pairing_revoked": true
   },
+  "config_mount": {
+    "config_name": "settings",
+    "gid": 1000,
+    "mode": 288,
+    "target": "/etc/api/settings.toml",
+    "uid": 1000
+  },
+  "container_observation_disabled_healthcheck": {
+    "address": null,
+    "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "created_at_unix_nanos": 1700000000000000000,
+    "display_name": "api-1",
+    "effective_healthcheck": {
+      "state": "disabled"
+    },
+    "kind": "service_container",
+    "labels": {},
+    "machine_id": "0123456789abcdef0123456789abcdef",
+    "project_name": "app",
+    "resolved_spec": {
+      "caddy_config": null,
+      "configs": [],
+      "container": {
+        "cap_add": [],
+        "cap_drop": [],
+        "command": [],
+        "config_mounts": [],
+        "entrypoint": [],
+        "environment": {},
+        "healthcheck": null,
+        "image": "api:1",
+        "init": null,
+        "log_driver": null,
+        "open_stdin": false,
+        "pid_mode": null,
+        "privileged": false,
+        "pull_policy": "missing",
+        "resources": {
+          "cpu_nanos": null,
+          "device_reservations": [],
+          "devices": [],
+          "memory_bytes": null,
+          "memory_reservation_bytes": null,
+          "shared_memory_bytes": null,
+          "ulimits": {}
+        },
+        "restart": {
+          "name": "unless-stopped"
+        },
+        "stop_timeout_secs": null,
+        "sysctls": {},
+        "tty": false,
+        "user": null,
+        "working_directory": null
+      },
+      "mode": {
+        "mode": "replicated",
+        "replicas": 1
+      },
+      "mounts": [],
+      "name": "api",
+      "placement": {
+        "machines": []
+      },
+      "ports": [],
+      "pre_deploy": null,
+      "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "update": {
+        "monitor_millis": null,
+        "order": "start_first"
+      },
+      "volumes": []
+    },
+    "runtime": {
+      "health": "healthy",
+      "state": "running"
+    },
+    "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "service_name": "api"
+  },
   "container_runtime_known_unknown_fields": {
     "engine_detail": "accepted and ignored",
     "health": "healthy",
@@ -271,6 +351,21 @@
     ],
     "would_remove": []
   },
+  "device_reservation": {
+    "capabilities": [
+      [
+        "gpu"
+      ]
+    ],
+    "count": 1,
+    "device_ids": [
+      "GPU-0"
+    ],
+    "driver": "nvidia",
+    "options": {
+      "count": "1"
+    }
+  },
   "docker_volume": {
     "driver": "local",
     "id": {
@@ -421,6 +516,319 @@
       "order": null
     },
     "volumes": []
+  },
+  "requested_service_spec_typed": {
+    "caddy_config": null,
+    "configs": [
+      {
+        "content": [
+          112,
+          111,
+          114,
+          116,
+          32,
+          61,
+          32,
+          56,
+          48,
+          56,
+          48
+        ],
+        "name": "settings"
+      }
+    ],
+    "container": {
+      "cap_add": [],
+      "cap_drop": [],
+      "command": [],
+      "config_mounts": [
+        {
+          "config_name": "settings",
+          "gid": 1000,
+          "mode": 288,
+          "target": "/etc/api/settings.toml",
+          "uid": 1000
+        },
+        {
+          "config_name": "settings",
+          "gid": null,
+          "mode": null,
+          "target": null,
+          "uid": null
+        }
+      ],
+      "entrypoint": [],
+      "environment": {},
+      "healthcheck": {
+        "interval_millis": 10000,
+        "retries": 3,
+        "start_interval_millis": 1000,
+        "start_period_millis": 15000,
+        "state": "configured",
+        "test": [
+          "CMD",
+          "true"
+        ],
+        "timeout_millis": 5000
+      },
+      "image": "api:1",
+      "init": null,
+      "log_driver": null,
+      "open_stdin": false,
+      "pid_mode": null,
+      "privileged": false,
+      "pull_policy": "missing",
+      "resources": {
+        "cpu_nanos": 1000000,
+        "device_reservations": [
+          {
+            "capabilities": [
+              [
+                "gpu"
+              ]
+            ],
+            "count": 1,
+            "device_ids": [
+              "GPU-0"
+            ],
+            "driver": "nvidia",
+            "options": {
+              "count": "1"
+            }
+          },
+          {
+            "capabilities": [],
+            "count": null,
+            "device_ids": [],
+            "driver": null,
+            "options": {}
+          }
+        ],
+        "devices": [
+          {
+            "cgroup_permissions": "rwm",
+            "container_path": "/dev/fuse",
+            "machine_path": "/dev/fuse"
+          }
+        ],
+        "memory_bytes": 67108864,
+        "memory_reservation_bytes": 33554432,
+        "shared_memory_bytes": 8388608,
+        "ulimits": {
+          "nofile": {
+            "hard": 2048,
+            "soft": 1024
+          }
+        }
+      },
+      "restart": {
+        "name": "unless-stopped"
+      },
+      "stop_timeout_secs": null,
+      "sysctls": {},
+      "tty": false,
+      "user": null,
+      "working_directory": null
+    },
+    "mode": {
+      "mode": "replicated",
+      "replicas": 1
+    },
+    "mounts": [
+      {
+        "read_only": false,
+        "target": "/data",
+        "volume": "data"
+      }
+    ],
+    "name": "api",
+    "placement": {
+      "machines": []
+    },
+    "ports": [],
+    "pre_deploy": null,
+    "update": {
+      "monitor_millis": null,
+      "order": null
+    },
+    "volumes": [
+      {
+        "reference": "data",
+        "source": {
+          "driver": {
+            "name": "nfs",
+            "options": {
+              "share": "app"
+            }
+          },
+          "external": false,
+          "kind": "named",
+          "labels": {
+            "keep": "1"
+          },
+          "name": "data",
+          "no_copy": true,
+          "subpath": "db"
+        }
+      }
+    ]
+  },
+  "resolved_service_spec_typed": {
+    "caddy_config": null,
+    "configs": [
+      {
+        "content": [
+          112,
+          111,
+          114,
+          116,
+          32,
+          61,
+          32,
+          56,
+          48,
+          56,
+          48
+        ],
+        "name": "settings"
+      }
+    ],
+    "container": {
+      "cap_add": [],
+      "cap_drop": [],
+      "command": [],
+      "config_mounts": [
+        {
+          "config_name": "settings",
+          "gid": 1000,
+          "mode": 288,
+          "target": "/etc/api/settings.toml",
+          "uid": 1000
+        },
+        {
+          "config_name": "settings",
+          "gid": null,
+          "mode": null,
+          "target": null,
+          "uid": null
+        }
+      ],
+      "entrypoint": [],
+      "environment": {},
+      "healthcheck": {
+        "interval_millis": 10000,
+        "retries": 3,
+        "start_interval_millis": 1000,
+        "start_period_millis": 15000,
+        "state": "configured",
+        "test": [
+          "CMD",
+          "true"
+        ],
+        "timeout_millis": 5000
+      },
+      "image": "api:1",
+      "init": null,
+      "log_driver": null,
+      "open_stdin": false,
+      "pid_mode": null,
+      "privileged": false,
+      "pull_policy": "missing",
+      "resources": {
+        "cpu_nanos": 1000000,
+        "device_reservations": [
+          {
+            "capabilities": [
+              [
+                "gpu"
+              ]
+            ],
+            "count": 1,
+            "device_ids": [
+              "GPU-0"
+            ],
+            "driver": "nvidia",
+            "options": {
+              "count": "1"
+            }
+          },
+          {
+            "capabilities": [],
+            "count": null,
+            "device_ids": [],
+            "driver": null,
+            "options": {}
+          }
+        ],
+        "devices": [
+          {
+            "cgroup_permissions": "rwm",
+            "container_path": "/dev/fuse",
+            "machine_path": "/dev/fuse"
+          }
+        ],
+        "memory_bytes": 67108864,
+        "memory_reservation_bytes": 33554432,
+        "shared_memory_bytes": 8388608,
+        "ulimits": {
+          "nofile": {
+            "hard": 2048,
+            "soft": 1024
+          }
+        }
+      },
+      "restart": {
+        "name": "unless-stopped"
+      },
+      "stop_timeout_secs": null,
+      "sysctls": {},
+      "tty": false,
+      "user": null,
+      "working_directory": null
+    },
+    "mode": {
+      "mode": "replicated",
+      "replicas": 1
+    },
+    "mounts": [
+      {
+        "read_only": false,
+        "target": "/data",
+        "volume": "data"
+      }
+    ],
+    "name": "api",
+    "placement": {
+      "machines": []
+    },
+    "ports": [],
+    "pre_deploy": null,
+    "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "update": {
+      "monitor_millis": null,
+      "order": "start_first"
+    },
+    "volumes": [
+      {
+        "reference": "data",
+        "source": {
+          "driver": {
+            "name": "nfs",
+            "options": {
+              "share": "app"
+            }
+          },
+          "external": false,
+          "kind": "named",
+          "labels": {
+            "keep": "1"
+          },
+          "name": "data",
+          "no_copy": true,
+          "subpath": "db"
+        }
+      }
+    ]
   },
   "rpc_error": {
     "code": "unsupported",

@@ -87,9 +87,14 @@ export type PortPublication =
   | Additive<{ mode: "host"; bind: HostBind; published_port: number; container_port: number; transport_protocol: TransportProtocol }>
   | Additive<{ mode?: string }>;
 
+export type VolumeDriver = Additive<{
+  name: string;
+  options: { readonly [key: string]: string };
+}>;
+
 export type VolumeSource =
   | Additive<{ kind: "bind"; machine_path: MachinePath; create_machine_path?: boolean; propagation?: string; recursive?: string }>
-  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: JsonValue; labels?: { readonly [key: string]: string }; no_copy?: boolean; subpath?: string }>
+  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: VolumeDriver; labels?: { readonly [key: string]: string }; no_copy?: boolean; subpath?: string }>
   | Additive<{ kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] }>
   | Additive<{ kind?: string }>;
 
@@ -110,14 +115,33 @@ export type LogDriver = Additive<{
   options: { readonly [key: string]: string };
 }>;
 
+export type DeviceMapping = Additive<{
+  machine_path: MachinePath;
+  container_path: ContainerPath;
+  cgroup_permissions: string;
+}>;
+
+export type DeviceReservation = Additive<{
+  driver?: string;
+  count?: number;
+  device_ids?: string[];
+  capabilities?: string[][];
+  options?: { readonly [key: string]: string };
+}>;
+
+export type Ulimit = Additive<{
+  soft: number;
+  hard: number;
+}>;
+
 export type ContainerResources = Additive<{
   cpu_nanos?: number;
   memory_bytes?: number;
   memory_reservation_bytes?: number;
   shared_memory_bytes?: number;
-  devices?: JsonValue[];
-  device_reservations?: JsonValue[];
-  ulimits?: JsonObject;
+  devices?: DeviceMapping[];
+  device_reservations?: DeviceReservation[];
+  ulimits?: { readonly [key: string]: Ulimit };
 }>;
 
 export type UpdateConfig = Additive<{
@@ -153,6 +177,19 @@ export type ServiceVolume = Additive<{
   source: VolumeSource;
 }>;
 
+export type ConfigSpec = Additive<{
+  name: string;
+  content?: number[];
+}>;
+
+export type ConfigMount = Additive<{
+  config_name: string;
+  target?: ContainerPath;
+  uid?: number;
+  gid?: number;
+  mode?: number;
+}>;
+
 export type ServiceContainerSpec = Additive<{
   image: string;
   command?: string[];
@@ -174,7 +211,7 @@ export type ServiceContainerSpec = Additive<{
   stop_timeout_secs?: number;
   sysctls?: { readonly [key: string]: string };
   restart?: RestartPolicy;
-  config_mounts?: JsonValue[];
+  config_mounts?: ConfigMount[];
 }>;
 
 export type RequestedServiceSpec = Additive<{
@@ -185,7 +222,7 @@ export type RequestedServiceSpec = Additive<{
   ports?: PortPublication[];
   volumes?: ServiceVolume[];
   mounts?: ServiceMount[];
-  configs?: JsonValue[];
+  configs?: ConfigSpec[];
   pre_deploy?: PreDeployHook;
   caddy_config?: string;
   update?: UpdateConfig;
@@ -200,7 +237,7 @@ export type ResolvedServiceSpec = Additive<{
   ports?: PortPublication[];
   volumes?: ServiceVolume[];
   mounts?: ServiceMount[];
-  configs?: JsonValue[];
+  configs?: ConfigSpec[];
   pre_deploy?: PreDeployHook;
   caddy_config?: string;
   update?: ResolvedUpdateConfig;
@@ -471,7 +508,7 @@ export type ContainerObservation = Additive<{
   service_name: ServiceName;
   kind: ContainerKind;
   runtime: ContainerRuntimeObservation;
-  effective_healthcheck: JsonValue | null;
+  effective_healthcheck: HealthcheckSpec | null;
   resolved_spec: ResolvedServiceSpec;
   address: ContainerAddress | null;
   labels: { readonly [key: string]: string };

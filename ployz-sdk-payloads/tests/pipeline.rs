@@ -4,11 +4,12 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
-    ClusterTeardown, ContainerRuntimeObservation, ContractDescription,
+    ClusterTeardown, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
     DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOutcome, DeployPreview,
-    DockerVolume, ExecutionError, HealthObservation, IngressHostname, LocalMachineRemoved,
-    MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY, RpcError,
-    RpcErrorCode, RuntimeWatchFrame, ServiceAttempt, UnconfirmedDataLoss,
+    DockerVolume, ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname,
+    LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
+    RUNTIME_WATCH_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode,
+    RuntimeWatchFrame, ServiceAttempt, UnconfirmedDataLoss, VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -36,6 +37,13 @@ fn npm_package_identity_matches_the_napi_crate() {
     assert_eq!(pkg_field(&pkg, "types"), "index.d.ts");
     assert_ne!(pkg.get("private"), Some(&Value::Bool(true)));
     assert_eq!(pkg_field(&pkg, "publishConfig")["access"], "public");
+    assert!(
+        pkg_field(&pkg, "devDependencies")
+            .get("typescript")
+            .and_then(Value::as_str)
+            .is_some(),
+        "TypeScript must be an @ployz/sdk dev dependency"
+    );
 }
 
 #[test]
@@ -193,13 +201,14 @@ fn json_fixtures_round_trip_through_rust_types() {
         *fixture(&fixtures, "deploy_preview")
     );
 
-    let spec: ployz_core::RequestedServiceSpec =
-        decode_fixture(fixture(&fixtures, "requested_service_spec"));
+    let spec: RequestedServiceSpec = decode_fixture(fixture(&fixtures, "requested_service_spec"));
     assert_eq!(spec.name.as_str(), "api");
     assert_eq!(
         serde_json::to_value(&spec).unwrap(),
         *fixture(&fixtures, "requested_service_spec")
     );
+
+    assert_typed_spec_fixtures(&fixtures);
 
     let automatic: IngressHostname =
         decode_fixture(fixture(&fixtures, "ingress_hostname_cluster_domain"));
@@ -418,6 +427,21 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ServiceVolume = Additive<{"));
+    assert!(dts.contains("export type VolumeDriver = Additive<{"));
+    assert!(dts.contains("driver?: VolumeDriver"));
+    assert!(dts.contains("export type ConfigSpec = Additive<{"));
+    assert!(dts.contains("content?: number[]"));
+    assert!(dts.contains("configs?: ConfigSpec[]"));
+    assert!(dts.contains("export type ConfigMount = Additive<{"));
+    assert!(dts.contains("config_mounts?: ConfigMount[]"));
+    assert!(dts.contains("export type DeviceMapping = Additive<{"));
+    assert!(dts.contains("devices?: DeviceMapping[]"));
+    assert!(dts.contains("export type DeviceReservation = Additive<{"));
+    assert!(dts.contains("device_reservations?: DeviceReservation[]"));
+    assert!(dts.contains("export type Ulimit = Additive<{"));
+    assert!(dts.contains("ulimits?: { readonly [key: string]: Ulimit }"));
+    assert!(dts.contains("effective_healthcheck: HealthcheckSpec | null"));
+    assert!(dts.contains("details?: JsonValue;"));
     assert!(!dts.contains("export type RequestedServiceSpec = JsonValue"));
     assert!(!dts.contains("export type ResolvedServiceSpec = JsonValue"));
     assert!(dts.contains("readonly __brand: \"MachineId\""));
@@ -558,6 +582,77 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(!dts.contains("ops.watch"));
     assert!(!dts.contains("export declare function call"));
     assert!(!dts.contains("export declare function request"));
+}
+
+fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
+    let requested: RequestedServiceSpec =
+        decode_fixture(fixture(fixtures, "requested_service_spec_typed"));
+    let config = requested
+        .configs()
+        .first()
+        .expect("typed spec includes ConfigSpec");
+    assert_eq!(config.name, "settings");
+    assert_eq!(config.content, b"port = 8080");
+    assert_eq!(requested.config_mounts().len(), 2);
+    match requested.volumes().first().map(|volume| &volume.source) {
+        Some(VolumeSource::Named {
+            driver: Some(driver),
+            ..
+        }) => assert_eq!(driver.name, "nfs"),
+        other => panic!("typed requested spec must nest VolumeDriver, got {other:?}"),
+    }
+    assert_eq!(requested.container.resources.devices.len(), 1);
+    assert_eq!(requested.container.resources.device_reservations.len(), 2);
+    assert!(
+        requested
+            .container
+            .resources
+            .device_reservations
+            .get(1)
+            .is_some_and(|reservation| reservation.driver.is_none())
+    );
+    assert_eq!(
+        requested
+            .container
+            .resources
+            .ulimits
+            .get("nofile")
+            .map(|limit| limit.hard),
+        Some(2048)
+    );
+    assert!(
+        requested
+            .container
+            .healthcheck
+            .as_ref()
+            .and_then(HealthcheckSpec::as_configured)
+            .is_some()
+    );
+    assert_eq!(
+        serde_json::to_value(&requested).unwrap(),
+        *fixture(fixtures, "requested_service_spec_typed")
+    );
+
+    let resolved: ResolvedServiceSpec =
+        decode_fixture(fixture(fixtures, "resolved_service_spec_typed"));
+    assert_eq!(resolved.configs(), requested.configs());
+    assert_eq!(
+        serde_json::to_value(&resolved).unwrap(),
+        *fixture(fixtures, "resolved_service_spec_typed")
+    );
+
+    let observation: ContainerObservation = decode_fixture(fixture(
+        fixtures,
+        "container_observation_disabled_healthcheck",
+    ));
+    assert_eq!(
+        observation.effective_healthcheck,
+        Some(HealthcheckSpec::Disabled)
+    );
+    assert_eq!(
+        serde_json::to_value(&observation).unwrap(),
+        *fixture(fixtures, "container_observation_disabled_healthcheck")
+    );
 }
 
 #[test]

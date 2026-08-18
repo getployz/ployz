@@ -36,6 +36,7 @@ pub fn artifacts() -> Artifacts {
     check_externally_tagged_variants_match_rust();
     check_internally_tagged_variants_match_rust();
     check_closed_strings_match_rust();
+    check_json_value_fields_are_intentional();
     Artifacts {
         payloads_dts: typescript(),
         fixtures_json: pretty_json(&Value::Object(fixtures().into_iter().collect())),
@@ -322,6 +323,44 @@ fn check_internally_tagged_variants_match_rust() {
                 "{name} TypeScript variant {variant} has no serde example"
             );
         }
+    }
+}
+
+fn check_json_value_fields_are_intentional() {
+    for (name, shape) in PAYLOADS {
+        match shape {
+            Shape::Alias(ts) => assert_json_field_is_intentional(name, "alias", ts),
+            Shape::Branded | Shape::OpenString(_) | Shape::ClosedString(_) => {}
+            Shape::Additive { fields, .. } => {
+                for (field, ts) in *fields {
+                    assert_json_field_is_intentional(name, field, ts);
+                }
+            }
+            Shape::ExternallyTagged { variants, .. } => {
+                for (variant, payload) in *variants {
+                    if let Some(ts) = payload {
+                        assert_json_field_is_intentional(name, variant, ts);
+                    }
+                }
+            }
+            Shape::InternallyTagged { variants, .. } => {
+                for (variant, fields) in *variants {
+                    for (field, ts) in *fields {
+                        assert_json_field_is_intentional(name, &format!("{variant}.{field}"), ts);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assert_json_field_is_intentional(type_name: &str, field: &str, ts: &str) {
+    let inner = strip_optional(ts).0;
+    if inner.contains("JsonValue") || inner.contains("JsonObject") {
+        assert!(
+            type_name == "RpcError" && field == "details",
+            "{type_name}.{field} uses {ts}; only RpcError.details may stay JsonValue (per-code JSON, not one wire type)"
+        );
     }
 }
 

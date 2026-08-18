@@ -116,6 +116,16 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "VolumeDriver",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("name", "string"),
+                ("options", "{ readonly [key: string]: string }"),
+            ],
+        },
+    ),
+    (
         "VolumeSource",
         Shape::InternallyTagged {
             tag: "kind",
@@ -135,7 +145,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                     &[
                         ("name", "DockerVolumeName"),
                         ("external", "boolean?"),
-                        ("driver", "JsonValue?"),
+                        ("driver", "VolumeDriver?"),
                         ("labels", "{ readonly [key: string]: string }?"),
                         ("no_copy", "boolean?"),
                         ("subpath", "string?"),
@@ -197,6 +207,37 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "DeviceMapping",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("machine_path", "MachinePath"),
+                ("container_path", "ContainerPath"),
+                ("cgroup_permissions", "string"),
+            ],
+        },
+    ),
+    (
+        "DeviceReservation",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("driver", "string?"),
+                ("count", "number?"),
+                ("device_ids", "string[]?"),
+                ("capabilities", "string[][]?"),
+                ("options", "{ readonly [key: string]: string }?"),
+            ],
+        },
+    ),
+    (
+        "Ulimit",
+        Shape::Additive {
+            params: "",
+            fields: &[("soft", "number"), ("hard", "number")],
+        },
+    ),
+    (
         "ContainerResources",
         Shape::Additive {
             params: "",
@@ -205,9 +246,9 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("memory_bytes", "number?"),
                 ("memory_reservation_bytes", "number?"),
                 ("shared_memory_bytes", "number?"),
-                ("devices", "JsonValue[]?"),
-                ("device_reservations", "JsonValue[]?"),
-                ("ulimits", "JsonObject?"),
+                ("devices", "DeviceMapping[]?"),
+                ("device_reservations", "DeviceReservation[]?"),
+                ("ulimits", "{ readonly [key: string]: Ulimit }?"),
             ],
         },
     ),
@@ -267,6 +308,26 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "ConfigSpec",
+        Shape::Additive {
+            params: "",
+            fields: &[("name", "string"), ("content", "number[]?")],
+        },
+    ),
+    (
+        "ConfigMount",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("config_name", "string"),
+                ("target", "ContainerPath?"),
+                ("uid", "number?"),
+                ("gid", "number?"),
+                ("mode", "number?"),
+            ],
+        },
+    ),
+    (
         "ServiceContainerSpec",
         Shape::Additive {
             params: "",
@@ -291,7 +352,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("stop_timeout_secs", "number?"),
                 ("sysctls", "{ readonly [key: string]: string }?"),
                 ("restart", "RestartPolicy?"),
-                ("config_mounts", "JsonValue[]?"),
+                ("config_mounts", "ConfigMount[]?"),
             ],
         },
     ),
@@ -307,7 +368,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("ports", "PortPublication[]?"),
                 ("volumes", "ServiceVolume[]?"),
                 ("mounts", "ServiceMount[]?"),
-                ("configs", "JsonValue[]?"),
+                ("configs", "ConfigSpec[]?"),
                 ("pre_deploy", "PreDeployHook?"),
                 ("caddy_config", "string?"),
                 ("update", "UpdateConfig?"),
@@ -327,7 +388,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("ports", "PortPublication[]?"),
                 ("volumes", "ServiceVolume[]?"),
                 ("mounts", "ServiceMount[]?"),
-                ("configs", "JsonValue[]?"),
+                ("configs", "ConfigSpec[]?"),
                 ("pre_deploy", "PreDeployHook?"),
                 ("caddy_config", "string?"),
                 ("update", "ResolvedUpdateConfig?"),
@@ -442,6 +503,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             fields: &[
                 ("code", "RpcErrorCode"),
                 ("message", "string"),
+                // Per-code JSON (ingest reason, data-loss payload). Not one wire type.
                 ("details", "JsonValue?"),
             ],
         },
@@ -904,7 +966,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("service_name", "ServiceName"),
                 ("kind", "ContainerKind"),
                 ("runtime", "ContainerRuntimeObservation"),
-                ("effective_healthcheck", "JsonValue | null"),
+                ("effective_healthcheck", "HealthcheckSpec | null"),
                 ("resolved_spec", "ResolvedServiceSpec"),
                 ("address", "ContainerAddress | null"),
                 ("labels", "{ readonly [key: string]: string }"),

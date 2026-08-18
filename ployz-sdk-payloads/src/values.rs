@@ -9,23 +9,24 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, BindPropagation, BindRecursive, CapabilityName, CertificateAvailability,
     CertificateBackoff, CertificateFailureKind, CertificateObservation, ClusterTeardown,
-    ConfiguredHealthcheck, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
-    ContainerResources, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployEvent, DeployIntent, DeployOperation,
-    DeployOutcome, DeployPreview, DeployWarning, DockerVolume, DockerVolumeId, DockerVolumeName,
-    ExecutionError, FailedOperation, HealthFailure, HealthObservation, HealthcheckCommand,
-    HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol, IngressHost,
-    IngressHostname, LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime, MachineSuccess,
-    ManagementAddress, MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase,
-    OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions,
-    PortPublication, PreDeployHook, PreservedVolume, ProjectName, PruneRefusal, PullPolicy,
-    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError,
-    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
-    ServiceAttempt, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeReference, TransportProtocol,
-    UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    ConfigMount, ConfigSpec, ConfiguredHealthcheck, ContainerId, ContainerKind,
+    ContainerObservation, ContainerPath, ContainerResources, ContainerRuntimeObservation,
+    ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployEvent, DeployIntent,
+    DeployOperation, DeployOutcome, DeployPreview, DeployWarning, DeviceMapping, DeviceReservation,
+    DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation, HealthFailure,
+    HealthObservation, HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind,
+    HttpProtocol, IngressHost, IngressHostname, LocalMachineRemoved, LogDriver, Machine,
+    MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachinePath,
+    MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
+    ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
+    Placement, PlanOptions, PortPublication, PreDeployHook, PreservedVolume, ProjectName,
+    PruneRefusal, PullPolicy, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy,
+    RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds,
+    SelectedEndpoint, ServiceAttempt, ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode,
+    ServiceMount, ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig,
+    UpdateOrder, VolumeDriver, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -116,6 +117,21 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
     fixtures.insert("requested_service_spec".into(), to_value(&requested_spec()));
+    // serde emits null for Option::None; these leaves stay null-free so tsc can `satisfies`.
+    fixtures.insert("config_mount".into(), to_value(&config_mount()));
+    fixtures.insert("device_reservation".into(), to_value(&device_reservation()));
+    fixtures.insert(
+        "requested_service_spec_typed".into(),
+        to_value(&typed_requested_spec()),
+    );
+    fixtures.insert(
+        "resolved_service_spec_typed".into(),
+        to_value(&typed_resolved_spec()),
+    );
+    fixtures.insert(
+        "container_observation_disabled_healthcheck".into(),
+        to_value(&container_observation_disabled_healthcheck()),
+    );
     fixtures.insert(
         "ingress_hostname_cluster_domain".into(),
         to_value(&IngressHostname::cluster_domain()),
@@ -212,6 +228,12 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("ResolvedServiceSpec", to_value(&resolved_spec())),
         ("ServiceVolume", to_value(&service_volume())),
         ("ServiceMount", to_value(&service_mount())),
+        ("VolumeDriver", to_value(&volume_driver())),
+        ("ConfigSpec", to_value(&config_spec())),
+        ("ConfigMount", to_value(&config_mount())),
+        ("DeviceMapping", to_value(&device_mapping())),
+        ("DeviceReservation", to_value(&device_reservation())),
+        ("Ulimit", to_value(&ulimit())),
         ("Placement", to_value(&Placement::default())),
         ("UpdateConfig", to_value(&UpdateConfig::default())),
         (
@@ -451,6 +473,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                     recursive: Some(BindRecursive::Disabled),
                 }),
                 to_value(&service_volume().source),
+                to_value(&named_volume_with_driver().source),
                 to_value(&VolumeSource::Tmpfs {
                     size_bytes: Some(64),
                     mode: Some(0o755),
@@ -788,6 +811,137 @@ fn service_volume() -> ServiceVolume {
             subpath: None,
         },
     }
+}
+
+fn named_volume_with_driver() -> ServiceVolume {
+    ServiceVolume {
+        reference: ServiceVolumeReference::parse("data")
+            .expect("fixture volume reference is valid"),
+        source: VolumeSource::Named {
+            name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
+            external: false,
+            driver: Some(volume_driver()),
+            labels: BTreeMap::from([("keep".into(), "1".into())]),
+            no_copy: true,
+            subpath: Some("db".into()),
+        },
+    }
+}
+
+fn volume_driver() -> VolumeDriver {
+    VolumeDriver {
+        name: "nfs".into(),
+        options: BTreeMap::from([("share".into(), "app".into())]),
+    }
+}
+
+fn config_spec() -> ConfigSpec {
+    ConfigSpec {
+        name: "settings".into(),
+        content: b"port = 8080".to_vec(),
+    }
+}
+
+fn config_mount() -> ConfigMount {
+    ConfigMount {
+        config_name: "settings".into(),
+        target: Some(
+            ContainerPath::parse("/etc/api/settings.toml").expect("fixture config path is valid"),
+        ),
+        uid: Some(1000),
+        gid: Some(1000),
+        mode: Some(0o440),
+    }
+}
+
+fn config_mount_defaults() -> ConfigMount {
+    ConfigMount {
+        config_name: "settings".into(),
+        target: None,
+        uid: None,
+        gid: None,
+        mode: None,
+    }
+}
+
+fn device_mapping() -> DeviceMapping {
+    DeviceMapping {
+        machine_path: MachinePath::parse("/dev/fuse").expect("fixture device path is valid"),
+        container_path: ContainerPath::parse("/dev/fuse").expect("fixture device path is valid"),
+        cgroup_permissions: "rwm".into(),
+    }
+}
+
+fn device_reservation() -> DeviceReservation {
+    DeviceReservation {
+        driver: Some("nvidia".into()),
+        count: Some(1),
+        device_ids: vec!["GPU-0".into()],
+        capabilities: vec![vec!["gpu".into()]],
+        options: BTreeMap::from([("count".into(), "1".into())]),
+    }
+}
+
+fn device_reservation_sparse() -> DeviceReservation {
+    DeviceReservation {
+        driver: None,
+        count: None,
+        device_ids: Vec::new(),
+        capabilities: Vec::new(),
+        options: BTreeMap::new(),
+    }
+}
+
+fn ulimit() -> Ulimit {
+    Ulimit {
+        soft: 1024,
+        hard: 2048,
+    }
+}
+
+fn configured_healthcheck() -> HealthcheckSpec {
+    HealthcheckSpec::Configured(ConfiguredHealthcheck {
+        test: HealthcheckCommand::parse(["CMD", "true"])
+            .expect("fixture healthcheck command is valid"),
+        interval_millis: Some(10_000),
+        timeout_millis: Some(5_000),
+        start_period_millis: Some(15_000),
+        start_interval_millis: Some(1_000),
+        retries: Some(3),
+    })
+}
+
+fn typed_requested_spec() -> RequestedServiceSpec {
+    let mut spec = requested_spec();
+    spec.volume_graph =
+        ServiceVolumeGraph::parse(vec![named_volume_with_driver()], vec![service_mount()])
+            .expect("typed volume graph is valid");
+    spec.config_graph = ServiceConfigGraph::parse(
+        vec![config_spec()],
+        vec![config_mount(), config_mount_defaults()],
+    )
+    .expect("typed config graph is valid");
+    spec.container.healthcheck = Some(configured_healthcheck());
+    spec.container.resources = ContainerResources {
+        cpu_nanos: Some(1_000_000),
+        memory_bytes: Some(64 * 1024 * 1024),
+        memory_reservation_bytes: Some(32 * 1024 * 1024),
+        shared_memory_bytes: Some(8 * 1024 * 1024),
+        devices: vec![device_mapping()],
+        device_reservations: vec![device_reservation(), device_reservation_sparse()],
+        ulimits: BTreeMap::from([("nofile".into(), ulimit())]),
+    };
+    spec
+}
+
+fn typed_resolved_spec() -> ResolvedServiceSpec {
+    typed_requested_spec().to_resolved(service_id(), ResolvedUpdateConfig::default())
+}
+
+fn container_observation_disabled_healthcheck() -> ContainerObservation {
+    let mut observation = container_observation();
+    observation.effective_healthcheck = Some(HealthcheckSpec::Disabled);
+    observation
 }
 
 fn runtime_watch_frame() -> RuntimeWatchFrame {

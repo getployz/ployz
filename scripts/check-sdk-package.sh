@@ -168,3 +168,9 @@ async function expectRpc(fn, code) {
   process.exit(1);
 });
 EOF
+
+cd "$ROOT/ployz-sdk"
+if [ ! -d node_modules/typescript ]; then
+  npm ci --ignore-scripts
+fi
+npx --no-install tsc --noEmit
