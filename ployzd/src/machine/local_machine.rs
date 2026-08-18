@@ -10,9 +10,10 @@ use std::{
 use ployz_core::{
     InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
     LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated, PublicIpDiscovery,
-    RegisterRequest, Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted,
-    RttObservation, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
+    MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated,
+    ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest, Registered,
+    RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics,
+    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
     synthesize_membership,
 };
 use thiserror::Error;
@@ -20,7 +21,7 @@ use tokio::sync::watch;
 
 use super::{LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 use crate::{
-    corrosion::{AdminClient, ReplicatedStore},
+    corrosion::{AdminClient, MembershipState, ReplicatedStore},
     docker::ContainerRuntime,
     network::{
         NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device,
@@ -41,6 +42,37 @@ pub struct LocalMachine {
 struct ClusterContext {
     replicated: ReplicatedStore,
     admin: AdminClient,
+}
+
+/// Entry-local admin membership, RTT samples, and selected endpoints.
+///
+/// Projected onto the current replicated Machine snapshot at assemble time.
+/// Missing telemetry is not a delete of the replicated Machine.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RuntimeWatchTelemetry {
+    pub states: BTreeMap<ManagementAddress, MembershipObservation>,
+    pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+    pub rtts: Vec<RttObservation>,
+}
+
+impl RuntimeWatchTelemetry {
+    /// Membership, selected endpoints, and RTT for the current replicated Machines.
+    pub(crate) fn overlay(
+        &self,
+        machines: Vec<Machine>,
+        entry_id: &MachineId,
+    ) -> Vec<MachineObservation> {
+        let rtt = rtts_by_machine(&machines, &self.rtts);
+        let mut observations = synthesize_membership(machines, entry_id, &self.states);
+        for observation in &mut observations {
+            observation.selected_endpoint = self
+                .selected_endpoints
+                .get(&observation.machine.id)
+                .copied();
+            observation.rtt = rtt.get(&observation.machine.id).cloned();
+        }
+        observations
+    }
 }
 
 /// Failures from Local Machine operations. The RPC adapter maps these once.
@@ -122,6 +154,26 @@ impl LocalMachine {
             .as_ref()
             .map(|cluster| &cluster.replicated)
             .ok_or(Error::ClusterStoreUnavailable)
+    }
+
+    /// Entry-local membership and RTT from the same admin source as ListMachines
+    /// and inspect RTT.
+    ///
+    /// Returns `None` when the admin socket cannot be read so Watch can keep
+    /// replicated rows.
+    pub(crate) async fn runtime_watch_telemetry(&self) -> Option<RuntimeWatchTelemetry> {
+        let Some(cluster) = &self.cluster else {
+            return None;
+        };
+        let Ok(local) = self.record() else {
+            return None;
+        };
+        let (states, rtts) = read_admin(&cluster.admin).await?;
+        Some(RuntimeWatchTelemetry {
+            states: membership_states_by_address(states),
+            rtts,
+            selected_endpoints: local.selected_endpoints,
+        })
     }
 
     /// Live Observation of this Machine's identity, Local Machine Phase, and
@@ -355,24 +407,15 @@ impl LocalMachine {
             Some(cluster) => cluster.admin.membership_states().await?,
             None => Vec::new(),
         };
-        let states = states
-            .into_iter()
-            .filter_map(|state| match state.address.ip() {
-                IpAddr::V6(address) => {
-                    Some((ployz_core::ManagementAddress(address), state.membership))
-                }
-                IpAddr::V4(_) => None,
-            })
-            .collect();
-        let mut observations = synthesize_membership(machines, &local.id(), &states);
-        for observation in &mut observations {
-            observation.selected_endpoint = local
-                .selected_endpoints
-                .get(&observation.machine.id)
-                .copied();
-        }
+        let states = membership_states_by_address(states);
+        let entry_id = local.id();
         Ok(MachineList {
-            machines: observations,
+            machines: RuntimeWatchTelemetry {
+                states,
+                selected_endpoints: local.selected_endpoints,
+                rtts: Vec::new(),
+            }
+            .overlay(machines, &entry_id),
         })
     }
 
@@ -508,9 +551,50 @@ async fn machine_rtts(
         .collect())
 }
 
-fn unique_identities(
-    entries: impl IntoIterator<Item = (IpAddr, MachineIdentity)>,
-) -> BTreeMap<IpAddr, MachineIdentity> {
+/// Read membership and RTT from the local admin socket.
+///
+/// Both reads must succeed; otherwise Watch keeps replicated rows.
+async fn read_admin(admin: &AdminClient) -> Option<(Vec<MembershipState>, Vec<RttObservation>)> {
+    let Ok((states, rtts)) = tokio::try_join!(admin.membership_states(), admin.member_rtts())
+    else {
+        return None;
+    };
+    Some((states, rtts))
+}
+
+fn rtts_by_machine(
+    machines: &[Machine],
+    rtts: &[RttObservation],
+) -> BTreeMap<MachineId, RttStatistics> {
+    let identities = unique_identities(
+        machines
+            .iter()
+            .map(|machine| (IpAddr::V6(machine.management_address.0), machine.id)),
+    );
+    rtts.iter()
+        .filter_map(|observation| {
+            identities
+                .get(&observation.address.ip())
+                .copied()
+                .map(|id| (id, observation.statistics.clone()))
+        })
+        .collect()
+}
+
+fn membership_states_by_address(
+    states: impl IntoIterator<Item = MembershipState>,
+) -> BTreeMap<ManagementAddress, MembershipObservation> {
+    states
+        .into_iter()
+        .filter_map(|state| match state.address.ip() {
+            IpAddr::V6(address) => Some((ManagementAddress(address), state.membership)),
+            IpAddr::V4(_) => None,
+        })
+        .collect()
+}
+
+/// Associate one value per management address; duplicate addresses are dropped.
+fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTreeMap<IpAddr, T> {
     let mut identities = BTreeMap::new();
     let mut ambiguous = BTreeSet::new();
     for (address, identity) in entries {
@@ -535,8 +619,18 @@ fn local_removal_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{local_removal_response, unique_identities};
-    use ployz_core::{MachineId, MachineIdentity, MachineName};
+    use std::collections::BTreeMap;
+
+    use super::{RuntimeWatchTelemetry, local_removal_response, read_admin, unique_identities};
+    use crate::corrosion::AdminClient;
+    use ployz_core::{
+        AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
+        ManagementAddress, MembershipObservation, RttObservation, RttStatistics, SelectedEndpoint,
+        WireGuardPublicKey,
+    };
+
+    const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
+    const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
 
     #[test]
     fn failed_local_removal_keeps_the_daemon_available_for_entry_fallback() {
@@ -575,5 +669,73 @@ mod tests {
 
         assert!(!identities.contains_key(&duplicate));
         assert_eq!(identities.get(&unique), Some(&identity('3')));
+    }
+
+    #[test]
+    fn overlay_marks_entry_up_and_maps_inspect_rtt() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let endpoint = SelectedEndpoint("203.0.113.10:51820".parse().unwrap());
+        let rtt = RttStatistics {
+            median_ns: 1_500_000,
+            population_stddev_ns: 250_000,
+        };
+        let observations = RuntimeWatchTelemetry {
+            states: BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]),
+            selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
+            rtts: vec![RttObservation {
+                peer_id: "peer".into(),
+                address: format!("[{}]:51001", peer.management_address.0)
+                    .parse()
+                    .unwrap(),
+                machine: None,
+                statistics: rtt.clone(),
+            }],
+        }
+        .overlay(vec![entry.clone(), peer.clone()], &entry.id);
+
+        let [entry_row, peer_row] = observations.as_slice() else {
+            panic!("expected entry and peer observations");
+        };
+        assert_eq!(entry_row.membership, MembershipObservation::Up);
+        assert_eq!(entry_row.selected_endpoint, Some(endpoint));
+        assert_eq!(peer_row.membership, MembershipObservation::Suspect);
+        assert_eq!(peer_row.rtt, Some(rtt));
+    }
+
+    #[test]
+    fn overlay_uses_down_for_peers_missing_from_admin() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let observations =
+            RuntimeWatchTelemetry::default().overlay(vec![entry.clone(), peer.clone()], &entry.id);
+
+        let [entry_row, peer_row] = observations.as_slice() else {
+            panic!("expected entry and peer observations");
+        };
+        assert_eq!(entry_row.membership, MembershipObservation::Up);
+        assert_eq!(peer_row.membership, MembershipObservation::Down);
+        assert_eq!(peer_row.rtt, None);
+    }
+
+    #[tokio::test]
+    async fn missing_admin_socket_is_unavailable_telemetry() {
+        let admin = AdminClient::new("/no/such/ployz-admin.sock");
+        assert!(read_admin(&admin).await.is_none());
+    }
+
+    fn machine(name: &str, id: &str, seed: u8) -> Machine {
+        Machine {
+            id: MachineId::parse(id).unwrap(),
+            name: MachineName::parse(name).unwrap(),
+            subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+            management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
+            public_key: WireGuardPublicKey([seed; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint(
+                format!("203.0.113.{seed}:51820").parse().unwrap(),
+            )],
+            runtime: MachineRuntime::default(),
+        }
     }
 }

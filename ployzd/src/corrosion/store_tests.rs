@@ -13,7 +13,9 @@ use serde_json::json;
 
 use super::ReplicatedStore;
 use crate::corrosion::ApiClient;
-use crate::machine::{LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore};
+use crate::machine::{
+    LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
+};
 use crate::runtime_watch::RuntimeWatchSnapshot;
 
 #[tokio::test]
@@ -154,11 +156,20 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
     assert!(store.certificate_rows().await.is_err());
     assert!(RuntimeWatchSnapshot::from_store(&store).await.is_err());
     assert!(store.subscribe_runtime_watch_changes().await.is_err());
+    let data_dir = std::env::temp_dir().join(format!(
+        "ployzd-runtime-watch-unreachable-{}",
+        ployz_core::MachineId::random()
+    ));
+    let local = LocalMachine::new(
+        Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap())),
+        tokio::sync::watch::channel(false).0,
+    );
     assert!(
-        crate::runtime_watch::serve_replicated_runtime_watch(store, MachineId::random())
+        crate::runtime_watch::serve_replicated_runtime_watch(store, local, MachineId::random())
             .await
             .is_err()
     );
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]

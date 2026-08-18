@@ -238,6 +238,10 @@ pub enum MachineSelectorError {
     },
 }
 
+/// Membership Observation of advertised Machines from the responder's admin view.
+///
+/// The responder is Up. A peer absent from `states` is Down. Selected endpoint
+/// and RTT start empty so the caller can overlay live values.
 #[must_use]
 pub fn synthesize_membership(
     machines: Vec<Machine>,

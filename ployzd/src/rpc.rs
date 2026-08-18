@@ -448,7 +448,7 @@ impl MachineRpc for MachineService {
             .map_err(|error| Status::unavailable(error.message))?
             .clone();
         let entry_id = self.local_record()?.id();
-        let stream = serve_replicated_runtime_watch(store, entry_id)
+        let stream = serve_replicated_runtime_watch(store, self.local.clone(), entry_id)
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
         Ok(Response::new(stream))
