@@ -2,7 +2,7 @@ use std::net::Ipv6Addr;
 
 use ployz::{
     compose::ComposeProject,
-    deploy::{DeployIntent, DeployPlan, DeploySnapshot, PlanError, PlanOptions, plan_deploy},
+    deploy::{DeployPlan, DeploySnapshot, PlanError},
 };
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
@@ -15,21 +15,7 @@ pub(super) fn plan_compose(
 ) -> Result<DeployPlan, PlanError> {
     let mut resolved = project.clone();
     resolved.resolve_secrets().expect("resolve secrets");
-    plan_deploy(
-        &DeployIntent::from_named_specs(
-            &resolved.services,
-            &resolved.dependencies,
-            resolved
-                .services
-                .values()
-                .map(|spec| ployz::deploy::ServiceAttempt {
-                    name: spec.name.clone(),
-                })
-                .collect(),
-            PlanOptions::default(),
-        ),
-        snapshot,
-    )
+    ployz::deploy::plan_compose(&resolved, snapshot)
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {

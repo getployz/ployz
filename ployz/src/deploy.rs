@@ -1,10 +1,12 @@
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
     MachineName, MachineObservation, MachineTarget, ServiceId,
 };
 use thiserror::Error;
+
+use crate::compose::ComposeProject;
 
 mod apply;
 mod exec;
@@ -270,6 +272,71 @@ pub enum PlanError {
     },
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
+    #[error("external volumes not found: {}", quoted_names(.names))]
+    ExternalVolumesNotFound { names: Vec<DockerVolumeName> },
+}
+
+fn quoted_names(names: &[DockerVolumeName]) -> String {
+    let mut quoted = String::new();
+    for (index, name) in names.iter().enumerate() {
+        if index > 0 {
+            quoted.push_str(", ");
+        }
+        quoted.push('\'');
+        quoted.push_str(name.as_str());
+        quoted.push('\'');
+    }
+    quoted
+}
+
+/// Plan a Compose project: fail if any `external: true` volume is missing from
+/// the snapshot, then plan service operations.
+///
+/// # Errors
+///
+/// Returns when an external volume is absent from every Machine, or when
+/// placement, volumes, service identity, or the apply-set dependency graph
+/// cannot produce a plan.
+pub fn plan_compose(
+    project: &ComposeProject,
+    snapshot: &DeploySnapshot,
+) -> Result<DeployPlan, PlanError> {
+    reject_missing_external_volumes(project, snapshot)?;
+    plan_deploy(
+        &DeployIntent::from_named_specs(
+            &project.services,
+            &project.dependencies,
+            project
+                .services
+                .values()
+                .map(|spec| ServiceAttempt {
+                    name: spec.name.clone(),
+                })
+                .collect(),
+            PlanOptions::default(),
+        ),
+        snapshot,
+    )
+}
+
+pub(crate) fn reject_missing_external_volumes(
+    project: &ComposeProject,
+    snapshot: &DeploySnapshot,
+) -> Result<(), PlanError> {
+    let present = snapshot
+        .volumes
+        .iter()
+        .map(|volume| &volume.id.name)
+        .collect::<BTreeSet<_>>();
+    let names = project
+        .external_volume_names()
+        .filter(|name| !present.contains(name))
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        Ok(())
+    } else {
+        Err(PlanError::ExternalVolumesNotFound { names })
+    }
 }
 
 impl PlanError {

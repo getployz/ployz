@@ -13,8 +13,8 @@ use ployz::{
     },
 };
 use ployz_core::{
-    HostBind, HttpProtocol, IngressHostname, PortPublication, RestartPolicy, ServiceMode,
-    TransportProtocol, UpdateOrder, VolumeSource,
+    DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname, PortPublication,
+    RestartPolicy, ServiceMode, TransportProtocol, UpdateOrder, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -470,18 +470,207 @@ volumes:
             ..
         }
     ));
+    let existing = machine('a', "one");
     let plan = plan_compose(
         &project,
         &DeploySnapshot {
-            machines: vec![machine('a', "one"), machine('b', "two")],
+            machines: vec![existing.clone(), machine('b', "two")],
+            volumes: vec![ObservedDockerVolume {
+                id: DockerVolumeId {
+                    machine_id: existing.machine.id,
+                    name: DockerVolumeName::parse("shared").unwrap(),
+                },
+                driver: "local".into(),
+                options: BTreeMap::new(),
+            }],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        plan.operations
+            .iter()
+            .all(|operation| !matches!(operation, DeployOperation::CreateVolume { .. }))
+    );
+}
+
+#[test]
+fn missing_external_volume_fails_compose_plan() {
+    let project = parse_normalized(
+        r#"
+services:
+  app: {image: app, volumes: [{type: volume, source: ext-vol, target: /data}]}
+volumes:
+  ext-vol: {external: true}
+"#,
+        ".",
+    )
+    .unwrap();
+    let error = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![machine('a', "one")],
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "external volumes not found: 'ext-vol'");
+}
+
+#[test]
+fn unused_external_volume_missing_from_cluster_fails_compose_plan() {
+    let project = parse_normalized(
+        r#"
+services:
+  app: {image: app}
+volumes:
+  orphan: {external: true}
+"#,
+        ".",
+    )
+    .unwrap();
+    let error = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![machine('a', "one")],
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "external volumes not found: 'orphan'");
+}
+
+#[test]
+fn existing_external_volume_is_not_created() {
+    let project = parse_normalized(
+        r#"
+services:
+  app: {image: app, volumes: [{type: volume, source: ext-vol, target: /data}]}
+volumes:
+  ext-vol: {external: true}
+"#,
+        ".",
+    )
+    .unwrap();
+    let existing = machine('a', "one");
+    let plan = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![existing.clone(), machine('b', "two")],
+            volumes: vec![ObservedDockerVolume {
+                id: DockerVolumeId {
+                    machine_id: existing.machine.id,
+                    name: DockerVolumeName::parse("ext-vol").unwrap(),
+                },
+                driver: "local".into(),
+                options: BTreeMap::new(),
+            }],
             ..Default::default()
         },
     )
     .unwrap();
     assert!(matches!(
         plan.operations.as_slice(),
-        [DeployOperation::CreateVolume { volume, .. }, ..]
-            if matches!(volume.source, VolumeSource::Named { external: true, .. })
+        [DeployOperation::RunContainer { machine_id, .. }]
+            if machine_id == &existing.machine.id
+    ));
+}
+
+#[test]
+fn missing_external_volumes_are_batched_in_plan_error() {
+    let project = parse_normalized(
+        r#"
+services:
+  app: {image: app}
+volumes:
+  beta: {external: true}
+  alpha: {external: true}
+"#,
+        ".",
+    )
+    .unwrap();
+    let error = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![machine('a', "one")],
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "external volumes not found: 'alpha', 'beta'"
+    );
+}
+
+#[test]
+fn select_services_keeps_unused_external_volumes() {
+    let project = parse_normalized(
+        r#"
+services:
+  web: {image: web}
+  api: {image: api, volumes: [{type: volume, source: data, target: /data}]}
+volumes:
+  data: {external: true}
+"#,
+        ".",
+    )
+    .unwrap();
+    let selected = project.select_services(&["web".into()]).unwrap();
+    let error = plan_compose(
+        &selected,
+        &DeploySnapshot {
+            machines: vec![machine('a', "one")],
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "external volumes not found: 'data'");
+}
+
+#[test]
+fn global_service_still_creates_external_volume_on_machines_that_lack_it() {
+    let project = parse_normalized(
+        r#"
+services:
+  app:
+    image: app
+    deploy: {mode: global}
+    volumes: [{type: volume, source: shared, target: /data}]
+volumes:
+  shared: {name: shared, external: true}
+"#,
+        ".",
+    )
+    .unwrap();
+    let first = machine('a', "one");
+    let second = machine('b', "two");
+    let plan = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![first.clone(), second.clone()],
+            volumes: vec![ObservedDockerVolume {
+                id: DockerVolumeId {
+                    machine_id: first.machine.id,
+                    name: DockerVolumeName::parse("shared").unwrap(),
+                },
+                driver: "local".into(),
+                options: BTreeMap::new(),
+            }],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        plan.operations.as_slice(),
+        [
+            DeployOperation::CreateVolume { machine_id: volume_machine, volume },
+            DeployOperation::RunContainer { machine_id: first_machine, .. },
+            DeployOperation::RunContainer { machine_id: second_machine, .. },
+        ] if volume_machine == &second.machine.id
+            && matches!(&volume.source, VolumeSource::Named { name, external: true, .. } if name.as_str() == "shared")
+            && first_machine == &first.machine.id
+            && second_machine == &second.machine.id
     ));
 }
 

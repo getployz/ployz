@@ -170,6 +170,7 @@ pub(super) async fn plan_project(
 ) -> Result<DeployPreview, Failure> {
     project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
+    super::reject_missing_external_volumes(project, &snapshot)?;
     let mut intent =
         DeployIntent::from_named_specs(&project.services, &project.dependencies, apply, options);
     prepare_intent(client, snapshot, warnings, &mut intent).await

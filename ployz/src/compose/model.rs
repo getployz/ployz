@@ -35,6 +35,7 @@ pub struct ComposeProject {
     pub builds: BTreeMap<String, BuildSpec>,
     pub dependencies: BTreeMap<String, Vec<String>>,
     pub warnings: Vec<String>,
+    pub(super) volumes: BTreeMap<String, RawVolume>,
     pub(super) secrets: BTreeMap<String, ProjectSecret>,
     pub(super) environment: BTreeMap<String, String>,
 }
