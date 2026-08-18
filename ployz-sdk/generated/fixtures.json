@@ -199,7 +199,8 @@
       },
       {
         "IngressHostname": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
-      }
+      },
+      "ObserverRelativeHostnameConflict"
     ],
     "would_remove": []
   },
@@ -239,7 +240,8 @@
       },
       {
         "IngressHostname": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
-      }
+      },
+      "ObserverRelativeHostnameConflict"
     ],
     "would_remove": []
   },

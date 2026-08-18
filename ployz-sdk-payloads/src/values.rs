@@ -640,7 +640,7 @@ fn deploy_event_progress() -> DeployEvent {
     }
 }
 
-fn deploy_warnings() -> [DeployWarning; 3] {
+fn deploy_warnings() -> [DeployWarning; 4] {
     [
         DeployWarning::ObservationFailed {
             kind: ObservationKind::Container,
@@ -655,6 +655,7 @@ fn deploy_warnings() -> [DeployWarning; 3] {
             "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
                 .into(),
         ),
+        DeployWarning::ObserverRelativeHostnameConflict,
     ]
 }
 

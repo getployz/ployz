@@ -311,7 +311,8 @@ export type ObservationKind = "container" | "volume";
 export type DeployWarning =
   | Additive<{ ObservationFailed: { kind: ObservationKind; machine_id: MachineId; message: string } }>
   | Additive<{ ObservationOmitted: { kind: ObservationKind; machine_id: MachineId } }>
-  | Additive<{ IngressHostname: string }>;
+  | Additive<{ IngressHostname: string }>
+  | "ObserverRelativeHostnameConflict";
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services" | "filtered_profiles" | "guessed_project_name";
 

@@ -1,8 +1,8 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, IngressHostname, Machine,
-    MachineId, PortPublication, QualifiedService, ServiceContainer, service_containers,
-    serving_replicas,
+    MachineId, PortPublication, QualifiedService, ServiceContainer, hostname_owners,
+    service_containers, serving_replicas,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -561,11 +561,13 @@ fn automatic_caddyfile(
     global_config: Option<&str>,
     certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> String {
+    let owners = hostname_owners(containers.iter().map(ServiceContainer::as_observation));
     let containers = eligible_containers(local_machine, containers);
     let mut sites = BTreeMap::<IngressHost, Site<'_>>::new();
     for container in containers {
         let observation = container.as_observation();
         let address = observation.address.expect("address was filtered above");
+        let identity = observation.identity();
         for port in &observation.resolved_spec.ports {
             let PortPublication::Ingress {
                 hostname: IngressHostname::Explicit { hostname },
@@ -578,6 +580,9 @@ fn automatic_caddyfile(
                 // the supported path. Assignment from the Cluster Domain is resolved before Caddy.
                 continue;
             };
+            if owners.get(hostname) != Some(&identity) {
+                continue;
+            }
             let upstream = format!("{}:{container_port}", address.0);
             let site = sites.entry(hostname.clone()).or_default();
             match http_protocol {

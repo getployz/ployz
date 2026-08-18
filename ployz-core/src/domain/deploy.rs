@@ -442,6 +442,8 @@ pub enum DeployWarning {
     },
     /// An Ingress Hostname misses this Cluster. The string is the CLI warning body.
     IngressHostname(String),
+    /// Conflict detection used this Machine's current view and does not claim uniqueness.
+    ObserverRelativeHostnameConflict,
 }
 
 impl Display for DeployWarning {
@@ -456,6 +458,9 @@ impl Display for DeployWarning {
                 write!(f, "{kind} observation omitted {machine_id}")
             }
             Self::IngressHostname(message) => f.write_str(message),
+            Self::ObserverRelativeHostnameConflict => f.write_str(
+                "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness.",
+            ),
         }
     }
 }

@@ -287,9 +287,9 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
                     && message.contains("192.0.2.1")
                     && !message.to_ascii_lowercase().contains("certificate")
             }
-            DeployWarning::ObservationFailed { .. } | DeployWarning::ObservationOmitted { .. } => {
-                false
-            }
+            DeployWarning::ObservationFailed { .. }
+            | DeployWarning::ObservationOmitted { .. }
+            | DeployWarning::ObserverRelativeHostnameConflict => false,
         }),
         "DNS warning must match the CLI body: {:?}",
         preview.warnings

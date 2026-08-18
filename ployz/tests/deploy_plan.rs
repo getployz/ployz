@@ -1,5 +1,7 @@
 #[path = "deploy_plan/comparison.rs"]
 mod comparison;
+#[path = "deploy_plan/hostnames.rs"]
+mod hostnames;
 #[path = "deploy_plan/intent.rs"]
 mod intent;
 #[path = "deploy_plan/placement.rs"]

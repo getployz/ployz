@@ -524,6 +524,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                     Some("{ kind: ObservationKind; machine_id: MachineId }"),
                 ),
                 ("IngressHostname", Some("string")),
+                ("ObserverRelativeHostnameConflict", None),
             ],
         },
     ),

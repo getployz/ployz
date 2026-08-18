@@ -177,7 +177,7 @@ fn json_fixtures_round_trip_through_rust_types() {
 
     let preview: DeployPreview = decode_fixture(fixture(&fixtures, "deploy_preview"));
     assert_eq!(preview.operations.len(), 1);
-    assert_eq!(preview.warnings.len(), 3);
+    assert_eq!(preview.warnings.len(), 4);
     assert!(matches!(
         preview.operations.first().map(|row| &row.status),
         Some(ployz_core::OperationStatus::Pending)

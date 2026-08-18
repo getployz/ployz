@@ -4,7 +4,7 @@ use ployz_core::{
     AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
     IngressHost, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
-    PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
+    PortPublication, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
     WireGuardPublicKey, service_containers,
 };
 use serde_json::json;
@@ -80,6 +80,108 @@ http://example.com {{\n\
 }}\n"
         )
     );
+}
+
+#[test]
+fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let mut shop_old = observation(
+        1,
+        &local,
+        "web",
+        Some([10, 210, 1, 2]),
+        vec![ingress("api.example.com", 80, HttpProtocol::Http)],
+    );
+    shop_old.project_name = ProjectName::parse("shop").unwrap();
+    shop_old.created_at_unix_nanos = 1;
+    let mut shop_rollout = observation(
+        3,
+        &local,
+        "web",
+        Some([10, 210, 1, 3]),
+        vec![ingress("api.example.com", 80, HttpProtocol::Http)],
+    );
+    shop_rollout.project_name = ProjectName::parse("shop").unwrap();
+    shop_rollout.created_at_unix_nanos = 3;
+    let mut blog = observation(
+        2,
+        &local,
+        "web",
+        Some([10, 210, 2, 2]),
+        vec![ingress("api.example.com", 80, HttpProtocol::Http)],
+    );
+    blog.project_name = ProjectName::parse("blog").unwrap();
+    blog.created_at_unix_nanos = 2;
+
+    let caddyfile = automatic_caddyfile(
+        &local,
+        "node-a",
+        &service_containers(vec![blog, shop_rollout, shop_old]),
+        "TIMESTAMP",
+        None,
+        &BTreeMap::new(),
+    );
+
+    assert!(
+        caddyfile.contains("reverse_proxy 10.210.1.2:80 10.210.1.3:80"),
+        "{caddyfile}"
+    );
+    assert!(
+        !caddyfile.contains("10.210.2.2"),
+        "loser must not join the winner's upstream pool: {caddyfile}"
+    );
+    assert_eq!(
+        caddyfile.matches("http://api.example.com").count(),
+        1,
+        "{caddyfile}"
+    );
+}
+
+#[test]
+fn proxy_owner_may_disagree_across_observation_sets_and_converges_when_they_match() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let mut shop = observation(
+        1,
+        &local,
+        "web",
+        Some([10, 210, 1, 2]),
+        vec![ingress("api.example.com", 80, HttpProtocol::Http)],
+    );
+    shop.project_name = ProjectName::parse("shop").unwrap();
+    shop.created_at_unix_nanos = 1;
+    let mut blog = observation(
+        2,
+        &local,
+        "web",
+        Some([10, 210, 2, 2]),
+        vec![ingress("api.example.com", 80, HttpProtocol::Http)],
+    );
+    blog.project_name = ProjectName::parse("blog").unwrap();
+    blog.created_at_unix_nanos = 2;
+
+    let file = |observations: Vec<ContainerObservation>| {
+        automatic_caddyfile(
+            &local,
+            "node-a",
+            &service_containers(observations),
+            "TIMESTAMP",
+            None,
+            &BTreeMap::new(),
+        )
+    };
+    let shop_only = file(vec![shop.clone()]);
+    let blog_only = file(vec![blog.clone()]);
+    assert!(shop_only.contains("10.210.1.2:80"), "{shop_only}");
+    assert!(!shop_only.contains("10.210.2.2"), "{shop_only}");
+    assert!(blog_only.contains("10.210.2.2:80"), "{blog_only}");
+    assert!(!blog_only.contains("10.210.1.2"), "{blog_only}");
+    assert_ne!(shop_only, blog_only);
+
+    let together = file(vec![blog.clone(), shop.clone()]);
+    let together_again = file(vec![shop, blog]);
+    assert_eq!(together, together_again);
+    assert!(together.contains("10.210.1.2:80"), "{together}");
+    assert!(!together.contains("10.210.2.2"), "{together}");
 }
 
 #[test]

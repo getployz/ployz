@@ -5,12 +5,13 @@ use ployz_core::{
     MachineObservation, MembershipObservation, PortPublication, ProjectName, QualifiedService,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
     ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs, machine_matches_target, same_service_mode_kind,
+    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners, machine_matches_target,
+    same_service_mode_kind,
 };
 
 use super::{
-    DeployIntent, DeployOperation, DeployPlan, DeploySnapshot, EliminatingConstraint, PlanError,
-    PlanOptions, ReplacementOperation,
+    DeployIntent, DeployOperation, DeployPlan, DeploySnapshot, DeployWarning,
+    EliminatingConstraint, PlanError, PlanOptions, ReplacementOperation,
 };
 
 mod volumes;
@@ -32,17 +33,62 @@ use volumes::{
 ///
 /// # Errors
 ///
-/// Returns when placement, volumes, service identity, or the apply-set
-/// dependency graph cannot produce a plan.
+/// Returns when placement, volumes, service identity, hostname ownership, or
+/// the apply-set dependency graph cannot produce a plan.
 pub fn plan_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
 ) -> Result<DeployPlan, PlanError> {
+    let requested = requested_specs(intent)?;
+    let warnings = hostname_policy_for(&intent.project_name, &requested, snapshot)?;
+    assemble_plan(intent, snapshot, requested, warnings)
+}
+
+/// Plan after the CLI has expanded assigned ingress. Hostname policy already ran
+/// on the unexpanded specs, where Explicit still means custom.
+pub(crate) fn plan_after_ingress_expansion(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Result<DeployPlan, PlanError> {
+    assemble_plan(intent, snapshot, requested_specs(intent)?, Vec::new())
+}
+
+/// Reject visible custom hostname conflicts and warn when the snapshot is incomplete.
+pub(crate) fn hostname_policy(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Result<Vec<DeployWarning>, PlanError> {
+    hostname_policy_for(&intent.project_name, &requested_specs(intent)?, snapshot)
+}
+
+fn requested_specs(intent: &DeployIntent) -> Result<Vec<RequestedServiceSpec>, PlanError> {
+    Ok(specs_to_plan(intent)?.into_iter().map(normalize).collect())
+}
+
+fn hostname_policy_for(
+    project_name: &ProjectName,
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> Result<Vec<DeployWarning>, PlanError> {
+    reject_custom_hostname_conflicts(project_name, requested, snapshot)?;
+    let mut warnings = Vec::new();
+    if !snapshot.is_observer_complete()
+        && requested
+            .iter()
+            .any(|spec| explicit_ingress_hosts(&spec.ports).next().is_some())
+    {
+        warnings.push(DeployWarning::ObserverRelativeHostnameConflict);
+    }
+    Ok(warnings)
+}
+
+fn assemble_plan(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+    requested: Vec<RequestedServiceSpec>,
+    warnings: Vec<DeployWarning>,
+) -> Result<DeployPlan, PlanError> {
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let requested = specs_to_plan(intent)?
-        .into_iter()
-        .map(normalize)
-        .collect::<Vec<_>>();
     let options = &intent.options;
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
@@ -77,7 +123,30 @@ pub fn plan_deploy(
         operations,
         would_remove,
         prune_refusal,
+        warnings,
     })
+}
+
+fn reject_custom_hostname_conflicts(
+    project_name: &ProjectName,
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> Result<(), PlanError> {
+    let owners = hostname_owners(snapshot.containers.iter());
+    for spec in requested {
+        let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
+        for hostname in explicit_ingress_hosts(&spec.ports) {
+            if let Some(owner) = owners.get(hostname)
+                && *owner != identity
+            {
+                return Err(PlanError::CustomHostnameConflict {
+                    hostname: hostname.clone(),
+                    owner: owner.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn obsolete_services(

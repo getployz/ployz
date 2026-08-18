@@ -9,7 +9,7 @@ use ployz_core::{
 use serde_json::Value;
 
 use super::*;
-use crate::deploy::{DeployOperation, DeploySnapshot};
+use crate::deploy::{DeployOperation, DeploySnapshot, plan_deploy};
 
 #[test]
 fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
@@ -271,6 +271,10 @@ fn deploy_warning_display_is_the_cli_line_body() {
             "volume observation omitted {}",
             MachineId::parse("c".repeat(32)).unwrap()
         )
+    );
+    assert_eq!(
+        DeployWarning::ObserverRelativeHostnameConflict.to_string(),
+        "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness."
     );
 }
 

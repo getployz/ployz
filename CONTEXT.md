@@ -204,6 +204,10 @@ _Avoid_: caller identity, authenticated client, source registry
 The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
 _Avoid_: empty hostname sentinel
 
+**Hostname Owner**:
+The Qualified Service that wins an Ingress Hostname in one observer's Container observations. Derived; not a persisted record, lease, or lock. Different observers may select different owners until their observations match.
+_Avoid_: hostname lease, ownership table, global hostname uniqueness
+
 **Certificate Material**:
 The certificate and private key held in cluster state for one Ingress Hostname. It is served as given; it is not an issuance request and not a local proxy store.
 _Avoid_: Caddy certificate, ACME certificate, cert secret

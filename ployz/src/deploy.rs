@@ -2,8 +2,8 @@ use std::{collections::BTreeSet, fmt};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    MachineFailure, MachineId, MachineName, MachineObservation, MachineTarget, ProjectName,
-    RpcError, ServiceObservation, derive_services,
+    IngressHost, MachineFailure, MachineId, MachineName, MachineObservation, MachineTarget,
+    ProjectName, QualifiedService, RpcError, ServiceObservation, derive_services,
 };
 use thiserror::Error;
 
@@ -109,9 +109,11 @@ pub struct ObservedDockerVolume {
 pub struct DeployPlan {
     pub operations: Vec<DeployOperation>,
     /// Visible Services in the Project that Compose no longer declares.
-    pub would_remove: Vec<ployz_core::QualifiedService>,
+    pub would_remove: Vec<QualifiedService>,
     /// Why pruning will not run. `None` means obsolete Services are removed.
     pub prune_refusal: Option<PruneRefusal>,
+    /// Observer-relative warnings produced while planning, including hostname detection.
+    pub warnings: Vec<DeployWarning>,
 }
 
 impl DeployPlan {
@@ -121,6 +123,7 @@ impl DeployPlan {
             operations,
             would_remove: Vec::new(),
             prune_refusal: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -338,6 +341,11 @@ pub enum PlanError {
     DependencyCycle { service: String },
     #[error("external volumes not found: {}", quoted_names(.names))]
     ExternalVolumesNotFound { names: Vec<DockerVolumeName> },
+    #[error("custom hostname {hostname} is already published by {owner}")]
+    CustomHostnameConflict {
+        hostname: IngressHost,
+        owner: QualifiedService,
+    },
 }
 
 fn quoted_names(names: &[DockerVolumeName]) -> String {
