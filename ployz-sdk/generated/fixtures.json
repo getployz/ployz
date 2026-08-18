@@ -1,0 +1,721 @@
+{
+  "capabilities": [
+    "ployz.caddy.config.v1",
+    "ployz.certificates.policy.v1",
+    "ployz.container.create.v1",
+    "ployz.container.exec.v1",
+    "ployz.container.inspect.v1",
+    "ployz.container.list.v1",
+    "ployz.container.logs.v1",
+    "ployz.container.remove.v1",
+    "ployz.container.start.v1",
+    "ployz.container.stop.v1",
+    "ployz.dns.records.create.v1",
+    "ployz.dns.release.v1",
+    "ployz.dns.reserve.v1",
+    "ployz.dns.show.v1",
+    "ployz.image.ingest.ensure.v1",
+    "ployz.image.list.v1",
+    "ployz.image.pull-from-machine.v1",
+    "ployz.machine.initialize.v1",
+    "ployz.machine.inspect.v1",
+    "ployz.machine.join.v1",
+    "ployz.machine.list.v1",
+    "ployz.machine.logs.v1",
+    "ployz.machine.register.v1",
+    "ployz.machine.remove-local.v1",
+    "ployz.machine.remove.v1",
+    "ployz.machine.reset.v1",
+    "ployz.machine.token.v1",
+    "ployz.machine.update.v1",
+    "ployz.rpc.describe-contract.v1",
+    "ployz.runtime.watch.v1",
+    "ployz.volume.create.v1",
+    "ployz.volume.inspect.v1",
+    "ployz.volume.list.v1",
+    "ployz.volume.remove.v1",
+    "ployz.wireguard.inspect.v1"
+  ],
+  "certificate_availability_unknown": "renewing",
+  "certificate_failure_kind_unknown": "rate_limited",
+  "container_runtime_known_unknown_fields": {
+    "engine_detail": "accepted and ignored",
+    "health": "healthy",
+    "state": "running"
+  },
+  "container_runtime_unknown": {
+    "state": "hibernating",
+    "vendor": {
+      "reason": 7
+    },
+    "wake_at": "tomorrow"
+  },
+  "contract_description": {
+    "capabilities": [
+      "ployz.rpc.describe-contract.v1"
+    ],
+    "daemon_version": "0.1.0",
+    "machine_id": "0123456789abcdef0123456789abcdef",
+    "protocol_major": 1
+  },
+  "contract_description_unknown_fields": {
+    "build_revision": "future",
+    "capabilities": [
+      "ployz.rpc.describe-contract.v1"
+    ],
+    "daemon_version": "0.1.0",
+    "machine_id": "0123456789abcdef0123456789abcdef",
+    "protocol_major": 1
+  },
+  "deploy_intent": {
+    "apply": [],
+    "options": {
+      "force_recreate": false,
+      "placement_seed": 0,
+      "skip_health_monitor": false
+    },
+    "target": []
+  },
+  "deploy_outcome": {
+    "Success": {
+      "completed": [
+        {
+          "StopContainer": {
+            "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "machine_id": "0123456789abcdef0123456789abcdef"
+          }
+        }
+      ]
+    }
+  },
+  "deploy_outcome_failed": {
+    "Failed": {
+      "completed": [],
+      "failed": {
+        "Operation": {
+          "error": {
+            "code": "unsupported",
+            "message": "watch is not advertised"
+          },
+          "operation": {
+            "StopContainer": {
+              "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              "machine_id": "0123456789abcdef0123456789abcdef"
+            }
+          }
+        }
+      },
+      "unexecuted": []
+    }
+  },
+  "deploy_outcome_unknown_fields": {
+    "Success": {
+      "completed": [
+        {
+          "StopContainer": {
+            "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "machine_id": "0123456789abcdef0123456789abcdef"
+          }
+        }
+      ],
+      "future_note": "ok"
+    }
+  },
+  "docker_volume": {
+    "driver": "local",
+    "id": {
+      "machine_id": "0123456789abcdef0123456789abcdef",
+      "name": "data"
+    },
+    "labels": {
+      "ployz.managed": "false"
+    },
+    "options": {
+      "type": "none"
+    }
+  },
+  "docker_volume_unknown_fields": {
+    "driver": "local",
+    "id": {
+      "machine_id": "0123456789abcdef0123456789abcdef",
+      "name": "data"
+    },
+    "labels": {
+      "ployz.managed": "false"
+    },
+    "options": {
+      "type": "none"
+    },
+    "quota_bytes": 1
+  },
+  "health_observation_unknown": "degraded",
+  "membership_observation_unknown": "future_membership",
+  "partial_result": {
+    "failures": [
+      {
+        "error": {
+          "code": "unsupported",
+          "message": "watch is not advertised"
+        },
+        "machine_id": "fedcba9876543210fedcba9876543210"
+      }
+    ],
+    "omissions": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "successes": [
+      {
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "value": {
+          "driver": "local",
+          "id": {
+            "machine_id": "0123456789abcdef0123456789abcdef",
+            "name": "data"
+          },
+          "labels": {
+            "ployz.managed": "false"
+          },
+          "options": {
+            "type": "none"
+          }
+        }
+      }
+    ]
+  },
+  "rpc_error": {
+    "code": "unsupported",
+    "message": "watch is not advertised"
+  },
+  "runtime_watch_frame": {
+    "certificates": [
+      {
+        "hostname": "ok.example.com",
+        "status": "available"
+      },
+      {
+        "backoff": {
+          "failure_kind": "does_not_resolve",
+          "failures": 2,
+          "next_attempt_at": "2024-01-01T01:00:00Z"
+        },
+        "hostname": "app.example.com",
+        "last_error": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
+        "status": "failure"
+      }
+    ],
+    "containers": [
+      {
+        "address": null,
+        "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "created_at_unix_nanos": 1700000000000000000,
+        "display_name": "api-1",
+        "effective_healthcheck": null,
+        "kind": "service_container",
+        "labels": {},
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "resolved_spec": {
+          "caddy_config": null,
+          "configs": [],
+          "container": {
+            "cap_add": [],
+            "cap_drop": [],
+            "command": [],
+            "config_mounts": [],
+            "entrypoint": [],
+            "environment": {},
+            "healthcheck": null,
+            "image": "api:1",
+            "init": null,
+            "log_driver": null,
+            "open_stdin": false,
+            "pid_mode": null,
+            "privileged": false,
+            "pull_policy": "missing",
+            "resources": {
+              "cpu_nanos": null,
+              "device_reservations": [],
+              "devices": [],
+              "memory_bytes": null,
+              "memory_reservation_bytes": null,
+              "shared_memory_bytes": null,
+              "ulimits": {}
+            },
+            "restart": {
+              "name": "unless-stopped"
+            },
+            "stop_timeout_secs": null,
+            "sysctls": {},
+            "tty": false,
+            "user": null,
+            "working_directory": null
+          },
+          "mode": {
+            "mode": "replicated",
+            "replicas": 1
+          },
+          "mounts": [],
+          "name": "api",
+          "placement": {
+            "machines": []
+          },
+          "ports": [],
+          "pre_deploy": null,
+          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "update": {
+            "monitor_millis": null,
+            "order": "start_first"
+          },
+          "volumes": []
+        },
+        "runtime": {
+          "health": "healthy",
+          "state": "running"
+        },
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "service_name": "api"
+      }
+    ],
+    "hosted_dns_hostname": "cluster.example.ts.net",
+    "incomplete_ids": {
+      "certificates": [
+        "pending.example.com"
+      ],
+      "containers": [
+        "2222222222222222222222222222222222222222222222222222222222222222"
+      ],
+      "machines": [
+        "fedcba9876543210fedcba9876543210"
+      ],
+      "volumes": [
+        {
+          "machine_id": "fedcba9876543210fedcba9876543210",
+          "name": "scratch"
+        }
+      ]
+    },
+    "machines": [
+      {
+        "machine": {
+          "advertised_endpoints": [
+            "203.0.113.10:51820"
+          ],
+          "id": "0123456789abcdef0123456789abcdef",
+          "management_address": "::1",
+          "name": "edge",
+          "public_key": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "runtime": {
+            "architecture": "x86_64",
+            "daemon_version": "0.1.0",
+            "docker_version": "27.0.0",
+            "hostname": "edge",
+            "kernel_version": "6.1.0",
+            "os_pretty_name": "Debian"
+          },
+          "subnet": "10.210.1.0/24"
+        },
+        "membership": "up",
+        "rtt": {
+          "median_ns": 1500000,
+          "population_stddev_ns": 250000
+        },
+        "selected_endpoint": "203.0.113.10:51820"
+      }
+    ],
+    "observed_at": "2024-01-01T00:00:00Z",
+    "services": [
+      {
+        "containers": [
+          {
+            "address": null,
+            "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "created_at_unix_nanos": 1700000000000000000,
+            "display_name": "api-1",
+            "effective_healthcheck": null,
+            "kind": "service_container",
+            "labels": {},
+            "machine_id": "0123456789abcdef0123456789abcdef",
+            "resolved_spec": {
+              "caddy_config": null,
+              "configs": [],
+              "container": {
+                "cap_add": [],
+                "cap_drop": [],
+                "command": [],
+                "config_mounts": [],
+                "entrypoint": [],
+                "environment": {},
+                "healthcheck": null,
+                "image": "api:1",
+                "init": null,
+                "log_driver": null,
+                "open_stdin": false,
+                "pid_mode": null,
+                "privileged": false,
+                "pull_policy": "missing",
+                "resources": {
+                  "cpu_nanos": null,
+                  "device_reservations": [],
+                  "devices": [],
+                  "memory_bytes": null,
+                  "memory_reservation_bytes": null,
+                  "shared_memory_bytes": null,
+                  "ulimits": {}
+                },
+                "restart": {
+                  "name": "unless-stopped"
+                },
+                "stop_timeout_secs": null,
+                "sysctls": {},
+                "tty": false,
+                "user": null,
+                "working_directory": null
+              },
+              "mode": {
+                "mode": "replicated",
+                "replicas": 1
+              },
+              "mounts": [],
+              "name": "api",
+              "placement": {
+                "machines": []
+              },
+              "ports": [],
+              "pre_deploy": null,
+              "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "update": {
+                "monitor_millis": null,
+                "order": "start_first"
+              },
+              "volumes": []
+            },
+            "runtime": {
+              "health": "healthy",
+              "state": "running"
+            },
+            "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "service_name": "api"
+          }
+        ],
+        "hook_containers": [],
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "volumes": [
+      {
+        "driver": "local",
+        "id": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "data"
+        },
+        "labels": {
+          "ployz.managed": "false"
+        },
+        "options": {
+          "type": "none"
+        }
+      }
+    ]
+  },
+  "runtime_watch_frame_unknown_fields": {
+    "certificates": [
+      {
+        "hostname": "ok.example.com",
+        "status": "available"
+      },
+      {
+        "backoff": {
+          "failure_kind": "does_not_resolve",
+          "failures": 2,
+          "next_attempt_at": "2024-01-01T01:00:00Z"
+        },
+        "hostname": "app.example.com",
+        "last_error": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
+        "status": "failure"
+      }
+    ],
+    "containers": [
+      {
+        "address": null,
+        "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "created_at_unix_nanos": 1700000000000000000,
+        "display_name": "api-1",
+        "effective_healthcheck": null,
+        "kind": "service_container",
+        "labels": {},
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "resolved_spec": {
+          "caddy_config": null,
+          "configs": [],
+          "container": {
+            "cap_add": [],
+            "cap_drop": [],
+            "command": [],
+            "config_mounts": [],
+            "entrypoint": [],
+            "environment": {},
+            "healthcheck": null,
+            "image": "api:1",
+            "init": null,
+            "log_driver": null,
+            "open_stdin": false,
+            "pid_mode": null,
+            "privileged": false,
+            "pull_policy": "missing",
+            "resources": {
+              "cpu_nanos": null,
+              "device_reservations": [],
+              "devices": [],
+              "memory_bytes": null,
+              "memory_reservation_bytes": null,
+              "shared_memory_bytes": null,
+              "ulimits": {}
+            },
+            "restart": {
+              "name": "unless-stopped"
+            },
+            "stop_timeout_secs": null,
+            "sysctls": {},
+            "tty": false,
+            "user": null,
+            "working_directory": null
+          },
+          "mode": {
+            "mode": "replicated",
+            "replicas": 1
+          },
+          "mounts": [],
+          "name": "api",
+          "placement": {
+            "machines": []
+          },
+          "ports": [],
+          "pre_deploy": null,
+          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "update": {
+            "monitor_millis": null,
+            "order": "start_first"
+          },
+          "volumes": []
+        },
+        "runtime": {
+          "health": "healthy",
+          "state": "running"
+        },
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "service_name": "api"
+      }
+    ],
+    "future_lens": {
+      "vendor": true
+    },
+    "hosted_dns_hostname": "cluster.example.ts.net",
+    "incomplete_ids": {
+      "certificates": [
+        "pending.example.com"
+      ],
+      "containers": [
+        "2222222222222222222222222222222222222222222222222222222222222222"
+      ],
+      "machines": [
+        "fedcba9876543210fedcba9876543210"
+      ],
+      "volumes": [
+        {
+          "machine_id": "fedcba9876543210fedcba9876543210",
+          "name": "scratch"
+        }
+      ]
+    },
+    "machines": [
+      {
+        "machine": {
+          "advertised_endpoints": [
+            "203.0.113.10:51820"
+          ],
+          "id": "0123456789abcdef0123456789abcdef",
+          "management_address": "::1",
+          "name": "edge",
+          "public_key": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "runtime": {
+            "architecture": "x86_64",
+            "daemon_version": "0.1.0",
+            "docker_version": "27.0.0",
+            "hostname": "edge",
+            "kernel_version": "6.1.0",
+            "os_pretty_name": "Debian"
+          },
+          "subnet": "10.210.1.0/24"
+        },
+        "membership": "up",
+        "rtt": {
+          "median_ns": 1500000,
+          "population_stddev_ns": 250000
+        },
+        "selected_endpoint": "203.0.113.10:51820"
+      }
+    ],
+    "observed_at": "2024-01-01T00:00:00Z",
+    "services": [
+      {
+        "containers": [
+          {
+            "address": null,
+            "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "created_at_unix_nanos": 1700000000000000000,
+            "display_name": "api-1",
+            "effective_healthcheck": null,
+            "kind": "service_container",
+            "labels": {},
+            "machine_id": "0123456789abcdef0123456789abcdef",
+            "resolved_spec": {
+              "caddy_config": null,
+              "configs": [],
+              "container": {
+                "cap_add": [],
+                "cap_drop": [],
+                "command": [],
+                "config_mounts": [],
+                "entrypoint": [],
+                "environment": {},
+                "healthcheck": null,
+                "image": "api:1",
+                "init": null,
+                "log_driver": null,
+                "open_stdin": false,
+                "pid_mode": null,
+                "privileged": false,
+                "pull_policy": "missing",
+                "resources": {
+                  "cpu_nanos": null,
+                  "device_reservations": [],
+                  "devices": [],
+                  "memory_bytes": null,
+                  "memory_reservation_bytes": null,
+                  "shared_memory_bytes": null,
+                  "ulimits": {}
+                },
+                "restart": {
+                  "name": "unless-stopped"
+                },
+                "stop_timeout_secs": null,
+                "sysctls": {},
+                "tty": false,
+                "user": null,
+                "working_directory": null
+              },
+              "mode": {
+                "mode": "replicated",
+                "replicas": 1
+              },
+              "mounts": [],
+              "name": "api",
+              "placement": {
+                "machines": []
+              },
+              "ports": [],
+              "pre_deploy": null,
+              "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "update": {
+                "monitor_millis": null,
+                "order": "start_first"
+              },
+              "volumes": []
+            },
+            "runtime": {
+              "health": "healthy",
+              "state": "running"
+            },
+            "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "service_name": "api"
+          }
+        ],
+        "hook_containers": [],
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "volumes": [
+      {
+        "driver": "local",
+        "id": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "data"
+        },
+        "labels": {
+          "ployz.managed": "false"
+        },
+        "options": {
+          "type": "none"
+        }
+      }
+    ]
+  },
+  "service_attempt": {
+    "name": "web"
+  }
+}

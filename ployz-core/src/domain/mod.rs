@@ -1,5 +1,6 @@
 mod certificate_policy;
 mod cluster_dns;
+mod deploy;
 mod issuance;
 mod machine;
 mod observation;
@@ -10,6 +11,7 @@ mod spec;
 
 pub use certificate_policy::*;
 pub use cluster_dns::*;
+pub use deploy::*;
 pub use issuance::*;
 pub use machine::*;
 pub use observation::*;

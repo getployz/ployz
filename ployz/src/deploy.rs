@@ -1,9 +1,6 @@
-use std::collections::BTreeMap;
-
 use ployz_core::{
-    ContainerId, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
-    DockerVolumeName, MachineId, MachineObservation, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceId, ServiceName, ServiceVolume,
+    ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
+    MachineObservation, ServiceId,
 };
 use thiserror::Error;
 
@@ -17,6 +14,10 @@ pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execut
 pub use pipeline::DeployError;
 pub use planning::plan_deploy;
 pub use ployz_core::compare_specs;
+pub use ployz_core::{
+    DeployIntent, DeployOperation, DeployOutcome, FailedOperation, PlanOptions,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
+};
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
@@ -39,107 +40,6 @@ pub struct ObservedDockerVolume {
     pub id: DockerVolumeId,
     pub driver: String,
     pub options: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PlanOptions {
-    pub force_recreate: bool,
-    pub skip_health_monitor: bool,
-    /// Caller-supplied entropy keeps the planner pure while varying equal-priority placement.
-    pub placement_seed: u64,
-}
-
-/// One Service Name this Deploy will apply from the target.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServiceAttempt {
-    pub name: ServiceName,
-}
-
-/// Complete desired Services plus which of those Services this command applies.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeployIntent {
-    pub target: Vec<RequestedServiceSpec>,
-    pub apply: Vec<ServiceAttempt>,
-    pub options: PlanOptions,
-    dependencies: BTreeMap<ServiceName, Vec<ServiceName>>,
-}
-
-impl DeployIntent {
-    /// Complete desired Services, the Service Attempts this command applies, and planning options.
-    ///
-    /// Empty `apply` means apply nothing. Names in `apply` that are absent from
-    /// `target` are not planned; they are not a prune.
-    #[must_use]
-    pub fn new(
-        target: Vec<RequestedServiceSpec>,
-        apply: Vec<ServiceAttempt>,
-        options: PlanOptions,
-    ) -> Self {
-        Self {
-            target,
-            apply,
-            options,
-            dependencies: BTreeMap::new(),
-        }
-    }
-
-    /// Target and apply set from every spec, in that order.
-    #[must_use]
-    pub fn apply_all<'a>(
-        specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
-        options: PlanOptions,
-    ) -> Self {
-        let target: Vec<_> = specs.into_iter().cloned().collect();
-        let apply = target
-            .iter()
-            .map(|spec| ServiceAttempt {
-                name: spec.name.clone(),
-            })
-            .collect();
-        Self::new(target, apply, options)
-    }
-
-    /// One-spec target with apply set to that name.
-    #[must_use]
-    pub fn apply_one(spec: RequestedServiceSpec, options: PlanOptions) -> Self {
-        let apply = vec![ServiceAttempt {
-            name: spec.name.clone(),
-        }];
-        Self::new(vec![spec], apply, options)
-    }
-
-    /// Target from every loaded spec; `apply` is this command's Service Attempts.
-    #[must_use]
-    pub fn from_named_specs(
-        services: &BTreeMap<String, RequestedServiceSpec>,
-        dependencies: &BTreeMap<String, Vec<String>>,
-        apply: Vec<ServiceAttempt>,
-        options: PlanOptions,
-    ) -> Self {
-        let dependencies = dependencies
-            .iter()
-            .filter_map(|(name, deps)| {
-                Some((
-                    services.get(name)?.name.clone(),
-                    deps.iter()
-                        .filter_map(|dep| services.get(dep).map(|spec| spec.name.clone()))
-                        .collect(),
-                ))
-            })
-            .collect();
-        Self::new(services.values().cloned().collect(), apply, options)
-            .with_dependencies(dependencies)
-    }
-
-    /// `depends_on` edges used to expand and order `apply` inside the planner.
-    #[must_use]
-    pub fn with_dependencies(
-        mut self,
-        dependencies: BTreeMap<ServiceName, Vec<ServiceName>>,
-    ) -> Self {
-        self.dependencies = dependencies;
-        self
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -216,93 +116,6 @@ impl DeployPlan {
             completed: self.operations.clone(),
         }
     }
-}
-
-/// Evidence from executing a Deploy Plan: every operation completed, or the
-/// completed prefix plus the failed operation and the unexecuted rest.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Failed must own the named op and unexecuted rest; boxing would not change the states"
-)]
-pub enum DeployOutcome<E> {
-    /// Every planned operation completed.
-    Success { completed: Vec<DeployOperation> },
-    /// Execution stopped at `failed`; `unexecuted` is the rest of the plan.
-    Failed {
-        completed: Vec<DeployOperation>,
-        failed: FailedOperation<E>,
-        unexecuted: Vec<DeployOperation>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FailedOperation<E> {
-    Operation {
-        operation: DeployOperation,
-        error: E,
-    },
-    ReplacementHealth {
-        operation: ReplacementOperation,
-        error: E,
-        compensation: ReplacementCompensation<E>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReplacementCompensation<E> {
-    StartFirst {
-        stop_new_container: Result<(), E>,
-    },
-    StopFirst {
-        stop_new_container: Result<(), E>,
-        restart_old_container: RestartAttempt<E>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RestartAttempt<E> {
-    NotAttempted,
-    Attempted(Result<(), E>),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReplacementOperation {
-    pub machine_id: MachineId,
-    pub old_container_id: ContainerId,
-    pub spec: ResolvedServiceSpec,
-    pub skip_health_monitor: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DeployOperation {
-    CreateVolume {
-        machine_id: MachineId,
-        volume: ServiceVolume,
-    },
-    RunContainer {
-        machine_id: MachineId,
-        spec: ResolvedServiceSpec,
-        skip_health_monitor: bool,
-    },
-    StopContainer {
-        machine_id: MachineId,
-        container_id: ContainerId,
-    },
-    RemoveContainer {
-        machine_id: MachineId,
-        container_id: ContainerId,
-    },
-    ReplaceContainer(ReplacementOperation),
-    StopHook {
-        machine_id: MachineId,
-        container_id: ContainerId,
-    },
-    RunHook {
-        machine_id: MachineId,
-        spec: ResolvedServiceSpec,
-        old_hook_containers: Vec<(MachineId, ContainerId)>,
-    },
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

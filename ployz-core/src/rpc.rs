@@ -58,6 +58,14 @@ macro_rules! define_capabilities {
         /// The daemon can take a Certificate Policy from cluster state.
         pub const CERTIFICATE_POLICY_CAPABILITY: &str = "ployz.certificates.policy.v1";
 
+        /// Const ident and wire spelling for every advertised capability.
+        pub const CATALOGUED_CAPABILITY_BINDINGS: &[(&str, &str)] = &[
+            $((stringify!($unary_capability), $unary_capability_name),)+
+            $((stringify!($stream_capability), $stream_capability_name),)+
+            ("EXEC_CONTAINER_CAPABILITY", EXEC_CONTAINER_CAPABILITY),
+            ("CERTIFICATE_POLICY_CAPABILITY", CERTIFICATE_POLICY_CAPABILITY),
+        ];
+
         const CATALOGUED_CAPABILITIES: &[(&str, CapabilityAdvertisement)] = &[
             $(($unary_capability, CapabilityAdvertisement::$unary_advertisement),)+
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+

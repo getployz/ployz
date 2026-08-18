@@ -1,0 +1,22 @@
+[package]
+name = "ployz-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+[dependencies]
+napi = { version = "2.16.17", default-features = false, features = ["napi4"] }
+napi-derive = "2.16.13"
+
+[build-dependencies]
+napi-build = "2.1.4"
+
+[lints.rust]
+unsafe_code = "allow"

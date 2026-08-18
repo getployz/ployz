@@ -235,6 +235,12 @@ macro_rules! open_string_enum {
                     Self::$fallback(value) => value,
                 }
             }
+
+            /// Known wire spellings, excluding the unknown fallback.
+            #[must_use]
+            pub const fn known_wires() -> &'static [&'static str] {
+                &[$($wire,)+]
+            }
         }
 
         impl Serialize for $name {
