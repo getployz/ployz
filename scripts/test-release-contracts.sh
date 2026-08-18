@@ -73,12 +73,37 @@ assert_contains "$ROOT/.github/workflows/release.yml" "push-relay-image: true"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh artifacts"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "runs-on: ubuntu-latest"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "runs-on: macos-15"
-assert_contains "$ROOT/.github/workflows/release-contracts.yml" "RELEASE_OS: linux"
-assert_contains "$ROOT/.github/workflows/release-contracts.yml" "RELEASE_OS: darwin"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "ubuntu-24.04-arm"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "RELEASE_ID: \${{ format('{0}-linux-{1}', matrix.binary, matrix.arch) }}"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "RELEASE_ID: ployz-darwin"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "runner: ubuntu-24.04-arm"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "**/dist/*.tar.gz"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "**/target/\${{ matrix.rust_target }}/release/sqlite-probe"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "binary: [ployz, ployzd, ployz-relay]"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "arch: [amd64, arm64]"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "pattern: release-linux-*"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "merge-multiple: true"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "taiki-e/install-action@v2"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "Swatinem/rust-cache@v2"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "scripts/pack-release.sh"
-assert_contains "$ROOT/.goreleaser.yaml" 'RELEASE_OS'
+assert_contains "$ROOT/.goreleaser.yaml" 'RELEASE_ID'
+assert_contains "$ROOT/.goreleaser.yaml" "id: ployz-linux-amd64"
+assert_contains "$ROOT/.goreleaser.yaml" "id: ployz-linux-arm64"
+assert_contains "$ROOT/.goreleaser.yaml" "id: ployzd-linux-amd64"
+assert_contains "$ROOT/.goreleaser.yaml" "id: ployzd-linux-arm64"
+assert_contains "$ROOT/.goreleaser.yaml" "id: ployz-relay-linux-amd64"
+assert_contains "$ROOT/.goreleaser.yaml" "id: ployz-relay-linux-arm64"
+assert_contains "$ROOT/.goreleaser.yaml" "builds: [ployz-linux-amd64, ployz-linux-arm64, ployz-darwin]"
+assert_contains "$ROOT/.goreleaser.yaml" "builds: [ployzd-linux-amd64, ployzd-linux-arm64]"
+assert_contains "$ROOT/.goreleaser.yaml" "builds: [ployz-relay-linux-amd64, ployz-relay-linux-arm64]"
+if grep -Fq 'x86_64-unknown-linux-musl,aarch64-unknown-linux-musl' "$ROOT/.github/workflows/release-contracts.yml"; then
+    echo "linux still compiles both musl targets in one job" >&2
+    exit 1
+fi
+if grep -Eq '^[[:space:]]*name: release-linux$' "$ROOT/.github/workflows/release-contracts.yml"; then
+    echo "linux still publishes a single combined artifact" >&2
+    exit 1
+fi
 if grep -q 'needs: gate' "$ROOT/.github/workflows/release.yml"; then
     echo "release still blocks artifacts on the CI gate" >&2
     exit 1

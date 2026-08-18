@@ -4,18 +4,25 @@ version: 2
 project_name: ployz
 
 builds:
-  - id: ployz-linux
+  - id: ployz-linux-amd64
     builder: rust
     binary: ployz
-    skip: '{{ and (ne (index .Env "RELEASE_OS") "") (ne (index .Env "RELEASE_OS") "linux") }}'
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-linux-amd64") }}'
     targets:
       - x86_64-unknown-linux-musl
-      - aarch64-unknown-linux-musl
-    flags:
+    flags: &ployz-flags
       - --release
       - --locked
       - --package=ployz
       - --bin=ployz
+
+  - id: ployz-linux-arm64
+    builder: rust
+    binary: ployz
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-linux-arm64") }}'
+    targets:
+      - aarch64-unknown-linux-musl
+    flags: *ployz-flags
 
   # zig 0.13 segfaults linking the CLI's Apple targets, so the macOS runner links
   # them with its own toolchain; zig stays only for the musl targets.
@@ -23,48 +30,59 @@ builds:
     builder: rust
     command: build
     binary: ployz
-    skip: '{{ and (ne (index .Env "RELEASE_OS") "") (ne (index .Env "RELEASE_OS") "darwin") }}'
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-darwin") }}'
     targets:
       - x86_64-apple-darwin
       - aarch64-apple-darwin
-    flags:
-      - --release
-      - --locked
-      - --package=ployz
-      - --bin=ployz
+    flags: *ployz-flags
 
-  - id: ployzd
+  - id: ployzd-linux-amd64
     builder: rust
     binary: ployzd
-    skip: '{{ and (ne (index .Env "RELEASE_OS") "") (ne (index .Env "RELEASE_OS") "linux") }}'
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployzd-linux-amd64") }}'
     targets:
       - x86_64-unknown-linux-musl
-      - aarch64-unknown-linux-musl
-    flags:
+    flags: &ployzd-flags
       - --release
       - --locked
       - --package=ployzd
       - --bin=ployzd
-    hooks:
+    hooks: &ployzd-hooks
       pre:
         - cargo zigbuild --release --locked --package ployz-testkit --bin sqlite-probe --target {{ .Target }}
 
-  - id: ployz-relay
+  - id: ployzd-linux-arm64
+    builder: rust
+    binary: ployzd
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployzd-linux-arm64") }}'
+    targets:
+      - aarch64-unknown-linux-musl
+    flags: *ployzd-flags
+    hooks: *ployzd-hooks
+
+  - id: ployz-relay-linux-amd64
     builder: rust
     binary: ployz-relay
-    skip: '{{ and (ne (index .Env "RELEASE_OS") "") (ne (index .Env "RELEASE_OS") "linux") }}'
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-relay-linux-amd64") }}'
     targets:
       - x86_64-unknown-linux-musl
-      - aarch64-unknown-linux-musl
-    flags:
+    flags: &ployz-relay-flags
       - --release
       - --locked
       - --package=ployz-relay
       - --bin=ployz-relay
 
+  - id: ployz-relay-linux-arm64
+    builder: rust
+    binary: ployz-relay
+    skip: '{{ and (ne (index .Env "RELEASE_ID") "") (ne (index .Env "RELEASE_ID") "ployz-relay-linux-arm64") }}'
+    targets:
+      - aarch64-unknown-linux-musl
+    flags: *ployz-relay-flags
+
 archives:
   - id: ployz
-    builds: [ployz-linux, ployz-darwin]
+    builds: [ployz-linux-amd64, ployz-linux-arm64, ployz-darwin]
     format: tar.gz
     name_template: >-
       ployz_
@@ -77,7 +95,7 @@ archives:
       - none*
 
   - id: ployzd
-    builds: [ployzd]
+    builds: [ployzd-linux-amd64, ployzd-linux-arm64]
     format: tar.gz
     name_template: "ployzd_{{ .Os }}_{{ .Arch }}"
     builds_info:
@@ -89,7 +107,7 @@ archives:
           mode: 0755
 
   - id: ployz-relay
-    builds: [ployz-relay]
+    builds: [ployz-relay-linux-amd64, ployz-relay-linux-arm64]
     format: tar.gz
     name_template: "ployz-relay_{{ .Os }}_{{ .Arch }}"
     builds_info:

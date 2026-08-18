@@ -83,9 +83,21 @@ jobs:
   build-linux:
     needs: [decide]
     if: needs.decide.outputs.artifacts == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        binary: [ployz, ployzd, ployz-relay]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
     env:
-      RELEASE_OS: linux
+      RELEASE_ID: ${{ format('{0}-linux-{1}', matrix.binary, matrix.arch) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,7 +105,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+          targets: ${{ matrix.rust_target }}
       - uses: mlugg/setup-zig@v1
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -102,7 +114,7 @@ jobs:
           tool: cargo-zigbuild@${{ env.CARGO_ZIGBUILD_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-${{ runner.os }}
+          shared-key: release-${{ runner.os }}-${{ matrix.arch }}
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -110,18 +122,18 @@ jobs:
           args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }} --skip=homebrew
       - uses: actions/upload-artifact@v4
         with:
-          name: release-linux
+          name: release-linux-${{ matrix.binary }}-${{ matrix.arch }}
           path: |
-            dist
-            target/x86_64-unknown-linux-musl/release/sqlite-probe
-            target/aarch64-unknown-linux-musl/release/sqlite-probe
+            **/dist/*.tar.gz
+            **/target/${{ matrix.rust_target }}/release/sqlite-probe
+          if-no-files-found: error
 
   build-macos:
     needs: [decide]
     if: needs.decide.outputs.artifacts == 'true'
     runs-on: macos-15
     env:
-      RELEASE_OS: darwin
+      RELEASE_ID: ployz-darwin
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,7 +166,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: release-linux
+          pattern: release-linux-*
+          merge-multiple: true
           path: linux
       - uses: actions/download-artifact@v4
         with:
@@ -184,7 +197,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: release-linux
+          pattern: release-linux-*
+          merge-multiple: true
           path: .
       - run: sudo apt-get update && sudo apt-get install -y file qemu-user
       - run: scripts/verify-release.sh linux
@@ -207,6 +221,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@v4
         with:
-          name: release-linux
+          pattern: release-linux-*
+          merge-multiple: true
           path: .
       - run: bash scripts/publish-relay-image.sh "${{ github.ref_name }}"
