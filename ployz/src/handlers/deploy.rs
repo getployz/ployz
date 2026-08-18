@@ -9,10 +9,7 @@ use crate::{
         execute_build, load_project, plan_build,
     },
     deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec, plan_options},
-    project::{
-        ProjectNameInput, ResolvedProject, resolve_compose_command, resolve_explicit,
-        resolve_from_matches,
-    },
+    project::{ResolvedProject, resolve_compose_command, resolve_explicit, resolve_run_command},
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime, string_values};
@@ -20,13 +17,7 @@ use super::{Error, connect_client, leaf_matches, required, runtime, string_value
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let requested = run_spec(matches)?;
-    let project = resolve_from_matches(
-        matches,
-        ProjectNameInput {
-            implicit_default: true,
-            ..ProjectNameInput::default()
-        },
-    )?;
+    let project = resolve_run_command(matches)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");

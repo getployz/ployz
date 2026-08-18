@@ -228,6 +228,97 @@ fn user_project_deploy_does_not_replace_or_remove_system_caddy() {
 }
 
 #[test]
+fn run_in_a_named_project_replaces_that_projects_matching_service() {
+    let mut current = spec("web");
+    current.container.image = "nginx:1".into();
+    let mut requested = spec("web");
+    requested.container.image = "nginx:2".into();
+    let mut owned = container('c', '1', &current, &service_id('a'));
+    owned.project_name = ProjectName::parse("shop").unwrap();
+
+    let plan = plan_deploy(
+        &DeployIntent::apply_one(
+            ProjectName::parse("shop").unwrap(),
+            requested,
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![owned],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    match plan.operations.as_slice() {
+        [DeployOperation::ReplaceContainer(replacement)] => {
+            assert_eq!(replacement.old_container_id, container_id('c'));
+            assert_eq!(replacement.spec.service_id, service_id('a'));
+        }
+        other => panic!("expected replace of shop/web, got {other:?}"),
+    }
+}
+
+#[test]
+fn run_in_a_named_project_does_not_take_over_another_projects_service() {
+    let mut current = spec("web");
+    current.container.image = "nginx:1".into();
+    let mut requested = spec("web");
+    requested.container.image = "nginx:2".into();
+    let mut other = container('c', '1', &current, &service_id('a'));
+    other.project_name = ProjectName::parse("default").unwrap();
+
+    let plan = plan_deploy(
+        &DeployIntent::apply_one(
+            ProjectName::parse("shop").unwrap(),
+            requested,
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![other],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!targets_container(&plan, &container_id('c')));
+    assert_eq!(run_names(&plan), ["web"]);
+}
+
+#[test]
+fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
+    let web = spec("web");
+    let debug = spec("debug");
+    let mut web_container = container('c', '1', &web, &service_id('a'));
+    web_container.project_name = ProjectName::parse("shop").unwrap();
+    let mut debug_container = container('d', '1', &debug, &service_id('b'));
+    debug_container.project_name = ProjectName::parse("shop").unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![web_container, debug_container],
+        ..Default::default()
+    };
+
+    let mut owned: Vec<_> = snapshot
+        .services_in(&ProjectName::parse("shop").unwrap())
+        .iter()
+        .filter_map(|service| service.service_name().map(|name| name.as_str().to_owned()))
+        .collect();
+    owned.sort();
+    assert_eq!(owned, ["debug", "web"]);
+
+    let plan = plan_deploy(
+        &DeployIntent::apply_all(
+            ProjectName::parse("shop").unwrap(),
+            [&web],
+            PlanOptions::default(),
+        ),
+        &snapshot,
+    )
+    .unwrap();
+    assert!(!targets_container(&plan, &container_id('d')));
+}
+
+#[test]
 fn system_project_deploy_still_replaces_its_own_caddy() {
     let mut current = spec("caddy");
     current.mode = ServiceMode::Global;

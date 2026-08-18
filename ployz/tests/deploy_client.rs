@@ -33,6 +33,26 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, Response, Status, Streaming, transport::Server};
 
 #[tokio::test]
+async fn deploy_creates_containers_owned_by_the_intent_project() {
+    let service = DeployService::new(machine('a', "one"));
+    let created = service.created_projects();
+    let (mut client, server) = connected(service).await;
+    client
+        .deploy(DeployIntent::apply_one(
+            ProjectName::parse("shop").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        *created.lock().unwrap(),
+        [ProjectName::parse("shop").unwrap()]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn deploy_returns_success_for_a_completed_run() {
     let machine = machine('a', "one");
     let (mut client, server) = connected(DeployService::new(machine.clone())).await;
@@ -306,6 +326,7 @@ struct DeployService {
     machines: Vec<MachineObservation>,
     create_volume_error: Option<RpcError>,
     containers: Arc<AtomicUsize>,
+    created_projects: Arc<Mutex<Vec<ProjectName>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     mutating_rpcs: Arc<AtomicUsize>,
     domain: Option<String>,
@@ -317,6 +338,7 @@ impl DeployService {
             machines: vec![machine],
             create_volume_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
+            created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
@@ -328,6 +350,7 @@ impl DeployService {
             machines: Vec::new(),
             create_volume_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
+            created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
@@ -354,6 +377,10 @@ impl DeployService {
 
     fn listed_containers(&self) -> Arc<Mutex<Vec<ployz_core::ContainerObservation>>> {
         self.listed_containers.clone()
+    }
+
+    fn created_projects(&self) -> Arc<Mutex<Vec<ProjectName>>> {
+        self.created_projects.clone()
     }
 
     fn record_mutation(&self) {
@@ -446,6 +473,10 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected create_container"));
         };
+        self.created_projects
+            .lock()
+            .unwrap()
+            .push(create.project_name);
         let n = self.containers.fetch_add(1, Ordering::SeqCst) + 1;
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         encoded(RpcResponse::from(ContainerCreated {

@@ -163,6 +163,21 @@ pub(crate) fn resolve_compose_command(
     )
 }
 
+/// Resolve a Project for `ployz run`. Absent CLI / env sources become `default`.
+///
+/// # Errors
+///
+/// Returns when a present source is not a valid Project Name, or the name is reserved.
+pub(crate) fn resolve_run_command(matches: &ArgMatches) -> Result<ResolvedProject, ProjectError> {
+    resolve_from_matches(
+        matches,
+        ProjectNameInput {
+            implicit_default: true,
+            ..ProjectNameInput::default()
+        },
+    )
+}
+
 /// Resolve a Project only when CLI or `COMPOSE_PROJECT_NAME` named one.
 ///
 /// # Errors

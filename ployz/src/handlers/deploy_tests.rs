@@ -1,3 +1,4 @@
+use crate::project::{ProjectNameSource, resolve_run_command};
 use ployz_core::{HttpProtocol, IngressHostname, PortPublication, RestartPolicy, ServiceMode};
 
 use super::*;
@@ -148,6 +149,38 @@ fn run_pulls_untagged_images_as_latest() {
     let digest = format!("alpine@sha256:{}", "0".repeat(64));
     assert_eq!(image(&digest), digest);
     assert_eq!(image("localhost:5000/foo"), "localhost:5000/foo:latest");
+}
+
+#[test]
+fn run_places_the_service_in_default_or_an_explicit_project() {
+    let resolve = |args: &[&str]| {
+        let matches = crate::cli::command().try_get_matches_from(args).unwrap();
+        resolve_run_command(super::leaf_matches(&matches)).unwrap()
+    };
+    let bare = resolve(&["ployz", "run", "alpine"]);
+    assert_eq!(bare.name.as_str(), "default");
+    assert_eq!(bare.source, ProjectNameSource::Default);
+    let named = resolve(&[
+        "ployz",
+        "run",
+        "--project-name",
+        "shop",
+        "--name",
+        "web",
+        "alpine",
+    ]);
+    assert_eq!(named.name.as_str(), "shop");
+    assert_eq!(named.source, ProjectNameSource::CommandLine);
+    let nested = resolve(&[
+        "ployz",
+        "service",
+        "run",
+        "--project-name",
+        "shop",
+        "alpine",
+    ]);
+    assert_eq!(nested.name, named.name);
+    assert_eq!(nested.source, named.source);
 }
 
 #[test]
