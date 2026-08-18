@@ -7,9 +7,9 @@ use std::sync::atomic::Ordering;
 
 use ployz::deploy::{
     DeployError, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployWarning,
-    ExecutionError, FailedOperation, OperationStatus, PlanError,
+    ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal,
 };
-use ployz_core::{OperationPhase, ProjectName, RequestedServiceSpec};
+use ployz_core::{ContainerId, OperationPhase, ProjectName, RequestedServiceSpec};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -409,6 +409,74 @@ async fn empty_target_is_noop_and_confirm_succeeds_with_zero_operations() {
         DeployOutcome::Success {
             completed: Vec::new()
         }
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn full_preview_confirms_prune_operations_without_replanning() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone());
+    let mut debug = running_container(&machine, &spec("debug"));
+    debug.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+    service.listed_containers().lock().unwrap().push(debug);
+    let (mut client, server) = connected(service).await;
+    let preview = client
+        .preview(DeployIntent::apply_all(
+            ProjectName::parse("app").unwrap(),
+            [&spec("web")],
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(preview.prune_refusal, None);
+    assert!(
+        preview.operations.iter().any(|row| {
+            matches!(
+                row.operation,
+                DeployOperation::RemoveContainer { container_id, .. }
+                    if container_id.as_str() == "2".repeat(64)
+            )
+        }),
+        "full preview must include the prune: {:?}",
+        preview.operations
+    );
+    let planned: Vec<_> = preview
+        .operations
+        .iter()
+        .map(|row| row.operation.clone())
+        .collect();
+    let outcome = client
+        .confirm(&preview, &CancellationToken::new(), None)
+        .await;
+    assert_eq!(outcome, DeployOutcome::Success { completed: planned });
+    server.abort();
+}
+
+#[tokio::test]
+async fn partial_preview_does_not_prune_an_unselected_imperative_service() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone());
+    let mut debug = running_container(&machine, &spec("debug"));
+    debug.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+    service.listed_containers().lock().unwrap().push(debug);
+    let (mut client, server) = connected(service).await;
+    let preview = client
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(preview.prune_refusal, Some(PruneRefusal::SelectedServices));
+    assert!(
+        !preview
+            .operations
+            .iter()
+            .any(|row| matches!(row.operation, DeployOperation::RemoveContainer { .. })),
+        "partial preview must not prune: {:?}",
+        preview.operations
     );
     server.abort();
 }

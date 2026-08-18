@@ -329,7 +329,7 @@ pub struct DeployPreview {
     /// Visible Services in the Project that Compose no longer declares.
     #[serde(default)]
     pub would_remove: Vec<QualifiedService>,
-    /// Why pruning will not run. `None` still does not remove; this command never prunes.
+    /// Why pruning will not run. `None` means obsolete Services are removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prune_refusal: Option<PruneRefusal>,
 }

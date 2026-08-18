@@ -304,17 +304,31 @@ impl MachineRpc for DeployService {
     }
     async fn stop_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
+        let RpcRequestBody::StopContainer(stop) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected stop_container"));
+        };
+        encoded(RpcResponse::from(ployz_core::ContainerChanged {
+            container_id: stop.container_id,
+        }))
     }
     async fn remove_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
+        let RpcRequestBody::RemoveContainer(remove) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected remove_container"));
+        };
+        encoded(RpcResponse::from(ployz_core::ContainerChanged {
+            container_id: remove.container_id,
+        }))
     }
     async fn exec(
         &self,

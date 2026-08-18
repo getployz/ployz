@@ -60,17 +60,14 @@ pub fn plan_text(preview: &DeployPreview, context: &str, project_source: Option<
 }
 
 fn prune_lines(preview: &DeployPreview) -> String {
+    let Some(reason) = preview.prune_refusal else {
+        return String::new();
+    };
     let mut out = String::new();
     for service in &preview.would_remove {
         let _ = writeln!(out, "  would remove {service}");
     }
-    if let Some(reason) = preview.prune_refusal {
-        let _ = writeln!(out, "{reason}");
-    } else if !preview.would_remove.is_empty() {
-        out.push_str(
-            "Ployz will not remove them in this command. Listed drift is from this Machine's current view, not Cluster completeness.\n",
-        );
-    }
+    let _ = writeln!(out, "{reason}");
     out
 }
 
@@ -127,7 +124,11 @@ fn service_trees(preview: &DeployPreview) -> String {
         let _ = writeln!(out, "{}", volume_line(row));
     }
     for (name, rows) in groups {
-        out.push_str(&service_block(&name, &rows));
+        let pruned = preview
+            .would_remove
+            .iter()
+            .any(|service| service.name.as_str() == name);
+        out.push_str(&service_block(&name, &rows, pruned));
     }
     out
 }
@@ -143,8 +144,8 @@ fn volume_line(row: &OperationRow) -> String {
     )
 }
 
-fn service_block(name: &str, rows: &[&OperationRow]) -> String {
-    let marker = service_marker(rows);
+fn service_block(name: &str, rows: &[&OperationRow], pruned: bool) -> String {
+    let marker = service_marker(rows, pruned);
     let image = rows.iter().find_map(|row| spec_image(&row.operation));
     let mut out = format!("{marker} service {name}\n");
     if let Some(image) = image {
@@ -164,7 +165,10 @@ fn service_block(name: &str, rows: &[&OperationRow]) -> String {
     out
 }
 
-fn service_marker(rows: &[&OperationRow]) -> &'static str {
+fn service_marker(rows: &[&OperationRow], pruned: bool) -> &'static str {
+    if pruned {
+        return "- remove";
+    }
     let replacing = rows
         .iter()
         .any(|row| matches!(row.operation, DeployOperation::ReplaceContainer(_)));
@@ -528,6 +532,63 @@ mod tests {
         );
         assert!(!text.contains("authoritative"));
         assert!(!text.contains("No changes."));
+    }
+
+    #[test]
+    fn plan_shows_prune_as_remove_operations_before_confirm() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let row = OperationRow::pending(
+            0,
+            DeployOperation::RemoveContainer {
+                machine_id,
+                container_id: ContainerId::parse("f".repeat(64)).unwrap(),
+            },
+            Some(MachineName::parse("machine-dc3c").unwrap()),
+            Some("debug/fde7ac7f11ad".into()),
+            Some(ServiceName::parse("debug").unwrap()),
+        );
+        let mut preview =
+            DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("shop").unwrap());
+        preview.would_remove = vec![QualifiedService::parse("shop/debug").unwrap()];
+        let text = plan_text(&preview, "default", None);
+        assert!(text.contains("- remove service debug\n"), "{text}");
+        assert!(
+            text.contains("- remove container debug/fde7ac7f11ad on machine-dc3c"),
+            "{text}"
+        );
+        assert!(text.contains("1 remove · across 1 machine"), "{text}");
+        assert!(!text.contains("~ update service debug"), "{text}");
+        assert!(!text.contains("would remove"), "{text}");
+        assert!(!text.contains("will not remove"), "{text}");
+        assert_eq!(
+            confirm_prompt("default"),
+            "Proceed with deployment to default? [y/N] "
+        );
+        assert!(!preview.noop());
+    }
+
+    #[test]
+    fn replica_shrink_still_prints_update_not_service_remove() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let row = OperationRow::pending(
+            0,
+            DeployOperation::RemoveContainer {
+                machine_id,
+                container_id: ContainerId::parse("f".repeat(64)).unwrap(),
+            },
+            Some(MachineName::parse("machine-dc3c").unwrap()),
+            Some("web/fde7ac7f11ad".into()),
+            Some(ServiceName::parse("web").unwrap()),
+        );
+        let preview =
+            DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("shop").unwrap());
+        let text = plan_text(&preview, "default", None);
+        assert!(text.contains("~ update service web\n"), "{text}");
+        assert!(
+            text.contains("- remove container web/fde7ac7f11ad on machine-dc3c"),
+            "{text}"
+        );
+        assert!(!text.contains("- remove service web"), "{text}");
     }
 
     #[test]

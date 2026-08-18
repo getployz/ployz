@@ -302,11 +302,12 @@ fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
         &snapshot,
     )
     .unwrap();
-    assert!(!targets_container(&plan, &container_id('d')));
+    assert!(targets_container(&plan, &container_id('d')));
     assert_eq!(
         plan.would_remove,
         [ployz_core::QualifiedService::parse("shop/debug").unwrap()]
     );
+    assert_eq!(plan.prune_refusal, None);
 }
 
 #[test]

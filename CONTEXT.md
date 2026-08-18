@@ -117,7 +117,7 @@ A bounded command attempt that calculates and executes work against an observer-
 _Avoid_: Deployment resource, reconciliation loop
 
 **Deploy Intent**:
-The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target. Services in the target that are not applied are unchanged.
+The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target, including removal of observer-visible Services the target no longer declares. Services in the target that are not applied are unchanged.
 _Avoid_: leftover filtered Compose project, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
 **Deploy Snapshot**:
@@ -125,7 +125,7 @@ The observer-relative Machine, Service Container, and Docker Volume observations
 _Avoid_: current cluster state, desired state, cluster snapshot, authoritative Cluster completeness
 
 **Prune Refusal**:
-Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. This command never prunes.
+Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Project.
 _Avoid_: prune flag, Cluster-complete snapshot
 
 **Deploy Plan**:

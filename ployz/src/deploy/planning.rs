@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
+    ContainerAction, ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
     MachineObservation, MembershipObservation, PortPublication, ProjectName, QualifiedService,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
     ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
@@ -27,7 +27,8 @@ use volumes::{
 /// reconciliation of `target` (profile-enabled Services start). Non-empty
 /// `selected` is partial: those names expand through dependencies that are also
 /// in `target`. Other target Services are unchanged. Visible obsolete Services
-/// are listed as `would_remove` and are never removed by this planner.
+/// owned by that user Project are removed after desired work when pruning is
+/// not refused; otherwise they are listed as `would_remove`.
 ///
 /// # Errors
 ///
@@ -69,6 +70,9 @@ pub fn plan_deploy(
     operations.extend(service_operations);
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
+    if prune_refusal.is_none() {
+        operations.extend(removal_operations(&services, &would_remove));
+    }
     Ok(DeployPlan {
         operations,
         would_remove,
@@ -80,6 +84,9 @@ fn obsolete_services(
     intent: &DeployIntent,
     services: &[ServiceObservation],
 ) -> Vec<QualifiedService> {
+    if intent.project_name.is_reserved() {
+        return Vec::new();
+    }
     let declared = intent
         .target
         .iter()
@@ -89,6 +96,25 @@ fn obsolete_services(
         .iter()
         .filter(|service| !declared.contains(&service.identity.name))
         .map(|service| service.identity.clone())
+        .collect()
+}
+
+fn removal_operations(
+    services: &[ServiceObservation],
+    obsolete: &[QualifiedService],
+) -> Vec<DeployOperation> {
+    let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
+    services
+        .iter()
+        .filter(|service| obsolete.contains(&service.identity))
+        .flat_map(|service| service.containers_for(ContainerAction::Remove))
+        .map(|container| {
+            let observation = container.as_observation();
+            DeployOperation::RemoveContainer {
+                machine_id: observation.machine_id,
+                container_id: observation.container_id,
+            }
+        })
         .collect()
 }
 
