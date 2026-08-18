@@ -256,7 +256,7 @@ impl NetworkPlane {
 
     fn rebuild(
         &mut self,
-        snapshot: &ReplicatedObservations<Machine>,
+        snapshot: &ReplicatedObservations<Machine, MachineId>,
         local: &Arc<Mutex<LocalMachineStore>>,
     ) -> Result<(), NetworkError> {
         let (selected, joining) = {

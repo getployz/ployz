@@ -8,8 +8,9 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, ContainerObservation, IngressHost, LocalMachinePhase, Machine, MachineId,
-    MachineName, ManagementAddress, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
+    DockerVolumeName, IngressHost, LocalMachinePhase, Machine, MachineId, MachineName,
+    ManagementAddress, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -80,7 +81,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         .publish_container(&duplicate_service_name)
         .await
         .unwrap();
-    let incomplete_id = format!("{:0<64}", "incomplete");
+    let incomplete_id = ContainerId::parse("a".repeat(64)).unwrap();
     running
         .store()
         .api()
@@ -293,6 +294,103 @@ async fn certificates_round_trip_and_notify_on_change() {
     running.cleanup().await.unwrap();
 }
 
+#[tokio::test]
+#[ignore = "requires Docker and the pinned Corrosion image"]
+async fn replicated_volumes_round_trip_incomplete_additive_and_machine_removal() {
+    let root = TestRoot::new();
+    let mut running = CorrosionConfig::new(
+        root.0.join("data"),
+        root.0.join("run"),
+        unused_address(),
+        unused_address(),
+        format!("ployz-corrosion-volumes-{}", MachineId::random()),
+    )
+    .start()
+    .await
+    .unwrap();
+    let store = running.store().clone();
+    let mut volume_changes = store
+        .api()
+        .subscribe(Statement::new(
+            "SELECT machine_id, name, volume FROM volumes",
+            [],
+        ))
+        .await
+        .unwrap();
+
+    let kept = machine("kept", 1);
+    let gone = machine("gone", 2);
+    let kept_volume = volume(&kept.id, "data");
+    let gone_volume = volume(&gone.id, "data");
+    store.publish_volume(&kept_volume).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), volume_changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.volume(&kept_volume.id).await.unwrap().as_ref(),
+        Some(&kept_volume)
+    );
+    assert_eq!(
+        store.volumes().await.unwrap().observations,
+        vec![kept_volume.clone()]
+    );
+
+    store.publish_volume(&gone_volume).await.unwrap();
+    let incomplete_id = DockerVolumeId {
+        machine_id: gone.id,
+        name: DockerVolumeName::parse("incomplete").unwrap(),
+    };
+    running
+        .store()
+        .api()
+        .execute([Statement::new(
+            "INSERT INTO volumes (machine_id, name) VALUES (?, ?)",
+            [json!(&incomplete_id.machine_id), json!(&incomplete_id.name)],
+        )])
+        .await
+        .unwrap();
+
+    let mut encoded = serde_json::to_value(&kept_volume).unwrap();
+    encoded
+        .as_object_mut()
+        .unwrap()
+        .insert("quota_bytes".into(), json!(1073741824));
+    running
+        .store()
+        .api()
+        .execute([Statement::new(
+            "UPDATE volumes SET volume = ? WHERE machine_id = ? AND name = ?",
+            [
+                json!(encoded.to_string()),
+                json!(&kept_volume.id.machine_id),
+                json!(&kept_volume.id.name),
+            ],
+        )])
+        .await
+        .unwrap();
+
+    let volumes = store.volumes().await.unwrap();
+    assert!(volumes.observations.contains(&kept_volume));
+    assert!(volumes.observations.contains(&gone_volume));
+    assert_eq!(volumes.observations.len(), 2);
+    assert_eq!(volumes.incomplete_ids, vec![incomplete_id.clone()]);
+    assert_eq!(
+        store.volume(&kept_volume.id).await.unwrap().as_ref(),
+        Some(&kept_volume)
+    );
+    assert!(store.volume(&incomplete_id).await.unwrap().is_none());
+
+    store.remove_machine(&gone.id).await.unwrap();
+    let volumes = store.volumes().await.unwrap();
+    assert_eq!(volumes.observations, vec![kept_volume.clone()]);
+    assert!(volumes.incomplete_ids.is_empty());
+    assert!(store.volume(&gone_volume.id).await.unwrap().is_none());
+    assert!(store.volume(&incomplete_id).await.unwrap().is_none());
+
+    running.cleanup().await.unwrap();
+}
+
 struct TestRoot(PathBuf);
 
 impl TestRoot {
@@ -347,6 +445,18 @@ fn machine(name: &str, seed: u8) -> Machine {
             format!("192.0.2.{seed}:51000").parse().unwrap(),
         )],
         runtime: Default::default(),
+    }
+}
+
+fn volume(machine_id: &MachineId, name: &str) -> DockerVolume {
+    DockerVolume {
+        id: DockerVolumeId {
+            machine_id: *machine_id,
+            name: DockerVolumeName::parse(name).unwrap(),
+        },
+        driver: "local".into(),
+        options: BTreeMap::from([("type".into(), "none".into())]),
+        labels: BTreeMap::from([("purpose".into(), "database".into())]),
     }
 }
 
