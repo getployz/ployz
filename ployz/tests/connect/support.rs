@@ -1,6 +1,8 @@
 use std::{
     collections::VecDeque,
     net::{Ipv6Addr, SocketAddr},
+    path::PathBuf,
+    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -17,12 +19,13 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContractDescription, DockerVolume,
     DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
     MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
-    WireGuardPublicKey,
+    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{
     Request, Response, Status, Streaming,
     transport::{Channel, Server},
@@ -50,10 +53,83 @@ pub(super) enum DescribeOutcome {
 }
 
 #[derive(Clone)]
+enum WatchEvent {
+    Frame(RuntimeWatchFrame),
+    Fail(Status),
+}
+
+struct WatchHub {
+    every_open: Mutex<Option<RuntimeWatchFrame>>,
+    pending: Mutex<VecDeque<WatchEvent>>,
+    live: Mutex<Vec<mpsc::Sender<Result<OpaquePayload, Status>>>>,
+}
+
+impl WatchHub {
+    fn new() -> Self {
+        Self {
+            every_open: Mutex::new(None),
+            pending: Mutex::new(VecDeque::new()),
+            live: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn set_every_open(&self, frame: RuntimeWatchFrame) {
+        *self.every_open.lock().unwrap() = Some(frame);
+    }
+
+    fn push(&self, event: WatchEvent) {
+        let mut live = self.live.lock().unwrap();
+        live.retain(|sender| !sender.is_closed());
+        if live.is_empty() {
+            drop(live);
+            self.pending.lock().unwrap().push_back(event);
+            return;
+        }
+        for sender in live.iter() {
+            send_watch_event(sender, &event);
+        }
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<Result<OpaquePayload, Status>> {
+        let (sender, receiver) = mpsc::channel(16);
+        if let Some(frame) = self.every_open.lock().unwrap().clone() {
+            send_watch_event(&sender, &WatchEvent::Frame(frame));
+        }
+        let mut pending = self.pending.lock().unwrap();
+        while let Some(event) = pending.pop_front() {
+            send_watch_event(&sender, &event);
+        }
+        drop(pending);
+        self.live.lock().unwrap().push(sender);
+        receiver
+    }
+
+    fn live_count(&self) -> usize {
+        let mut live = self.live.lock().unwrap();
+        live.retain(|sender| !sender.is_closed());
+        live.len()
+    }
+}
+
+fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event: &WatchEvent) {
+    let item = match event {
+        WatchEvent::Frame(frame) => {
+            OpaquePayload::from_json(frame).map_err(|error| Status::internal(error.to_string()))
+        }
+        WatchEvent::Fail(status) => Err(status.clone()),
+    };
+    let _ = sender.try_send(item);
+}
+
+#[derive(Clone)]
 pub(super) struct DiscoveryService {
     description: ContractDescription,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
+    pub(super) watch_opens: Arc<AtomicUsize>,
+    pub(super) list_rpc_calls: Arc<AtomicUsize>,
+    pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
+    watch: Arc<WatchHub>,
     pub(super) machines: Vec<MachineObservation>,
 }
 
@@ -63,8 +139,28 @@ impl DiscoveryService {
             description,
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
+            watch_opens: Arc::new(AtomicUsize::new(0)),
+            list_rpc_calls: Arc::new(AtomicUsize::new(0)),
+            watch_requests: Arc::new(Mutex::new(Vec::new())),
+            watch: Arc::new(WatchHub::new()),
             machines: vec![machine('a', "one")],
         }
+    }
+
+    pub(super) fn emit_watch_frame_on_open(&self, frame: RuntimeWatchFrame) {
+        self.watch.set_every_open(frame);
+    }
+
+    pub(super) fn push_watch_frame(&self, frame: RuntimeWatchFrame) {
+        self.watch.push(WatchEvent::Frame(frame));
+    }
+
+    pub(super) fn fail_watch(&self, status: Status) {
+        self.watch.push(WatchEvent::Fail(status));
+    }
+
+    pub(super) fn live_watch_senders(&self) -> usize {
+        self.watch.live_count()
     }
 }
 
@@ -117,7 +213,7 @@ impl MachineRpc for DiscoveryService {
     type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
         &self,
@@ -183,6 +279,7 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         Ok(Response::new(
             RpcResponse::from(MachineList {
                 machines: self.machines.clone(),
@@ -196,6 +293,7 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         Err(Status::unimplemented("unused"))
     }
 
@@ -217,6 +315,7 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
@@ -322,9 +421,17 @@ impl MachineRpc for DiscoveryService {
 
     async fn runtime_watch(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
-        Err(Status::unimplemented("unused"))
+        self.watch_opens.fetch_add(1, Ordering::SeqCst);
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let watch_request = op::RuntimeWatch::from_request_body(decoded.body)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        self.watch_requests.lock().unwrap().push(watch_request);
+        Ok(Response::new(ReceiverStream::new(self.watch.subscribe())))
     }
 
     async fn list_images(
@@ -475,4 +582,40 @@ pub(super) async fn connected_client(
     .await
     .unwrap();
     (client, server, connects)
+}
+
+pub(super) fn native_addon() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.join("..");
+    let target = option_env!("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.join("target"));
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let names = ["libployz_sdk.so", "libployz_sdk.dylib", "ployz_sdk.dll"];
+    for name in names {
+        let path = target.join(profile).join(name);
+        if path.is_file() {
+            return path;
+        }
+    }
+    let status = Command::new("cargo")
+        .args(["build", "-p", "ployz-sdk", "--locked"])
+        .current_dir(&workspace)
+        .status()
+        .expect("cargo build -p ployz-sdk");
+    assert!(status.success(), "cargo build -p ployz-sdk failed");
+    for name in names {
+        let path = target.join(profile).join(name);
+        if path.is_file() {
+            return path;
+        }
+    }
+    panic!(
+        "ployz-sdk cdylib was not produced under {}",
+        target.join(profile).display()
+    );
 }

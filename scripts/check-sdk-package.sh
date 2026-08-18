@@ -74,7 +74,13 @@ if (!dts.includes("deploy(intent: DeployIntent): Promise<DeployOutcome<Execution
 if (!dts.includes("close(): Promise<void>")) {
   throw new Error("index.d.ts is missing close()");
 }
-for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watch("]) {
+if (!dts.includes("readonly runtime:")) {
+  throw new Error("index.d.ts is missing Client.runtime");
+}
+if (!dts.includes("watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>")) {
+  throw new Error("index.d.ts is missing runtime.watch()");
+}
+for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watchRuntime"]) {
   if (dts.includes(needle)) {
     throw new Error(`index.d.ts must not declare ${needle}`);
   }

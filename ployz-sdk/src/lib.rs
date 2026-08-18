@@ -1,8 +1,7 @@
 //! Napi package `@ployz/sdk`. Public payloads are generated from Rust.
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / about / deploy / close. Watch is a
-//! later ticket.
+//! The handwritten façade is connect / about / runtime.watch / deploy / close.
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -30,6 +29,12 @@ pub struct Client {
     inner: sdk::Session,
 }
 
+/// Native Watch stream. The package façade exposes this as `runtime.watch()`.
+#[napi]
+pub struct WatchStream {
+    inner: sdk::Watch,
+}
+
 #[napi]
 impl Client {
     /// Describe the entry Machine contract.
@@ -42,6 +47,18 @@ impl Client {
     pub async fn about(&self) -> Result<serde_json::Value> {
         let description = self.inner.about().await.map_err(rpc_to_napi)?;
         serde_json::to_value(&description).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Open a Runtime Watch stream of complete frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when Watch is not
+    /// advertised, the session is closed, or the stream cannot be opened.
+    #[napi]
+    pub async fn watch(&self) -> Result<WatchStream> {
+        let inner = self.inner.watch().await.map_err(rpc_to_napi)?;
+        Ok(WatchStream { inner })
     }
 
     /// Submit a Deploy Intent and resolve to a Deploy Outcome.
@@ -72,6 +89,32 @@ impl Client {
     #[napi]
     pub async fn close(&self) {
         self.inner.close().await;
+    }
+}
+
+#[napi]
+impl WatchStream {
+    /// Next complete `RuntimeWatchFrame`, or `null` when this stream ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the daemon, store, or
+    /// RPC fails.
+    #[napi]
+    pub async fn next(&self) -> Result<Option<serde_json::Value>> {
+        match self.inner.next().await {
+            Ok(Some(frame)) => serde_json::to_value(&frame)
+                .map(Some)
+                .map_err(|error| Error::from_reason(error.to_string())),
+            Ok(None) => Ok(None),
+            Err(error) => Err(rpc_to_napi(error)),
+        }
+    }
+
+    /// End this Watch stream. The Client stays usable.
+    #[napi]
+    pub fn cancel(&self) {
+        self.inner.cancel();
     }
 }
 

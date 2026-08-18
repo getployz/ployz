@@ -12,7 +12,7 @@ use ployz_core::{
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::DiscoveryService;
+use super::support::{DiscoveryService, native_addon};
 
 #[tokio::test]
 async fn connect_about_returns_contract_and_branches_on_capability_names() {
@@ -310,43 +310,6 @@ fn advertised_description() -> ContractDescription {
         .into(),
     }
 }
-
-fn native_addon() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest.join("..");
-    let target = option_env!("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace.join("target"));
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    let names = ["libployz_sdk.so", "libployz_sdk.dylib", "ployz_sdk.dll"];
-    for name in names {
-        let path = target.join(profile).join(name);
-        if path.is_file() {
-            return path;
-        }
-    }
-    let status = Command::new("cargo")
-        .args(["build", "-p", "ployz-sdk", "--locked"])
-        .current_dir(&workspace)
-        .status()
-        .expect("cargo build -p ployz-sdk");
-    assert!(status.success(), "cargo build -p ployz-sdk failed");
-    for name in names {
-        let path = target.join(profile).join(name);
-        if path.is_file() {
-            return path;
-        }
-    }
-    panic!(
-        "ployz-sdk cdylib was not produced under {}",
-        target.join(profile).display()
-    );
-}
-
 fn spec(name: &str) -> RequestedServiceSpec {
     serde_json::from_value(serde_json::json!({
         "name": name,

@@ -190,6 +190,17 @@ impl Client {
             .into_inner())
     }
 
+    pub(crate) async fn runtime_watch_stream(
+        &self,
+        request: OpaquePayload,
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
+        let mut rpc = self.machine_rpc();
+        Ok(rpc
+            .runtime_watch(tonic::Request::new(request))
+            .await?
+            .into_inner())
+    }
+
     async fn call_once<T: Rpc>(
         &self,
         payload: OpaquePayload,
