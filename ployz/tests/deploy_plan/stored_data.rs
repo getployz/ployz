@@ -143,6 +143,7 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
                 driver: "local".into(),
                 options: Default::default(),
             }],
+            ..Default::default()
         },
         PlanOptions::default(),
     )
@@ -168,6 +169,7 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
                 driver: "local".into(),
                 options: Default::default(),
             }],
+            ..Default::default()
         },
         PlanOptions::default(),
     )

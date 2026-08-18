@@ -5,28 +5,11 @@ use ployz::deploy::plan_deploy;
 use ployz_core::ServiceName;
 
 #[test]
-fn empty_apply_with_nonempty_target_produces_an_empty_plan() {
-    let web = spec("web");
-    let plan = plan_deploy(
-        &DeployIntent::new(
-            ProjectName::parse("app").unwrap(),
-            vec![web],
-            Vec::new(),
-            PlanOptions::default(),
-        ),
-        &snapshot(),
-    )
-    .unwrap();
-    assert!(plan.operations.is_empty());
-}
-
-#[test]
-fn apply_all_names_plans_every_service_in_dependency_order() {
+fn empty_selected_plans_every_target_service_in_dependency_order() {
     let (db, web, worker, dependencies) = web_db_worker();
-    let intent = DeployIntent::new(
+    let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
-        vec![db, web, worker],
-        vec![attempt("db"), attempt("web"), attempt("worker")],
+        [&db, &web, &worker],
         PlanOptions::default(),
     )
     .with_dependencies(dependencies);
@@ -41,8 +24,10 @@ fn apply_web_plans_web_and_db_not_worker() {
     let intent = DeployIntent::new(
         ProjectName::parse("app").unwrap(),
         vec![db, web, spec("worker")],
-        vec![attempt("web")],
-        PlanOptions::default(),
+        PlanOptions {
+            selected: vec![attempt("web")],
+            ..PlanOptions::default()
+        },
     )
     .with_dependencies(dependencies);
     let snapshot = DeploySnapshot {
@@ -86,8 +71,10 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
     let intent = DeployIntent::new(
         ProjectName::parse("app").unwrap(),
         vec![db, web],
-        vec![attempt("web")],
-        PlanOptions::default(),
+        PlanOptions {
+            selected: vec![attempt("web")],
+            ..PlanOptions::default()
+        },
     )
     .with_dependencies(dependencies);
     assert!(matches!(
@@ -316,6 +303,10 @@ fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
     )
     .unwrap();
     assert!(!targets_container(&plan, &container_id('d')));
+    assert_eq!(
+        plan.would_remove,
+        [ployz_core::QualifiedService::parse("shop/debug").unwrap()]
+    );
 }
 
 #[test]

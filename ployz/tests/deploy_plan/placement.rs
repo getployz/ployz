@@ -419,6 +419,7 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
                 driver: "local".into(),
                 options: Default::default(),
             }],
+            ..Default::default()
         },
         PlanOptions::default(),
     )

@@ -562,6 +562,7 @@ async fn deploy(
             .flat_map(|success| success.value)
             .collect(),
         volumes: Vec::new(),
+        ..Default::default()
     };
     let plan = ployz::deploy::plan_deploy(
         &ployz::deploy::DeployIntent::apply_all(

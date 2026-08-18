@@ -2,8 +2,8 @@ use std::{collections::BTreeSet, fmt};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    MachineName, MachineObservation, MachineTarget, ProjectName, ServiceObservation,
-    derive_services,
+    MachineFailure, MachineId, MachineName, MachineObservation, MachineTarget, ProjectName,
+    RpcError, ServiceObservation, derive_services,
 };
 use thiserror::Error;
 
@@ -19,13 +19,14 @@ mod render;
 pub(crate) use apply::{ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec};
 pub use exec::execute_plan;
 pub use pipeline::DeployError;
+pub(crate) use pipeline::{ReconciliationHints, plan_options};
 pub use planning::plan_deploy;
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
-    DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
-    ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,
-    OperationPhase, OperationRow, OperationStatus, PlanOptions, ReplacementCompensation,
-    ReplacementOperation, RestartAttempt, ServiceAttempt,
+    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
+    DeployWarning, ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction,
+    ObservationKind, OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
 };
 
 pub(crate) use progress::pending_rows;
@@ -44,6 +45,14 @@ pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
     pub containers: Vec<ContainerObservation>,
     pub volumes: Vec<ObservedDockerVolume>,
+    /// Target-specific Container listing failures from this observer's fan-out.
+    pub container_failures: Vec<MachineFailure<RpcError>>,
+    /// Required Container queries that produced no terminal response.
+    pub container_omissions: Vec<MachineId>,
+    /// Target-specific Docker Volume listing failures from this observer's fan-out.
+    pub volume_failures: Vec<MachineFailure<RpcError>>,
+    /// Required Docker Volume queries that produced no terminal response.
+    pub volume_omissions: Vec<MachineId>,
 }
 
 impl DeploySnapshot {
@@ -57,6 +66,36 @@ impl DeploySnapshot {
                 .cloned(),
         )
     }
+
+    /// Completeness relative to this Machine's current visible required fan-out.
+    ///
+    /// Required targets are Machines whose Membership Observation invites RPC.
+    /// A partition may hide a Machine entirely; that absence is not detected here.
+    #[must_use]
+    pub fn is_observer_complete(&self) -> bool {
+        let required = self
+            .machines
+            .iter()
+            .filter(|machine| machine.membership.invites_rpc())
+            .map(|machine| machine.machine.id)
+            .collect::<BTreeSet<_>>();
+        !affects_required(
+            &self.container_failures,
+            &self.container_omissions,
+            &required,
+        ) && !affects_required(&self.volume_failures, &self.volume_omissions, &required)
+    }
+}
+
+fn affects_required(
+    failures: &[MachineFailure<RpcError>],
+    omissions: &[MachineId],
+    required: &BTreeSet<MachineId>,
+) -> bool {
+    failures
+        .iter()
+        .any(|failure| required.contains(&failure.machine_id))
+        || omissions.iter().any(|machine| required.contains(machine))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,12 +108,20 @@ pub struct ObservedDockerVolume {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeployPlan {
     pub operations: Vec<DeployOperation>,
+    /// Visible Services in the Project that Compose no longer declares.
+    pub would_remove: Vec<ployz_core::QualifiedService>,
+    /// Why pruning will not run. `None` still does not remove; this command never prunes.
+    pub prune_refusal: Option<PruneRefusal>,
 }
 
 impl DeployPlan {
     #[must_use]
     pub fn new(operations: Vec<DeployOperation>) -> Self {
-        Self { operations }
+        Self {
+            operations,
+            would_remove: Vec::new(),
+            prune_refusal: None,
+        }
     }
 
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
@@ -325,15 +372,9 @@ pub fn plan_compose(
             project_name,
             &project.services,
             &project.dependencies,
-            project
-                .services
-                .values()
-                .map(|spec| ServiceAttempt {
-                    name: spec.name.clone(),
-                })
-                .collect(),
             PlanOptions::default(),
-        ),
+        )
+        .with_service_profiles(project.service_profiles()),
         snapshot,
     )
 }

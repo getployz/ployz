@@ -64,6 +64,7 @@ pub(super) fn convert_raw_project(
     let mut services = BTreeMap::new();
     let mut builds = BTreeMap::new();
     let mut dependencies = BTreeMap::new();
+    let mut service_profiles = BTreeMap::new();
     let mut warnings = Vec::new();
     for (service_name, service) in &raw.services {
         warnings.extend(classify(service_name, service));
@@ -82,6 +83,9 @@ pub(super) fn convert_raw_project(
             )));
         }
         dependencies.insert(service_name.clone(), service_dependencies);
+        if !service.profiles.is_empty() {
+            service_profiles.insert(service_name.clone(), service.profiles.clone());
+        }
         let (spec, build) =
             convert_service(&name, service_name, service, &raw, &working_dir, &images)?;
         if let Some(build) = build {
@@ -97,6 +101,7 @@ pub(super) fn convert_raw_project(
         builds,
         dependencies,
         warnings,
+        service_profiles,
         volumes: raw.volumes,
         secrets,
         environment,

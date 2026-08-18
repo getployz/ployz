@@ -35,6 +35,7 @@ pub struct ComposeProject {
     pub builds: BTreeMap<String, BuildSpec>,
     pub dependencies: BTreeMap<String, Vec<String>>,
     pub warnings: Vec<String>,
+    pub service_profiles: BTreeMap<String, Vec<String>>,
     pub(super) volumes: BTreeMap<String, RawVolume>,
     pub(super) secrets: BTreeMap<String, ProjectSecret>,
     pub(super) environment: BTreeMap<String, String>,
@@ -72,6 +73,9 @@ impl ComposeProject {
         let mut project = self.clone();
         project.services.retain(|name, _| included.contains(name));
         project.builds.retain(|name, _| included.contains(name));
+        project
+            .service_profiles
+            .retain(|name, _| included.contains(name));
         project.dependencies.retain(|name, dependencies| {
             if !included.contains(name) {
                 return false;
@@ -80,6 +84,35 @@ impl ComposeProject {
             true
         });
         Ok(project)
+    }
+
+    /// Compose `profiles:` per loaded Service. Empty means the Service always starts.
+    #[must_use]
+    pub fn service_profiles(&self) -> BTreeMap<ployz_core::ServiceName, Vec<String>> {
+        self.service_profiles
+            .iter()
+            .filter_map(|(name, profiles)| {
+                Some((ployz_core::ServiceName::parse(name).ok()?, profiles.clone()))
+            })
+            .collect()
+    }
+
+    /// Service keys that start for `requested_profiles`. Unprofiled Services always start.
+    #[must_use]
+    pub fn enabled_service_names(&self, requested_profiles: &[String]) -> Vec<String> {
+        self.services
+            .keys()
+            .filter(|name| {
+                ployz_core::profiles_enable_start(
+                    self.service_profiles
+                        .get(*name)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                    requested_profiles,
+                )
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -161,6 +194,8 @@ pub(super) struct RawService {
     pub gpus: Vec<RawDeviceRequest>,
     #[serde(default)]
     pub ulimits: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub profiles: Vec<String>,
     #[serde(rename = "x-machines")]
     pub machines: Option<RawStringList>,
     #[serde(rename = "x-ports")]

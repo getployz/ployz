@@ -23,9 +23,11 @@ use volumes::{
 /// Plan operations for the Services this Deploy applies from the target.
 ///
 /// Matching and replacement use only Containers owned by
-/// [`DeployIntent::project_name`]. Empty `apply` yields an empty plan. Names in
-/// `apply` expand through dependencies that are also in `target`. Other target
-/// Services are unchanged.
+/// [`DeployIntent::project_name`]. Empty `options.selected` is a full
+/// reconciliation of `target` (profile-enabled Services start). Non-empty
+/// `selected` is partial: those names expand through dependencies that are also
+/// in `target`. Other target Services are unchanged. Visible obsolete Services
+/// are listed as `would_remove` and are never removed by this planner.
 ///
 /// # Errors
 ///
@@ -35,15 +37,12 @@ pub fn plan_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
 ) -> Result<DeployPlan, PlanError> {
-    if intent.apply.is_empty() {
-        return Ok(DeployPlan::new(Vec::new()));
-    }
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let requested = specs_to_plan(intent)?
         .into_iter()
         .map(normalize)
         .collect::<Vec<_>>();
-    let options = intent.options;
+    let options = &intent.options;
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::default();
@@ -68,14 +67,49 @@ pub fn plan_deploy(
     }
     let mut operations = pins.into_creates();
     operations.extend(service_operations);
-    Ok(DeployPlan::new(operations))
+    let would_remove = obsolete_services(intent, &services);
+    let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
+    Ok(DeployPlan {
+        operations,
+        would_remove,
+        prune_refusal,
+    })
+}
+
+fn obsolete_services(
+    intent: &DeployIntent,
+    services: &[ServiceObservation],
+) -> Vec<QualifiedService> {
+    let declared = intent
+        .target
+        .iter()
+        .map(|spec| &spec.name)
+        .collect::<BTreeSet<_>>();
+    services
+        .iter()
+        .filter(|service| !declared.contains(&service.identity.name))
+        .map(|service| service.identity.clone())
+        .collect()
 }
 
 fn specs_to_plan(intent: &DeployIntent) -> Result<Vec<&RequestedServiceSpec>, PlanError> {
-    order_included(intent, &expand_apply(intent))
+    order_included(intent, &names_to_plan(intent))
 }
 
-fn expand_apply(intent: &DeployIntent) -> BTreeSet<&ServiceName> {
+fn names_to_plan(intent: &DeployIntent) -> BTreeSet<&ServiceName> {
+    if intent.options.selected.is_empty() {
+        intent
+            .target
+            .iter()
+            .filter(|spec| intent.service_starts(&spec.name))
+            .map(|spec| &spec.name)
+            .collect()
+    } else {
+        expand_selected(intent)
+    }
+}
+
+fn expand_selected(intent: &DeployIntent) -> BTreeSet<&ServiceName> {
     let present = intent
         .target
         .iter()
@@ -83,7 +117,8 @@ fn expand_apply(intent: &DeployIntent) -> BTreeSet<&ServiceName> {
         .collect::<BTreeSet<_>>();
     let mut included = BTreeSet::new();
     let mut pending = intent
-        .apply
+        .options
+        .selected
         .iter()
         .map(|attempt| &attempt.name)
         .filter(|name| present.contains(name))
@@ -171,7 +206,7 @@ fn plan_one_service(
     snapshot: &DeploySnapshot,
     services: &[ServiceObservation],
     pins: &mut VolumePins,
-    options: PlanOptions,
+    options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options)?;
     plan_volume_operations(requested, snapshot, pins, &mut machines)?;
@@ -225,7 +260,7 @@ fn service_error(name_errors_with_service: bool, service: &str, source: PlanErro
 fn eligible_machines<'a>(
     requested: &RequestedServiceSpec,
     snapshot: &'a DeploySnapshot,
-    options: PlanOptions,
+    options: &PlanOptions,
 ) -> Result<Vec<&'a MachineObservation>, PlanError> {
     let mut machines = snapshot
         .machines
@@ -377,7 +412,7 @@ fn plan_global(
     service_id: &ServiceId,
     current: &[ServiceContainer],
     machines: Vec<&MachineObservation>,
-    options: PlanOptions,
+    options: &PlanOptions,
 ) -> Vec<DeployOperation> {
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
@@ -450,7 +485,7 @@ fn plan_replicated(
     current: &[ServiceContainer],
     mut machines: Vec<&MachineObservation>,
     replicas: usize,
-    options: PlanOptions,
+    options: &PlanOptions,
 ) -> Vec<DeployOperation> {
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
     for container in current {
@@ -531,7 +566,7 @@ fn remove_unused(
 fn is_up_to_date(
     container: &ServiceContainer,
     requested: &RequestedServiceSpec,
-    options: PlanOptions,
+    options: &PlanOptions,
 ) -> bool {
     let observation = container.as_observation();
     !options.force_recreate

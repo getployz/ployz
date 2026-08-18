@@ -207,7 +207,7 @@ pub(super) fn prepare_shared_replicated_volumes(
     volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
-    options: PlanOptions,
+    options: &PlanOptions,
 ) -> Result<(), PlanError> {
     for component in shared_volume_components(volume_uses) {
         let machine_id = shared_component_anchor(&component, snapshot, pins, options)?;
@@ -220,7 +220,7 @@ fn shared_component_anchor(
     component: &SharedVolumeComponent<'_>,
     snapshot: &DeploySnapshot,
     pins: &VolumePins,
-    options: PlanOptions,
+    options: &PlanOptions,
 ) -> Result<MachineId, PlanError> {
     let services = component
         .volumes
@@ -272,7 +272,7 @@ fn volume_eligible_machine_ids(
     spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     pins: &VolumePins,
-    options: PlanOptions,
+    options: &PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
     let mut machines = super::eligible_machines(spec, snapshot, options)?;
     volume_constraints(spec, snapshot, pins, &mut machines)?;

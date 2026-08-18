@@ -123,6 +123,7 @@ function defaultPlanOptions() {
     force_recreate: false,
     skip_health_monitor: false,
     placement_seed: 0,
+    selected: [],
   };
 }
 
@@ -130,13 +131,20 @@ function applyAll(project_name, specs, options = defaultPlanOptions()) {
   return {
     project_name,
     target: specs,
-    apply: specs.map((spec) => ({ name: spec.name })),
     options,
   };
 }
 
-function applyOne(project_name, spec, options) {
-  return applyAll(project_name, [spec], options);
+function applyOne(project_name, spec, options = defaultPlanOptions()) {
+  return {
+    project_name,
+    target: [spec],
+    options: {
+      ...defaultPlanOptions(),
+      ...options,
+      selected: [{ name: spec.name }],
+    },
+  };
 }
 
 async function connect(options) {

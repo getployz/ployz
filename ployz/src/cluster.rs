@@ -42,12 +42,6 @@ pub struct MachineImagesObservation {
     pub images: MachineImages,
 }
 
-pub(crate) struct DeploySnapshotGather {
-    pub snapshot: DeploySnapshot,
-    pub containers: PartialResult<Vec<ContainerObservation>, RpcError>,
-    pub volumes: PartialResult<Vec<DockerVolume>, RpcError>,
-}
-
 impl Client {
     pub(crate) fn new(
         channel: Channel,
@@ -586,45 +580,52 @@ impl Client {
     }
 
     /// Gather an observer-relative Deploy Snapshot from the given Machines.
-    /// Container and volume fan-out failures stay in the returned Partial
-    /// Results; the snapshot keeps successful observations.
+    /// Target-specific Container and Docker Volume failures and omissions stay
+    /// on the snapshot so planning can derive observer-relative completeness.
     pub(crate) async fn deploy_snapshot(
         &mut self,
         machines: Vec<MachineObservation>,
-    ) -> Result<DeploySnapshotGather, ConnectError> {
+    ) -> Result<DeploySnapshot, ConnectError> {
         let containers = self.live_services_from(&machines).await?.containers;
         let volumes = self.list_volumes(&machines).await;
-        let snapshot = snapshot_from_partial(machines, &containers, &volumes);
-        Ok(DeploySnapshotGather {
-            snapshot,
-            containers,
-            volumes,
-        })
+        Ok(snapshot_from_partial(machines, containers, volumes))
     }
 }
 
 pub(crate) fn snapshot_from_partial(
     machines: Vec<MachineObservation>,
-    containers: &PartialResult<Vec<ContainerObservation>, RpcError>,
-    volumes: &PartialResult<Vec<DockerVolume>, RpcError>,
+    containers: PartialResult<Vec<ContainerObservation>, RpcError>,
+    volumes: PartialResult<Vec<DockerVolume>, RpcError>,
 ) -> DeploySnapshot {
+    let PartialResult {
+        successes: container_successes,
+        failures: container_failures,
+        omissions: container_omissions,
+    } = containers;
+    let PartialResult {
+        successes: volume_successes,
+        failures: volume_failures,
+        omissions: volume_omissions,
+    } = volumes;
     DeploySnapshot {
         machines,
-        containers: containers
-            .successes
-            .iter()
-            .flat_map(|success| success.value.iter().cloned())
+        containers: container_successes
+            .into_iter()
+            .flat_map(|success| success.value)
             .collect(),
-        volumes: volumes
-            .successes
-            .iter()
-            .flat_map(|success| success.value.iter().cloned())
+        volumes: volume_successes
+            .into_iter()
+            .flat_map(|success| success.value)
             .map(|volume| ObservedDockerVolume {
                 id: volume.id,
                 driver: volume.driver,
                 options: volume.options,
             })
             .collect(),
+        container_failures,
+        container_omissions,
+        volume_failures,
+        volume_omissions,
     }
 }
 

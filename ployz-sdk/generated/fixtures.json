@@ -96,10 +96,10 @@
     "type": "progress"
   },
   "deploy_intent": {
-    "apply": [],
     "options": {
       "force_recreate": false,
       "placement_seed": 0,
+      "selected": [],
       "skip_health_monitor": false
     },
     "project_name": "app",
@@ -200,7 +200,8 @@
       {
         "IngressHostname": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
       }
-    ]
+    ],
+    "would_remove": []
   },
   "deploy_preview_unknown_fields": {
     "future_note": "ok",
@@ -239,7 +240,8 @@
       {
         "IngressHostname": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
       }
-    ]
+    ],
+    "would_remove": []
   },
   "docker_volume": {
     "driver": "local",

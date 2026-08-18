@@ -59,11 +59,11 @@ async function expectRpc(fn, code) {
         container: { image: "nginx", pull_policy: "always" },
       },
     ],
-    apply: [{ name: "web" }],
     options: {
       force_recreate: false,
       skip_health_monitor: true,
       placement_seed: 0,
+      selected: [{ name: "web" }],
     },
   };
     const preview = await client.preview(intent);

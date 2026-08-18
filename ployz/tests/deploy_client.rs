@@ -388,13 +388,12 @@ async fn confirm_emits_all_pending_before_any_machine_rpc() {
 }
 
 #[tokio::test]
-async fn empty_apply_is_noop_and_confirm_succeeds_with_zero_operations() {
+async fn empty_target_is_noop_and_confirm_succeeds_with_zero_operations() {
     let machine = machine('a', "one");
     let (mut client, server) = connected(DeployService::new(machine)).await;
     let preview = client
         .preview(DeployIntent::new(
             ProjectName::parse("app").unwrap(),
-            vec![spec("web")],
             Vec::new(),
             skip_health(),
         ))

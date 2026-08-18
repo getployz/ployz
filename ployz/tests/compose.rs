@@ -985,6 +985,31 @@ services:
 }
 
 #[test]
+fn loaded_compose_keeps_profiles_and_enabled_names_without_dropping_services() {
+    let project = parse_normalized(
+        r#"
+name: demo
+services:
+  web: {image: nginx}
+  worker: {image: busybox, profiles: [tools]}
+"#,
+        ".",
+    )
+    .unwrap();
+    assert_eq!(
+        project.service_profiles.get("worker"),
+        Some(&vec!["tools".to_string()])
+    );
+    assert_eq!(project.enabled_service_names(&[]), vec!["web".to_string()]);
+    assert_eq!(
+        project.enabled_service_names(&["tools".into()]),
+        vec!["web".to_string(), "worker".to_string()]
+    );
+    let selected = project.select_services(&["web".into()]).unwrap();
+    assert!(selected.service_profiles.is_empty());
+}
+
+#[test]
 fn compose_plan_anchors_shared_replicated_volumes_and_rejects_mixed_modes() {
     let replicated = parse_normalized(
         r#"

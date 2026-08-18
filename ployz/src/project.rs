@@ -20,6 +20,14 @@ pub enum ProjectNameSource {
     Default,
 }
 
+impl ProjectNameSource {
+    /// Directory basename sources, not an explicit Project name.
+    #[must_use]
+    pub fn is_directory_guess(self) -> bool {
+        matches!(self, Self::ComposeProjectDirectory | Self::CurrentDirectory)
+    }
+}
+
 impl fmt::Display for ProjectNameSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -381,6 +389,15 @@ mod tests {
             "current directory"
         );
         assert_eq!(ProjectNameSource::Default.to_string(), "default");
+    }
+
+    #[test]
+    fn directory_sources_are_guesses() {
+        assert!(ProjectNameSource::ComposeProjectDirectory.is_directory_guess());
+        assert!(ProjectNameSource::CurrentDirectory.is_directory_guess());
+        assert!(!ProjectNameSource::CommandLine.is_directory_guess());
+        assert!(!ProjectNameSource::ComposeName.is_directory_guess());
+        assert!(!ProjectNameSource::Default.is_directory_guess());
     }
 
     #[test]

@@ -18,7 +18,7 @@ use ployz_core::{
     MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachinePath,
     MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
     ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
-    Placement, PlanOptions, PortPublication, PreDeployHook, ProjectName, PullPolicy,
+    Placement, PlanOptions, PortPublication, PreDeployHook, ProjectName, PruneRefusal, PullPolicy,
     RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError,
     RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
@@ -291,6 +291,15 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             vec![
                 to_value(&ObservationKind::Container),
                 to_value(&ObservationKind::Volume),
+            ],
+        ),
+        (
+            "PruneRefusal",
+            vec![
+                to_value(&PruneRefusal::IncompleteSnapshot),
+                to_value(&PruneRefusal::SelectedServices),
+                to_value(&PruneRefusal::FilteredProfiles),
+                to_value(&PruneRefusal::GuessedProjectName),
             ],
         ),
         (
@@ -601,7 +610,6 @@ fn service_attempt() -> ServiceAttempt {
 fn deploy_intent() -> DeployIntent {
     DeployIntent::new(
         ProjectName::parse("app").unwrap(),
-        Vec::new(),
         Vec::new(),
         PlanOptions::default(),
     )

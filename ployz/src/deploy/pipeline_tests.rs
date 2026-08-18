@@ -293,7 +293,11 @@ fn observation_warnings_keep_failures_and_omissions_distinct() {
     };
 
     assert_eq!(
-        observation_warnings(ObservationKind::Container, &result),
+        observation_warnings(
+            ObservationKind::Container,
+            &result.failures,
+            &result.omissions,
+        ),
         [
             DeployWarning::ObservationFailed {
                 kind: ObservationKind::Container,

@@ -30,10 +30,10 @@ pub fn progress_text(event: &DeployEvent, title: &str) -> String {
     }
 }
 
-/// Tree plan plus footer. Empty operations are "No changes."
+/// Tree plan plus footer. Empty operations with no listed drift are "No changes."
 #[must_use]
 pub fn plan_text(preview: &DeployPreview, context: &str, project_source: Option<&str>) -> String {
-    if preview.noop() {
+    if preview.noop() && preview.would_remove.is_empty() && preview.prune_refusal.is_none() {
         return "No changes.\n".into();
     }
     let mut out = String::from("Deployment plan\n");
@@ -47,9 +47,30 @@ pub fn plan_text(preview: &DeployPreview, context: &str, project_source: Option<
         }
     }
     out.push_str(&service_trees(preview));
-    out.push_str("──────────────────────────────────────────\n");
-    out.push_str(&plan_footer(preview));
-    out.push('\n');
+    if !preview.operations.is_empty() {
+        out.push_str("──────────────────────────────────────────\n");
+        out.push_str(&plan_footer(preview));
+        out.push('\n');
+    }
+    out.push_str(&prune_lines(preview));
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn prune_lines(preview: &DeployPreview) -> String {
+    let mut out = String::new();
+    for service in &preview.would_remove {
+        let _ = writeln!(out, "  would remove {service}");
+    }
+    if let Some(reason) = preview.prune_refusal {
+        let _ = writeln!(out, "{reason}");
+    } else if !preview.would_remove.is_empty() {
+        out.push_str(
+            "Ployz will not remove them in this command. Listed drift is from this Machine's current view, not Cluster completeness.\n",
+        );
+    }
     out
 }
 
@@ -439,8 +460,8 @@ fn operation_label(operation: &DeployOperation) -> String {
 mod tests {
     use ployz_core::{
         ContainerId, DeployOperation, MachineId, MachineName, OperationRow, OperationStatus,
-        ProjectName, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ServiceName,
-        UpdateOrder,
+        ProjectName, PruneRefusal, QualifiedService, ReplacementOperation, RequestedServiceSpec,
+        ResolvedServiceSpec, ServiceName, UpdateOrder,
     };
 
     use super::*;
@@ -482,6 +503,31 @@ mod tests {
             text.contains("  ╰── +/- replace container excalidraw/fde7ac7f11ad on machine-dc3c\n")
         );
         assert!(text.contains("1 replace (start-first) · across 1 machine\n"));
+    }
+
+    #[test]
+    fn plan_lists_would_remove_with_observer_relative_refusal() {
+        let mut preview =
+            DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
+        preview.would_remove = vec![QualifiedService::parse("shop/debug").unwrap()];
+        preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
+        let text = plan_text(&preview, "default", Some("top-level Compose name"));
+        assert!(
+            text.contains("project: shop (top-level Compose name)"),
+            "{text}"
+        );
+        assert!(text.contains("would remove shop/debug"), "{text}");
+        assert!(
+            text.contains("incomplete relative to this Machine's current visible fan-out"),
+            "{text}"
+        );
+        assert!(
+            !text.to_ascii_lowercase().contains("cluster completeness")
+                || text.contains("not Cluster completeness"),
+            "{text}"
+        );
+        assert!(!text.contains("authoritative"));
+        assert!(!text.contains("No changes."));
     }
 
     #[test]

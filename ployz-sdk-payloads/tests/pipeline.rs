@@ -164,7 +164,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     let intent: DeployIntent = decode_fixture(fixture(&fixtures, "deploy_intent"));
     assert_eq!(intent.project_name.as_str(), "app");
     assert!(intent.target.is_empty());
-    assert!(intent.apply.is_empty());
+    assert!(intent.options.selected.is_empty());
     assert_eq!(intent.options, PlanOptions::default());
     assert!(intent.dependencies().is_empty());
     assert_eq!(
@@ -411,6 +411,10 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("elapsed_ms: number"));
     assert!(dts.contains("deadline_ms: number"));
     assert!(dts.contains("warnings: DeployWarning[]"));
+    assert!(dts.contains("would_remove: QualifiedService[]"));
+    assert!(dts.contains("prune_refusal?: PruneRefusal"));
+    assert!(dts.contains("export type PruneRefusal ="));
+    assert!(dts.contains("selected: ServiceAttempt[]"));
     assert!(dts.contains("export type DeployOperation ="));
     assert!(dts.contains("type: \"run_container\""));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));

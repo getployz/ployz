@@ -163,8 +163,8 @@ exit 1
                     && !line.contains("--no-normalize")
             })
             .count(),
-        1,
-        "bare logs must request disabled-profile services"
+        3,
+        "deploy and bare logs must request disabled-profile services"
     );
     assert!(
         calls

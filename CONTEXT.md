@@ -61,7 +61,7 @@ The unresolved Service ID, Qualified Service (`project/name`), or Service Name u
 _Avoid_: Service Name as identity
 
 **Service Attempt**:
-One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists.
+One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists. An empty selected list on Plan Options is full reconciliation; a non-empty list is partial. There is no independent prune flag.
 _Avoid_: selected-service list as a prune flag
 
 **Service Container**:
@@ -117,12 +117,16 @@ A bounded command attempt that calculates and executes work against an observer-
 _Avoid_: Deployment resource, reconciliation loop
 
 **Deploy Intent**:
-The complete desired Services for one Deploy together with which of those Services this command applies. Services in the target that are not applied are unchanged.
+The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target. Services in the target that are not applied are unchanged.
 _Avoid_: leftover filtered Compose project, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
 **Deploy Snapshot**:
-The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy. It is Live Observation for a bounded command, not Cluster truth.
-_Avoid_: current cluster state, desired state, cluster snapshot
+The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy, including target-specific Container and Docker Volume failures and omissions. Completeness is relative to the entry Machine's current visible required fan-out, not Cluster truth.
+_Avoid_: current cluster state, desired state, cluster snapshot, authoritative Cluster completeness
+
+**Prune Refusal**:
+Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. This command never prunes.
+_Avoid_: prune flag, Cluster-complete snapshot
 
 **Deploy Plan**:
 The ephemeral sequence of operations calculated for one Deploy. It may complete only a prefix and is neither persisted nor generally rolled back.

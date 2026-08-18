@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    MachineId, MachineObservation, PartialResult, PortPublication, ProjectName,
+    MachineFailure, MachineId, MachineObservation, PortPublication, ProjectName,
     RequestedServiceSpec, RpcError, ServiceMode, ServiceSelector, select_service,
 };
 use thiserror::Error;
@@ -25,10 +25,16 @@ use crate::{
 };
 
 use super::{
-    DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot, DeployWarning,
-    ExecutionError, ObservationKind, PlanError, PlanOptions, ServiceAttempt,
+    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot,
+    DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
     exec::execute_operation_sequence, pending_rows, plan_deploy,
 };
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ReconciliationHints {
+    pub requested_profiles: Vec<String>,
+    pub compose_refusal: Option<ComposePruneRefusal>,
+}
 
 /// Snapshot, planning, or ingress-expansion failure before a Deploy executes.
 ///
@@ -152,9 +158,9 @@ pub(super) async fn plan_project(
     client: &mut Client,
     project: &mut ComposeProject,
     machines: Vec<MachineObservation>,
-    apply: Vec<ServiceAttempt>,
     options: PlanOptions,
     project_name: &ProjectName,
+    hints: ReconciliationHints,
 ) -> Result<DeployPreview, Failure> {
     project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
@@ -163,9 +169,11 @@ pub(super) async fn plan_project(
         project_name.clone(),
         &project.services,
         &project.dependencies,
-        apply,
         options,
-    );
+    )
+    .with_service_profiles(project.service_profiles())
+    .with_requested_profiles(hints.requested_profiles)
+    .with_compose_refusal(hints.compose_refusal);
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
@@ -201,11 +209,13 @@ async fn prepare_intent(
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
     let plan = plan_deploy(intent, &snapshot)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    Ok(DeployPreview::new(
-        pending_rows(&plan.operations, &snapshot),
+    Ok(DeployPreview {
+        project_name: intent.project_name.clone(),
+        operations: pending_rows(&plan.operations, &snapshot),
         warnings,
-        intent.project_name.clone(),
-    ))
+        would_remove: plan.would_remove,
+        prune_refusal: plan.prune_refusal,
+    })
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
@@ -215,6 +225,7 @@ pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> P
         placement_seed: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos() as u64),
+        ..PlanOptions::default()
     }
 }
 
@@ -264,21 +275,26 @@ async fn gather_snapshot(
     client: &mut Client,
     machines: Vec<MachineObservation>,
 ) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
-    let gathered = client.deploy_snapshot(machines).await?;
-    let mut warnings = observation_warnings(ObservationKind::Container, &gathered.containers);
+    let snapshot = client.deploy_snapshot(machines).await?;
+    let mut warnings = observation_warnings(
+        ObservationKind::Container,
+        &snapshot.container_failures,
+        &snapshot.container_omissions,
+    );
     warnings.extend(observation_warnings(
         ObservationKind::Volume,
-        &gathered.volumes,
+        &snapshot.volume_failures,
+        &snapshot.volume_omissions,
     ));
-    Ok((gathered.snapshot, warnings))
+    Ok((snapshot, warnings))
 }
 
-fn observation_warnings<T>(
+fn observation_warnings(
     kind: ObservationKind,
-    result: &PartialResult<T, RpcError>,
+    failures: &[MachineFailure<RpcError>],
+    omissions: &[MachineId],
 ) -> Vec<DeployWarning> {
-    result
-        .failures
+    failures
         .iter()
         .map(|failure| DeployWarning::ObservationFailed {
             kind,
@@ -286,8 +302,7 @@ fn observation_warnings<T>(
             message: failure.error.message.clone(),
         })
         .chain(
-            result
-                .omissions
+            omissions
                 .iter()
                 .map(|machine| DeployWarning::ObservationOmitted {
                     kind,

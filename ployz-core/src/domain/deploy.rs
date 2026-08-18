@@ -11,11 +11,17 @@ use super::{
     ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
     ServiceVolume,
 };
-use crate::{ContainerId, MachineId, MachineName, ProjectName, RpcError, ServiceName};
+use crate::{
+    ContainerId, MachineId, MachineName, ProjectName, QualifiedService, RpcError, ServiceName,
+};
 use thiserror::Error;
 
 /// Planner knobs for one Deploy.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+///
+/// `selected` is the Service list this command applies. Empty means full
+/// reconciliation of `DeployIntent.target`. Non-empty means partial. There is
+/// no independent prune flag.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlanOptions {
     /// Recreate containers even when the resolved spec matches.
     pub force_recreate: bool,
@@ -23,6 +29,9 @@ pub struct PlanOptions {
     pub skip_health_monitor: bool,
     /// Caller-supplied entropy keeps the planner pure while varying equal-priority placement.
     pub placement_seed: u64,
+    /// Service Names this command applies. Empty means full reconciliation.
+    #[serde(default)]
+    pub selected: Vec<ServiceAttempt>,
 }
 
 /// One Service Name this Deploy will apply from the target.
@@ -39,73 +48,71 @@ pub struct DeployIntent {
     pub project_name: ProjectName,
     /// Complete desired Services for this Cluster.
     pub target: Vec<RequestedServiceSpec>,
-    /// Service Attempts this command applies. Empty means apply nothing.
-    pub apply: Vec<ServiceAttempt>,
-    /// Planner knobs for this Deploy.
+    /// Planner knobs for this Deploy, including the selected Service list.
     pub options: PlanOptions,
     // ponytail: planner graph, not wire. Split if Cloud ever sends depends_on.
     #[serde(default, skip)]
     dependencies: BTreeMap<ServiceName, Vec<ServiceName>>,
+    #[serde(default, skip)]
+    service_profiles: BTreeMap<ServiceName, Vec<String>>,
+    #[serde(default, skip)]
+    requested_profiles: Vec<String>,
+    #[serde(default, skip)]
+    compose_refusal: Option<ComposePruneRefusal>,
 }
 
 impl DeployIntent {
-    /// Complete desired Services, the Service Attempts this command applies, and planning options.
+    /// Complete desired Services and planning options.
     ///
-    /// Empty `apply` means apply nothing. Names in `apply` that are absent from
-    /// `target` are not planned; they are not a prune.
+    /// Empty `options.selected` means full reconciliation of `target`. Names in
+    /// `selected` that are absent from `target` are not planned; they are not a
+    /// prune.
     #[must_use]
     pub fn new(
         project_name: ProjectName,
         target: Vec<RequestedServiceSpec>,
-        apply: Vec<ServiceAttempt>,
         options: PlanOptions,
     ) -> Self {
         Self {
             project_name,
             target,
-            apply,
             options,
             dependencies: BTreeMap::new(),
+            service_profiles: BTreeMap::new(),
+            requested_profiles: Vec::new(),
+            compose_refusal: None,
         }
     }
 
-    /// Target and apply set from every spec, in that order.
+    /// Full reconciliation of every spec: `target` is those specs and `selected` stays empty.
     #[must_use]
     pub fn apply_all<'a>(
         project_name: ProjectName,
         specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
         options: PlanOptions,
     ) -> Self {
-        let target: Vec<_> = specs.into_iter().cloned().collect();
-        let apply = target
-            .iter()
-            .map(|spec| ServiceAttempt {
-                name: spec.name.clone(),
-            })
-            .collect();
-        Self::new(project_name, target, apply, options)
+        Self::new(project_name, specs.into_iter().cloned().collect(), options)
     }
 
-    /// One-spec target with apply set to that name.
+    /// One-spec target; `selected` is that name, so the Deploy is partial.
     #[must_use]
     pub fn apply_one(
         project_name: ProjectName,
         spec: RequestedServiceSpec,
-        options: PlanOptions,
+        mut options: PlanOptions,
     ) -> Self {
-        let apply = vec![ServiceAttempt {
+        options.selected = vec![ServiceAttempt {
             name: spec.name.clone(),
         }];
-        Self::new(project_name, vec![spec], apply, options)
+        Self::new(project_name, vec![spec], options)
     }
 
-    /// Target from every loaded spec; `apply` is this command's Service Attempts.
+    /// Target from every loaded spec; `options.selected` is this command's Service list.
     #[must_use]
     pub fn from_named_specs(
         project_name: ProjectName,
         services: &BTreeMap<String, RequestedServiceSpec>,
         dependencies: &BTreeMap<String, Vec<String>>,
-        apply: Vec<ServiceAttempt>,
         options: PlanOptions,
     ) -> Self {
         let dependencies = dependencies
@@ -119,16 +126,11 @@ impl DeployIntent {
                 ))
             })
             .collect();
-        Self::new(
-            project_name,
-            services.values().cloned().collect(),
-            apply,
-            options,
-        )
-        .with_dependencies(dependencies)
+        Self::new(project_name, services.values().cloned().collect(), options)
+            .with_dependencies(dependencies)
     }
 
-    /// `depends_on` edges used to expand and order `apply` inside the planner.
+    /// `depends_on` edges used to expand and order `selected` inside the planner.
     #[must_use]
     pub fn with_dependencies(
         mut self,
@@ -138,11 +140,68 @@ impl DeployIntent {
         self
     }
 
-    /// Planner `depends_on` edges used to expand and order `apply`.
+    /// Compose `profiles:` per Service Name in `target`.
+    #[must_use]
+    pub fn with_service_profiles(
+        mut self,
+        service_profiles: BTreeMap<ServiceName, Vec<String>>,
+    ) -> Self {
+        self.service_profiles = service_profiles;
+        self
+    }
+
+    /// Profiles requested for this command. They decide what starts, not what exists.
+    #[must_use]
+    pub fn with_requested_profiles(mut self, requested_profiles: Vec<String>) -> Self {
+        self.requested_profiles = requested_profiles;
+        self
+    }
+
+    /// Compose-side reason pruning is refused, if any.
+    #[must_use]
+    pub fn with_compose_refusal(mut self, compose_refusal: Option<ComposePruneRefusal>) -> Self {
+        self.compose_refusal = compose_refusal;
+        self
+    }
+
+    /// Planner `depends_on` edges used to expand and order `selected`.
     #[must_use]
     pub fn dependencies(&self) -> &BTreeMap<ServiceName, Vec<ServiceName>> {
         &self.dependencies
     }
+
+    /// Whether `name` starts given the requested profile list.
+    #[must_use]
+    pub fn service_starts(&self, name: &ServiceName) -> bool {
+        profiles_enable_start(
+            self.service_profiles
+                .get(name)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            &self.requested_profiles,
+        )
+    }
+
+    /// Why pruning is refused for this Intent and Snapshot completeness.
+    #[must_use]
+    pub fn prune_refusal(&self, snapshot_complete: bool) -> Option<PruneRefusal> {
+        if !snapshot_complete {
+            Some(PruneRefusal::IncompleteSnapshot)
+        } else if !self.options.selected.is_empty() {
+            Some(PruneRefusal::SelectedServices)
+        } else {
+            self.compose_refusal.map(PruneRefusal::from)
+        }
+    }
+}
+
+/// Unprofiled Services always start; otherwise any requested profile match starts them.
+#[must_use]
+pub fn profiles_enable_start(service_profiles: &[String], requested_profiles: &[String]) -> bool {
+    service_profiles.is_empty()
+        || service_profiles
+            .iter()
+            .any(|profile| requested_profiles.contains(profile))
 }
 
 /// Evidence from executing a Deploy Plan: every operation completed, or the
@@ -267,6 +326,63 @@ pub struct DeployPreview {
     pub operations: Vec<OperationRow>,
     /// Observer-relative warnings for this snapshot, including ingress DNS misses.
     pub warnings: Vec<DeployWarning>,
+    /// Visible Services in the Project that Compose no longer declares.
+    #[serde(default)]
+    pub would_remove: Vec<QualifiedService>,
+    /// Why pruning will not run. `None` still does not remove; this command never prunes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune_refusal: Option<PruneRefusal>,
+}
+
+/// Why a loaded Compose Project is incomplete for reconciliation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComposePruneRefusal {
+    /// Profiled Services were removed before planning.
+    FilteredProfiles,
+    /// The Project name was guessed from a directory while a non-default Compose file was named explicitly.
+    GuessedProjectName,
+}
+
+impl From<ComposePruneRefusal> for PruneRefusal {
+    fn from(reason: ComposePruneRefusal) -> Self {
+        match reason {
+            ComposePruneRefusal::FilteredProfiles => Self::FilteredProfiles,
+            ComposePruneRefusal::GuessedProjectName => Self::GuessedProjectName,
+        }
+    }
+}
+
+/// Why a full reconciliation must not remove visible drift.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PruneRefusal {
+    /// Required Container or Docker Volume evidence is missing from this Machine's visible fan-out.
+    IncompleteSnapshot,
+    /// The command named specific Services, so it is not a full reconciliation.
+    SelectedServices,
+    /// Profiled Services were removed before planning.
+    FilteredProfiles,
+    /// The Project name was guessed from a directory while a non-default Compose file was named explicitly.
+    GuessedProjectName,
+}
+
+impl Display for PruneRefusal {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IncompleteSnapshot => f.write_str(
+                "Pruning is disabled because the Deploy Snapshot is incomplete relative to this Machine's current visible fan-out; required Container or Docker Volume evidence is missing. This is not Cluster completeness.",
+            ),
+            Self::SelectedServices => f.write_str(
+                "Pruning is disabled because this command named specific Services, so it is not a full reconciliation.",
+            ),
+            Self::FilteredProfiles => f.write_str(
+                "Pruning is disabled because profiled Services were removed before planning, so the loaded Compose Project is incomplete for reconciliation.",
+            ),
+            Self::GuessedProjectName => f.write_str(
+                "Pruning is disabled because the Project name was guessed from a directory while a non-default Compose file was named explicitly.",
+            ),
+        }
+    }
 }
 
 impl DeployPreview {
@@ -281,6 +397,8 @@ impl DeployPreview {
             project_name,
             operations,
             warnings,
+            would_remove: Vec::new(),
+            prune_refusal: None,
         }
     }
 

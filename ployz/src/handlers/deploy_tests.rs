@@ -220,3 +220,36 @@ fn run_placement_rejects_star_and_keeps_all_as_identity() {
         "all"
     );
 }
+
+#[test]
+fn deploy_loads_every_profile_and_leaves_named_services_for_the_planner() {
+    let named = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy", "web"])
+        .unwrap();
+    let load = deploy_load(super::leaf_matches(&named));
+    assert!(load.all_profiles);
+    assert_eq!(
+        string_values(super::leaf_matches(&named), "service"),
+        ["web"]
+    );
+
+    let full = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy"])
+        .unwrap();
+    let load = deploy_load(super::leaf_matches(&full));
+    assert!(load.all_profiles);
+    assert!(string_values(super::leaf_matches(&full), "service").is_empty());
+
+    let explicit = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy", "--file", "prod.yaml"])
+        .unwrap();
+    assert!(has_explicit_nondefault_compose_file(&deploy_load(
+        super::leaf_matches(&explicit)
+    )));
+    let default_name = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy", "--file", "compose.yaml"])
+        .unwrap();
+    assert!(!has_explicit_nondefault_compose_file(&deploy_load(
+        super::leaf_matches(&default_name)
+    )));
+}

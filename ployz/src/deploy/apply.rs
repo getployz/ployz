@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{DeployEvent, ProjectName, RequestedServiceSpec, ServiceSelector};
+use ployz_core::{DeployEvent, PlanOptions, ProjectName, RequestedServiceSpec, ServiceSelector};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -14,10 +14,10 @@ use crate::{
 };
 
 use super::{
-    DeployOutcome, DeployPreview, ExecutionError, ServiceAttempt,
+    DeployOutcome, DeployPreview, ExecutionError,
     pipeline::{
-        PushOutcome, list_machines, plan_options, plan_project, plan_scale, plan_spec,
-        push_project_images,
+        PushOutcome, ReconciliationHints, list_machines, plan_options, plan_project, plan_scale,
+        plan_spec, push_project_images,
     },
     render,
 };
@@ -83,12 +83,10 @@ pub(crate) async fn deploy_project(
     client: &mut Client,
     project: &mut ComposeProject,
     builds: &[BuildService],
-    apply: Vec<ServiceAttempt>,
-    force_recreate: bool,
-    skip_health_monitor: bool,
+    options: PlanOptions,
+    hints: ReconciliationHints,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
-    let options = plan_options(force_recreate, skip_health_monitor);
     let machines = list_machines(client).await?;
     let outcome = push_project_images(client, builds, &machines).await?;
     print_pushed_images(&outcome);
@@ -102,9 +100,9 @@ pub(crate) async fn deploy_project(
         client,
         project,
         machines,
-        apply,
         options,
         &gate.project.name,
+        hints,
     )
     .await?;
     print_warnings(&preview);

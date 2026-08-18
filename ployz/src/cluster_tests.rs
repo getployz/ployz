@@ -50,7 +50,7 @@ fn remove_tolerates_a_missing_preliminary_stop_target() {
 }
 
 #[test]
-fn deploy_snapshot_keeps_successful_observations_and_drops_failures() {
+fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     let machines = vec![machine('a'), machine('b')];
     let container = observation('1', 'a');
     let volume = docker_volume('a', "data");
@@ -76,7 +76,11 @@ fn deploy_snapshot_keeps_successful_observations_and_drops_failures() {
         }],
         omissions: Vec::new(),
     };
-    let snapshot = snapshot_from_partial(machines.clone(), &containers, &volumes);
+    let expected_container_failures = containers.failures.clone();
+    let expected_container_omissions = containers.omissions.clone();
+    let expected_volume_failures = volumes.failures.clone();
+    let expected_volume_omissions = volumes.omissions.clone();
+    let snapshot = snapshot_from_partial(machines.clone(), containers, volumes);
 
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
@@ -88,6 +92,11 @@ fn deploy_snapshot_keeps_successful_observations_and_drops_failures() {
             options: volume.options,
         }]
     );
+    assert_eq!(snapshot.container_failures, expected_container_failures);
+    assert_eq!(snapshot.container_omissions, expected_container_omissions);
+    assert_eq!(snapshot.volume_failures, expected_volume_failures);
+    assert_eq!(snapshot.volume_omissions, expected_volume_omissions);
+    assert!(!snapshot.is_observer_complete());
 }
 
 fn machine(hex: char) -> MachineObservation {

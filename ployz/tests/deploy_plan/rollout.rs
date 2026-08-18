@@ -399,6 +399,7 @@ fn multi_replica_named_volume_replacement_defaults_to_start_first() {
                 driver: "local".into(),
                 options: Default::default(),
             }],
+            ..Default::default()
         },
         PlanOptions::default(),
     )
