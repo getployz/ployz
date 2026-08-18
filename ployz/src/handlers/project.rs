@@ -6,7 +6,7 @@ use crate::{
     project::refuse_reserved,
 };
 
-use super::{Error, leaf_matches, required, with_client};
+use super::{Error, data_loss, leaf_matches, required, string_values, with_client};
 
 pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
@@ -46,12 +46,19 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         VolumeFate::Preserve
     };
     let yes = matches.get_flag("yes");
+    let named = string_values(matches, "data-loss");
     let context = matches
         .get_one::<String>("context")
         .cloned()
         .unwrap_or_else(|| "default".into());
     with_client(root, move |client| {
-        Box::pin(async move { remove_project(client, &name, volumes, yes, &context).await })
+        Box::pin(async move {
+            let observed = client
+                .data_loss_if_project_destroyed(&name, volumes)
+                .await?;
+            let confirmation = data_loss::collect_data_loss_confirmation(&observed, &named)?;
+            remove_project(client, &name, volumes, yes, &context, &confirmation).await
+        })
     })
 }
 

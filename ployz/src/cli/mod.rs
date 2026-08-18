@@ -364,7 +364,13 @@ fn project() -> Command {
                     "Also remove this Project's visible managed volumes after the plan identifies each one",
                 ))
                 .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-                .arg(positional("project", true)),
+                .arg(positional("project", true))
+                .arg(
+                    Arg::new("data-loss")
+                        .help("Data Loss names to confirm when --volumes is set")
+                        .num_args(0..)
+                        .action(ArgAction::Append),
+                ),
         )
 }
 
@@ -641,6 +647,30 @@ mod tests {
         );
         assert!(rm.get_flag("volumes"));
         assert!(rm.get_flag("yes"));
+        let named = super::command()
+            .try_get_matches_from([
+                "ployz",
+                "project",
+                "rm",
+                "shop",
+                "--volumes",
+                "shop_data",
+                "shop_logs",
+                "--yes",
+            ])
+            .unwrap();
+        let rm = named
+            .subcommand_matches("project")
+            .unwrap()
+            .subcommand_matches("rm")
+            .unwrap();
+        assert_eq!(
+            rm.get_many::<String>("data-loss")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["shop_data", "shop_logs"]
+        );
         assert!(
             super::command()
                 .try_get_matches_from(["ployz", "project", "rm", "shop", "-v"])

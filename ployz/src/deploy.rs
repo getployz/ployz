@@ -22,7 +22,7 @@ pub(crate) use apply::{
 pub use exec::execute_plan;
 pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
-pub use planning::{VolumeFate, plan_deploy, plan_project_removal};
+pub use planning::{VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal};
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
     ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,

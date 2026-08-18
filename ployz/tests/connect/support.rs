@@ -16,9 +16,9 @@ use ployz::{
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerCreated, ContainerId, ContractDescription, DockerVolume,
-    DockerVolumeId, DockerVolumeName, LocalMachineRemoved, Machine, MachineId, MachineList,
-    MachineName, MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer,
+    AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
+    DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachineRemoved, Machine, MachineId,
+    MachineList, MachineName, MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer,
     ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RemoveMachineRequest,
     RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
     VolumeList, VolumeRemoved, WireGuardPublicKey, op,
@@ -133,6 +133,8 @@ pub(super) struct DiscoveryService {
     watch: Arc<WatchHub>,
     pub(super) machines: Vec<MachineObservation>,
     pub(super) listed_volumes: Arc<Mutex<BTreeMap<MachineId, Vec<DockerVolume>>>>,
+    pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
+    pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
@@ -150,6 +152,8 @@ impl DiscoveryService {
             watch: Arc::new(WatchHub::new()),
             machines: vec![machine('a', "one")],
             listed_volumes: Arc::new(Mutex::new(BTreeMap::new())),
+            listed_containers: Arc::new(Mutex::new(Vec::new())),
+            removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
@@ -303,7 +307,13 @@ impl MachineRpc for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
-        Err(Status::unimplemented("unused"))
+        Ok(Response::new(
+            RpcResponse::from(ContainerList {
+                containers: self.listed_containers.lock().unwrap().clone(),
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn create_volume(
@@ -410,6 +420,10 @@ impl MachineRpc for DiscoveryService {
                 details: Value::Null,
             })
         } else {
+            self.removed_volumes.lock().unwrap().push(DockerVolumeId {
+                machine_id,
+                name: remove.name.clone(),
+            });
             RpcResponse::from(VolumeRemoved {})
         };
         Ok(Response::new(response.encode().unwrap()))

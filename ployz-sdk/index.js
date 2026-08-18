@@ -42,6 +42,14 @@ class Client {
     return this._inner.removeMachine(machine, confirmDataLoss);
   }
 
+  dataLossIfProjectDestroyed(projectName, destroyVolumes = false) {
+    return this._inner.dataLossIfProjectDestroyed(projectName, destroyVolumes);
+  }
+
+  destroyProject(projectName, confirmDataLoss, destroyVolumes = false) {
+    return this._inner.destroyProject(projectName, confirmDataLoss, destroyVolumes);
+  }
+
   close() {
     return this._inner.close();
   }

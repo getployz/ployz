@@ -527,6 +527,14 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("removeMachine("));
     assert!(dts.contains("confirmDataLoss: DataLoss[]"));
     assert!(dts.contains("Promise<LocalMachineRemoved>"));
+    assert!(
+        dts.contains(
+            "dataLossIfProjectDestroyed(\n    project_name: ProjectName,\n    destroy_volumes?: boolean,\n  ): Promise<ObservedDataLoss>"
+        )
+    );
+    assert!(dts.contains("destroyProject("));
+    assert!(dts.contains("Promise<DeployOutcome<ExecutionError>>"));
+    assert!(!dts.contains("destroyProject(\n    project_name: ProjectName,\n  )"));
     assert!(!dts.contains("confirmAll"));
     assert!(!dts.contains("removeMachine(machine: MachineTarget):"));
     assert!(dts.contains("close(): Promise<void>"));

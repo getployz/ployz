@@ -1,9 +1,9 @@
 use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
-    AmbiguousDataLossName, CodecError, ContainerSelectorError, IngressLabelTooLong,
+    AmbiguousDataLossName, CodecError, ContainerSelectorError, DataLoss, IngressLabelTooLong,
     MachineSelectorError, MachineUpdateError, RpcError, ServiceSelectorError, StreamProtocolError,
-    ValueError,
+    UnconfirmedDataLoss, ValueError,
 };
 
 use crate::{
@@ -65,6 +65,24 @@ impl Failure {
     /// One product line for a follow-on failure. `terminate` prints it once.
     pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
         Self::usage(format!("WARNING: {context}: {cause}."))
+    }
+}
+
+pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
+    format!(
+        "Data Loss is not covered by the confirmation; pass the names as arguments: {}",
+        missing
+            .iter()
+            .map(DataLoss::name)
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
+pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
+    match UnconfirmedDataLoss::from_rpc_error(&error) {
+        Some(unconfirmed) => Failure::usage(pass_data_loss_names_message(&unconfirmed.missing)),
+        None => error.into(),
     }
 }
 

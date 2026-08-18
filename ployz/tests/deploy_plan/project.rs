@@ -1,6 +1,6 @@
 use super::support::*;
-use ployz::deploy::{VolumeFate, plan_project_removal};
-use ployz_core::{PruneRefusal, QualifiedService};
+use ployz::deploy::{VolumeFate, data_loss_from_plan, plan_project_removal};
+use ployz_core::{DataLoss, PruneRefusal, QualifiedService};
 
 fn project() -> ProjectName {
     ProjectName::parse("app").unwrap()
@@ -185,6 +185,43 @@ fn planner_does_not_refuse_reserved_names() {
     assert_eq!(plan.prune_refusal, None);
     assert!(plan.would_remove.is_empty());
     assert!(plan.operations.is_empty());
+}
+
+#[test]
+fn preserving_volumes_is_empty_data_loss() {
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        volumes: vec![owned_volume(machine_id('1'), "data")],
+        ..Default::default()
+    };
+    assert_eq!(
+        data_loss_from_plan(
+            &plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap()
+        )
+        .data_loss,
+        Vec::<DataLoss>::new()
+    );
+}
+
+#[test]
+fn destroying_volumes_names_owned_docker_volumes_only() {
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        volumes: vec![
+            owned_volume(machine_id('1'), "data"),
+            observed_volume(machine_id('1'), "orphan"),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        data_loss_from_plan(
+            &plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap()
+        )
+        .data_loss,
+        [DataLoss::DockerVolume(
+            owned_volume(machine_id('1'), "data").id
+        )]
+    );
 }
 
 #[test]

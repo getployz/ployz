@@ -3,7 +3,7 @@
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / about / runtime.watch / preview / run /
 //! previewProjectRemoval / remove_volumes / dataLossIfMachineRemoved /
-//! removeMachine / close.
+//! removeMachine / dataLossIfProjectDestroyed / destroyProject / close.
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
@@ -111,11 +111,7 @@ impl Client {
                 details: serde_json::Value::Null,
             })
         })?;
-        let volumes = if destroy_volumes {
-            ployz::deploy::VolumeFate::Destroy
-        } else {
-            ployz::deploy::VolumeFate::Preserve
-        };
+        let volumes = volume_fate(destroy_volumes);
         let inner = self
             .inner
             .preview_project_removal(project_name, volumes)
@@ -197,6 +193,67 @@ impl Client {
             .await
             .map_err(rpc_to_napi)?;
         serde_json::to_value(&removed).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Live Observation of Data Loss that destroying `project_name` would cause.
+    ///
+    /// `destroy_volumes` false is empty. Mutates nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `project_name` is not
+    /// a Project Name, the Project is reserved, the session is closed, snapshot
+    /// gathering fails, or destroying volumes is requested against a known
+    /// incomplete snapshot.
+    #[napi]
+    pub async fn data_loss_if_project_destroyed(
+        &self,
+        project_name: String,
+        destroy_volumes: bool,
+    ) -> Result<serde_json::Value> {
+        let observed = self
+            .inner
+            .data_loss_if_project_destroyed(&project_name, volume_fate(destroy_volumes))
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Destroy `project_name` after a named Data Loss confirmation.
+    ///
+    /// `confirm_data_loss` must name Data Loss identities, not a boolean and
+    /// not an ObservedDataLoss read. Extra names are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
+    /// is not a Data Loss list, the session is closed, the Project cannot be
+    /// destroyed, or the confirmation does not cover the fresh Data Loss.
+    #[napi]
+    pub async fn destroy_project(
+        &self,
+        project_name: String,
+        confirm_data_loss: serde_json::Value,
+        destroy_volumes: bool,
+    ) -> Result<serde_json::Value> {
+        let confirm_data_loss: Vec<DataLoss> =
+            serde_json::from_value(confirm_data_loss).map_err(|error| {
+                rpc_to_napi(RpcError {
+                    code: RpcErrorCode::InvalidArgument,
+                    message: error.to_string(),
+                    details: serde_json::Value::Null,
+                })
+            })?;
+        let outcome = self
+            .inner
+            .destroy_project(
+                &project_name,
+                &confirm_data_loss,
+                volume_fate(destroy_volumes),
+            )
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&outcome).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
@@ -304,6 +361,14 @@ pub async fn connect(options: ConnectOptions) -> Result<Client> {
         .await
         .map_err(rpc_to_napi)?;
     Ok(Client { inner })
+}
+
+fn volume_fate(destroy_volumes: bool) -> ployz::deploy::VolumeFate {
+    if destroy_volumes {
+        ployz::deploy::VolumeFate::Destroy
+    } else {
+        ployz::deploy::VolumeFate::Preserve
+    }
 }
 
 fn parse_intent(intent: serde_json::Value) -> Result<DeployIntent> {

@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRuntimeObservation, HookContainer, HostBind,
-    IngressHost, MachineId, MachineObservation, MembershipObservation, PortPublication,
-    ProjectName, QualifiedService, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph,
-    SpecChange, UpdateOrder, VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners,
-    machine_matches_target, same_service_mode_kind,
+    ContainerAction, ContainerId, ContainerRuntimeObservation, DataLoss, HookContainer, HostBind,
+    IngressHost, MachineId, MachineObservation, MembershipObservation, ObservedDataLoss,
+    PortPublication, ProjectName, QualifiedService, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource, compare_specs,
+    explicit_ingress_hosts, hostname_owners, machine_matches_target, same_service_mode_kind,
 };
 
 use super::{
@@ -56,6 +56,28 @@ pub fn plan_project_removal(
         );
     }
     Ok(plan)
+}
+
+/// Data Loss implied by a Project-removal plan.
+///
+/// Preserve plans are empty. Destroy names each `RemoveVolume`. Completeness is
+/// the caller's check; this listing is not a Cluster view.
+#[must_use]
+pub fn data_loss_from_plan(plan: &DeployPlan) -> ObservedDataLoss {
+    ObservedDataLoss {
+        data_loss: plan
+            .operations
+            .iter()
+            .filter_map(remove_volume_loss)
+            .collect(),
+    }
+}
+
+fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
+    let DeployOperation::RemoveVolume { id } = operation else {
+        return None;
+    };
+    Some(DataLoss::DockerVolume(id.clone()))
 }
 
 /// Plan operations for the Services this Deploy applies from the target.

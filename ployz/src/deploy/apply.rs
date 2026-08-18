@@ -3,7 +3,9 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{DeployEvent, PlanOptions, ProjectName, RequestedServiceSpec, ServiceSelector};
+use ployz_core::{
+    DataLoss, DeployEvent, PlanOptions, ProjectName, RequestedServiceSpec, ServiceSelector,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -166,18 +168,15 @@ pub(crate) async fn remove_project(
     volumes: VolumeFate,
     auto_confirm: bool,
     context: &str,
+    confirm_data_loss: &[DataLoss],
 ) -> Result<(), Failure> {
-    let preview = client.preview_project_removal(name, volumes).await?;
+    let preview = client
+        .prepare_project_destroy(name, confirm_data_loss, volumes)
+        .await
+        .map_err(crate::failure::refusal_from_rpc)?;
     print_warnings(&preview);
-    if let Some(reason) = preview.prune_refusal {
-        print!("{}", render::removal_plan_text(&preview, context));
-        return Err(Failure::usage(reason.to_string()));
-    }
-    if project_not_found(&preview) {
-        return Err(Failure::usage(format!("Project '{name}' was not found")));
-    }
     print!("{}", render::removal_plan_text(&preview, context));
-    if preview.operations.is_empty() {
+    if preview.noop() {
         return Ok(());
     }
     if !auto_confirm && !confirm(&render::confirm_removal_prompt(name, context))? {
@@ -192,13 +191,6 @@ pub(crate) async fn remove_project(
         )
         .await,
     )
-}
-
-fn project_not_found(preview: &DeployPreview) -> bool {
-    preview.prune_refusal.is_none()
-        && preview.operations.is_empty()
-        && preview.preserved_volumes.is_empty()
-        && preview.would_remove.is_empty()
 }
 
 async fn stream_confirm(
@@ -323,6 +315,7 @@ fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::pipeline::project_not_found;
     use super::*;
     use crate::deploy::DeployWarning;
     use crate::dns::ingress_dns_warnings;

@@ -46,7 +46,8 @@ pub fn artifacts() -> Artifacts {
 ///
 /// Façade declarations (`connect` / `about` / `preview` /
 /// `previewProjectRemoval` / `run` / `removeVolumes` /
-/// `dataLossIfMachineRemoved` / `removeMachine` / `close`) live in handwritten
+/// `dataLossIfMachineRemoved` / `removeMachine` /
+/// `dataLossIfProjectDestroyed` / `destroyProject` / `close`) live in handwritten
 /// `index.d.ts` and are not emitted here.
 ///
 /// # Errors

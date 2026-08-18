@@ -1,6 +1,6 @@
 //! Relay-only Cloud session: connect, about, runtime.watch, preview, run,
-//! preview_project_removal, remove_volumes, Data Loss for Machine removal,
-//! remove_machine, and close.
+//! preview_project_removal, remove_volumes, Data Loss for Machine and Project
+//! destroy, remove_machine, destroy_project, and close.
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
-use crate::deploy::{DeployError, DeployIntent, DeployPreview, VolumeFate};
+use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
     ContractDescription, DataLoss, DeployEvent, DeployOutcome, DescribeContractRequest,
     DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
@@ -153,7 +153,7 @@ impl Session {
     /// gathering fails, ingress expansion fails, or planning fails.
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
-        let preview = client.preview(intent).await.map_err(deploy_error)?;
+        let preview = client.preview(intent).await?;
         Ok(PreparedDeploy {
             preview,
             client,
@@ -176,8 +176,7 @@ impl Session {
         let mut client = self.client().await?;
         let preview = client
             .preview_project_removal(&project_name, volumes)
-            .await
-            .map_err(deploy_error)?;
+            .await?;
         Ok(PreparedDeploy {
             preview,
             client,
@@ -270,6 +269,62 @@ impl Session {
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client().await?;
         client.remove_machine(&target, confirm_data_loss).await
+    }
+
+    /// Live Observation of Data Loss that destroying `project` would cause.
+    ///
+    /// [`VolumeFate::Preserve`] yields an empty list. Mutates nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `project`
+    /// is not a Project Name or is reserved, snapshot gathering fails, or
+    /// destroying volumes is requested against a known incomplete snapshot.
+    pub async fn data_loss_if_project_destroyed(
+        &self,
+        project: &str,
+        volumes: VolumeFate,
+    ) -> Result<ObservedDataLoss, RpcError> {
+        let project_name =
+            ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client().await?;
+        client
+            .data_loss_if_project_destroyed(&project_name, volumes)
+            .await
+    }
+
+    /// Destroy `project` after a named Data Loss confirmation.
+    ///
+    /// `confirm_data_loss` is the identities the caller showed a human. Extra
+    /// names are ignored, so one confirmation can cover several Projects.
+    /// Re-reads Data Loss at execute time. [`VolumeFate::Preserve`] is the
+    /// non-destructive default.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `project`
+    /// is not a Project Name or is reserved, the Project is not visible, the
+    /// snapshot is incomplete, or the confirmation does not cover the fresh
+    /// Data Loss. Unconfirmed names are in `UnconfirmedDataLoss` details.
+    /// Execution failure is a [`DeployOutcome::Failed`].
+    pub async fn destroy_project(
+        &self,
+        project: &str,
+        confirm_data_loss: &[DataLoss],
+        volumes: VolumeFate,
+    ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
+        let project_name =
+            ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client().await?;
+        client
+            .destroy_project(
+                &project_name,
+                confirm_data_loss,
+                volumes,
+                &self.inner.cancel,
+                None,
+            )
+            .await
     }
 
     /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
@@ -420,15 +475,6 @@ fn closed() -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: "client is closed".into(),
         details: Value::Null,
-    }
-}
-
-fn deploy_error(error: DeployError) -> RpcError {
-    match error {
-        DeployError::Connect(error) => error.into(),
-        DeployError::Plan(error) => invalid_argument(error.to_string()),
-        DeployError::Ingress(error) => invalid_argument(error.to_string()),
-        DeployError::Project(error) => invalid_argument(error.to_string()),
     }
 }
 

@@ -81,5 +81,14 @@ export declare class Client {
     machine: MachineTarget,
     confirmDataLoss: DataLoss[],
   ): Promise<LocalMachineRemoved>;
+  dataLossIfProjectDestroyed(
+    project_name: ProjectName,
+    destroy_volumes?: boolean,
+  ): Promise<ObservedDataLoss>;
+  destroyProject(
+    project_name: ProjectName,
+    confirmDataLoss: DataLoss[],
+    destroy_volumes?: boolean,
+  ): Promise<DeployOutcome<ExecutionError>>;
   close(): Promise<void>;
 };
