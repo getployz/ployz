@@ -530,6 +530,40 @@ impl ReplicatedStore {
             .collect())
     }
 
+    /// Return decoded certificate rows and typed incomplete Ingress Hostnames.
+    ///
+    /// An incomplete row is listed in `incomplete_ids`; it is not a deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns if rows cannot be read or decoded.
+    pub async fn certificate_rows(
+        &self,
+    ) -> Result<ReplicatedObservations<(IngressHost, CertificateRow), IngressHost>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT hostname, body FROM certificates ORDER BY hostname",
+                [],
+            ))
+            .await?;
+        let mut observations = Vec::new();
+        let mut incomplete_ids = Vec::new();
+        for [hostname, encoded] in query.rows(["hostname", "body"])? {
+            let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
+            let encoded = text(&encoded, "certificate body")?;
+            if is_incomplete_document(encoded) {
+                incomplete_ids.push(hostname);
+            } else {
+                observations.push((hostname, CertificateRow::decode(encoded)?));
+            }
+        }
+        Ok(ReplicatedObservations {
+            observations,
+            incomplete_ids,
+        })
+    }
+
     pub async fn certificate_state(&self) -> Result<BTreeMap<IngressHost, CertificateRow>, Error> {
         let query = self
             .api
@@ -762,8 +796,12 @@ pub async fn run_machine_publisher(
     }
 }
 
+fn is_incomplete_document(encoded: &str) -> bool {
+    encoded.is_empty() || encoded == "{}"
+}
+
 fn decode_json_document<T: DeserializeOwned>(encoded: &str) -> Result<Option<T>, Error> {
-    if encoded.is_empty() || encoded == "{}" {
+    if is_incomplete_document(encoded) {
         Ok(None)
     } else {
         Ok(Some(serde_json::from_str(encoded)?))

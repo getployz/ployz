@@ -14,6 +14,7 @@ use serde_json::json;
 use super::ReplicatedStore;
 use crate::corrosion::ApiClient;
 use crate::machine::{LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore};
+use crate::runtime_watch::RuntimeWatchSnapshot;
 
 #[tokio::test]
 async fn catch_up_waits_for_removal_and_rechecks_phase() {
@@ -114,6 +115,16 @@ async fn volume_store_is_an_error_when_the_store_is_unreachable() {
     assert!(store.publish_volume(&volume).await.is_err());
     assert!(store.volume(&id).await.is_err());
     assert!(store.volumes().await.is_err());
+}
+
+#[tokio::test]
+async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let store = ReplicatedStore::new(ApiClient::new(address, &"a".repeat(64)).unwrap());
+    assert!(store.certificate_rows().await.is_err());
+    assert!(RuntimeWatchSnapshot::from_store(&store).await.is_err());
 }
 
 #[tokio::test]
