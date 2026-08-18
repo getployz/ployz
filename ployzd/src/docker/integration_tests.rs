@@ -22,7 +22,7 @@ use bollard::{
 use futures_util::TryStreamExt;
 use ployz_core::{
     AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, MachineGateway, MachineName,
-    PullPolicy, ResolvedServiceSpec,
+    ProjectName, PullPolicy, ResolvedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -56,6 +56,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
             &machine_id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
+            &ProjectName::parse("app").unwrap(),
             &spec,
         )
         .await
@@ -66,6 +67,12 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .unwrap();
     assert_eq!(inspected.resolved_spec, spec);
     assert_eq!(inspected.kind, ContainerKind::ServiceContainer);
+    assert_eq!(inspected.project_name.as_str(), "app");
+    assert_eq!(inspected.service_name.as_str(), "default-api");
+    assert_eq!(
+        inspected.labels.get(LABEL_PROJECT_NAME).map(String::as_str),
+        Some("app")
+    );
     assert_eq!(
         specs.get(&created.container_id).await.unwrap(),
         Some(spec.clone())
@@ -121,6 +128,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
             &machine_id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
+            &ProjectName::parse("app").unwrap(),
             &spec,
         )
         .await
@@ -252,6 +260,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
             &machine_id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
+            &ProjectName::parse("app").unwrap(),
             &spec,
         )
         .await
@@ -310,6 +319,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
                 &machine_id,
                 TEST_GATEWAY,
                 ContainerKind::ServiceContainer,
+                &ProjectName::parse("app").unwrap(),
                 &failed_spec,
             )
             .await
@@ -472,6 +482,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
             &machine_id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
+            &ProjectName::parse("app").unwrap(),
             &spec,
         )
         .await
@@ -709,6 +720,10 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         .unwrap();
     assert_eq!(service_observation.kind, ContainerKind::ServiceContainer);
     assert_eq!(hook_observation.kind, ContainerKind::PreDeployHook);
+    assert_eq!(service_observation.project_name.as_str(), "app");
+    assert_eq!(hook_observation.project_name.as_str(), "app");
+    assert_eq!(service_observation.service_name.as_str(), "api");
+    assert_eq!(hook_observation.service_name.as_str(), "api");
     assert_eq!(
         service_observation.runtime,
         ContainerRuntimeObservation::Created
@@ -856,6 +871,7 @@ async fn create_managed_container(
 ) -> ContainerId {
     let mut labels = HashMap::from([
         (LABEL_MANAGED.to_owned(), String::new()),
+        (LABEL_PROJECT_NAME.to_owned(), "app".to_owned()),
         (LABEL_SERVICE_ID.to_owned(), service_id.to_string()),
         (LABEL_SERVICE_NAME.to_owned(), service_name.to_string()),
     ]);
@@ -917,6 +933,7 @@ fn fixture_observation(
         display_name: format!("{service_name}-stale"),
         created_at_unix_nanos: 0,
         machine_id,
+        project_name: ProjectName::parse("app").unwrap(),
         service_id,
         service_name: service_name.clone(),
         kind: ContainerKind::ServiceContainer,

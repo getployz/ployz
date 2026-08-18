@@ -37,6 +37,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
             &requested,
             force_recreate,
             skip_health_monitor,
+            &project.name,
             Some(&project),
         )
         .await

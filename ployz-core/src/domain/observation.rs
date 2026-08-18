@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 use super::spec::{HealthcheckSpec, ResolvedServiceSpec};
-use crate::{ContainerAddress, ContainerId, MachineId, ServiceId, ServiceName};
+use crate::{ContainerAddress, ContainerId, MachineId, ProjectName, ServiceId, ServiceName};
 
 crate::value::open_string_enum!(HealthObservation, Unrecognized {
     NotConfigured => "not_configured",
@@ -130,6 +130,7 @@ pub struct ContainerObservation {
     #[serde(default)]
     pub created_at_unix_nanos: i64,
     pub machine_id: MachineId,
+    pub project_name: ProjectName,
     pub service_id: ServiceId,
     pub service_name: ServiceName,
     pub kind: ContainerKind,
@@ -345,7 +346,7 @@ mod tests {
         Container, ContainerKind, ContainerObservation, ContainerRoleError,
         ContainerRuntimeObservation, HealthObservation, HookContainer, ServiceContainer,
     };
-    use crate::{ContainerId, MachineId, ResolvedServiceSpec, ServiceId, ServiceName};
+    use crate::{ContainerId, MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName};
 
     #[test]
     fn is_healthy_is_running_with_healthy_or_not_configured() {
@@ -473,6 +474,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mixed_container_observation_keeps_project_and_service_name_on_the_wire() {
+        let service = observation(ContainerKind::ServiceContainer);
+        let json = serde_json::to_value(&service).unwrap();
+
+        assert_eq!(json.get("project_name"), Some(&json!("app")));
+        assert_eq!(json.get("service_name"), Some(&json!("api")));
+        assert_eq!(
+            serde_json::from_value::<ContainerObservation>(json).unwrap(),
+            service
+        );
+    }
+
+    #[test]
+    fn mixed_container_observation_rejects_missing_project_name() {
+        let mut json = serde_json::to_value(observation(ContainerKind::ServiceContainer)).unwrap();
+        json.as_object_mut()
+            .expect("observation serializes as an object")
+            .remove("project_name");
+        assert!(serde_json::from_value::<ContainerObservation>(json).is_err());
+    }
+
     fn start_service(container: &ServiceContainer) -> ContainerId {
         container.as_observation().container_id
     }
@@ -511,6 +534,7 @@ mod tests {
             display_name: format!("api-{id}"),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
+            project_name: ProjectName::parse("app").unwrap(),
             service_id,
             service_name,
             kind,

@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{PlanOptions, RequestedServiceSpec, ServiceSelector};
+use ployz_core::{PlanOptions, ProjectName, RequestedServiceSpec, ServiceSelector};
 
 use crate::{
     compose::{BuildService, ComposeProject},
@@ -27,24 +27,34 @@ pub(crate) async fn deploy_spec(
     requested: &RequestedServiceSpec,
     force_recreate: bool,
     skip_health_monitor: bool,
-    project: Option<&ResolvedProject>,
+    project_name: &ProjectName,
+    header: Option<&ResolvedProject>,
 ) -> Result<(), Failure> {
     let preview = plan_spec(
         client,
         requested,
         plan_options(force_recreate, skip_health_monitor),
+        project_name,
     )
     .await?;
     print_warnings(&preview);
-    render(&preview.operations, client.connection(), project);
-    finish(execute_deploy(client, &preview.operations).await)
+    render(&preview.operations, client.connection(), header);
+    finish(execute_deploy(client, &preview.operations, project_name).await)
 }
 
 pub(crate) async fn apply_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
 ) -> Result<(), Failure> {
-    deploy_spec(client, requested, false, false, None).await
+    deploy_spec(
+        client,
+        requested,
+        false,
+        false,
+        &ProjectName::system(),
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn deploy_project(
@@ -65,7 +75,7 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    let preview = plan_project(client, project, machines, apply, options).await?;
+    let preview = plan_project(client, project, machines, apply, options, &resolved.name).await?;
     print_warnings(&preview);
     if preview.operations.is_empty() {
         render(&[], client.connection(), Some(resolved));
@@ -73,7 +83,7 @@ pub(crate) async fn deploy_project(
         return Ok(());
     }
     // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
-    confirm_and_execute(client, &preview.operations, auto_confirm, Some(resolved)).await
+    confirm_and_execute(client, &preview.operations, auto_confirm, resolved).await
 }
 
 pub(crate) async fn deploy_scale(
@@ -89,6 +99,7 @@ pub(crate) async fn deploy_scale(
         selector,
         replicas,
         plan_options(false, skip_health_monitor),
+        &project.name,
     )
     .await?;
     print_warnings(&preview);
@@ -97,21 +108,21 @@ pub(crate) async fn deploy_scale(
         println!("No changes.");
         return Ok(());
     }
-    confirm_and_execute(client, &preview.operations, auto_confirm, Some(project)).await
+    confirm_and_execute(client, &preview.operations, auto_confirm, project).await
 }
 
 async fn confirm_and_execute(
     client: &mut Client,
     operations: &[DeployOperation],
     auto_confirm: bool,
-    project: Option<&ResolvedProject>,
+    project: &ResolvedProject,
 ) -> Result<(), Failure> {
-    render(operations, client.connection(), project);
+    render(operations, client.connection(), Some(project));
     if !auto_confirm && !confirm()? {
         println!("Cancelled. No changes were made.");
         return Ok(());
     }
-    finish(execute_deploy(client, operations).await)
+    finish(execute_deploy(client, operations, &project.name).await)
 }
 
 fn print_pushed_images(outcome: &PushOutcome) {

@@ -416,6 +416,7 @@ mod tests {
             display_name: name.into(),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(machine.to_string().repeat(32)).unwrap(),
+            project_name: ployz_core::ProjectName::parse("app").unwrap(),
             service_id,
             service_name: service_name.clone(),
             kind: ployz_core::ContainerKind::ServiceContainer,

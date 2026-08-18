@@ -4,9 +4,9 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContainerSelector, ContainerSelectorError, FanoutSelector,
     Machine, MachineId, MachineName, MachineRuntime, MachineSelectorError, MachineTarget,
-    ManagementAddress, NameMatches, Placement, ServiceId, ServiceName, ServiceSelector,
-    ServiceSelectorError, WireGuardPublicKey, derive_services, resolve_container_selector,
-    resolve_machine_selectors,
+    ManagementAddress, NameMatches, Placement, ProjectName, ServiceId, ServiceName,
+    ServiceSelector, ServiceSelectorError, WireGuardPublicKey, derive_services,
+    resolve_container_selector, resolve_machine_selectors,
 };
 use serde_json::json;
 
@@ -309,6 +309,7 @@ fn container(
         display_name: display_name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
+        project_name: ProjectName::parse("app").unwrap(),
         service_id,
         service_name,
         kind,

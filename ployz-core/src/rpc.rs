@@ -12,8 +12,8 @@ use thiserror::Error;
 use crate::{
     AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
     DockerVolume, LocalMachinePhase, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, PublicIpDiscovery,
-    ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
+    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
+    PublicIpDiscovery, ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -265,6 +265,7 @@ pub struct InspectContainerRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CreateContainerRequest {
     pub kind: ContainerKind,
+    pub project_name: ProjectName,
     pub resolved_spec: ResolvedServiceSpec,
 }
 

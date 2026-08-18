@@ -14,7 +14,7 @@ use ployz_core::{
     FailedOperation, HealthFailure, HealthObservation, HookContainer, HookFailure, IngressHost,
     LocalMachineRemoved, Machine, MachineAction, MachineFailure, MachineId, MachineName,
     MachineObservation, MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation,
-    ObservationKind, ObservedDataLoss, PROTOCOL_MAJOR, PartialResult, PlanOptions,
+    ObservationKind, ObservedDataLoss, PROTOCOL_MAJOR, PartialResult, PlanOptions, ProjectName,
     RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
     RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
     RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
@@ -426,7 +426,12 @@ fn service_attempt() -> ServiceAttempt {
 }
 
 fn deploy_intent() -> DeployIntent {
-    DeployIntent::new(Vec::new(), Vec::new(), PlanOptions::default())
+    DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
+        Vec::new(),
+        Vec::new(),
+        PlanOptions::default(),
+    )
 }
 
 fn deploy_preview() -> DeployPreview {
@@ -632,6 +637,7 @@ fn container_observation() -> ContainerObservation {
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: machine_id(MACHINE_ID_HEX),
+        project_name: ProjectName::parse("app").unwrap(),
         service_id: service_id(),
         service_name: ServiceName::parse("api").expect("fixture Service Name is valid"),
         kind: ContainerKind::ServiceContainer,

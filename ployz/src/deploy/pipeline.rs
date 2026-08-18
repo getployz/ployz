@@ -10,8 +10,8 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    MachineId, MachineObservation, PartialResult, PortPublication, RequestedServiceSpec, RpcError,
-    ServiceMode, ServiceSelector, select_service,
+    MachineId, MachineObservation, PartialResult, PortPublication, ProjectName,
+    RequestedServiceSpec, RpcError, ServiceMode, ServiceSelector, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -82,7 +82,7 @@ impl Client {
         let snapshot = self.deploy_snapshot(machines).await?.snapshot;
         expand_ingress(self, intent.target.iter_mut()).await?;
         let plan = plan_deploy(&intent, &snapshot)?;
-        Ok(execute_deploy(self, &plan.operations).await)
+        Ok(execute_deploy(self, &plan.operations, &intent.project_name).await)
     }
 }
 
@@ -108,10 +108,11 @@ pub(super) async fn plan_spec(
     client: &mut Client,
     requested: &RequestedServiceSpec,
     options: PlanOptions,
+    project_name: &ProjectName,
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    let mut intent = DeployIntent::apply_one(requested.clone(), options);
+    let mut intent = DeployIntent::apply_one(project_name.clone(), requested.clone(), options);
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
@@ -140,12 +141,18 @@ pub(super) async fn plan_project(
     machines: Vec<MachineObservation>,
     apply: Vec<ServiceAttempt>,
     options: PlanOptions,
+    project_name: &ProjectName,
 ) -> Result<DeployPreview, Failure> {
     project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     super::reject_missing_external_volumes(project, &snapshot)?;
-    let mut intent =
-        DeployIntent::from_named_specs(&project.services, &project.dependencies, apply, options);
+    let mut intent = DeployIntent::from_named_specs(
+        project_name.clone(),
+        &project.services,
+        &project.dependencies,
+        apply,
+        options,
+    );
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
@@ -154,6 +161,7 @@ pub(super) async fn plan_scale(
     selector: &ServiceSelector,
     replicas: NonZeroU32,
     options: PlanOptions,
+    project_name: &ProjectName,
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
@@ -163,7 +171,7 @@ pub(super) async fn plan_scale(
             warnings,
         });
     };
-    let mut intent = DeployIntent::apply_one(requested, options);
+    let mut intent = DeployIntent::apply_one(project_name.clone(), requested, options);
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
@@ -186,8 +194,9 @@ async fn prepare_intent(
 pub(super) async fn execute_deploy(
     client: &mut Client,
     operations: &[DeployOperation],
+    project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operations(operations, client, &CancellationToken::new()).await
+    execute_operations(operations, client, &CancellationToken::new(), project_name).await
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {

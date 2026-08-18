@@ -6,7 +6,7 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
-    MembershipObservation, WireGuardPublicKey,
+    MembershipObservation, ProjectName, WireGuardPublicKey,
 };
 
 pub(super) fn plan_compose(
@@ -15,7 +15,7 @@ pub(super) fn plan_compose(
 ) -> Result<DeployPlan, PlanError> {
     let mut resolved = project.clone();
     resolved.resolve_secrets().expect("resolve secrets");
-    ployz::deploy::plan_compose(&resolved, snapshot)
+    ployz::deploy::plan_compose(&resolved, snapshot, ProjectName::parse("app").unwrap())
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {

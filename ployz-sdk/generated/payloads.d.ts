@@ -24,6 +24,8 @@ export type ServiceId = string;
 
 export type ServiceName = string;
 
+export type ProjectName = string;
+
 export type MachineName = string;
 
 export type MachineTarget = string;
@@ -146,6 +148,7 @@ export type ServiceAttempt = Additive<{
 }>;
 
 export type DeployIntent = Additive<{
+  project_name: ProjectName;
   target: RequestedServiceSpec[];
   apply: ServiceAttempt[];
   options: PlanOptions;
@@ -249,6 +252,7 @@ export type ContainerObservation = Additive<{
   display_name: string;
   created_at_unix_nanos: number;
   machine_id: MachineId;
+  project_name: ProjectName;
   service_id: ServiceId;
   service_name: ServiceName;
   kind: ContainerKind;

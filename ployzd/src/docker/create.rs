@@ -11,18 +11,20 @@ use bollard::models::{
 };
 use ployz_core::{
     BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
-    HostBind, MachineGateway, MachineId, PortPublication, ResolvedServiceSpec, ServiceVolumeGraph,
-    TransportProtocol, VolumeSource,
+    HostBind, MachineGateway, MachineId, PortPublication, ProjectName, ResolvedServiceSpec,
+    ServiceVolumeGraph, TransportProtocol, VolumeSource,
 };
 
 use super::{
-    Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_SERVICE_ID, LABEL_SERVICE_NAME,
+    Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_PROJECT_NAME, LABEL_SERVICE_ID,
+    LABEL_SERVICE_NAME,
 };
 
 pub(super) fn container_create_body(
     machine_id: &MachineId,
     gateway: MachineGateway,
     kind: ContainerKind,
+    project_name: &ProjectName,
     spec: &ResolvedServiceSpec,
 ) -> Result<ContainerCreateBody, Error> {
     let hook = match kind {
@@ -42,6 +44,7 @@ pub(super) fn container_create_body(
     environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
     let mut labels = HashMap::from([
         (LABEL_MANAGED.into(), String::new()),
+        (LABEL_PROJECT_NAME.into(), project_name.to_string()),
         (LABEL_SERVICE_ID.into(), spec.service_id.to_string()),
         (LABEL_SERVICE_NAME.into(), spec.name.to_string()),
     ]);

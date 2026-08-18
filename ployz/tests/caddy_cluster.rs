@@ -5,7 +5,7 @@ use std::{
 
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerAction, ContainerId, ContainerKind, GetCaddyConfigRequest,
-    ListMachinesRequest, Machine, MachineId, MachineTarget, MembershipObservation,
+    ListMachinesRequest, Machine, MachineId, MachineTarget, MembershipObservation, ProjectName,
     RequestedServiceSpec, ResolvedServiceSpec, ServiceId, StartContainerRequest,
     StopContainerRequest, op,
 };
@@ -565,6 +565,7 @@ async fn deploy(
     };
     let plan = ployz::deploy::plan_deploy(
         &ployz::deploy::DeployIntent::apply_all(
+            ProjectName::parse("app").unwrap(),
             [requested],
             ployz::deploy::PlanOptions {
                 skip_health_monitor: true,
@@ -574,7 +575,13 @@ async fn deploy(
         &snapshot,
     )
     .unwrap();
-    let outcome = ployz::deploy::execute_plan(&plan, client, &CancellationToken::new()).await;
+    let outcome = ployz::deploy::execute_plan(
+        &plan,
+        client,
+        &CancellationToken::new(),
+        &ProjectName::parse("app").unwrap(),
+    )
+    .await;
     assert!(
         matches!(outcome, ployz::deploy::DeployOutcome::Success { .. }),
         "{outcome:?}"
@@ -635,7 +642,12 @@ async fn create_and_start(
     spec: ResolvedServiceSpec,
 ) -> ployz_core::ContainerId {
     let created = client
-        .create_container(machine.id, ContainerKind::ServiceContainer, spec)
+        .create_container(
+            machine.id,
+            ContainerKind::ServiceContainer,
+            ProjectName::parse("app").unwrap(),
+            spec,
+        )
         .await
         .unwrap();
     start_container(client, machine.id, created.container_id).await;

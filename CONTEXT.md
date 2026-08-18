@@ -61,7 +61,7 @@ One Service Name this Deploy will apply from the target. Attempts are implicitly
 _Avoid_: selected-service list as a prune flag
 
 **Service Container**:
-A managed Docker container carrying the Resolved Service Spec from its creation. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
+A managed Docker container carrying the Resolved Service Spec from its creation and the Project that owns it. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
 _Avoid_: Replica, service record
 
 **Healthcheck**:
@@ -77,7 +77,7 @@ A Healthcheck with a non-empty command that probes the container.
 _Avoid_: enabled healthcheck
 
 **Hook Container**:
-A managed Docker container that executes a pre-deploy hook rather than serving as an instance of the Service. Its identity and runtime observation remain distinct from those of Service Containers.
+A managed Docker container that executes a pre-deploy hook rather than serving as an instance of the Service. It records the same owning Project as the Service's regular containers. Its identity and runtime observation remain distinct from those of Service Containers.
 _Avoid_: Service Container, sidecar
 
 **Container ID**:

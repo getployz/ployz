@@ -465,6 +465,7 @@ fn container(machine_id: &MachineId, suffix: &str) -> ContainerObservation {
         "container_id": format!("{suffix:0<64}"),
         "display_name": format!("service-{suffix}"),
         "machine_id": machine_id,
+        "project_name": "app",
         "service_id": format!("{suffix:0<32}"),
         "service_name": "service",
         "kind": "service_container",

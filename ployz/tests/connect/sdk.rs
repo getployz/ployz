@@ -6,7 +6,7 @@ use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployOperation,
-    DeployOutcome, ExecutionError, FailedOperation, MachineId, PROTOCOL_MAJOR,
+    DeployOutcome, ExecutionError, FailedOperation, MachineId, PROTOCOL_MAJOR, ProjectName,
     RequestedServiceSpec, RpcErrorCode,
 };
 use tokio::time::timeout;
@@ -151,7 +151,11 @@ async fn deploy_returns_success_for_a_completed_run() {
         .unwrap();
 
     let outcome = client
-        .deploy(DeployIntent::apply_one(spec("web"), skip_health()))
+        .deploy(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap();
 
@@ -188,6 +192,7 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
         .unwrap();
     let outcome = client
         .deploy(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
             spec_with_volume("web", "scratch"),
             skip_health(),
         ))
@@ -240,7 +245,11 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
         .unwrap();
 
     let error = client
-        .deploy(DeployIntent::apply_one(spec("web"), skip_health()))
+        .deploy(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap_err();
 
@@ -270,7 +279,11 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
         .unwrap();
 
     let error = client
-        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap_err();
 
@@ -297,7 +310,11 @@ async fn preview_then_deploy_reuses_the_planner_without_a_handle() {
     let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
         .await
         .unwrap();
-    let intent = DeployIntent::apply_one(spec("web"), skip_health());
+    let intent = DeployIntent::apply_one(
+        ProjectName::parse("app").unwrap(),
+        spec("web"),
+        skip_health(),
+    );
 
     let preview = client.preview(intent.clone()).await.unwrap();
     assert_eq!(preview.operations.len(), 1);

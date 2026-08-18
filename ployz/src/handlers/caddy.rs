@@ -59,6 +59,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             &requested,
             force_recreate,
             skip_health_monitor,
+            &ployz_core::ProjectName::system(),
             None,
         )
         .await?;

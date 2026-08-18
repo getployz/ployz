@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, num::NonZeroU32};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSuccess,
-    ManagementAddress, MembershipObservation, PartialResult, RequestedServiceSpec, RpcError,
-    RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
+    ManagementAddress, MembershipObservation, PartialResult, ProjectName, RequestedServiceSpec,
+    RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
 };
 use serde_json::Value;
 
@@ -85,7 +85,11 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     .unwrap();
     assert_eq!(requested.container.image, "v1");
     let mixed = plan_deploy(
-        &DeployIntent::apply_one(requested, PlanOptions::default()),
+        &DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            requested,
+            PlanOptions::default(),
+        ),
         &mixed_snapshot,
     )
     .unwrap();
@@ -269,6 +273,7 @@ fn observation(
         display_name: format!("api-{id}"),
         created_at_unix_nanos: 0,
         machine_id: machine().machine.id,
+        project_name: ProjectName::parse("app").unwrap(),
         service_id: *service_id,
         service_name: requested.name,
         kind: ContainerKind::ServiceContainer,

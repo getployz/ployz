@@ -80,6 +80,7 @@
       "placement_seed": 0,
       "skip_health_monitor": false
     },
+    "project_name": "app",
     "target": []
   },
   "deploy_outcome": {
@@ -325,6 +326,7 @@
         "kind": "service_container",
         "labels": {},
         "machine_id": "0123456789abcdef0123456789abcdef",
+        "project_name": "app",
         "resolved_spec": {
           "caddy_config": null,
           "configs": [],
@@ -479,6 +481,7 @@
             "kind": "service_container",
             "labels": {},
             "machine_id": "0123456789abcdef0123456789abcdef",
+            "project_name": "app",
             "resolved_spec": {
               "caddy_config": null,
               "configs": [],
@@ -588,6 +591,7 @@
         "kind": "service_container",
         "labels": {},
         "machine_id": "0123456789abcdef0123456789abcdef",
+        "project_name": "app",
         "resolved_spec": {
           "caddy_config": null,
           "configs": [],
@@ -745,6 +749,7 @@
             "kind": "service_container",
             "labels": {},
             "machine_id": "0123456789abcdef0123456789abcdef",
+            "project_name": "app",
             "resolved_spec": {
               "caddy_config": null,
               "configs": [],

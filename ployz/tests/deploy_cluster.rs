@@ -9,7 +9,7 @@ use ployz::{
 };
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget,
+    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, ProjectName,
     RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceVolume, ServiceVolumeReference,
     StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
@@ -44,7 +44,13 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
     healthy.container.healthcheck = Some(healthcheck("true", 2));
     healthy.update.monitor_millis = Some(3_000);
     let healthy_plan = deploy_plan(vec![run_with_health_monitor(machine, &healthy)]);
-    let healthy_outcome = execute_plan(&healthy_plan, client, &CancellationToken::new()).await;
+    let healthy_outcome = execute_plan(
+        &healthy_plan,
+        client,
+        &CancellationToken::new(),
+        &ProjectName::parse("app").unwrap(),
+    )
+    .await;
     assert!(matches!(
         healthy_outcome,
         ployz::deploy::DeployOutcome::Success { .. }
@@ -64,7 +70,13 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
     unhealthy.update.monitor_millis = Some(1_000);
     let unhealthy_plan = deploy_plan(vec![run_with_health_monitor(machine, &unhealthy)]);
     assert!(matches!(
-        execute_plan(&unhealthy_plan, client, &CancellationToken::new()).await,
+        execute_plan(
+            &unhealthy_plan,
+            client,
+            &CancellationToken::new(),
+            &ProjectName::parse("app").unwrap()
+        )
+        .await,
         DeployOutcome::Failed {
             failed: FailedOperation::Operation {
                 error: ExecutionError::Health { .. },
@@ -95,7 +107,13 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
         crashing.container.healthcheck = healthcheck;
         crashing.update.monitor_millis = Some(1_000);
         let plan = deploy_plan(vec![run_with_health_monitor(machine, &crashing)]);
-        let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
+        let outcome = execute_plan(
+            &plan,
+            client,
+            &CancellationToken::new(),
+            &ProjectName::parse("app").unwrap(),
+        )
+        .await;
         assert!(
             matches!(
                 outcome,
@@ -133,7 +151,13 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &Client, machine:
         volume,
     }]);
 
-    let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
+    let outcome = execute_plan(
+        &plan,
+        client,
+        &CancellationToken::new(),
+        &ProjectName::parse("app").unwrap(),
+    )
+    .await;
 
     assert!(matches!(
         outcome,
@@ -172,7 +196,13 @@ async fn assert_unreachable_middle_keeps_prefix(
     let plan = deploy_plan(operations.clone());
     cluster.remote_machine_api_rule(0, "--insert").unwrap();
 
-    let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
+    let outcome = execute_plan(
+        &plan,
+        client,
+        &CancellationToken::new(),
+        &ProjectName::parse("app").unwrap(),
+    )
+    .await;
 
     cluster.remote_machine_api_rule(0, "--delete").unwrap();
     let DeployOutcome::Failed {
@@ -210,6 +240,7 @@ async fn assert_replacement_health_compensation(
             .create_container(
                 machine.id,
                 ContainerKind::ServiceContainer,
+                ProjectName::parse("app").unwrap(),
                 old_spec.clone(),
             )
             .await
@@ -233,7 +264,13 @@ async fn assert_replacement_health_compensation(
         ];
         let plan = deploy_plan(operations.clone());
 
-        let outcome = execute_plan(&plan, client, &CancellationToken::new()).await;
+        let outcome = execute_plan(
+            &plan,
+            client,
+            &CancellationToken::new(),
+            &ProjectName::parse("app").unwrap(),
+        )
+        .await;
 
         let DeployOutcome::Failed {
             failed:
@@ -304,9 +341,21 @@ async fn assert_failed_hooks_are_retained_and_rerun(
         run_without_health_monitor(machine, &service_spec(&ServiceId::random(), "hook-suffix"));
     let plan = deploy_plan(vec![hook(machine, &nonzero), suffix.clone()]);
 
-    let first = execute_plan(&plan, client, &CancellationToken::new()).await;
+    let first = execute_plan(
+        &plan,
+        client,
+        &CancellationToken::new(),
+        &ProjectName::parse("app").unwrap(),
+    )
+    .await;
     let first_id = failed_hook_id(&first, &suffix);
-    let second = execute_plan(&plan, client, &CancellationToken::new()).await;
+    let second = execute_plan(
+        &plan,
+        client,
+        &CancellationToken::new(),
+        &ProjectName::parse("app").unwrap(),
+    )
+    .await;
     let second_id = failed_hook_id(&second, &suffix);
     assert_ne!(first_id, second_id);
     assert!(docker_exists(cluster, 0, &first_id));
@@ -322,7 +371,13 @@ async fn assert_failed_hooks_are_retained_and_rerun(
         user: None,
     });
     let timeout_plan = deploy_plan(vec![hook(machine, &timeout), suffix]);
-    let timed_out = execute_plan(&timeout_plan, client, &CancellationToken::new()).await;
+    let timed_out = execute_plan(
+        &timeout_plan,
+        client,
+        &CancellationToken::new(),
+        &ProjectName::parse("app").unwrap(),
+    )
+    .await;
     let DeployOutcome::Failed {
         failed:
             FailedOperation::Operation {
@@ -358,7 +413,13 @@ async fn assert_unhealthy_service_is_not_repaired(
     spec.container.healthcheck = Some(healthcheck("false", 1));
     let plan = deploy_plan(vec![run_without_health_monitor(&machines[0], &spec)]);
     assert!(matches!(
-        execute_plan(&plan, client, &CancellationToken::new()).await,
+        execute_plan(
+            &plan,
+            client,
+            &CancellationToken::new(),
+            &ProjectName::parse("app").unwrap()
+        )
+        .await,
         DeployOutcome::Success { .. }
     ));
     let before = wait_for_service(client, &service_id, 1).await;

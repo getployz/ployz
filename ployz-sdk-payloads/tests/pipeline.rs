@@ -162,6 +162,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert_eq!(error.code.as_str(), "unsupported");
 
     let intent: DeployIntent = decode_fixture(fixture(&fixtures, "deploy_intent"));
+    assert_eq!(intent.project_name.as_str(), "app");
     assert!(intent.target.is_empty());
     assert!(intent.apply.is_empty());
     assert_eq!(intent.options, PlanOptions::default());
@@ -225,6 +226,12 @@ fn json_fixtures_round_trip_through_rust_types() {
     );
     assert_eq!(frame.machines.len(), 1);
     assert_eq!(frame.containers.len(), 1);
+    let container = frame
+        .containers
+        .first()
+        .expect("runtime_watch_frame fixture has one Container");
+    assert_eq!(container.project_name.as_str(), "app");
+    assert_eq!(container.service_name.as_str(), "api");
     assert_eq!(frame.services.len(), 1);
     assert_eq!(frame.certificates.len(), 2);
     assert_eq!(
@@ -354,7 +361,9 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("reset_warning?: string"));
     assert!(dts.contains("export type MachineTarget = string"));
     assert!(dts.contains("export type ContractDescription = Additive<{"));
+    assert!(dts.contains("export type ProjectName = string"));
     assert!(dts.contains("export type DeployIntent = Additive<{"));
+    assert!(dts.contains("project_name: ProjectName"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
     assert!(dts.contains("export type ObservationKind ="));
     assert!(dts.contains("export type DeployWarning ="));

@@ -2,8 +2,9 @@ use std::{process, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerId, ContainerKind, ContainerRuntimeObservation,
-    InspectContainerRequest, Machine, MachineId, MachineTarget, RemoveContainerRequest,
-    ResolvedServiceSpec, ServiceId, ServiceSelector, StopContainerRequest, op, select_service,
+    InspectContainerRequest, Machine, MachineId, MachineTarget, ProjectName,
+    RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceSelector, StopContainerRequest,
+    op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 
@@ -31,6 +32,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[0].id,
             ContainerKind::ServiceContainer,
+            ProjectName::parse("app").unwrap(),
             first.clone(),
         )
         .await
@@ -39,16 +41,27 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[1].id,
             ContainerKind::ServiceContainer,
+            ProjectName::parse("app").unwrap(),
             second.clone(),
         )
         .await
         .unwrap();
     client
-        .create_container(machines[0].id, ContainerKind::PreDeployHook, first.clone())
+        .create_container(
+            machines[0].id,
+            ContainerKind::PreDeployHook,
+            ProjectName::parse("app").unwrap(),
+            first.clone(),
+        )
         .await
         .unwrap();
     client
-        .create_container(machines[1].id, ContainerKind::PreDeployHook, second.clone())
+        .create_container(
+            machines[1].id,
+            ContainerKind::PreDeployHook,
+            ProjectName::parse("app").unwrap(),
+            second.clone(),
+        )
         .await
         .unwrap();
 
@@ -78,6 +91,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[1].id,
             ContainerKind::ServiceContainer,
+            ProjectName::parse("app").unwrap(),
             spec(&collision_id, "shared", "collision"),
         )
         .await
@@ -190,7 +204,12 @@ async fn assert_l3_061_default_spec(
     }))
     .unwrap();
     let created = client
-        .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
+        .create_container(
+            machine.id,
+            ContainerKind::ServiceContainer,
+            ProjectName::parse("app").unwrap(),
+            spec.clone(),
+        )
         .await
         .unwrap();
 
@@ -271,7 +290,12 @@ async fn assert_l3_062_full_spec(
     }))
     .unwrap();
     let created = client
-        .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
+        .create_container(
+            machine.id,
+            ContainerKind::ServiceContainer,
+            ProjectName::parse("app").unwrap(),
+            spec.clone(),
+        )
         .await
         .unwrap();
 

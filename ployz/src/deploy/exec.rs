@@ -4,9 +4,9 @@ use ployz_core::{
     ConfiguredHealthcheck, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, ExecutionError,
     HealthFailure, HealthObservation, HealthcheckSpec, HookFailure, InspectContainerRequest,
-    MachineAction, MachineId, MachineTarget, RemoveContainerRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, ServiceVolume, StartContainerRequest, StopContainerRequest, UpdateOrder,
-    VolumeSource, op,
+    MachineAction, MachineId, MachineTarget, ProjectName, RemoveContainerRequest,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume, StartContainerRequest,
+    StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -30,16 +30,18 @@ pub async fn execute_plan(
     plan: &DeployPlan,
     client: &Client,
     cancellation: &CancellationToken,
+    project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
-    execute_with(plan, client, cancellation).await
+    execute_with(plan, client, cancellation, project_name).await
 }
 
 pub(crate) async fn execute_operations(
     operations: &[DeployOperation],
     client: &Client,
     cancellation: &CancellationToken,
+    project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(operations, client, cancellation).await
+    execute_operation_sequence(operations, client, cancellation, project_name).await
 }
 
 trait MachineOperations {
@@ -52,6 +54,7 @@ trait MachineOperations {
         &self,
         machine_id: &MachineId,
         kind: ContainerKind,
+        project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError>;
     async fn start_container(
@@ -117,6 +120,7 @@ impl MachineOperations for Client {
         &self,
         machine_id: &MachineId,
         kind: ContainerKind,
+        project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
         crate::image::ensure_cluster_image(
@@ -129,6 +133,7 @@ impl MachineOperations for Client {
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
                 kind,
+                project_name: project_name.clone(),
                 resolved_spec: spec.clone(),
             },
             &MachineTarget::from(machine_id),
@@ -254,9 +259,12 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         &self,
         machine_id: &MachineId,
         kind: ContainerKind,
+        project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
-        self.inner.create_container(machine_id, kind, spec).await
+        self.inner
+            .create_container(machine_id, kind, project_name, spec)
+            .await
     }
 
     async fn start_container(
@@ -342,14 +350,16 @@ async fn execute_with<C: MachineOperations>(
     plan: &DeployPlan,
     client: &C,
     cancellation: &CancellationToken,
+    project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(&plan.operations, client, cancellation).await
+    execute_operation_sequence(&plan.operations, client, cancellation, project_name).await
 }
 
 async fn execute_operation_sequence<C: MachineOperations>(
     operations: impl IntoIterator<Item = &DeployOperation>,
     client: &C,
     cancellation: &CancellationToken,
+    project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
     let operations: Vec<DeployOperation> = operations.into_iter().cloned().collect();
     let client = RestartTolerant {
@@ -357,7 +367,7 @@ async fn execute_operation_sequence<C: MachineOperations>(
         cancellation,
     };
     for (index, operation) in operations.iter().enumerate() {
-        match execute_operation(operation, &client, cancellation).await {
+        match execute_operation(operation, &client, cancellation, project_name).await {
             Ok(()) => {}
             Err(OperationFailure::Ordinary(error)) => {
                 return DeployPlan::failure_outcome_from(&operations, index, error)
@@ -386,6 +396,7 @@ async fn execute_operation<C: MachineOperations>(
     operation: &DeployOperation,
     client: &C,
     cancellation: &CancellationToken,
+    project_name: &ProjectName,
 ) -> Result<(), OperationFailure> {
     match operation {
         DeployOperation::CreateVolume { machine_id, volume } => client
@@ -396,10 +407,17 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             spec,
             skip_health_monitor,
-        } => run_container(client, machine_id, spec, *skip_health_monitor, cancellation)
-            .await
-            .map(|_| ())
-            .map_err(Into::into),
+        } => run_container(
+            client,
+            machine_id,
+            project_name,
+            spec,
+            *skip_health_monitor,
+            cancellation,
+        )
+        .await
+        .map(|_| ())
+        .map_err(Into::into),
         DeployOperation::StopContainer {
             machine_id,
             container_id,
@@ -415,7 +433,7 @@ async fn execute_operation<C: MachineOperations>(
                 .map_err(|error| machine_error(MachineAction::RemoveContainer, error).into())
         }
         DeployOperation::ReplaceContainer(replacement) => {
-            replace_container(client, replacement, cancellation).await
+            replace_container(client, replacement, project_name, cancellation).await
         }
         DeployOperation::StopHook {
             machine_id,
@@ -426,9 +444,16 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             spec,
             old_hook_containers,
-        } => run_hook(client, machine_id, spec, old_hook_containers, cancellation)
-            .await
-            .map_err(Into::into),
+        } => run_hook(
+            client,
+            machine_id,
+            project_name,
+            spec,
+            old_hook_containers,
+            cancellation,
+        )
+        .await
+        .map_err(Into::into),
     }
 }
 
@@ -436,10 +461,11 @@ async fn create_and_start<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
     kind: ContainerKind,
+    project_name: &ProjectName,
     spec: &ResolvedServiceSpec,
 ) -> Result<ContainerId, ExecutionError> {
     let created = client
-        .create_container(machine_id, kind, spec)
+        .create_container(machine_id, kind, project_name, spec)
         .await
         .map_err(|error| machine_error(MachineAction::CreateContainer, error))?;
     client
@@ -452,12 +478,19 @@ async fn create_and_start<C: MachineOperations>(
 async fn run_container<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
+    project_name: &ProjectName,
     spec: &ResolvedServiceSpec,
     skip_health_monitor: bool,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, ExecutionError> {
-    let container_id =
-        create_and_start(client, machine_id, ContainerKind::ServiceContainer, spec).await?;
+    let container_id = create_and_start(
+        client,
+        machine_id,
+        ContainerKind::ServiceContainer,
+        project_name,
+        spec,
+    )
+    .await?;
     if !skip_health_monitor {
         monitor_container(client, machine_id, &container_id, spec, cancellation).await?;
     }
@@ -467,6 +500,7 @@ async fn run_container<C: MachineOperations>(
 async fn replace_container<C: MachineOperations>(
     client: &C,
     operation: &ReplacementOperation,
+    project_name: &ProjectName,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
     let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
@@ -504,6 +538,7 @@ async fn replace_container<C: MachineOperations>(
         client,
         &operation.machine_id,
         ContainerKind::ServiceContainer,
+        project_name,
         &operation.spec,
     )
     .await?;
@@ -679,6 +714,7 @@ fn classify_health(
 async fn run_hook<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
+    project_name: &ProjectName,
     spec: &ResolvedServiceSpec,
     old_hook_containers: &[(MachineId, ContainerId)],
     cancellation: &CancellationToken,
@@ -692,8 +728,14 @@ async fn run_hook<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
     }
 
-    let container_id =
-        create_and_start(client, machine_id, ContainerKind::PreDeployHook, spec).await?;
+    let container_id = create_and_start(
+        client,
+        machine_id,
+        ContainerKind::PreDeployHook,
+        project_name,
+        spec,
+    )
+    .await?;
 
     let timeout = spec
         .pre_deploy

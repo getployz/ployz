@@ -1036,9 +1036,17 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     .unwrap();
     let request = op::CreateContainer::into_request(CreateContainerRequest {
         kind: ContainerKind::ServiceContainer,
+        project_name: ProjectName::parse("shop").unwrap(),
         resolved_spec: spec.clone(),
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    assert!(
+        serde_json::from_value::<CreateContainerRequest>(json!({
+            "kind": "service_container",
+            "resolved_spec": spec
+        }))
+        .is_err()
+    );
 
     let created = ContainerCreated {
         container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
@@ -1245,6 +1253,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
     assert!(
         serde_json::from_value::<CreateContainerRequest>(json!({
             "kind": "service_container",
+            "project_name": "shop",
             "resolved_spec": dangling
         }))
         .is_err()

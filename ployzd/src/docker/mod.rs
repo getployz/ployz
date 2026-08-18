@@ -21,8 +21,8 @@ use bollard::{
 use ployz_core::{
     ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, RpcErrorCode,
-    ServiceId, ServiceName, ValueError,
+    HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, ProjectName,
+    RpcErrorCode, ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -41,6 +41,7 @@ use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
 pub const LABEL_MANAGED: &str = "ployz.managed";
 pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
+pub const LABEL_PROJECT_NAME: &str = "ployz.project.name";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 
@@ -194,6 +195,7 @@ impl ContainerRuntime {
             display_name: display_name(inspected.name.as_deref()),
             created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
             machine_id: *machine_id,
+            project_name: managed.project_name,
             service_id: managed.service_id,
             service_name: managed.service_name,
             kind: managed.kind,
@@ -338,6 +340,7 @@ fn created_at_unix_nanos(created: Option<&str>) -> i64 {
 }
 
 struct ManagedLabels {
+    project_name: ProjectName,
     service_id: ServiceId,
     service_name: ServiceName,
     kind: ContainerKind,
@@ -348,6 +351,7 @@ impl ManagedLabels {
         if !labels.contains_key(LABEL_MANAGED) {
             return Err(Error::NotManaged);
         }
+        let project_name = required_label(labels, LABEL_PROJECT_NAME)?;
         let service_id = required_label(labels, LABEL_SERVICE_ID)?;
         let service_name = required_label(labels, LABEL_SERVICE_NAME)?;
         let kind = match labels.get(LABEL_HOOK) {
@@ -355,6 +359,12 @@ impl ManagedLabels {
             Some(_) => ContainerKind::PreDeployHook,
         };
         Ok(Self {
+            project_name: ProjectName::parse(project_name).map_err(|source| {
+                Error::InvalidValue {
+                    field: LABEL_PROJECT_NAME,
+                    source,
+                }
+            })?,
             service_id: ServiceId::parse(service_id).map_err(|source| Error::InvalidValue {
                 field: LABEL_SERVICE_ID,
                 source,
@@ -672,10 +682,12 @@ mod tests {
         }))
         .unwrap();
 
+        let project_name = ployz_core::ProjectName::parse("shop").unwrap();
         let regular = create::container_create_body(
             &machine_id,
             gateway,
             ContainerKind::ServiceContainer,
+            &project_name,
             &spec,
         )
         .unwrap();
@@ -697,11 +709,22 @@ mod tests {
             Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED)
         );
         assert!(regular_host.port_bindings.is_some());
+        let regular_labels = regular.labels.as_ref().unwrap();
+        assert_eq!(
+            regular_labels.get(LABEL_PROJECT_NAME).map(String::as_str),
+            Some("shop")
+        );
+        assert_eq!(
+            regular_labels.get(LABEL_SERVICE_NAME).map(String::as_str),
+            Some("api")
+        );
+        assert!(!regular_labels.contains_key(LABEL_HOOK));
 
         let hook = create::container_create_body(
             &machine_id,
             gateway,
             ContainerKind::PreDeployHook,
+            &project_name,
             &spec,
         )
         .unwrap();
@@ -722,6 +745,19 @@ mod tests {
         assert_eq!(
             hook_host.restart_policy.unwrap().name,
             Some(bollard::models::RestartPolicyNameEnum::NO)
+        );
+        let hook_labels = hook.labels.as_ref().unwrap();
+        assert_eq!(
+            hook_labels.get(LABEL_PROJECT_NAME).map(String::as_str),
+            Some("shop")
+        );
+        assert_eq!(
+            hook_labels.get(LABEL_SERVICE_NAME).map(String::as_str),
+            Some("api")
+        );
+        assert_eq!(
+            hook_labels.get(LABEL_HOOK).map(String::as_str),
+            Some(LABEL_HOOK_PRE_DEPLOY)
         );
     }
 
@@ -746,6 +782,7 @@ mod tests {
             &machine_id,
             gateway,
             ContainerKind::ServiceContainer,
+            &ployz_core::ProjectName::parse("app").unwrap(),
             &spec,
         )
         .unwrap();
@@ -786,6 +823,7 @@ mod tests {
             &machine_id,
             gateway,
             ContainerKind::ServiceContainer,
+            &ployz_core::ProjectName::parse("app").unwrap(),
             &spec,
         )
         .unwrap();
@@ -1122,13 +1160,14 @@ mod tests {
         ));
         let mut labels = HashMap::from([
             (LABEL_MANAGED.to_owned(), String::new()),
+            (LABEL_PROJECT_NAME.to_owned(), "app".to_owned()),
             (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
             (LABEL_SERVICE_NAME.to_owned(), "api".to_owned()),
         ]);
-        assert_eq!(
-            ManagedLabels::parse(&labels).unwrap().kind,
-            ContainerKind::ServiceContainer
-        );
+        let parsed = ManagedLabels::parse(&labels).unwrap();
+        assert_eq!(parsed.kind, ContainerKind::ServiceContainer);
+        assert_eq!(parsed.project_name.as_str(), "app");
+        assert_eq!(parsed.service_name.as_str(), "api");
         labels.insert(LABEL_HOOK.to_owned(), LABEL_HOOK_PRE_DEPLOY.to_owned());
         assert_eq!(
             ManagedLabels::parse(&labels).unwrap().kind,
@@ -1139,6 +1178,36 @@ mod tests {
             ManagedLabels::parse(&labels).unwrap().kind,
             ContainerKind::PreDeployHook
         );
+    }
+
+    #[test]
+    fn managed_labels_reject_missing_project_name() {
+        let labels = HashMap::from([
+            (LABEL_MANAGED.to_owned(), String::new()),
+            (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
+            (LABEL_SERVICE_NAME.to_owned(), "api".to_owned()),
+        ]);
+        assert!(matches!(
+            ManagedLabels::parse(&labels),
+            Err(Error::MissingLabel(LABEL_PROJECT_NAME))
+        ));
+    }
+
+    #[test]
+    fn managed_labels_reject_invalid_project_name() {
+        let labels = HashMap::from([
+            (LABEL_MANAGED.to_owned(), String::new()),
+            (LABEL_PROJECT_NAME.to_owned(), "Not_DNS".to_owned()),
+            (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
+            (LABEL_SERVICE_NAME.to_owned(), "api".to_owned()),
+        ]);
+        assert!(matches!(
+            ManagedLabels::parse(&labels),
+            Err(Error::InvalidValue {
+                field: LABEL_PROJECT_NAME,
+                ..
+            })
+        ));
     }
 
     #[test]

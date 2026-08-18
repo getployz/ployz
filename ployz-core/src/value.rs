@@ -423,6 +423,12 @@ impl ProjectName {
     /// The reserved Project for Ployz infrastructure.
     pub const SYSTEM: &'static str = "ployz-system";
 
+    /// The reserved Project name for Ployz infrastructure Containers.
+    #[must_use]
+    pub fn system() -> Self {
+        Self::parse(Self::SYSTEM).expect("the reserved Project name is a valid DNS label")
+    }
+
     /// Whether this name is reserved for Ployz infrastructure.
     #[must_use]
     pub fn is_reserved(&self) -> bool {

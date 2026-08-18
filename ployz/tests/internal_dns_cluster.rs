@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, net::Ipv4Addr, process, time::Duration};
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, Machine, MachineId, MachineTarget, MembershipObservation,
+    HealthObservation, Machine, MachineId, MachineTarget, MembershipObservation, ProjectName,
     ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, StopContainerRequest,
     op, select_service,
 };
@@ -53,7 +53,12 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
     let mut created = Vec::new();
     for machine in &machines {
         let container = client
-            .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
+            .create_container(
+                machine.id,
+                ContainerKind::ServiceContainer,
+                ProjectName::parse("app").unwrap(),
+                spec.clone(),
+            )
             .await
             .unwrap();
         start_container(&mut client, machine.id, container.container_id).await;

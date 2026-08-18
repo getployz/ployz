@@ -47,6 +47,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ("ContainerId", Shape::Alias("string")),
     ("ServiceId", Shape::Alias("string")),
     ("ServiceName", Shape::Alias("string")),
+    ("ProjectName", Shape::Alias("string")),
     ("MachineName", Shape::Alias("string")),
     ("MachineTarget", Shape::Alias("string")),
     ("MachineSubnet", Shape::Alias("string")),
@@ -225,6 +226,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Additive {
             params: "",
             fields: &[
+                ("project_name", "ProjectName"),
                 ("target", "RequestedServiceSpec[]"),
                 ("apply", "ServiceAttempt[]"),
                 ("options", "PlanOptions"),
@@ -483,6 +485,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
                 ("display_name", "string"),
                 ("created_at_unix_nanos", "number"),
                 ("machine_id", "MachineId"),
+                ("project_name", "ProjectName"),
                 ("service_id", "ServiceId"),
                 ("service_name", "ServiceName"),
                 ("kind", "ContainerKind"),

@@ -6,9 +6,10 @@ use ployz_core::{
     ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeId,
     DockerVolumeName, HealthObservation, IngressHost, Machine, MachineId, MachineName,
     MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
-    PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody, RttStatistics,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchRequest, SelectedEndpoint,
-    ServiceContainer, ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey, op,
+    PROTOCOL_MAJOR, ProjectName, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody,
+    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchRequest,
+    SelectedEndpoint, ServiceContainer, ServiceId, ServiceName, ServiceObservation,
+    WireGuardPublicKey, op,
 };
 use serde_json::{Value, json};
 
@@ -279,6 +280,7 @@ fn container_observation() -> ContainerObservation {
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+        project_name: ProjectName::parse("app").unwrap(),
         service_id,
         service_name,
         kind: ContainerKind::ServiceContainer,

@@ -7,7 +7,8 @@ use bollard::{
     },
 };
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, MachineGateway, MachineId, ResolvedServiceSpec,
+    ContainerCreated, ContainerId, ContainerKind, MachineGateway, MachineId, ProjectName,
+    ResolvedServiceSpec,
 };
 
 use crate::docker_image::prepare_image;
@@ -24,11 +25,13 @@ impl ContainerRuntime {
         machine_id: &MachineId,
         gateway: MachineGateway,
         kind: ContainerKind,
+        project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
+            project = project_name.as_str(),
             service = spec.name.as_str(),
             kind = match kind {
                 ContainerKind::ServiceContainer => "service_container",
@@ -36,7 +39,8 @@ impl ContainerRuntime {
             },
             "create container"
         );
-        let mut body = create::container_create_body(machine_id, gateway, kind, spec)?;
+        let mut body =
+            create::container_create_body(machine_id, gateway, kind, project_name, spec)?;
         let mounts = body
             .host_config
             .get_or_insert_default()

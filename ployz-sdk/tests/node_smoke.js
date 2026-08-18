@@ -51,6 +51,7 @@ async function expectRpc(fn, code) {
   }
 
   const intent = {
+    project_name: "app",
     target: [
       {
         name: "web",

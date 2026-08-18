@@ -200,6 +200,7 @@ mod tests {
             "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "display_name": "caddy-old",
             "machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "project_name": "app",
             "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "service_name": "caddy",
             "kind": "service_container",

@@ -199,8 +199,8 @@ mod tests {
     use crate::{
         ContainerAddress, ContainerId, ContainerKind, ContainerObservation, ContainerRef,
         ContainerRuntimeObservation, HealthObservation, MachineFailure, MachineId, MachineSuccess,
-        PartialResult, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceContainer, ServiceId,
-        ServiceName, ServiceSelector,
+        PartialResult, ProjectName, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceContainer,
+        ServiceId, ServiceName, ServiceSelector,
     };
 
     #[test]
@@ -743,6 +743,7 @@ mod tests {
             display_name: format!("{name}-{id}"),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
+            project_name: ProjectName::parse("app").unwrap(),
             service_id: *service_id,
             service_name,
             kind,

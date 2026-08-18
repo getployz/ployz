@@ -22,8 +22,8 @@ use ployz_core::{
     ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeId,
     DockerVolumeName, Domain, HealthObservation, Machine, MachineId, MachineList, MachineName,
     MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec, ResolvedUpdateConfig, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
+    OpaquePayload, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, ResolvedUpdateConfig,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeList, VolumeSource,
     WireGuardPublicKey,
 };
@@ -39,7 +39,11 @@ async fn deploy_returns_success_for_a_completed_run() {
     let spec = spec("web");
 
     let outcome = client
-        .deploy(DeployIntent::apply_one(spec, skip_health()))
+        .deploy(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec,
+            skip_health(),
+        ))
         .await
         .unwrap();
 
@@ -68,7 +72,11 @@ async fn deploy_returns_the_completed_prefix_failed_op_and_unexecuted_suffix() {
     add_named_volume(&mut spec, "data");
 
     let outcome = client
-        .deploy(DeployIntent::apply_one(spec, skip_health()))
+        .deploy(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec,
+            skip_health(),
+        ))
         .await
         .unwrap();
 
@@ -101,7 +109,11 @@ async fn deploy_surfaces_a_planning_error_instead_of_an_outcome() {
     let (mut client, server) = connected(DeployService::empty()).await;
 
     let error = client
-        .deploy(DeployIntent::apply_one(spec("web"), skip_health()))
+        .deploy(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap_err();
 
@@ -127,7 +139,11 @@ async fn preview_returns_operations_and_mutates_nothing() {
     let spec = spec("web");
 
     let preview = client
-        .preview(DeployIntent::apply_one(spec, skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec,
+            skip_health(),
+        ))
         .await
         .unwrap();
 
@@ -152,7 +168,11 @@ async fn executing_a_previewed_intent_re_plans_against_a_fresh_snapshot() {
     let mutating = service.mutating_rpcs();
     let listed = service.listed_containers();
     let (mut client, server) = connected(service).await;
-    let intent = DeployIntent::apply_one(spec.clone(), skip_health());
+    let intent = DeployIntent::apply_one(
+        ProjectName::parse("app").unwrap(),
+        spec.clone(),
+        skip_health(),
+    );
 
     let preview = client.preview(intent.clone()).await.unwrap();
     assert_eq!(mutating.load(Ordering::SeqCst), 0);
@@ -209,7 +229,11 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
     .unwrap();
 
     let preview = client
-        .preview(DeployIntent::apply_one(spec, skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec,
+            skip_health(),
+        ))
         .await
         .unwrap();
 
@@ -262,7 +286,11 @@ async fn preview_surfaces_a_planning_error_instead_of_a_preview() {
     let (mut client, server) = connected(DeployService::empty()).await;
 
     let error = client
-        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap_err();
 
@@ -704,6 +732,7 @@ fn running_container(
         display_name: format!("{}-1", spec.name),
         created_at_unix_nanos: 0,
         machine_id: machine.machine.id,
+        project_name: ProjectName::parse("app").unwrap(),
         service_id: resolved.service_id,
         service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,

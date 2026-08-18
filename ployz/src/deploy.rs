@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fmt};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    MachineName, MachineObservation, MachineTarget, ServiceId,
+    MachineName, MachineObservation, MachineTarget, ProjectName, ServiceId,
 };
 use thiserror::Error;
 
@@ -301,10 +301,12 @@ fn quoted_names(names: &[DockerVolumeName]) -> String {
 pub fn plan_compose(
     project: &ComposeProject,
     snapshot: &DeploySnapshot,
+    project_name: ProjectName,
 ) -> Result<DeployPlan, PlanError> {
     reject_missing_external_volumes(project, snapshot)?;
     plan_deploy(
         &DeployIntent::from_named_specs(
+            project_name,
             &project.services,
             &project.dependencies,
             project

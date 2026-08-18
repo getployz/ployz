@@ -8,7 +8,8 @@ use ployz::operator::{
 use ployz_core::{
     ContainerAction, ContainerKind, ContainerSelector, ExecRequestFrame, ExecResponseFrame,
     FanoutSelector, LogBody, LogEntry, LogOrigin, LogsOptions, MachineLogService, MachineTarget,
-    ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, op, select_service,
+    ProjectName, ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, op,
+    select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -31,7 +32,12 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     let mut created = Vec::new();
     for machine in [&machines[0], &machines[0], &machines[1]] {
         let container = client
-            .create_container(machine.id, ContainerKind::ServiceContainer, spec.clone())
+            .create_container(
+                machine.id,
+                ContainerKind::ServiceContainer,
+                ProjectName::parse("app").unwrap(),
+                spec.clone(),
+            )
             .await
             .unwrap();
         client

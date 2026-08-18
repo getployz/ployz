@@ -7,10 +7,10 @@ use ployz_core::{
     ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
     MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
     MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
-    RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
-    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, apply_many_targets,
-    derive_live_services, op,
+    ProjectName, RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
+    RpcResponseBody, StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss,
+    apply_many_targets, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -504,11 +504,13 @@ impl Client {
         &self,
         machine_id: MachineId,
         kind: ContainerKind,
+        project_name: ProjectName,
         resolved_spec: ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
                 kind,
+                project_name,
                 resolved_spec,
             },
             &MachineTarget::from(&machine_id),

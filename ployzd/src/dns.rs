@@ -443,7 +443,7 @@ mod tests {
 
     use ployz_core::{
         ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation,
-        HealthObservation, MachineId, ResolvedServiceSpec, ServiceId, ServiceName,
+        HealthObservation, MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName,
     };
     use serde_json::json;
 
@@ -832,6 +832,7 @@ options ndots:1
             display_name: format!("{service_name}-{suffix}"),
             created_at_unix_nanos: 0,
             machine_id: *machine_id,
+            project_name: ProjectName::parse("app").unwrap(),
             service_id: *service_id,
             service_name: service_name.clone(),
             kind,

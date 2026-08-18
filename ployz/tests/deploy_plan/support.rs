@@ -14,7 +14,10 @@ pub(super) fn plan_deploy<'a>(
     snapshot: &DeploySnapshot,
     options: PlanOptions,
 ) -> Result<ployz::deploy::DeployPlan, PlanError> {
-    ployz::deploy::plan_deploy(&DeployIntent::apply_all(requested, options), snapshot)
+    ployz::deploy::plan_deploy(
+        &DeployIntent::apply_all(ProjectName::parse("app").unwrap(), requested, options),
+        snapshot,
+    )
 }
 
 pub(super) fn assert_no_eligible(
@@ -47,10 +50,11 @@ pub(super) use ployz_core::{
     ContainerResources, ContainerRuntimeObservation, DeviceMapping, DeviceReservation,
     DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver, Machine, MachineId,
     MachineName, MachineObservation, MachinePath, MachineTarget, ManagementAddress,
-    MembershipObservation, PidMode, Placement, PortPublication, PreDeployHook, PullPolicy,
-    RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
-    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    MembershipObservation, PidMode, Placement, PortPublication, PreDeployHook, ProjectName,
+    PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec,
+    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
+    SpecChange, TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource,
+    WireGuardPublicKey,
 };
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -163,6 +167,7 @@ pub(super) fn container(
         display_name: format!("{}-{hex}", requested.name),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine_hex),
+        project_name: ProjectName::parse("app").unwrap(),
         service_id: *service_id,
         service_name: requested.name.clone(),
         kind: ContainerKind::ServiceContainer,

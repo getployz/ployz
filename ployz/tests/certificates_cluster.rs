@@ -6,8 +6,8 @@ use std::{
 
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, ContainerKind, GetCaddyConfigRequest, Machine, MachineTarget,
-    MachineUpdate, PublicIpUpdate, ResolvedServiceSpec, ServiceId, StartContainerRequest,
-    StopContainerRequest, op,
+    MachineUpdate, ProjectName, PublicIpUpdate, ResolvedServiceSpec, ServiceId,
+    StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
@@ -607,7 +607,12 @@ async fn create_and_start(
     spec: ResolvedServiceSpec,
 ) -> ployz_core::ContainerId {
     let created = client
-        .create_container(machine.id, ContainerKind::ServiceContainer, spec)
+        .create_container(
+            machine.id,
+            ContainerKind::ServiceContainer,
+            ProjectName::parse("app").unwrap(),
+            spec,
+        )
         .await
         .unwrap();
     client

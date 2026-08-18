@@ -3,8 +3,8 @@ use std::net::Ipv6Addr;
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    HealthObservation, Machine, ManagementAddress, MembershipObservation, ServiceId, ServiceName,
-    WireGuardPublicKey,
+    HealthObservation, Machine, ManagementAddress, MembershipObservation, ProjectName, ServiceId,
+    ServiceName, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -122,6 +122,7 @@ fn observation(id: char, machine: char) -> ContainerObservation {
         display_name: "api".into(),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine),
+        project_name: ProjectName::parse("app").unwrap(),
         service_id,
         service_name: service_name.clone(),
         kind: ContainerKind::ServiceContainer,

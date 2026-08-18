@@ -13,8 +13,8 @@ use ployz_core::{
     ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
     HookContainer, IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName,
     MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
-    ResolvedServiceSpec, RttObservation, RttStatistics, SelectedEndpoint, ServiceContainer,
-    ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey,
+    ProjectName, ResolvedServiceSpec, RttObservation, RttStatistics, SelectedEndpoint,
+    ServiceContainer, ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -409,6 +409,7 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: MachineId::parse(ENTRY_ID).unwrap(),
+        project_name: ProjectName::parse("app").unwrap(),
         service_id,
         service_name,
         kind,

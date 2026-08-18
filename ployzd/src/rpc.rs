@@ -240,7 +240,13 @@ impl MachineRpc for MachineService {
             .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
         let gateway = machine.subnet.gateway();
         match containers
-            .create(&record.id(), gateway, request.kind, &request.resolved_spec)
+            .create(
+                &record.id(),
+                gateway,
+                request.kind,
+                &request.project_name,
+                &request.resolved_spec,
+            )
             .await
         {
             Ok(created) => respond(created),

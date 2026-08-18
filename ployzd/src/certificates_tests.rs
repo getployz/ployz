@@ -8,8 +8,8 @@ use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
     HealthObservation, HttpProtocol, IngressHost, IngressHostname, IssuanceClock, IssuanceFailure,
-    IssuanceGate, Machine, MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
-    resolve_certificate_policy,
+    IssuanceGate, Machine, MachineId, PortPublication, ProjectName, ResolvedServiceSpec, ServiceId,
+    ServiceName, resolve_certificate_policy,
 };
 use serde_json::json;
 
@@ -664,6 +664,7 @@ fn observation(
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+        project_name: ProjectName::parse("app").unwrap(),
         service_id,
         service_name,
         kind: ContainerKind::ServiceContainer,

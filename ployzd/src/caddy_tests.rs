@@ -814,6 +814,7 @@ fn observation(
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
+        project_name: ployz_core::ProjectName::parse("app").unwrap(),
         service_id,
         service_name,
         kind: ContainerKind::ServiceContainer,
