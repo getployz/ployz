@@ -49,6 +49,19 @@ builds:
       pre:
         - cargo zigbuild --release --locked --package ployz-testkit --bin sqlite-probe --target {{ .Target }}
 
+  - id: ployz-relay
+    builder: rust
+    binary: ployz-relay
+    skip: '{{ and (ne (index .Env "RELEASE_OS") "") (ne (index .Env "RELEASE_OS") "linux") }}'
+    targets:
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-musl
+    flags:
+      - --release
+      - --locked
+      - --package=ployz-relay
+      - --bin=ployz-relay
+
 archives:
   - id: ployz
     builds: [ployz-linux, ployz-darwin]
@@ -74,6 +87,15 @@ archives:
         dst: ployz-uninstall
         info:
           mode: 0755
+
+  - id: ployz-relay
+    builds: [ployz-relay]
+    format: tar.gz
+    name_template: "ployz-relay_{{ .Os }}_{{ .Arch }}"
+    builds_info:
+      mode: 0755
+    files:
+      - none*
 
 checksum:
   name_template: checksums.txt

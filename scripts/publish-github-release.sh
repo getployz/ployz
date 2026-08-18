@@ -16,10 +16,12 @@ release_assets() {
         ployz_macos_amd64.tar.gz \
         ployz_macos_arm64.tar.gz \
         ployzd_linux_amd64.tar.gz \
-        ployzd_linux_arm64.tar.gz | sort)
+        ployzd_linux_arm64.tar.gz \
+        ployz-relay_linux_amd64.tar.gz \
+        ployz-relay_linux_arm64.tar.gz | sort)
     actual=$(find "$dist" -maxdepth 1 \( -name '*.tar.gz' -o -name checksums.txt \) -exec basename {} \; | sort)
     if [ "$actual" != "$expected" ]; then
-        echo "release asset set differs from the seven approved files" >&2
+        echo "release asset set differs from the approved files" >&2
         echo "expected:"$'\n'"$expected" >&2
         echo "actual:"$'\n'"$actual" >&2
         return 1

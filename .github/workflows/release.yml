@@ -21,8 +21,10 @@ jobs:
     permissions:
       contents: read
       actions: write
+      packages: write
     with:
       goreleaser-args: release --clean --skip=publish
+      push-relay-image: true
 
   publish:
     needs: [tag, artifacts]

@@ -1,17 +1,31 @@
-use std::time::Duration;
+use std::{net::Ipv4Addr, time::Duration};
 
 use ployz_core::{InspectRequest, MachineId, OpaquePayload, TunnelId, op};
 use ployz_relay::{
     AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, MACHINE_ID_METADATA, Open,
     PairingCredential, RegisterRequest, Relay, TUNNEL_ID_METADATA, TunnelFrame,
 };
-use tokio::{sync::mpsc, time::timeout};
+use tokio::{net::TcpListener, sync::mpsc, time::timeout};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
 const PAIRING: &str = "pairing-secret";
 const DIAL: &str = "dial-secret";
 const TEST_DRAIN: Duration = Duration::from_millis(300);
+
+#[tokio::test]
+async fn serve_binds_the_requested_address() {
+    let probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let listen = probe.local_addr().unwrap();
+    drop(probe);
+    let relay = Relay::new(
+        PairingCredential::parse(PAIRING).unwrap(),
+        DialCredential::parse(DIAL).unwrap(),
+    )
+    .unwrap();
+    let (bound, _server, _goaway) = relay.serve(listen).await.unwrap();
+    assert_eq!(bound, listen);
+}
 
 #[tokio::test]
 async fn register_dial_attach_splices_bytes_both_ways() {
@@ -300,9 +314,10 @@ impl Session {
             DialCredential::parse(DIAL).unwrap(),
         )
         .unwrap();
+        let listen = (Ipv4Addr::LOCALHOST, 0).into();
         let (address, server, goaway) = match drain {
-            None => relay.serve().await.unwrap(),
-            Some(drain) => relay.serve_with_drain(drain).await.unwrap(),
+            None => relay.serve(listen).await.unwrap(),
+            Some(drain) => relay.serve_with_drain(listen, drain).await.unwrap(),
         };
         Self {
             server: Some(server),

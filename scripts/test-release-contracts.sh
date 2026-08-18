@@ -25,6 +25,8 @@ assert_contains "$ROOT/.goreleaser.yaml" "aarch64-apple-darwin"
 assert_contains "$ROOT/.goreleaser.yaml" 'name_template: >-'
 assert_contains "$ROOT/.goreleaser.yaml" '{{- if eq .Os "darwin" }}macos'
 assert_contains "$ROOT/.goreleaser.yaml" 'name_template: "ployzd_{{ .Os }}_{{ .Arch }}"'
+assert_contains "$ROOT/.goreleaser.yaml" 'name_template: "ployz-relay_{{ .Os }}_{{ .Arch }}"'
+assert_contains "$ROOT/.goreleaser.yaml" "--package=ployz-relay"
 assert_contains "$ROOT/.goreleaser.yaml" "mode: 0755"
 assert_contains "$ROOT/.goreleaser.yaml" "ids: [ployz]"
 assert_contains "$ROOT/.goreleaser.yaml" "skip_upload: true"
@@ -60,6 +62,9 @@ if grep -Fq 'channels/alpha.env' "$ROOT/.github/workflows/ployz-sh.yml" "$ROOT/s
 fi
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh macos"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh linux"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-relay-image.sh"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "publish-relay-image.sh"
+assert_contains "$ROOT/.github/workflows/release.yml" "push-relay-image: true"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "verify-release.sh artifacts"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "runs-on: ubuntu-latest"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "runs-on: macos-15"
@@ -112,13 +117,13 @@ rm -f "$manifest"
 
 PLOYZ_RELEASE_TEST_ONLY=true source "$ROOT/scripts/publish-github-release.sh"
 release_dist=$(mktemp -d)
-for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
+for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz ployz-relay_linux_amd64.tar.gz ployz-relay_linux_arm64.tar.gz; do
     : > "$release_dist/$archive"
 done
 : > "$release_dist/checksums.txt"
 : > "$release_dist/ployz.rb"
 assert_eq "$(release_assets "$release_dist" | xargs -n1 basename | sort)" \
-    "$(printf '%s\n' checksums.txt ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz | sort)"
+    "$(printf '%s\n' checksums.txt ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz ployz-relay_linux_amd64.tar.gz ployz-relay_linux_arm64.tar.gz | sort)"
 assert_eq "$(release_create_flags v1.2.3 | tr '\n' ' ')" "--draft "
 assert_eq "$(release_create_flags v1.2.3-beta.1 | tr '\n' ' ')" "--draft --prerelease "
 if ! printf '%s\n' "$(release_notes v1.2.3)" | grep -Fq "clean break"; then
@@ -243,18 +248,26 @@ assert_eq "$(release_artifacts_needed pull_request scripts/pack-release.sh)" tru
 assert_eq "$(release_artifacts_needed pull_request scripts/homebrew-formula.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/release-tag.sh)" false
 assert_eq "$(release_artifacts_needed pull_request .github/workflows/release-contracts.yml)" true
+assert_eq "$(release_artifacts_needed pull_request ployz-relay/Dockerfile)" true
+assert_eq "$(release_artifacts_needed pull_request scripts/build-relay-image.sh)" true
+assert_eq "$(release_artifacts_needed pull_request scripts/verify-relay-image.sh)" true
+assert_eq "$(release_artifacts_needed pull_request scripts/publish-relay-image.sh)" true
 
 pack_dist=$(mktemp -d)
 pack_bin=$(mktemp -d)
 printf 'x' > "$pack_bin/ployz"
 cp "$ROOT/scripts/uninstall.sh" "$pack_bin/ployz-uninstall"
 printf 'x' > "$pack_bin/ployzd"
-chmod 0755 "$pack_bin/ployz" "$pack_bin/ployz-uninstall" "$pack_bin/ployzd"
+printf 'x' > "$pack_bin/ployz-relay"
+chmod 0755 "$pack_bin/ployz" "$pack_bin/ployz-uninstall" "$pack_bin/ployzd" "$pack_bin/ployz-relay"
 for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
     tar -czf "$pack_dist/$archive" -C "$pack_bin" ployz
 done
 for archive in ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
     tar -czf "$pack_dist/$archive" -C "$pack_bin" ployzd ployz-uninstall
+done
+for archive in ployz-relay_linux_amd64.tar.gz ployz-relay_linux_arm64.tar.gz; do
+    tar -czf "$pack_dist/$archive" -C "$pack_bin" ployz-relay
 done
 bash "$ROOT/scripts/pack-release.sh" "$pack_dist"
 DIST="$pack_dist" bash "$ROOT/scripts/verify-release.sh" artifacts
@@ -292,5 +305,13 @@ if [ -e "$site/stable" ] || [ -e "$site/beta" ]; then
     exit 1
 fi
 rm -rf "$site"
+
+assert_contains "$ROOT/ployz-relay/Dockerfile" "FROM scratch"
+assert_contains "$ROOT/ployz-relay/Dockerfile" "COPY ployz-relay /ployz-relay"
+assert_contains "$ROOT/ployz-relay/Dockerfile" 'ENTRYPOINT ["/ployz-relay"]'
+if grep -Eq '^RUN |^ADD ' "$ROOT/ployz-relay/Dockerfile"; then
+    echo "relay Dockerfile is not scratch-only" >&2
+    exit 1
+fi
 
 echo "release contracts passed"

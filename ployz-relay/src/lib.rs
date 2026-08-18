@@ -255,7 +255,7 @@ impl Relay {
         })
     }
 
-    /// Serve plaintext HTTP/2 on an ephemeral local port.
+    /// Serve plaintext HTTP/2 on `listen`.
     ///
     /// [`Goaway::start`] sends HTTP/2 GOAWAY: new Attaches are refused, in-flight
     /// tunnels drain for 30 seconds, then remaining streams close.
@@ -265,12 +265,13 @@ impl Relay {
     /// Returns I/O errors from binding the listener.
     pub async fn serve(
         &self,
+        listen: SocketAddr,
     ) -> std::io::Result<(
         SocketAddr,
         JoinHandle<Result<(), tonic::transport::Error>>,
         Goaway,
     )> {
-        self.serve_with_drain(DRAIN).await
+        self.serve_with_drain(listen, DRAIN).await
     }
 
     /// Bind with a drain timeout. Production uses [`serve`] (30s).
@@ -281,13 +282,14 @@ impl Relay {
     #[doc(hidden)]
     pub async fn serve_with_drain(
         &self,
+        listen: SocketAddr,
         drain: Duration,
     ) -> std::io::Result<(
         SocketAddr,
         JoinHandle<Result<(), tonic::transport::Error>>,
         Goaway,
     )> {
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let listener = TcpListener::bind(listen).await?;
         let address = listener.local_addr()?;
         let server = CloudRelayServer::new(self.clone());
         let closer = self.clone();

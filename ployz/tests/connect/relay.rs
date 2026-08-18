@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{net::Ipv4Addr, time::Duration};
 
 use ployz::connect::{ConnectError, DialCredential, connect_relay};
 use ployz_core::{DescribeContractRequest, MachineId, MachineRpcServer, op};
@@ -97,7 +97,8 @@ impl RelaySession {
             DialCredential::parse(DIAL).unwrap(),
         )
         .unwrap();
-        let (address, server, _) = relay.serve().await.unwrap();
+        let listen = (Ipv4Addr::LOCALHOST, 0).into();
+        let (address, server, _) = relay.serve(listen).await.unwrap();
         Self {
             url: format!("http://{address}"),
             _server: server,

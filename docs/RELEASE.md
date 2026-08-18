@@ -24,7 +24,7 @@ git push origin v0.2.0
 
 Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. Nightly, `-rc`, and other suffixes are rejected.
 
-4. Wait for the Release workflow. It builds the seven archives, then opens a **draft** GitHub release (`--prerelease` on beta tags).
+4. Wait for the Release workflow. It builds the eight archives and the `ployz-relay` image, then opens a **draft** GitHub release (`--prerelease` on beta tags).
 5. Fill `## Notes`. Click **Publish**. That click is the review gate. Drafts are not public downloads.
 
 ## What Publish does
@@ -72,3 +72,9 @@ Goreleaser does not upload the tap (`skip_upload: true`). Bottles 404 if the for
 ## Machine daemon
 
 `scripts/install.sh` on Linux. Same version tokens: `latest` / `stable` / `beta` / pin. Set `PLOYZ_VERSION`.
+
+## Cloud Relay
+
+Linux musl archives `ployz-relay_linux_amd64.tar.gz` and `ployz-relay_linux_arm64.tar.gz` are GitHub Release assets. They are not in `checksums.txt`, Homebrew, or `ployz.sh`.
+
+The same binary is published as `ghcr.io/getployz/ployz-relay:<tag>` when the tag workflow runs. TLS stays on the terminator in front. Required env: `PLOYZ_RELAY_PAIRING_CREDENTIAL` and `PLOYZ_RELAY_DIAL_CREDENTIAL`. Listen: `--listen` / `PLOYZ_RELAY_LISTEN` (default `0.0.0.0:50051`).
