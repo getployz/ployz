@@ -380,6 +380,7 @@ mod tests {
             },
             membership: MembershipObservation::Up,
             selected_endpoint: None,
+            rtt: None,
         }
     }
 }

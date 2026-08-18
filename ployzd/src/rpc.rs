@@ -111,6 +111,7 @@ impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
     type ContainerLogsStream = RpcStream;
     type MachineLogsStream = RpcStream;
+    type RuntimeWatchStream = RpcStream;
 
     async fn describe_contract(
         &self,
@@ -434,6 +435,15 @@ impl MachineRpc for MachineService {
             metadata,
             request.options.follow,
         )))
+    }
+
+    async fn runtime_watch(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
+        Err(Status::unimplemented(
+            "Runtime Watch is catalogued and not served by this daemon yet",
+        ))
     }
 
     async fn update_machine(

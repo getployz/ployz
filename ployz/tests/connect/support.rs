@@ -114,6 +114,7 @@ impl MachineRpc for DiscoveryService {
     type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
         &self,
@@ -303,6 +304,13 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(tokio_stream::empty()))
     }
 
+    async fn runtime_watch(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn list_images(
         &self,
         _request: Request<OpaquePayload>,
@@ -411,6 +419,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
         },
         membership: MembershipObservation::Up,
         selected_endpoint: None,
+        rtt: None,
     }
 }
 

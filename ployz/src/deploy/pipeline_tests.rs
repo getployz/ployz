@@ -247,6 +247,7 @@ fn machine() -> ployz_core::MachineObservation {
         },
         membership: MembershipObservation::Up,
         selected_endpoint: None,
+        rtt: None,
     }
 }
 

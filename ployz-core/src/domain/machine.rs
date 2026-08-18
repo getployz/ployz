@@ -160,6 +160,9 @@ pub struct MachineObservation {
     pub membership: MembershipObservation,
     #[serde(default)]
     pub selected_endpoint: Option<SelectedEndpoint>,
+    /// Entry-local RTT. `ListMachines` omits it; Runtime Watch may include it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt: Option<RttStatistics>,
 }
 
 /// Match a Machine by exact ID or observer-relative Name. `all` is identity text.
@@ -253,6 +256,7 @@ pub fn synthesize_membership(
                     .unwrap_or(MembershipObservation::Down)
             },
             selected_endpoint: None,
+            rtt: None,
             machine,
         })
         .collect()

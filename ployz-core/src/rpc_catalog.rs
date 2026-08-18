@@ -69,6 +69,7 @@ macro_rules! rpc_catalog {
             server_streaming {
                 ContainerLogs: (container_logs, "ContainerLogs", ContainerLogsRequest, "container_logs", CONTAINER_LOGS_CAPABILITY, "ployz.container.logs.v1", Container),
                 MachineLogs: (machine_logs, "MachineLogs", MachineLogsRequest, "machine_logs", MACHINE_LOGS_CAPABILITY, "ployz.machine.logs.v1", Container),
+                RuntimeWatch: (runtime_watch, "RuntimeWatch", RuntimeWatchRequest, "runtime_watch", RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Always),
             }
         }
     };

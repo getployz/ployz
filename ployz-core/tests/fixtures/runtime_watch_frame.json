@@ -1,0 +1,133 @@
+{
+  "machines": [
+    {
+      "machine": {
+        "id": "0123456789abcdef0123456789abcdef",
+        "name": "edge",
+        "subnet": "10.210.1.0/24",
+        "management_address": "::1",
+        "public_key": [
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ],
+        "advertised_endpoints": ["203.0.113.10:51820"],
+        "runtime": {
+          "daemon_version": "0.1.0",
+          "docker_version": "27.0.0",
+          "hostname": "edge",
+          "architecture": "x86_64",
+          "os_pretty_name": "Debian",
+          "kernel_version": "6.1.0"
+        }
+      },
+      "membership": "up",
+      "selected_endpoint": "203.0.113.10:51820",
+      "rtt": {
+        "median_ns": 1500000,
+        "population_stddev_ns": 250000
+      }
+    }
+  ],
+  "containers": [
+    {
+      "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+      "display_name": "api-1",
+      "created_at_unix_nanos": 1700000000000000000,
+      "machine_id": "0123456789abcdef0123456789abcdef",
+      "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "service_name": "api",
+      "kind": "service_container",
+      "runtime": {
+        "state": "running",
+        "health": "healthy"
+      },
+      "resolved_spec": {
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": {
+          "image": "api:1",
+          "pull_policy": "missing"
+        }
+      }
+    }
+  ],
+  "services": [
+    {
+      "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "containers": [
+        {
+          "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+          "display_name": "api-1",
+          "created_at_unix_nanos": 1700000000000000000,
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "service_name": "api",
+          "kind": "service_container",
+          "runtime": {
+            "state": "running",
+            "health": "healthy"
+          },
+          "resolved_spec": {
+            "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": {
+              "image": "api:1",
+              "pull_policy": "missing"
+            }
+          }
+        }
+      ],
+      "hook_containers": []
+    }
+  ],
+  "volumes": [
+    {
+      "id": {
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "name": "data"
+      },
+      "driver": "local",
+      "options": { "type": "none" },
+      "labels": { "purpose": "database" }
+    }
+  ],
+  "certificates": [
+    {
+      "hostname": "ok.example.com",
+      "status": "available"
+    },
+    {
+      "hostname": "new.example.com",
+      "status": "pending"
+    },
+    {
+      "hostname": "app.example.com",
+      "status": "failure",
+      "last_error": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
+      "backoff": {
+        "failure_kind": "does_not_resolve",
+        "next_attempt_at": "2024-01-01T01:00:00Z",
+        "failures": 2
+      }
+    },
+    {
+      "hostname": "maybe.example.com",
+      "status": "unknown"
+    }
+  ],
+  "hosted_dns_hostname": "cluster.example.ts.net",
+  "incomplete_ids": {
+    "machines": ["fedcba9876543210fedcba9876543210"],
+    "containers": ["2222222222222222222222222222222222222222222222222222222222222222"],
+    "volumes": [
+      {
+        "machine_id": "fedcba9876543210fedcba9876543210",
+        "name": "scratch"
+      }
+    ],
+    "certificates": ["pending.example.com"]
+  },
+  "observed_at": "2024-01-01T00:00:00Z"
+}

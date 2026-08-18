@@ -224,6 +224,7 @@ mod tests {
             machine: assigned.clone(),
             membership: MembershipObservation::Up,
             selected_endpoint: None,
+            rtt: None,
         }];
         assert_eq!(
             cluster_membership_conflict(

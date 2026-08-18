@@ -396,6 +396,7 @@ mod tests {
             },
             membership: ployz_core::MembershipObservation::Up,
             selected_endpoint: None,
+            rtt: None,
         };
         let output = serde_json::to_value(MachineObservationOutput {
             gateway: observation.machine.subnet.gateway().0,

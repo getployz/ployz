@@ -48,6 +48,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
         },
         membership: MembershipObservation::Up,
         selected_endpoint: None,
+        rtt: None,
     }
 }
 

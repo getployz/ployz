@@ -244,6 +244,9 @@ pub struct JoinRequest {
 pub struct ListMachinesRequest {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeWatchRequest {}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ListContainersRequest {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -500,6 +503,8 @@ macro_rules! define_request_body {
         )+
         $(
             impl op::$stream_variant {
+                pub const PATH: &'static str = concat!("/", $package, ".MachineRpc/", $stream_route);
+
                 pub fn into_request(request: $stream_request) -> RpcRequest {
                     RpcRequestBody::$stream_variant(request).into()
                 }

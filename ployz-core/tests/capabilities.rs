@@ -9,8 +9,9 @@ use ployz_core::{
     LIST_VOLUMES_CAPABILITY, MACHINE_LOGS_CAPABILITY, MACHINE_TOKEN_CAPABILITY,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, RELEASE_DOMAIN_CAPABILITY,
     REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY, Rpc,
-    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY, op,
+    REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY,
+    RUNTIME_WATCH_CAPABILITY, Rpc, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -69,6 +70,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (CONTAINER_LOGS_CAPABILITY, "ployz.container.logs.v1"),
         (MACHINE_LOGS_CAPABILITY, "ployz.machine.logs.v1"),
+        (RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1"),
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
     ];
     for (capability, spelling) in frozen {
@@ -94,6 +96,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.remove.v1",
             "ployz.wireguard.inspect.v1",
             "ployz.machine.reset.v1",
+            "ployz.runtime.watch.v1",
             "ployz.certificates.policy.v1",
         ]
     );
@@ -162,5 +165,9 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
     assert_eq!(
         op::CreateDomainRecords::PATH,
         "/ployz.rpc.v1.MachineRpc/CreateDomainRecords"
+    );
+    assert_eq!(
+        op::RuntimeWatch::PATH,
+        "/ployz.rpc.v1.MachineRpc/RuntimeWatch"
     );
 }

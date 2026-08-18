@@ -1205,6 +1205,7 @@ macro_rules! compile_fixture {
             // ponytail: ident concat is unstable; name each catalog stream type here.
             type ContainerLogsStream = EmptyRpcStream;
             type MachineLogsStream = EmptyRpcStream;
+            type RuntimeWatchStream = EmptyRpcStream;
 
             $(
                 async fn $unary_name(
