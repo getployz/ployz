@@ -40,6 +40,8 @@ assert_contains "$ROOT/.github/workflows/release-published.yml" "promote-release
 assert_contains "$ROOT/.github/workflows/release-published.yml" "types: [published]"
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "publish-sdk-package.sh"
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "id-token: write"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "actions: write"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "Swatinem/rust-cache@v2"
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "registry-url: https://registry.npmjs.org"
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "types: [published]"
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "workflow_dispatch"

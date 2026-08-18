@@ -13,6 +13,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: write
 
 jobs:
   publish-sdk:
@@ -20,6 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
