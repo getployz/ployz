@@ -385,6 +385,29 @@ mod tests {
             dispatch(&reserved, &mut command).unwrap_err().to_string(),
             "Project 'ployz-system' is reserved for Ployz infrastructure",
         );
+        let deploy = command
+            .clone()
+            .try_get_matches_from(["ployz", "deploy", "--project-name", "ployz-system"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&deploy, &mut command).unwrap_err().to_string(),
+            "Project 'ployz-system' is reserved for Ployz infrastructure",
+        );
+        let scale = command
+            .clone()
+            .try_get_matches_from([
+                "ployz",
+                "scale",
+                "--project-name",
+                "ployz-system",
+                "web",
+                "2",
+            ])
+            .unwrap();
+        assert_eq!(
+            dispatch(&scale, &mut command).unwrap_err().to_string(),
+            "Project 'ployz-system' is reserved for Ployz infrastructure",
+        );
         let invalid = command
             .clone()
             .try_get_matches_from(["ployz", "deploy", "--project-name", "My_App"])

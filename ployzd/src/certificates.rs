@@ -35,7 +35,6 @@ use crate::{
 
 pub(crate) const DIRECTORY_ENV: &str = "PLOYZ_ACME_DIRECTORY";
 const ACCOUNT_FILE: &str = "account.json";
-const CADDY_SERVICE: &str = "caddy";
 const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
@@ -221,8 +220,9 @@ fn caddy_challenge_ips(
 ) -> BTreeSet<IpAddr> {
     let caddy: BTreeSet<_> = observations
         .iter()
-        .filter(|observation| observation.service_name.as_str() == CADDY_SERVICE)
-        .filter(|observation| observation.runtime.is_healthy())
+        .filter(|observation| {
+            crate::caddy::is_system_caddy(observation) && observation.runtime.is_healthy()
+        })
         .map(|observation| observation.machine_id)
         .collect();
     machines

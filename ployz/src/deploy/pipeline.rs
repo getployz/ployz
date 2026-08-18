@@ -165,7 +165,7 @@ pub(super) async fn plan_scale(
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    let Some(requested) = choose_scale_spec(&snapshot, selector, replicas)? else {
+    let Some(requested) = choose_scale_spec(&snapshot, selector, replicas, project_name)? else {
         return Ok(DeployPreview {
             operations: Vec::new(),
             warnings,
@@ -213,8 +213,9 @@ fn choose_scale_spec(
     snapshot: &DeploySnapshot,
     selector: &ServiceSelector,
     replicas: NonZeroU32,
+    project_name: &ProjectName,
 ) -> Result<Option<RequestedServiceSpec>, Failure> {
-    let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
+    let services = snapshot.services_in(project_name);
     let service = select_service(&services, selector)?;
     let observed_container = service
         .containers

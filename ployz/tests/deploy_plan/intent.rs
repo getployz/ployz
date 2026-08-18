@@ -167,3 +167,85 @@ fn run_names(plan: &ployz::deploy::DeployPlan) -> Vec<&str> {
         })
         .collect()
 }
+
+fn targets_container(plan: &ployz::deploy::DeployPlan, id: &ContainerId) -> bool {
+    plan.operations.iter().any(|operation| match operation {
+        DeployOperation::StopContainer { container_id, .. }
+        | DeployOperation::RemoveContainer { container_id, .. }
+        | DeployOperation::StopHook { container_id, .. } => container_id == id,
+        DeployOperation::ReplaceContainer(replacement) => &replacement.old_container_id == id,
+        DeployOperation::CreateVolume { .. }
+        | DeployOperation::RunContainer { .. }
+        | DeployOperation::RunHook { .. } => false,
+    })
+}
+
+#[test]
+fn user_project_deploy_does_not_replace_or_remove_system_caddy() {
+    let mut system_caddy = spec("caddy");
+    system_caddy.mode = ServiceMode::Global;
+    system_caddy.container.image = "caddy:2.9.1".into();
+    let mut shop_caddy = spec("caddy");
+    shop_caddy.mode = ServiceMode::Global;
+    shop_caddy.container.image = "caddy:2.10.2".into();
+    let mut system_container = container('c', '1', &system_caddy, &service_id('a'));
+    system_container.project_name = ProjectName::system();
+
+    let shop = plan_deploy(
+        &DeployIntent::apply_one(
+            ProjectName::parse("shop").unwrap(),
+            shop_caddy,
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![system_container],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!targets_container(&shop, &container_id('c')));
+    assert_eq!(run_names(&shop), ["caddy"]);
+
+    let web = spec("web");
+    let mut leftover = container('c', '1', &system_caddy, &service_id('a'));
+    leftover.project_name = ProjectName::system();
+    let full = plan_deploy(
+        &DeployIntent::apply_all(
+            ProjectName::parse("shop").unwrap(),
+            [&web],
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![leftover],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!targets_container(&full, &container_id('c')));
+    assert_eq!(run_names(&full), ["web"]);
+}
+
+#[test]
+fn system_project_deploy_still_replaces_its_own_caddy() {
+    let mut current = spec("caddy");
+    current.mode = ServiceMode::Global;
+    current.container.image = "caddy:2.9.1".into();
+    let mut requested = spec("caddy");
+    requested.mode = ServiceMode::Global;
+    requested.container.image = "caddy:2.10.2".into();
+    let mut system_container = container('c', '1', &current, &service_id('a'));
+    system_container.project_name = ProjectName::system();
+
+    let plan = plan_deploy(
+        &DeployIntent::apply_one(ProjectName::system(), requested, PlanOptions::default()),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![system_container],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(targets_container(&plan, &container_id('c')));
+}

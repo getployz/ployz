@@ -101,7 +101,7 @@ The exact service configuration attached to a Service Container when it is creat
 _Avoid_: Current service spec, canonical service spec
 
 **Project**:
-An observer-derived ownership namespace. It is not a persisted resource, a workflow, or the loaded Compose input.
+An observer-derived ownership namespace. It is not a persisted resource, a workflow, or the loaded Compose input. `ployz-system` is reserved for Ployz infrastructure.
 _Avoid_: ComposeProject, Compose project, deployment resource
 
 **ComposeProject**:

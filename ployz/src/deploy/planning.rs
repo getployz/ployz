@@ -5,7 +5,7 @@ use ployz_core::{
     MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
     ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource,
-    compare_specs, derive_services, machine_matches_target, same_service_mode_kind,
+    compare_specs, machine_matches_target, same_service_mode_kind,
 };
 
 use super::{
@@ -22,8 +22,10 @@ use volumes::{
 
 /// Plan operations for the Services this Deploy applies from the target.
 ///
-/// Empty `apply` yields an empty plan. Names in `apply` expand through
-/// dependencies that are also in `target`. Other target Services are unchanged.
+/// Matching and replacement use only Containers owned by
+/// [`DeployIntent::project_name`]. Empty `apply` yields an empty plan. Names in
+/// `apply` expand through dependencies that are also in `target`. Other target
+/// Services are unchanged.
 ///
 /// # Errors
 ///
@@ -47,7 +49,7 @@ pub fn plan_deploy(
     let mut pins = VolumePins::default();
     prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, options)?;
     let name_errors_with_service = requested.len() > 1;
-    let services = derive_services(snapshot.containers.iter().cloned());
+    let services = snapshot.services_in(&intent.project_name);
     let mut service_operations = Vec::new();
     for spec in &requested {
         service_operations.extend(

@@ -2,7 +2,8 @@ use std::{collections::BTreeSet, fmt};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    MachineName, MachineObservation, MachineTarget, ProjectName, ServiceId,
+    MachineName, MachineObservation, MachineTarget, ProjectName, ServiceId, ServiceObservation,
+    derive_services,
 };
 use thiserror::Error;
 
@@ -39,6 +40,19 @@ pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
     pub containers: Vec<ContainerObservation>,
     pub volumes: Vec<ObservedDockerVolume>,
+}
+
+impl DeploySnapshot {
+    /// Observer-derived Services owned by `project`. Other Projects are excluded.
+    #[must_use]
+    pub fn services_in(&self, project: &ProjectName) -> Vec<ServiceObservation> {
+        derive_services(
+            self.containers
+                .iter()
+                .filter(|container| container.project_name == *project)
+                .cloned(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

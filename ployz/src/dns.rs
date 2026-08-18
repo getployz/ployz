@@ -13,10 +13,7 @@ use ployz_core::{
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
 
-use crate::{
-    caddy::SERVICE_NAME,
-    connect::{Client, ConnectError},
-};
+use crate::connect::{Client, ConnectError};
 
 const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -102,7 +99,7 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     let caddy_machines = services
         .iter()
         .flat_map(|service| &service.containers)
-        .filter(|container| container.as_observation().service_name.as_str() == SERVICE_NAME)
+        .filter(|container| crate::caddy::is_system_caddy(container.as_observation()))
         .map(|container| container.as_observation().machine_id)
         .collect::<BTreeSet<_>>();
     if caddy_machines.is_empty() {

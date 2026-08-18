@@ -376,9 +376,11 @@ fn caddy_challenge_ips_come_from_running_caddy_machines() {
     let mut caddy = observation(1, "caddy", Vec::new());
     caddy.machine_id = local.id;
     caddy.service_name = ServiceName::parse("caddy").unwrap();
+    caddy.project_name = ProjectName::system();
     let mut down = observation(2, "caddy", Vec::new());
     down.machine_id = remote.id;
     down.service_name = ServiceName::parse("caddy").unwrap();
+    down.project_name = ProjectName::system();
     down.runtime = ContainerRuntimeObservation::Exited { code: 1 };
     assert_eq!(
         caddy_challenge_ips(&[local, remote], &[caddy, down]),

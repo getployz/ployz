@@ -130,6 +130,7 @@ fn project_name_accepts_lowercase_dns_labels() {
         "a".repeat(63)
     );
     assert!(ProjectName::parse("ployz-system").unwrap().is_reserved());
+    assert_eq!(ProjectName::system().as_str(), "ployz-system");
     assert!(!ProjectName::parse("shop").unwrap().is_reserved());
 }
 

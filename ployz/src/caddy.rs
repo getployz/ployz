@@ -4,8 +4,8 @@ use oci_client::{
     Client, ParseError, Reference, errors::OciDistributionError, secrets::RegistryAuth,
 };
 use ployz_core::{
-    ContainerPath, ContainerResources, HostBind, MachinePath, MachineTarget, Placement,
-    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainer,
+    ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath, MachineTarget,
+    Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainer,
     ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
@@ -50,13 +50,19 @@ pub fn select_image(tags: &[String]) -> String {
         )
 }
 
+/// True when this observation is the reserved Caddy Service.
+#[must_use]
+pub fn is_system_caddy(observation: &ContainerObservation) -> bool {
+    observation.project_name.is_reserved() && observation.service_name.as_str() == SERVICE_NAME
+}
+
 #[must_use]
 pub fn newest_existing_settings<'a>(
     containers: impl IntoIterator<Item = &'a ServiceContainer>,
 ) -> Option<(String, Vec<MachineTarget>, Option<String>)> {
     containers
         .into_iter()
-        .filter(|container| container.as_observation().service_name.as_str() == SERVICE_NAME)
+        .filter(|container| is_system_caddy(container.as_observation()))
         .max_by_key(|container| {
             let observation = container.as_observation();
             (
@@ -200,7 +206,7 @@ mod tests {
             "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "display_name": "caddy-old",
             "machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "project_name": "app",
+            "project_name": "ployz-system",
             "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "service_name": "caddy",
             "kind": "service_container",
@@ -225,9 +231,14 @@ mod tests {
         hook.container_id = ContainerId::parse("c".repeat(64)).unwrap();
         hook.created_at_unix_nanos = 3;
         hook.resolved_spec.container.image = "caddy:hook".into();
+        let mut user = newer.clone();
+        user.project_name = ployz_core::ProjectName::parse("shop").unwrap();
+        user.container_id = ContainerId::parse("d".repeat(64)).unwrap();
+        user.created_at_unix_nanos = 4;
+        user.resolved_spec.container.image = "caddy:user".into();
 
         assert_eq!(
-            newest_existing_settings(&service_containers([newer, older, hook])),
+            newest_existing_settings(&service_containers([user, newer, older, hook])),
             Some((
                 "caddy:2.10.2".into(),
                 vec![MachineTarget::parse("edge").unwrap()],
