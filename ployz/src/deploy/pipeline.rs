@@ -14,20 +14,58 @@ use ployz_core::{
     MachineId, MachineObservation, PartialResult, PortPublication, RequestedServiceSpec, RpcError,
     ServiceMode, ServiceSelector, select_service,
 };
+use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     compose::{BuildService, ComposeProject},
-    connect::Client,
-    dns::{IngressDnsWarning, resolve_ingress_dns_warnings},
+    connect::{Client, ConnectError},
+    dns::{DomainRequired, IngressDnsWarning, resolve_ingress_dns_warnings},
     failure::Failure,
     image::PushError,
 };
 
 use super::{
-    DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, ExecutionError, PlanOptions,
-    ServiceAttempt, exec::execute_operations, plan_deploy,
+    DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, ExecutionError, PlanError,
+    PlanOptions, ServiceAttempt, exec::execute_operations, plan_deploy,
 };
+
+/// Snapshot, planning, or ingress-expansion failure before a Deploy executes.
+///
+/// Execution failure is a [`DeployOutcome::Failed`], not this error.
+#[derive(Debug, Error)]
+pub enum DeployError {
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+    #[error(transparent)]
+    Plan(#[from] PlanError),
+    #[error(transparent)]
+    Ingress(#[from] DomainRequired),
+}
+
+impl Client {
+    /// Submit a Deploy Intent: gather a snapshot, plan, and execute.
+    ///
+    /// Reuses the same planner and Machine Proxy fan-out as the CLI. Execution
+    /// failure is a [`DeployOutcome::Failed`] with the completed prefix, failed
+    /// operation, and unexecuted suffix. This operation does not prompt, stream
+    /// progress, mint operation IDs, or speak `ops.watch`.
+    ///
+    /// # Errors
+    ///
+    /// Returns when snapshot gathering, ingress expansion, or planning fails
+    /// before execution starts.
+    pub async fn deploy(
+        &mut self,
+        mut intent: DeployIntent,
+    ) -> Result<DeployOutcome<ExecutionError>, DeployError> {
+        let machines = self.machines().await?;
+        let snapshot = self.deploy_snapshot(machines).await?.snapshot;
+        expand_ingress(self, intent.target.iter_mut()).await?;
+        let plan = plan_deploy(&intent, &snapshot)?;
+        Ok(execute_deploy(self, &plan.operations).await)
+    }
+}
 
 /// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -257,7 +295,7 @@ fn observation_warnings<T>(
 async fn expand_ingress<'a>(
     client: &mut Client,
     specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
-) -> Result<(), Failure> {
+) -> Result<(), DeployError> {
     let specs: Vec<_> = specs.into_iter().collect();
     if !specs.iter().any(|spec| needs_ingress_expansion(spec)) {
         return Ok(());

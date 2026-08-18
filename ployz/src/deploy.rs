@@ -14,6 +14,7 @@ mod planning;
 
 pub(crate) use apply::{apply_requested, deploy_project, deploy_scale, deploy_spec};
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
+pub use pipeline::DeployError;
 pub use planning::plan_deploy;
 pub use ployz_core::compare_specs;
 

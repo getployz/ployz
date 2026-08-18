@@ -10,7 +10,7 @@ use crate::{
     compose::ComposeError,
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
-    deploy::PlanError,
+    deploy::{DeployError, PlanError},
     dns::{DomainRequired, Error as DnsError, NoReachableMachines},
     image::PushError,
     operator::OperatorError,
@@ -159,6 +159,16 @@ impl From<OperatorError> for Failure {
             OperatorError::Connect(error) => error.into(),
             OperatorError::Protocol(error) => error.into(),
             error => Self::command(error),
+        }
+    }
+}
+
+impl From<DeployError> for Failure {
+    fn from(error: DeployError) -> Self {
+        match error {
+            DeployError::Connect(error) => error.into(),
+            DeployError::Plan(error) => error.into(),
+            DeployError::Ingress(error) => error.into(),
         }
     }
 }
