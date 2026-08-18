@@ -8,6 +8,8 @@ import type {
   MachineId,
   MachineTarget,
   ObservedDataLoss,
+  LocalMachineRemoved,
+  DataLoss,
   PartialResult,
   RemoveVolumesRequest,
   RpcError,
@@ -38,5 +40,9 @@ export declare class Client {
     request: RemoveVolumesRequest,
   ): Promise<PartialResult<DockerVolumeName, RpcError>>;
   dataLossIfMachineRemoved(machine: MachineTarget): Promise<ObservedDataLoss>;
+  removeMachine(
+    machine: MachineTarget,
+    confirmDataLoss: DataLoss[],
+  ): Promise<LocalMachineRemoved>;
   close(): Promise<void>;
 };

@@ -88,6 +88,14 @@ export type ObservedDataLoss = Additive<{
   data_loss: DataLoss[];
 }>;
 
+export type UnconfirmedDataLoss = Additive<{
+  missing: DataLoss[];
+}>;
+
+export type LocalMachineRemoved = Additive<{
+  reset_warning?: string;
+}>;
+
 export type ContractDescription = Additive<{
   machine_id: MachineId;
   protocol_major: number;

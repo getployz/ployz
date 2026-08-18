@@ -30,6 +30,7 @@ use tonic::{
 mod relay;
 mod sdk;
 mod sdk_data_loss;
+mod sdk_remove_machine;
 mod sdk_volumes;
 mod sdk_watch;
 mod support;

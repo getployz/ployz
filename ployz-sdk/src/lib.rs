@@ -2,12 +2,12 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / about / runtime.watch / preview / deploy /
-//! remove_volumes / dataLossIfMachineRemoved / close.
+//! remove_volumes / dataLossIfMachineRemoved / removeMachine / close.
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
-use ployz_core::{DeployIntent, RemoveVolumesRequest, RpcError, RpcErrorCode};
+use ployz_core::{DataLoss, DeployIntent, RemoveVolumesRequest, RpcError, RpcErrorCode};
 
 /// npm package name.
 #[must_use]
@@ -149,6 +149,38 @@ impl Client {
             .await
             .map_err(rpc_to_napi)?;
         serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Remove `machine` after a named Data Loss confirmation.
+    ///
+    /// `confirm_data_loss` must name Data Loss identities, not a boolean and
+    /// not an ObservedDataLoss read.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
+    /// is not a Data Loss list, the session is closed, the Machine cannot be
+    /// removed, or the confirmation does not cover the fresh Data Loss.
+    #[napi]
+    pub async fn remove_machine(
+        &self,
+        machine: String,
+        confirm_data_loss: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let confirm_data_loss: Vec<DataLoss> =
+            serde_json::from_value(confirm_data_loss).map_err(|error| {
+                rpc_to_napi(RpcError {
+                    code: RpcErrorCode::InvalidArgument,
+                    message: error.to_string(),
+                    details: serde_json::Value::Null,
+                })
+            })?;
+        let removed = self
+            .inner
+            .remove_machine(&machine, &confirm_data_loss)
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&removed).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Drop the Client and Relay tunnel.

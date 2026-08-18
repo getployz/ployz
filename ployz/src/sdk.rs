@@ -1,5 +1,5 @@
 //! Relay-only Cloud session: connect, about, runtime.watch, preview, deploy,
-//! remove_volumes, Data Loss for Machine removal, and close.
+//! remove_volumes, Data Loss for Machine removal, remove_machine, and close.
 
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -8,10 +8,10 @@ use tokio_util::sync::CancellationToken;
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
-    ContractDescription, DeployOutcome, DescribeContractRequest, DockerVolumeName, ExecutionError,
-    MachineId, MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult,
-    RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, op,
+    ContractDescription, DataLoss, DeployOutcome, DescribeContractRequest, DockerVolumeName,
+    ExecutionError, LocalMachineRemoved, MachineId, MachineTarget, ObservedDataLoss, OpaquePayload,
+    PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode,
+    RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
 /// Connected Cloud session over one Relay Attach.
@@ -176,6 +176,30 @@ impl Session {
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client().await?;
         client.data_loss_if_machine_removed(&target).await
+    }
+
+    /// Remove `machine` after a named Data Loss confirmation.
+    ///
+    /// `confirm_data_loss` is the identities the caller showed a human. It is
+    /// not a boolean, auto-confirm flag, or echo of an [`ObservedDataLoss`]
+    /// read. Re-reads Data Loss at execute time.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the Machine is not visible or is the current
+    /// entry while another Machine is visible, the confirmation does not cover
+    /// the fresh Data Loss, or reset or shared-row removal fails. Unconfirmed
+    /// names are in `UnconfirmedDataLoss` details.
+    pub async fn remove_machine(
+        &self,
+        machine: &str,
+        confirm_data_loss: &[DataLoss],
+    ) -> Result<LocalMachineRemoved, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client().await?;
+        client.remove_machine(&target, confirm_data_loss).await
     }
 
     /// Drop the Client and Relay tunnel.

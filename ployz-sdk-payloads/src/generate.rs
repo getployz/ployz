@@ -126,6 +126,20 @@ const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "UnconfirmedDataLoss",
+        Shape::Additive {
+            params: "",
+            fields: &[("missing", "DataLoss[]")],
+        },
+    ),
+    (
+        "LocalMachineRemoved",
+        Shape::Additive {
+            params: "",
+            fields: &[("reset_warning", "string?")],
+        },
+    ),
+    (
         "ContractDescription",
         Shape::Additive {
             params: "",
@@ -568,8 +582,9 @@ pub fn artifacts() -> Artifacts {
 /// Write generated files under the napi package root.
 ///
 /// Façade declarations (`connect` / `about` / `preview` / `deploy` /
-/// `removeVolumes` / `close`) live in handwritten `index.d.ts` and are not
-/// emitted here.///
+/// `removeVolumes` / `dataLossIfMachineRemoved` / `removeMachine` / `close`)
+/// live in handwritten `index.d.ts` and are not emitted here.
+///
 /// # Errors
 ///
 /// Returns filesystem errors from creating `generated/` or writing files.

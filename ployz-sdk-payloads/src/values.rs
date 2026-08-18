@@ -12,13 +12,14 @@ use ployz_core::{
     DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation, DeployOutcome,
     DeployPreview, DeployWarning, DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError,
     FailedOperation, HealthFailure, HealthObservation, HookContainer, HookFailure, IngressHost,
-    Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
-    ObservedDataLoss, PROTOCOL_MAJOR, PartialResult, PlanOptions, RemoveVolumesRequest,
-    ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec, RestartAttempt, RpcError,
-    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
-    ServiceAttempt, ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceVolume,
-    ServiceVolumeReference, VolumeSource, WireGuardPublicKey,
+    LocalMachineRemoved, Machine, MachineAction, MachineFailure, MachineId, MachineName,
+    MachineObservation, MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation,
+    ObservationKind, ObservedDataLoss, PROTOCOL_MAJOR, PartialResult, PlanOptions,
+    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
+    RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, UnconfirmedDataLoss,
+    VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -53,6 +54,20 @@ pub fn fixtures() -> BTreeMap<String, Value> {
         "observed_data_loss_empty".into(),
         to_value(&ObservedDataLoss {
             data_loss: Vec::new(),
+        }),
+    );
+    fixtures.insert(
+        "unconfirmed_data_loss".into(),
+        to_value(&unconfirmed_data_loss()),
+    );
+    fixtures.insert(
+        "local_machine_removed".into(),
+        to_value(&LocalMachineRemoved::default()),
+    );
+    fixtures.insert(
+        "local_machine_removed_reset_warning".into(),
+        to_value(&LocalMachineRemoved {
+            reset_warning: Some("replicated delete failed".into()),
         }),
     );
     fixtures.insert(
@@ -157,6 +172,13 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("DockerVolumeId", to_value(&docker_volume().id)),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
         ("ObservedDataLoss", to_value(&observed_data_loss())),
+        ("UnconfirmedDataLoss", to_value(&unconfirmed_data_loss())),
+        (
+            "LocalMachineRemoved",
+            to_value(&LocalMachineRemoved {
+                reset_warning: Some("replicated delete failed".into()),
+            }),
+        ),
         ("DeployIntent", to_value(&deploy_intent())),
         ("DeployPreview", to_value(&deploy_preview())),
         ("PlanOptions", to_value(&PlanOptions::default())),
@@ -388,6 +410,12 @@ fn data_loss() -> DataLoss {
 fn observed_data_loss() -> ObservedDataLoss {
     ObservedDataLoss {
         data_loss: vec![data_loss()],
+    }
+}
+
+fn unconfirmed_data_loss() -> UnconfirmedDataLoss {
+    UnconfirmedDataLoss {
+        missing: vec![data_loss()],
     }
 }
 

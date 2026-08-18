@@ -235,6 +235,10 @@
     "quota_bytes": 1
   },
   "health_observation_unknown": "degraded",
+  "local_machine_removed": {},
+  "local_machine_removed_reset_warning": {
+    "reset_warning": "replicated delete failed"
+  },
   "membership_observation_unknown": "future_membership",
   "observed_data_loss": {
     "data_loss": [
@@ -825,5 +829,15 @@
   },
   "service_attempt": {
     "name": "web"
+  },
+  "unconfirmed_data_loss": {
+    "missing": [
+      {
+        "DockerVolume": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "data"
+        }
+      }
+    ]
   }
 }

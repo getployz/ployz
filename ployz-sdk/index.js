@@ -30,6 +30,10 @@ class Client {
     return this._inner.dataLossIfMachineRemoved(machine);
   }
 
+  removeMachine(machine, confirmDataLoss) {
+    return this._inner.removeMachine(machine, confirmDataLoss);
+  }
+
   close() {
     return this._inner.close();
   }
