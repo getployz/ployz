@@ -10,7 +10,11 @@ use std::{
 use ployz_core::{MachineId, TunnelId, ValueError};
 use prost::Message;
 use thiserror::Error;
-use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
+use tokio::{
+    net::TcpListener,
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 use tokio_stream::{
     StreamExt,
     wrappers::{ReceiverStream, TcpListenerStream},
@@ -182,13 +186,25 @@ pub struct Relay {
 }
 
 struct State {
-    machines: HashMap<MachineId, mpsc::Sender<Result<Open, Status>>>,
+    machines: HashMap<MachineId, Registration>,
     pending: HashMap<TunnelId, Pending>,
+    next_generation: u64,
+}
+
+struct Registration {
+    // Distinguishes this Register from a later replacement so the old inbound
+    // task cannot delete the winner.
+    generation: u64,
+    open_tx: mpsc::Sender<Result<Open, Status>>,
+    // Dropped when this Register is displaced; Dial/Attach forwarders abort.
+    cancel: watch::Sender<()>,
 }
 
 struct Pending {
+    machine_id: MachineId,
     to_machine: mpsc::Receiver<Result<TunnelFrame, Status>>,
     from_machine: mpsc::Sender<Result<TunnelFrame, Status>>,
+    cancel: watch::Receiver<()>,
 }
 
 impl Relay {
@@ -207,6 +223,7 @@ impl Relay {
             state: Arc::new(Mutex::new(State {
                 machines: HashMap::new(),
                 pending: HashMap::new(),
+                next_generation: 0,
             })),
         })
     }
@@ -250,10 +267,17 @@ fn metadata_str<'a>(metadata: &'a MetadataMap, key: &'static str) -> Option<&'a 
 async fn forward_frames(
     mut inbound: Streaming<TunnelFrame>,
     tx: mpsc::Sender<Result<TunnelFrame, Status>>,
+    mut cancel: watch::Receiver<()>,
 ) {
-    while let Some(Ok(frame)) = inbound.next().await {
-        if tx.send(Ok(frame)).await.is_err() {
-            break;
+    loop {
+        tokio::select! {
+            frame = inbound.next() => {
+                let Some(Ok(frame)) = frame else { break };
+                if tx.send(Ok(frame)).await.is_err() {
+                    break;
+                }
+            }
+            _ = cancel.changed() => break,
         }
     }
 }
@@ -281,13 +305,24 @@ impl CloudRelay for Relay {
             .machine_id()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let (open_tx, open_rx) = mpsc::channel(TUNNEL_BUFFER);
-        {
+        let (cancel, _) = watch::channel(());
+        let generation = {
             let mut state = self.lock();
-            if state.machines.contains_key(&machine_id) {
-                return Err(Status::already_exists("Machine already registered"));
-            }
-            state.machines.insert(machine_id, open_tx.clone());
-        }
+            let generation = state.next_generation;
+            state.next_generation += 1;
+            state
+                .pending
+                .retain(|_, pending| pending.machine_id != machine_id);
+            state.machines.insert(
+                machine_id,
+                Registration {
+                    generation,
+                    open_tx,
+                    cancel,
+                },
+            );
+            generation
+        };
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
             while inbound.next().await.is_some() {}
@@ -295,8 +330,11 @@ impl CloudRelay for Relay {
                 && state
                     .machines
                     .get(&machine_id)
-                    .is_some_and(|current| current.same_channel(&open_tx))
+                    .is_some_and(|current| current.generation == generation)
             {
+                state
+                    .pending
+                    .retain(|_, pending| pending.machine_id != machine_id);
                 state.machines.remove(&machine_id);
             }
         });
@@ -322,27 +360,30 @@ impl CloudRelay for Relay {
         let tunnel_id = TunnelId::random();
         let (to_machine_tx, to_machine_rx) = mpsc::channel(TUNNEL_BUFFER);
         let (from_machine_tx, from_machine_rx) = mpsc::channel(TUNNEL_BUFFER);
-        let open_tx = {
+        let (open_tx, cancel) = {
             let mut state = self.lock();
-            let open_tx = state
+            let registration = state
                 .machines
                 .get(&machine_id)
-                .cloned()
                 .ok_or_else(|| Status::not_found("unknown Machine ID"))?;
+            let open_tx = registration.open_tx.clone();
+            let cancel = registration.cancel.subscribe();
             state.pending.insert(
                 tunnel_id,
                 Pending {
+                    machine_id,
                     to_machine: to_machine_rx,
                     from_machine: from_machine_tx,
+                    cancel: cancel.clone(),
                 },
             );
-            open_tx
+            (open_tx, cancel)
         };
         if open_tx.send(Ok(Open::new(&tunnel_id))).await.is_err() {
             self.lock().pending.remove(&tunnel_id);
             return Err(Status::unavailable("Register closed"));
         }
-        tokio::spawn(forward_frames(request.into_inner(), to_machine_tx));
+        tokio::spawn(forward_frames(request.into_inner(), to_machine_tx, cancel));
         Ok(Response::new(ReceiverStream::new(from_machine_rx)))
     }
 
@@ -360,7 +401,11 @@ impl CloudRelay for Relay {
             .pending
             .remove(&tunnel_id)
             .ok_or_else(|| Status::not_found("unknown Tunnel ID"))?;
-        tokio::spawn(forward_frames(request.into_inner(), pending.from_machine));
+        tokio::spawn(forward_frames(
+            request.into_inner(),
+            pending.from_machine,
+            pending.cancel,
+        ));
         Ok(Response::new(ReceiverStream::new(pending.to_machine)))
     }
 }
