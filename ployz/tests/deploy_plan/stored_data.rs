@@ -16,11 +16,11 @@ fn destroys_stored_data(operation: &DeployOperation) -> bool {
     }
 }
 
-fn assert_plan_cannot_destroy_stored_data(plan: &ployz::deploy::DeployPlan, label: &str) {
-    for operation in &plan.operations {
+fn assert_plan_cannot_destroy_stored_data(plan: &ployz::deploy::DeployPreview, label: &str) {
+    for row in &plan.operations {
         assert!(
-            !destroys_stored_data(operation),
-            "{label}: {DATA_LOSS_PROTOCOL}: {operation:?}"
+            !destroys_stored_data(&row.operation),
+            "{label}: {DATA_LOSS_PROTOCOL}: {row:?}"
         );
     }
 }
@@ -113,7 +113,7 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
         unused_volume
             .operations
             .iter()
-            .all(|operation| { !matches!(operation, DeployOperation::CreateVolume { .. }) }),
+            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. })),
         "an unused snapshot volume must not be created or removed: {DATA_LOSS_PROTOCOL}"
     );
 

@@ -43,7 +43,7 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: target, .. },
             DeployOperation::RunContainer { .. },
@@ -71,7 +71,7 @@ fn global_named_volume_existing_on_every_machine_is_not_created() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::RunContainer { .. },
             DeployOperation::RunContainer { .. },
@@ -104,7 +104,7 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
         .unwrap()
         .operations
         .iter()
-        .map(|operation| match operation {
+        .map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => *machine_id,
             other @ (DeployOperation::CreateVolume { .. }
             | DeployOperation::StopContainer { .. }
@@ -151,7 +151,7 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { .. },
             DeployOperation::RunContainer { .. }
@@ -189,7 +189,7 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { volume, .. },
             DeployOperation::RunContainer { .. }

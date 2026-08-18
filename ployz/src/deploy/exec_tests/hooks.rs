@@ -13,7 +13,7 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
             hook(&machine, spec(None, None, Some(5_000))),
             stop(&machine, &suffix),
         ];
-        let plan = plan(operations);
+        let plan = operations;
         let client = Scripted::new(vec![
             created(
                 Call::Create(machine, ContainerKind::PreDeployHook),
@@ -34,10 +34,10 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
     let machine = machine('2');
     let hook_id = container('c');
     let suffix = container('d');
-    let plan = plan(vec![
+    let plan = vec![
         hook(&machine, spec(None, None, Some(5_000))),
         stop(&machine, &suffix),
-    ]);
+    ];
     let client = Scripted::new(vec![
         created(
             Call::Create(machine, ContainerKind::PreDeployHook),
@@ -58,7 +58,7 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
 async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
     let machine = machine('1');
     let hook_id = container('a');
-    let plan = plan(vec![hook(&machine, spec(None, None, Some(10)))]);
+    let plan = vec![hook(&machine, spec(None, None, Some(10)))];
     let client = Scripted::new(vec![
         created(
             Call::Create(machine, ContainerKind::PreDeployHook),
@@ -123,7 +123,7 @@ async fn executing_the_same_plan_twice_runs_a_fresh_hook_each_time() {
     let machine = machine('1');
     let first = container('a');
     let second = container('b');
-    let plan = plan(vec![hook(&machine, spec(None, None, Some(5_000)))]);
+    let plan = vec![hook(&machine, spec(None, None, Some(5_000)))];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::PreDeployHook), &first),
         ok(Call::Start(machine, first)),

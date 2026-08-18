@@ -5,7 +5,7 @@ use ployz_core::{
     HealthObservation, ProjectName, ServiceVolumeReference, VolumeSource,
 };
 
-use crate::deploy::{DeployOutcome, FailedOperation};
+use crate::deploy::{DeployOutcome, DeploySnapshot, FailedOperation};
 
 use super::health::parse_monitor_period;
 use super::*;
@@ -15,11 +15,18 @@ fn test_project() -> ProjectName {
 }
 
 async fn execute_with<C: MachineOperations>(
-    plan: &DeployPlan,
+    plan: &[DeployOperation],
     client: &C,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    super::execute_with(plan, client, cancellation, &test_project()).await
+    super::execute_operation_sequence(
+        crate::deploy::pending_rows(plan, &DeploySnapshot::default()),
+        client,
+        cancellation,
+        None,
+        &test_project(),
+    )
+    .await
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -176,10 +183,6 @@ mod hooks;
 mod replacement;
 #[path = "exec_tests/restart.rs"]
 mod restart;
-
-fn plan(operations: Vec<DeployOperation>) -> DeployPlan {
-    DeployPlan::new(operations)
-}
 
 fn run(
     machine_id: &MachineId,

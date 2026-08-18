@@ -17,7 +17,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
     let transient = container('d');
     let mut inherited_healthcheck = configured_healthcheck();
     inherited_healthcheck.start_period_millis = Some(300_000);
-    let plan = plan(vec![
+    let plan = vec![
         run(&machine, spec(Some(25), None, None), false),
         run(&machine, spec(Some(5_000), None, None), false),
         run(
@@ -30,7 +30,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
             spec(Some(2_000), Some(healthcheck()), None),
             false,
         ),
-    ]);
+    ];
     let client = Scripted::new(vec![
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
@@ -74,7 +74,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
 async fn health_monitor_accepts_a_clean_exit_instead_of_failing_as_restarting() {
     let machine = machine('1');
     let new = container('a');
-    let plan = plan(vec![run(&machine, spec(Some(0), None, None), false)]);
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
@@ -91,11 +91,11 @@ async fn health_monitor_accepts_a_clean_exit_instead_of_failing_as_restarting() 
 async fn health_monitor_succeeds_on_the_first_healthy_probe() {
     let machine = machine('1');
     let new = container('a');
-    let plan = plan(vec![run(
+    let plan = vec![run(
         &machine,
         spec(Some(1_000), Some(healthcheck()), None),
         false,
-    )]);
+    )];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
@@ -113,7 +113,7 @@ async fn health_monitor_succeeds_on_the_first_healthy_probe() {
 async fn health_monitor_accepts_running_without_a_healthcheck_after_the_monitor() {
     let machine = machine('1');
     let new = container('a');
-    let plan = plan(vec![run(&machine, spec(Some(1_000), None, None), false)]);
+    let plan = vec![run(&machine, spec(Some(1_000), None, None), false)];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
@@ -130,11 +130,11 @@ async fn health_monitor_accepts_running_without_a_healthcheck_after_the_monitor(
 async fn health_monitor_fails_restarting_without_waiting_out_the_monitor_window() {
     let machine = machine('1');
     let new = container('a');
-    let plan = plan(vec![run(
+    let plan = vec![run(
         &machine,
         spec(Some(1_000), Some(healthcheck()), None),
         false,
-    )]);
+    )];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
@@ -168,7 +168,7 @@ async fn health_monitor_fails_restarting_without_waiting_out_the_monitor_window(
 async fn health_monitor_still_fails_a_restart_loop() {
     let machine = machine('1');
     let new = container('a');
-    let plan = plan(vec![run(&machine, spec(Some(0), None, None), false)]);
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
@@ -207,7 +207,7 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
     ] {
         let machine = machine('1');
         let new = container('a');
-        let plan = plan(vec![run(&machine, spec(Some(0), healthcheck, None), false)]);
+        let plan = vec![run(&machine, spec(Some(0), healthcheck, None), false)];
         let client = Scripted::new(vec![
             created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
             ok(Call::Start(machine, new)),
@@ -229,11 +229,11 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
 
     let machine = machine('2');
     let new = container('b');
-    let plan = plan(vec![run(
+    let plan = vec![run(
         &machine,
         spec(Some(0), Some(healthcheck()), None),
         true,
-    )]);
+    )];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
@@ -251,11 +251,11 @@ async fn health_monitor_does_not_inherit_when_spec_disables_the_check() {
     let new = container('a');
     let mut inherited = configured_healthcheck();
     inherited.start_period_millis = Some(300_000);
-    let plan = plan(vec![run(
+    let plan = vec![run(
         &machine,
         spec(Some(0), Some(ployz_core::HealthcheckSpec::Disabled), None),
         false,
-    )]);
+    )];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),

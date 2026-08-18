@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerAction, ContainerId, ContainerKind, GetCaddyConfigRequest,
     ListMachinesRequest, Machine, MachineId, MachineTarget, MembershipObservation, ProjectName,
@@ -564,7 +565,7 @@ async fn deploy(
         volumes: Vec::new(),
         ..Default::default()
     };
-    let plan = ployz::deploy::plan_deploy(
+    let plan = preview_deploy(
         &ployz::deploy::DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
             [requested],
@@ -574,22 +575,17 @@ async fn deploy(
             },
         ),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
-    let outcome = ployz::deploy::execute_plan(
-        &plan,
-        client,
-        &CancellationToken::new(),
-        &ProjectName::parse("app").unwrap(),
-    )
-    .await;
+    let outcome = client.confirm(&plan, &CancellationToken::new(), None).await;
     assert!(
         matches!(outcome, ployz::deploy::DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
     plan.operations
         .iter()
-        .find_map(|operation| match operation {
+        .find_map(|row| match &row.operation {
             ployz::deploy::DeployOperation::RunContainer { spec, .. }
             | ployz::deploy::DeployOperation::RunHook { spec, .. } => Some(spec.service_id),
             ployz::deploy::DeployOperation::ReplaceContainer(replacement) => {

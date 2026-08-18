@@ -58,7 +58,7 @@ async fn dispatches_the_complete_algebra() {
             },
         },
     ];
-    let plan = plan(operations.clone());
+    let plan = operations.clone();
     let client = Scripted::new(vec![
         ok(Call::CreateVolume(first)),
         created(
@@ -112,7 +112,7 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
             container_id: container(id),
         })
         .to_vec();
-    let plan = plan(operations.clone());
+    let plan = operations.clone();
 
     for failed_index in 0..operations.len() {
         let steps = operations
@@ -158,7 +158,7 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
 async fn create_then_start_failure_keeps_the_container_without_cleanup() {
     let machine = machine('1');
     let created_id = container('a');
-    let plan = plan(vec![run(&machine, spec(None, None, None), false)]);
+    let plan = vec![run(&machine, spec(None, None, None), false)];
     let client = Scripted::new(vec![
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
@@ -197,7 +197,7 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
     };
     let mut missing = error("not found");
     missing.code = RpcErrorCode::NotFound;
-    let plan = plan(vec![
+    let plan = vec![
         DeployOperation::StopContainer {
             machine_id: machine,
             container_id: stopped,
@@ -208,7 +208,7 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
         },
         DeployOperation::RemoveVolume { id: volume.clone() },
         stop(&machine, &suffix),
-    ]);
+    ];
     let client = Scripted::new(vec![
         Step(Call::Stop(machine, stopped), Reply::Error(missing.clone())),
         Step(Call::Stop(machine, removed), Reply::Error(missing.clone())),

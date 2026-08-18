@@ -27,12 +27,12 @@ fn project_removal_deletes_visible_services_and_preserves_volumes() {
     assert!(
         plan.operations
             .iter()
-            .any(|operation| matches!(operation, DeployOperation::RemoveContainer { .. }))
+            .any(|row| matches!(row.operation, DeployOperation::RemoveContainer { .. }))
     );
     assert!(
         plan.operations
             .iter()
-            .all(|operation| !matches!(operation, DeployOperation::RemoveVolume { .. }))
+            .all(|row| !matches!(row.operation, DeployOperation::RemoveVolume { .. }))
     );
     assert_eq!(plan.preserved_volumes.len(), 1);
     assert_eq!(
@@ -91,7 +91,7 @@ fn destroying_volumes_emits_remove_volume_only_when_complete() {
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
     assert_eq!(plan.prune_refusal, None);
     assert_eq!(
-        plan.operations,
+        operations(&plan),
         [DeployOperation::RemoveVolume { id: volume.id }]
     );
     assert!(plan.preserved_volumes.is_empty());
@@ -155,7 +155,7 @@ fn other_project_resources_are_left_alone() {
         plan.would_remove,
         [QualifiedService::parse("app/api").unwrap()]
     );
-    assert!(plan.operations.iter().all(|operation| match operation {
+    assert!(plan.operations.iter().all(|row| match &row.operation {
         DeployOperation::RemoveContainer { container_id, .. } => {
             *container_id == super::support::container_id('b')
         }
@@ -240,7 +240,7 @@ fn plan_deploy_never_emits_remove_volume() {
     assert!(
         plan.operations
             .iter()
-            .all(|operation| !matches!(operation, DeployOperation::RemoveVolume { .. }))
+            .all(|row| !matches!(row.operation, DeployOperation::RemoveVolume { .. }))
     );
     assert_eq!(plan.preserved_volumes.len(), 1);
 }

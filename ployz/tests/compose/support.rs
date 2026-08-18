@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, net::Ipv6Addr};
 
 use ployz::{
     compose::ComposeProject,
-    deploy::{DeployPlan, DeploySnapshot, ObservedDockerVolume, PlanError},
+    deploy::{DeployPreview, DeploySnapshot, ObservedDockerVolume, PlanError},
 };
 use ployz_core::{
     AdvertisedEndpoint, DockerVolumeId, DockerVolumeName, MANAGED_LABEL, Machine, MachineId,
@@ -13,7 +13,7 @@ use ployz_core::{
 pub(super) fn plan_compose(
     project: &ComposeProject,
     snapshot: &DeploySnapshot,
-) -> Result<DeployPlan, PlanError> {
+) -> Result<DeployPreview, PlanError> {
     plan_compose_for(project, snapshot, "app")
 }
 
@@ -21,7 +21,7 @@ pub(super) fn plan_compose_for(
     project: &ComposeProject,
     snapshot: &DeploySnapshot,
     project_name: &str,
-) -> Result<DeployPlan, PlanError> {
+) -> Result<DeployPreview, PlanError> {
     let mut resolved = project.clone();
     resolved.resolve_secrets().expect("resolve secrets");
     ployz::deploy::plan_compose(
@@ -29,6 +29,14 @@ pub(super) fn plan_compose_for(
         snapshot,
         ProjectName::parse(project_name).unwrap(),
     )
+}
+
+pub(super) fn operations(preview: &DeployPreview) -> Vec<ployz::deploy::DeployOperation> {
+    preview
+        .operations
+        .iter()
+        .map(|row| row.operation.clone())
+        .collect()
 }
 
 pub(super) fn app_volume(logical: &str) -> DockerVolumeName {

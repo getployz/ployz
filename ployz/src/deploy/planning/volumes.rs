@@ -7,7 +7,7 @@ use ployz_core::{
 };
 
 use crate::deploy::{
-    DeployIntent, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
+    DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
 };
 
 /// Planner-internal assignment of Docker Volumes to Machines.
@@ -90,13 +90,14 @@ pub(super) fn scope_requested(
 
 /// Owned Compose-declared Docker Volumes omitted from this Deploy's target.
 pub(super) fn preserved_owned_volumes(
-    intent: &DeployIntent,
+    project_name: &ProjectName,
+    target: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
 ) -> Vec<PreservedVolume> {
-    let declared = declared_physical_names(intent);
+    let declared = declared_physical_names(target);
     let mut preserved = Vec::new();
     for volume in &snapshot.volumes {
-        if owned_volume_project(&volume.labels).as_ref() != Some(&intent.project_name) {
+        if owned_volume_project(&volume.labels).as_ref() != Some(project_name) {
             continue;
         }
         if declared.contains(&volume.id.name) {
@@ -121,9 +122,8 @@ pub(super) fn preserved_owned_volumes(
     preserved
 }
 
-fn declared_physical_names(intent: &DeployIntent) -> BTreeSet<DockerVolumeName> {
-    intent
-        .target
+fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVolumeName> {
+    target
         .iter()
         .flat_map(|spec| spec.volume_graph.volumes())
         .filter_map(|volume| match &volume.source {

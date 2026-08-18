@@ -339,29 +339,27 @@ fn join_addresses(addresses: &[IpAddr]) -> String {
         .join(", ")
 }
 
-fn ingress_targets<'a>(
-    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+fn ingress_targets_from_ports<'a>(
+    ports: impl IntoIterator<Item = &'a PortPublication>,
 ) -> BTreeMap<&'a IngressHost, bool> {
     let mut targets = BTreeMap::new();
-    for spec in specs {
-        for port in &spec.ports {
-            let PortPublication::Ingress {
-                hostname,
-                http_protocol,
-                ..
-            } = port
-            else {
-                continue;
-            };
-            let Some(hostname) = hostname.as_explicit_host() else {
-                continue;
-            };
-            let mentions_certificates = *http_protocol == HttpProtocol::Https;
-            targets
-                .entry(hostname)
-                .and_modify(|mentions| *mentions |= mentions_certificates)
-                .or_insert(mentions_certificates);
-        }
+    for port in ports {
+        let PortPublication::Ingress {
+            hostname,
+            http_protocol,
+            ..
+        } = port
+        else {
+            continue;
+        };
+        let Some(hostname) = hostname.as_explicit_host() else {
+            continue;
+        };
+        let mentions_certificates = *http_protocol == HttpProtocol::Https;
+        targets
+            .entry(hostname)
+            .and_modify(|mentions| *mentions |= mentions_certificates)
+            .or_insert(mentions_certificates);
     }
     targets
 }
@@ -414,7 +412,11 @@ pub fn ingress_dns_warnings<'a>(
     cluster_addresses: &[IpAddr],
     resolve: impl FnMut(&IngressHost) -> Vec<IpAddr>,
 ) -> Vec<IngressDnsWarning> {
-    warnings_from_targets(ingress_targets(specs), cluster_addresses, resolve)
+    warnings_from_targets(
+        ingress_targets_from_ports(specs.into_iter().flat_map(|spec| spec.ports.iter())),
+        cluster_addresses,
+        resolve,
+    )
 }
 
 fn unique_addresses(addresses: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {
@@ -433,12 +435,12 @@ pub async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
     }
 }
 
-/// Resolve Ingress Hostnames and warn when they miss this Cluster.
-pub async fn resolve_ingress_dns_warnings<'a>(
-    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+/// Resolve Ingress Hostnames from planned ports and warn when they miss this Cluster.
+pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
+    ports: impl IntoIterator<Item = &'a PortPublication>,
     cluster_addresses: &[IpAddr],
 ) -> Vec<IngressDnsWarning> {
-    let targets = ingress_targets(specs);
+    let targets = ingress_targets_from_ports(ports);
     let mut resolved = BTreeMap::new();
     for hostname in targets.keys().copied() {
         resolved.insert(hostname, resolve_ingress_addresses(hostname).await);

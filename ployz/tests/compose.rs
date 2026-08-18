@@ -481,7 +481,7 @@ volumes:
     assert!(
         plan.operations
             .iter()
-            .all(|operation| !matches!(operation, DeployOperation::CreateVolume { .. }))
+            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. }))
     );
 }
 
@@ -554,7 +554,7 @@ volumes:
     )
     .unwrap();
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::RunContainer { machine_id, .. }]
             if machine_id == &existing.machine.id
     ));
@@ -639,7 +639,7 @@ volumes:
     )
     .unwrap();
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: volume_machine, volume },
             DeployOperation::RunContainer { machine_id: first_machine, .. },
@@ -916,7 +916,7 @@ secrets: {token: {x-command: "printf resolved"}}
     let plan = plan_compose(&project, &snapshot).unwrap();
     assert_eq!(snapshot, original);
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { volume, .. },
             DeployOperation::RunHook { .. },
@@ -970,13 +970,13 @@ volumes: {data: {}}
 }
 
 fn created_named_volume(
-    plan: &ployz::deploy::DeployPlan,
+    plan: &ployz::deploy::DeployPreview,
     project: &str,
 ) -> ployz_core::DockerVolumeName {
     let volume = plan
         .operations
         .iter()
-        .find_map(|operation| match operation {
+        .find_map(|row| match &row.operation {
             DeployOperation::CreateVolume { volume, .. } => Some(volume),
             DeployOperation::RunContainer { .. }
             | DeployOperation::StopContainer { .. }
@@ -1029,7 +1029,7 @@ volumes: {data: {}}
     assert!(
         plan.operations
             .iter()
-            .all(|operation| { !matches!(operation, DeployOperation::CreateVolume { .. }) })
+            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. }))
     );
     let still_declared = plan_compose(&with_volume, &snapshot).unwrap();
     assert!(still_declared.preserved_volumes.is_empty());
@@ -1129,15 +1129,16 @@ volumes: {data: {name: demo_data}}
         ..Default::default()
     };
     let plan = plan_compose(&replicated, &snapshot).unwrap();
+    let ops = operations(&plan);
     let Some(DeployOperation::CreateVolume {
         machine_id: anchor,
         volume,
-    }) = plan.operations.first()
+    }) = ops.first()
     else {
         panic!("missing Volume creation: {plan:?}")
     };
     assert_eq!(anchor, &machine('b', "two").machine.id);
-    assert!(plan.operations.iter().skip(1).all(|operation| matches!(
+    assert!(ops.iter().skip(1).all(|operation| matches!(
         operation,
         DeployOperation::RunContainer { machine_id, .. } if machine_id == anchor
     )));
@@ -1156,10 +1157,14 @@ volumes: {data: {name: demo_data}}
         .map(|machine| snapshot_volume(machine.machine.id, existing_name.as_str()))
         .collect();
     let existing_on_both = plan_compose(&replicated, &existing_snapshot).unwrap();
-    assert!(existing_on_both.operations.iter().all(|operation| matches!(
-        operation,
-        DeployOperation::RunContainer { machine_id, .. } if machine_id == anchor
-    )));
+    assert!(
+        operations(&existing_on_both)
+            .iter()
+            .all(|operation| matches!(
+                operation,
+                DeployOperation::RunContainer { machine_id, .. } if machine_id == anchor
+            ))
+    );
 
     let connected = parse_normalized(
         r#"
@@ -1182,13 +1187,12 @@ volumes: {a: {}, b: {}}
         connected_plan
             .operations
             .iter()
-            .take_while(|operation| matches!(operation, DeployOperation::CreateVolume { .. }))
+            .take_while(|row| matches!(row.operation, DeployOperation::CreateVolume { .. }))
             .count(),
         2
     );
     assert!(
-        connected_plan
-            .operations
+        operations(&connected_plan)
             .iter()
             .all(|operation| match operation {
                 DeployOperation::CreateVolume { machine_id, .. }
@@ -1198,8 +1202,9 @@ volumes: {a: {}, b: {}}
                 | DeployOperation::ReplaceContainer(..)
                 | DeployOperation::StopHook { .. }
                 | DeployOperation::RunHook { .. }
-                | DeployOperation::RemoveVolume { .. }) =>
-                    panic!("unexpected operation: {other:?}"),
+                | DeployOperation::RemoveVolume { .. }) => {
+                    panic!("unexpected operation: {other:?}")
+                }
             })
     );
 
@@ -1230,7 +1235,7 @@ volumes:
     )
     .unwrap();
     assert!(matches!(
-        constrained_plan.operations.as_slice(),
+        operations(&constrained_plan).as_slice(),
         [DeployOperation::CreateVolume { machine_id, .. }, ..] if machine_id == &existing_machine
     ));
 

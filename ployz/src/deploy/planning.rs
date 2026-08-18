@@ -3,14 +3,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerRuntimeObservation, DataLoss, HookContainer, HostBind,
     IngressHost, MachineId, MachineObservation, MembershipObservation, ObservedDataLoss,
-    PortPublication, ProjectName, QualifiedService, RequestedServiceSpec, ResolvedServiceSpec,
-    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource, compare_specs,
-    explicit_ingress_hosts, hostname_owners, machine_matches_target, same_service_mode_kind,
+    PortPublication, PreservedVolume, ProjectName, PruneRefusal, QualifiedService,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
+    ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
+    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners, machine_matches_target,
+    same_service_mode_kind,
 };
 
 use super::{
-    DeployIntent, DeployOperation, DeployPlan, DeploySnapshot, DeployWarning,
+    DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
     EliminatingConstraint, PlanError, PlanOptions, ReplacementOperation,
 };
 
@@ -30,6 +31,28 @@ pub enum VolumeFate {
     Destroy,
 }
 
+/// Reserved Cluster Domain used to expand applied Ingress Hostname intents.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IngressContext<'domain> {
+    /// Hosted Cluster Domain, when reserved. Absence fails Cluster Domain expansion.
+    pub cluster_domain: Option<&'domain str>,
+}
+
+/// Volume-bound target plus the expanded apply-set. Private planning phase.
+struct BoundIntent {
+    target: Vec<RequestedServiceSpec>,
+    requested: Vec<RequestedServiceSpec>,
+}
+
+/// Operations and prune results before pending rows are attached.
+struct Planned {
+    operations: Vec<DeployOperation>,
+    would_remove: Vec<QualifiedService>,
+    preserved_volumes: Vec<PreservedVolume>,
+    prune_refusal: Option<PruneRefusal>,
+    warnings: Vec<DeployWarning>,
+}
+
 /// Plan removal of observer-visible compute for `project`.
 ///
 /// Empty target is full reconciliation of nothing: owned Services are obsolete.
@@ -40,35 +63,36 @@ pub enum VolumeFate {
 ///
 /// # Errors
 ///
-/// Returns when [`plan_deploy`] cannot produce a plan.
+/// Returns when [`preview_deploy`] cannot produce a preview.
 pub fn plan_project_removal(
     project: &ProjectName,
     snapshot: &DeploySnapshot,
     volumes: VolumeFate,
-) -> Result<DeployPlan, PlanError> {
+) -> Result<DeployPreview, PlanError> {
     let intent = DeployIntent::apply_all(project.clone(), [], PlanOptions::default());
-    let mut plan = plan_deploy(&intent, snapshot)?;
-    if volumes == VolumeFate::Destroy && plan.prune_refusal.is_none() {
-        plan.operations.extend(
-            plan.preserved_volumes
+    let mut planned = plan_operations(&intent, snapshot, IngressContext::default())?;
+    if volumes == VolumeFate::Destroy && planned.prune_refusal.is_none() {
+        planned.operations.extend(
+            planned
+                .preserved_volumes
                 .drain(..)
                 .map(|volume| DeployOperation::RemoveVolume { id: volume.id }),
         );
     }
-    Ok(plan)
+    Ok(preview_from(planned, snapshot, project))
 }
 
-/// Data Loss implied by a Project-removal plan.
+/// Data Loss implied by a Project-removal preview.
 ///
-/// Preserve plans are empty. Destroy names each `RemoveVolume`. Completeness is
-/// the caller's check; this listing is not a Cluster view.
+/// Preserve previews are empty. Destroy names each `RemoveVolume`. Completeness
+/// is the caller's check; this listing is not a Cluster view.
 #[must_use]
-pub fn data_loss_from_plan(plan: &DeployPlan) -> ObservedDataLoss {
+pub fn data_loss_from_plan(preview: &DeployPreview) -> ObservedDataLoss {
     ObservedDataLoss {
-        data_loss: plan
+        data_loss: preview
             .operations
             .iter()
-            .filter_map(remove_volume_loss)
+            .filter_map(|row| remove_volume_loss(&row.operation))
             .collect(),
     }
 }
@@ -80,7 +104,10 @@ fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
     Some(DataLoss::DockerVolume(id.clone()))
 }
 
-/// Plan operations for the Services this Deploy applies from the target.
+/// Calculate a Deploy Preview for this Intent against this Snapshot.
+///
+/// Expands applied Cluster Domain hostnames, binds Project volumes once, then
+/// constructs pending operation rows. Does not mutate `intent`.
 ///
 /// Matching and replacement use only Containers owned by
 /// [`DeployIntent::project_name`]. Empty `options.selected` is a full
@@ -92,19 +119,65 @@ fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
 ///
 /// # Errors
 ///
-/// Returns when placement, volumes, service identity, hostname ownership, or
-/// the apply-set dependency graph cannot produce a plan.
-pub fn plan_deploy(
+/// Returns when domain assignment, generated labels, hostname conflicts,
+/// placement, volumes, service identity, or the apply-set dependency graph
+/// cannot produce a preview.
+pub fn preview_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
-) -> Result<DeployPlan, PlanError> {
-    let requested = requested_specs(intent)?;
-    let warnings = hostname_policy_for(&intent.project_name, &requested, snapshot)?;
-    assemble_plan(intent, snapshot, requested, warnings)
+    ingress: IngressContext<'_>,
+) -> Result<DeployPreview, PlanError> {
+    let planned = plan_operations(intent, snapshot, ingress)?;
+    Ok(preview_from(planned, snapshot, &intent.project_name))
 }
 
-fn requested_specs(intent: &DeployIntent) -> Result<Vec<RequestedServiceSpec>, PlanError> {
-    Ok(specs_to_plan(intent)?.into_iter().map(normalize).collect())
+fn preview_from(
+    planned: Planned,
+    snapshot: &DeploySnapshot,
+    project_name: &ProjectName,
+) -> DeployPreview {
+    DeployPreview {
+        project_name: project_name.clone(),
+        operations: super::pending_rows(&planned.operations, snapshot),
+        warnings: planned.warnings,
+        would_remove: planned.would_remove,
+        preserved_volumes: planned.preserved_volumes,
+        prune_refusal: planned.prune_refusal,
+    }
+}
+
+fn plan_operations(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+    ingress: IngressContext<'_>,
+) -> Result<Planned, PlanError> {
+    let bound = bind(intent, ingress)?;
+    let warnings = hostname_policy_for(&intent.project_name, &bound.requested, snapshot)?;
+    assemble_plan(intent, &bound, snapshot, warnings)
+}
+
+fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundIntent, PlanError> {
+    let target: Vec<_> = intent
+        .target
+        .iter()
+        .cloned()
+        .map(|spec| scope_requested(spec, &intent.project_name))
+        .collect();
+    let mut requested = Vec::new();
+    for spec in specs_to_plan(intent)? {
+        let scoped = target
+            .iter()
+            .find(|candidate| candidate.name == spec.name)
+            .expect("apply-set names are drawn from the Intent target");
+        let mut planned = normalize(scoped);
+        crate::dns::expand_ingress_ports(
+            &mut planned,
+            &intent.project_name,
+            ingress.cluster_domain,
+        )?;
+        requested.push(planned);
+    }
+    Ok(BoundIntent { target, requested })
 }
 
 fn hostname_policy_for(
@@ -126,30 +199,19 @@ fn hostname_policy_for(
 
 fn assemble_plan(
     intent: &DeployIntent,
+    bound: &BoundIntent,
     snapshot: &DeploySnapshot,
-    requested: Vec<RequestedServiceSpec>,
     warnings: Vec<DeployWarning>,
-) -> Result<DeployPlan, PlanError> {
+) -> Result<Planned, PlanError> {
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let mut intent = intent.clone();
-    intent.target = intent
-        .target
-        .iter()
-        .map(|spec| scope_requested(spec.clone(), &intent.project_name))
-        .collect();
-    let requested: Vec<_> = requested
-        .into_iter()
-        .map(|spec| scope_requested(spec, &intent.project_name))
-        .collect();
-    let options = &intent.options;
-    let volume_uses = named_volume_uses(&requested);
+    let volume_uses = named_volume_uses(&bound.requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::default();
-    prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, options)?;
-    let name_errors_with_service = requested.len() > 1;
+    prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, &intent.options)?;
+    let name_errors_with_service = bound.requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut service_operations = Vec::new();
-    for spec in &requested {
+    for spec in &bound.requested {
         service_operations.extend(
             plan_one_service(
                 spec,
@@ -157,7 +219,7 @@ fn assemble_plan(
                 snapshot,
                 &services,
                 &mut pins,
-                options,
+                &intent.options,
             )
             .map_err(|source| {
                 service_error(name_errors_with_service, spec.name.as_str(), source)
@@ -166,13 +228,13 @@ fn assemble_plan(
     }
     let mut operations = pins.into_creates();
     operations.extend(service_operations);
-    let would_remove = obsolete_services(&intent, &services);
+    let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
-    let preserved_volumes = preserved_owned_volumes(&intent, snapshot);
+    let preserved_volumes = preserved_owned_volumes(&intent.project_name, &bound.target, snapshot);
     if prune_refusal.is_none() {
         operations.extend(removal_operations(&services, &would_remove));
     }
-    Ok(DeployPlan {
+    Ok(Planned {
         operations,
         would_remove,
         preserved_volumes,

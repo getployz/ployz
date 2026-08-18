@@ -36,7 +36,7 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::StopHook { container_id: running, .. },
             DeployOperation::StopHook { container_id: paused, .. },
@@ -69,37 +69,6 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(plan.operations.is_empty());
-}
-
-#[test]
-fn sequence_failure_keeps_completed_failed_and_unexecuted_operations_exact() {
-    let requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(3).unwrap(),
-    });
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-
-    let outcome = plan.failure_outcome(1, "container failed").unwrap();
-
-    let operations = &plan.operations;
-    assert_eq!(
-        outcome,
-        DeployOutcome::Failed {
-            completed: operations.get(..1).unwrap().to_vec(),
-            failed: FailedOperation::Operation {
-                operation: operations.get(1).unwrap().clone(),
-                error: "container failed",
-            },
-            unexecuted: operations.get(2..).unwrap().to_vec(),
-        }
-    );
 }
 
 #[test]
@@ -157,7 +126,7 @@ fn global_missing_volume_is_created_on_every_eligible_machine_before_containers(
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: first_volume, .. },
             DeployOperation::CreateVolume { machine_id: second_volume, .. },
@@ -190,7 +159,7 @@ fn force_recreate_replaces_an_otherwise_matching_container() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::ReplaceContainer(ReplacementOperation { old_container_id, .. })]
             if old_container_id == &container_id('b')
     ));
@@ -219,93 +188,6 @@ fn no_op_plan_does_not_run_a_pre_deploy_hook() {
     .unwrap();
 
     assert!(plan.operations.is_empty());
-}
-
-#[test]
-fn replacement_failure_can_record_its_only_allowed_compensation() {
-    let mut requested = requested(ServiceMode::Global);
-    requested.update.order = Some(UpdateOrder::StopFirst);
-    let mut current = requested.clone();
-    current.container.image = "ghcr.io/getployz/api:old".into();
-    let current_service_id = service_id('a');
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![container('b', '1', &current, &current_service_id)],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-    let compensation = ReplacementCompensation::StopFirst {
-        stop_new_container: Err("stop failed"),
-        restart_old_container: RestartAttempt::Attempted(Err("restart failed")),
-    };
-
-    let outcome = plan
-        .replacement_health_failure_outcome(0, "health failed", compensation.clone())
-        .unwrap();
-
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            completed,
-            failed: FailedOperation::ReplacementHealth {
-                error: "health failed",
-                compensation: actual,
-                ..
-            },
-            unexecuted,
-        } if completed.is_empty() && unexecuted.is_empty() && actual == compensation
-    ));
-}
-
-#[test]
-fn stop_first_failure_can_record_that_a_stopped_old_container_was_not_restarted() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    requested.update.order = Some(UpdateOrder::StopFirst);
-    let mut current = requested.clone();
-    current.container.image = "ghcr.io/getployz/api:old".into();
-    let mut stopped = container('b', '1', &current, &service_id('a'));
-    stopped.runtime = ContainerRuntimeObservation::Exited { code: 1 };
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            containers: vec![stopped],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-
-    let outcome = plan
-        .replacement_health_failure_outcome(
-            0,
-            "health failed",
-            ReplacementCompensation::StopFirst {
-                stop_new_container: Ok(()),
-                restart_old_container: RestartAttempt::NotAttempted,
-            },
-        )
-        .unwrap();
-
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::ReplacementHealth {
-                compensation: ReplacementCompensation::StopFirst {
-                    restart_old_container: RestartAttempt::NotAttempted,
-                    ..
-                },
-                ..
-            },
-            ..
-        }
-    ));
 }
 
 #[test]
@@ -359,7 +241,7 @@ fn incompatible_volume_excludes_only_its_machine() {
     .unwrap();
     assert!(
         matches!(
-            plan.operations.as_slice(),
+            operations(&plan).as_slice(),
             [
                 DeployOperation::CreateVolume { machine_id: volume_machine, .. },
                 DeployOperation::RunContainer { machine_id: container_machine, .. },
@@ -392,7 +274,7 @@ fn multi_replica_named_volume_replacement_defaults_to_start_first() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.first(),
+        operations(&plan).first(),
         Some(DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. }))
             if spec.update.order == UpdateOrder::StartFirst
     ));
@@ -424,7 +306,7 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::StopContainer { container_id: stopped, .. },
             DeployOperation::ReplaceContainer(ReplacementOperation {
@@ -436,26 +318,4 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
             && replaced == &container_id('b')
             && removed == &container_id('c')
     ));
-}
-
-#[test]
-fn successful_outcome_has_no_failed_or_unexecuted_operation() {
-    let requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(2).unwrap(),
-    });
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        plan.success_outcome::<&str>(),
-        DeployOutcome::Success {
-            completed: plan.operations.clone(),
-        }
-    );
 }

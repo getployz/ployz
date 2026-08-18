@@ -4,7 +4,7 @@ use super::*;
 async fn start_lost_to_a_daemon_restart_starts_the_created_container() {
     let machine = machine('1');
     let created_id = container('a');
-    let plan = plan(vec![run(&machine, spec(None, None, None), true)]);
+    let plan = vec![run(&machine, spec(None, None, None), true)];
     let client = Scripted::new(vec![
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
@@ -24,7 +24,7 @@ async fn start_lost_to_a_daemon_restart_starts_the_created_container() {
 async fn start_lost_to_a_daemon_restart_accepts_a_container_that_is_already_running() {
     let machine = machine('1');
     let created_id = container('a');
-    let plan = plan(vec![run(&machine, spec(Some(0), None, None), false)]);
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
     let client = Scripted::new(vec![
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
@@ -47,10 +47,10 @@ async fn two_consecutive_run_containers_each_survive_a_target_restart() {
     let second_machine = machine('2');
     let first = container('a');
     let second = container('b');
-    let plan = plan(vec![
+    let plan = vec![
         run(&first_machine, spec(None, None, None), true),
         run(&second_machine, spec(None, None, None), true),
-    ]);
+    ];
     let client = Scripted::new(vec![
         created(
             Call::Create(first_machine, ContainerKind::ServiceContainer),
@@ -76,7 +76,7 @@ async fn two_consecutive_run_containers_each_survive_a_target_restart() {
 async fn inspect_lost_to_a_daemon_restart_is_waited_out() {
     let machine = machine('1');
     let created_id = container('a');
-    let plan = plan(vec![run(&machine, spec(Some(0), None, None), false)]);
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
     let client = Scripted::new(vec![
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
@@ -96,7 +96,7 @@ async fn inspect_lost_to_a_daemon_restart_is_waited_out() {
 #[tokio::test(start_paused = true)]
 async fn create_unavailable_is_not_retried() {
     let machine = machine('1');
-    let plan = plan(vec![run(&machine, spec(None, None, None), true)]);
+    let plan = vec![run(&machine, spec(None, None, None), true)];
     let client = Scripted::new(vec![failed_unavailable(
         Call::Create(machine, ContainerKind::ServiceContainer),
         "transport error",
@@ -124,7 +124,7 @@ async fn create_unavailable_is_not_retried() {
 async fn start_unavailable_stops_waiting_when_cancelled() {
     let machine = machine('1');
     let created_id = container('a');
-    let plan = plan(vec![run(&machine, spec(None, None, None), true)]);
+    let plan = vec![run(&machine, spec(None, None, None), true)];
     let client = Scripted::new(vec![
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),

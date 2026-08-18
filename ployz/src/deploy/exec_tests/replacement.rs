@@ -6,7 +6,7 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
         let machine = machine('1');
         let old = container('a');
         let new = container('b');
-        let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StartFirst)]);
+        let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
         let mut steps = vec![
             created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
             ok(Call::Start(machine, new)),
@@ -39,7 +39,7 @@ async fn replacement_compensation_tolerates_a_missing_new_container() {
     let machine = machine('1');
     let old = container('a');
     let new = container('b');
-    let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StartFirst)]);
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
     let mut missing = error("not found");
     missing.code = RpcErrorCode::NotFound;
     let client = Scripted::new(vec![
@@ -71,7 +71,7 @@ async fn replacement_inspect_failure_runs_no_health_compensation() {
     let machine = machine('1');
     let old = container('a');
     let new = container('b');
-    let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StartFirst)]);
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
@@ -104,7 +104,7 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
         let machine = machine('1');
         let old = container('a');
         let new = container('b');
-        let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
+        let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
         let mut steps = vec![
             observed(Call::Inspect(machine, old), running()),
             ok(Call::Stop(machine, old)),
@@ -146,7 +146,7 @@ async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
     let machine = machine('1');
     let old = container('a');
     let new = container('b');
-    let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
     let client = Scripted::new(vec![
         observed(Call::Inspect(machine, old), exited(1)),
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
@@ -182,7 +182,7 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
         let machine = machine('1');
         let old = container('a');
         let new = container('b');
-        let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
+        let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
         let client = Scripted::new(vec![
             observed(Call::Inspect(machine, old), runtime),
             ok(Call::Stop(machine, old)),
@@ -217,7 +217,7 @@ async fn stop_first_tolerates_disappearance_between_inspect_and_stop() {
     let machine = machine('1');
     let old = container('a');
     let new = container('b');
-    let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
     let mut missing = error("not found");
     missing.code = RpcErrorCode::NotFound;
     let client = Scripted::new(vec![
@@ -241,7 +241,7 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
         let machine = machine('1');
         let old = container('a');
         let new = container('b');
-        let plan = plan(vec![replacement(&machine, &old, order)]);
+        let plan = vec![replacement(&machine, &old, order)];
         let mut missing = error("not found");
         missing.code = RpcErrorCode::NotFound;
         let mut steps = Vec::new();
@@ -283,7 +283,7 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
             unreachable!()
         };
         replacement.spec.container.stop_timeout_secs = Some(30);
-        let plan = plan(vec![operation]);
+        let plan = vec![operation];
         let mut steps = Vec::new();
         if order == UpdateOrder::StopFirst {
             steps.extend([
@@ -316,7 +316,7 @@ async fn stop_first_create_or_start_failure_runs_no_compensation() {
         let machine = machine('1');
         let old = container('a');
         let new = container('b');
-        let plan = plan(vec![replacement(&machine, &old, UpdateOrder::StopFirst)]);
+        let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
         let mut steps = vec![
             observed(Call::Inspect(machine, old), running()),
             ok(Call::Stop(machine, old)),

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use super::support::*;
-use ployz::deploy::plan_deploy;
+use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    ComposePruneRefusal, ContainerKind, FailedOperation, MachineFailure, PruneRefusal,
-    QualifiedService, RpcError, RpcErrorCode, ServiceName,
+    ComposePruneRefusal, ContainerKind, MachineFailure, PruneRefusal, QualifiedService, RpcError,
+    RpcErrorCode, ServiceName,
 };
 
 #[test]
@@ -14,13 +14,14 @@ fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
         volume_omissions: vec![machine_id('1')],
         ..snapshot
     };
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
             [&web],
             PlanOptions::default(),
         ),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(
@@ -34,13 +35,14 @@ fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
 #[test]
 fn selected_services_list_obsolete_services_and_remove_nothing() {
     let (web, snapshot) = shop_with_obsolete_debug();
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),
             web,
             PlanOptions::default(),
         ),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(
@@ -54,7 +56,7 @@ fn selected_services_list_obsolete_services_and_remove_nothing() {
 #[test]
 fn filtered_profiles_list_obsolete_services_and_remove_nothing() {
     let (web, snapshot) = shop_with_obsolete_debug();
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
             [&web],
@@ -62,6 +64,7 @@ fn filtered_profiles_list_obsolete_services_and_remove_nothing() {
         )
         .with_compose_refusal(Some(ComposePruneRefusal::FilteredProfiles)),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(
@@ -75,7 +78,7 @@ fn filtered_profiles_list_obsolete_services_and_remove_nothing() {
 #[test]
 fn guessed_project_name_lists_obsolete_services_and_removes_nothing() {
     let (web, snapshot) = shop_with_obsolete_debug();
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
             [&web],
@@ -83,6 +86,7 @@ fn guessed_project_name_lists_obsolete_services_and_removes_nothing() {
         )
         .with_compose_refusal(Some(ComposePruneRefusal::GuessedProjectName)),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(
@@ -135,7 +139,7 @@ fn full_reconciliation_keeps_profiled_services_in_the_target_without_starting_th
         ],
         ..Default::default()
     };
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
             [&web, &worker],
@@ -146,14 +150,15 @@ fn full_reconciliation_keeps_profiled_services_in_the_target_without_starting_th
             vec!["tools".into()],
         )])),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     assert!(plan.would_remove.is_empty());
     assert!(plan.prune_refusal.is_none());
     assert!(!removes(&plan, 'e'));
-    assert!(!plan.operations.iter().any(|operation| {
+    assert!(!plan.operations.iter().any(|row| {
         matches!(
-            operation,
+            &row.operation,
             DeployOperation::RunContainer { spec, .. }
                 | DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })
                 if spec.name.as_str() == "worker"
@@ -178,13 +183,13 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
         PlanOptions::default(),
     )
     .with_dependencies(BTreeMap::from([(web.name.clone(), vec![db.name.clone()])]));
-    let plan = plan_deploy(&intent, &snapshot).unwrap();
+    let plan = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
     assert_eq!(
         plan.would_remove,
         [QualifiedService::parse("app/debug").unwrap()]
     );
     assert_eq!(plan.prune_refusal, None);
-    match plan.operations.as_slice() {
+    match operations(&plan).as_slice() {
         [
             DeployOperation::CreateVolume { .. },
             DeployOperation::RunContainer { spec: first, .. },
@@ -216,7 +221,7 @@ fn selecting_one_service_does_not_remove_the_rest_of_the_project() {
         ],
         ..Default::default()
     };
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::new(
             ProjectName::parse("app").unwrap(),
             vec![web, api],
@@ -228,6 +233,7 @@ fn selecting_one_service_does_not_remove_the_rest_of_the_project() {
             },
         ),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     assert_eq!(
@@ -252,13 +258,14 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
         ],
         ..Default::default()
     };
-    let partial = plan_deploy(
+    let partial = preview_deploy(
         &DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),
             web.clone(),
             PlanOptions::default(),
         ),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     assert!(!removes(&partial, 'd'));
@@ -266,19 +273,20 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
 
     let mut requested_debug = debug;
     requested_debug.container.image = "busybox".into();
-    let selected_debug = plan_deploy(
+    let selected_debug = preview_deploy(
         &DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),
             requested_debug,
             PlanOptions::default(),
         ),
         &snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     assert!(
-        selected_debug.operations.iter().any(|operation| {
+        selected_debug.operations.iter().any(|row| {
             matches!(
-                operation,
+                &row.operation,
                 DeployOperation::ReplaceContainer(replacement)
                     if replacement.old_container_id == container_id('d')
             )
@@ -296,7 +304,7 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
     system_caddy.mode = ServiceMode::Global;
     let mut leftover = container('c', '1', &system_caddy, &service_id('a'));
     leftover.project_name = ProjectName::system();
-    let shop = plan_deploy(
+    let shop = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("shop").unwrap(),
             [&web],
@@ -307,6 +315,7 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
             containers: vec![leftover.clone()],
             ..Default::default()
         },
+        IngressContext::default(),
     )
     .unwrap();
     assert!(!removes(&shop, 'c'));
@@ -316,7 +325,7 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
     let mut extra = container('3', '1', &metrics, &service_id('b'));
     extra.project_name = ProjectName::system();
     leftover.project_name = ProjectName::system();
-    let system = plan_deploy(
+    let system = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::system(),
             [&system_caddy],
@@ -327,6 +336,7 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
             containers: vec![leftover, extra],
             ..Default::default()
         },
+        IngressContext::default(),
     )
     .unwrap();
     assert!(!removes(&system, '3'));
@@ -340,7 +350,7 @@ fn other_project_services_are_not_removed_by_a_user_project_reconcile() {
     let other_web = spec("web");
     let mut other = container('9', '1', &other_web, &service_id('c'));
     other.project_name = ProjectName::parse("other").unwrap();
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
             [&web],
@@ -351,6 +361,7 @@ fn other_project_services_are_not_removed_by_a_user_project_reconcile() {
             containers: vec![other],
             ..Default::default()
         },
+        IngressContext::default(),
     )
     .unwrap();
     assert!(!removes(&plan, '9'));
@@ -363,7 +374,7 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
     let debug = spec("debug");
     let mut hook = container('8', '1', &debug, &service_id('b'));
     hook.kind = ContainerKind::PreDeployHook;
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
             [&web],
@@ -374,6 +385,7 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
             containers: vec![container('d', '1', &debug, &service_id('b')), hook],
             ..Default::default()
         },
+        IngressContext::default(),
     )
     .unwrap();
     assert!(removes(&plan, 'd'));
@@ -384,7 +396,7 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
 fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
     let web = spec("web");
     let debug = spec("debug");
-    let plan = plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("app").unwrap(),
             [&web],
@@ -395,35 +407,29 @@ fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
             containers: vec![container('d', '1', &debug, &service_id('b'))],
             ..Default::default()
         },
+        IngressContext::default(),
     )
     .unwrap();
-    let outcome = plan.failure_outcome(0, "create failed").unwrap();
-    match outcome {
-        DeployOutcome::Failed {
-            completed,
-            failed,
-            unexecuted,
-        } => {
-            assert!(completed.is_empty());
-            assert!(matches!(
-                failed,
-                FailedOperation::Operation {
-                    operation: DeployOperation::RunContainer { .. },
+    let ops = operations(&plan);
+    assert!(
+        matches!(
+            ops.first(),
+            Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
+        ),
+        "desired work comes first: {ops:?}"
+    );
+    assert!(
+        ops.iter().skip(1).any(|operation| {
+            matches!(
+                operation,
+                DeployOperation::RemoveContainer {
+                    container_id: removed,
                     ..
-                }
-            ));
-            assert!(unexecuted.iter().any(|operation| {
-                matches!(
-                    operation,
-                    DeployOperation::RemoveContainer {
-                        container_id: removed,
-                        ..
-                    } if *removed == container_id('d')
-                )
-            }));
-        }
-        other => panic!("expected failed outcome, got {other:?}"),
-    }
+                } if *removed == container_id('d')
+            )
+        }),
+        "prune is after desired work: {ops:?}"
+    );
 }
 
 fn shop_with_obsolete_debug() -> (RequestedServiceSpec, DeploySnapshot) {
@@ -450,12 +456,12 @@ fn spec(name: &str) -> RequestedServiceSpec {
     requested
 }
 
-fn removes(plan: &ployz::deploy::DeployPlan, hex: char) -> bool {
+fn removes(plan: &ployz::deploy::DeployPreview, hex: char) -> bool {
     let id = container_id(hex);
-    plan.operations.iter().any(|operation| {
+    plan.operations.iter().any(|row| {
         matches!(
-            operation,
-            DeployOperation::RemoveContainer { container_id, .. } if *container_id == id
+            row.operation,
+            DeployOperation::RemoveContainer { container_id, .. } if container_id == id
         )
     })
 }

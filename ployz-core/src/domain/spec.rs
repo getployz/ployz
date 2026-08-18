@@ -165,9 +165,9 @@ impl VolumeSource {
         else {
             return;
         };
-        if *external || labels.get(PROJECT_NAME_LABEL).map(String::as_str) == Some(project.as_str())
-        {
-            // Scale rebuilds the Intent from an already-scoped Resolved Service Spec.
+        if *external || labels.contains_key(PROJECT_NAME_LABEL) {
+            // Already bound: scale from a Resolved Service Spec, or a volume that
+            // already carries ownership. Do not prefix again or rewrite a foreign owner.
             return;
         }
         *name = project.volume_name(name);

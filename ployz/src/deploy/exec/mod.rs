@@ -3,10 +3,10 @@ use std::{future::Future, time::Duration};
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
-    DockerVolumeId, ExecutionError, HookFailure, InspectContainerRequest, MachineAction, MachineId,
-    MachineTarget, OperationPhase, OperationRow, ProjectName, RemoveContainerRequest,
-    RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume,
-    StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
+    DockerVolumeId, ExecutionError, FailedOperation, HookFailure, InspectContainerRequest,
+    MachineAction, MachineId, MachineTarget, OperationPhase, OperationRow, ProjectName,
+    RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
+    ServiceVolume, StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -15,8 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 
 use super::{
-    DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ReplacementCompensation,
-    ReplacementOperation, RestartAttempt, pending_rows,
+    DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestartAttempt,
 };
 
 pub(super) use super::progress::Progress;
@@ -29,15 +28,43 @@ pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
 
-/// Executes this finite plan once. Reusing the same value starts a fresh attempt from operation 0.
-// TODO(UT-087): there is deliberately no persisted "already run" guard at this boundary.
-pub async fn execute_plan(
-    plan: &DeployPlan,
-    client: &Client,
-    cancellation: &CancellationToken,
-    project_name: &ProjectName,
-) -> DeployOutcome<ExecutionError> {
-    execute_with(plan, client, cancellation, project_name).await
+fn failure_outcome_from<E>(
+    operations: &[DeployOperation],
+    completed_count: usize,
+    error: E,
+) -> Option<DeployOutcome<E>> {
+    let completed = operations.get(..completed_count)?;
+    let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
+    Some(DeployOutcome::Failed {
+        completed: completed.to_vec(),
+        failed: FailedOperation::Operation {
+            operation: failed.clone(),
+            error,
+        },
+        unexecuted: unexecuted.to_vec(),
+    })
+}
+
+fn replacement_health_failure_outcome_from<E>(
+    operations: &[DeployOperation],
+    completed_count: usize,
+    error: E,
+    compensation: ReplacementCompensation<E>,
+) -> Option<DeployOutcome<E>> {
+    let completed = operations.get(..completed_count)?;
+    let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
+    let DeployOperation::ReplaceContainer(operation) = failed else {
+        return None;
+    };
+    Some(DeployOutcome::Failed {
+        completed: completed.to_vec(),
+        failed: FailedOperation::ReplacementHealth {
+            operation: operation.clone(),
+            error,
+            compensation,
+        },
+        unexecuted: unexecuted.to_vec(),
+    })
 }
 
 pub(super) trait MachineOperations {
@@ -354,22 +381,6 @@ where
     }
 }
 
-async fn execute_with<C: MachineOperations>(
-    plan: &DeployPlan,
-    client: &C,
-    cancellation: &CancellationToken,
-    project_name: &ProjectName,
-) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(
-        pending_rows(&plan.operations, &DeploySnapshot::default()),
-        client,
-        cancellation,
-        None,
-        project_name,
-    )
-    .await
-}
-
 pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     rows: Vec<OperationRow>,
     client: &C,
@@ -377,6 +388,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     tx: Option<UnboundedSender<DeployEvent>>,
     project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
+    // TODO(UT-087): there is deliberately no persisted "already run" guard at this boundary.
     let operations: Vec<DeployOperation> = rows.iter().map(|row| row.operation.clone()).collect();
     let client = RestartTolerant {
         inner: client,
@@ -387,9 +399,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     for (index, operation) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             progress.fail(index, ExecutionError::Cancelled);
-            let outcome =
-                DeployPlan::failure_outcome_from(&operations, index, ExecutionError::Cancelled)
-                    .expect("the failed operation belongs to this plan");
+            let outcome = failure_outcome_from(&operations, index, ExecutionError::Cancelled)
+                .expect("the failed operation belongs to this plan");
             progress.outcome(outcome.clone());
             return outcome;
         }
@@ -408,7 +419,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
             Err(OperationFailure::Ordinary(error)) => {
                 progress.fail(index, error.clone());
-                let outcome = DeployPlan::failure_outcome_from(&operations, index, error)
+                let outcome = failure_outcome_from(&operations, index, error)
                     .expect("the failed operation belongs to this plan");
                 progress.outcome(outcome.clone());
                 return outcome;
@@ -418,7 +429,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 compensation,
             }) => {
                 progress.fail(index, error.clone());
-                let outcome = DeployPlan::replacement_health_failure_outcome_from(
+                let outcome = replacement_health_failure_outcome_from(
                     &operations,
                     index,
                     error,

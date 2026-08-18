@@ -9,7 +9,7 @@ use ployz_core::{
 use serde_json::Value;
 
 use super::*;
-use crate::deploy::{DeployOperation, DeploySnapshot, plan_deploy};
+use crate::deploy::{DeployOperation, DeploySnapshot, IngressContext, preview_deploy};
 
 #[test]
 fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
@@ -85,15 +85,16 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     let requested = choice.requested.unwrap();
     assert_eq!(choice.project_name.as_str(), "app");
     assert_eq!(requested.container.image, "v1");
-    let mixed = plan_deploy(
+    let mixed = preview_deploy(
         &DeployIntent::apply_one(choice.project_name, requested, PlanOptions::default()),
         &mixed_snapshot,
+        IngressContext::default(),
     )
     .unwrap();
     let image = mixed
         .operations
         .iter()
-        .find_map(|operation| match operation {
+        .find_map(|row| match &row.operation {
             DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
                 Some(spec.container.image.as_str())
             }

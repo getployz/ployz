@@ -5,24 +5,33 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, EliminatingConstraint,
-    EliminatingConstraints, FailedOperation, ObservedDockerVolume, PlanError, PlanOptions,
-    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, compare_specs,
+    DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
+    EliminatingConstraints, IngressContext, ObservedDockerVolume, PlanError, PlanOptions,
+    ReplacementOperation, ServiceAttempt, compare_specs, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(
     requested: impl IntoIterator<Item = &'a RequestedServiceSpec>,
     snapshot: &DeploySnapshot,
     options: PlanOptions,
-) -> Result<ployz::deploy::DeployPlan, PlanError> {
-    ployz::deploy::plan_deploy(
+) -> Result<DeployPreview, PlanError> {
+    preview_deploy(
         &DeployIntent::apply_all(ProjectName::parse("app").unwrap(), requested, options),
         snapshot,
+        IngressContext::default(),
     )
 }
 
+pub(super) fn operations(preview: &DeployPreview) -> Vec<DeployOperation> {
+    preview
+        .operations
+        .iter()
+        .map(|row| row.operation.clone())
+        .collect()
+}
+
 pub(super) fn assert_no_eligible(
-    result: Result<ployz::deploy::DeployPlan, PlanError>,
+    result: Result<DeployPreview, PlanError>,
     expected: &[EliminatingConstraint],
     display_needles: &[&str],
 ) {

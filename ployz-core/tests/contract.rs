@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, net::Ipv4Addr, num::NonZeroU32};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::Ipv4Addr,
+    num::NonZeroU32,
+};
 
 use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
@@ -274,6 +278,28 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
         VolumeSource::Named { name, labels, .. } => {
             assert_eq!(name.as_str(), "shared");
             assert!(labels.is_empty());
+        }
+        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
+            panic!("expected a named volume")
+        }
+    }
+
+    let mut foreign = VolumeSource::Named {
+        name: DockerVolumeName::parse("blog_data").unwrap(),
+        external: false,
+        driver: None,
+        labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "blog".into())]),
+        no_copy: false,
+        subpath: None,
+    };
+    foreign.scope_to_project(&project);
+    match &foreign {
+        VolumeSource::Named { name, labels, .. } => {
+            assert_eq!(name.as_str(), "blog_data");
+            assert_eq!(
+                labels.get(PROJECT_NAME_LABEL).map(String::as_str),
+                Some("blog")
+            );
         }
         VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
             panic!("expected a named volume")

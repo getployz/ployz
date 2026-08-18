@@ -12,7 +12,7 @@ fn new_replicated_service_runs_the_requested_count_across_available_machines() {
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::RunContainer { machine_id: first, spec: first_spec, .. },
             DeployOperation::RunContainer { machine_id: second, spec: second_spec, .. },
@@ -37,7 +37,7 @@ fn new_container_keeps_an_explicit_stop_first_order_in_its_resolved_spec() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::RunContainer { spec, .. }]
             if spec.update.order == UpdateOrder::StopFirst
     ));
@@ -78,7 +78,7 @@ fn changed_running_container_is_replaced_on_its_machine() {
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::ReplaceContainer(ReplacementOperation {
             machine_id: target_machine_id,
             old_container_id,
@@ -116,7 +116,7 @@ fn global_active_non_running_container_is_replaced_before_reusing_its_host_port(
         .unwrap();
 
         assert!(matches!(
-            plan.operations.as_slice(),
+            operations(&plan).as_slice(),
             [DeployOperation::ReplaceContainer(ReplacementOperation {
                 old_container_id,
                 spec,
@@ -145,7 +145,7 @@ fn replicated_plan_removes_containers_beyond_the_requested_count() {
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::RemoveContainer {
             machine_id: target_machine_id,
             container_id: removed,
@@ -178,7 +178,7 @@ fn changing_replica_count_keeps_matching_existing_containers() {
     assert!(
         plan.operations
             .iter()
-            .all(|operation| matches!(operation, DeployOperation::RunContainer { .. }))
+            .all(|row| matches!(row.operation, DeployOperation::RunContainer { .. }))
     );
 }
 
@@ -200,7 +200,7 @@ fn global_plan_is_exactly_one_container_per_currently_available_machine() {
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert_eq!(
-        plan.operations,
+        operations(&plan),
         vec![DeployOperation::RemoveContainer {
             machine_id: machine_id('2'),
             container_id: container_id('c'),
@@ -226,7 +226,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
     let targets = plan
         .operations
         .iter()
-        .map(|operation| match operation {
+        .map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => *machine_id,
             other @ (DeployOperation::CreateVolume { .. }
             | DeployOperation::StopContainer { .. }
@@ -248,10 +248,10 @@ fn empty_placement_keeps_every_eligible_machine_and_all_is_a_name() {
         ..Default::default()
     };
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
-    let targets = |plan: &ployz::deploy::DeployPlan| {
+    let targets = |plan: &ployz::deploy::DeployPreview| {
         plan.operations
             .iter()
-            .map(|operation| match operation {
+            .map(|row| match &row.operation {
                 DeployOperation::RunContainer { machine_id, .. } => *machine_id,
                 other @ (DeployOperation::CreateVolume { .. }
                 | DeployOperation::StopContainer { .. }
@@ -287,8 +287,8 @@ fn mounted_docker_volume_anchors_all_replicas_to_its_machine() {
 
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
-    assert!(plan.operations.iter().all(|operation| matches!(
-        operation,
+    assert!(plan.operations.iter().all(|row| matches!(
+        &row.operation,
         DeployOperation::RunContainer { machine_id: target, .. } if target == &machine_id('2')
     )));
     assert_eq!(plan.operations.len(), 2);
@@ -308,7 +308,7 @@ fn missing_mounted_volume_is_created_before_replicas_on_one_machine() {
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: volume_machine, volume },
             DeployOperation::RunContainer { machine_id: first, .. },
@@ -343,7 +343,7 @@ fn missing_named_volume_is_created_before_three_replicas() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.first(),
+        operations(&plan).first(),
         Some(DeployOperation::CreateVolume { .. })
     ));
     assert_eq!(plan.operations.len(), 4);
@@ -385,7 +385,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
         let order = plan
             .operations
             .iter()
-            .find_map(|operation| match operation {
+            .find_map(|row| match &row.operation {
                 DeployOperation::ReplaceContainer(operation) => Some(operation.spec.update.order),
                 DeployOperation::CreateVolume { .. }
                 | DeployOperation::RunContainer { .. }
@@ -419,7 +419,7 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })]
             if spec.update.order == UpdateOrder::StopFirst
     ));
@@ -445,7 +445,7 @@ fn two_global_services_sharing_a_missing_volume_create_it_once_per_machine() {
     let created_on = plan
         .operations
         .iter()
-        .filter_map(|operation| match operation {
+        .filter_map(|row| match &row.operation {
             DeployOperation::CreateVolume { machine_id, .. } => Some(*machine_id),
             DeployOperation::RunContainer { .. }
             | DeployOperation::StopContainer { .. }
@@ -484,7 +484,7 @@ fn two_services_sharing_a_named_volume_create_it_once() {
     assert_eq!(
         plan.operations
             .iter()
-            .filter(|operation| matches!(operation, DeployOperation::CreateVolume { .. }))
+            .filter(|row| matches!(row.operation, DeployOperation::CreateVolume { .. }))
             .count(),
         1
     );
@@ -509,7 +509,7 @@ fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::CreateVolume { machine_id: volume_machine, volume }, rest @ ..]
             if volume_machine == &machine_id('1')
                 && matches!(&volume.source, VolumeSource::Named { name, .. } if name.as_str() == "app_multi_missing")
@@ -541,8 +541,8 @@ fn replicas_run_on_the_intersection_of_existing_named_volumes() {
     .unwrap();
 
     assert_eq!(plan.operations.len(), 2);
-    assert!(plan.operations.iter().all(|operation| matches!(
-        operation,
+    assert!(plan.operations.iter().all(|row| matches!(
+        &row.operation,
         DeployOperation::RunContainer { machine_id: target, .. } if target == &machine_id('1')
     )));
 }

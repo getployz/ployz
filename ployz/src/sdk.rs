@@ -152,7 +152,7 @@ impl Session {
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the session is closed, snapshot
-    /// gathering fails, ingress expansion fails, or planning fails.
+    /// gathering fails, or planning fails.
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
         let preview = client.preview(intent).await?;

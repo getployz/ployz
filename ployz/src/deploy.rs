@@ -2,12 +2,15 @@ use std::{collections::BTreeSet, fmt};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    IngressHost, MachineFailure, MachineId, MachineName, MachineObservation, MachineTarget,
-    ProjectName, QualifiedService, RpcError, ServiceObservation, derive_services,
+    IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName, MachineObservation,
+    MachineTarget, ProjectName, QualifiedService, RpcError, ServiceObservation, derive_services,
 };
 use thiserror::Error;
 
-use crate::compose::ComposeProject;
+use crate::{
+    compose::ComposeProject,
+    dns::{DomainRequired, ExpandIngressError},
+};
 
 mod apply;
 mod exec;
@@ -19,10 +22,11 @@ mod render;
 pub(crate) use apply::{
     ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec, remove_project,
 };
-pub use exec::execute_plan;
 pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
-pub use planning::{VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal};
+pub use planning::{
+    IngressContext, VolumeFate, data_loss_from_plan, plan_project_removal, preview_deploy,
+};
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
     ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
@@ -106,97 +110,6 @@ pub struct ObservedDockerVolume {
     pub driver: String,
     pub options: std::collections::BTreeMap<String, String>,
     pub labels: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeployPlan {
-    pub operations: Vec<DeployOperation>,
-    /// Visible Services in the Project that Compose no longer declares.
-    pub would_remove: Vec<QualifiedService>,
-    /// Compose-declared Docker Volumes owned by this Project that this Compose
-    /// input no longer declares. They are not deleted.
-    pub preserved_volumes: Vec<ployz_core::PreservedVolume>,
-    /// Why pruning will not run. `None` means obsolete Services are removed.
-    pub prune_refusal: Option<PruneRefusal>,
-    /// Observer-relative warnings produced while planning, including hostname detection.
-    pub warnings: Vec<DeployWarning>,
-}
-
-impl DeployPlan {
-    #[must_use]
-    pub fn new(operations: Vec<DeployOperation>) -> Self {
-        Self {
-            operations,
-            would_remove: Vec::new(),
-            preserved_volumes: Vec::new(),
-            prune_refusal: None,
-            warnings: Vec::new(),
-        }
-    }
-
-    pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
-        Self::failure_outcome_from(&self.operations, completed_count, error)
-    }
-
-    pub(super) fn failure_outcome_from<E>(
-        operations: &[DeployOperation],
-        completed_count: usize,
-        error: E,
-    ) -> Option<DeployOutcome<E>> {
-        let completed = operations.get(..completed_count)?;
-        let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
-        Some(DeployOutcome::Failed {
-            completed: completed.to_vec(),
-            failed: FailedOperation::Operation {
-                operation: failed.clone(),
-                error,
-            },
-            unexecuted: unexecuted.to_vec(),
-        })
-    }
-
-    pub fn replacement_health_failure_outcome<E>(
-        &self,
-        completed_count: usize,
-        error: E,
-        compensation: ReplacementCompensation<E>,
-    ) -> Option<DeployOutcome<E>> {
-        Self::replacement_health_failure_outcome_from(
-            &self.operations,
-            completed_count,
-            error,
-            compensation,
-        )
-    }
-
-    pub(super) fn replacement_health_failure_outcome_from<E>(
-        operations: &[DeployOperation],
-        completed_count: usize,
-        error: E,
-        compensation: ReplacementCompensation<E>,
-    ) -> Option<DeployOutcome<E>> {
-        let completed = operations.get(..completed_count)?;
-        let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
-        let DeployOperation::ReplaceContainer(operation) = failed else {
-            return None;
-        };
-        Some(DeployOutcome::Failed {
-            completed: completed.to_vec(),
-            failed: FailedOperation::ReplacementHealth {
-                operation: operation.clone(),
-                error,
-                compensation,
-            },
-            unexecuted: unexecuted.to_vec(),
-        })
-    }
-
-    #[must_use]
-    pub fn success_outcome<E>(&self) -> DeployOutcome<E> {
-        DeployOutcome::Success {
-            completed: self.operations.clone(),
-        }
-    }
 }
 
 /// Why [`PlanError::NoEligibleMachines`] found zero Machines.
@@ -353,6 +266,19 @@ pub enum PlanError {
         hostname: IngressHost,
         owner: QualifiedService,
     },
+    #[error(transparent)]
+    DomainRequired(#[from] DomainRequired),
+    #[error(transparent)]
+    GeneratedLabel(#[from] IngressLabelTooLong),
+}
+
+impl From<ExpandIngressError> for PlanError {
+    fn from(error: ExpandIngressError) -> Self {
+        match error {
+            ExpandIngressError::DomainRequired(error) => Self::DomainRequired(error),
+            ExpandIngressError::LabelTooLong(error) => Self::GeneratedLabel(error),
+        }
+    }
 }
 
 fn quoted_names(names: &[DockerVolumeName]) -> String {
@@ -374,15 +300,15 @@ fn quoted_names(names: &[DockerVolumeName]) -> String {
 /// # Errors
 ///
 /// Returns when an external volume is absent from every Machine, or when
-/// placement, volumes, service identity, or the apply-set dependency graph
-/// cannot produce a plan.
+/// placement, volumes, service identity, hostname assignment, or the apply-set
+/// dependency graph cannot produce a preview.
 pub fn plan_compose(
     project: &ComposeProject,
     snapshot: &DeploySnapshot,
     project_name: ProjectName,
-) -> Result<DeployPlan, PlanError> {
+) -> Result<DeployPreview, PlanError> {
     reject_missing_external_volumes(project, snapshot)?;
-    plan_deploy(
+    preview_deploy(
         &DeployIntent::from_named_specs(
             project_name,
             &project.services,
@@ -391,6 +317,7 @@ pub fn plan_compose(
         )
         .with_service_profiles(project.service_profiles()),
         snapshot,
+        IngressContext::default(),
     )
 }
 

@@ -313,7 +313,7 @@ pub enum DeployOperation {
         spec: ResolvedServiceSpec,
         old_hook_containers: Vec<(MachineId, ContainerId)>,
     },
-    /// Destroy a named Docker Volume. Project removal may emit this; `plan_deploy` never does.
+    /// Destroy a named Docker Volume. Project removal may emit this; `preview_deploy` never does.
     RemoveVolume { id: DockerVolumeId },
 }
 

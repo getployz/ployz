@@ -21,7 +21,7 @@ fn already_owned_volume_names_are_not_prefixed_again() {
     assert!(
         plan.operations
             .iter()
-            .all(|operation| !matches!(operation, DeployOperation::CreateVolume { .. })),
+            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. })),
         "already-owned physical names must not be prefixed again: {:?}",
         plan.operations
     );
@@ -40,7 +40,7 @@ fn sibling_target_volume_is_not_listed_as_preserved_on_a_partial_deploy() {
     });
     worker.name = ServiceName::parse("worker").unwrap();
     add_named_volume(&mut worker, "worker-data");
-    let plan = ployz::deploy::plan_deploy(
+    let plan = preview_deploy(
         &DeployIntent::new(
             ProjectName::parse("app").unwrap(),
             vec![web, worker],
@@ -59,6 +59,7 @@ fn sibling_target_volume_is_not_listed_as_preserved_on_a_partial_deploy() {
             ],
             ..Default::default()
         },
+        IngressContext::default(),
     )
     .unwrap();
     assert!(
@@ -125,7 +126,7 @@ fn external_named_volume_keeps_its_declared_identity() {
     )
     .unwrap();
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::CreateVolume { volume, .. }, DeployOperation::RunContainer { .. }]
             if matches!(
                 &volume.source,
@@ -134,6 +135,42 @@ fn external_named_volume_keeps_its_declared_identity() {
                         && !labels.contains_key(MANAGED_LABEL)
                         && !labels.contains_key(PROJECT_NAME_LABEL)
                         && labels.get("keep").map(String::as_str) == Some("me")
+            )
+    ));
+}
+
+#[test]
+fn foreign_project_volume_label_is_not_rewritten() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut requested, "data");
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mounts = requested.volume_graph.mounts().to_vec();
+    let volume = volumes.first_mut().expect("named volume was added");
+    let VolumeSource::Named { name, labels, .. } = &mut volume.source else {
+        panic!("named volume");
+    };
+    *name = DockerVolumeName::parse("blog_data").unwrap();
+    labels.insert(PROJECT_NAME_LABEL.into(), "blog".into());
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [DeployOperation::CreateVolume { volume, .. }, DeployOperation::RunContainer { .. }]
+            if matches!(
+                &volume.source,
+                VolumeSource::Named { name, labels, .. }
+                    if name.as_str() == "blog_data"
+                        && labels.get(PROJECT_NAME_LABEL).map(String::as_str) == Some("blog")
             )
     ));
 }
