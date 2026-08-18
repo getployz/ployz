@@ -245,9 +245,62 @@ const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "MachineAction",
+        Shape::ClosedString(&[
+            "CreateVolume",
+            "CreateContainer",
+            "StartContainer",
+            "InspectContainer",
+            "StopContainer",
+            "RemoveContainer",
+        ]),
+    ),
+    (
+        "HealthFailure",
+        Shape::ExternallyTagged {
+            params: "",
+            variants: &[
+                ("Cancelled", None),
+                ("TimedOut", None),
+                ("Runtime", Some("ContainerRuntimeObservation")),
+            ],
+        },
+    ),
+    (
+        "HookFailure",
+        Shape::ExternallyTagged {
+            params: "",
+            variants: &[
+                ("Cancelled", Some("{ stop_error: RpcError | null }")),
+                ("TimedOut", Some("{ stop_error: RpcError | null }")),
+                ("Exit", Some("number")),
+            ],
+        },
+    ),
+    (
+        "ExecutionError",
+        Shape::ExternallyTagged {
+            params: "",
+            variants: &[
+                (
+                    "Machine",
+                    Some("{ action: MachineAction; error: RpcError }"),
+                ),
+                (
+                    "Health",
+                    Some("{ container_id: ContainerId; failure: HealthFailure }"),
+                ),
+                (
+                    "Hook",
+                    Some("{ container_id: ContainerId; failure: HookFailure }"),
+                ),
+            ],
+        },
+    ),
+    (
         "RestartAttempt",
         Shape::ExternallyTagged {
-            params: "<E = RpcError>",
+            params: "<E = ExecutionError>",
             variants: &[
                 ("NotAttempted", None),
                 ("Attempted", Some("SerdeResult<null, E>")),
@@ -257,7 +310,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
     (
         "ReplacementCompensation",
         Shape::ExternallyTagged {
-            params: "<E = RpcError>",
+            params: "<E = ExecutionError>",
             variants: &[
                 (
                     "StartFirst",
@@ -275,7 +328,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
     (
         "FailedOperation",
         Shape::ExternallyTagged {
-            params: "<E = RpcError>",
+            params: "<E = ExecutionError>",
             variants: &[
                 (
                     "Operation",
@@ -293,7 +346,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployOutcome",
         Shape::ExternallyTagged {
-            params: "<E = RpcError>",
+            params: "<E = ExecutionError>",
             variants: &[
                 ("Success", Some("{ completed: DeployOperation[] }")),
                 (
@@ -461,8 +514,8 @@ pub fn artifacts() -> Artifacts {
 
 /// Write generated files under the napi package root.
 ///
-/// Façade declarations (`connect` / `about` / `close`) live in handwritten
-/// `index.d.ts` and are not emitted here.
+/// Façade declarations (`connect` / `about` / `deploy` / `close`) live in
+/// handwritten `index.d.ts` and are not emitted here.
 ///
 /// # Errors
 ///

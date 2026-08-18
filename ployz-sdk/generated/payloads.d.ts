@@ -145,19 +145,36 @@ export type DeployOperation =
   | Additive<{ StopHook: { machine_id: MachineId; container_id: ContainerId } }>
   | Additive<{ RunHook: { machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> } }>;
 
-export type RestartAttempt<E = RpcError> =
+export type MachineAction = "CreateVolume" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer";
+
+export type HealthFailure =
+  | "Cancelled"
+  | "TimedOut"
+  | Additive<{ Runtime: ContainerRuntimeObservation }>;
+
+export type HookFailure =
+  | Additive<{ Cancelled: { stop_error: RpcError | null } }>
+  | Additive<{ TimedOut: { stop_error: RpcError | null } }>
+  | Additive<{ Exit: number }>;
+
+export type ExecutionError =
+  | Additive<{ Machine: { action: MachineAction; error: RpcError } }>
+  | Additive<{ Health: { container_id: ContainerId; failure: HealthFailure } }>
+  | Additive<{ Hook: { container_id: ContainerId; failure: HookFailure } }>;
+
+export type RestartAttempt<E = ExecutionError> =
   | "NotAttempted"
   | Additive<{ Attempted: SerdeResult<null, E> }>;
 
-export type ReplacementCompensation<E = RpcError> =
+export type ReplacementCompensation<E = ExecutionError> =
   | Additive<{ StartFirst: { stop_new_container: SerdeResult<null, E> } }>
   | Additive<{ StopFirst: { stop_new_container: SerdeResult<null, E>; restart_old_container: RestartAttempt<E> } }>;
 
-export type FailedOperation<E = RpcError> =
+export type FailedOperation<E = ExecutionError> =
   | Additive<{ Operation: { operation: DeployOperation; error: E } }>
   | Additive<{ ReplacementHealth: { operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> } }>;
 
-export type DeployOutcome<E = RpcError> =
+export type DeployOutcome<E = ExecutionError> =
   | Additive<{ Success: { completed: DeployOperation[] } }>
   | Additive<{ Failed: { completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] } }>;
 

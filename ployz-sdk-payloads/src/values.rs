@@ -10,14 +10,14 @@ use ployz_core::{
     CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, ContractDescription,
     DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DeployOperation, DeployOutcome, DockerVolume,
-    DockerVolumeId, DockerVolumeName, FailedOperation, HealthObservation, HookContainer,
-    IngressHost, Machine, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, PROTOCOL_MAJOR,
-    PartialResult, PlanOptions, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
-    RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
-    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
-    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, VolumeSource,
-    WireGuardPublicKey,
+    DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation, HealthFailure,
+    HealthObservation, HookContainer, HookFailure, IngressHost, Machine, MachineAction,
+    MachineFailure, MachineId, MachineName, MachineObservation, MachineRuntime, MachineSuccess,
+    ManagementAddress, MembershipObservation, PROTOCOL_MAJOR, PartialResult, PlanOptions,
+    ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec, RestartAttempt, RpcError,
+    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
+    ServiceAttempt, ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceVolume,
+    ServiceVolumeReference, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -197,13 +197,58 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             deploy_operations().iter().map(to_value).collect(),
         ),
         (
+            "MachineAction",
+            vec![
+                to_value(&MachineAction::CreateVolume),
+                to_value(&MachineAction::CreateContainer),
+                to_value(&MachineAction::StartContainer),
+                to_value(&MachineAction::InspectContainer),
+                to_value(&MachineAction::StopContainer),
+                to_value(&MachineAction::RemoveContainer),
+            ],
+        ),
+        (
+            "HealthFailure",
+            vec![
+                to_value(&HealthFailure::Cancelled),
+                to_value(&HealthFailure::TimedOut),
+                to_value(&HealthFailure::Runtime(
+                    ContainerRuntimeObservation::Restarting,
+                )),
+            ],
+        ),
+        (
+            "HookFailure",
+            vec![
+                to_value(&HookFailure::Cancelled { stop_error: None }),
+                to_value(&HookFailure::TimedOut {
+                    stop_error: Some(rpc_error()),
+                }),
+                to_value(&HookFailure::Exit(7)),
+            ],
+        ),
+        (
+            "ExecutionError",
+            vec![
+                to_value(&execution_error_machine()),
+                to_value(&ExecutionError::Health {
+                    container_id: container_id(),
+                    failure: HealthFailure::TimedOut,
+                }),
+                to_value(&ExecutionError::Hook {
+                    container_id: container_id(),
+                    failure: HookFailure::Exit(1),
+                }),
+            ],
+        ),
+        (
             "FailedOperation",
             vec![
                 to_value(&failed),
                 to_value(&FailedOperation::ReplacementHealth {
                     operation: replacement_operation(),
-                    error: rpc_error(),
-                    compensation: ReplacementCompensation::<RpcError>::StartFirst {
+                    error: execution_error_machine(),
+                    compensation: ReplacementCompensation::<ExecutionError>::StartFirst {
                         stop_new_container: Ok(()),
                     },
                 }),
@@ -212,17 +257,17 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         (
             "RestartAttempt",
             vec![
-                to_value(&RestartAttempt::<RpcError>::NotAttempted),
-                to_value(&RestartAttempt::<RpcError>::Attempted(Ok(()))),
+                to_value(&RestartAttempt::<ExecutionError>::NotAttempted),
+                to_value(&RestartAttempt::<ExecutionError>::Attempted(Ok(()))),
             ],
         ),
         (
             "ReplacementCompensation",
             vec![
-                to_value(&ReplacementCompensation::<RpcError>::StartFirst {
+                to_value(&ReplacementCompensation::<ExecutionError>::StartFirst {
                     stop_new_container: Ok(()),
                 }),
-                to_value(&ReplacementCompensation::<RpcError>::StopFirst {
+                to_value(&ReplacementCompensation::<ExecutionError>::StopFirst {
                     stop_new_container: Ok(()),
                     restart_old_container: RestartAttempt::NotAttempted,
                 }),
@@ -306,7 +351,7 @@ fn deploy_intent() -> DeployIntent {
     DeployIntent::new(Vec::new(), Vec::new(), PlanOptions::default())
 }
 
-fn deploy_outcome() -> DeployOutcome<RpcError> {
+fn deploy_outcome() -> DeployOutcome<ExecutionError> {
     DeployOutcome::Success {
         completed: vec![DeployOperation::StopContainer {
             machine_id: machine_id(MACHINE_ID_HEX),
@@ -315,17 +360,27 @@ fn deploy_outcome() -> DeployOutcome<RpcError> {
     }
 }
 
-fn deploy_outcome_failed() -> DeployOutcome<RpcError> {
+fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
     DeployOutcome::Failed {
         completed: Vec::new(),
         failed: FailedOperation::Operation {
-            operation: DeployOperation::StopContainer {
+            operation: DeployOperation::CreateVolume {
                 machine_id: machine_id(MACHINE_ID_HEX),
-                container_id: container_id(),
+                volume: service_volume(),
             },
-            error: rpc_error(),
+            error: execution_error_machine(),
         },
-        unexecuted: Vec::new(),
+        unexecuted: vec![DeployOperation::StopContainer {
+            machine_id: machine_id(MACHINE_ID_HEX),
+            container_id: container_id(),
+        }],
+    }
+}
+
+fn execution_error_machine() -> ExecutionError {
+    ExecutionError::Machine {
+        action: MachineAction::CreateVolume,
+        error: rpc_error(),
     }
 }
 

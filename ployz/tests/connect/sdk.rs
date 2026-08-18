@@ -1,11 +1,13 @@
-//! Façade tests for Cloud session connect / about / close.
+//! Façade tests for Cloud session connect / about / deploy / close.
 
 use std::{path::PathBuf, process::Command, time::Duration};
 
+use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz::sdk;
 use ployz_core::{
-    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, MachineId, PROTOCOL_MAJOR,
-    RpcErrorCode,
+    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployOperation,
+    DeployOutcome, ExecutionError, FailedOperation, MachineId, PROTOCOL_MAJOR,
+    RequestedServiceSpec, RpcErrorCode,
 };
 use tokio::time::timeout;
 
@@ -135,7 +137,125 @@ async fn close_drops_the_session_and_repeated_lifecycle_works() {
 }
 
 #[tokio::test]
-async fn node_smoke_covers_connect_about_error_and_close() {
+async fn deploy_returns_success_for_a_completed_run() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone()),
+        )
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+
+    let outcome = client
+        .deploy(DeployIntent::apply_one(spec("web"), skip_health()))
+        .await
+        .unwrap();
+
+    let DeployOutcome::Success { completed } = outcome else {
+        panic!("expected success: {outcome:?}");
+    };
+    assert_eq!(completed.len(), 1);
+    assert!(matches!(
+        completed.first(),
+        Some(DeployOperation::RunContainer { spec, skip_health_monitor: true, .. })
+            if spec.name.as_str() == "web"
+    ));
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
+async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone()),
+        )
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+    let outcome = client
+        .deploy(DeployIntent::apply_one(
+            spec_with_volume("web", "scratch"),
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+
+    let DeployOutcome::Failed {
+        completed,
+        failed,
+        unexecuted,
+    } = outcome
+    else {
+        panic!("expected partial failure: {outcome:?}");
+    };
+    assert!(completed.is_empty());
+    assert!(matches!(
+        failed,
+        FailedOperation::Operation {
+            operation: DeployOperation::CreateVolume { volume, .. },
+            error: ExecutionError::Machine { .. },
+        } if volume.reference.as_str() == "scratch"
+    ));
+    assert_eq!(unexecuted.len(), 1);
+    assert!(matches!(
+        unexecuted.first(),
+        Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
+    ));
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
+async fn deploy_planning_error_is_a_typed_rpc_error() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(description.machine_id, {
+            let mut service = DiscoveryService::new(description.clone());
+            service.machines.clear();
+            service
+        })
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+
+    let error = client
+        .deploy(DeployIntent::apply_one(spec("web"), skip_health()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
+async fn node_smoke_covers_connect_about_deploy_and_close() {
     let description = advertised_description();
     let session = RelaySession::start().await;
     let _machine = session
@@ -225,4 +345,34 @@ fn native_addon() -> PathBuf {
         "ployz-sdk cdylib was not produced under {}",
         target.join(profile).display()
     );
+}
+
+fn spec(name: &str) -> RequestedServiceSpec {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "always" }
+    }))
+    .unwrap()
+}
+
+fn spec_with_volume(name: &str, volume: &str) -> RequestedServiceSpec {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "always" },
+        "volumes": [{
+            "reference": volume,
+            "source": { "kind": "named", "name": volume }
+        }],
+        "mounts": [{ "volume": volume, "target": format!("/{volume}") }]
+    }))
+    .unwrap()
+}
+
+fn skip_health() -> PlanOptions {
+    PlanOptions {
+        skip_health_monitor: true,
+        ..PlanOptions::default()
+    }
 }

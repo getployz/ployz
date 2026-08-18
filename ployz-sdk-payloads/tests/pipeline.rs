@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
     ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent,
-    DeployOutcome, DockerVolume, HealthObservation, MembershipObservation, PlanOptions,
-    RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame, ServiceAttempt,
+    DeployOutcome, DockerVolume, ExecutionError, HealthObservation, MembershipObservation,
+    PlanOptions, RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    ServiceAttempt,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -128,7 +129,8 @@ fn json_fixtures_round_trip_through_rust_types() {
     let attempt: ServiceAttempt = decode_fixture(fixture(&fixtures, "service_attempt"));
     assert_eq!(attempt.name.as_str(), "web");
 
-    let outcome: DeployOutcome<RpcError> = decode_fixture(fixture(&fixtures, "deploy_outcome"));
+    let outcome: DeployOutcome<ExecutionError> =
+        decode_fixture(fixture(&fixtures, "deploy_outcome"));
     let DeployOutcome::Success { completed } = &outcome else {
         panic!("deploy_outcome fixture must be Success");
     };
@@ -138,11 +140,22 @@ fn json_fixtures_round_trip_through_rust_types() {
         *fixture(&fixtures, "deploy_outcome")
     );
 
-    let failed: DeployOutcome<RpcError> =
+    let failed: DeployOutcome<ExecutionError> =
         decode_fixture(fixture(&fixtures, "deploy_outcome_failed"));
-    let DeployOutcome::Failed { .. } = &failed else {
+    let DeployOutcome::Failed {
+        completed,
+        failed: failed_op,
+        unexecuted,
+    } = &failed
+    else {
         panic!("deploy_outcome_failed fixture must be Failed");
     };
+    assert!(completed.is_empty());
+    assert_eq!(unexecuted.len(), 1);
+    let ployz_core::FailedOperation::Operation { error, .. } = failed_op else {
+        panic!("deploy_outcome_failed fixture must wrap an operation error");
+    };
+    assert!(matches!(error, ExecutionError::Machine { .. }));
     assert_eq!(
         serde_json::to_value(&failed).unwrap(),
         *fixture(&fixtures, "deploy_outcome_failed")
@@ -195,7 +208,7 @@ fn unknown_fields_are_accepted_on_public_payloads() {
         *fixture(&fixtures, "docker_volume")
     );
 
-    let outcome: DeployOutcome<RpcError> =
+    let outcome: DeployOutcome<ExecutionError> =
         decode_fixture(fixture(&fixtures, "deploy_outcome_unknown_fields"));
     let DeployOutcome::Success { .. } = &outcome else {
         panic!("deploy_outcome_unknown_fields must decode as Success");
@@ -273,8 +286,12 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type DeployIntent = Additive<{"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
     assert!(dts.contains("export type DeployOperation ="));
-    assert!(dts.contains("export type FailedOperation<E = RpcError> ="));
-    assert!(dts.contains("export type DeployOutcome<E = RpcError> ="));
+    assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
+    assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
+    assert!(dts.contains("export type ExecutionError ="));
+    assert!(dts.contains("export type MachineAction ="));
+    assert!(dts.contains("export type HealthFailure ="));
+    assert!(dts.contains("export type HookFailure ="));
     assert!(dts.contains("Success: { completed: DeployOperation[] }"));
     assert!(dts.contains("unexecuted: DeployOperation[]"));
     assert!(dts.contains("failed: FailedOperation<E>"));
@@ -318,23 +335,25 @@ fn generated_typescript_encodes_additive_evolution_rules() {
 #[test]
 fn handwritten_facade_types_use_generated_payloads() {
     let dts = include_str!("../../ployz-sdk/index.d.ts");
-    assert!(
-        dts.contains(
-            "import type { ContractDescription, MachineId } from \"./generated/payloads\""
-        )
-    );
+    assert!(dts.contains("from \"./generated/payloads\""));
+    assert!(dts.contains("ContractDescription"));
+    assert!(dts.contains("DeployIntent"));
+    assert!(dts.contains("DeployOutcome"));
+    assert!(dts.contains("ExecutionError"));
+    assert!(dts.contains("MachineId"));
     assert!(dts.contains("export * from \"./generated/payloads\""));
     assert!(dts.contains("export declare function connect"));
     assert!(dts.contains("relayUrl: string"));
     assert!(dts.contains("bearer: string"));
     assert!(dts.contains("machineId: MachineId"));
     assert!(dts.contains("about(): Promise<ContractDescription>"));
+    assert!(dts.contains("deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>"));
     assert!(dts.contains("close(): Promise<void>"));
     assert!(!dts.contains("connectSsh"));
     assert!(!dts.contains("connectTcp"));
     assert!(!dts.contains("connectUnix"));
     assert!(!dts.contains("watch("));
-    assert!(!dts.contains("deploy("));
+    assert!(!dts.contains("ops.watch"));
     assert!(!dts.contains("export declare function call"));
     assert!(!dts.contains("export declare function request"));
 }

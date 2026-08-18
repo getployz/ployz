@@ -1,13 +1,13 @@
 //! Napi package `@ployz/sdk`. Public payloads are generated from Rust.
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / about / close. Watch and deploy are
-//! later tickets.
+//! The handwritten façade is connect / about / deploy / close. Watch is a
+//! later ticket.
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
-use ployz_core::RpcError;
+use ployz_core::{DeployIntent, RpcError, RpcErrorCode};
 
 /// npm package name.
 #[must_use]
@@ -42,6 +42,30 @@ impl Client {
     pub async fn about(&self) -> Result<serde_json::Value> {
         let description = self.inner.about().await.map_err(rpc_to_napi)?;
         serde_json::to_value(&description).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Submit a Deploy Intent and resolve to a Deploy Outcome.
+    ///
+    /// Invokes the shared Rust Client deployment operation. No TypeScript
+    /// planning or policy logic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `intent` is not
+    /// [`DeployIntent`] data, the session is closed, or planning fails before
+    /// execution. Execution failure is a [`ployz_core::DeployOutcome::Failed`]
+    /// value, not this error.
+    #[napi]
+    pub async fn deploy(&self, intent: serde_json::Value) -> Result<serde_json::Value> {
+        let intent: DeployIntent = serde_json::from_value(intent).map_err(|error| {
+            rpc_to_napi(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: error.to_string(),
+                details: serde_json::Value::Null,
+            })
+        })?;
+        let outcome = self.inner.deploy(intent).await.map_err(rpc_to_napi)?;
+        serde_json::to_value(&outcome).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Drop the Client and Relay tunnel.

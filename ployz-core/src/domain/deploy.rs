@@ -4,8 +4,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{RequestedServiceSpec, ResolvedServiceSpec, ServiceVolume};
-use crate::{ContainerId, MachineId, ServiceName};
+use super::{
+    ContainerRuntimeObservation, RequestedServiceSpec, ResolvedServiceSpec, ServiceVolume,
+};
+use crate::{ContainerId, MachineId, RpcError, ServiceName};
+use thiserror::Error;
 
 /// Planner knobs for one Deploy.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -227,5 +230,52 @@ pub enum DeployOperation {
         machine_id: MachineId,
         spec: ResolvedServiceSpec,
         old_hook_containers: Vec<(MachineId, ContainerId)>,
+    },
+}
+
+/// Machine RPC invoked while executing one Deploy Operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum MachineAction {
+    CreateVolume,
+    CreateContainer,
+    StartContainer,
+    InspectContainer,
+    StopContainer,
+    RemoveContainer,
+}
+
+/// Why health monitoring rejected a started container.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum HealthFailure {
+    Cancelled,
+    TimedOut,
+    Runtime(ContainerRuntimeObservation),
+}
+
+/// Why a pre-deploy hook container did not succeed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum HookFailure {
+    Cancelled { stop_error: Option<RpcError> },
+    TimedOut { stop_error: Option<RpcError> },
+    Exit(i64),
+}
+
+/// Error from executing one Deploy Operation.
+#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
+pub enum ExecutionError {
+    #[error("{action:?} failed: {}", error.message)]
+    Machine {
+        action: MachineAction,
+        error: RpcError,
+    },
+    #[error("container {container_id} failed health monitoring: {failure:?}")]
+    Health {
+        container_id: ContainerId,
+        failure: HealthFailure,
+    },
+    #[error("hook container {container_id} failed: {failure:?}")]
+    Hook {
+        container_id: ContainerId,
+        failure: HookFailure,
     },
 }

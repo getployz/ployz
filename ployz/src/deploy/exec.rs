@@ -2,12 +2,12 @@ use std::{future::Future, time::Duration};
 
 use ployz_core::{
     ConfiguredHealthcheck, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, HealthObservation,
-    HealthcheckSpec, InspectContainerRequest, MachineId, MachineTarget, RemoveContainerRequest,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume, StartContainerRequest,
-    StopContainerRequest, UpdateOrder, VolumeSource, op,
+    ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, ExecutionError,
+    HealthFailure, HealthObservation, HealthcheckSpec, HookFailure, InspectContainerRequest,
+    MachineAction, MachineId, MachineTarget, RemoveContainerRequest, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, ServiceVolume, StartContainerRequest, StopContainerRequest, UpdateOrder,
+    VolumeSource, op,
 };
-use thiserror::Error;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -23,49 +23,6 @@ const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MachineAction {
-    CreateVolume,
-    CreateContainer,
-    StartContainer,
-    InspectContainer,
-    StopContainer,
-    RemoveContainer,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum HealthFailure {
-    Cancelled,
-    TimedOut,
-    Runtime(ContainerRuntimeObservation),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum HookFailure {
-    Cancelled { stop_error: Option<RpcError> },
-    TimedOut { stop_error: Option<RpcError> },
-    Exit(i64),
-}
-
-#[derive(Clone, Debug, Error, PartialEq)]
-pub enum ExecutionError {
-    #[error("{action:?} failed: {}", error.message)]
-    Machine {
-        action: MachineAction,
-        error: RpcError,
-    },
-    #[error("container {container_id} failed health monitoring: {failure:?}")]
-    Health {
-        container_id: ContainerId,
-        failure: HealthFailure,
-    },
-    #[error("hook container {container_id} failed: {failure:?}")]
-    Hook {
-        container_id: ContainerId,
-        failure: HookFailure,
-    },
-}
 
 /// Executes this finite plan once. Reusing the same value starts a fresh attempt from operation 0.
 // TODO(UT-087): there is deliberately no persisted "already run" guard at this boundary.

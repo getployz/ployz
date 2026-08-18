@@ -94,18 +94,41 @@
       "failed": {
         "Operation": {
           "error": {
-            "code": "unsupported",
-            "message": "watch is not advertised"
+            "Machine": {
+              "action": "CreateVolume",
+              "error": {
+                "code": "unsupported",
+                "message": "watch is not advertised"
+              }
+            }
           },
           "operation": {
-            "StopContainer": {
-              "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-              "machine_id": "0123456789abcdef0123456789abcdef"
+            "CreateVolume": {
+              "machine_id": "0123456789abcdef0123456789abcdef",
+              "volume": {
+                "reference": "data",
+                "source": {
+                  "driver": null,
+                  "external": false,
+                  "kind": "named",
+                  "labels": {},
+                  "name": "data",
+                  "no_copy": false,
+                  "subpath": null
+                }
+              }
             }
           }
         }
       },
-      "unexecuted": []
+      "unexecuted": [
+        {
+          "StopContainer": {
+            "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "machine_id": "0123456789abcdef0123456789abcdef"
+          }
+        }
+      ]
     }
   },
   "deploy_outcome_unknown_fields": {
