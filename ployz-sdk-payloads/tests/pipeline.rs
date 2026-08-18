@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
-    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss,
-    DeployIntent, DeployOutcome, DeployPreview, DockerVolume, ExecutionError, HealthObservation,
-    IngressHostname, LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
-    RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame, ServiceAttempt,
-    UnconfirmedDataLoss,
+    ClusterTeardown, ContainerRuntimeObservation, ContractDescription,
+    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOutcome, DeployPreview,
+    DockerVolume, ExecutionError, HealthObservation, IngressHostname, LocalMachineRemoved,
+    MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY, RpcError,
+    RpcErrorCode, RuntimeWatchFrame, ServiceAttempt, UnconfirmedDataLoss,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -129,6 +129,12 @@ fn json_fixtures_round_trip_through_rust_types() {
         warned.reset_warning.as_deref(),
         Some("replicated delete failed")
     );
+
+    let teardown: ClusterTeardown = decode_fixture(fixture(&fixtures, "cluster_teardown"));
+    assert!(teardown.pairing_revoked);
+    assert_eq!(teardown.destroyed_projects.len(), 1);
+    assert_eq!(teardown.machines.successes.len(), 1);
+    assert_eq!(teardown.machines.failures.len(), 1);
 
     let encoded = fixture(&fixtures, "partial_result");
     let successes = encoded
@@ -397,6 +403,10 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("missing: DataLoss[]"));
     assert!(dts.contains("export type LocalMachineRemoved = Additive<{"));
     assert!(dts.contains("reset_warning?: string"));
+    assert!(dts.contains("export type ClusterTeardown = Additive<{"));
+    assert!(dts.contains("destroyed_projects: ProjectName[]"));
+    assert!(dts.contains("machines: PartialResult<LocalMachineRemoved, RpcError>"));
+    assert!(dts.contains("pairing_revoked: boolean"));
     assert!(dts.contains("export type MachineTarget = string"));
     assert!(dts.contains("export type ContractDescription = Additive<{"));
     assert!(dts.contains("readonly __brand: \"ProjectName\""));
@@ -499,6 +509,7 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("ObservedDataLoss"));
     assert!(dts.contains("DataLoss"));
     assert!(dts.contains("LocalMachineRemoved"));
+    assert!(dts.contains("ClusterTeardown"));
     assert!(dts.contains("RuntimeWatchFrame"));
     assert!(dts.contains("export * from \"./generated/payloads\""));
     assert!(dts.contains("export declare function connect"));
@@ -535,6 +546,8 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("destroyProject("));
     assert!(dts.contains("Promise<DeployOutcome<ExecutionError>>"));
     assert!(!dts.contains("destroyProject(\n    project_name: ProjectName,\n  )"));
+    assert!(dts.contains("dataLossIfClusterDestroyed(): Promise<ObservedDataLoss>"));
+    assert!(dts.contains("destroyCluster(confirmDataLoss: DataLoss[]): Promise<ClusterTeardown>"));
     assert!(!dts.contains("confirmAll"));
     assert!(!dts.contains("removeMachine(machine: MachineTarget):"));
     assert!(dts.contains("close(): Promise<void>"));

@@ -11,6 +11,7 @@ import type {
   ObservedDataLoss,
   LocalMachineRemoved,
   DataLoss,
+  ClusterTeardown,
   PartialResult,
   PlanOptions,
   ProjectName,
@@ -90,5 +91,7 @@ export declare class Client {
     confirmDataLoss: DataLoss[],
     destroy_volumes?: boolean,
   ): Promise<DeployOutcome<ExecutionError>>;
+  dataLossIfClusterDestroyed(): Promise<ObservedDataLoss>;
+  destroyCluster(confirmDataLoss: DataLoss[]): Promise<ClusterTeardown>;
   close(): Promise<void>;
 };

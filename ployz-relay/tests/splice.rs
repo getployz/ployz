@@ -195,6 +195,52 @@ async fn pairing_credential_is_rejected_on_dial() {
 }
 
 #[tokio::test]
+async fn revoke_drops_pairing_so_register_fails_and_is_idempotent() {
+    let mut session = Session::start().await;
+    session.register().await;
+
+    let mut request = Request::new(ployz_relay::RevokeRequest {});
+    set_bearer(request.metadata_mut(), DIAL);
+    session.cloud.revoke(request).await.unwrap();
+
+    let (tx, rx) = mpsc::channel(4);
+    tx.send(RegisterRequest::new(&MachineId::random()))
+        .await
+        .unwrap();
+    let mut register = Request::new(ReceiverStream::new(rx));
+    set_bearer(register.metadata_mut(), PAIRING);
+    let error = session.machine.register(register).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Unauthenticated);
+
+    let mut again = Request::new(ployz_relay::RevokeRequest {});
+    set_bearer(again.metadata_mut(), DIAL);
+    session.cloud.revoke(again).await.unwrap();
+}
+
+#[tokio::test]
+async fn pairing_credential_cannot_revoke() {
+    let mut session = Session::start().await;
+    let mut request = Request::new(ployz_relay::RevokeRequest {});
+    set_bearer(request.metadata_mut(), PAIRING);
+    let error = session.cloud.revoke(request).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+}
+
+#[tokio::test]
+async fn revoke_keeps_dial_on_an_existing_register() {
+    let (session, dial_tx, _dial_in, _attach_tx, mut attach_in) =
+        Session::start().await.splice().await;
+    let mut request = Request::new(ployz_relay::RevokeRequest {});
+    set_bearer(request.metadata_mut(), DIAL);
+    session.cloud.clone().revoke(request).await.unwrap();
+    dial_tx
+        .send(TunnelFrame::new(b"after-revoke".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut attach_in).await.data, b"after-revoke");
+}
+
+#[tokio::test]
 async fn dial_of_unknown_machine_id_fails_closed() {
     let mut session = Session::start().await;
     let error = session

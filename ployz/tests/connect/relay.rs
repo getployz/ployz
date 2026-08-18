@@ -12,7 +12,7 @@ use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
 use super::support::{DiscoveryService, test_description};
 
-const PAIRING: &str = "pairing-secret";
+pub(super) const PAIRING: &str = "pairing-secret";
 pub(super) const DIAL: &str = "dial-secret";
 
 #[tokio::test]
@@ -164,6 +164,23 @@ async fn serve_attach(
         .add_service(MachineRpcServer::new(service))
         .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(io)))
         .await;
+}
+
+pub(super) async fn register_with_pairing(
+    url: &str,
+    pairing: &str,
+    machine_id: MachineId,
+) -> Result<tonic::Streaming<ployz_relay::Open>, tonic::Status> {
+    let mut relay = relay_client(url).await;
+    let (hold, rx) = mpsc::channel(4);
+    hold.send(RegisterRequest::new(&machine_id)).await.unwrap();
+    let mut request = Request::new(ReceiverStream::new(rx));
+    set_bearer(request.metadata_mut(), pairing);
+    std::mem::forget(hold);
+    relay
+        .register(request)
+        .await
+        .map(tonic::Response::into_inner)
 }
 
 async fn relay_client(url: &str) -> CloudRelayClient<tonic::transport::Channel> {

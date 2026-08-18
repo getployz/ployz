@@ -497,6 +497,18 @@ pub async fn connect(
     connect_selected_with(selected, Arc::new(SystemConnector::default())).await
 }
 
+/// Revoke the Cloud Pairing for this Dial tenant so Register fails afterwards.
+///
+/// # Errors
+///
+/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected.
+pub(crate) async fn revoke_cloud_pairing(
+    url: &str,
+    credential: &DialCredential,
+) -> Result<(), ConnectError> {
+    relay::revoke_pairing(url, credential).await
+}
+
 /// Open a Machine RPC channel through Cloud Relay.
 ///
 /// Succeeds only after Relay Dial and Machine Attach produce a usable RPC

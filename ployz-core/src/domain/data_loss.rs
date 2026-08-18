@@ -5,7 +5,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{DockerVolumeId, NameMatches, RpcError, RpcErrorCode};
+use super::PartialResult;
+use crate::{
+    DockerVolumeId, LocalMachineRemoved, NameMatches, ProjectName, RpcError, RpcErrorCode,
+};
 
 /// One named thing an operation will destroy.
 ///
@@ -130,4 +133,17 @@ impl UnconfirmedDataLoss {
         }
         Self::deserialize(&error.details).ok()
     }
+}
+
+/// Partial Result of destroying one Cluster.
+///
+/// Projects and Machines that completed are named. Unreachable Machines stay
+/// in `machines.failures` rather than being omitted. `pairing_revoked` is
+/// independent of Machine reset so a repeated attempt can finish leftover work
+/// over Dial after Register is already closed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClusterTeardown {
+    pub destroyed_projects: Vec<ProjectName>,
+    pub machines: PartialResult<LocalMachineRemoved, RpcError>,
+    pub pairing_revoked: bool,
 }

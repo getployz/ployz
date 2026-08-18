@@ -413,6 +413,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "ClusterTeardown",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("destroyed_projects", "ProjectName[]"),
+                ("machines", "PartialResult<LocalMachineRemoved, RpcError>"),
+                ("pairing_revoked", "boolean"),
+            ],
+        },
+    ),
+    (
         "ContractDescription",
         Shape::Additive {
             params: "",

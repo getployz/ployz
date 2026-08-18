@@ -238,7 +238,7 @@ impl Client {
             let machine_id = machine.machine.id;
             let client = self.clone();
             requests
-                .spawn(async move { (index, list_volumes_on_machine(client, machine_id).await) });
+                .spawn(async move { (index, list_volumes_on_machine(&client, machine_id).await) });
         }
         let mut outcomes = Vec::with_capacity(requests.len());
         while let Some(outcome) = requests.join_next().await {
@@ -296,7 +296,7 @@ impl Client {
     ) -> Result<ObservedDataLoss, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
-        data_loss_on_machine(self.clone(), observation).await
+        data_loss_on_machine(self, observation).await
     }
 
     /// Remove `machine` after a named Data Loss confirmation.
@@ -334,39 +334,7 @@ impl Client {
                 details: Value::Null,
             });
         }
-        let missing = data_loss_on_machine(self.clone(), observation)
-            .await?
-            .uncovered_by(confirm_data_loss);
-        if !missing.is_empty() {
-            return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
-        }
-        let selected_target = MachineTarget::from(&selected);
-        let reset_warning = match self
-            .call::<op::RemoveLocalMachine>(
-                RemoveLocalMachineRequest {
-                    restart_on_cleanup_failure: selected != current,
-                },
-                Some(&selected_target),
-            )
-            .await
-        {
-            Ok(removed) => removed.reset_warning,
-            Err(error) if error.is_unreachable() => Some(format!(
-                "target is unreachable; removing shared rows: {error}"
-            )),
-            Err(error) => return Err(error.into()),
-        };
-        if reset_warning.is_some() || selected != current {
-            self.call::<op::RemoveMachine>(
-                RemoveMachineRequest {
-                    machine_id: selected,
-                },
-                None,
-            )
-            .await
-            .map_err(RpcError::from)?;
-        }
-        Ok(LocalMachineRemoved { reset_warning })
+        evict_machine(self, observation, confirm_data_loss, current).await
     }
 
     pub async fn list_images(
@@ -722,8 +690,51 @@ fn visible_machine<'list>(
         .expect("resolved Machine came from this list"))
 }
 
+pub(crate) async fn evict_machine(
+    client: &mut Client,
+    observation: &MachineObservation,
+    confirm_data_loss: &[DataLoss],
+    current: MachineId,
+) -> Result<LocalMachineRemoved, RpcError> {
+    let selected = observation.machine.id;
+    let missing = data_loss_on_machine(client, observation)
+        .await?
+        .uncovered_by(confirm_data_loss);
+    if !missing.is_empty() {
+        return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
+    }
+    let selected_target = MachineTarget::from(&selected);
+    let reset_warning = match client
+        .call::<op::RemoveLocalMachine>(
+            RemoveLocalMachineRequest {
+                restart_on_cleanup_failure: selected != current,
+            },
+            Some(&selected_target),
+        )
+        .await
+    {
+        Ok(removed) => removed.reset_warning,
+        Err(error) if error.is_unreachable() => Some(format!(
+            "target is unreachable; removing shared rows: {error}"
+        )),
+        Err(error) => return Err(error.into()),
+    };
+    if reset_warning.is_some() || selected != current {
+        client
+            .call::<op::RemoveMachine>(
+                RemoveMachineRequest {
+                    machine_id: selected,
+                },
+                None,
+            )
+            .await
+            .map_err(RpcError::from)?;
+    }
+    Ok(LocalMachineRemoved { reset_warning })
+}
+
 async fn data_loss_on_machine(
-    client: Client,
+    client: &Client,
     observation: &MachineObservation,
 ) -> Result<ObservedDataLoss, RpcError> {
     let selected = observation.machine.id;
@@ -749,7 +760,7 @@ async fn data_loss_on_machine(
 }
 
 async fn list_volumes_on_machine(
-    client: Client,
+    client: &Client,
     machine_id: MachineId,
 ) -> Result<MachineSuccess<Vec<DockerVolume>>, MachineFailure<RpcError>> {
     client

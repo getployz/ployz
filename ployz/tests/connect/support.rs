@@ -293,12 +293,17 @@ impl MachineRpc for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
+        let removed = self.removed_machines.lock().unwrap().clone();
+        let machines = self
+            .machines
+            .iter()
+            .filter(|observation| !removed.contains(&observation.machine.id))
+            .cloned()
+            .collect();
         Ok(Response::new(
-            RpcResponse::from(MachineList {
-                machines: self.machines.clone(),
-            })
-            .encode()
-            .unwrap(),
+            RpcResponse::from(MachineList { machines })
+                .encode()
+                .unwrap(),
         ))
     }
 

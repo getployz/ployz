@@ -1,6 +1,7 @@
 //! Relay-only Cloud session: connect, about, runtime.watch, preview, run,
-//! preview_project_removal, remove_volumes, Data Loss for Machine and Project
-//! destroy, remove_machine, destroy_project, and close.
+//! preview_project_removal, remove_volumes, Data Loss for Machine, Project,
+//! and Cluster destroy, remove_machine, destroy_project, destroy_cluster, and
+//! close.
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,10 +13,11 @@ use tokio_util::sync::CancellationToken;
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
-    ContractDescription, DataLoss, DeployEvent, DeployOutcome, DescribeContractRequest,
-    DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
-    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_CAPABILITY,
-    RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
+    ClusterTeardown, ContractDescription, DataLoss, DeployEvent, DeployOutcome,
+    DescribeContractRequest, DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId,
+    MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
+    RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, op,
 };
 
 struct SessionInner {
@@ -324,6 +326,42 @@ impl Session {
                 &self.inner.cancel,
                 None,
             )
+            .await
+    }
+
+    /// Live Observation of Data Loss that destroying this Cluster would cause.
+    ///
+    /// Unions Docker Volumes across every visible Project and Machine. Mutates
+    /// nothing: it is safe to call when the operator then cancels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed or listing
+    /// Machines fails.
+    pub async fn data_loss_if_cluster_destroyed(&self) -> Result<ObservedDataLoss, RpcError> {
+        let mut client = self.client().await?;
+        client.data_loss_if_cluster_destroyed().await
+    }
+
+    /// Destroy this Cluster after a named Data Loss confirmation.
+    ///
+    /// `confirm_data_loss` is the identities the caller showed a human. It is
+    /// not a boolean, auto-confirm flag, or echo of an [`ObservedDataLoss`]
+    /// read. Re-reads Data Loss at execute time. Extra names are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed or the
+    /// confirmation does not cover the fresh Data Loss. Unconfirmed names are
+    /// in `UnconfirmedDataLoss` details. Unreachable Machines stay on the
+    /// returned [`ClusterTeardown`].
+    pub async fn destroy_cluster(
+        &self,
+        confirm_data_loss: &[DataLoss],
+    ) -> Result<ClusterTeardown, RpcError> {
+        let mut client = self.client().await?;
+        client
+            .destroy_cluster(confirm_data_loss, &self.inner.cancel)
             .await
     }
 

@@ -66,6 +66,10 @@ pub struct MachineFailure<E> {
 
 /// All outcomes observed during a fan-out operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T: Serialize, E: Serialize",
+    deserialize = "T: Deserialize<'de>, E: Deserialize<'de>"
+))]
 pub struct PartialResult<T, E> {
     #[serde(default)]
     pub successes: Vec<MachineSuccess<T>>,

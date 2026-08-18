@@ -38,6 +38,30 @@
   ],
   "certificate_availability_unknown": "renewing",
   "certificate_failure_kind_unknown": "rate_limited",
+  "cluster_teardown": {
+    "destroyed_projects": [
+      "app"
+    ],
+    "machines": {
+      "failures": [
+        {
+          "error": {
+            "code": "unsupported",
+            "message": "watch is not advertised"
+          },
+          "machine_id": "fedcba9876543210fedcba9876543210"
+        }
+      ],
+      "omissions": [],
+      "successes": [
+        {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "value": {}
+        }
+      ]
+    },
+    "pairing_revoked": true
+  },
   "container_runtime_known_unknown_fields": {
     "engine_detail": "accepted and ignored",
     "health": "healthy",

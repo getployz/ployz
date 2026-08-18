@@ -50,6 +50,14 @@ class Client {
     return this._inner.destroyProject(projectName, confirmDataLoss, destroyVolumes);
   }
 
+  dataLossIfClusterDestroyed() {
+    return this._inner.dataLossIfClusterDestroyed();
+  }
+
+  destroyCluster(confirmDataLoss) {
+    return this._inner.destroyCluster(confirmDataLoss);
+  }
+
   close() {
     return this._inner.close();
   }

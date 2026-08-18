@@ -3,7 +3,8 @@
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / about / runtime.watch / preview / run /
 //! previewProjectRemoval / remove_volumes / dataLossIfMachineRemoved /
-//! removeMachine / dataLossIfProjectDestroyed / destroyProject / close.
+//! removeMachine / dataLossIfProjectDestroyed / destroyProject /
+//! dataLossIfClusterDestroyed / destroyCluster / close.
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
@@ -254,6 +255,55 @@ impl Client {
             .await
             .map_err(rpc_to_napi)?;
         serde_json::to_value(&outcome).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Live Observation of Data Loss that destroying this Cluster would cause.
+    ///
+    /// Mutates nothing. Not a complete Cluster view.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the session is
+    /// closed or listing Machines fails.
+    #[napi]
+    pub async fn data_loss_if_cluster_destroyed(&self) -> Result<serde_json::Value> {
+        let observed = self
+            .inner
+            .data_loss_if_cluster_destroyed()
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Destroy this Cluster after a named Data Loss confirmation.
+    ///
+    /// `confirm_data_loss` must name Data Loss identities, not a boolean and
+    /// not an ObservedDataLoss read. Extra names are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
+    /// is not a Data Loss list, the session is closed, or the confirmation
+    /// does not cover the fresh Data Loss.
+    #[napi]
+    pub async fn destroy_cluster(
+        &self,
+        confirm_data_loss: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let confirm_data_loss: Vec<DataLoss> =
+            serde_json::from_value(confirm_data_loss).map_err(|error| {
+                rpc_to_napi(RpcError {
+                    code: RpcErrorCode::InvalidArgument,
+                    message: error.to_string(),
+                    details: serde_json::Value::Null,
+                })
+            })?;
+        let teardown = self
+            .inner
+            .destroy_cluster(&confirm_data_loss)
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&teardown).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.

@@ -12,13 +12,21 @@ fn main() {
         "crate::TunnelFrame",
         "crate::TunnelFrame",
     );
+    let revoke = tonic_build::manual::Method::builder()
+        .name("revoke")
+        .route_name("Revoke")
+        .input_type("crate::RevokeRequest")
+        .output_type("crate::RevokeResponse")
+        .codec_path("tonic::codec::ProstCodec")
+        .build();
     let service = tonic_build::manual::Service::builder()
         .name("CloudRelay")
         .package("ployz.relay.v1")
-        .comment("Cloud Relay Register, Dial, and Attach. Inner bytes are opaque.")
+        .comment("Cloud Relay Register, Dial, Attach, and pairing Revoke. Inner bytes are opaque.")
         .method(register)
         .method(dial)
         .method(attach)
+        .method(revoke)
         .build();
     tonic_build::manual::Builder::new().compile(&[service]);
 }

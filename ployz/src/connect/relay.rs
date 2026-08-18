@@ -9,7 +9,8 @@ use std::{
 use hyper_util::rt::TokioIo;
 use ployz_core::MachineId;
 use ployz_relay::{
-    AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, MACHINE_ID_METADATA, TunnelIo,
+    AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, MACHINE_ID_METADATA, RevokeRequest,
+    TunnelIo,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -77,4 +78,24 @@ async fn dial_tunnel(
         }
     };
     Ok(TunnelIo::new(tx, inbound))
+}
+
+pub(super) async fn revoke_pairing(
+    url: &str,
+    credential: &DialCredential,
+) -> Result<(), ConnectError> {
+    let mut relay = CloudRelayClient::new(super::connect_endpoint(url.to_owned()).await?);
+    let mut request = tonic::Request::new(RevokeRequest {});
+    let bearer = format!("Bearer {}", credential.as_str());
+    request.metadata_mut().insert(
+        AUTHORIZATION_METADATA,
+        MetadataValue::try_from(&bearer).map_err(|_| ConnectError::InvalidDialCredential)?,
+    );
+    match relay.revoke(request).await {
+        Ok(_) => Ok(()),
+        Err(status) if status.code() == tonic::Code::Unauthenticated => {
+            Err(ConnectError::InvalidDialCredential)
+        }
+        Err(status) => Err(ConnectError::from(status)),
+    }
 }

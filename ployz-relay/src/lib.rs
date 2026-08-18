@@ -112,6 +112,14 @@ impl TunnelFrame {
     }
 }
 
+/// Dial-authenticated request to revoke this tenant's Pairing Credential.
+#[derive(Clone, PartialEq, Message)]
+pub struct RevokeRequest {}
+
+/// Pairing Credential for this Dial tenant is no longer accepted on Register.
+#[derive(Clone, PartialEq, Message)]
+pub struct RevokeResponse {}
+
 /// Bearer that authenticates Register and is rejected on Dial.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PairingCredential(String);
@@ -226,7 +234,7 @@ struct Slot {
 }
 
 struct TenantIndex {
-    by_pairing: HashMap<String, RelayTenant>,
+    by_pairing: Mutex<HashMap<String, RelayTenant>>,
     by_dial: HashMap<String, RelayTenant>,
 }
 
@@ -253,21 +261,32 @@ impl TenantIndex {
             return Err(RelayError::EmptyTenants);
         }
         Ok(Self {
-            by_pairing,
+            by_pairing: Mutex::new(by_pairing),
             by_dial,
         })
     }
 
     fn pairing(&self, bearer: &str) -> Option<RelayTenant> {
-        self.by_pairing.get(bearer).copied()
+        self.by_pairing
+            .lock()
+            .expect("pairing map poisoned")
+            .get(bearer)
+            .copied()
     }
 
     fn is_pairing(&self, bearer: &str) -> bool {
-        self.by_pairing.contains_key(bearer)
+        self.pairing(bearer).is_some()
     }
 
     fn dial(&self, bearer: &str) -> Option<RelayTenant> {
         self.by_dial.get(bearer).copied()
+    }
+
+    fn revoke(&self, tenant: RelayTenant) {
+        self.by_pairing
+            .lock()
+            .expect("pairing map poisoned")
+            .retain(|_, id| *id != tenant);
     }
 }
 
@@ -584,6 +603,25 @@ impl CloudRelay for Relay {
             pending.cancel,
         ));
         Ok(Response::new(ReceiverStream::new(pending.to_machine)))
+    }
+
+    async fn revoke(
+        &self,
+        request: Request<RevokeRequest>,
+    ) -> Result<Response<RevokeResponse>, Status> {
+        match bearer(request.metadata()) {
+            Some(bearer) if self.tenants.is_pairing(bearer) => Err(Status::permission_denied(
+                "Pairing Credential cannot Revoke",
+            )),
+            Some(bearer) => match self.tenants.dial(bearer) {
+                Some(tenant) => {
+                    self.tenants.revoke(tenant);
+                    Ok(Response::new(RevokeResponse {}))
+                }
+                None => Err(Status::unauthenticated("invalid Dial Credential")),
+            },
+            None => Err(Status::unauthenticated("invalid Dial Credential")),
+        }
     }
 }
 

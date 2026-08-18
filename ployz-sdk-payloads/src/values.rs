@@ -8,22 +8,23 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, BindPropagation, BindRecursive, CapabilityName, CertificateAvailability,
-    CertificateBackoff, CertificateFailureKind, CertificateObservation, ConfiguredHealthcheck,
-    ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerResources,
-    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss,
-    DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
-    DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation, HealthFailure,
-    HealthObservation, HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind,
-    HttpProtocol, IngressHost, IngressHostname, LocalMachineRemoved, LogDriver, Machine,
-    MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachinePath,
-    MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
-    ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
-    Placement, PlanOptions, PortPublication, PreDeployHook, PreservedVolume, ProjectName,
-    PruneRefusal, PullPolicy, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy,
-    RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds,
-    SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
-    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, TransportProtocol,
+    CertificateBackoff, CertificateFailureKind, CertificateObservation, ClusterTeardown,
+    ConfiguredHealthcheck, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
+    ContainerResources, ContainerRuntimeObservation, ContractDescription,
+    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployEvent, DeployIntent, DeployOperation,
+    DeployOutcome, DeployPreview, DeployWarning, DockerVolume, DockerVolumeId, DockerVolumeName,
+    ExecutionError, FailedOperation, HealthFailure, HealthObservation, HealthcheckCommand,
+    HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol, IngressHost,
+    IngressHostname, LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure,
+    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime, MachineSuccess,
+    ManagementAddress, MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase,
+    OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions,
+    PortPublication, PreDeployHook, PreservedVolume, ProjectName, PruneRefusal, PullPolicy,
+    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError,
+    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
+    ServiceAttempt, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceObservation, ServiceVolume, ServiceVolumeReference, TransportProtocol,
     UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
@@ -75,6 +76,7 @@ pub fn fixtures() -> BTreeMap<String, Value> {
             reset_warning: Some("replicated delete failed".into()),
         }),
     );
+    fixtures.insert("cluster_teardown".into(), to_value(&cluster_teardown()));
     fixtures.insert(
         "docker_volume_unknown_fields".into(),
         with_unknown_field(to_value(&docker_volume()), "quota_bytes", json!(1)),
@@ -202,6 +204,7 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
                 reset_warning: Some("replicated delete failed".into()),
             }),
         ),
+        ("ClusterTeardown", to_value(&cluster_teardown())),
         ("DeployIntent", to_value(&deploy_intent())),
         ("DeployPreview", to_value(&deploy_preview())),
         ("PreservedVolume", to_value(&preserved_volume())),
@@ -986,6 +989,24 @@ fn partial_result() -> PartialResult<DockerVolume, RpcError> {
             error: rpc_error(),
         }],
         omissions: vec![machine_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")],
+    }
+}
+
+fn cluster_teardown() -> ClusterTeardown {
+    ClusterTeardown {
+        destroyed_projects: vec![ProjectName::parse("app").unwrap()],
+        machines: PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: machine_id(MACHINE_ID_HEX),
+                value: LocalMachineRemoved::default(),
+            }],
+            failures: vec![MachineFailure {
+                machine_id: machine_id(OTHER_MACHINE_ID_HEX),
+                error: rpc_error(),
+            }],
+            omissions: Vec::new(),
+        },
+        pairing_revoked: true,
     }
 }
 

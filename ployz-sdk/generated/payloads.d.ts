@@ -250,6 +250,12 @@ export type LocalMachineRemoved = Additive<{
   reset_warning?: string;
 }>;
 
+export type ClusterTeardown = Additive<{
+  destroyed_projects: ProjectName[];
+  machines: PartialResult<LocalMachineRemoved, RpcError>;
+  pairing_revoked: boolean;
+}>;
+
 export type ContractDescription = Additive<{
   machine_id: MachineId;
   protocol_major: number;
