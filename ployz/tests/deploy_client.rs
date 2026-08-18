@@ -104,8 +104,14 @@ async fn deploy_surfaces_a_planning_error_instead_of_an_outcome() {
 
     assert!(matches!(
         error,
-        DeployError::Plan(PlanError::NoEligibleMachines)
+        DeployError::Plan(PlanError::NoEligibleMachines { .. })
     ));
+    assert!(
+        error
+            .to_string()
+            .contains("no Machines in the Deploy Snapshot"),
+        "{error}"
+    );
     server.abort();
 }
 

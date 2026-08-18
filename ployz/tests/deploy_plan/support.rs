@@ -4,9 +4,9 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, FailedOperation, PlanError,
-    PlanOptions, ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
-    compare_specs,
+    DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, EliminatingConstraint,
+    EliminatingConstraints, FailedOperation, PlanError, PlanOptions, ReplacementCompensation,
+    ReplacementOperation, RestartAttempt, ServiceAttempt, compare_specs,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -15,6 +15,31 @@ pub(super) fn plan_deploy<'a>(
     options: PlanOptions,
 ) -> Result<ployz::deploy::DeployPlan, PlanError> {
     ployz::deploy::plan_deploy(&DeployIntent::apply_all(requested, options), snapshot)
+}
+
+pub(super) fn assert_no_eligible(
+    result: Result<ployz::deploy::DeployPlan, PlanError>,
+    expected: &[EliminatingConstraint],
+    display_needles: &[&str],
+) {
+    let error = result.expect_err("plan should find no eligible Machine");
+    let display = error.to_string();
+    assert_eq!(
+        error,
+        PlanError::NoEligibleMachines {
+            constraints: EliminatingConstraints::new(expected.to_vec()),
+        }
+    );
+    assert!(
+        display.starts_with("no machines available that satisfy all constraints: "),
+        "{display}"
+    );
+    for needle in display_needles {
+        assert!(
+            display.contains(needle),
+            "expected {needle:?} in {display:?}"
+        );
+    }
 }
 
 pub(super) use ployz_core::{

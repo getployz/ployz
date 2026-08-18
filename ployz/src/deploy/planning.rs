@@ -9,8 +9,8 @@ use ployz_core::{
 };
 
 use super::{
-    DeployIntent, DeployOperation, DeployPlan, DeploySnapshot, PlanError, PlanOptions,
-    ReplacementOperation,
+    DeployIntent, DeployOperation, DeployPlan, DeploySnapshot, EliminatingConstraint, PlanError,
+    PlanOptions, ReplacementOperation,
 };
 
 mod volumes;
@@ -162,7 +162,7 @@ fn plan_one_service(
     pins: &mut VolumePins,
     options: PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
-    let mut machines = eligible_machines(requested, snapshot, options);
+    let mut machines = eligible_machines(requested, snapshot, options)?;
     plan_volume_operations(requested, snapshot, pins, &mut machines)?;
     let matching = services
         .iter()
@@ -229,7 +229,7 @@ fn eligible_machines<'a>(
     requested: &RequestedServiceSpec,
     snapshot: &'a DeploySnapshot,
     options: PlanOptions,
-) -> Vec<&'a MachineObservation> {
+) -> Result<Vec<&'a MachineObservation>, PlanError> {
     let mut machines = snapshot
         .machines
         .iter()
@@ -243,8 +243,56 @@ fn eligible_machines<'a>(
                     .any(|target| machine_matches_target(&machine.machine, target))
         })
         .collect::<Vec<_>>();
+    if machines.is_empty() {
+        return Err(placement_error(requested, snapshot));
+    }
     shuffle(&mut machines, options.placement_seed);
-    machines
+    Ok(machines)
+}
+
+fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> PlanError {
+    if snapshot.machines.is_empty() {
+        return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
+    }
+    let targets = &spec.placement.machines;
+    if targets.is_empty() {
+        let names = snapshot
+            .machines
+            .iter()
+            .filter(|machine| machine.membership == MembershipObservation::Down)
+            .map(|machine| machine.machine.name.clone())
+            .collect::<Vec<_>>();
+        return PlanError::no_eligible_machines(vec![EliminatingConstraint::MachineDown { names }]);
+    }
+    let mut unknown = Vec::new();
+    let mut down = Vec::new();
+    for target in targets {
+        let matched = snapshot
+            .machines
+            .iter()
+            .filter(|machine| machine_matches_target(&machine.machine, target))
+            .collect::<Vec<_>>();
+        if matched.is_empty() {
+            unknown.push(target.clone());
+        } else if matched
+            .iter()
+            .all(|machine| machine.membership == MembershipObservation::Down)
+        {
+            for machine in matched {
+                if !down.contains(&machine.machine.name) {
+                    down.push(machine.machine.name.clone());
+                }
+            }
+        }
+    }
+    let mut constraints = Vec::new();
+    if !unknown.is_empty() {
+        constraints.push(EliminatingConstraint::UnknownPlacement { targets: unknown });
+    }
+    if !down.is_empty() {
+        constraints.push(EliminatingConstraint::MachineDown { names: down });
+    }
+    PlanError::no_eligible_machines(constraints)
 }
 
 fn normalize(requested: &RequestedServiceSpec) -> RequestedServiceSpec {

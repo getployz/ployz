@@ -603,8 +603,105 @@ fn named_volumes_split_across_machines_return_no_eligible_machines() {
         ..Default::default()
     };
 
-    assert_eq!(
+    assert_no_eligible(
         plan_deploy([&requested], &snapshot, PlanOptions::default()),
-        Err(PlanError::NoEligibleMachines)
+        &[
+            EliminatingConstraint::VolumeAlreadyOn {
+                volume: DockerVolumeName::parse("split_a").unwrap(),
+                located_on: vec![MachineName::parse("first").unwrap()],
+            },
+            EliminatingConstraint::VolumeAlreadyOn {
+                volume: DockerVolumeName::parse("split_b").unwrap(),
+                located_on: vec![MachineName::parse("second").unwrap()],
+            },
+        ],
+        &[
+            "Docker Volume 'split_a' is already on Machine 'first'",
+            "Docker Volume 'split_b' is already on Machine 'second'",
+        ],
+    );
+}
+
+#[test]
+fn unknown_x_machines_names_the_missing_target() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.placement.machines = vec![MachineTarget::parse("missing-machine").unwrap()];
+
+    assert_no_eligible(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "ewr1")],
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        &[EliminatingConstraint::UnknownPlacement {
+            targets: vec![MachineTarget::parse("missing-machine").unwrap()],
+        }],
+        &["x-machines 'missing-machine' matched no Machine"],
+    );
+}
+
+#[test]
+fn down_x_machines_names_the_down_machine() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.placement.machines = vec![MachineTarget::parse("ord1").unwrap()];
+    let mut ord1 = machine('2', "ord1");
+    ord1.membership = MembershipObservation::Down;
+
+    assert_no_eligible(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "ewr1"), ord1],
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        &[EliminatingConstraint::MachineDown {
+            names: vec![MachineName::parse("ord1").unwrap()],
+        }],
+        &["Machine 'ord1' is down"],
+    );
+}
+
+#[test]
+fn volume_on_another_machine_names_the_volume_and_the_conflict() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.placement.machines = vec![MachineTarget::parse("ord1").unwrap()];
+    add_named_volume(&mut requested, "data");
+
+    assert_no_eligible(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "ewr1"), machine('2', "ord1")],
+                volumes: vec![ployz::deploy::ObservedDockerVolume {
+                    id: DockerVolumeId {
+                        machine_id: machine_id('1'),
+                        name: DockerVolumeName::parse("data").unwrap(),
+                    },
+                    driver: "local".into(),
+                    options: Default::default(),
+                }],
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        &[EliminatingConstraint::VolumeConflictsWithPlacement {
+            volume: DockerVolumeName::parse("data").unwrap(),
+            located_on: vec![MachineName::parse("ewr1").unwrap()],
+            requested: vec![MachineTarget::parse("ord1").unwrap()],
+        }],
+        &[
+            "Docker Volume 'data' is already on Machine 'ewr1', which conflicts with x-machines 'ord1'",
+        ],
     );
 }

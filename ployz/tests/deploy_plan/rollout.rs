@@ -127,7 +127,7 @@ fn unmatched_placement_returns_no_eligible_machines() {
     let mut requested = requested(ServiceMode::Global);
     requested.placement.machines = vec![MachineTarget::parse("missing").unwrap()];
 
-    assert_eq!(
+    assert_no_eligible(
         plan_deploy(
             [&requested],
             &DeploySnapshot {
@@ -136,7 +136,10 @@ fn unmatched_placement_returns_no_eligible_machines() {
             },
             PlanOptions::default(),
         ),
-        Err(PlanError::NoEligibleMachines)
+        &[EliminatingConstraint::UnknownPlacement {
+            targets: vec![MachineTarget::parse("missing").unwrap()],
+        }],
+        &["x-machines 'missing' matched no Machine"],
     );
 }
 

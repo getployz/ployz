@@ -8,7 +8,9 @@ use std::{
 
 use ployz::{
     compose::parse_normalized,
-    deploy::{DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError},
+    deploy::{
+        DeployOperation, DeploySnapshot, EliminatingConstraint, ObservedDockerVolume, PlanError,
+    },
 };
 use ployz_core::{
     HostBind, HttpProtocol, IngressHostname, PortPublication, RestartPolicy, ServiceMode,
@@ -956,13 +958,34 @@ volumes: {data: {name: shared}}
         ".",
     )
     .unwrap();
-    assert!(matches!(
-        plan_compose(&disjoint, &snapshot),
-        Err(PlanError::Service {
-            source,
-            ..
-        }) if matches!(*source, PlanError::NoEligibleMachines)
-    ));
+    let disjoint_error = plan_compose(&disjoint, &snapshot).unwrap_err();
+    let display = disjoint_error.to_string();
+    assert!(
+        matches!(
+            &disjoint_error,
+            PlanError::Service { source, .. }
+                if matches!(
+                    source.as_ref(),
+                    PlanError::NoEligibleMachines { constraints }
+                        if matches!(
+                            constraints.as_slice(),
+                            [EliminatingConstraint::SharedVolumeNoCommonMachine {
+                                volume,
+                                requested,
+                            }]
+                                if volume.as_str() == "shared"
+                                    && requested.iter().map(|target| target.as_str()).eq(["one", "two"])
+                        )
+                )
+        ),
+        "{disjoint_error:?}"
+    );
+    assert!(
+        display.contains(
+            "x-machines 'one', 'two' have no Machine in common for Docker Volume 'shared'"
+        ),
+        "{display}"
+    );
 
     let mixed = parse_normalized(
         r#"
