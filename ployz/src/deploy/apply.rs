@@ -13,11 +13,11 @@ use crate::{
 };
 
 use super::{
-    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
-    ServiceAttempt,
+    DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
+    ReplacementOperation, ServiceAttempt,
     pipeline::{
-        DeployPreview, PushOutcome, execute_deploy, list_machines, plan_options, plan_project,
-        plan_scale, plan_spec, push_project_images,
+        PushOutcome, execute_deploy, list_machines, plan_options, plan_project, plan_scale,
+        plan_spec, push_project_images,
     },
 };
 
@@ -223,8 +223,8 @@ fn operation_list(operations: &[DeployOperation]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::pipeline::DeployWarning;
     use super::*;
+    use crate::deploy::DeployWarning;
     use crate::dns::ingress_dns_warnings;
 
     #[test]
@@ -260,7 +260,7 @@ mod tests {
                 other => panic!("unexpected {other}"),
             })
             .into_iter()
-            .map(DeployWarning::IngressHostname)
+            .map(DeployWarning::from)
             .collect(),
         };
         assert_eq!(

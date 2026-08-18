@@ -134,6 +134,18 @@ export type DeployIntent = Additive<{
   options: PlanOptions;
 }>;
 
+export type ObservationKind = "container" | "volume";
+
+export type DeployWarning =
+  | Additive<{ ObservationFailed: { kind: ObservationKind; machine_id: MachineId; message: string } }>
+  | Additive<{ ObservationOmitted: { kind: ObservationKind; machine_id: MachineId } }>
+  | Additive<{ IngressHostname: string }>;
+
+export type DeployPreview = Additive<{
+  operations: DeployOperation[];
+  warnings: DeployWarning[];
+}>;
+
 export type ReplacementOperation = Additive<{
   machine_id: MachineId;
   old_container_id: ContainerId;

@@ -203,6 +203,37 @@ const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "ObservationKind",
+        Shape::ClosedString(&["container", "volume"]),
+    ),
+    (
+        "DeployWarning",
+        Shape::ExternallyTagged {
+            params: "",
+            variants: &[
+                (
+                    "ObservationFailed",
+                    Some("{ kind: ObservationKind; machine_id: MachineId; message: string }"),
+                ),
+                (
+                    "ObservationOmitted",
+                    Some("{ kind: ObservationKind; machine_id: MachineId }"),
+                ),
+                ("IngressHostname", Some("string")),
+            ],
+        },
+    ),
+    (
+        "DeployPreview",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("operations", "DeployOperation[]"),
+                ("warnings", "DeployWarning[]"),
+            ],
+        },
+    ),
+    (
         "ReplacementOperation",
         Shape::Additive {
             params: "",
@@ -521,9 +552,9 @@ pub fn artifacts() -> Artifacts {
 
 /// Write generated files under the napi package root.
 ///
-/// Façade declarations (`connect` / `about` / `deploy` / `removeVolumes` /
-/// `close`) live in handwritten `index.d.ts` and are not emitted here.
-///
+/// Façade declarations (`connect` / `about` / `preview` / `deploy` /
+/// `removeVolumes` / `close`) live in handwritten `index.d.ts` and are not
+/// emitted here.///
 /// # Errors
 ///
 /// Returns filesystem errors from creating `generated/` or writing files.

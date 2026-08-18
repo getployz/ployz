@@ -1,9 +1,8 @@
 //! Napi package `@ployz/sdk`. Public payloads are generated from Rust.
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / about / runtime.watch / deploy /
+//! The handwritten façade is connect / about / runtime.watch / preview / deploy /
 //! remove_volumes / close.
-
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
@@ -60,6 +59,28 @@ impl Client {
     pub async fn watch(&self) -> Result<WatchStream> {
         let inner = self.inner.watch().await.map_err(rpc_to_napi)?;
         Ok(WatchStream { inner })
+    }
+
+    /// Calculate a Deploy Preview for a Deploy Intent without executing it.
+    ///
+    /// Invokes the shared Rust Client planner. Executes nothing. The preview is
+    /// not a handle: `deploy` re-plans against a fresh snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `intent` is not
+    /// [`DeployIntent`] data, the session is closed, or planning fails.
+    #[napi]
+    pub async fn preview(&self, intent: serde_json::Value) -> Result<serde_json::Value> {
+        let intent: DeployIntent = serde_json::from_value(intent).map_err(|error| {
+            rpc_to_napi(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: error.to_string(),
+                details: serde_json::Value::Null,
+            })
+        })?;
+        let preview = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
+        serde_json::to_value(&preview).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Submit a Deploy Intent and resolve to a Deploy Outcome.

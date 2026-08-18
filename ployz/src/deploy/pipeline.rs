@@ -5,7 +5,6 @@
 //! stdin, or exit the process.
 
 use std::collections::BTreeSet;
-use std::fmt::{self, Display, Formatter};
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::time::SystemTime;
@@ -26,8 +25,9 @@ use crate::{
 };
 
 use super::{
-    DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, ExecutionError, PlanError,
-    PlanOptions, ServiceAttempt, exec::execute_operations, plan_deploy,
+    DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeploySnapshot, DeployWarning,
+    ExecutionError, ObservationKind, PlanError, PlanOptions, ServiceAttempt,
+    exec::execute_operations, plan_deploy,
 };
 
 /// Snapshot, planning, or ingress-expansion failure before a Deploy executes.
@@ -44,12 +44,31 @@ pub enum DeployError {
 }
 
 impl Client {
+    /// Calculate a Deploy Preview for a Deploy Intent without executing it.
+    ///
+    /// Reuses the same planner, ingress expansion, and DNS warnings as the CLI.
+    /// The preview is observer-relative and is not a handle: [`Self::deploy`]
+    /// re-plans against a fresh snapshot rather than replaying these operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns when snapshot gathering, ingress expansion, or planning fails.
+    pub async fn preview(
+        &mut self,
+        mut intent: DeployIntent,
+    ) -> Result<DeployPreview, DeployError> {
+        let machines = self.machines().await?;
+        let (snapshot, warnings) = gather_snapshot(self, machines).await?;
+        prepare_intent(self, snapshot, warnings, &mut intent).await
+    }
+
     /// Submit a Deploy Intent: gather a snapshot, plan, and execute.
     ///
     /// Reuses the same planner and Machine Proxy fan-out as the CLI. Execution
     /// failure is a [`DeployOutcome::Failed`] with the completed prefix, failed
     /// operation, and unexecuted suffix. This operation does not prompt, stream
-    /// progress, mint operation IDs, or speak `ops.watch`.
+    /// progress, mint operation IDs, or speak `ops.watch`. Always re-plans
+    /// against a fresh snapshot; it does not replay a prior Deploy Preview.
     ///
     /// # Errors
     ///
@@ -67,13 +86,6 @@ impl Client {
     }
 }
 
-/// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct DeployPreview {
-    pub operations: Vec<DeployOperation>,
-    pub warnings: Vec<DeployWarning>,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PushOutcome {
     pub pushed: Vec<PushedImage>,
@@ -86,48 +98,9 @@ pub(super) struct PushedImage {
     pub machine_id: MachineId,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ObservationKind {
-    Container,
-    Volume,
-}
-
-impl Display for ObservationKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Container => f.write_str("container"),
-            Self::Volume => f.write_str("volume"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum DeployWarning {
-    ObservationFailed {
-        kind: ObservationKind,
-        machine_id: MachineId,
-        message: String,
-    },
-    ObservationOmitted {
-        kind: ObservationKind,
-        machine_id: MachineId,
-    },
-    IngressHostname(IngressDnsWarning),
-}
-
-impl Display for DeployWarning {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ObservationFailed {
-                kind,
-                machine_id,
-                message,
-            } => write!(f, "{kind} observation failed on {machine_id}: {message}"),
-            Self::ObservationOmitted { kind, machine_id } => {
-                write!(f, "{kind} observation omitted {machine_id}")
-            }
-            Self::IngressHostname(warning) => warning.fmt(f),
-        }
+impl From<IngressDnsWarning> for DeployWarning {
+    fn from(warning: IngressDnsWarning) -> Self {
+        Self::IngressHostname(warning.to_string())
     }
 }
 
@@ -139,7 +112,7 @@ pub(super) async fn plan_spec(
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let mut intent = DeployIntent::apply_one(requested.clone(), options);
-    prepare_intent(client, snapshot, warnings, &mut intent).await
+    Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
 pub(super) async fn push_project_images(
@@ -173,7 +146,7 @@ pub(super) async fn plan_project(
     super::reject_missing_external_volumes(project, &snapshot)?;
     let mut intent =
         DeployIntent::from_named_specs(&project.services, &project.dependencies, apply, options);
-    prepare_intent(client, snapshot, warnings, &mut intent).await
+    Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
 pub(super) async fn plan_scale(
@@ -191,7 +164,7 @@ pub(super) async fn plan_scale(
         });
     };
     let mut intent = DeployIntent::apply_one(requested, options);
-    prepare_intent(client, snapshot, warnings, &mut intent).await
+    Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
 async fn prepare_intent(
@@ -199,7 +172,7 @@ async fn prepare_intent(
     snapshot: DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
     intent: &mut DeployIntent,
-) -> Result<DeployPreview, Failure> {
+) -> Result<DeployPreview, DeployError> {
     expand_ingress(client, intent.target.iter_mut()).await?;
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
     let plan = plan_deploy(intent, &snapshot)?;
@@ -259,7 +232,7 @@ pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObse
 async fn gather_snapshot(
     client: &mut Client,
     machines: Vec<MachineObservation>,
-) -> Result<(DeploySnapshot, Vec<DeployWarning>), Failure> {
+) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
     let gathered = client.deploy_snapshot(machines).await?;
     let mut warnings = observation_warnings(ObservationKind::Container, &gathered.containers);
     warnings.extend(observation_warnings(
@@ -315,7 +288,7 @@ async fn hostname_warnings<'a>(
     resolve_ingress_dns_warnings(specs, &machine_public_addresses(machines))
         .await
         .into_iter()
-        .map(DeployWarning::IngressHostname)
+        .map(DeployWarning::from)
         .collect()
 }
 

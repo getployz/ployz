@@ -55,6 +55,7 @@ const forbidden = [
   "call",
   "request",
   "watch",
+  "preview",
   "deploy",
   "connectTcp",
   "connectSsh",
@@ -73,6 +74,9 @@ if (!dts.includes("export declare function connect")) {
 }
 if (!dts.includes("about(): Promise<ContractDescription>")) {
   throw new Error("index.d.ts is missing about()");
+}
+if (!dts.includes("preview(intent: DeployIntent): Promise<DeployPreview>")) {
+  throw new Error("index.d.ts is missing preview()");
 }
 if (!dts.includes("deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>")) {
   throw new Error("index.d.ts is missing deploy()");
@@ -96,6 +100,9 @@ for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watchRuntime"]
   if (dts.includes(needle)) {
     throw new Error(`index.d.ts must not declare ${needle}`);
   }
+}
+if (typeof sdk.Client.prototype.preview !== "function") {
+  throw new Error("Client.preview must be a method");
 }
 if (typeof sdk.Client.prototype.deploy !== "function") {
   throw new Error("Client.deploy must be a method");

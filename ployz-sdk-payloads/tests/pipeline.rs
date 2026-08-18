@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
     ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent,
-    DeployOutcome, DockerVolume, ExecutionError, HealthObservation, MembershipObservation,
-    PlanOptions, RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    ServiceAttempt,
+    DeployOutcome, DeployPreview, DockerVolume, ExecutionError, HealthObservation,
+    MembershipObservation, PlanOptions, RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode,
+    RuntimeWatchFrame, ServiceAttempt,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -140,6 +140,14 @@ fn json_fixtures_round_trip_through_rust_types() {
     let attempt: ServiceAttempt = decode_fixture(fixture(&fixtures, "service_attempt"));
     assert_eq!(attempt.name.as_str(), "web");
 
+    let preview: DeployPreview = decode_fixture(fixture(&fixtures, "deploy_preview"));
+    assert_eq!(preview.operations.len(), 1);
+    assert_eq!(preview.warnings.len(), 3);
+    assert_eq!(
+        serde_json::to_value(&preview).unwrap(),
+        *fixture(&fixtures, "deploy_preview")
+    );
+
     let outcome: DeployOutcome<ExecutionError> =
         decode_fixture(fixture(&fixtures, "deploy_outcome"));
     let DeployOutcome::Success { completed } = &outcome else {
@@ -229,6 +237,14 @@ fn unknown_fields_are_accepted_on_public_payloads() {
         *fixture(&fixtures, "deploy_outcome")
     );
 
+    let preview: DeployPreview =
+        decode_fixture(fixture(&fixtures, "deploy_preview_unknown_fields"));
+    assert_eq!(preview.operations.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&preview).unwrap(),
+        *fixture(&fixtures, "deploy_preview")
+    );
+
     let frame: RuntimeWatchFrame =
         decode_fixture(fixture(&fixtures, "runtime_watch_frame_unknown_fields"));
     assert_eq!(
@@ -296,6 +312,11 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type ContractDescription = Additive<{"));
     assert!(dts.contains("export type DeployIntent = Additive<{"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
+    assert!(dts.contains("export type ObservationKind ="));
+    assert!(dts.contains("export type DeployWarning ="));
+    assert!(dts.contains("export type DeployPreview = Additive<{"));
+    assert!(dts.contains("operations: DeployOperation[]"));
+    assert!(dts.contains("warnings: DeployWarning[]"));
     assert!(dts.contains("export type DeployOperation ="));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
@@ -349,6 +370,7 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("from \"./generated/payloads\""));
     assert!(dts.contains("ContractDescription"));
     assert!(dts.contains("DeployIntent"));
+    assert!(dts.contains("DeployPreview"));
     assert!(dts.contains("DeployOutcome"));
     assert!(dts.contains("DockerVolumeName"));
     assert!(dts.contains("ExecutionError"));
@@ -365,6 +387,7 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("about(): Promise<ContractDescription>"));
     assert!(dts.contains("readonly runtime:"));
     assert!(dts.contains("watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>"));
+    assert!(dts.contains("preview(intent: DeployIntent): Promise<DeployPreview>"));
     assert!(dts.contains("deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>"));
     assert!(dts.contains("removeVolumes("));
     assert!(dts.contains("RemoveVolumesRequest"));

@@ -179,7 +179,7 @@ fn deploy_warning_display_is_the_cli_line_body() {
     let warning =
         crate::dns::ingress_dns_warnings([&spec], &["192.0.2.1".parse().unwrap()], |_| Vec::new())
             .into_iter()
-            .map(DeployWarning::IngressHostname)
+            .map(DeployWarning::from)
             .next()
             .expect("unresolved Ingress Hostname warns");
     assert_eq!(

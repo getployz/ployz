@@ -144,6 +144,63 @@
       "future_note": "ok"
     }
   },
+  "deploy_preview": {
+    "operations": [
+      {
+        "StopContainer": {
+          "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "machine_id": "0123456789abcdef0123456789abcdef"
+        }
+      }
+    ],
+    "warnings": [
+      {
+        "ObservationFailed": {
+          "kind": "container",
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "message": "container listing failed"
+        }
+      },
+      {
+        "ObservationOmitted": {
+          "kind": "volume",
+          "machine_id": "fedcba9876543210fedcba9876543210"
+        }
+      },
+      {
+        "IngressHostname": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
+      }
+    ]
+  },
+  "deploy_preview_unknown_fields": {
+    "future_note": "ok",
+    "operations": [
+      {
+        "StopContainer": {
+          "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "machine_id": "0123456789abcdef0123456789abcdef"
+        }
+      }
+    ],
+    "warnings": [
+      {
+        "ObservationFailed": {
+          "kind": "container",
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "message": "container listing failed"
+        }
+      },
+      {
+        "ObservationOmitted": {
+          "kind": "volume",
+          "machine_id": "fedcba9876543210fedcba9876543210"
+        }
+      },
+      {
+        "IngressHostname": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
+      }
+    ]
+  },
   "docker_volume": {
     "driver": "local",
     "id": {

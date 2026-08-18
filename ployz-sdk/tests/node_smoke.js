@@ -65,6 +65,15 @@ async function expectRpc(fn, code) {
       placement_seed: 0,
     },
   };
+  const preview = await client.preview(intent);
+  if (!Array.isArray(preview.operations) || !Array.isArray(preview.warnings)) {
+    throw new Error("preview() must return operations and warnings");
+  }
+  if (preview.operations.length !== 1) {
+    throw new Error(
+      `expected one previewed operation, got ${preview.operations.length}`,
+    );
+  }
   const outcome = await client.deploy(intent);
   if (!outcome.Success || !Array.isArray(outcome.Success.completed)) {
     throw new Error(`expected Success outcome, got ${JSON.stringify(outcome)}`);
@@ -102,6 +111,7 @@ async function expectRpc(fn, code) {
     "call",
     "request",
     "watch",
+    "preview",
     "deploy",
     "connectTcp",
     "connectSsh",
@@ -111,6 +121,9 @@ async function expectRpc(fn, code) {
     if (Object.hasOwn(sdk, name)) {
       throw new Error(`${name} must not be exported`);
     }
+  }
+  if (typeof sdk.Client.prototype.preview !== "function") {
+    throw new Error("Client.preview must be a method");
   }
   if (typeof sdk.Client.prototype.deploy !== "function") {
     throw new Error("Client.deploy must be a method");

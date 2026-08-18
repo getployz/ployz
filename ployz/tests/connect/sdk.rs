@@ -1,4 +1,4 @@
-//! Façade tests for Cloud session connect / about / deploy / close.
+//! Façade tests for Cloud session connect / about / preview / deploy / close.
 
 use std::{path::PathBuf, process::Command, time::Duration};
 
@@ -255,7 +255,74 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
 }
 
 #[tokio::test]
-async fn node_smoke_covers_connect_about_deploy_and_close() {
+async fn preview_planning_error_is_a_typed_rpc_error() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(description.machine_id, {
+            let mut service = DiscoveryService::new(description.clone());
+            service.machines.clear();
+            service
+        })
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+
+    let error = client
+        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
+async fn preview_then_deploy_reuses_the_planner_without_a_handle() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone()),
+        )
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+    let intent = DeployIntent::apply_one(spec("web"), skip_health());
+
+    let preview = client.preview(intent.clone()).await.unwrap();
+    assert_eq!(preview.operations.len(), 1);
+    assert!(matches!(
+        preview.operations.first(),
+        Some(DeployOperation::RunContainer { spec, skip_health_monitor: true, .. })
+            if spec.name.as_str() == "web"
+    ));
+
+    let outcome = client.deploy(intent).await.unwrap();
+    let DeployOutcome::Success { completed } = outcome else {
+        panic!("expected success: {outcome:?}");
+    };
+    assert_eq!(completed.len(), 1);
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
+async fn node_smoke_covers_connect_about_preview_deploy_and_close() {
     let description = advertised_description();
     let session = RelaySession::start().await;
     let _machine = session

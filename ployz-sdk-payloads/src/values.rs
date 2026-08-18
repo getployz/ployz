@@ -9,16 +9,16 @@ use ployz_core::{
     AdvertisedEndpoint, CapabilityName, CertificateAvailability, CertificateBackoff,
     CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DeployOperation, DeployOutcome, DockerVolume,
-    DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation, HealthFailure,
-    HealthObservation, HookContainer, HookFailure, IngressHost, Machine, MachineAction,
-    MachineFailure, MachineId, MachineName, MachineObservation, MachineRuntime, MachineSuccess,
-    ManagementAddress, MembershipObservation, PROTOCOL_MAJOR, PartialResult, PlanOptions,
-    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
-    RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
-    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
-    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, VolumeSource,
-    WireGuardPublicKey,
+    DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
+    DeployWarning, DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation,
+    HealthFailure, HealthObservation, HookContainer, HookFailure, IngressHost, Machine,
+    MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachineRuntime,
+    MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind, PROTOCOL_MAJOR,
+    PartialResult, PlanOptions, RemoveVolumesRequest, ReplacementCompensation,
+    ReplacementOperation, ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode,
+    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
+    ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceVolume,
+    ServiceVolumeReference, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -85,6 +85,11 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("capabilities".into(), Value::Array(capability_wires()));
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
+    fixtures.insert("deploy_preview".into(), to_value(&deploy_preview()));
+    fixtures.insert(
+        "deploy_preview_unknown_fields".into(),
+        with_unknown_field(to_value(&deploy_preview()), "future_note", json!("ok")),
+    );
     fixtures.insert("deploy_outcome".into(), to_value(&deploy_outcome()));
     fixtures.insert(
         "deploy_outcome_unknown_fields".into(),
@@ -144,6 +149,7 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("DockerVolumeId", to_value(&docker_volume().id)),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
         ("DeployIntent", to_value(&deploy_intent())),
+        ("DeployPreview", to_value(&deploy_preview())),
         ("PlanOptions", to_value(&PlanOptions::default())),
         ("ServiceAttempt", to_value(&service_attempt())),
         ("RpcError", to_value(&rpc_error())),
@@ -201,6 +207,17 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         (
             "DeployOperation",
             deploy_operations().iter().map(to_value).collect(),
+        ),
+        (
+            "ObservationKind",
+            vec![
+                to_value(&ObservationKind::Container),
+                to_value(&ObservationKind::Volume),
+            ],
+        ),
+        (
+            "DeployWarning",
+            deploy_warnings().iter().map(to_value).collect(),
         ),
         (
             "MachineAction",
@@ -362,6 +379,34 @@ fn service_attempt() -> ServiceAttempt {
 
 fn deploy_intent() -> DeployIntent {
     DeployIntent::new(Vec::new(), Vec::new(), PlanOptions::default())
+}
+
+fn deploy_preview() -> DeployPreview {
+    DeployPreview {
+        operations: vec![DeployOperation::StopContainer {
+            machine_id: machine_id(MACHINE_ID_HEX),
+            container_id: container_id(),
+        }],
+        warnings: deploy_warnings().to_vec(),
+    }
+}
+
+fn deploy_warnings() -> [DeployWarning; 3] {
+    [
+        DeployWarning::ObservationFailed {
+            kind: ObservationKind::Container,
+            machine_id: machine_id(MACHINE_ID_HEX),
+            message: "container listing failed".into(),
+        },
+        DeployWarning::ObservationOmitted {
+            kind: ObservationKind::Volume,
+            machine_id: machine_id(OTHER_MACHINE_ID_HEX),
+        },
+        DeployWarning::IngressHostname(
+            "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
+                .into(),
+        ),
+    ]
 }
 
 fn deploy_outcome() -> DeployOutcome<ExecutionError> {

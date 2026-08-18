@@ -1,6 +1,9 @@
-//! Deploy Intent, Plan Options, and Deploy Outcome shared by the CLI planner and `@ployz/sdk`.
+//! Deploy Intent, Plan Options, Preview, and Outcome shared by the CLI planner and `@ployz/sdk`.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fmt::{self, Display, Formatter},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -231,6 +234,69 @@ pub enum DeployOperation {
         spec: ResolvedServiceSpec,
         old_hook_containers: Vec<(MachineId, ContainerId)>,
     },
+}
+
+/// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
+///
+/// Live Observation shaped for a decision, not persisted state. Not a handle:
+/// executing submits the same Deploy Intent and re-plans against a fresh snapshot.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeployPreview {
+    /// Operations the current snapshot would execute.
+    pub operations: Vec<DeployOperation>,
+    /// Observer-relative warnings for this snapshot, including ingress DNS misses.
+    pub warnings: Vec<DeployWarning>,
+}
+
+/// Kind of Machine observation that failed or was omitted while gathering a snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationKind {
+    Container,
+    Volume,
+}
+
+impl Display for ObservationKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Container => f.write_str("container"),
+            Self::Volume => f.write_str("volume"),
+        }
+    }
+}
+
+/// A warning attached to a Deploy Preview. Display matches the CLI warning body.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DeployWarning {
+    /// Listing containers or volumes on `machine_id` returned `message`.
+    ObservationFailed {
+        kind: ObservationKind,
+        machine_id: MachineId,
+        message: String,
+    },
+    /// Listing containers or volumes on `machine_id` produced no terminal response.
+    ObservationOmitted {
+        kind: ObservationKind,
+        machine_id: MachineId,
+    },
+    /// An Ingress Hostname misses this Cluster. The string is the CLI warning body.
+    IngressHostname(String),
+}
+
+impl Display for DeployWarning {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ObservationFailed {
+                kind,
+                machine_id,
+                message,
+            } => write!(f, "{kind} observation failed on {machine_id}: {message}"),
+            Self::ObservationOmitted { kind, machine_id } => {
+                write!(f, "{kind} observation omitted {machine_id}")
+            }
+            Self::IngressHostname(message) => f.write_str(message),
+        }
+    }
 }
 
 /// Machine RPC invoked while executing one Deploy Operation.

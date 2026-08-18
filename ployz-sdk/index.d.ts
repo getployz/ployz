@@ -2,6 +2,7 @@ import type {
   ContractDescription,
   DeployIntent,
   DeployOutcome,
+  DeployPreview,
   DockerVolumeName,
   ExecutionError,
   MachineId,
@@ -29,6 +30,7 @@ export declare class Client {
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>;
   };
+  preview(intent: DeployIntent): Promise<DeployPreview>;
   deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>;
   removeVolumes(
     request: RemoveVolumesRequest,

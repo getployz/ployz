@@ -6,6 +6,8 @@ mod intent;
 mod placement;
 #[path = "deploy_plan/rollout.rs"]
 mod rollout;
+#[path = "deploy_plan/stored_data.rs"]
+mod stored_data;
 #[path = "deploy_plan/support.rs"]
 mod support;
 #[path = "deploy_plan/validation.rs"]

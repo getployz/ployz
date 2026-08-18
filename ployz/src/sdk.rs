@@ -1,11 +1,10 @@
-//! Relay-only Cloud session: connect, about, runtime.watch, deploy, remove_volumes, and close.
-
+//! Relay-only Cloud session: connect, about, runtime.watch, preview, deploy, remove_volumes, and close.
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
-use crate::deploy::{DeployError, DeployIntent};
+use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
     ContractDescription, DeployOutcome, DescribeContractRequest, DockerVolumeName, ExecutionError,
     MachineId, OpaquePayload, PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
@@ -106,12 +105,27 @@ impl Session {
         })
     }
 
+    /// Calculate a Deploy Preview for a Deploy Intent without executing it.
+    ///
+    /// Same planner, ingress expansion, and DNS warnings as the CLI. The
+    /// preview is not a handle: [`Self::deploy`] re-plans against a fresh
+    /// snapshot rather than replaying these operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, snapshot
+    /// gathering fails, ingress expansion fails, or planning fails.
+    pub async fn preview(&self, intent: DeployIntent) -> Result<DeployPreview, RpcError> {
+        let mut client = self.client().await?;
+        client.preview(intent).await.map_err(deploy_error)
+    }
+
     /// Submit a Deploy Intent on the shared Rust Client and return a Deploy Outcome.
     ///
     /// Unary: no operation ID, reserve/submit, progress stream, or `ops.watch`.
     /// Execution failure is [`DeployOutcome::Failed`] with the completed prefix,
     /// failed operation, and unexecuted suffix. Planning and snapshot errors are
-    /// [`RpcError`], not an outcome.
+    /// [`RpcError`], not an outcome. Always re-plans against a fresh snapshot.
     ///
     /// # Errors
     ///

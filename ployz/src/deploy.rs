@@ -19,9 +19,9 @@ pub use pipeline::DeployError;
 pub use planning::plan_deploy;
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
-    DeployIntent, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, HealthFailure,
-    HookFailure, MachineAction, PlanOptions, ReplacementCompensation, ReplacementOperation,
-    RestartAttempt, ServiceAttempt,
+    DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning, ExecutionError,
+    FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind, PlanOptions,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
 };
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
