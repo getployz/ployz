@@ -28,6 +28,7 @@ use tonic::{
 };
 
 mod relay;
+mod sdk;
 mod support;
 use support::*;
 

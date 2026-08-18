@@ -442,7 +442,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
 
 /// Generated TypeScript declarations and JSON fixtures.
 pub struct Artifacts {
-    pub index_dts: String,
+    pub payloads_dts: String,
     pub fixtures_json: String,
 }
 
@@ -454,12 +454,15 @@ pub fn artifacts() -> Artifacts {
     check_internally_tagged_variants_match_rust();
     check_closed_strings_match_rust();
     Artifacts {
-        index_dts: typescript(),
+        payloads_dts: typescript(),
         fixtures_json: pretty_json(&Value::Object(fixtures().into_iter().collect())),
     }
 }
 
 /// Write generated files under the napi package root.
+///
+/// Façade declarations (`connect` / `about` / `close`) live in handwritten
+/// `index.d.ts` and are not emitted here.
 ///
 /// # Errors
 ///
@@ -467,7 +470,7 @@ pub fn artifacts() -> Artifacts {
 pub fn write_generated(root: &Path) -> std::io::Result<()> {
     let artifacts = artifacts();
     fs::create_dir_all(root.join("generated"))?;
-    fs::write(root.join("index.d.ts"), artifacts.index_dts)?;
+    fs::write(root.join("generated/payloads.d.ts"), artifacts.payloads_dts)?;
     fs::write(
         root.join("generated/fixtures.json"),
         artifacts.fixtures_json,
@@ -480,10 +483,10 @@ pub fn write_generated(root: &Path) -> std::io::Result<()> {
 pub fn drift(root: &Path) -> Option<String> {
     let expected = artifacts();
     let mut problems = Vec::new();
-    match fs::read_to_string(root.join("index.d.ts")) {
-        Ok(on_disk) if on_disk == expected.index_dts => {}
-        Ok(_) => problems.push("index.d.ts is stale".to_owned()),
-        Err(error) => problems.push(format!("index.d.ts: {error}")),
+    match fs::read_to_string(root.join("generated/payloads.d.ts")) {
+        Ok(on_disk) if on_disk == expected.payloads_dts => {}
+        Ok(_) => problems.push("generated/payloads.d.ts is stale".to_owned()),
+        Err(error) => problems.push(format!("generated/payloads.d.ts: {error}")),
     }
     match fs::read_to_string(root.join("generated/fixtures.json")) {
         Ok(on_disk) if on_disk == expected.fixtures_json => {}

@@ -343,6 +343,12 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     }
 }
 
+impl From<ConnectError> for RpcError {
+    fn from(error: ConnectError) -> Self {
+        rpc_error(error)
+    }
+}
+
 pub(crate) async fn apply_timeout<T>(
     timeout: Option<Duration>,
     future: impl Future<Output = Result<T, ConnectError>>,

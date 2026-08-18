@@ -11,5 +11,6 @@ pub mod handlers;
 pub mod image;
 pub mod operator;
 mod provisioning;
+pub mod sdk;
 pub mod service;
 pub mod volume;

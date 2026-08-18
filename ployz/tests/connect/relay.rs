@@ -13,7 +13,7 @@ use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 use super::support::{DiscoveryService, test_description};
 
 const PAIRING: &str = "pairing-secret";
-const DIAL: &str = "dial-secret";
+pub(super) const DIAL: &str = "dial-secret";
 
 #[tokio::test]
 async fn client_rpc_round_trip_through_relay_attach() {
@@ -85,13 +85,13 @@ async fn unknown_machine_id_fails_closed() {
     assert!(matches!(error, ConnectError::UnknownMachine), "{error:?}");
 }
 
-struct RelaySession {
-    url: String,
+pub(super) struct RelaySession {
+    pub(super) url: String,
     _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 
 impl RelaySession {
-    async fn start() -> Self {
+    pub(super) async fn start() -> Self {
         let relay = Relay::new(
             PairingCredential::parse(PAIRING).unwrap(),
             DialCredential::parse(DIAL).unwrap(),
@@ -105,12 +105,16 @@ impl RelaySession {
         }
     }
 
-    async fn spawn_machine(&self, machine_id: MachineId, service: DiscoveryService) -> FakeMachine {
+    pub(super) async fn spawn_machine(
+        &self,
+        machine_id: MachineId,
+        service: DiscoveryService,
+    ) -> FakeMachine {
         FakeMachine::register(&self.url, machine_id, service).await
     }
 }
 
-struct FakeMachine {
+pub(super) struct FakeMachine {
     _register_hold: mpsc::Sender<RegisterRequest>,
     _accept: tokio::task::JoinHandle<()>,
 }

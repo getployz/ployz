@@ -263,7 +263,7 @@ fn observation_enums_keep_an_unknown_case() {
 
 #[test]
 fn generated_typescript_encodes_additive_evolution_rules() {
-    let dts = ployz_sdk_payloads::artifacts().index_dts;
+    let dts = ployz_sdk_payloads::artifacts().payloads_dts;
     assert!(dts.contains("export type Additive<T extends object> = T & JsonObject;"));
     assert!(dts.contains("export type MembershipObservation ="));
     assert!(dts.contains("| (string & {});"));
@@ -288,6 +288,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type CertificateObservation = Additive<{"));
     assert!(dts.contains("resolved_spec: ResolvedServiceSpec"));
     assert!(!dts.contains("export declare function connect"));
+    assert!(!dts.contains("export declare class Client"));
     assert!(dts.contains("export const RUNTIME_WATCH_CAPABILITY: CapabilityName"));
     assert!(dts.contains(RUNTIME_WATCH_CAPABILITY));
     assert!(dts.contains("export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName"));
@@ -312,6 +313,30 @@ fn generated_typescript_encodes_additive_evolution_rules() {
             "RpcErrorCode TypeScript is missing {wire}"
         );
     }
+}
+
+#[test]
+fn handwritten_facade_types_use_generated_payloads() {
+    let dts = include_str!("../../ployz-sdk/index.d.ts");
+    assert!(
+        dts.contains(
+            "import type { ContractDescription, MachineId } from \"./generated/payloads\""
+        )
+    );
+    assert!(dts.contains("export * from \"./generated/payloads\""));
+    assert!(dts.contains("export declare function connect"));
+    assert!(dts.contains("relayUrl: string"));
+    assert!(dts.contains("bearer: string"));
+    assert!(dts.contains("machineId: MachineId"));
+    assert!(dts.contains("about(): Promise<ContractDescription>"));
+    assert!(dts.contains("close(): Promise<void>"));
+    assert!(!dts.contains("connectSsh"));
+    assert!(!dts.contains("connectTcp"));
+    assert!(!dts.contains("connectUnix"));
+    assert!(!dts.contains("watch("));
+    assert!(!dts.contains("deploy("));
+    assert!(!dts.contains("export declare function call"));
+    assert!(!dts.contains("export declare function request"));
 }
 
 #[test]

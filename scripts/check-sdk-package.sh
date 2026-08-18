@@ -25,6 +25,7 @@ ln -s "$ROOT/ployz-sdk" "$TMP/node_modules/@ployz/sdk"
 
 cd "$TMP"
 node --input-type=commonjs <<'EOF'
+const fs = require("node:fs");
 const path = require("node:path");
 const pkg = require("@ployz/sdk/package.json");
 if (pkg.name !== "@ployz/sdk") {
@@ -37,8 +38,84 @@ if (typeof sdk.packageName !== "function") {
 if (sdk.packageName() !== "@ployz/sdk") {
   throw new Error(`expected packageName() to return @ployz/sdk, got ${sdk.packageName()}`);
 }
-if (Object.hasOwn(sdk, "connect")) {
-  throw new Error("connect is out of scope for the generated-type pipeline");
+if (typeof sdk.connect !== "function") {
+  throw new Error("connect export is missing");
 }
-console.log(`loaded ${path.join("@ployz", "sdk")} ${pkg.version}`);
+if (typeof sdk.Client !== "function") {
+  throw new Error("Client export is missing");
+}
+
+const forbidden = [
+  "call",
+  "request",
+  "watch",
+  "deploy",
+  "connectTcp",
+  "connectSsh",
+  "connectUnix",
+  "connectSSH",
+];
+for (const name of forbidden) {
+  if (Object.hasOwn(sdk, name)) {
+    throw new Error(`${name} must not be exported`);
+  }
+}
+
+const dts = fs.readFileSync(require.resolve("@ployz/sdk/index.d.ts"), "utf8");
+if (!dts.includes("export declare function connect")) {
+  throw new Error("index.d.ts is missing connect");
+}
+if (!dts.includes("about(): Promise<ContractDescription>")) {
+  throw new Error("index.d.ts is missing about()");
+}
+if (!dts.includes("close(): Promise<void>")) {
+  throw new Error("index.d.ts is missing close()");
+}
+for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watch(", "deploy("]) {
+  if (dts.includes(needle)) {
+    throw new Error(`index.d.ts must not declare ${needle}`);
+  }
+}
+
+async function expectRpc(fn, code) {
+  try {
+    await fn();
+    throw new Error(`expected ${code}`);
+  } catch (error) {
+    let rpc;
+    try {
+      rpc = JSON.parse(error.message);
+    } catch {
+      throw new Error(`expected generated RpcError JSON, got ${error && error.message}`);
+    }
+    if (rpc.code !== code) {
+      throw new Error(`expected ${code}, got ${rpc.code}`);
+    }
+  }
+}
+
+(async () => {
+  await expectRpc(
+    () =>
+      sdk.connect({
+        relayUrl: "http://127.0.0.1:1",
+        bearer: "",
+        machineId: "0123456789abcdef0123456789abcdef",
+      }),
+    "unauthenticated",
+  );
+  await expectRpc(
+    () =>
+      sdk.connect({
+        relayUrl: "http://127.0.0.1:1",
+        bearer: "dial-secret",
+        machineId: "not-a-machine-id",
+      }),
+    "invalid_argument",
+  );
+  console.log(`loaded ${path.join("@ployz", "sdk")} ${pkg.version}`);
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 EOF
