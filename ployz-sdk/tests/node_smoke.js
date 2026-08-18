@@ -66,25 +66,39 @@ async function expectRpc(fn, code) {
       placement_seed: 0,
     },
   };
-  const preview = await client.preview(intent);
-  if (!Array.isArray(preview.operations) || !Array.isArray(preview.warnings)) {
-    throw new Error("preview() must return operations and warnings");
-  }
-  if (preview.operations.length !== 1) {
-    throw new Error(
-      `expected one previewed operation, got ${preview.operations.length}`,
-    );
-  }
-  const outcome = await client.deploy(intent);
-  if (!outcome.Success || !Array.isArray(outcome.Success.completed)) {
-    throw new Error(`expected Success outcome, got ${JSON.stringify(outcome)}`);
-  }
-  if (outcome.Success.completed.length !== 1) {
-    throw new Error(
-      `expected one completed operation, got ${outcome.Success.completed.length}`,
-    );
-  }
-  await expectRpc(() => client.deploy({ not: "a DeployIntent" }), "invalid_argument");
+    const preview = await client.preview(intent);
+    if (!Array.isArray(preview.operations) || !Array.isArray(preview.warnings)) {
+      throw new Error("preview() must return operations and warnings");
+    }
+    if (preview.operations.length !== 1) {
+      throw new Error(
+        `expected one previewed operation, got ${preview.operations.length}`,
+      );
+    }
+    if (typeof preview.confirm !== "function") {
+      throw new Error("preview.confirm must be a method");
+    }
+    const running = preview.confirm();
+    let sawProgress = false;
+    for await (const event of running) {
+      if (event && event.type === "progress") {
+        sawProgress = true;
+      }
+    }
+    if (!sawProgress) {
+      throw new Error("confirm() must stream progress events");
+    }
+    const outcome = await running.finished;
+    if (outcome.type !== "success" || !Array.isArray(outcome.completed)) {
+      throw new Error(`expected success outcome, got ${JSON.stringify(outcome)}`);
+    }
+    if (outcome.completed.length !== 1) {
+      throw new Error(
+        `expected one completed operation, got ${outcome.completed.length}`,
+      );
+    }
+    await expectRpc(() => preview.confirm(), "invalid_argument");
+    await expectRpc(() => client.run({ not: "a DeployIntent" }), "invalid_argument");
   const after = await client.about();
   if (!after.capabilities.includes("ployz.rpc.describe-contract.v1")) {
     throw new Error("Client must stay usable after deploy");
@@ -92,7 +106,7 @@ async function expectRpc(fn, code) {
 
   await client.close();
   await expectRpc(() => client.about(), "unavailable");
-  await expectRpc(() => client.deploy(intent), "unavailable");
+  await expectRpc(() => client.run(intent), "unavailable");
   await client.close();
 
   const again = await sdk.connect({ relayUrl, bearer, machineId });
@@ -126,8 +140,14 @@ async function expectRpc(fn, code) {
   if (typeof sdk.Client.prototype.preview !== "function") {
     throw new Error("Client.preview must be a method");
   }
-  if (typeof sdk.Client.prototype.deploy !== "function") {
-    throw new Error("Client.deploy must be a method");
+  if (typeof sdk.Client.prototype.run !== "function") {
+    throw new Error("Client.run must be a method");
+  }
+  if (typeof sdk.Client.prototype.deploy !== "undefined") {
+    throw new Error("Client.deploy must not exist");
+  }
+  if (typeof sdk.applyAll !== "function" || typeof sdk.applyOne !== "function") {
+    throw new Error("applyAll / applyOne must be exported");
   }
   if (typeof sdk.Client.prototype.watch !== "undefined") {
     throw new Error("Client.watch must not exist");

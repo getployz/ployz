@@ -75,11 +75,14 @@ if (!dts.includes("export declare function connect")) {
 if (!dts.includes("about(): Promise<ContractDescription>")) {
   throw new Error("index.d.ts is missing about()");
 }
-if (!dts.includes("preview(intent: DeployIntent): Promise<DeployPreview>")) {
+if (!dts.includes("preview(intent: DeployIntent): Promise<PreparedDeploy>")) {
   throw new Error("index.d.ts is missing preview()");
 }
-if (!dts.includes("deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>")) {
-  throw new Error("index.d.ts is missing deploy()");
+if (!dts.includes("run(") || !dts.includes("Promise<DeployOutcome<ExecutionError>>")) {
+  throw new Error("index.d.ts is missing run()");
+}
+if (dts.includes("deploy(intent: DeployIntent)")) {
+  throw new Error("index.d.ts must not declare unary deploy()");
 }
 if (!dts.includes("removeVolumes(")) {
   throw new Error("index.d.ts is missing removeVolumes()");
@@ -107,8 +110,14 @@ for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watchRuntime"]
 if (typeof sdk.Client.prototype.preview !== "function") {
   throw new Error("Client.preview must be a method");
 }
-if (typeof sdk.Client.prototype.deploy !== "function") {
-  throw new Error("Client.deploy must be a method");
+if (typeof sdk.Client.prototype.run !== "function") {
+  throw new Error("Client.run must be a method");
+}
+if (typeof sdk.Client.prototype.deploy !== "undefined") {
+  throw new Error("Client.deploy must not exist");
+}
+if (typeof sdk.applyAll !== "function" || typeof sdk.applyOne !== "function") {
+  throw new Error("applyAll / applyOne must be exported");
 }
 if (typeof sdk.Client.prototype.removeVolumes !== "function") {
   throw new Error("Client.removeVolumes must be a method");

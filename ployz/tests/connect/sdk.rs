@@ -1,4 +1,4 @@
-//! Façade tests for Cloud session connect / about / preview / deploy / close.
+//! Façade tests for Cloud session connect / about / preview / run / close.
 
 use std::{path::PathBuf, process::Command, time::Duration};
 
@@ -151,11 +151,14 @@ async fn deploy_returns_success_for_a_completed_run() {
         .unwrap();
 
     let outcome = client
-        .deploy(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            spec("web"),
-            skip_health(),
-        ))
+        .run(
+            DeployIntent::apply_one(
+                ProjectName::parse("app").unwrap(),
+                spec("web"),
+                skip_health(),
+            ),
+            None,
+        )
         .await
         .unwrap();
 
@@ -191,11 +194,14 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
         .await
         .unwrap();
     let outcome = client
-        .deploy(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            spec_with_volume("web", "scratch"),
-            skip_health(),
-        ))
+        .run(
+            DeployIntent::apply_one(
+                ProjectName::parse("app").unwrap(),
+                spec_with_volume("web", "scratch"),
+                skip_health(),
+            ),
+            None,
+        )
         .await
         .unwrap();
 
@@ -245,11 +251,14 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
         .unwrap();
 
     let error = client
-        .deploy(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            spec("web"),
-            skip_health(),
-        ))
+        .run(
+            DeployIntent::apply_one(
+                ProjectName::parse("app").unwrap(),
+                spec("web"),
+                skip_health(),
+            ),
+            None,
+        )
         .await
         .unwrap_err();
 
@@ -298,7 +307,7 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
 }
 
 #[tokio::test]
-async fn preview_then_deploy_reuses_the_planner_without_a_handle() {
+async fn preview_then_confirm_executes_the_shown_plan() {
     let description = advertised_description();
     let session = RelaySession::start().await;
     let _machine = session
@@ -316,15 +325,16 @@ async fn preview_then_deploy_reuses_the_planner_without_a_handle() {
         skip_health(),
     );
 
-    let preview = client.preview(intent.clone()).await.unwrap();
+    let preview = client.preview(intent).await.unwrap();
     assert_eq!(preview.operations.len(), 1);
     assert!(matches!(
-        preview.operations.first(),
+        preview.operations.first().map(|row| &row.operation),
         Some(DeployOperation::RunContainer { spec, skip_health_monitor: true, .. })
             if spec.name.as_str() == "web"
     ));
 
-    let outcome = client.deploy(intent).await.unwrap();
+    let running = preview.confirm().unwrap();
+    let outcome = running.finished().await;
     let DeployOutcome::Success { completed } = outcome else {
         panic!("expected success: {outcome:?}");
     };
@@ -336,10 +346,39 @@ async fn preview_then_deploy_reuses_the_planner_without_a_handle() {
             .unwrap()
             .supports(DESCRIBE_CONTRACT_CAPABILITY)
     );
+    assert!(preview.confirm().is_err(), "second confirm is illegal");
 }
 
 #[tokio::test]
-async fn node_smoke_covers_connect_about_preview_deploy_and_close() {
+async fn confirm_after_close_fails_closed() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone()),
+        )
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+    let preview = client
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+    client.close().await;
+    let Err(error) = preview.confirm() else {
+        panic!("confirm after close must fail closed");
+    };
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
+#[tokio::test]
+async fn node_smoke_covers_connect_about_preview_run_and_close() {
     let description = advertised_description();
     let session = RelaySession::start().await;
     let _machine = session

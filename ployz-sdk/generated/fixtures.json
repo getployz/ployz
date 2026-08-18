@@ -73,6 +73,28 @@
       "name": "data"
     }
   },
+  "deploy_event_progress": {
+    "completed": 0,
+    "rows": [
+      {
+        "display_name": "api-1",
+        "index": 0,
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "machine_name": "edge",
+        "operation": {
+          "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "type": "stop_container"
+        },
+        "service_name": "api",
+        "status": {
+          "type": "pending"
+        }
+      }
+    ],
+    "total": 1,
+    "type": "progress"
+  },
   "deploy_intent": {
     "apply": [],
     "options": {
@@ -84,82 +106,83 @@
     "target": []
   },
   "deploy_outcome": {
-    "Success": {
-      "completed": [
-        {
-          "StopContainer": {
-            "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            "machine_id": "0123456789abcdef0123456789abcdef"
-          }
-        }
-      ]
-    }
+    "completed": [
+      {
+        "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "type": "stop_container"
+      }
+    ],
+    "type": "success"
   },
   "deploy_outcome_failed": {
-    "Failed": {
-      "completed": [],
-      "failed": {
-        "Operation": {
-          "error": {
-            "Machine": {
-              "action": "CreateVolume",
-              "error": {
-                "code": "unsupported",
-                "message": "watch is not advertised"
-              }
-            }
-          },
-          "operation": {
-            "CreateVolume": {
-              "machine_id": "0123456789abcdef0123456789abcdef",
-              "volume": {
-                "reference": "data",
-                "source": {
-                  "driver": null,
-                  "external": false,
-                  "kind": "named",
-                  "labels": {},
-                  "name": "data",
-                  "no_copy": false,
-                  "subpath": null
-                }
-              }
-            }
+    "completed": [],
+    "failed": {
+      "error": {
+        "action": "CreateVolume",
+        "error": {
+          "code": "unsupported",
+          "message": "watch is not advertised"
+        },
+        "type": "machine"
+      },
+      "operation": {
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "type": "create_volume",
+        "volume": {
+          "reference": "data",
+          "source": {
+            "driver": null,
+            "external": false,
+            "kind": "named",
+            "labels": {},
+            "name": "data",
+            "no_copy": false,
+            "subpath": null
           }
         }
       },
-      "unexecuted": [
-        {
-          "StopContainer": {
-            "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            "machine_id": "0123456789abcdef0123456789abcdef"
-          }
-        }
-      ]
-    }
+      "type": "operation"
+    },
+    "type": "failed",
+    "unexecuted": [
+      {
+        "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "type": "stop_container"
+      }
+    ]
   },
   "deploy_outcome_unknown_fields": {
-    "Success": {
-      "completed": [
-        {
-          "StopContainer": {
-            "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            "machine_id": "0123456789abcdef0123456789abcdef"
-          }
-        }
-      ],
-      "future_note": "ok"
-    }
+    "completed": [
+      {
+        "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "type": "stop_container"
+      }
+    ],
+    "future_note": "ok",
+    "type": "success"
   },
   "deploy_preview": {
     "operations": [
       {
-        "StopContainer": {
+        "display_name": "api-1",
+        "index": 0,
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "machine_name": "edge",
+        "operation": {
           "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-          "machine_id": "0123456789abcdef0123456789abcdef"
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "type": "stop_container"
+        },
+        "service_name": "api",
+        "status": {
+          "type": "pending"
         }
       }
     ],
+    "project_name": "app",
     "warnings": [
       {
         "ObservationFailed": {
@@ -183,12 +206,22 @@
     "future_note": "ok",
     "operations": [
       {
-        "StopContainer": {
+        "display_name": "api-1",
+        "index": 0,
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "machine_name": "edge",
+        "operation": {
           "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-          "machine_id": "0123456789abcdef0123456789abcdef"
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "type": "stop_container"
+        },
+        "service_name": "api",
+        "status": {
+          "type": "pending"
         }
       }
     ],
+    "project_name": "app",
     "warnings": [
       {
         "ObservationFailed": {
@@ -294,6 +327,59 @@
         "name": "data"
       }
     ]
+  },
+  "requested_service_spec": {
+    "caddy_config": null,
+    "configs": [],
+    "container": {
+      "cap_add": [],
+      "cap_drop": [],
+      "command": [],
+      "config_mounts": [],
+      "entrypoint": [],
+      "environment": {},
+      "healthcheck": null,
+      "image": "api:1",
+      "init": null,
+      "log_driver": null,
+      "open_stdin": false,
+      "pid_mode": null,
+      "privileged": false,
+      "pull_policy": "missing",
+      "resources": {
+        "cpu_nanos": null,
+        "device_reservations": [],
+        "devices": [],
+        "memory_bytes": null,
+        "memory_reservation_bytes": null,
+        "shared_memory_bytes": null,
+        "ulimits": {}
+      },
+      "restart": {
+        "name": "unless-stopped"
+      },
+      "stop_timeout_secs": null,
+      "sysctls": {},
+      "tty": false,
+      "user": null,
+      "working_directory": null
+    },
+    "mode": {
+      "mode": "replicated",
+      "replicas": 1
+    },
+    "mounts": [],
+    "name": "api",
+    "placement": {
+      "machines": []
+    },
+    "ports": [],
+    "pre_deploy": null,
+    "update": {
+      "monitor_millis": null,
+      "order": null
+    },
+    "volumes": []
   },
   "rpc_error": {
     "code": "unsupported",

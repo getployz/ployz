@@ -133,9 +133,14 @@ async fn start_unavailable_stops_waiting_when_cancelled() {
         failed_unavailable(Call::Start(machine, created_id), "transport error"),
     ]);
     let cancellation = CancellationToken::new();
+    let execute = execute_with(&plan, &client, &cancellation);
+    tokio::pin!(execute);
+    tokio::select! {
+        outcome = &mut execute => panic!("start retry returned before cancel: {outcome:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
+    }
     cancellation.cancel();
-
-    let outcome = execute_with(&plan, &client, &cancellation).await;
+    let outcome = execute.await;
 
     assert!(matches!(
         outcome,

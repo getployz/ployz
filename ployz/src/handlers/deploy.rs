@@ -8,7 +8,7 @@ use crate::{
         BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, compose_identity,
         execute_build, load_project, plan_build,
     },
-    deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec, plan_options},
+    deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec},
     project::{ResolvedProject, resolve_compose_command, resolve_explicit, resolve_run_command},
 };
 
@@ -29,6 +29,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
             force_recreate,
             skip_health_monitor,
             &project.name,
+            context.unwrap_or("default"),
             Some(&project),
         )
         .await
@@ -56,9 +57,13 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             &mut project,
             &builds,
             apply,
-            plan_options(force_recreate, skip_health_monitor),
-            yes,
-            &resolved,
+            force_recreate,
+            skip_health_monitor,
+            crate::deploy::ConfirmGate {
+                auto_confirm: yes,
+                context: context.as_deref().unwrap_or("default"),
+                project: &resolved,
+            },
         )
         .await
     })
@@ -169,8 +174,11 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
             &selector,
             replicas,
             skip_health_monitor,
-            yes,
-            &project,
+            crate::deploy::ConfirmGate {
+                auto_confirm: yes,
+                context: context.unwrap_or("default"),
+                project: &project,
+            },
         )
         .await
     })

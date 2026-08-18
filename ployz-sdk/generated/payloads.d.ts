@@ -16,21 +16,19 @@ export type SerdeResult<T, E> =
   | Additive<{ Ok: T }>
   | Additive<{ Err: E }>;
 
-export type MachineId = string;
+export type MachineId = string & { readonly __brand: "MachineId" };
 
-export type ContainerId = string;
+export type ContainerId = string & { readonly __brand: "ContainerId" };
 
-export type ServiceId = string;
+export type ServiceId = string & { readonly __brand: "ServiceId" };
 
-export type ServiceName = string;
+export type ServiceName = string & { readonly __brand: "ServiceName" };
 
-export type ProjectName = string;
+export type ProjectName = string & { readonly __brand: "ProjectName" };
 
 export type QualifiedService = string;
 
 export type MachineName = string;
-
-export type MachineTarget = string;
 
 export type MachineSubnet = string;
 
@@ -50,11 +48,163 @@ export type CapabilityName = string;
 
 export type WireGuardPublicKey = number[];
 
-export type RequestedServiceSpec = JsonValue;
+export type MachinePath = string;
 
-export type ResolvedServiceSpec = JsonValue;
+export type ContainerPath = string;
 
-export type ServiceVolume = JsonValue;
+export type ServiceVolumeReference = string;
+
+export type MachineTarget = string;
+
+export type PidMode = string;
+
+export type PullPolicy = "always" | "missing" | "never";
+
+export type UpdateOrder = "start_first" | "stop_first";
+
+export type HttpProtocol = "http" | "https";
+
+export type TransportProtocol = "tcp" | "udp";
+
+export type ServiceMode =
+  | Additive<{ mode: "replicated"; replicas: number }>
+  | Additive<{ mode: "global" }>
+  | Additive<{ mode?: string }>;
+
+export type IngressHostname =
+  | Additive<{ kind: "assign_from_cluster_domain" }>
+  | Additive<{ kind: "explicit"; hostname: IngressHost }>
+  | Additive<{ kind?: string }>;
+
+export type HostBind =
+  | Additive<{ kind: "all" }>
+  | Additive<{ kind: "address"; address: string }>
+  | Additive<{ kind: "prefix"; prefix: string }>
+  | Additive<{ kind?: string }>;
+
+export type PortPublication =
+  | Additive<{ mode: "ingress"; hostname: IngressHostname; load_balancer_port: number; container_port: number; http_protocol: HttpProtocol }>
+  | Additive<{ mode: "host"; bind: HostBind; published_port: number; container_port: number; transport_protocol: TransportProtocol }>
+  | Additive<{ mode?: string }>;
+
+export type VolumeSource =
+  | Additive<{ kind: "bind"; machine_path: MachinePath; create_machine_path?: boolean; propagation?: string; recursive?: string }>
+  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: JsonValue; labels?: { readonly [key: string]: string }; no_copy?: boolean; subpath?: string }>
+  | Additive<{ kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] }>
+  | Additive<{ kind?: string }>;
+
+export type HealthcheckSpec =
+  | Additive<{ state: "disabled" }>
+  | Additive<{ state: "configured"; test: string[]; interval_millis?: number; timeout_millis?: number; start_period_millis?: number; start_interval_millis?: number; retries?: number }>
+  | Additive<{ state?: string }>;
+
+export type RestartPolicy =
+  | Additive<{ name: "no" }>
+  | Additive<{ name: "always" }>
+  | Additive<{ name: "unless-stopped" }>
+  | Additive<{ name: "on-failure"; maximum_retry_count?: number }>
+  | Additive<{ name?: string }>;
+
+export type LogDriver = Additive<{
+  name: string;
+  options: { readonly [key: string]: string };
+}>;
+
+export type ContainerResources = Additive<{
+  cpu_nanos?: number;
+  memory_bytes?: number;
+  memory_reservation_bytes?: number;
+  shared_memory_bytes?: number;
+  devices?: JsonValue[];
+  device_reservations?: JsonValue[];
+  ulimits?: JsonObject;
+}>;
+
+export type UpdateConfig = Additive<{
+  order?: UpdateOrder;
+  monitor_millis?: number;
+}>;
+
+export type ResolvedUpdateConfig = Additive<{
+  order: UpdateOrder;
+  monitor_millis?: number;
+}>;
+
+export type Placement = Additive<{
+  machines?: MachineTarget[];
+}>;
+
+export type PreDeployHook = Additive<{
+  command: string[];
+  environment?: { readonly [key: string]: string };
+  privileged?: boolean;
+  timeout_millis?: number;
+  user?: string;
+}>;
+
+export type ServiceMount = Additive<{
+  volume: ServiceVolumeReference;
+  target: ContainerPath;
+  read_only?: boolean;
+}>;
+
+export type ServiceVolume = Additive<{
+  reference: ServiceVolumeReference;
+  source: VolumeSource;
+}>;
+
+export type ServiceContainerSpec = Additive<{
+  image: string;
+  command?: string[];
+  entrypoint?: string[];
+  environment?: { readonly [key: string]: string };
+  cap_add?: string[];
+  cap_drop?: string[];
+  healthcheck?: HealthcheckSpec;
+  pull_policy: PullPolicy;
+  init?: boolean;
+  user?: string;
+  working_directory?: ContainerPath;
+  tty?: boolean;
+  open_stdin?: boolean;
+  privileged?: boolean;
+  pid_mode?: PidMode;
+  log_driver?: LogDriver;
+  resources?: ContainerResources;
+  stop_timeout_secs?: number;
+  sysctls?: { readonly [key: string]: string };
+  restart?: RestartPolicy;
+  config_mounts?: JsonValue[];
+}>;
+
+export type RequestedServiceSpec = Additive<{
+  name: ServiceName;
+  mode: ServiceMode;
+  container: ServiceContainerSpec;
+  placement?: Placement;
+  ports?: PortPublication[];
+  volumes?: ServiceVolume[];
+  mounts?: ServiceMount[];
+  configs?: JsonValue[];
+  pre_deploy?: PreDeployHook;
+  caddy_config?: string;
+  update?: UpdateConfig;
+}>;
+
+export type ResolvedServiceSpec = Additive<{
+  service_id: ServiceId;
+  name: ServiceName;
+  mode: ServiceMode;
+  container: ServiceContainerSpec;
+  placement?: Placement;
+  ports?: PortPublication[];
+  volumes?: ServiceVolume[];
+  mounts?: ServiceMount[];
+  configs?: JsonValue[];
+  pre_deploy?: PreDeployHook;
+  caddy_config?: string;
+  update?: ResolvedUpdateConfig;
+}>;
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | (string & {});
 
@@ -164,9 +314,45 @@ export type DeployWarning =
   | Additive<{ IngressHostname: string }>;
 
 export type DeployPreview = Additive<{
-  operations: DeployOperation[];
+  project_name: ProjectName;
+  operations: OperationRow[];
   warnings: DeployWarning[];
 }>;
+
+export type OperationRow = Additive<{
+  index: number;
+  machine_id: MachineId;
+  machine_name?: MachineName;
+  operation: DeployOperation;
+  display_name?: string;
+  service_name?: ServiceName;
+  status: OperationStatus;
+}>;
+
+export type OperationStatus =
+  | Additive<{ type: "pending" }>
+  | Additive<{ type: "running"; phase: OperationPhase }>
+  | Additive<{ type: "completed" }>
+  | Additive<{ type: "failed"; error: ExecutionError }>
+  | Additive<{ type: "unexecuted" }>
+  | Additive<{ type?: string }>;
+
+export type OperationPhase =
+  | Additive<{ type: "starting" }>
+  | Additive<{ type: "creating_volume" }>
+  | Additive<{ type: "creating_container" }>
+  | Additive<{ type: "starting_container" }>
+  | Additive<{ type: "waiting_for_health"; container_id: ContainerId; health?: HealthObservation; elapsed_ms: number; deadline_ms: number }>
+  | Additive<{ type: "waiting_for_hook"; container_id: ContainerId; elapsed_ms: number; deadline_ms: number }>
+  | Additive<{ type: "stopping_container" }>
+  | Additive<{ type: "removing_container" }>
+  | Additive<{ type: "compensating" }>
+  | Additive<{ type?: string }>;
+
+export type DeployEvent =
+  | Additive<{ type: "progress"; completed: number; total: number; rows: OperationRow[] }>
+  | Additive<{ type: "outcome"; outcome: DeployOutcome }>
+  | Additive<{ type?: string }>;
 
 export type ReplacementOperation = Additive<{
   machine_id: MachineId;
@@ -176,30 +362,35 @@ export type ReplacementOperation = Additive<{
 }>;
 
 export type DeployOperation =
-  | Additive<{ CreateVolume: { machine_id: MachineId; volume: ServiceVolume } }>
-  | Additive<{ RunContainer: { machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean } }>
-  | Additive<{ StopContainer: { machine_id: MachineId; container_id: ContainerId } }>
-  | Additive<{ RemoveContainer: { machine_id: MachineId; container_id: ContainerId } }>
-  | Additive<{ ReplaceContainer: ReplacementOperation }>
-  | Additive<{ StopHook: { machine_id: MachineId; container_id: ContainerId } }>
-  | Additive<{ RunHook: { machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> } }>;
+  | Additive<{ type: "create_volume"; machine_id: MachineId; volume: ServiceVolume }>
+  | Additive<{ type: "run_container"; machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
+  | Additive<{ type: "stop_container"; machine_id: MachineId; container_id: ContainerId }>
+  | Additive<{ type: "remove_container"; machine_id: MachineId; container_id: ContainerId }>
+  | Additive<{ type: "replace_container"; machine_id: MachineId; old_container_id: ContainerId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
+  | Additive<{ type: "stop_hook"; machine_id: MachineId; container_id: ContainerId }>
+  | Additive<{ type: "run_hook"; machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> }>
+  | Additive<{ type?: string }>;
 
 export type MachineAction = "CreateVolume" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer";
 
 export type HealthFailure =
-  | "Cancelled"
-  | "TimedOut"
-  | Additive<{ Runtime: ContainerRuntimeObservation }>;
+  | Additive<{ type: "cancelled" }>
+  | Additive<{ type: "timed_out" }>
+  | Additive<{ type: "runtime"; observation: ContainerRuntimeObservation }>
+  | Additive<{ type?: string }>;
 
 export type HookFailure =
-  | Additive<{ Cancelled: { stop_error: RpcError | null } }>
-  | Additive<{ TimedOut: { stop_error: RpcError | null } }>
-  | Additive<{ Exit: number }>;
+  | Additive<{ type: "cancelled"; stop_error: RpcError | null }>
+  | Additive<{ type: "timed_out"; stop_error: RpcError | null }>
+  | Additive<{ type: "exit"; code: number }>
+  | Additive<{ type?: string }>;
 
 export type ExecutionError =
-  | Additive<{ Machine: { action: MachineAction; error: RpcError } }>
-  | Additive<{ Health: { container_id: ContainerId; failure: HealthFailure } }>
-  | Additive<{ Hook: { container_id: ContainerId; failure: HookFailure } }>;
+  | Additive<{ type: "machine"; action: MachineAction; error: RpcError }>
+  | Additive<{ type: "health"; container_id: ContainerId; failure: HealthFailure }>
+  | Additive<{ type: "hook"; container_id: ContainerId; failure: HookFailure }>
+  | Additive<{ type: "cancelled" }>
+  | Additive<{ type?: string }>;
 
 export type RestartAttempt<E = ExecutionError> =
   | "NotAttempted"
@@ -210,12 +401,14 @@ export type ReplacementCompensation<E = ExecutionError> =
   | Additive<{ StopFirst: { stop_new_container: SerdeResult<null, E>; restart_old_container: RestartAttempt<E> } }>;
 
 export type FailedOperation<E = ExecutionError> =
-  | Additive<{ Operation: { operation: DeployOperation; error: E } }>
-  | Additive<{ ReplacementHealth: { operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> } }>;
+  | Additive<{ type: "operation"; operation: DeployOperation; error: E }>
+  | Additive<{ type: "replacement_health"; operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> }>
+  | Additive<{ type?: string }>;
 
 export type DeployOutcome<E = ExecutionError> =
-  | Additive<{ Success: { completed: DeployOperation[] } }>
-  | Additive<{ Failed: { completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] } }>;
+  | Additive<{ type: "success"; completed: DeployOperation[] }>
+  | Additive<{ type: "failed"; completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] }>
+  | Additive<{ type?: string }>;
 
 export type MachineRuntime = Additive<{
   daemon_version: string;

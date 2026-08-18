@@ -178,10 +178,33 @@ fn json_fixtures_round_trip_through_rust_types() {
     let preview: DeployPreview = decode_fixture(fixture(&fixtures, "deploy_preview"));
     assert_eq!(preview.operations.len(), 1);
     assert_eq!(preview.warnings.len(), 3);
+    assert!(matches!(
+        preview.operations.first().map(|row| &row.status),
+        Some(ployz_core::OperationStatus::Pending)
+    ));
     assert_eq!(
         serde_json::to_value(&preview).unwrap(),
         *fixture(&fixtures, "deploy_preview")
     );
+
+    let spec: ployz_core::RequestedServiceSpec =
+        decode_fixture(fixture(&fixtures, "requested_service_spec"));
+    assert_eq!(spec.name.as_str(), "api");
+    assert_eq!(
+        serde_json::to_value(&spec).unwrap(),
+        *fixture(&fixtures, "requested_service_spec")
+    );
+
+    let event: ployz_core::DeployEvent =
+        decode_fixture(fixture(&fixtures, "deploy_event_progress"));
+    let ployz_core::DeployEvent::Progress {
+        rows, completed, ..
+    } = &event
+    else {
+        panic!("deploy_event_progress fixture must be Progress");
+    };
+    assert_eq!(*completed, 0);
+    assert_eq!(rows.len(), 1);
 
     let outcome: DeployOutcome<ExecutionError> =
         decode_fixture(fixture(&fixtures, "deploy_outcome"));
@@ -361,25 +384,44 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("reset_warning?: string"));
     assert!(dts.contains("export type MachineTarget = string"));
     assert!(dts.contains("export type ContractDescription = Additive<{"));
-    assert!(dts.contains("export type ProjectName = string"));
+    assert!(dts.contains("readonly __brand: \"ProjectName\""));
     assert!(dts.contains("export type QualifiedService = string"));
     assert!(dts.contains("identity: QualifiedService"));
     assert!(dts.contains("export type DeployIntent = Additive<{"));
     assert!(dts.contains("project_name: ProjectName"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
+    assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
+    assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
+    assert!(dts.contains("export type ServiceVolume = Additive<{"));
+    assert!(!dts.contains("export type RequestedServiceSpec = JsonValue"));
+    assert!(!dts.contains("export type ResolvedServiceSpec = JsonValue"));
+    assert!(dts.contains("readonly __brand: \"MachineId\""));
+    assert!(dts.contains("readonly __brand: \"ServiceId\""));
+    assert!(dts.contains("readonly __brand: \"ContainerId\""));
+    assert!(dts.contains("readonly __brand: \"ServiceName\""));
     assert!(dts.contains("export type ObservationKind ="));
     assert!(dts.contains("export type DeployWarning ="));
     assert!(dts.contains("export type DeployPreview = Additive<{"));
-    assert!(dts.contains("operations: DeployOperation[]"));
+    assert!(dts.contains("operations: OperationRow[]"));
+    assert!(dts.contains("export type OperationRow = Additive<{"));
+    assert!(dts.contains("export type DeployEvent ="));
+    assert!(dts.contains("export type OperationStatus ="));
+    assert!(dts.contains("export type OperationPhase ="));
+    assert!(dts.contains("type: \"waiting_for_health\""));
+    assert!(dts.contains("elapsed_ms: number"));
+    assert!(dts.contains("deadline_ms: number"));
     assert!(dts.contains("warnings: DeployWarning[]"));
     assert!(dts.contains("export type DeployOperation ="));
+    assert!(dts.contains("type: \"run_container\""));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
     assert!(dts.contains("export type ExecutionError ="));
     assert!(dts.contains("export type MachineAction ="));
     assert!(dts.contains("export type HealthFailure ="));
     assert!(dts.contains("export type HookFailure ="));
-    assert!(dts.contains("Success: { completed: DeployOperation[] }"));
+    assert!(dts.contains("type: \"success\""));
+    assert!(dts.contains("type: \"failed\""));
+    assert!(!dts.contains("Success: { completed: DeployOperation[] }"));
     assert!(dts.contains("unexecuted: DeployOperation[]"));
     assert!(dts.contains("failed: FailedOperation<E>"));
     assert!(dts.contains("export type RuntimeWatchFrame = Additive<{"));
@@ -446,8 +488,14 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("about(): Promise<ContractDescription>"));
     assert!(dts.contains("readonly runtime:"));
     assert!(dts.contains("watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>"));
-    assert!(dts.contains("preview(intent: DeployIntent): Promise<DeployPreview>"));
-    assert!(dts.contains("deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>"));
+    assert!(dts.contains("preview(intent: DeployIntent): Promise<PreparedDeploy>"));
+    assert!(dts.contains("run("));
+    assert!(dts.contains("Promise<DeployOutcome<ExecutionError>>"));
+    assert!(dts.contains("confirm(options?: ConfirmOptions): RunningDeploy"));
+    assert!(dts.contains("applyAll("));
+    assert!(dts.contains("applyOne("));
+    assert!(dts.contains("applyAll(\n  project_name: ProjectName,"));
+    assert!(!dts.contains("deploy(intent: DeployIntent)"));
     assert!(dts.contains("removeVolumes("));
     assert!(dts.contains("RemoveVolumesRequest"));
     assert!(dts.contains("PartialResult<DockerVolumeName, RpcError>"));

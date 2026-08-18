@@ -53,13 +53,19 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             None => crate::caddy::latest_image().await?,
         };
         let requested = crate::caddy::service_spec(image, machines, caddy_config);
-        let mut client = connect_client(root, None).await?;
+        let context = root
+            .get_one::<String>("context")
+            .map(String::as_str)
+            .unwrap_or("default");
+        let mut client =
+            connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
         crate::deploy::deploy_spec(
             &mut client,
             &requested,
             force_recreate,
             skip_health_monitor,
             &ployz_core::ProjectName::system(),
+            context,
             None,
         )
         .await?;

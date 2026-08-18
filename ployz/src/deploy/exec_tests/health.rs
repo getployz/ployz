@@ -151,7 +151,9 @@ async fn health_monitor_fails_restarting_without_waiting_out_the_monitor_window(
         DeployOutcome::Failed {
             failed: FailedOperation::Operation {
                 error: ExecutionError::Health {
-                    failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+                    failure: HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Restarting,
+                    },
                     ..
                 },
                 ..
@@ -183,7 +185,9 @@ async fn health_monitor_still_fails_a_restart_loop() {
         DeployOutcome::Failed {
             failed: FailedOperation::Operation {
                 error: ExecutionError::Health {
-                    failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+                    failure: HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Restarting,
+                    },
                     ..
                 },
                 ..

@@ -1,9 +1,8 @@
 //! Napi package `@ployz/sdk`. Public payloads are generated from Rust.
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / about / runtime.watch / preview / deploy /
+//! The handwritten façade is connect / about / runtime.watch / preview / run /
 //! remove_volumes / dataLossIfMachineRemoved / removeMachine / close.
-
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
@@ -36,6 +35,18 @@ pub struct WatchStream {
     inner: sdk::Watch,
 }
 
+/// Planned Deploy that has not executed. `confirm` runs these operations.
+#[napi]
+pub struct DeployPreviewHandle {
+    inner: sdk::PreparedDeploy,
+}
+
+/// In-flight execution of one Deploy Preview.
+#[napi]
+pub struct RunningDeployHandle {
+    inner: sdk::RunningDeploy,
+}
+
 #[napi]
 impl Client {
     /// Describe the entry Machine contract.
@@ -64,48 +75,17 @@ impl Client {
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
-    /// Invokes the shared Rust Client planner. Executes nothing. The preview is
-    /// not a handle: `deploy` re-plans against a fresh snapshot.
+    /// Confirming executes these operations. It does not re-plan.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] JSON payload when `intent` is not
     /// [`DeployIntent`] data, the session is closed, or planning fails.
     #[napi]
-    pub async fn preview(&self, intent: serde_json::Value) -> Result<serde_json::Value> {
-        let intent: DeployIntent = serde_json::from_value(intent).map_err(|error| {
-            rpc_to_napi(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-            })
-        })?;
-        let preview = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
-        serde_json::to_value(&preview).map_err(|error| Error::from_reason(error.to_string()))
-    }
-
-    /// Submit a Deploy Intent and resolve to a Deploy Outcome.
-    ///
-    /// Invokes the shared Rust Client deployment operation. No TypeScript
-    /// planning or policy logic.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] JSON payload when `intent` is not
-    /// [`DeployIntent`] data, the session is closed, or planning fails before
-    /// execution. Execution failure is a [`ployz_core::DeployOutcome::Failed`]
-    /// value, not this error.
-    #[napi]
-    pub async fn deploy(&self, intent: serde_json::Value) -> Result<serde_json::Value> {
-        let intent: DeployIntent = serde_json::from_value(intent).map_err(|error| {
-            rpc_to_napi(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-            })
-        })?;
-        let outcome = self.inner.deploy(intent).await.map_err(rpc_to_napi)?;
-        serde_json::to_value(&outcome).map_err(|error| Error::from_reason(error.to_string()))
+    pub async fn preview(&self, intent: serde_json::Value) -> Result<DeployPreviewHandle> {
+        let intent = parse_intent(intent)?;
+        let inner = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
+        Ok(DeployPreviewHandle { inner })
     }
 
     /// Destroy named Docker Volumes. The list is the confirmation.
@@ -183,10 +163,70 @@ impl Client {
         serde_json::to_value(&removed).map_err(|error| Error::from_reason(error.to_string()))
     }
 
-    /// Drop the Client and Relay tunnel.
+    /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
     #[napi]
     pub async fn close(&self) {
         self.inner.close().await;
+    }
+}
+
+#[napi]
+impl DeployPreviewHandle {
+    /// Planned rows and warnings.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the preview cannot be encoded as JSON.
+    #[napi]
+    pub fn payload(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(&*self.inner).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Execute these operations. Illegal after a previous confirm.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when this preview already
+    /// confirmed.
+    #[napi]
+    pub fn confirm(&self) -> Result<RunningDeployHandle> {
+        let inner = self.inner.confirm().map_err(rpc_to_napi)?;
+        Ok(RunningDeployHandle { inner })
+    }
+}
+
+#[napi]
+impl RunningDeployHandle {
+    /// Cancel this Deploy. The outcome is a failed Deploy with `cancelled`.
+    #[napi]
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+
+    /// Next progress or outcome event, or `null` when the stream ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns when an event cannot be encoded as JSON.
+    #[napi]
+    pub async fn next(&self) -> Result<Option<serde_json::Value>> {
+        match self.inner.next().await {
+            Some(event) => serde_json::to_value(&event)
+                .map(Some)
+                .map_err(|error| Error::from_reason(error.to_string())),
+            None => Ok(None),
+        }
+    }
+
+    /// Wait for the Deploy Outcome. Progress events are still produced.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the outcome cannot be encoded as JSON.
+    #[napi]
+    pub async fn finished(&self) -> Result<serde_json::Value> {
+        let outcome = self.inner.finished().await;
+        serde_json::to_value(&outcome).map_err(|error| Error::from_reason(error.to_string()))
     }
 }
 
@@ -228,6 +268,16 @@ pub async fn connect(options: ConnectOptions) -> Result<Client> {
         .await
         .map_err(rpc_to_napi)?;
     Ok(Client { inner })
+}
+
+fn parse_intent(intent: serde_json::Value) -> Result<DeployIntent> {
+    serde_json::from_value(intent).map_err(|error| {
+        rpc_to_napi(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: error.to_string(),
+            details: serde_json::Value::Null,
+        })
+    })
 }
 
 fn rpc_to_napi(error: RpcError) -> Error {

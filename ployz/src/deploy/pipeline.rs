@@ -25,9 +25,9 @@ use crate::{
 };
 
 use super::{
-    DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeploySnapshot, DeployWarning,
+    DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot, DeployWarning,
     ExecutionError, ObservationKind, PlanError, PlanOptions, ServiceAttempt,
-    exec::execute_operations, plan_deploy,
+    exec::execute_operation_sequence, pending_rows, plan_deploy,
 };
 
 /// Snapshot, planning, or ingress-expansion failure before a Deploy executes.
@@ -47,8 +47,7 @@ impl Client {
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Reuses the same planner, ingress expansion, and DNS warnings as the CLI.
-    /// The preview is observer-relative and is not a handle: [`Self::deploy`]
-    /// re-plans against a fresh snapshot rather than replaying these operations.
+    /// Confirming executes these operations; it does not re-plan.
     ///
     /// # Errors
     ///
@@ -62,27 +61,41 @@ impl Client {
         prepare_intent(self, snapshot, warnings, &mut intent).await
     }
 
-    /// Submit a Deploy Intent: gather a snapshot, plan, and execute.
+    /// Execute the operations on this Deploy Preview. Does not re-plan.
     ///
-    /// Reuses the same planner and Machine Proxy fan-out as the CLI. Execution
-    /// failure is a [`DeployOutcome::Failed`] with the completed prefix, failed
-    /// operation, and unexecuted suffix. This operation does not prompt, stream
-    /// progress, mint operation IDs, or speak `ops.watch`. Always re-plans
-    /// against a fresh snapshot; it does not replay a prior Deploy Preview.
+    /// Progress events are sent on `progress` when provided. The first event is
+    /// every row `pending` before any Machine RPC. Execution failure is a
+    /// [`DeployOutcome::Failed`], not this error.
+    pub async fn confirm(
+        &self,
+        preview: &DeployPreview,
+        cancellation: &CancellationToken,
+        progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
+    ) -> DeployOutcome<ExecutionError> {
+        execute_operation_sequence(
+            preview.operations.clone(),
+            self,
+            cancellation,
+            progress,
+            &preview.project_name,
+        )
+        .await
+    }
+
+    /// Preview, auto-confirm, and return the Deploy Outcome.
     ///
     /// # Errors
     ///
     /// Returns when snapshot gathering, ingress expansion, or planning fails
     /// before execution starts.
-    pub async fn deploy(
+    pub async fn run(
         &mut self,
-        mut intent: DeployIntent,
+        intent: DeployIntent,
+        cancellation: &CancellationToken,
+        progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> Result<DeployOutcome<ExecutionError>, DeployError> {
-        let machines = self.machines().await?;
-        let snapshot = self.deploy_snapshot(machines).await?.snapshot;
-        expand_ingress(self, intent.target.iter_mut()).await?;
-        let plan = plan_deploy(&intent, &snapshot)?;
-        Ok(execute_deploy(self, &plan.operations, &intent.project_name).await)
+        let preview = self.preview(intent).await?;
+        Ok(self.confirm(&preview, cancellation, progress).await)
     }
 }
 
@@ -167,10 +180,7 @@ pub(super) async fn plan_scale(
     let choice = choose_scale_spec(&snapshot, selector, replicas)?;
     let Some(requested) = choice.requested else {
         return Ok((
-            DeployPreview {
-                operations: Vec::new(),
-                warnings,
-            },
+            DeployPreview::new(Vec::new(), warnings, choice.project_name.clone()),
             choice.project_name,
         ));
     };
@@ -191,18 +201,11 @@ async fn prepare_intent(
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
     let plan = plan_deploy(intent, &snapshot)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    Ok(DeployPreview {
-        operations: plan.operations,
+    Ok(DeployPreview::new(
+        pending_rows(&plan.operations, &snapshot),
         warnings,
-    })
-}
-
-pub(super) async fn execute_deploy(
-    client: &mut Client,
-    operations: &[DeployOperation],
-    project_name: &ProjectName,
-) -> DeployOutcome<ExecutionError> {
-    execute_operations(operations, client, &CancellationToken::new(), project_name).await
+        intent.project_name.clone(),
+    ))
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {

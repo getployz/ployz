@@ -132,6 +132,10 @@ _Avoid_: Desired state, workflow
 The observer-relative plan-plus-warnings offered for confirmation before one Deploy executes. It is Live Observation shaped for a decision, not persisted state.
 _Avoid_: persisted plan, cluster decision record
 
+**Deploy Progress**:
+Live evidence of one in-flight Deploy: the current operation, the completed prefix, and health/hook waits. It is not Cluster Watch, not a workflow status, and not persisted.
+_Avoid_: Watch frame, durable Deploy status, workflow state
+
 **Deploy Outcome**:
 The evidence produced by executing a Deploy Plan: its completed prefix, any failed operation, its unexecuted suffix, and any narrow replacement compensation attempted. It does not imply atomicity or general rollback.
 _Avoid_: Bare deployment error, transaction result

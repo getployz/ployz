@@ -1,22 +1,31 @@
-//! Relay-only Cloud session: connect, about, runtime.watch, preview, deploy,
+//! Relay-only Cloud session: connect, about, runtime.watch, preview, run,
 //! remove_volumes, Data Loss for Machine removal, remove_machine, and close.
+use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
-    ContractDescription, DataLoss, DeployOutcome, DescribeContractRequest, DockerVolumeName,
-    ExecutionError, LocalMachineRemoved, MachineId, MachineTarget, ObservedDataLoss, OpaquePayload,
-    PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode,
-    RuntimeWatchFrame, RuntimeWatchRequest, op,
+    ContractDescription, DataLoss, DeployEvent, DeployOutcome, DescribeContractRequest,
+    DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
+    ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
+    RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
+struct SessionInner {
+    client: Mutex<Option<Client>>,
+    cancel: CancellationToken,
+}
+
 /// Connected Cloud session over one Relay Attach.
+#[derive(Clone)]
 pub struct Session {
-    inner: Mutex<Option<Client>>,
+    inner: Arc<SessionInner>,
 }
 
 /// Complete Runtime Watch frames from the entry Machine.
@@ -25,6 +34,21 @@ pub struct Session {
 pub struct Watch {
     cancel: CancellationToken,
     stream: Mutex<Option<tonic::Streaming<OpaquePayload>>>,
+}
+
+/// A planned Deploy that has not executed. [`Self::confirm`] runs these operations.
+pub struct PreparedDeploy {
+    preview: DeployPreview,
+    client: Client,
+    session_cancel: CancellationToken,
+    confirmed: AtomicBool,
+}
+
+/// In-flight execution of one Deploy Preview.
+pub struct RunningDeploy {
+    cancel: CancellationToken,
+    events: Mutex<Option<mpsc::UnboundedReceiver<DeployEvent>>>,
+    join: Mutex<Option<tokio::task::JoinHandle<DeployOutcome<ExecutionError>>>>,
 }
 
 /// Open a Machine RPC channel through Cloud Relay.
@@ -50,13 +74,22 @@ pub async fn connect(relay_url: &str, bearer: &str, machine_id: &str) -> Result<
     })?;
     let client = connect_relay(relay_url, credential, machine_id).await?;
     Ok(Session {
-        inner: Mutex::new(Some(client)),
+        inner: Arc::new(SessionInner {
+            client: Mutex::new(Some(client)),
+            cancel: CancellationToken::new(),
+        }),
     })
 }
 
 impl Session {
     async fn client(&self) -> Result<Client, RpcError> {
-        self.inner.lock().await.as_ref().ok_or_else(closed).cloned()
+        self.inner
+            .client
+            .lock()
+            .await
+            .as_ref()
+            .ok_or_else(closed)
+            .cloned()
     }
 
     /// Describe the entry Machine contract.
@@ -103,44 +136,56 @@ impl Session {
             .await
             .map_err(ConnectError::Rpc)?;
         Ok(Watch {
-            cancel: CancellationToken::new(),
+            cancel: self.inner.cancel.child_token(),
             stream: Mutex::new(Some(stream)),
         })
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
-    /// Same planner, ingress expansion, and DNS warnings as the CLI. The
-    /// preview is not a handle: [`Self::deploy`] re-plans against a fresh
-    /// snapshot rather than replaying these operations.
+    /// Same planner, ingress expansion, and DNS warnings as the CLI. Confirming
+    /// executes these operations; it does not re-plan.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the session is closed, snapshot
     /// gathering fails, ingress expansion fails, or planning fails.
-    pub async fn preview(&self, intent: DeployIntent) -> Result<DeployPreview, RpcError> {
+    pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
-        client.preview(intent).await.map_err(deploy_error)
+        let preview = client.preview(intent).await.map_err(deploy_error)?;
+        Ok(PreparedDeploy {
+            preview,
+            client,
+            session_cancel: self.inner.cancel.clone(),
+            confirmed: AtomicBool::new(false),
+        })
     }
 
-    /// Submit a Deploy Intent on the shared Rust Client and return a Deploy Outcome.
+    /// Preview, auto-confirm, and return the Deploy Outcome.
     ///
-    /// Unary: no operation ID, reserve/submit, progress stream, or `ops.watch`.
-    /// Execution failure is [`DeployOutcome::Failed`] with the completed prefix,
-    /// failed operation, and unexecuted suffix. Planning and snapshot errors are
-    /// [`RpcError`], not an outcome. Always re-plans against a fresh snapshot.
+    /// Execution failure is a Deploy Outcome. Progress still streams on a
+    /// [`RunningDeploy`] from [`PreparedDeploy::confirm`]; this method drains it.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the session is closed, snapshot
-    /// gathering fails, ingress expansion fails, or planning fails before
-    /// execution starts.
-    pub async fn deploy(
+    /// Returns a generated [`RpcError`] when planning fails before any progress
+    /// events, or when the session is closed.
+    pub async fn run(
         &self,
         intent: DeployIntent,
+        cancel: Option<&CancellationToken>,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
-        let mut client = self.client().await?;
-        client.deploy(intent).await.map_err(deploy_error)
+        let prepared = self.preview(intent).await?;
+        let running = prepared.confirm()?;
+        if let Some(cancel) = cancel {
+            let abort = running.cancel.clone();
+            let watcher = cancel.clone();
+            tokio::spawn(async move {
+                watcher.cancelled().await;
+                abort.cancel();
+            });
+        }
+        Ok(running.finished().await)
     }
 
     /// Destroy named Docker Volumes. The list is the confirmation.
@@ -202,11 +247,95 @@ impl Session {
         client.remove_machine(&target, confirm_data_loss).await
     }
 
-    /// Drop the Client and Relay tunnel.
+    /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
     ///
     /// Repeated calls are a no-op.
     pub async fn close(&self) {
-        self.inner.lock().await.take();
+        self.inner.cancel.cancel();
+        self.inner.client.lock().await.take();
+    }
+}
+
+impl std::fmt::Debug for PreparedDeploy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedDeploy")
+            .field("noop", &self.preview.noop())
+            .field("operations", &self.preview.operations.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedDeploy {
+    /// True when this preview planned no operations.
+    #[must_use]
+    pub fn noop(&self) -> bool {
+        self.preview.noop()
+    }
+
+    /// Execute these operations. Illegal after a previous confirm.
+    ///
+    /// # Errors
+    ///
+    /// Returns when this preview already confirmed, or when the session is closed.
+    pub fn confirm(&self) -> Result<RunningDeploy, RpcError> {
+        if self.session_cancel.is_cancelled() {
+            return Err(closed());
+        }
+        if self.confirmed.swap(true, Ordering::SeqCst) {
+            return Err(invalid_argument(
+                "this Deploy Preview already confirmed".into(),
+            ));
+        }
+        let cancel = self.session_cancel.child_token();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let client = self.client.clone();
+        let preview = self.preview.clone();
+        let token = cancel.clone();
+        let join = tokio::spawn(async move { client.confirm(&preview, &token, Some(tx)).await });
+        Ok(RunningDeploy {
+            cancel,
+            events: Mutex::new(Some(rx)),
+            join: Mutex::new(Some(join)),
+        })
+    }
+}
+
+impl Deref for PreparedDeploy {
+    type Target = DeployPreview;
+
+    fn deref(&self) -> &Self::Target {
+        &self.preview
+    }
+}
+
+impl RunningDeploy {
+    /// Cancel this Deploy. The outcome is a failed Deploy with `cancelled`.
+    pub fn abort(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Next progress or outcome event, or `None` when the stream ended.
+    pub async fn next(&self) -> Option<DeployEvent> {
+        let mut guard = self.events.lock().await;
+        let rx = guard.as_mut()?;
+        if let Some(event) = rx.recv().await {
+            return Some(event);
+        }
+        *guard = None;
+        None
+    }
+
+    /// Wait for the Deploy Outcome. Progress events are still produced.
+    pub async fn finished(&self) -> DeployOutcome<ExecutionError> {
+        let handle = self
+            .join
+            .lock()
+            .await
+            .take()
+            .expect("deploy already finished");
+        let outcome = handle.await.expect("deploy task joins");
+        while self.next().await.is_some() {}
+        outcome
     }
 }
 

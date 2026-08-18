@@ -8,9 +8,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ContainerRuntimeObservation, RequestedServiceSpec, ResolvedServiceSpec, ServiceVolume,
+    ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
+    ServiceVolume,
 };
-use crate::{ContainerId, MachineId, ProjectName, RpcError, ServiceName};
+use crate::{ContainerId, MachineId, MachineName, ProjectName, RpcError, ServiceName};
 use thiserror::Error;
 
 /// Planner knobs for one Deploy.
@@ -147,6 +148,7 @@ impl DeployIntent {
 /// Evidence from executing a Deploy Plan: every operation completed, or the
 /// completed prefix plus the failed operation and the unexecuted rest.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[expect(
     clippy::large_enum_variant,
     reason = "Failed must own the named op and unexecuted rest; boxing would not change the states"
@@ -164,6 +166,7 @@ pub enum DeployOutcome<E> {
 
 /// Why a Deploy Operation did not complete.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum FailedOperation<E> {
     /// The named operation returned `error`.
     Operation {
@@ -214,6 +217,7 @@ pub struct ReplacementOperation {
 
 /// One step in a Deploy Plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeployOperation {
     /// Create a Service Volume on `machine_id`.
     CreateVolume {
@@ -253,14 +257,38 @@ pub enum DeployOperation {
 
 /// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
 ///
-/// Live Observation shaped for a decision, not persisted state. Not a handle:
-/// executing submits the same Deploy Intent and re-plans against a fresh snapshot.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Live Observation shaped for a decision, not persisted state. Confirming executes
+/// these operations; it does not re-plan.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeployPreview {
-    /// Operations the current snapshot would execute.
-    pub operations: Vec<DeployOperation>,
+    /// Project this preview was planned for. Confirm uses this name; it does not re-plan.
+    pub project_name: ProjectName,
+    /// Pending rows for the operations this snapshot would execute.
+    pub operations: Vec<OperationRow>,
     /// Observer-relative warnings for this snapshot, including ingress DNS misses.
     pub warnings: Vec<DeployWarning>,
+}
+
+impl DeployPreview {
+    /// Plan rows plus observer-relative warnings. `noop` is empty operations.
+    #[must_use]
+    pub fn new(
+        operations: Vec<OperationRow>,
+        warnings: Vec<DeployWarning>,
+        project_name: ProjectName,
+    ) -> Self {
+        Self {
+            project_name,
+            operations,
+            warnings,
+        }
+    }
+
+    /// True when this preview planned no operations.
+    #[must_use]
+    pub fn noop(&self) -> bool {
+        self.operations.is_empty()
+    }
 }
 
 /// Kind of Machine observation that failed or was omitted while gathering a snapshot.
@@ -327,22 +355,27 @@ pub enum MachineAction {
 
 /// Why health monitoring rejected a started container.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum HealthFailure {
     Cancelled,
     TimedOut,
-    Runtime(ContainerRuntimeObservation),
+    Runtime {
+        observation: ContainerRuntimeObservation,
+    },
 }
 
 /// Why a pre-deploy hook container did not succeed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum HookFailure {
     Cancelled { stop_error: Option<RpcError> },
     TimedOut { stop_error: Option<RpcError> },
-    Exit(i64),
+    Exit { code: i64 },
 }
 
 /// Error from executing one Deploy Operation.
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionError {
     #[error("{action:?} failed: {}", error.message)]
     Machine {
@@ -359,4 +392,147 @@ pub enum ExecutionError {
         container_id: ContainerId,
         failure: HookFailure,
     },
+    #[error("deploy cancelled")]
+    Cancelled,
+}
+
+/// Live evidence of one in-flight Deploy. Not a Watch frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Outcome owns the completed prefix, failed op, and unexecuted rest"
+)]
+pub enum DeployEvent {
+    /// Full snapshot of every planned row.
+    Progress {
+        completed: u32,
+        total: u32,
+        rows: Vec<OperationRow>,
+    },
+    /// Terminal evidence for this Deploy.
+    Outcome {
+        outcome: DeployOutcome<ExecutionError>,
+    },
+}
+
+/// One planned operation plus its current execution status.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OperationRow {
+    /// Zero-based index in the Deploy Plan.
+    pub index: u32,
+    /// Machine this operation targets.
+    pub machine_id: MachineId,
+    /// Human-facing Machine Name when known from the snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_name: Option<MachineName>,
+    /// Planned operation.
+    pub operation: DeployOperation,
+    /// Container display name when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Service Name when known from the spec or snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<ServiceName>,
+    /// Current status of this row.
+    pub status: OperationStatus,
+}
+
+/// Status of one operation in a Deploy Progress snapshot.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OperationStatus {
+    Pending,
+    Running { phase: OperationPhase },
+    Completed,
+    Failed { error: ExecutionError },
+    Unexecuted,
+}
+
+/// Phase of a running operation. Wait phases carry clocks.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OperationPhase {
+    Starting,
+    CreatingVolume,
+    CreatingContainer,
+    StartingContainer,
+    WaitingForHealth {
+        container_id: ContainerId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        health: Option<HealthObservation>,
+        elapsed_ms: u64,
+        deadline_ms: u64,
+    },
+    WaitingForHook {
+        container_id: ContainerId,
+        elapsed_ms: u64,
+        deadline_ms: u64,
+    },
+    StoppingContainer,
+    RemovingContainer,
+    Compensating,
+}
+
+impl OperationRow {
+    /// A not-yet-started row for one planned operation.
+    #[must_use]
+    pub fn pending(
+        index: u32,
+        operation: DeployOperation,
+        machine_name: Option<MachineName>,
+        display_name: Option<String>,
+        service_name: Option<ServiceName>,
+    ) -> Self {
+        Self {
+            index,
+            machine_id: operation.machine_id(),
+            machine_name,
+            display_name,
+            service_name: service_name.or_else(|| operation.service_name().cloned()),
+            operation,
+            status: OperationStatus::Pending,
+        }
+    }
+}
+
+impl DeployOperation {
+    /// Machine this operation targets.
+    #[must_use]
+    pub fn machine_id(&self) -> MachineId {
+        match self {
+            Self::CreateVolume { machine_id, .. }
+            | Self::RunContainer { machine_id, .. }
+            | Self::StopContainer { machine_id, .. }
+            | Self::RemoveContainer { machine_id, .. }
+            | Self::StopHook { machine_id, .. }
+            | Self::RunHook { machine_id, .. } => *machine_id,
+            Self::ReplaceContainer(replacement) => replacement.machine_id,
+        }
+    }
+
+    /// Service Name when this operation carries a spec.
+    #[must_use]
+    pub fn service_name(&self) -> Option<&ServiceName> {
+        match self {
+            Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
+            Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
+            Self::CreateVolume { .. }
+            | Self::StopContainer { .. }
+            | Self::RemoveContainer { .. }
+            | Self::StopHook { .. } => None,
+        }
+    }
+
+    /// Container ID when this operation names an existing container.
+    #[must_use]
+    pub fn container_id(&self) -> Option<ContainerId> {
+        match self {
+            Self::StopContainer { container_id, .. }
+            | Self::RemoveContainer { container_id, .. }
+            | Self::StopHook { container_id, .. } => Some(*container_id),
+            Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
+            Self::CreateVolume { .. } | Self::RunContainer { .. } | Self::RunHook { .. } => None,
+        }
+    }
 }

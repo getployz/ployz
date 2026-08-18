@@ -442,7 +442,7 @@ fn failed_hook_id(
                 error:
                     ExecutionError::Hook {
                         container_id,
-                        failure: HookFailure::Exit(7),
+                        failure: HookFailure::Exit { code: 7 },
                     },
                 ..
             },
