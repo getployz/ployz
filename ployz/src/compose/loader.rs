@@ -9,6 +9,8 @@ use std::{
     time::Duration,
 };
 
+use serde::Deserialize;
+
 use super::{
     configs::short_config,
     convert::convert_raw_project,
@@ -239,12 +241,79 @@ pub(super) fn compose_command(
 }
 
 pub(super) fn first_compose_file_from_environment() -> Option<PathBuf> {
-    let files = std::env::var_os("COMPOSE_FILE")?;
+    compose_files_from_environment().into_iter().next()
+}
+
+fn compose_input_files(options: &LoadOptions) -> Vec<PathBuf> {
+    if !options.files.is_empty() {
+        return options.files.clone();
+    }
+    let env_files = compose_files_from_environment();
+    if !env_files.is_empty() {
+        return env_files;
+    }
+    discover_default_compose_file(options)
+        .ok()
+        .into_iter()
+        .collect()
+}
+
+/// Source-YAML Project identity for Compose commands. This is not `ComposeProject.name`.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct ComposeIdentity {
+    pub name: Option<String>,
+    pub directory: Option<PathBuf>,
+}
+
+pub(crate) fn compose_identity(options: &LoadOptions) -> ComposeIdentity {
+    let files = compose_input_files(options);
+    ComposeIdentity {
+        name: top_level_compose_name(&files),
+        directory: compose_directory(&files),
+    }
+}
+
+fn top_level_compose_name(files: &[PathBuf]) -> Option<String> {
+    let mut found = None;
+    for file in files {
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        let Ok(parsed) = serde_norway::from_str::<NamedCompose>(&text) else {
+            continue;
+        };
+        if let Some(name) = parsed.name {
+            found = Some(name);
+        }
+    }
+    found
+}
+
+fn compose_directory(files: &[PathBuf]) -> Option<PathBuf> {
+    let file = files.first()?;
+    Some(
+        file.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(".")),
+    )
+}
+
+#[derive(Deserialize)]
+struct NamedCompose {
+    name: Option<String>,
+}
+
+fn compose_files_from_environment() -> Vec<PathBuf> {
+    let Some(files) = std::env::var_os("COMPOSE_FILE") else {
+        return Vec::new();
+    };
     files
         .to_string_lossy()
         .split(compose_path_separator().to_string_lossy().as_ref())
-        .find(|file| !file.is_empty())
+        .filter(|file| !file.is_empty())
         .map(PathBuf::from)
+        .collect()
 }
 
 pub(super) fn discover_default_compose_file(
@@ -403,7 +472,11 @@ impl Drop for TemporaryComposeFile {
 
 #[cfg(test)]
 mod tests {
-    use std::{io, os::unix::fs::PermissionsExt as _};
+    use std::{
+        io,
+        os::unix::fs::PermissionsExt as _,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use super::*;
 
@@ -426,5 +499,52 @@ mod tests {
             }
         });
         assert_eq!(result.unwrap(), 7);
+    }
+
+    #[test]
+    fn compose_identity_reads_the_last_source_name_and_first_file_directory() {
+        let root = unique_dir();
+        fs::write(root.join("a.yaml"), "name: first\nservices: {}\n").unwrap();
+        fs::write(root.join("b.yaml"), "name: second\nservices: {}\n").unwrap();
+        fs::write(root.join("c.yaml"), "services: {}\n").unwrap();
+        let stacked = LoadOptions {
+            files: vec![root.join("a.yaml"), root.join("b.yaml")],
+            ..Default::default()
+        };
+        assert_eq!(
+            compose_identity(&stacked),
+            ComposeIdentity {
+                name: Some("second".into()),
+                directory: Some(root.clone()),
+            }
+        );
+        let later_without_name = LoadOptions {
+            files: vec![root.join("a.yaml"), root.join("c.yaml")],
+            ..Default::default()
+        };
+        assert_eq!(
+            compose_identity(&later_without_name).name.as_deref(),
+            Some("first")
+        );
+        let relative = LoadOptions {
+            files: vec![PathBuf::from("compose.yaml")],
+            ..Default::default()
+        };
+        assert_eq!(
+            compose_identity(&relative).directory.as_deref(),
+            Some(Path::new("."))
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn unique_dir() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "ployz-compose-identity-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
     }
 }

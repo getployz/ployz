@@ -14,7 +14,7 @@ use ployz_core::{
     MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess,
     MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
-    PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy,
+    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy,
     RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
@@ -115,6 +115,40 @@ fn machine_name_accepts_lowercase_dns_labels() {
         MachineName::parse("machine-a").unwrap().as_str(),
         "machine-a"
     );
+}
+
+#[test]
+fn project_name_accepts_lowercase_dns_labels() {
+    assert_eq!(ProjectName::parse("shop").unwrap().as_str(), "shop");
+    assert_eq!(ProjectName::parse("a1").unwrap().as_str(), "a1");
+    assert_eq!(
+        ProjectName::parse("shop-staging").unwrap().as_str(),
+        "shop-staging"
+    );
+    assert_eq!(
+        ProjectName::parse("a".repeat(63)).unwrap().as_str(),
+        "a".repeat(63)
+    );
+    assert!(ProjectName::parse("ployz-system").unwrap().is_reserved());
+    assert!(!ProjectName::parse("shop").unwrap().is_reserved());
+}
+
+#[test]
+fn project_name_rejects_underscores_and_uppercase_without_normalising() {
+    let expected =
+        "a 1-63 character lowercase DNS label; underscores and uppercase are not accepted";
+    for invalid in ["My_App", "SHOP", "shop_staging", "Shop", "-shop", "shop-"] {
+        assert_eq!(
+            ProjectName::parse(invalid).unwrap_err().to_string(),
+            format!("invalid Project Name {invalid:?}: {expected}")
+        );
+    }
+    assert_eq!(
+        ProjectName::parse("").unwrap_err().to_string(),
+        format!("invalid Project Name \"\": {expected}")
+    );
+    assert!(ProjectName::parse("a".repeat(64)).is_err());
+    assert!(ProjectName::parse("shop.staging").is_err());
 }
 
 #[test]

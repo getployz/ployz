@@ -54,8 +54,14 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         };
         let requested = crate::caddy::service_spec(image, machines, caddy_config);
         let mut client = connect_client(root, None).await?;
-        crate::deploy::deploy_spec(&mut client, &requested, force_recreate, skip_health_monitor)
-            .await?;
+        crate::deploy::deploy_spec(
+            &mut client,
+            &requested,
+            force_recreate,
+            skip_health_monitor,
+            None,
+        )
+        .await?;
         crate::dns::update_records_if_reserved(&mut client).await?;
         Ok(())
     })

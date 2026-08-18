@@ -3,13 +3,14 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{RequestedServiceSpec, ServiceSelector};
+use ployz_core::{PlanOptions, RequestedServiceSpec, ServiceSelector};
 
 use crate::{
     compose::{BuildService, ComposeProject},
     connect::Client,
     context::Connection,
     failure::Failure,
+    project::ResolvedProject,
 };
 
 use super::{
@@ -26,6 +27,7 @@ pub(crate) async fn deploy_spec(
     requested: &RequestedServiceSpec,
     force_recreate: bool,
     skip_health_monitor: bool,
+    project: Option<&ResolvedProject>,
 ) -> Result<(), Failure> {
     let preview = plan_spec(
         client,
@@ -34,7 +36,7 @@ pub(crate) async fn deploy_spec(
     )
     .await?;
     print_warnings(&preview);
-    render(&preview.operations, client.connection());
+    render(&preview.operations, client.connection(), project);
     finish(execute_deploy(client, &preview.operations).await)
 }
 
@@ -42,7 +44,7 @@ pub(crate) async fn apply_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
 ) -> Result<(), Failure> {
-    deploy_spec(client, requested, false, false).await
+    deploy_spec(client, requested, false, false, None).await
 }
 
 pub(crate) async fn deploy_project(
@@ -50,11 +52,10 @@ pub(crate) async fn deploy_project(
     project: &mut ComposeProject,
     builds: &[BuildService],
     apply: Vec<ServiceAttempt>,
-    force_recreate: bool,
-    skip_health_monitor: bool,
+    options: PlanOptions,
     auto_confirm: bool,
+    resolved: &ResolvedProject,
 ) -> Result<(), Failure> {
-    let options = plan_options(force_recreate, skip_health_monitor);
     let machines = list_machines(client).await?;
     let outcome = push_project_images(client, builds, &machines).await?;
     print_pushed_images(&outcome);
@@ -67,11 +68,12 @@ pub(crate) async fn deploy_project(
     let preview = plan_project(client, project, machines, apply, options).await?;
     print_warnings(&preview);
     if preview.operations.is_empty() {
+        render(&[], client.connection(), Some(resolved));
         println!("No changes.");
         return Ok(());
     }
     // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
-    confirm_and_execute(client, &preview.operations, auto_confirm).await
+    confirm_and_execute(client, &preview.operations, auto_confirm, Some(resolved)).await
 }
 
 pub(crate) async fn deploy_scale(
@@ -80,6 +82,7 @@ pub(crate) async fn deploy_scale(
     replicas: NonZeroU32,
     skip_health_monitor: bool,
     auto_confirm: bool,
+    project: &ResolvedProject,
 ) -> Result<(), Failure> {
     let preview = plan_scale(
         client,
@@ -90,18 +93,20 @@ pub(crate) async fn deploy_scale(
     .await?;
     print_warnings(&preview);
     if preview.operations.is_empty() {
+        render(&[], client.connection(), Some(project));
         println!("No changes.");
         return Ok(());
     }
-    confirm_and_execute(client, &preview.operations, auto_confirm).await
+    confirm_and_execute(client, &preview.operations, auto_confirm, Some(project)).await
 }
 
 async fn confirm_and_execute(
     client: &mut Client,
     operations: &[DeployOperation],
     auto_confirm: bool,
+    project: Option<&ResolvedProject>,
 ) -> Result<(), Failure> {
-    render(operations, client.connection());
+    render(operations, client.connection(), project);
     if !auto_confirm && !confirm()? {
         println!("Cancelled. No changes were made.");
         return Ok(());
@@ -134,10 +139,24 @@ fn confirm() -> Result<bool, Failure> {
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
-fn render(operations: &[DeployOperation], connection: &Connection) {
-    println!("Plan for {connection}:");
+fn render(
+    operations: &[DeployOperation],
+    connection: &Connection,
+    project: Option<&ResolvedProject>,
+) {
+    println!("{}", plan_header(connection, project));
     for operation in operations {
         println!("  {}", operation_summary(operation));
+    }
+}
+
+fn plan_header(connection: &Connection, project: Option<&ResolvedProject>) -> String {
+    match project {
+        Some(project) => format!(
+            "Plan for {connection}:\nProject: {} ({})",
+            project.name, project.source
+        ),
+        None => format!("Plan for {connection}:"),
     }
 }
 
@@ -281,6 +300,23 @@ mod tests {
                 .map(|warning| format!("WARNING: {warning}"))
                 .any(|line| line.contains("plain.example.com")
                     && line.to_ascii_lowercase().contains("certificate"))
+        );
+    }
+
+    #[test]
+    fn plan_header_states_the_project_and_precedence_level() {
+        let connection = Connection::tcp("127.0.0.1:1".parse().unwrap());
+        let project = crate::project::ResolvedProject {
+            name: ployz_core::ProjectName::parse("shop").unwrap(),
+            source: crate::project::ProjectNameSource::ComposeName,
+        };
+        assert_eq!(
+            plan_header(&connection, Some(&project)),
+            "Plan for tcp://127.0.0.1:1:\nProject: shop (top-level Compose name)"
+        );
+        assert_eq!(
+            plan_header(&connection, None),
+            "Plan for tcp://127.0.0.1:1:"
         );
     }
 }

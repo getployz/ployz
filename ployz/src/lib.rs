@@ -10,6 +10,7 @@ pub mod failure;
 pub mod handlers;
 pub mod image;
 pub mod operator;
+pub mod project;
 mod provisioning;
 pub mod sdk;
 pub mod service;

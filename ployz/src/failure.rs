@@ -14,6 +14,7 @@ use crate::{
     dns::{DomainRequired, Error as DnsError, NoReachableMachines},
     image::PushError,
     operator::OperatorError,
+    project::ProjectError,
     provisioning::ProvisionError,
     volume::AssignmentError,
 };
@@ -133,6 +134,7 @@ from_error!(
     ProvisionError,
     CaddyImageError,
     RpcError,
+    ProjectError,
 );
 
 impl From<ConnectError> for Failure {

@@ -5,10 +5,14 @@ use ployz_core::ServiceSelector;
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, execute_build,
-        load_project, plan_build,
+        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, compose_identity,
+        execute_build, load_project, plan_build,
     },
-    deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec},
+    deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec, plan_options},
+    project::{
+        ProjectNameInput, ResolvedProject, resolve_compose_command, resolve_explicit,
+        resolve_from_matches,
+    },
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime, string_values};
@@ -16,18 +20,34 @@ use super::{Error, connect_client, leaf_matches, required, runtime, string_value
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let requested = run_spec(matches)?;
+    let project = resolve_from_matches(
+        matches,
+        ProjectNameInput {
+            implicit_default: true,
+            ..ProjectNameInput::default()
+        },
+    )?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        deploy_spec(&mut client, &requested, force_recreate, skip_health_monitor).await
+        deploy_spec(
+            &mut client,
+            &requested,
+            force_recreate,
+            skip_health_monitor,
+            Some(&project),
+        )
+        .await
     })
 }
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (mut project, builds, apply) = prepare_deploy(matches)?;
+    let load = deploy_load(matches);
+    let resolved = resolve_from_compose_load(matches, &load)?;
+    let (mut project, builds, apply) = prepare_deploy(matches, &load)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -44,18 +64,16 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             &mut project,
             &builds,
             apply,
-            force_recreate,
-            skip_health_monitor,
+            plan_options(force_recreate, skip_health_monitor),
             yes,
+            &resolved,
         )
         .await
     })
 }
 
-fn prepare_deploy(
-    matches: &ArgMatches,
-) -> Result<(ComposeProject, Vec<BuildService>, Vec<ServiceAttempt>), Error> {
-    let load = LoadOptions {
+fn deploy_load(matches: &ArgMatches) -> LoadOptions {
+    LoadOptions {
         command: "deploy".into(),
         files: string_values(matches, "file")
             .into_iter()
@@ -63,9 +81,32 @@ fn prepare_deploy(
             .collect(),
         profiles: string_values(matches, "profile"),
         ..Default::default()
-    };
+    }
+}
+
+fn resolve_from_compose_load(
+    matches: &ArgMatches,
+    load: &LoadOptions,
+) -> Result<ResolvedProject, Error> {
+    match resolve_explicit(matches)? {
+        Some(resolved) => Ok(resolved),
+        None => {
+            let identity = compose_identity(load);
+            Ok(resolve_compose_command(
+                matches,
+                identity.name.as_deref(),
+                identity.directory.as_deref(),
+            )?)
+        }
+    }
+}
+
+fn prepare_deploy(
+    matches: &ArgMatches,
+    load: &LoadOptions,
+) -> Result<(ComposeProject, Vec<BuildService>, Vec<ServiceAttempt>), Error> {
     let selected = string_values(matches, "service");
-    let project = load_project(&load)?;
+    let project = load_project(load)?;
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
@@ -81,7 +122,7 @@ fn prepare_deploy(
     if matches.get_flag("no-build") {
         builds.clear();
     } else {
-        execute_build(&builds, &build_options, &load)?;
+        execute_build(&builds, &build_options, load)?;
     }
     let apply = apply_attempts(&project, &selected)?;
     Ok((project, builds, apply))
@@ -123,10 +164,23 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let selector = ServiceSelector::parse(required(matches, "service")?)?;
     let yes = matches.get_flag("yes");
     let skip_health_monitor = matches.get_flag("skip-health");
+    let load = LoadOptions {
+        command: "scale".into(),
+        ..Default::default()
+    };
+    let project = resolve_from_compose_load(matches, &load)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        deploy_scale(&mut client, &selector, replicas, skip_health_monitor, yes).await
+        deploy_scale(
+            &mut client,
+            &selector,
+            replicas,
+            skip_health_monitor,
+            yes,
+            &project,
+        )
+        .await
     })
 }
 

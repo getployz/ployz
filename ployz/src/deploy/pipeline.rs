@@ -190,7 +190,7 @@ pub(super) async fn execute_deploy(
     execute_operations(operations, client, &CancellationToken::new()).await
 }
 
-pub(super) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
+pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
     PlanOptions {
         force_recreate,
         skip_health_monitor,

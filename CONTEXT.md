@@ -100,6 +100,14 @@ _Avoid_: Current service spec, desired state
 The exact service configuration attached to a Service Container when it is created. Different observed containers in one Service may legitimately carry different Resolved Service Specs.
 _Avoid_: Current service spec, canonical service spec
 
+**Project**:
+An observer-derived ownership namespace. It is not a persisted resource, a workflow, or the loaded Compose input.
+_Avoid_: ComposeProject, Compose project, deployment resource
+
+**ComposeProject**:
+The loaded Compose input for one command. It is not a Cluster-side Project.
+_Avoid_: Project
+
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow.
 _Avoid_: Deployment resource, reconciliation loop

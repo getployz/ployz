@@ -239,14 +239,14 @@ stub_handlers! {
     machine_update(root) { machine::update(root) } => "machine update";
     proxy(root) { operator::proxy(root) } => "proxy";
     process_list(root) { service::processes(root) } => "ps";
-    remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "rm";
+    remove(root) { service::remove(root) } => "rm";
     run_service(root) { deploy::run(root) } => "run";
     scale(root) { deploy::scale(root) } => "scale";
     service_exec(root) { operator::exec(root) } => "service exec";
     service_inspect(root) { service::inspect(root) } => "service inspect";
     service_logs(root) { operator::service_logs(root) } => "service logs";
     service_list(root) { service::list(root) } => "service ls";
-    service_remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "service rm";
+    service_remove(root) { service::remove(root) } => "service rm";
     service_run(root) { deploy::run(root) } => "service run";
     service_scale(root) { deploy::scale(root) } => "service scale";
     service_start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "service start";
@@ -371,6 +371,62 @@ mod tests {
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
             "replicas must be greater than zero",
+        );
+    }
+
+    #[test]
+    fn reserved_and_invalid_project_names_fail_before_connecting() {
+        let mut command = crate::cli::command();
+        let reserved = command
+            .clone()
+            .try_get_matches_from(["ployz", "run", "--project-name", "ployz-system", "alpine"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&reserved, &mut command).unwrap_err().to_string(),
+            "Project 'ployz-system' is reserved for Ployz infrastructure",
+        );
+        let invalid = command
+            .clone()
+            .try_get_matches_from(["ployz", "deploy", "--project-name", "My_App"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&invalid, &mut command).unwrap_err().to_string(),
+            "invalid Project Name \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
+        );
+        let remove = command
+            .clone()
+            .try_get_matches_from(["ployz", "rm", "--project-name", "ployz-system", "web"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&remove, &mut command).unwrap_err().to_string(),
+            "Project 'ployz-system' is reserved for Ployz infrastructure",
+        );
+        let service_remove = command
+            .clone()
+            .try_get_matches_from([
+                "ployz",
+                "service",
+                "rm",
+                "--project-name",
+                "ployz-system",
+                "web",
+            ])
+            .unwrap();
+        assert_eq!(
+            dispatch(&service_remove, &mut command)
+                .unwrap_err()
+                .to_string(),
+            "Project 'ployz-system' is reserved for Ployz infrastructure",
+        );
+        let implicit_default = command
+            .clone()
+            .try_get_matches_from(["ployz", "run", "alpine"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&implicit_default, &mut command)
+                .unwrap_err()
+                .to_string(),
+            crate::context::ContextError::NoConfig.to_string(),
         );
     }
 

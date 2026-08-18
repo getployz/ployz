@@ -412,6 +412,24 @@ validated_string_newtype!(
     |value| is_dns_label(value)
 );
 validated_string_newtype!(
+    /// A DNS-label Project name. It is an ownership namespace, not a persisted identity.
+    ProjectName,
+    "Project Name",
+    "a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
+    |value| is_dns_label(value)
+);
+
+impl ProjectName {
+    /// The reserved Project for Ployz infrastructure.
+    pub const SYSTEM: &'static str = "ployz-system";
+
+    /// Whether this name is reserved for Ployz infrastructure.
+    #[must_use]
+    pub fn is_reserved(&self) -> bool {
+        self.as_str() == Self::SYSTEM
+    }
+}
+validated_string_newtype!(
     /// A validated HTTP ingress hostname. It is not a Machine Name.
     IngressHost,
     "Ingress Hostname",
