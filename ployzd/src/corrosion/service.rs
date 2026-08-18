@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
+    future::Future,
     io::{Read, Write},
     net::SocketAddr,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -89,15 +90,12 @@ impl CorrosionConfig {
             run_dir: self.run_dir.clone(),
         };
         service.start().await?;
-        if let Err(primary) = wait_ready(&api).await {
-            return match service.stop().await {
-                Ok(()) => Err(primary),
-                Err(cleanup) => Err(Error::CleanupAfter {
-                    primary: Box::new(primary),
-                    cleanup: Box::new(cleanup),
-                }),
-            };
-        }
+        wait_ready(|| async {
+            api.query(Statement::new("SELECT 1 FROM cluster LIMIT 1", []))
+                .await
+                .is_ok()
+        })
+        .await;
         Ok(RunningCorrosion {
             store: ReplicatedStore::new(api),
             admin,
@@ -242,22 +240,25 @@ impl DockerService {
     }
 }
 
-async fn wait_ready(api: &ApiClient) -> Result<(), Error> {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if api
-                .query(Statement::new("SELECT 1 FROM cluster LIMIT 1", []))
-                .await
-                .is_ok()
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+async fn wait_ready<F, Fut>(mut ready: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let warning_interval = Duration::from_secs(5 * 60);
+    let mut warning_at = tokio::time::Instant::now() + warning_interval;
+    loop {
+        if ready().await {
+            return;
         }
-    })
-    .await
-    .map_err(|_| Error::Api("service did not become ready within 15 seconds".into()))?;
-    Ok(())
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(500)) => {}
+            () = tokio::time::sleep_until(warning_at) => {
+                eprintln!("Corrosion is still not ready");
+                warning_at = tokio::time::Instant::now() + warning_interval;
+            }
+        }
+    }
 }
 
 fn create_private_dir(path: &Path) -> Result<(), Error> {
@@ -341,4 +342,21 @@ struct AuthzConfig {
 #[derive(Serialize)]
 struct AdminConfig {
     path: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::Instant;
+
+    #[tokio::test(start_paused = true)]
+    async fn corrosion_readiness_wait_keeps_polling_after_fifteen_seconds() {
+        let started = Instant::now();
+        wait_ready(|| async { started.elapsed() >= Duration::from_secs(16) }).await;
+        assert!(
+            started.elapsed() >= Duration::from_secs(16),
+            "probe must succeed only after 15 seconds, got {:?}",
+            started.elapsed()
+        );
+    }
 }

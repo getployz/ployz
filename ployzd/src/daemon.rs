@@ -545,6 +545,8 @@ async fn start_corrosion(
             CORROSION_GOSSIP_PORT,
         )
     });
+    // TimeoutStartSec=20; EXTEND_TIMEOUT covers Corrosion image pull and wait_ready.
+    let _extend = extend_systemd_start_timeout();
     Ok(Some(
         CorrosionConfig::new(
             config.data_dir.join("corrosion"),
@@ -637,6 +639,43 @@ fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
 fn notify(state: NotifyState<'_>) {
     if let Err(error) = sd_notify::notify(&[state]) {
         eprintln!("systemd notification failed: {error}");
+    }
+}
+
+const SYSTEMD_START_TIMEOUT_EXTENSION: Duration = Duration::from_secs(30);
+const SYSTEMD_START_TIMEOUT_EXTEND_MAX: Duration = Duration::from_secs(5 * 60);
+
+#[must_use]
+struct SystemdStartTimeoutExtend {
+    task: JoinHandle<()>,
+}
+
+impl Drop for SystemdStartTimeoutExtend {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
+    let usec = u32::try_from(SYSTEMD_START_TIMEOUT_EXTENSION.as_micros())
+        .expect("30s start-timeout extension fits u32 microseconds");
+    let deadline = Instant::now() + SYSTEMD_START_TIMEOUT_EXTEND_MAX;
+    SystemdStartTimeoutExtend {
+        task: tokio::spawn(async move {
+            loop {
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "stopped extending the systemd start timeout: Corrosion is taking too long to start"
+                    );
+                    return;
+                }
+                if let Err(error) = sd_notify::notify(&[NotifyState::ExtendTimeoutUsec(usec)]) {
+                    eprintln!("failed to extend the systemd start timeout: {error}");
+                    return;
+                }
+                tokio::time::sleep(SYSTEMD_START_TIMEOUT_EXTENSION).await;
+            }
+        }),
     }
 }
 

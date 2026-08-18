@@ -45,6 +45,7 @@ x509-parser = "0.18.1"
 [dev-dependencies]
 ployz = { path = "../ployz" }
 ployz-testkit.workspace = true
+tokio = { version = "1.53.1", features = ["test-util"] }
 
 [lints]
 workspace = true
