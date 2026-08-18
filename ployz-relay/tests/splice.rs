@@ -11,6 +11,7 @@ use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
 const PAIRING: &str = "pairing-secret";
 const DIAL: &str = "dial-secret";
+const TEST_DRAIN: Duration = Duration::from_millis(300);
 
 #[tokio::test]
 async fn register_dial_attach_splices_bytes_both_ways() {
@@ -209,31 +210,125 @@ async fn tunnel_bytes_are_not_interpreted_as_machine_rpc() {
     assert_eq!(recv_frame(&mut dial_in).await.data, not_rpc);
 }
 
+#[tokio::test]
+async fn after_goaway_a_new_attach_is_refused() {
+    let mut session = Session::start().await;
+    session.register().await;
+    session.goaway();
+    let error = session
+        .machine
+        .attach(attach_request(&TunnelId::random()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Unavailable);
+}
+
+#[tokio::test]
+async fn in_flight_tunnel_continues_until_drain_then_closes() {
+    let session = Session::start_with_drain(TEST_DRAIN).await;
+    let (mut session, dial_tx, mut dial_in, attach_tx, mut attach_in) = session.splice().await;
+    session.goaway();
+
+    dial_tx
+        .send(TunnelFrame::new(b"after-goaway".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut attach_in).await.data, b"after-goaway");
+    attach_tx
+        .send(TunnelFrame::new(b"still-open".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut dial_in).await.data, b"still-open");
+
+    assert_stream_closes(&mut attach_in).await;
+    assert_stream_closes(&mut dial_in).await;
+}
+
+#[tokio::test]
+async fn register_after_close_is_a_new_session() {
+    let session = Session::start_with_drain(TEST_DRAIN).await;
+    let machine_id = session.machine_id;
+    let (mut session, _dial_tx, mut dial_in, _attach_tx, mut attach_in) = session.splice().await;
+    let old_tunnel = session.tunnel_id.expect("splice opens a tunnel");
+    session.goaway();
+    session.wait_closed().await;
+    assert_stream_closes(&mut attach_in).await;
+    assert_stream_closes(&mut dial_in).await;
+
+    let mut next = Session::start_with_machine(machine_id).await;
+    let error = next
+        .machine
+        .attach(attach_request(&old_tunnel))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::NotFound);
+    let (_hold, dial_tx, _dial_in, _attach_tx, mut attach_in) = next.splice().await;
+    dial_tx
+        .send(TunnelFrame::new(b"new-session".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut attach_in).await.data, b"new-session");
+}
+
 struct Session {
-    _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    server: Option<tokio::task::JoinHandle<Result<(), tonic::transport::Error>>>,
+    goaway: Option<ployz_relay::Goaway>,
     machine: CloudRelayClient<tonic::transport::Channel>,
     cloud: CloudRelayClient<tonic::transport::Channel>,
     machine_id: MachineId,
     register_hold: Option<mpsc::Sender<RegisterRequest>>,
     opens: Option<tonic::Streaming<Open>>,
+    tunnel_id: Option<TunnelId>,
 }
 
 impl Session {
     async fn start() -> Self {
+        Self::bind(None, MachineId::random()).await
+    }
+
+    async fn start_with_drain(drain: Duration) -> Self {
+        Self::bind(Some(drain), MachineId::random()).await
+    }
+
+    async fn start_with_machine(machine_id: MachineId) -> Self {
+        Self::bind(None, machine_id).await
+    }
+
+    async fn bind(drain: Option<Duration>, machine_id: MachineId) -> Self {
         let relay = Relay::new(
             PairingCredential::parse(PAIRING).unwrap(),
             DialCredential::parse(DIAL).unwrap(),
         )
         .unwrap();
-        let (address, server) = relay.serve().await.unwrap();
+        let (address, server, goaway) = match drain {
+            None => relay.serve().await.unwrap(),
+            Some(drain) => relay.serve_with_drain(drain).await.unwrap(),
+        };
         Self {
-            _server: server,
+            server: Some(server),
+            goaway: Some(goaway),
             machine: connect(address).await,
             cloud: connect(address).await,
-            machine_id: MachineId::random(),
+            machine_id,
             register_hold: None,
             opens: None,
+            tunnel_id: None,
         }
+    }
+
+    fn goaway(&mut self) {
+        if let Some(goaway) = self.goaway.take() {
+            goaway.start();
+        }
+    }
+
+    async fn wait_closed(&mut self) {
+        let server = self.server.take().expect("serve task still running");
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("relay did not close after drain")
+            .unwrap()
+            .unwrap();
     }
 
     async fn register(&mut self) {
@@ -298,6 +393,7 @@ impl Session {
             .await
             .unwrap()
             .into_inner();
+        self.tunnel_id = Some(open.tunnel_id().expect("Open carries a Tunnel ID"));
         (dial_tx, dial_in, attach_tx, attach_in)
     }
 
@@ -343,6 +439,18 @@ async fn recv_frame(stream: &mut tonic::Streaming<TunnelFrame>) -> TunnelFrame {
         .expect("frame timed out")
         .unwrap()
         .unwrap()
+}
+
+fn attach_request(tunnel_id: &TunnelId) -> Request<ReceiverStream<TunnelFrame>> {
+    let mut request = Request::new(ReceiverStream::new(mpsc::channel(1).1));
+    request.metadata_mut().insert(
+        TUNNEL_ID_METADATA,
+        tunnel_id
+            .as_str()
+            .parse()
+            .expect("Tunnel ID is ASCII metadata"),
+    );
+    request
 }
 
 async fn assert_stream_closes<T>(stream: &mut tonic::Streaming<T>) {

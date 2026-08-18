@@ -5,6 +5,7 @@ use std::{
     fmt,
     net::SocketAddr,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use ployz_core::{MachineId, TunnelId, ValueError};
@@ -20,6 +21,9 @@ use tokio_stream::{
     wrappers::{ReceiverStream, TcpListenerStream},
 };
 use tonic::{Request, Response, Status, Streaming, metadata::MetadataMap, transport::Server};
+
+/// In-flight tunnels drain for this long after GOAWAY, then remaining streams close.
+const DRAIN: Duration = Duration::from_secs(30);
 
 /// Bearer metadata key (`authorization`).
 pub const AUTHORIZATION_METADATA: &str = "authorization";
@@ -177,12 +181,31 @@ fn parse_credential(value: impl Into<String>) -> Result<String, RelayError> {
     }
 }
 
+/// Starts HTTP/2 GOAWAY drain on a running [`Relay::serve`] task.
+pub struct Goaway {
+    phase: watch::Sender<Phase>,
+}
+
+impl Goaway {
+    /// Refuse new Attaches and drain in-flight tunnels, then close.
+    pub fn start(self) {
+        self.phase.send_replace(Phase::Draining);
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Phase {
+    Live,
+    Draining,
+}
+
 /// Plaintext Cloud Relay: Register, Dial, Attach, opaque splice.
 #[derive(Clone)]
 pub struct Relay {
     pairing: PairingCredential,
     dial: DialCredential,
     state: Arc<Mutex<State>>,
+    phase: watch::Sender<Phase>,
 }
 
 struct State {
@@ -225,26 +248,91 @@ impl Relay {
                 pending: HashMap::new(),
                 next_generation: 0,
             })),
+            phase: watch::channel(Phase::Live).0,
         })
     }
 
     /// Serve plaintext HTTP/2 on an ephemeral local port.
+    ///
+    /// [`Goaway::start`] sends HTTP/2 GOAWAY: new Attaches are refused, in-flight
+    /// tunnels drain for 30 seconds, then remaining streams close.
     ///
     /// # Errors
     ///
     /// Returns I/O errors from binding the listener.
     pub async fn serve(
         &self,
-    ) -> std::io::Result<(SocketAddr, JoinHandle<Result<(), tonic::transport::Error>>)> {
+    ) -> std::io::Result<(
+        SocketAddr,
+        JoinHandle<Result<(), tonic::transport::Error>>,
+        Goaway,
+    )> {
+        self.serve_with_drain(DRAIN).await
+    }
+
+    /// Bind with a drain timeout. Production uses [`serve`] (30s).
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from binding the listener.
+    #[doc(hidden)]
+    pub async fn serve_with_drain(
+        &self,
+        drain: Duration,
+    ) -> std::io::Result<(
+        SocketAddr,
+        JoinHandle<Result<(), tonic::transport::Error>>,
+        Goaway,
+    )> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let server = CloudRelayServer::new(self.clone());
-        let handle = tokio::spawn(
-            Server::builder()
+        let closer = self.clone();
+        let mut shutdown_phase = self.phase.subscribe();
+        let mut expire_phase = closer.phase.subscribe();
+        let handle = tokio::spawn(async move {
+            let shutdown = async move {
+                let _ = shutdown_phase.wait_for(|phase| *phase != Phase::Live).await;
+            };
+            let serve = Server::builder()
                 .add_service(server)
-                .serve_with_incoming(TcpListenerStream::new(listener)),
-        );
-        Ok((address, handle))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown);
+            let expire = async move {
+                if expire_phase
+                    .wait_for(|phase| *phase != Phase::Live)
+                    .await
+                    .is_ok()
+                {
+                    tokio::time::sleep(drain).await;
+                    // tonic waits forever on the held Register stream.
+                    closer.force_close();
+                }
+            };
+            tokio::select! {
+                result = serve => result,
+                _ = expire => Ok(()),
+            }
+        });
+        Ok((
+            address,
+            handle,
+            Goaway {
+                phase: self.phase.clone(),
+            },
+        ))
+    }
+
+    fn force_close(&self) {
+        let mut state = self.lock();
+        state.machines.clear();
+        state.pending.clear();
+    }
+
+    fn accepting(&self) -> bool {
+        match *self.phase.borrow() {
+            Phase::Live => true,
+            Phase::Draining => false,
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -295,6 +383,9 @@ impl CloudRelay for Relay {
         match bearer(request.metadata()) {
             Some(bearer) if bearer == self.pairing.as_str() => {}
             _ => return Err(Status::unauthenticated("invalid Pairing Credential")),
+        }
+        if !self.accepting() {
+            return Err(Status::unavailable("GOAWAY"));
         }
         let mut inbound = request.into_inner();
         let first = inbound
@@ -352,6 +443,9 @@ impl CloudRelay for Relay {
             Some(bearer) if bearer == self.dial.as_str() => {}
             _ => return Err(Status::unauthenticated("invalid Dial Credential")),
         }
+        if !self.accepting() {
+            return Err(Status::unavailable("GOAWAY"));
+        }
         let machine_id = MachineId::parse(
             metadata_str(request.metadata(), MACHINE_ID_METADATA)
                 .ok_or_else(|| Status::invalid_argument("missing or invalid machine-id"))?,
@@ -391,6 +485,9 @@ impl CloudRelay for Relay {
         &self,
         request: Request<Streaming<TunnelFrame>>,
     ) -> Result<Response<Self::AttachStream>, Status> {
+        if !self.accepting() {
+            return Err(Status::unavailable("GOAWAY"));
+        }
         let tunnel_id = TunnelId::parse(
             metadata_str(request.metadata(), TUNNEL_ID_METADATA)
                 .ok_or_else(|| Status::invalid_argument("missing or invalid tunnel-id"))?,
