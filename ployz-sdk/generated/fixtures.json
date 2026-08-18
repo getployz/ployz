@@ -205,6 +205,15 @@
       }
     ]
   },
+  "remove_volumes_request": {
+    "force": false,
+    "volumes": [
+      {
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "name": "data"
+      }
+    ]
+  },
   "rpc_error": {
     "code": "unsupported",
     "message": "watch is not advertised"

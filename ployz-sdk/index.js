@@ -18,6 +18,10 @@ class Client {
     return this._inner.deploy(intent);
   }
 
+  removeVolumes(request) {
+    return this._inner.removeVolumes(request);
+  }
+
   close() {
     return this._inner.close();
   }

@@ -20,7 +20,7 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
     MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
     OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, WireGuardPublicKey, op,
+    RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, VolumeRemoved, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -365,9 +365,36 @@ impl MachineRpc for DiscoveryService {
 
     async fn remove_volume(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::RemoveVolume(remove) = request.body else {
+            return Err(Status::invalid_argument("expected remove_volume"));
+        };
+        let response = if machine_id.as_str().starts_with('b') {
+            RpcResponse::from(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "target unavailable".into(),
+                details: Value::Null,
+            })
+        } else if remove.name.as_str() == "missing" {
+            RpcResponse::from(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: "volume not found".into(),
+                details: Value::Null,
+            })
+        } else if remove.name.as_str() == "busy" && !remove.force {
+            RpcResponse::from(RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "volume is in use".into(),
+                details: Value::Null,
+            })
+        } else {
+            RpcResponse::from(VolumeRemoved {})
+        };
+        Ok(Response::new(response.encode().unwrap()))
     }
 
     async fn start_container(

@@ -1016,6 +1016,36 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
 }
 
 #[test]
+fn remove_volumes_request_identifies_each_volume_by_machine_and_name() {
+    use ployz_core::{DockerVolumeId, DockerVolumeName, RemoveVolumesRequest};
+
+    assert!(
+        serde_json::from_value::<RemoveVolumesRequest>(json!({ "volumes": ["data"] })).is_err()
+    );
+    assert!(
+        serde_json::from_value::<RemoveVolumesRequest>(json!({
+            "volumes": [{ "name": "data" }]
+        }))
+        .is_err()
+    );
+    let request: RemoveVolumesRequest = serde_json::from_value(json!({
+        "volumes": [{
+            "machine_id": MACHINE_ID,
+            "name": "data"
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        request.volumes,
+        vec![DockerVolumeId {
+            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+            name: DockerVolumeName::parse("data").unwrap(),
+        }]
+    );
+    assert!(!request.force);
+}
+
+#[test]
 fn machine_administration_requests_round_trip_as_typed_payloads() {
     let requests = [
         op::MachineToken::into_request(MachineTokenRequest {

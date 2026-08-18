@@ -104,6 +104,13 @@ const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "RemoveVolumesRequest",
+        Shape::Additive {
+            params: "",
+            fields: &[("volumes", "DockerVolumeId[]"), ("force", "boolean?")],
+        },
+    ),
+    (
         "ContractDescription",
         Shape::Additive {
             params: "",
@@ -514,8 +521,8 @@ pub fn artifacts() -> Artifacts {
 
 /// Write generated files under the napi package root.
 ///
-/// Façade declarations (`connect` / `about` / `deploy` / `close`) live in
-/// handwritten `index.d.ts` and are not emitted here.
+/// Façade declarations (`connect` / `about` / `deploy` / `removeVolumes` /
+/// `close`) live in handwritten `index.d.ts` and are not emitted here.
 ///
 /// # Errors
 ///

@@ -14,10 +14,11 @@ use ployz_core::{
     HealthObservation, HookContainer, HookFailure, IngressHost, Machine, MachineAction,
     MachineFailure, MachineId, MachineName, MachineObservation, MachineRuntime, MachineSuccess,
     ManagementAddress, MembershipObservation, PROTOCOL_MAJOR, PartialResult, PlanOptions,
-    ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec, RestartAttempt, RpcError,
-    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
-    ServiceAttempt, ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceVolume,
-    ServiceVolumeReference, VolumeSource, WireGuardPublicKey,
+    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
+    RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, VolumeSource,
+    WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -49,6 +50,10 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert(
         "docker_volume_unknown_fields".into(),
         with_unknown_field(to_value(&docker_volume()), "quota_bytes", json!(1)),
+    );
+    fixtures.insert(
+        "remove_volumes_request".into(),
+        to_value(&remove_volumes_request()),
     );
     fixtures.insert("partial_result".into(), to_value(&partial_result()));
     fixtures.insert(
@@ -137,6 +142,7 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("ContractDescription", to_value(&contract_description())),
         ("DockerVolume", to_value(&docker_volume())),
         ("DockerVolumeId", to_value(&docker_volume().id)),
+        ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
         ("DeployIntent", to_value(&deploy_intent())),
         ("PlanOptions", to_value(&PlanOptions::default())),
         ("ServiceAttempt", to_value(&service_attempt())),
@@ -338,6 +344,13 @@ fn docker_volume() -> DockerVolume {
         driver: "local".into(),
         options: BTreeMap::from([("type".into(), "none".into())]),
         labels: BTreeMap::from([("ployz.managed".into(), "false".into())]),
+    }
+}
+
+fn remove_volumes_request() -> RemoveVolumesRequest {
+    RemoveVolumesRequest {
+        volumes: vec![docker_volume().id],
+        force: false,
     }
 }
 

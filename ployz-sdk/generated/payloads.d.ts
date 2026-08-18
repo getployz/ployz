@@ -74,6 +74,11 @@ export type DockerVolume = Additive<{
   labels: { readonly [key: string]: string };
 }>;
 
+export type RemoveVolumesRequest = Additive<{
+  volumes: DockerVolumeId[];
+  force?: boolean;
+}>;
+
 export type ContractDescription = Additive<{
   machine_id: MachineId;
   protocol_major: number;

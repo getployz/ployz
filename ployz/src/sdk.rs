@@ -1,4 +1,4 @@
-//! Relay-only Cloud session: connect, about, runtime.watch, deploy, and close.
+//! Relay-only Cloud session: connect, about, runtime.watch, deploy, remove_volumes, and close.
 
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -7,9 +7,9 @@ use tokio_util::sync::CancellationToken;
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent};
 use ployz_core::{
-    ContractDescription, DeployOutcome, DescribeContractRequest, ExecutionError, MachineId,
-    OpaquePayload, RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, op,
+    ContractDescription, DeployOutcome, DescribeContractRequest, DockerVolumeName, ExecutionError,
+    MachineId, OpaquePayload, PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
+    RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
 /// Connected Cloud session over one Relay Attach.
@@ -124,6 +124,21 @@ impl Session {
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let mut client = self.client().await?;
         client.deploy(intent).await.map_err(deploy_error)
+    }
+
+    /// Destroy named Docker Volumes. The list is the confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed or listing
+    /// Machines fails. Per-volume not-found and other Machine errors stay in
+    /// the Partial Result.
+    pub async fn remove_volumes(
+        &self,
+        request: RemoveVolumesRequest,
+    ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
+        let mut client = self.client().await?;
+        client.remove_volumes(request).await
     }
 
     /// Drop the Client and Relay tunnel.

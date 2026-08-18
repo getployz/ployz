@@ -2,13 +2,13 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, DescribeContractRequest, DockerVolume, FanoutOutcome, FanoutResponse,
-    FanoutSelector, GetDomainRequest, ListContainersRequest, ListImagesRequest,
+    CreateContainerRequest, DescribeContractRequest, DockerVolume, DockerVolumeName, FanoutOutcome,
+    FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest, ListImagesRequest,
     ListMachinesRequest, ListVolumesRequest, LiveServices, MachineFailure, MachineId,
     MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
-    MachineTarget, OpaquePayload, PartialResult, RemoveContainerRequest, ResolvedServiceSpec, Rpc,
-    RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
-    apply_many_targets, derive_live_services, op,
+    MachineTarget, OpaquePayload, PartialResult, RemoveContainerRequest, RemoveVolumeRequest,
+    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    StartContainerRequest, StopContainerRequest, apply_many_targets, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -263,6 +263,27 @@ impl Client {
         result
     }
 
+    /// Destroy named Docker Volumes. The list is the confirmation.
+    ///
+    /// Each volume is identified by Machine plus name. Fan-out is a Partial
+    /// Result: destroyed names, per-Machine failures (including not-found),
+    /// and omissions for Machines that do not invite RPC. Forced removal is
+    /// off unless `force` is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when listing Machines fails.
+    pub async fn remove_volumes(
+        &mut self,
+        request: RemoveVolumesRequest,
+    ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
+        let machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await
+            .map_err(RpcError::from)?;
+        Ok(remove_volumes_on(self, &machines.machines, request).await)
+    }
+
     pub async fn list_images(
         &self,
         reference: Option<String>,
@@ -512,6 +533,64 @@ pub(crate) fn snapshot_from_partial(
             })
             .collect(),
     }
+}
+
+async fn remove_volumes_on(
+    client: &Client,
+    machines: &[MachineObservation],
+    request: RemoveVolumesRequest,
+) -> PartialResult<DockerVolumeName, RpcError> {
+    let mut removals = JoinSet::new();
+    let mut omissions = Vec::new();
+    for (index, volume) in request.volumes.iter().enumerate() {
+        if !machines.iter().any(|machine| {
+            machine.machine.id == volume.machine_id && machine.membership.invites_rpc()
+        }) {
+            if !omissions.contains(&volume.machine_id) {
+                omissions.push(volume.machine_id);
+            }
+            continue;
+        }
+        let client = client.clone();
+        let id = volume.clone();
+        let force = request.force;
+        removals.spawn(async move {
+            let outcome = client
+                .invoke::<op::RemoveVolume>(
+                    RemoveVolumeRequest {
+                        name: id.name.clone(),
+                        force,
+                    },
+                    &MachineTarget::from(&id.machine_id),
+                    Some(TARGET_RPC_TIMEOUT),
+                )
+                .await;
+            (index, id, outcome)
+        });
+    }
+    let mut outcomes = Vec::with_capacity(removals.len());
+    while let Some(outcome) = removals.join_next().await {
+        outcomes.push(outcome.expect("Volume removal task does not panic"));
+    }
+    outcomes.sort_by_key(|(index, _, _)| *index);
+    let mut result = PartialResult {
+        successes: Vec::new(),
+        failures: Vec::new(),
+        omissions,
+    };
+    for (_, id, outcome) in outcomes {
+        match outcome {
+            Ok(_) => result.successes.push(MachineSuccess {
+                machine_id: id.machine_id,
+                value: id.name,
+            }),
+            Err(error) => result.failures.push(MachineFailure {
+                machine_id: id.machine_id,
+                error,
+            }),
+        }
+    }
+    result
 }
 
 async fn list_volumes_on_machine(

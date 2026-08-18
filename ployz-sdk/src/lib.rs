@@ -1,12 +1,13 @@
 //! Napi package `@ployz/sdk`. Public payloads are generated from Rust.
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / about / runtime.watch / deploy / close.
+//! The handwritten façade is connect / about / runtime.watch / deploy /
+//! remove_volumes / close.
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
-use ployz_core::{DeployIntent, RpcError, RpcErrorCode};
+use ployz_core::{DeployIntent, RemoveVolumesRequest, RpcError, RpcErrorCode};
 
 /// npm package name.
 #[must_use]
@@ -83,6 +84,30 @@ impl Client {
         })?;
         let outcome = self.inner.deploy(intent).await.map_err(rpc_to_napi)?;
         serde_json::to_value(&outcome).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Destroy named Docker Volumes. The list is the confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `request` is not
+    /// [`RemoveVolumesRequest`] data, the session is closed, or listing
+    /// Machines fails. Per-volume failures stay in the Partial Result.
+    #[napi]
+    pub async fn remove_volumes(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+        let request: RemoveVolumesRequest = serde_json::from_value(request).map_err(|error| {
+            rpc_to_napi(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: error.to_string(),
+                details: serde_json::Value::Null,
+            })
+        })?;
+        let result = self
+            .inner
+            .remove_volumes(request)
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&result).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Drop the Client and Relay tunnel.

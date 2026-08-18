@@ -139,6 +139,15 @@ pub struct DockerVolume {
     pub labels: BTreeMap<String, String>,
 }
 
+/// Destroy these Docker Volumes. The list is the confirmation.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoveVolumesRequest {
+    pub volumes: Vec<DockerVolumeId>,
+    /// Force-remove an in-use Docker Volume. Defaults to false.
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// A storage source declared under a service-local reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ServiceVolume {

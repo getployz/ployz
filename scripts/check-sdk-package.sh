@@ -77,6 +77,12 @@ if (!dts.includes("about(): Promise<ContractDescription>")) {
 if (!dts.includes("deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>")) {
   throw new Error("index.d.ts is missing deploy()");
 }
+if (!dts.includes("removeVolumes(")) {
+  throw new Error("index.d.ts is missing removeVolumes()");
+}
+if (!dts.includes("RemoveVolumesRequest")) {
+  throw new Error("index.d.ts is missing RemoveVolumesRequest");
+}
 if (!dts.includes("close(): Promise<void>")) {
   throw new Error("index.d.ts is missing close()");
 }
@@ -93,6 +99,9 @@ for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watchRuntime"]
 }
 if (typeof sdk.Client.prototype.deploy !== "function") {
   throw new Error("Client.deploy must be a method");
+}
+if (typeof sdk.Client.prototype.removeVolumes !== "function") {
+  throw new Error("Client.removeVolumes must be a method");
 }
 
 async function expectRpc(fn, code) {

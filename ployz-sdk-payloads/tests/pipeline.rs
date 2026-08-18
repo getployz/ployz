@@ -87,6 +87,15 @@ fn json_fixtures_round_trip_through_rust_types() {
         *fixture(&fixtures, "docker_volume")
     );
 
+    let remove: ployz_core::RemoveVolumesRequest =
+        decode_fixture(fixture(&fixtures, "remove_volumes_request"));
+    assert_eq!(remove.volumes.len(), 1);
+    assert!(!remove.force);
+    assert_eq!(
+        serde_json::to_value(&remove).unwrap(),
+        *fixture(&fixtures, "remove_volumes_request")
+    );
+
     let encoded = fixture(&fixtures, "partial_result");
     let successes = encoded
         .get("successes")
@@ -341,8 +350,12 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("ContractDescription"));
     assert!(dts.contains("DeployIntent"));
     assert!(dts.contains("DeployOutcome"));
+    assert!(dts.contains("DockerVolumeName"));
     assert!(dts.contains("ExecutionError"));
     assert!(dts.contains("MachineId"));
+    assert!(dts.contains("PartialResult"));
+    assert!(dts.contains("RemoveVolumesRequest"));
+    assert!(dts.contains("RpcError"));
     assert!(dts.contains("RuntimeWatchFrame"));
     assert!(dts.contains("export * from \"./generated/payloads\""));
     assert!(dts.contains("export declare function connect"));
@@ -353,6 +366,9 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("readonly runtime:"));
     assert!(dts.contains("watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>"));
     assert!(dts.contains("deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>"));
+    assert!(dts.contains("removeVolumes("));
+    assert!(dts.contains("RemoveVolumesRequest"));
+    assert!(dts.contains("PartialResult<DockerVolumeName, RpcError>"));
     assert!(dts.contains("close(): Promise<void>"));
     assert!(!dts.contains("connectSsh"));
     assert!(!dts.contains("connectTcp"));

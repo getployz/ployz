@@ -2,8 +2,12 @@ import type {
   ContractDescription,
   DeployIntent,
   DeployOutcome,
+  DockerVolumeName,
   ExecutionError,
   MachineId,
+  PartialResult,
+  RemoveVolumesRequest,
+  RpcError,
   RuntimeWatchFrame,
 } from "./generated/payloads";
 export * from "./generated/payloads";
@@ -26,5 +30,8 @@ export declare class Client {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>;
   };
   deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>;
+  removeVolumes(
+    request: RemoveVolumesRequest,
+  ): Promise<PartialResult<DockerVolumeName, RpcError>>;
   close(): Promise<void>;
 };
