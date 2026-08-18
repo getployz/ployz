@@ -2,13 +2,14 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, DescribeContractRequest, DockerVolume, DockerVolumeName, FanoutOutcome,
-    FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest, ListImagesRequest,
-    ListMachinesRequest, ListVolumesRequest, LiveServices, MachineFailure, MachineId,
-    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
-    MachineTarget, OpaquePayload, PartialResult, RemoveContainerRequest, RemoveVolumeRequest,
-    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    StartContainerRequest, StopContainerRequest, apply_many_targets, derive_live_services, op,
+    CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume, DockerVolumeName,
+    FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, MachineFailure,
+    MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
+    MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
+    RemoveContainerRequest, RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc,
+    RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
+    apply_many_targets, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -282,6 +283,70 @@ impl Client {
             .await
             .map_err(RpcError::from)?;
         Ok(remove_volumes_on(self, &machines.machines, request).await)
+    }
+
+    /// Live Observation of Data Loss that removing `machine` would cause.
+    ///
+    /// This is not a complete Cluster view. Mutates nothing: it is safe to
+    /// call when the operator then cancels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Machine is not visible or is
+    /// ambiguous, or when this observer cannot list Docker Volumes on that
+    /// Machine.
+    pub async fn data_loss_if_machine_removed(
+        &mut self,
+        machine: &MachineTarget,
+    ) -> Result<ObservedDataLoss, RpcError> {
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let selected = match machine.resolve(machines.iter().map(|entry| &entry.machine)) {
+            NameMatches::None => {
+                return Err(RpcError {
+                    code: RpcErrorCode::NotFound,
+                    message: format!("Machine {machine:?} was not found"),
+                    details: Value::Null,
+                });
+            }
+            NameMatches::Ambiguous(matches) => {
+                return Err(RpcError {
+                    code: RpcErrorCode::Ambiguous,
+                    message: format!(
+                        "Machine name {machine:?} is ambiguous: {}",
+                        matches
+                            .into_iter()
+                            .map(|row| row.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    details: Value::Null,
+                });
+            }
+            NameMatches::One(row) => row.id,
+        };
+        let observation = machines
+            .iter()
+            .find(|entry| entry.machine.id == selected)
+            .expect("resolved Machine came from this list");
+        if !observation.membership.invites_rpc() {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: format!(
+                    "Machine {selected} did not produce a Volume listing from this observer"
+                ),
+                details: Value::Null,
+            });
+        }
+        let volumes = list_volumes_on_machine(self.clone(), selected)
+            .await
+            .map_err(|failure| failure.error)?;
+        Ok(ObservedDataLoss {
+            data_loss: volumes
+                .value
+                .into_iter()
+                .map(|volume| DataLoss::DockerVolume(volume.id))
+                .collect(),
+        })
     }
 
     pub async fn list_images(

@@ -1,4 +1,6 @@
-//! Relay-only Cloud session: connect, about, runtime.watch, preview, deploy, remove_volumes, and close.
+//! Relay-only Cloud session: connect, about, runtime.watch, preview, deploy,
+//! remove_volumes, Data Loss for Machine removal, and close.
+
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -7,8 +9,9 @@ use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
     ContractDescription, DeployOutcome, DescribeContractRequest, DockerVolumeName, ExecutionError,
-    MachineId, OpaquePayload, PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
-    RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
+    MachineId, MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult,
+    RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, op,
 };
 
 /// Connected Cloud session over one Relay Attach.
@@ -153,6 +156,26 @@ impl Session {
     ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
         let mut client = self.client().await?;
         client.remove_volumes(request).await
+    }
+
+    /// Live Observation of Data Loss that removing `machine` would cause.
+    ///
+    /// `machine` is a Machine Target. This is not a complete Cluster view.
+    /// Mutates nothing: it is safe to call when the operator then cancels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the Machine is not visible or is ambiguous, or
+    /// this observer cannot list Docker Volumes on that Machine.
+    pub async fn data_loss_if_machine_removed(
+        &self,
+        machine: &str,
+    ) -> Result<ObservedDataLoss, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client().await?;
+        client.data_loss_if_machine_removed(&target).await
     }
 
     /// Drop the Client and Relay tunnel.

@@ -6,6 +6,8 @@ import type {
   DockerVolumeName,
   ExecutionError,
   MachineId,
+  MachineTarget,
+  ObservedDataLoss,
   PartialResult,
   RemoveVolumesRequest,
   RpcError,
@@ -35,5 +37,6 @@ export declare class Client {
   removeVolumes(
     request: RemoveVolumesRequest,
   ): Promise<PartialResult<DockerVolumeName, RpcError>>;
+  dataLossIfMachineRemoved(machine: MachineTarget): Promise<ObservedDataLoss>;
   close(): Promise<void>;
 };

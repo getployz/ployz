@@ -9,15 +9,15 @@ use ployz_core::{
     AdvertisedEndpoint, CapabilityName, CertificateAvailability, CertificateBackoff,
     CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
-    DeployWarning, DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation,
-    HealthFailure, HealthObservation, HookContainer, HookFailure, IngressHost, Machine,
-    MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachineRuntime,
-    MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind, PROTOCOL_MAJOR,
-    PartialResult, PlanOptions, RemoveVolumesRequest, ReplacementCompensation,
-    ReplacementOperation, ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode,
-    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
-    ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceVolume,
+    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation, DeployOutcome,
+    DeployPreview, DeployWarning, DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError,
+    FailedOperation, HealthFailure, HealthObservation, HookContainer, HookFailure, IngressHost,
+    Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
+    MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
+    ObservedDataLoss, PROTOCOL_MAJOR, PartialResult, PlanOptions, RemoveVolumesRequest,
+    ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec, RestartAttempt, RpcError,
+    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
+    ServiceAttempt, ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceVolume,
     ServiceVolumeReference, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
@@ -47,6 +47,14 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert("rpc_error".into(), to_value(&rpc_error()));
     fixtures.insert("docker_volume".into(), to_value(&docker_volume()));
+    fixtures.insert("data_loss".into(), to_value(&data_loss()));
+    fixtures.insert("observed_data_loss".into(), to_value(&observed_data_loss()));
+    fixtures.insert(
+        "observed_data_loss_empty".into(),
+        to_value(&ObservedDataLoss {
+            data_loss: Vec::new(),
+        }),
+    );
     fixtures.insert(
         "docker_volume_unknown_fields".into(),
         with_unknown_field(to_value(&docker_volume()), "quota_bytes", json!(1)),
@@ -148,6 +156,7 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("DockerVolume", to_value(&docker_volume())),
         ("DockerVolumeId", to_value(&docker_volume().id)),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
+        ("ObservedDataLoss", to_value(&observed_data_loss())),
         ("DeployIntent", to_value(&deploy_intent())),
         ("DeployPreview", to_value(&deploy_preview())),
         ("PlanOptions", to_value(&PlanOptions::default())),
@@ -197,6 +206,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         panic!("failed fixture is Failed");
     };
     BTreeMap::from([
+        ("DataLoss", vec![to_value(&data_loss())]),
         (
             "DeployOutcome",
             vec![
@@ -368,6 +378,16 @@ fn remove_volumes_request() -> RemoveVolumesRequest {
     RemoveVolumesRequest {
         volumes: vec![docker_volume().id],
         force: false,
+    }
+}
+
+fn data_loss() -> DataLoss {
+    DataLoss::DockerVolume(docker_volume().id)
+}
+
+fn observed_data_loss() -> ObservedDataLoss {
+    ObservedDataLoss {
+        data_loss: vec![data_loss()],
     }
 }
 

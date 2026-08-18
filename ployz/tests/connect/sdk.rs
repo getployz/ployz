@@ -367,7 +367,7 @@ async fn node_smoke_covers_connect_about_preview_deploy_and_close() {
     );
 }
 
-fn advertised_description() -> ContractDescription {
+pub(super) fn advertised_description() -> ContractDescription {
     ContractDescription {
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,

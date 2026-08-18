@@ -128,6 +128,10 @@ _Avoid_: Bare deployment error, transaction result
 A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine.
 _Avoid_: Cluster volume, replicated volume, CSI volume
 
+**Data Loss**:
+One named thing an operation will destroy, carrying the identity that makes it unique. A Data Loss list is Live Observation from one observer, not a complete Cluster view, and it is not a warning, a plan, or an operation.
+_Avoid_: warning, plan, operation
+
 **Machine Pool**:
 A ZFS storage budget on one Machine, chosen when that Machine joins and not addable afterwards. Provisioned Volumes live on it. Docker's data-root, image layers, and build cache do not.
 _Avoid_: Cluster pool, auto-created pool, dedicated disk, Machine ZFS Pool, ZFS-enabled cluster

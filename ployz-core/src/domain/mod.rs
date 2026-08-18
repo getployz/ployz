@@ -1,5 +1,6 @@
 mod certificate_policy;
 mod cluster_dns;
+mod data_loss;
 mod deploy;
 mod issuance;
 mod machine;
@@ -11,6 +12,7 @@ mod spec;
 
 pub use certificate_policy::*;
 pub use cluster_dns::*;
+pub use data_loss::*;
 pub use deploy::*;
 pub use issuance::*;
 pub use machine::*;

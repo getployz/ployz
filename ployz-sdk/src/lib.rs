@@ -2,7 +2,8 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / about / runtime.watch / preview / deploy /
-//! remove_volumes / close.
+//! remove_volumes / dataLossIfMachineRemoved / close.
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
@@ -129,6 +130,25 @@ impl Client {
             .await
             .map_err(rpc_to_napi)?;
         serde_json::to_value(&result).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Live Observation of Data Loss that removing `machine` would cause.
+    ///
+    /// Mutates nothing. Not a complete Cluster view.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the session is
+    /// closed, `machine` is not a Machine Target, the Machine is not visible,
+    /// or this observer cannot list Docker Volumes on that Machine.
+    #[napi]
+    pub async fn data_loss_if_machine_removed(&self, machine: String) -> Result<serde_json::Value> {
+        let observed = self
+            .inner
+            .data_loss_if_machine_removed(&machine)
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Drop the Client and Relay tunnel.

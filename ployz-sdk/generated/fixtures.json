@@ -67,6 +67,12 @@
     "machine_id": "0123456789abcdef0123456789abcdef",
     "protocol_major": 1
   },
+  "data_loss": {
+    "DockerVolume": {
+      "machine_id": "0123456789abcdef0123456789abcdef",
+      "name": "data"
+    }
+  },
   "deploy_intent": {
     "apply": [],
     "options": {
@@ -230,6 +236,19 @@
   },
   "health_observation_unknown": "degraded",
   "membership_observation_unknown": "future_membership",
+  "observed_data_loss": {
+    "data_loss": [
+      {
+        "DockerVolume": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "data"
+        }
+      }
+    ]
+  },
+  "observed_data_loss_empty": {
+    "data_loss": []
+  },
   "partial_result": {
     "failures": [
       {

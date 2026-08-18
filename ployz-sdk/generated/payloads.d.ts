@@ -26,6 +26,8 @@ export type ServiceName = string;
 
 export type MachineName = string;
 
+export type MachineTarget = string;
+
 export type MachineSubnet = string;
 
 export type ManagementAddress = string;
@@ -77,6 +79,13 @@ export type DockerVolume = Additive<{
 export type RemoveVolumesRequest = Additive<{
   volumes: DockerVolumeId[];
   force?: boolean;
+}>;
+
+export type DataLoss =
+  | Additive<{ DockerVolume: DockerVolumeId }>;
+
+export type ObservedDataLoss = Additive<{
+  data_loss: DataLoss[];
 }>;
 
 export type ContractDescription = Additive<{

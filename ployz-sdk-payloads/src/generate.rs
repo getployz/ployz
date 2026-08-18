@@ -48,6 +48,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ("ServiceId", Shape::Alias("string")),
     ("ServiceName", Shape::Alias("string")),
     ("MachineName", Shape::Alias("string")),
+    ("MachineTarget", Shape::Alias("string")),
     ("MachineSubnet", Shape::Alias("string")),
     ("ManagementAddress", Shape::Alias("string")),
     ("AdvertisedEndpoint", Shape::Alias("string")),
@@ -108,6 +109,20 @@ const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Additive {
             params: "",
             fields: &[("volumes", "DockerVolumeId[]"), ("force", "boolean?")],
+        },
+    ),
+    (
+        "DataLoss",
+        Shape::ExternallyTagged {
+            params: "",
+            variants: &[("DockerVolume", Some("DockerVolumeId"))],
+        },
+    ),
+    (
+        "ObservedDataLoss",
+        Shape::Additive {
+            params: "",
+            fields: &[("data_loss", "DataLoss[]")],
         },
     ),
     (

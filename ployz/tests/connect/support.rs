@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     net::{Ipv6Addr, SocketAddr},
     path::PathBuf,
     process::Command,
@@ -131,6 +131,7 @@ pub(super) struct DiscoveryService {
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     watch: Arc<WatchHub>,
     pub(super) machines: Vec<MachineObservation>,
+    pub(super) listed_volumes: Arc<Mutex<BTreeMap<MachineId, Vec<DockerVolume>>>>,
 }
 
 impl DiscoveryService {
@@ -144,6 +145,7 @@ impl DiscoveryService {
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch: Arc::new(WatchHub::new()),
             machines: vec![machine('a', "one")],
+            listed_volumes: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -320,6 +322,15 @@ impl MachineRpc for DiscoveryService {
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
         assert!(matches!(request.body, RpcRequestBody::ListVolumes(_)));
+        if let Some(volumes) = self.listed_volumes.lock().unwrap().get(&machine_id) {
+            return Ok(Response::new(
+                RpcResponse::from(VolumeList {
+                    volumes: volumes.clone(),
+                })
+                .encode()
+                .unwrap(),
+            ));
+        }
         let response = if machine_id.as_str().starts_with('b') {
             RpcResponse::from(RpcError {
                 code: RpcErrorCode::Unavailable,

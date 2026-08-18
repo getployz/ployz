@@ -26,6 +26,10 @@ class Client {
     return this._inner.removeVolumes(request);
   }
 
+  dataLossIfMachineRemoved(machine) {
+    return this._inner.dataLossIfMachineRemoved(machine);
+  }
+
   close() {
     return this._inner.close();
   }
