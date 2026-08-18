@@ -84,10 +84,13 @@ if grep -q 'cargo install cargo-zigbuild' "$ROOT/.github/workflows/release-contr
 fi
 
 manifest=$(mktemp)
+sdk_package=$(mktemp)
 printf 'version = "1.2.3"\n' > "$manifest"
-"$ROOT/scripts/check-release-tag.sh" v1.2.3 "$manifest"
+printf '{ "version": "1.2.3" }\n' > "$sdk_package"
+"$ROOT/scripts/check-release-tag.sh" v1.2.3 "$manifest" "$sdk_package"
 printf 'version = "1.2.3-beta.1"\n' > "$manifest"
-"$ROOT/scripts/check-release-tag.sh" v1.2.3-beta.1 "$manifest"
+printf '{ "version": "1.2.3-beta.1" }\n' > "$sdk_package"
+"$ROOT/scripts/check-release-tag.sh" v1.2.3-beta.1 "$manifest" "$sdk_package"
 if "$ROOT/scripts/check-release-tag.sh" v1.2.3 "$manifest" >/dev/null 2>&1; then
     echo "stable tag was accepted against a beta workspace version" >&2
     exit 1
@@ -113,7 +116,23 @@ if "$ROOT/scripts/check-release-tag.sh" v1.2 "$manifest" >/dev/null 2>&1; then
     echo "non-SemVer tag was accepted" >&2
     exit 1
 fi
-rm -f "$manifest"
+printf 'version = "1.2.3"\n' > "$manifest"
+if "$ROOT/scripts/check-release-tag.sh" v1.2.3 "$manifest" >/dev/null 2>&1; then
+    echo "default sdk package mismatch was accepted" >&2
+    exit 1
+fi
+printf '{ "version": "9.9.9" }\n' > "$sdk_package"
+if "$ROOT/scripts/check-release-tag.sh" v1.2.3 "$manifest" "$sdk_package" >/dev/null 2>&1; then
+    echo "mismatched sdk package version was accepted" >&2
+    exit 1
+fi
+missing_sdk=$(mktemp)
+rm -f "$missing_sdk"
+if "$ROOT/scripts/check-release-tag.sh" v1.2.3 "$manifest" "$missing_sdk" >/dev/null 2>&1; then
+    echo "missing sdk package was accepted" >&2
+    exit 1
+fi
+rm -f "$manifest" "$sdk_package"
 
 PLOYZ_RELEASE_TEST_ONLY=true source "$ROOT/scripts/publish-github-release.sh"
 release_dist=$(mktemp -d)

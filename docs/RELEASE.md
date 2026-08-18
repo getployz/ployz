@@ -13,7 +13,7 @@ No `next` branch. Features and fixes both land on `main`. Beta is a tag.
 
 ## Cut a release
 
-1. Set `[workspace.package] version` in `Cargo.toml` to the version you will tag (`0.2.0` or `0.2.0-beta.1`).
+1. Set `[workspace.package] version` in `Cargo.toml` and `ployz-sdk/package.json` to the version you will tag (`0.2.0` or `0.2.0-beta.1`). `check-release-tag.sh` rejects a tag if either is missing or differs.
 2. Merge that commit to `main`.
 3. Tag and push:
 
