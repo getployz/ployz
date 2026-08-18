@@ -468,7 +468,13 @@ fn automatic_sites_omit_unaddressed_host_and_unassigned_ports() {
             transport_protocol: TransportProtocol::Tcp,
         },
         PortPublication::Ingress {
-            hostname: IngressHostname::AssignFromClusterDomain,
+            hostname: IngressHostname::cluster_domain(),
+            load_balancer_port: 80.try_into().unwrap(),
+            container_port: 80.try_into().unwrap(),
+            http_protocol: HttpProtocol::Http,
+        },
+        PortPublication::Ingress {
+            hostname: IngressHostname::cluster_domain_label("api").unwrap(),
             load_balancer_port: 80.try_into().unwrap(),
             container_port: 80.try_into().unwrap(),
             http_protocol: HttpProtocol::Http,

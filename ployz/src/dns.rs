@@ -222,16 +222,18 @@ fn records_from_machines(machines: &[Machine]) -> Result<Vec<DnsRecord>, NoReach
     }
 }
 
-/// Assign generated Ingress Hostnames for ports that still need one.
+/// Expand Cluster Domain intents and attach automatic fallbacks.
 ///
-/// A generated name is `{service}-{project}.{cluster_domain}`. Custom hostnames
-/// are left unchanged. Generation is skipped when every ingress port already
-/// has a hostname under the Cluster Domain.
+/// `ClusterDomain { label: None }` becomes `{service}-{project}.{cluster_domain}`.
+/// `ClusterDomain { label: Some(label) }` becomes exactly `{label}.{cluster_domain}`.
+/// An explicit hostname outside the Cluster Domain also receives the automatic
+/// `{service}-{project}` fallback. Expansion is skipped when every ingress port
+/// is already an explicit hostname under the Cluster Domain.
 ///
 /// # Errors
 ///
-/// Returns [`ExpandIngressError::DomainRequired`] when a port asks for
-/// assignment and no Cluster Domain is reserved. Returns
+/// Returns [`ExpandIngressError::DomainRequired`] when a Cluster Domain intent
+/// needs a reserved domain and none is present. Returns
 /// [`ExpandIngressError::LabelTooLong`] when the combined `{service}-{project}`
 /// label exceeds 63 characters, before any port is rewritten.
 pub fn expand_ingress_ports(
@@ -240,14 +242,11 @@ pub fn expand_ingress_ports(
     cluster_domain: Option<&str>,
 ) -> Result<(), ExpandIngressError> {
     let domain = cluster_domain.filter(|domain| !domain.is_empty());
-    let assigned = match domain {
-        Some(domain) if needs_generated_hostname(spec, domain) => {
+    let automatic = match domain {
+        Some(domain) if needs_automatic_hostname(spec, domain) => {
             let label =
                 QualifiedService::new(project.clone(), spec.name.clone()).ingress_label()?;
-            Some(
-                IngressHost::parse(format!("{label}.{domain}"))
-                    .expect("validated ingress label and reserved cluster domain form a hostname"),
-            )
+            Some(cluster_domain_host(&label, domain))
         }
         _ => None,
     };
@@ -263,21 +262,33 @@ pub fn expand_ingress_ports(
             continue;
         };
         match hostname {
-            IngressHostname::AssignFromClusterDomain => {
+            IngressHostname::ClusterDomain { label: None } => {
                 *hostname = IngressHostname::Explicit {
-                    hostname: assigned.clone().ok_or(DomainRequired {
+                    hostname: automatic.clone().ok_or(DomainRequired {
                         container_port: container_port.get(),
                         protocol: *http_protocol,
                     })?,
                 };
             }
+            IngressHostname::ClusterDomain { label: Some(label) } => {
+                let label = label.as_str().to_owned();
+                *hostname = IngressHostname::Explicit {
+                    hostname: cluster_domain_host(
+                        &label,
+                        domain.ok_or(DomainRequired {
+                            container_port: container_port.get(),
+                            protocol: *http_protocol,
+                        })?,
+                    ),
+                };
+            }
             IngressHostname::Explicit { hostname: existing } => {
-                if let (Some(domain), Some(assigned)) = (domain, assigned.as_ref())
+                if let (Some(domain), Some(automatic)) = (domain, automatic.as_ref())
                     && !existing.under_cluster_domain(Some(domain))
                 {
                     extras.push(PortPublication::Ingress {
                         hostname: IngressHostname::Explicit {
-                            hostname: assigned.clone(),
+                            hostname: automatic.clone(),
                         },
                         load_balancer_port: *load_balancer_port,
                         container_port: *container_port,
@@ -291,10 +302,16 @@ pub fn expand_ingress_ports(
     Ok(())
 }
 
-fn needs_generated_hostname(spec: &RequestedServiceSpec, domain: &str) -> bool {
+fn cluster_domain_host(label: &str, domain: &str) -> IngressHost {
+    IngressHost::parse(format!("{label}.{domain}"))
+        .expect("validated ingress label and reserved cluster domain form a hostname")
+}
+
+fn needs_automatic_hostname(spec: &RequestedServiceSpec, domain: &str) -> bool {
     spec.ports.iter().any(|port| match port {
         PortPublication::Ingress { hostname, .. } => match hostname {
-            IngressHostname::AssignFromClusterDomain => true,
+            IngressHostname::ClusterDomain { label: None } => true,
+            IngressHostname::ClusterDomain { label: Some(_) } => false,
             IngressHostname::Explicit { hostname } => !hostname.under_cluster_domain(Some(domain)),
         },
         PortPublication::Host { .. } => false,
@@ -329,11 +346,14 @@ fn ingress_targets<'a>(
     for spec in specs {
         for port in &spec.ports {
             let PortPublication::Ingress {
-                hostname: IngressHostname::Explicit { hostname },
+                hostname,
                 http_protocol,
                 ..
             } = port
             else {
+                continue;
+            };
+            let Some(hostname) = hostname.as_explicit_host() else {
                 continue;
             };
             let mentions_certificates = *http_protocol == HttpProtocol::Https;
@@ -525,7 +545,7 @@ mod tests {
     #[test]
     fn assigned_ingress_hostnames_require_a_reserved_cluster_domain() {
         let mut spec = requested(vec![ingress(
-            IngressHostname::AssignFromClusterDomain,
+            IngressHostname::cluster_domain(),
             HttpProtocol::Https,
         )]);
         assert_eq!(
@@ -546,7 +566,7 @@ mod tests {
     #[test]
     fn reserved_domain_assigns_and_duplicates_external_ingress_hostnames() {
         let mut spec = requested(vec![
-            ingress(IngressHostname::AssignFromClusterDomain, HttpProtocol::Http),
+            ingress(IngressHostname::cluster_domain(), HttpProtocol::Http),
             ingress(explicit("app.example.com"), HttpProtocol::Https),
             ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http),
             PortPublication::Host {
@@ -585,11 +605,11 @@ mod tests {
     fn two_projects_get_distinct_generated_ingress_names_for_the_same_service() {
         let domain = Some("opaque.ployz.example");
         let mut shop = requested(vec![ingress(
-            IngressHostname::AssignFromClusterDomain,
+            IngressHostname::cluster_domain(),
             HttpProtocol::Http,
         )]);
         let mut blog = requested(vec![ingress(
-            IngressHostname::AssignFromClusterDomain,
+            IngressHostname::cluster_domain(),
             HttpProtocol::Http,
         )]);
 
@@ -616,10 +636,7 @@ mod tests {
     fn combined_ingress_label_over_63_characters_fails_before_mutating_ports() {
         let mut spec = requested(vec![
             ingress(explicit("app.example.com"), HttpProtocol::Https),
-            ingress(
-                IngressHostname::AssignFromClusterDomain,
-                HttpProtocol::Https,
-            ),
+            ingress(IngressHostname::cluster_domain(), HttpProtocol::Https),
         ]);
         spec.name = ployz_core::ServiceName::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
         let before = spec.clone();
@@ -652,6 +669,78 @@ mod tests {
         assert_eq!(
             spec.ports,
             vec![ingress(explicit(hostname), HttpProtocol::Https)]
+        );
+    }
+
+    #[test]
+    fn chosen_cluster_domain_label_expands_without_a_project_suffix_or_automatic_alias() {
+        let mut spec = requested(vec![ingress(
+            IngressHostname::cluster_domain_label("api").unwrap(),
+            HttpProtocol::Http,
+        )]);
+        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();
+        assert_eq!(
+            spec.ports,
+            vec![ingress(
+                explicit("api.opaque.ployz.example"),
+                HttpProtocol::Http
+            )]
+        );
+    }
+
+    #[test]
+    fn chosen_cluster_domain_label_requires_a_reserved_cluster_domain() {
+        let mut spec = requested(vec![ingress(
+            IngressHostname::cluster_domain_label("api").unwrap(),
+            HttpProtocol::Https,
+        )]);
+        assert_eq!(
+            expand_ingress_ports(&mut spec, &project("app"), None),
+            Err(ExpandIngressError::DomainRequired(DomainRequired {
+                container_port: 8080,
+                protocol: HttpProtocol::Https,
+            }))
+        );
+    }
+
+    #[test]
+    fn chosen_label_does_not_fail_when_the_automatic_combined_label_is_long() {
+        let mut spec = requested(vec![ingress(
+            IngressHostname::cluster_domain_label("api").unwrap(),
+            HttpProtocol::Https,
+        )]);
+        spec.name = ployz_core::ServiceName::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+        expand_ingress_ports(
+            &mut spec,
+            &project("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some("opaque.ployz.example"),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.ports,
+            vec![ingress(
+                explicit("api.opaque.ployz.example"),
+                HttpProtocol::Https
+            )]
+        );
+    }
+
+    #[test]
+    fn explicit_hostname_outside_the_cluster_domain_still_gets_the_automatic_fallback() {
+        let mut spec = requested(vec![ingress(
+            explicit("app.example.com"),
+            HttpProtocol::Https,
+        )]);
+        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();
+        assert_eq!(
+            spec.ports,
+            vec![
+                ingress(explicit("app.example.com"), HttpProtocol::Https),
+                ingress(
+                    explicit("web-app.opaque.ployz.example"),
+                    HttpProtocol::Https
+                ),
+            ]
         );
     }
 
@@ -689,10 +778,7 @@ mod tests {
         let spec = requested(vec![
             ingress(explicit("app.example.com"), HttpProtocol::Https),
             ingress(explicit("web.opaque.ployz.example"), HttpProtocol::Https),
-            ingress(
-                IngressHostname::AssignFromClusterDomain,
-                HttpProtocol::Https,
-            ),
+            ingress(IngressHostname::cluster_domain(), HttpProtocol::Https),
             ingress(explicit("plain.example.com"), HttpProtocol::Http),
             ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http),
             PortPublication::Host {
@@ -736,7 +822,7 @@ mod tests {
     fn assigned_hostname_warns_after_expansion() {
         let cluster = ["192.0.2.1".parse().unwrap()];
         let mut spec = requested(vec![ingress(
-            IngressHostname::AssignFromClusterDomain,
+            IngressHostname::cluster_domain(),
             HttpProtocol::Https,
         )]);
         expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();

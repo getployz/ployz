@@ -275,6 +275,17 @@
     "quota_bytes": 1
   },
   "health_observation_unknown": "degraded",
+  "ingress_hostname_cluster_domain": {
+    "kind": "cluster_domain"
+  },
+  "ingress_hostname_cluster_domain_label": {
+    "kind": "cluster_domain",
+    "label": "api"
+  },
+  "ingress_hostname_explicit": {
+    "hostname": "api.example.com",
+    "kind": "explicit"
+  },
   "local_machine_removed": {},
   "local_machine_removed_reset_warning": {
     "reset_warning": "replicated delete failed"

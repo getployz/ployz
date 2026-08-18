@@ -175,9 +175,11 @@ pub(crate) fn parse_extension_port(value: &str) -> Result<PortPublication, Compo
 
 fn ingress_hostname(hostname: &str) -> Result<IngressHostname, ComposeError> {
     if hostname.is_empty() {
-        Ok(IngressHostname::AssignFromClusterDomain)
-    } else {
+        Ok(IngressHostname::cluster_domain())
+    } else if hostname.contains('.') {
         IngressHostname::explicit(hostname).map_err(invalid)
+    } else {
+        IngressHostname::cluster_domain_label(hostname).map_err(invalid)
     }
 }
 

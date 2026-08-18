@@ -588,6 +588,14 @@ impl From<QualifiedService> for String {
     }
 }
 validated_string_newtype!(
+    /// One DNS label under the Cluster Domain for a public Ingress Hostname.
+    ClusterDomainLabel,
+    "Cluster Domain label",
+    "a 1-63 character lowercase DNS label",
+    |value| is_dns_label(value)
+);
+
+validated_string_newtype!(
     /// A validated HTTP ingress hostname. It is not a Machine Name.
     IngressHost,
     "Ingress Hostname",

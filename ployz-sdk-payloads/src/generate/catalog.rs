@@ -71,7 +71,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             tag: "kind",
             params: "",
             variants: &[
-                ("assign_from_cluster_domain", &[]),
+                ("cluster_domain", &[("label", "string?")]),
                 ("explicit", &[("hostname", "IngressHost")]),
             ],
         },

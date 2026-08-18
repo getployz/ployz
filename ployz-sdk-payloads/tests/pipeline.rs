@@ -6,7 +6,7 @@ use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
     ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss,
     DeployIntent, DeployOutcome, DeployPreview, DockerVolume, ExecutionError, HealthObservation,
-    LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
+    IngressHostname, LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
     RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame, ServiceAttempt,
     UnconfirmedDataLoss,
 };
@@ -193,6 +193,21 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert_eq!(
         serde_json::to_value(&spec).unwrap(),
         *fixture(&fixtures, "requested_service_spec")
+    );
+
+    let automatic: IngressHostname =
+        decode_fixture(fixture(&fixtures, "ingress_hostname_cluster_domain"));
+    assert_eq!(automatic, IngressHostname::cluster_domain());
+    let chosen: IngressHostname =
+        decode_fixture(fixture(&fixtures, "ingress_hostname_cluster_domain_label"));
+    assert_eq!(
+        chosen,
+        IngressHostname::cluster_domain_label("api").unwrap()
+    );
+    let explicit: IngressHostname = decode_fixture(fixture(&fixtures, "ingress_hostname_explicit"));
+    assert_eq!(
+        explicit,
+        IngressHostname::explicit("api.example.com").unwrap()
     );
 
     let event: ployz_core::DeployEvent =

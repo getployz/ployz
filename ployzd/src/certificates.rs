@@ -19,9 +19,9 @@ use instant_acme::{
 };
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation, HttpProtocol,
-    IngressHost, IngressHostname, IssuanceFailure, IssuanceGate, Machine, MachineId,
-    PortPublication, cluster_dns_verdict, issuance_failure_clock, issuance_gate,
-    issuance_refusal_reason, resolve_certificate_policy,
+    IngressHost, IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication,
+    cluster_dns_verdict, issuance_failure_clock, issuance_gate, issuance_refusal_reason,
+    resolve_certificate_policy,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -304,11 +304,14 @@ pub(crate) fn wanted_certificate_hosts<'a>(
         }
         for port in &observation.resolved_spec.ports {
             let PortPublication::Ingress {
-                hostname: IngressHostname::Explicit { hostname },
+                hostname,
                 http_protocol: HttpProtocol::Https,
                 ..
             } = port
             else {
+                continue;
+            };
+            let Some(hostname) = hostname.as_explicit_host() else {
                 continue;
             };
             wanted.insert(hostname.clone());

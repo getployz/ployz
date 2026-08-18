@@ -63,6 +63,7 @@ fn wanted_hosts_are_https_ingress_only() {
             ],
         ),
         observation(2, "www", vec![ingress_assign(HttpProtocol::Https)]),
+        observation(4, "edge", vec![ingress_chosen(HttpProtocol::Https)]),
         {
             let mut hook = observation(
                 3,
@@ -641,7 +642,16 @@ fn ingress(hostname: &str, http_protocol: HttpProtocol) -> PortPublication {
 
 fn ingress_assign(http_protocol: HttpProtocol) -> PortPublication {
     PortPublication::Ingress {
-        hostname: IngressHostname::AssignFromClusterDomain,
+        hostname: IngressHostname::cluster_domain(),
+        load_balancer_port: 443.try_into().unwrap(),
+        container_port: 8080.try_into().unwrap(),
+        http_protocol,
+    }
+}
+
+fn ingress_chosen(http_protocol: HttpProtocol) -> PortPublication {
+    PortPublication::Ingress {
+        hostname: IngressHostname::cluster_domain_label("api").unwrap(),
         load_balancer_port: 443.try_into().unwrap(),
         container_port: 8080.try_into().unwrap(),
         http_protocol,

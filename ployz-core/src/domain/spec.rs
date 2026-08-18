@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
-    BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, IngressHost,
-    MANAGED_LABEL, MachinePath, MachineTarget, PROJECT_NAME_LABEL, PidMode, ProjectName,
-    RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference, ValueError,
+    BindPropagation, BindRecursive, ClusterDomainLabel, ContainerPath, DockerVolumeId,
+    DockerVolumeName, IngressHost, MANAGED_LABEL, MachinePath, MachineTarget, PROJECT_NAME_LABEL,
+    PidMode, ProjectName, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
+    ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -52,11 +53,33 @@ pub enum HostBind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum IngressHostname {
-    AssignFromClusterDomain,
-    Explicit { hostname: IngressHost },
+    ClusterDomain {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<ClusterDomainLabel>,
+    },
+    Explicit {
+        hostname: IngressHost,
+    },
 }
 
 impl IngressHostname {
+    /// Automatic `{service}-{project}` Cluster Domain assignment.
+    #[must_use]
+    pub fn cluster_domain() -> Self {
+        Self::ClusterDomain { label: None }
+    }
+
+    /// Chosen Cluster Domain label with no Project suffix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `label` is not a lowercase DNS label.
+    pub fn cluster_domain_label(label: impl Into<String>) -> Result<Self, ValueError> {
+        Ok(Self::ClusterDomain {
+            label: Some(ClusterDomainLabel::parse(label)?),
+        })
+    }
+
     /// Parse a non-empty validated hostname as explicit ingress intent.
     ///
     /// # Errors
@@ -66,6 +89,15 @@ impl IngressHostname {
         Ok(Self::Explicit {
             hostname: IngressHost::parse(hostname)?,
         })
+    }
+
+    /// The explicit hostname when this intent is already a concrete Ingress Hostname.
+    #[must_use]
+    pub fn as_explicit_host(&self) -> Option<&IngressHost> {
+        match self {
+            Self::Explicit { hostname } => Some(hostname),
+            Self::ClusterDomain { .. } => None,
+        }
     }
 }
 

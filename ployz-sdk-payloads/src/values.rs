@@ -114,6 +114,24 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
     fixtures.insert("requested_service_spec".into(), to_value(&requested_spec()));
+    fixtures.insert(
+        "ingress_hostname_cluster_domain".into(),
+        to_value(&IngressHostname::cluster_domain()),
+    );
+    fixtures.insert(
+        "ingress_hostname_cluster_domain_label".into(),
+        to_value(
+            &IngressHostname::cluster_domain_label("api")
+                .expect("fixture Cluster Domain label is valid"),
+        ),
+    );
+    fixtures.insert(
+        "ingress_hostname_explicit".into(),
+        to_value(
+            &IngressHostname::explicit("api.example.com")
+                .expect("fixture explicit Ingress Hostname is valid"),
+        ),
+    );
     fixtures.insert("deploy_preview".into(), to_value(&deploy_preview()));
     fixtures.insert(
         "deploy_preview_unknown_fields".into(),
@@ -440,7 +458,11 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         (
             "IngressHostname",
             vec![
-                to_value(&IngressHostname::AssignFromClusterDomain),
+                to_value(&IngressHostname::cluster_domain()),
+                to_value(
+                    &IngressHostname::cluster_domain_label("api")
+                        .expect("fixture Cluster Domain label is valid"),
+                ),
                 to_value(&IngressHostname::Explicit {
                     hostname: ingress_host("app.example.com"),
                 }),

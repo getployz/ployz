@@ -201,7 +201,7 @@ The Project attributed to an Internal DNS query by matching its source Container
 _Avoid_: caller identity, authenticated client, source registry
 
 **Ingress Hostname**:
-The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
+The HTTP hostname a Service publishes through ingress. Cluster Domain assignment uses the automatic `{service}-{project}` label or a chosen DNS label with no Project suffix; otherwise the hostname is an explicit validated name. An empty string is not an assignment signal.
 _Avoid_: empty hostname sentinel
 
 **Hostname Owner**:

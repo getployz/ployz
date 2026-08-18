@@ -1,7 +1,7 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, IngressHostname, Machine,
-    MachineId, PortPublication, QualifiedService, ServiceContainer, ServiceName, hostname_owners,
+    CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, Machine, MachineId,
+    PortPublication, QualifiedService, ServiceContainer, ServiceName, hostname_owners,
     service_containers, serving_replicas,
 };
 use reqwest::{Client, StatusCode, header};
@@ -565,14 +565,17 @@ fn automatic_caddyfile(
         let identity = observation.identity();
         for port in &observation.resolved_spec.ports {
             let PortPublication::Ingress {
-                hostname: IngressHostname::Explicit { hostname },
+                hostname,
                 container_port,
                 http_protocol,
                 ..
             } = port
             else {
+                continue;
+            };
+            let Some(hostname) = hostname.as_explicit_host() else {
                 // TODO(UT-112): Caddy does not route L4 TCP/UDP ingress; host publication remains
-                // the supported path. Assignment from the Cluster Domain is resolved before Caddy.
+                // the supported path. Cluster Domain assignment is resolved before Caddy.
                 continue;
             };
             if owners.get(hostname) != Some(&identity) {

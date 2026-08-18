@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
-    MachineObservation, MembershipObservation, PortPublication, ProjectName, QualifiedService,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
-    ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners, machine_matches_target,
-    same_service_mode_kind,
+    ContainerAction, ContainerId, ContainerRuntimeObservation, HookContainer, HostBind,
+    IngressHost, MachineId, MachineObservation, MembershipObservation, PortPublication,
+    ProjectName, QualifiedService, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph,
+    SpecChange, UpdateOrder, VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners,
+    machine_matches_target, same_service_mode_kind,
 };
 
 use super::{
@@ -81,23 +81,6 @@ pub fn plan_deploy(
     assemble_plan(intent, snapshot, requested, warnings)
 }
 
-/// Plan after the CLI has expanded assigned ingress. Hostname policy already ran
-/// on the unexpanded specs, where Explicit still means custom.
-pub(crate) fn plan_after_ingress_expansion(
-    intent: &DeployIntent,
-    snapshot: &DeploySnapshot,
-) -> Result<DeployPlan, PlanError> {
-    assemble_plan(intent, snapshot, requested_specs(intent)?, Vec::new())
-}
-
-/// Reject visible custom hostname conflicts and warn when the snapshot is incomplete.
-pub(crate) fn hostname_policy(
-    intent: &DeployIntent,
-    snapshot: &DeploySnapshot,
-) -> Result<Vec<DeployWarning>, PlanError> {
-    hostname_policy_for(&intent.project_name, &requested_specs(intent)?, snapshot)
-}
-
 fn requested_specs(intent: &DeployIntent) -> Result<Vec<RequestedServiceSpec>, PlanError> {
     Ok(specs_to_plan(intent)?.into_iter().map(normalize).collect())
 }
@@ -107,7 +90,7 @@ fn hostname_policy_for(
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
 ) -> Result<Vec<DeployWarning>, PlanError> {
-    reject_custom_hostname_conflicts(project_name, requested, snapshot)?;
+    reject_hostname_conflicts(project_name, requested, snapshot)?;
     let mut warnings = Vec::new();
     if !snapshot.is_observer_complete()
         && requested
@@ -176,23 +159,25 @@ fn assemble_plan(
     })
 }
 
-fn reject_custom_hostname_conflicts(
+fn reject_hostname_conflicts(
     project_name: &ProjectName,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
 ) -> Result<(), PlanError> {
     let owners = hostname_owners(snapshot.containers.iter());
+    let mut claimed = BTreeMap::<&IngressHost, QualifiedService>::new();
     for spec in requested {
         let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
         for hostname in explicit_ingress_hosts(&spec.ports) {
-            if let Some(owner) = owners.get(hostname)
+            if let Some(owner) = claimed.get(hostname).or_else(|| owners.get(hostname))
                 && *owner != identity
             {
-                return Err(PlanError::CustomHostnameConflict {
+                return Err(PlanError::HostnameConflict {
                     hostname: hostname.clone(),
                     owner: owner.clone(),
                 });
             }
+            claimed.entry(hostname).or_insert_with(|| identity.clone());
         }
     }
     Ok(())

@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use ployz_core::{
     DeployEvent, DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
-    HttpProtocol, IngressHostname, OperationPhase, OperationRow, OperationStatus, PortPublication,
+    HttpProtocol, OperationPhase, OperationRow, OperationStatus, PortPublication,
     ReplacementOperation, UpdateOrder,
 };
 
@@ -448,12 +448,15 @@ fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
         };
         for port in &spec.ports {
             let PortPublication::Ingress {
-                hostname: IngressHostname::Explicit { hostname },
+                hostname,
                 container_port,
                 http_protocol,
                 ..
             } = port
             else {
+                continue;
+            };
+            let Some(hostname) = hostname.as_explicit_host() else {
                 continue;
             };
             let scheme = match http_protocol {

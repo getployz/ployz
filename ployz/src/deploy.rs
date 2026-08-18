@@ -348,8 +348,8 @@ pub enum PlanError {
     DependencyCycle { service: String },
     #[error("external volumes not found: {}", quoted_names(.names))]
     ExternalVolumesNotFound { names: Vec<DockerVolumeName> },
-    #[error("custom hostname {hostname} is already published by {owner}")]
-    CustomHostnameConflict {
+    #[error("hostname {hostname} is already published by {owner}")]
+    HostnameConflict {
         hostname: IngressHost,
         owner: QualifiedService,
     },

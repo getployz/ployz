@@ -77,17 +77,18 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
             "alpine",
         ])
         .unwrap();
-    assert!(matches!(
+    assert_eq!(
         run_spec(super::leaf_matches(&assigned))
             .unwrap()
             .ports
             .first(),
-        Some(PortPublication::Ingress {
-            hostname: IngressHostname::AssignFromClusterDomain,
+        Some(&PortPublication::Ingress {
+            hostname: IngressHostname::cluster_domain(),
+            load_balancer_port: 443.try_into().unwrap(),
+            container_port: 8080.try_into().unwrap(),
             http_protocol: HttpProtocol::Https,
-            ..
         })
-    ));
+    );
     let explicit = crate::cli::command()
         .try_get_matches_from([
             "ployz",
@@ -106,6 +107,29 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
             .first(),
         Some(&PortPublication::Ingress {
             hostname: IngressHostname::explicit("app.example.com").unwrap(),
+            load_balancer_port: 443.try_into().unwrap(),
+            container_port: 8080.try_into().unwrap(),
+            http_protocol: HttpProtocol::Https,
+        })
+    );
+    let chosen = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "run",
+            "--name",
+            "api",
+            "--publish",
+            "api:8080/https",
+            "alpine",
+        ])
+        .unwrap();
+    assert_eq!(
+        run_spec(super::leaf_matches(&chosen))
+            .unwrap()
+            .ports
+            .first(),
+        Some(&PortPublication::Ingress {
+            hostname: IngressHostname::cluster_domain_label("api").unwrap(),
             load_balancer_port: 443.try_into().unwrap(),
             container_port: 8080.try_into().unwrap(),
             http_protocol: HttpProtocol::Https,

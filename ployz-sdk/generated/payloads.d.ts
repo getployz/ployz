@@ -72,7 +72,7 @@ export type ServiceMode =
   | Additive<{ mode?: string }>;
 
 export type IngressHostname =
-  | Additive<{ kind: "assign_from_cluster_domain" }>
+  | Additive<{ kind: "cluster_domain"; label?: string }>
   | Additive<{ kind: "explicit"; hostname: IngressHost }>
   | Additive<{ kind?: string }>;
 

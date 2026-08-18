@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{ContainerKind, ContainerObservation, IngressHostname, PortPublication};
+use super::{ContainerKind, ContainerObservation, PortPublication};
 use crate::{IngressHost, QualifiedService, ServiceId};
 
 /// Hostname Owner for each explicit Ingress Hostname in these observations.
@@ -43,15 +43,8 @@ pub fn hostname_owners<'a>(
 /// Explicit Ingress Hostnames published by these ports.
 pub fn explicit_ingress_hosts(ports: &[PortPublication]) -> impl Iterator<Item = &IngressHost> {
     ports.iter().filter_map(|port| match port {
-        PortPublication::Ingress {
-            hostname: IngressHostname::Explicit { hostname },
-            ..
-        } => Some(hostname),
-        PortPublication::Ingress {
-            hostname: IngressHostname::AssignFromClusterDomain,
-            ..
-        }
-        | PortPublication::Host { .. } => None,
+        PortPublication::Ingress { hostname, .. } => hostname.as_explicit_host(),
+        PortPublication::Host { .. } => None,
     })
 }
 
@@ -140,12 +133,19 @@ mod tests {
         hook.kind = ContainerKind::PreDeployHook;
         let mut assigned = observation("blog", "web", '2', 'b', 2, "api.example.com");
         assigned.resolved_spec.ports = vec![PortPublication::Ingress {
-            hostname: IngressHostname::AssignFromClusterDomain,
+            hostname: IngressHostname::cluster_domain(),
             load_balancer_port: NonZeroU16::new(80).unwrap(),
             container_port: NonZeroU16::new(80).unwrap(),
             http_protocol: HttpProtocol::Http,
         }];
-        assert!(hostname_owners([&hook, &assigned]).is_empty());
+        let mut chosen = observation("shop", "api", '3', 'c', 3, "api.example.com");
+        chosen.resolved_spec.ports = vec![PortPublication::Ingress {
+            hostname: IngressHostname::cluster_domain_label("api").unwrap(),
+            load_balancer_port: NonZeroU16::new(80).unwrap(),
+            container_port: NonZeroU16::new(80).unwrap(),
+            http_protocol: HttpProtocol::Http,
+        }];
+        assert!(hostname_owners([&hook, &assigned, &chosen]).is_empty());
     }
 
     fn host(name: &str) -> IngressHost {

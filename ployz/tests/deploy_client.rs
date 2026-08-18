@@ -9,7 +9,9 @@ use ployz::deploy::{
     DeployError, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployWarning,
     ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal, VolumeFate,
 };
-use ployz_core::{ContainerId, OperationPhase, ProjectName, RequestedServiceSpec};
+use ployz_core::{
+    ContainerId, OperationPhase, ProjectName, QualifiedService, RequestedServiceSpec,
+};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -226,7 +228,7 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
         "ports": [
             {
                 "mode": "ingress",
-                "hostname": { "kind": "assign_from_cluster_domain" },
+                "hostname": { "kind": "cluster_domain" },
                 "load_balancer_port": 443,
                 "container_port": 8080,
                 "http_protocol": "https"
@@ -261,15 +263,10 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
         .ports
         .iter()
         .filter_map(|port| match port {
-            ployz_core::PortPublication::Ingress {
-                hostname: ployz_core::IngressHostname::Explicit { hostname },
-                ..
-            } => Some(hostname.as_str()),
-            ployz_core::PortPublication::Ingress {
-                hostname: ployz_core::IngressHostname::AssignFromClusterDomain,
-                ..
-            }
-            | ployz_core::PortPublication::Host { .. } => None,
+            ployz_core::PortPublication::Ingress { hostname, .. } => hostname
+                .as_explicit_host()
+                .map(ployz_core::IngressHost::as_str),
+            ployz_core::PortPublication::Host { .. } => None,
         })
         .collect();
     assert!(
@@ -298,6 +295,106 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
 }
 
 #[tokio::test]
+async fn preview_expands_a_chosen_cluster_domain_label_without_a_project_suffix() {
+    let mut machine = machine('a', "one");
+    machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
+    let service = DeployService::new(machine).with_domain("opaque.ployz.example");
+    let (mut client, server) = connected(service).await;
+    let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "always" },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": { "kind": "cluster_domain", "label": "api" },
+            "load_balancer_port": 80,
+            "container_port": 8080,
+            "http_protocol": "http"
+        }]
+    }))
+    .unwrap();
+
+    let preview = client
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("shop").unwrap(),
+            spec,
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+
+    let Some(DeployOperation::RunContainer { spec, .. }) =
+        preview.operations.first().map(|row| &row.operation)
+    else {
+        panic!("expected RunContainer: {preview:?}");
+    };
+    let hostnames: Vec<_> = spec
+        .ports
+        .iter()
+        .filter_map(|port| match port {
+            ployz_core::PortPublication::Ingress { hostname, .. } => hostname
+                .as_explicit_host()
+                .map(ployz_core::IngressHost::as_str),
+            ployz_core::PortPublication::Host { .. } => None,
+        })
+        .collect();
+    assert_eq!(hostnames, ["api.opaque.ployz.example"]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn preview_rejects_a_visible_owner_of_an_expanded_chosen_label() {
+    let mut machine = machine('a', "one");
+    machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
+    let service = DeployService::new(machine.clone()).with_domain("opaque.ployz.example");
+    let mut owner_spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "always" },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": { "kind": "explicit", "hostname": "api.opaque.ployz.example" },
+            "load_balancer_port": 80,
+            "container_port": 8080,
+            "http_protocol": "http"
+        }]
+    }))
+    .unwrap();
+    let mut owner = running_container(&machine, &owner_spec);
+    owner.project_name = ProjectName::parse("blog").unwrap();
+    service.listed_containers().lock().unwrap().push(owner);
+    let (mut client, server) = connected(service).await;
+    owner_spec.name = ployz_core::ServiceName::parse("api").unwrap();
+    owner_spec.ports = vec![ployz_core::PortPublication::Ingress {
+        hostname: ployz_core::IngressHostname::cluster_domain_label("api").unwrap(),
+        load_balancer_port: 80.try_into().unwrap(),
+        container_port: 8080.try_into().unwrap(),
+        http_protocol: ployz_core::HttpProtocol::Http,
+    }];
+
+    let error = client
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("shop").unwrap(),
+            owner_spec,
+            skip_health(),
+        ))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        &error,
+        DeployError::Plan(PlanError::HostnameConflict { hostname, owner })
+            if hostname.as_str() == "api.opaque.ployz.example"
+                && *owner == QualifiedService::parse("blog/web").unwrap()
+    ));
+    assert_eq!(
+        error.to_string(),
+        "hostname api.opaque.ployz.example is already published by blog/web"
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn preview_rejects_a_combined_ingress_label_over_63_characters() {
     let mut machine = machine('a', "one");
     machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
@@ -309,7 +406,7 @@ async fn preview_rejects_a_combined_ingress_label_over_63_characters() {
         "container": { "image": "nginx", "pull_policy": "always" },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "assign_from_cluster_domain" },
+            "hostname": { "kind": "cluster_domain" },
             "load_balancer_port": 443,
             "container_port": 8080,
             "http_protocol": "https"

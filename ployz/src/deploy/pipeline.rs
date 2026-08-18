@@ -234,10 +234,9 @@ async fn prepare_intent(
     mut warnings: Vec<DeployWarning>,
     intent: &mut DeployIntent,
 ) -> Result<DeployPreview, DeployError> {
-    warnings.extend(planning::hostname_policy(intent, &snapshot)?);
     expand_ingress(client, &intent.project_name, intent.target.iter_mut()).await?;
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
-    let plan = planning::plan_after_ingress_expansion(intent, &snapshot)?;
+    let plan = planning::plan_deploy(intent, &snapshot)?;
     warnings.extend(plan.warnings);
     Ok(DeployPreview {
         project_name: intent.project_name.clone(),

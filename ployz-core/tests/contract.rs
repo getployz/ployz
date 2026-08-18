@@ -356,14 +356,22 @@ fn machine_subnet_exposes_its_gateway_and_stays_a_cidr_string() {
 }
 
 #[test]
-fn ingress_hostname_intent_is_explicit_or_assigned() {
+fn ingress_hostname_intent_is_cluster_domain_or_explicit() {
     assert_eq!(
-        serde_json::to_value(IngressHostname::AssignFromClusterDomain).unwrap(),
-        json!({ "kind": "assign_from_cluster_domain" })
+        serde_json::to_value(IngressHostname::cluster_domain()).unwrap(),
+        json!({ "kind": "cluster_domain" })
+    );
+    assert_eq!(
+        serde_json::to_value(IngressHostname::cluster_domain_label("api").unwrap()).unwrap(),
+        json!({ "kind": "cluster_domain", "label": "api" })
     );
     assert_eq!(
         serde_json::to_value(IngressHostname::explicit("app.example.com").unwrap()).unwrap(),
         json!({ "kind": "explicit", "hostname": "app.example.com" })
+    );
+    assert!(
+        serde_json::from_value::<IngressHostname>(json!({ "kind": "assign_from_cluster_domain" }))
+            .is_err()
     );
     assert!(
         serde_json::from_value::<PortPublication>(json!({
@@ -385,7 +393,7 @@ fn ingress_hostname_intent_is_explicit_or_assigned() {
     );
     let assigned: PortPublication = serde_json::from_value(json!({
         "mode": "ingress",
-        "hostname": { "kind": "assign_from_cluster_domain" },
+        "hostname": { "kind": "cluster_domain" },
         "load_balancer_port": 80,
         "container_port": 8080,
         "http_protocol": "http"
@@ -394,11 +402,29 @@ fn ingress_hostname_intent_is_explicit_or_assigned() {
     assert!(matches!(
         assigned,
         PortPublication::Ingress {
-            hostname: IngressHostname::AssignFromClusterDomain,
+            hostname: IngressHostname::ClusterDomain { label: None },
             http_protocol: HttpProtocol::Http,
             ..
         }
     ));
+    let chosen: PortPublication = serde_json::from_value(json!({
+        "mode": "ingress",
+        "hostname": { "kind": "cluster_domain", "label": "api" },
+        "load_balancer_port": 80,
+        "container_port": 8080,
+        "http_protocol": "http"
+    }))
+    .unwrap();
+    assert_eq!(
+        chosen,
+        PortPublication::Ingress {
+            hostname: IngressHostname::cluster_domain_label("api").unwrap(),
+            load_balancer_port: 80.try_into().unwrap(),
+            container_port: 8080.try_into().unwrap(),
+            http_protocol: HttpProtocol::Http,
+        }
+    );
+    assert!(IngressHostname::cluster_domain_label("a".repeat(64)).is_err());
 }
 
 #[test]
