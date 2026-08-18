@@ -1,7 +1,8 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, Machine, MachineTarget, NameMatches, RemoveLocalMachineRequest,
-    RemoveMachineRequest, op,
+    DescribeContractRequest, DockerVolume, DockerVolumeName, LiveServices, Machine, MachineId,
+    MachineName, MachineTarget, NameMatches, PartialResult, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RpcError, ServiceName, op,
 };
 
 use super::super::{connect_client, runtime};
@@ -27,6 +28,29 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             return Err(Error::usage(
                 "the current entry Machine cannot be removed while another Machine is visible",
             ));
+        }
+        let selected_observation = machines
+            .iter()
+            .find(|entry| entry.machine.id == selected.id)
+            .expect("selected Machine came from this list");
+        let volumes = if no_reset {
+            Vec::new()
+        } else {
+            docker_volumes_on(
+                &selected.id,
+                &client
+                    .list_volumes(std::slice::from_ref(selected_observation))
+                    .await,
+            )
+        };
+        let services = services_on(
+            &selected.id,
+            &client
+                .live_services_from(std::slice::from_ref(selected_observation))
+                .await?,
+        );
+        for line in removal_warnings(&selected.name, &volumes, &services) {
+            eprintln!("{line}");
         }
         helpers::confirm(
             yes,
@@ -111,12 +135,230 @@ fn select_machine(
     }
 }
 
+#[must_use]
+fn docker_volumes_on(
+    machine_id: &MachineId,
+    listed: &PartialResult<Vec<DockerVolume>, RpcError>,
+) -> Vec<DockerVolumeName> {
+    listed
+        .successes
+        .iter()
+        .filter(|success| success.machine_id == *machine_id)
+        .flat_map(|success| success.value.iter())
+        .map(|volume| volume.id.name.clone())
+        .collect()
+}
+
+#[must_use]
+fn services_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<ServiceName> {
+    live.services()
+        .into_iter()
+        .filter(|service| {
+            service
+                .containers
+                .iter()
+                .any(|container| container.as_observation().machine_id == *machine_id)
+        })
+        .filter_map(|service| service.service_name().cloned())
+        .collect()
+}
+
+#[must_use]
+fn removal_warnings(
+    machine: &MachineName,
+    volumes: &[DockerVolumeName],
+    services: &[ServiceName],
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !volumes.is_empty() {
+        lines.push(format!(
+            "WARNING: Docker Volumes on Machine {machine} will be destroyed: {}",
+            volumes
+                .iter()
+                .map(DockerVolumeName::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !services.is_empty() {
+        lines.push(format!(
+            "WARNING: Machine {machine} is running Services: {}",
+            services
+                .iter()
+                .map(ServiceName::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
-    use ployz_core::{RpcError, RpcErrorCode};
-    use serde_json::Value;
+    use ployz_core::{
+        ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
+        DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineFailure,
+        MachineId, MachineName, MachineSuccess, PartialResult, RpcError, RpcErrorCode, ServiceId,
+        ServiceName, derive_live_services,
+    };
+    use serde_json::{Value, json};
 
+    use super::{docker_volumes_on, removal_warnings, services_on};
     use crate::connect::ConnectError;
+
+    #[test]
+    fn removal_warnings_are_silent_when_nothing_is_at_stake() {
+        assert_eq!(
+            removal_warnings(&MachineName::parse("ams1").unwrap(), &[], &[]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn removal_warnings_name_docker_volumes_that_will_be_destroyed() {
+        assert_eq!(
+            removal_warnings(
+                &MachineName::parse("ams1").unwrap(),
+                &[
+                    DockerVolumeName::parse("ams-critical").unwrap(),
+                    DockerVolumeName::parse("data").unwrap(),
+                ],
+                &[],
+            ),
+            vec![
+                "WARNING: Docker Volumes on Machine ams1 will be destroyed: ams-critical, data"
+                    .to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn removal_warnings_name_services_on_the_machine() {
+        assert_eq!(
+            removal_warnings(
+                &MachineName::parse("ams1").unwrap(),
+                &[],
+                &[
+                    ServiceName::parse("api").unwrap(),
+                    ServiceName::parse("web").unwrap(),
+                ],
+            ),
+            vec!["WARNING: Machine ams1 is running Services: api, web".to_owned()]
+        );
+    }
+
+    #[test]
+    fn docker_volumes_on_names_volumes_observed_on_that_machine() {
+        let listed = PartialResult {
+            successes: vec![
+                MachineSuccess {
+                    machine_id: machine_id('a'),
+                    value: vec![volume('a', "data"), volume('a', "ams-critical")],
+                },
+                MachineSuccess {
+                    machine_id: machine_id('b'),
+                    value: vec![volume('b', "data")],
+                },
+            ],
+            failures: vec![MachineFailure {
+                machine_id: machine_id('c'),
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "offline".into(),
+                    details: Value::Null,
+                },
+            }],
+            omissions: vec![machine_id('d')],
+        };
+        assert_eq!(
+            docker_volumes_on(&machine_id('a'), &listed),
+            [
+                DockerVolumeName::parse("data").unwrap(),
+                DockerVolumeName::parse("ams-critical").unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn services_on_names_services_with_a_service_container_on_that_machine() {
+        let live: LiveServices<RpcError> = derive_live_services(PartialResult {
+            successes: vec![
+                MachineSuccess {
+                    machine_id: machine_id('a'),
+                    value: vec![
+                        observation('1', 'a', "api", ContainerKind::ServiceContainer, 'a'),
+                        observation('2', 'a', "api", ContainerKind::ServiceContainer, 'a'),
+                        observation('3', 'a', "hooked", ContainerKind::PreDeployHook, 'b'),
+                    ],
+                },
+                MachineSuccess {
+                    machine_id: machine_id('b'),
+                    value: vec![observation(
+                        '4',
+                        'b',
+                        "web",
+                        ContainerKind::ServiceContainer,
+                        'c',
+                    )],
+                },
+            ],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+        assert_eq!(
+            services_on(&machine_id('a'), &live),
+            [ServiceName::parse("api").unwrap()]
+        );
+    }
+
+    fn volume(machine: char, name: &str) -> DockerVolume {
+        DockerVolume {
+            id: DockerVolumeId {
+                machine_id: machine_id(machine),
+                name: DockerVolumeName::parse(name).unwrap(),
+            },
+            driver: "local".into(),
+            options: Default::default(),
+            labels: Default::default(),
+        }
+    }
+
+    fn observation(
+        id: char,
+        machine: char,
+        name: &str,
+        kind: ContainerKind,
+        service: char,
+    ) -> ContainerObservation {
+        let service_id = ServiceId::parse(service.to_string().repeat(32)).unwrap();
+        let service_name = ServiceName::parse(name).unwrap();
+        ContainerObservation {
+            container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
+            display_name: name.into(),
+            created_at_unix_nanos: 0,
+            machine_id: machine_id(machine),
+            service_id,
+            service_name: service_name.clone(),
+            kind,
+            runtime: ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            effective_healthcheck: None,
+            resolved_spec: serde_json::from_value(json!({
+                "service_id": service_id,
+                "name": service_name,
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
+            }))
+            .unwrap(),
+            address: None,
+            labels: Default::default(),
+        }
+    }
+
+    fn machine_id(value: char) -> MachineId {
+        MachineId::parse(value.to_string().repeat(32)).unwrap()
+    }
 
     #[test]
     fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
