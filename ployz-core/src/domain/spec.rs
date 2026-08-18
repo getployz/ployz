@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
     BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, IngressHost,
-    MachinePath, MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceName,
-    ServiceVolumeReference, ValueError,
+    MANAGED_LABEL, MachinePath, MachineTarget, PROJECT_NAME_LABEL, PidMode, ProjectName,
+    RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -119,6 +119,29 @@ pub enum VolumeSource {
         #[serde(default)]
         options: Vec<Vec<String>>,
     },
+}
+
+impl VolumeSource {
+    /// Bind a non-external named volume to `project`: physical Docker name and ownership labels.
+    pub fn scope_to_project(&mut self, project: &ProjectName) {
+        let Self::Named {
+            name,
+            external,
+            labels,
+            ..
+        } = self
+        else {
+            return;
+        };
+        if *external || labels.get(PROJECT_NAME_LABEL).map(String::as_str) == Some(project.as_str())
+        {
+            // Scale rebuilds the Intent from an already-scoped Resolved Service Spec.
+            return;
+        }
+        *name = project.volume_name(name);
+        labels.insert(MANAGED_LABEL.into(), String::new());
+        labels.insert(PROJECT_NAME_LABEL.into(), project.to_string());
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

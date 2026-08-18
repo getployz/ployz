@@ -351,14 +351,7 @@ fn incompatible_volume_excludes_only_its_machine() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
-            volumes: vec![ployz::deploy::ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("data").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            }],
+            volumes: vec![observed_volume(machine_id('1'), "data")],
             ..Default::default()
         },
         PlanOptions::default(),
@@ -391,14 +384,7 @@ fn multi_replica_named_volume_replacement_defaults_to_start_first() {
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &current_service_id)],
-            volumes: vec![ployz::deploy::ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("data").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            }],
+            volumes: vec![observed_volume(machine_id('1'), "data")],
             ..Default::default()
         },
         PlanOptions::default(),

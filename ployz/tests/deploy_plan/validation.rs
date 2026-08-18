@@ -35,14 +35,7 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
-            volumes: vec![ployz::deploy::ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("data").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            }],
+            volumes: vec![observed_volume(machine_id('1'), "data")],
             ..Default::default()
         },
         PlanOptions::default(),
@@ -68,22 +61,8 @@ fn global_named_volume_existing_on_every_machine_is_not_created() {
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
             volumes: vec![
-                ployz::deploy::ObservedDockerVolume {
-                    id: DockerVolumeId {
-                        machine_id: machine_id('1'),
-                        name: DockerVolumeName::parse("data").unwrap(),
-                    },
-                    driver: "local".into(),
-                    options: Default::default(),
-                },
-                ployz::deploy::ObservedDockerVolume {
-                    id: DockerVolumeId {
-                        machine_id: machine_id('2'),
-                        name: DockerVolumeName::parse("data").unwrap(),
-                    },
-                    driver: "local".into(),
-                    options: Default::default(),
-                },
+                observed_volume(machine_id('1'), "data"),
+                observed_volume(machine_id('2'), "data"),
             ],
             ..Default::default()
         },
@@ -262,7 +241,7 @@ fn conflicting_named_volume_aliases_are_rejected() {
             PlanOptions::default(),
         ),
         Err(PlanError::ConflictingDockerVolumeDefinitions {
-            name: DockerVolumeName::parse("data").unwrap(),
+            name: app_volume("data"),
         })
     );
 }

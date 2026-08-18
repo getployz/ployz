@@ -103,6 +103,7 @@ pub struct ObservedDockerVolume {
     pub id: DockerVolumeId,
     pub driver: String,
     pub options: std::collections::BTreeMap<String, String>,
+    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,6 +111,9 @@ pub struct DeployPlan {
     pub operations: Vec<DeployOperation>,
     /// Visible Services in the Project that Compose no longer declares.
     pub would_remove: Vec<QualifiedService>,
+    /// Compose-declared Docker Volumes owned by this Project that this Compose
+    /// input no longer declares. They are not deleted.
+    pub preserved_volumes: Vec<ployz_core::PreservedVolume>,
     /// Why pruning will not run. `None` means obsolete Services are removed.
     pub prune_refusal: Option<PruneRefusal>,
     /// Observer-relative warnings produced while planning, including hostname detection.
@@ -122,6 +126,7 @@ impl DeployPlan {
         Self {
             operations,
             would_remove: Vec::new(),
+            preserved_volumes: Vec::new(),
             prune_refusal: None,
             warnings: Vec::new(),
         }

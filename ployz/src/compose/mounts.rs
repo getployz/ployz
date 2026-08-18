@@ -14,7 +14,6 @@ use super::{
 pub(super) fn volumes(
     service: &RawService,
     root: &RawProject,
-    project: &str,
 ) -> Result<(Vec<ServiceVolume>, Vec<ServiceMount>), ComposeError> {
     if let Some(source) = relative_bind_source(service) {
         return Err(invalid(format!("bind mount source '{source}' is relative")));
@@ -104,17 +103,18 @@ pub(super) fn volumes(
                     invalid(format!("volume '{key}' not found in project volumes"))
                 })?;
                 let external = is_external(&declared.external);
-                let docker_name = declared
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("{project}_{key}"));
+                let docker_name = if external {
+                    declared
+                        .name
+                        .as_deref()
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(key.as_str())
+                        .to_owned()
+                } else {
+                    key.clone()
+                };
                 VolumeSource::Named {
-                    name: DockerVolumeName::parse(
-                        docker_name
-                            .strip_prefix(&format!("{project}_"))
-                            .unwrap_or(&docker_name),
-                    )
-                    .map_err(invalid)?,
+                    name: DockerVolumeName::parse(docker_name).map_err(invalid)?,
                     external,
                     driver: (!external
                         && (declared.driver.is_some() || !declared.driver_opts.is_empty()))

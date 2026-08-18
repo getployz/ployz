@@ -427,6 +427,11 @@ validated_string_newtype!(
     |value| is_dns_label(value)
 );
 
+/// Docker label written on resources Ployz manages.
+pub const MANAGED_LABEL: &str = "ployz.managed";
+/// Docker label recording the owning Project.
+pub const PROJECT_NAME_LABEL: &str = "ployz.project.name";
+
 impl ProjectName {
     /// The reserved Project for Ployz infrastructure.
     pub const SYSTEM: &'static str = "ployz-system";
@@ -441,6 +446,13 @@ impl ProjectName {
     #[must_use]
     pub fn is_reserved(&self) -> bool {
         self.as_str() == Self::SYSTEM
+    }
+
+    /// Physical Docker Volume name for a Compose-declared volume owned by this Project.
+    #[must_use]
+    pub fn volume_name(&self, logical: &DockerVolumeName) -> DockerVolumeName {
+        DockerVolumeName::parse(format!("{self}_{logical}"))
+            .expect("a Project Name and Docker Volume name are each non-empty")
     }
 }
 

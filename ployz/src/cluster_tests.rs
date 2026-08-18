@@ -90,6 +90,7 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
             id: volume.id,
             driver: volume.driver,
             options: volume.options,
+            labels: volume.labels,
         }]
     );
     assert_eq!(snapshot.container_failures, expected_container_failures);

@@ -241,7 +241,7 @@ volumes:
             .successes
             .iter()
             .flat_map(|success| &success.value)
-            .any(|volume| volume.id.name.as_str() == "data"),
+            .any(|volume| volume.id.name.as_str() == "workflow_data"),
         "{volumes:?}"
     );
     fs::remove_dir_all(root).unwrap();

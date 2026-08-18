@@ -140,14 +140,23 @@ fn spec_comparison_handles_resource_precedence_and_unordered_volumes() {
         .cloned()
         .collect();
     reordered.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-    assert_eq!(compare_specs(&current, &reordered), SpecChange::UpToDate);
+    assert_eq!(
+        compare_specs(&current, &scoped_spec(&reordered)),
+        SpecChange::UpToDate
+    );
 
     let mut mutable = requested.clone();
     mutable.container.resources.cpu_nanos = Some(1_000_000_000);
-    assert_eq!(compare_specs(&current, &mutable), SpecChange::NeedsUpdate);
+    assert_eq!(
+        compare_specs(&current, &scoped_spec(&mutable)),
+        SpecChange::NeedsUpdate
+    );
 
     mutable.container.cap_add.push("NET_ADMIN".into());
-    assert_eq!(compare_specs(&current, &mutable), SpecChange::NeedsRecreate);
+    assert_eq!(
+        compare_specs(&current, &scoped_spec(&mutable)),
+        SpecChange::NeedsRecreate
+    );
 }
 
 #[test]

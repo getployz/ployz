@@ -1,12 +1,13 @@
 pub(super) use std::{
+    collections::BTreeMap,
     net::Ipv6Addr,
     num::{NonZeroU16, NonZeroU32},
 };
 
 pub(super) use ployz::deploy::{
     DeployIntent, DeployOperation, DeployOutcome, DeploySnapshot, EliminatingConstraint,
-    EliminatingConstraints, FailedOperation, PlanError, PlanOptions, ReplacementCompensation,
-    ReplacementOperation, RestartAttempt, ServiceAttempt, compare_specs,
+    EliminatingConstraints, FailedOperation, ObservedDockerVolume, PlanError, PlanOptions,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, compare_specs,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -48,13 +49,13 @@ pub(super) fn assert_no_eligible(
 pub(super) use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
     ContainerResources, ContainerRuntimeObservation, DeviceMapping, DeviceReservation,
-    DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver, Machine, MachineId,
-    MachineName, MachineObservation, MachinePath, MachineTarget, ManagementAddress,
-    MembershipObservation, PidMode, Placement, PortPublication, PreDeployHook, ProjectName,
-    PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec,
-    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
-    SpecChange, TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource,
-    WireGuardPublicKey,
+    DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver, MANAGED_LABEL,
+    Machine, MachineId, MachineName, MachineObservation, MachinePath, MachineTarget,
+    ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement,
+    PortPublication, PreDeployHook, ProjectName, PullPolicy, RequestedServiceSpec,
+    ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
+    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -147,6 +148,51 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 }
 
+pub(super) fn app_volume(logical: &str) -> DockerVolumeName {
+    ProjectName::parse("app")
+        .unwrap()
+        .volume_name(&DockerVolumeName::parse(logical).unwrap())
+}
+
+pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> ObservedDockerVolume {
+    ObservedDockerVolume {
+        id: DockerVolumeId {
+            machine_id,
+            name: app_volume(logical),
+        },
+        driver: "local".into(),
+        options: Default::default(),
+        labels: Default::default(),
+    }
+}
+
+pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> ObservedDockerVolume {
+    ObservedDockerVolume {
+        id: DockerVolumeId {
+            machine_id,
+            name: app_volume(logical),
+        },
+        driver: "local".into(),
+        options: Default::default(),
+        labels: BTreeMap::from([
+            (MANAGED_LABEL.to_owned(), String::new()),
+            (PROJECT_NAME_LABEL.to_owned(), "app".to_owned()),
+        ]),
+    }
+}
+
+pub(super) fn scoped_spec(spec: &RequestedServiceSpec) -> RequestedServiceSpec {
+    let project = ProjectName::parse("app").unwrap();
+    let mut spec = spec.clone();
+    let mut volumes = spec.volume_graph.volumes().to_vec();
+    let mounts = spec.volume_graph.mounts().to_vec();
+    for volume in &mut volumes {
+        volume.source.scope_to_project(&project);
+    }
+    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    spec
+}
+
 pub(super) fn host_port(port: u16) -> PortPublication {
     PortPublication::Host {
         bind: HostBind::All,
@@ -175,7 +221,7 @@ pub(super) fn container(
             health: HealthObservation::Healthy,
         },
         effective_healthcheck: None,
-        resolved_spec: requested.to_resolved(
+        resolved_spec: scoped_spec(requested).to_resolved(
             *service_id,
             ResolvedUpdateConfig {
                 order: UpdateOrder::StartFirst,

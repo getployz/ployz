@@ -1,5 +1,4 @@
 use super::support::*;
-use ployz::deploy::ObservedDockerVolume;
 use ployz_core::{ReplacementOperation, ResolvedUpdateConfig, UpdateOrder};
 
 const DATA_LOSS_PROTOCOL: &str = "Deploy Plan destroyed stored data; Deploy is a Data Loss path and must adopt the named-confirmation protocol from #355 (see #354)";
@@ -95,14 +94,7 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
-                volumes: vec![ObservedDockerVolume {
-                    id: DockerVolumeId {
-                        machine_id: machine_id('1'),
-                        name: DockerVolumeName::parse("orphan").unwrap(),
-                    },
-                    driver: "local".into(),
-                    options: Default::default(),
-                }],
+                volumes: vec![observed_volume(machine_id('1'), "orphan")],
                 ..Default::default()
             },
             PlanOptions::default(),
@@ -135,14 +127,7 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
                 container('b', '1', &previous, &sid),
                 container('c', '1', &previous, &sid),
             ],
-            volumes: vec![ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("data").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            }],
+            volumes: vec![observed_volume(machine_id('1'), "data")],
             ..Default::default()
         },
         PlanOptions::default(),
@@ -161,14 +146,7 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &sid)],
-            volumes: vec![ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("data").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            }],
+            volumes: vec![observed_volume(machine_id('1'), "data")],
             ..Default::default()
         },
         PlanOptions::default(),

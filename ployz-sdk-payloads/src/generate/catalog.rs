@@ -538,6 +538,13 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         ]),
     ),
     (
+        "PreservedVolume",
+        Shape::Additive {
+            params: "",
+            fields: &[("id", "DockerVolumeId"), ("machine_name", "MachineName?")],
+        },
+    ),
+    (
         "DeployPreview",
         Shape::Additive {
             params: "",
@@ -546,6 +553,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("operations", "OperationRow[]"),
                 ("warnings", "DeployWarning[]"),
                 ("would_remove", "QualifiedService[]"),
+                ("preserved_volumes", "PreservedVolume[]"),
                 ("prune_refusal", "PruneRefusal?"),
             ],
         },

@@ -206,7 +206,7 @@ fn convert_service(
             "service '{name}': ingress ports and 'x-caddy' cannot be specified simultaneously"
         )));
     }
-    let (volumes, mounts) = volumes(raw, root, project)?;
+    let (volumes, mounts) = volumes(raw, root)?;
     let volume_graph = ServiceVolumeGraph::parse(volumes, mounts).map_err(invalid)?;
     let (configs, config_mounts) = configs(raw, root, directory)?;
     let config_graph = ServiceConfigGraph::parse(configs, config_mounts).map_err(invalid)?;

@@ -316,11 +316,17 @@ export type DeployWarning =
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services" | "filtered_profiles" | "guessed_project_name";
 
+export type PreservedVolume = Additive<{
+  id: DockerVolumeId;
+  machine_name?: MachineName;
+}>;
+
 export type DeployPreview = Additive<{
   project_name: ProjectName;
   operations: OperationRow[];
   warnings: DeployWarning[];
   would_remove: QualifiedService[];
+  preserved_volumes: PreservedVolume[];
   prune_refusal?: PruneRefusal;
 }>;
 

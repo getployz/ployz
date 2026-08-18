@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineObservation, MachineTarget, RequestedServiceSpec,
-    ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target,
+    DockerVolumeName, MachineId, MachineObservation, MachineTarget, PROJECT_NAME_LABEL,
+    PreservedVolume, ProjectName, RequestedServiceSpec, ServiceMode, ServiceVolume,
+    ServiceVolumeGraph, VolumeSource, machine_matches_target,
 };
 
 use crate::deploy::{
-    DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
+    DeployIntent, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
 };
 
 /// Planner-internal assignment of Docker Volumes to Machines.
@@ -70,6 +71,74 @@ impl VolumePins {
             .map(|(machine_id, volume)| DeployOperation::CreateVolume { machine_id, volume })
             .collect()
     }
+}
+
+/// Bind non-external named volumes to `project`: physical Docker name and ownership labels.
+pub(super) fn scope_requested(
+    mut spec: RequestedServiceSpec,
+    project: &ProjectName,
+) -> RequestedServiceSpec {
+    let mut volumes = spec.volume_graph.volumes().to_vec();
+    let mounts = spec.volume_graph.mounts().to_vec();
+    for volume in &mut volumes {
+        volume.source.scope_to_project(project);
+    }
+    spec.volume_graph = ServiceVolumeGraph::parse(volumes, mounts)
+        .expect("scoping Docker Volume names does not change Service Volume References");
+    spec
+}
+
+/// Owned Compose-declared Docker Volumes omitted from this Deploy's target.
+pub(super) fn preserved_owned_volumes(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Vec<PreservedVolume> {
+    let declared = declared_physical_names(intent);
+    let mut preserved = Vec::new();
+    for volume in &snapshot.volumes {
+        if volume.labels.get(PROJECT_NAME_LABEL).map(String::as_str)
+            != Some(intent.project_name.as_str())
+        {
+            continue;
+        }
+        if declared.contains(&volume.id.name) {
+            continue;
+        }
+        let machine_name = snapshot
+            .machines
+            .iter()
+            .find(|machine| machine.machine.id == volume.id.machine_id)
+            .map(|machine| machine.machine.name.clone());
+        preserved.push(PreservedVolume {
+            id: volume.id.clone(),
+            machine_name,
+        });
+    }
+    preserved.sort_by(|left, right| {
+        left.id
+            .name
+            .cmp(&right.id.name)
+            .then_with(|| left.id.machine_id.cmp(&right.id.machine_id))
+    });
+    preserved
+}
+
+fn declared_physical_names(intent: &DeployIntent) -> BTreeSet<DockerVolumeName> {
+    intent
+        .target
+        .iter()
+        .flat_map(|spec| spec.volume_graph.volumes())
+        .filter_map(|volume| match &volume.source {
+            VolumeSource::Named {
+                name,
+                external: false,
+                ..
+            } => Some(name.clone()),
+            VolumeSource::Named { external: true, .. }
+            | VolumeSource::Bind { .. }
+            | VolumeSource::Tmpfs { .. } => None,
+        })
+        .collect()
 }
 
 static EMPTY_VOLUME_OPTIONS: BTreeMap<String, String> = BTreeMap::new();

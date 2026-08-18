@@ -277,14 +277,7 @@ fn mounted_docker_volume_anchors_all_replicas_to_its_machine() {
     add_named_volume(&mut requested, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), machine('2', "second")],
-        volumes: vec![ployz::deploy::ObservedDockerVolume {
-            id: DockerVolumeId {
-                machine_id: machine_id('2'),
-                name: DockerVolumeName::parse("data").unwrap(),
-            },
-            driver: "local".into(),
-            options: Default::default(),
-        }],
+        volumes: vec![observed_volume(machine_id('2'), "data")],
         ..Default::default()
     };
 
@@ -313,12 +306,19 @@ fn missing_mounted_volume_is_created_before_replicas_on_one_machine() {
     assert!(matches!(
         plan.operations.as_slice(),
         [
-            DeployOperation::CreateVolume { machine_id: volume_machine, .. },
+            DeployOperation::CreateVolume { machine_id: volume_machine, volume },
             DeployOperation::RunContainer { machine_id: first, .. },
             DeployOperation::RunContainer { machine_id: second, .. },
         ] if volume_machine == &machine_id('1')
             && first == volume_machine
             && second == volume_machine
+            && matches!(
+                &volume.source,
+                VolumeSource::Named { name, external: false, labels, .. }
+                    if name.as_str() == "app_data"
+                        && labels.get(MANAGED_LABEL) == Some(&String::new())
+                        && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
+            )
     ));
 }
 
@@ -372,14 +372,9 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
             ..Default::default()
         };
         if with_volume {
-            snapshot.volumes.push(ployz::deploy::ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("data").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            });
+            snapshot
+                .volumes
+                .push(observed_volume(machine_id('1'), "data"));
         }
 
         let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
@@ -411,14 +406,7 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &service_id('a'))],
-            volumes: vec![ployz::deploy::ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("data").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            }],
+            volumes: vec![observed_volume(machine_id('1'), "data")],
             ..Default::default()
         },
         PlanOptions::default(),
@@ -507,14 +495,7 @@ fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
-            volumes: vec![ployz::deploy::ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("multi_existing").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            }],
+            volumes: vec![observed_volume(machine_id('1'), "multi_existing")],
             ..Default::default()
         },
         PlanOptions::default(),
@@ -525,7 +506,7 @@ fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
         plan.operations.as_slice(),
         [DeployOperation::CreateVolume { machine_id: volume_machine, volume }, rest @ ..]
             if volume_machine == &machine_id('1')
-                && matches!(&volume.source, VolumeSource::Named { name, .. } if name.as_str() == "multi_missing")
+                && matches!(&volume.source, VolumeSource::Named { name, .. } if name.as_str() == "app_multi_missing")
                 && rest.iter().all(|operation| matches!(operation,
                     DeployOperation::RunContainer { machine_id: container_machine, .. }
                         if container_machine == &machine_id('1')))
@@ -544,22 +525,8 @@ fn replicas_run_on_the_intersection_of_existing_named_volumes() {
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
             volumes: vec![
-                ployz::deploy::ObservedDockerVolume {
-                    id: DockerVolumeId {
-                        machine_id: machine_id('1'),
-                        name: DockerVolumeName::parse("intersect_a").unwrap(),
-                    },
-                    driver: "local".into(),
-                    options: Default::default(),
-                },
-                ployz::deploy::ObservedDockerVolume {
-                    id: DockerVolumeId {
-                        machine_id: machine_id('1'),
-                        name: DockerVolumeName::parse("intersect_b").unwrap(),
-                    },
-                    driver: "local".into(),
-                    options: Default::default(),
-                },
+                observed_volume(machine_id('1'), "intersect_a"),
+                observed_volume(machine_id('1'), "intersect_b"),
             ],
             ..Default::default()
         },
@@ -584,22 +551,8 @@ fn named_volumes_split_across_machines_return_no_eligible_machines() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), machine('2', "second")],
         volumes: vec![
-            ployz::deploy::ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('1'),
-                    name: DockerVolumeName::parse("split_a").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            },
-            ployz::deploy::ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: machine_id('2'),
-                    name: DockerVolumeName::parse("split_b").unwrap(),
-                },
-                driver: "local".into(),
-                options: Default::default(),
-            },
+            observed_volume(machine_id('1'), "split_a"),
+            observed_volume(machine_id('2'), "split_b"),
         ],
         ..Default::default()
     };
@@ -608,17 +561,17 @@ fn named_volumes_split_across_machines_return_no_eligible_machines() {
         plan_deploy([&requested], &snapshot, PlanOptions::default()),
         &[
             EliminatingConstraint::VolumeAlreadyOn {
-                volume: DockerVolumeName::parse("split_a").unwrap(),
+                volume: app_volume("split_a"),
                 located_on: vec![MachineName::parse("first").unwrap()],
             },
             EliminatingConstraint::VolumeAlreadyOn {
-                volume: DockerVolumeName::parse("split_b").unwrap(),
+                volume: app_volume("split_b"),
                 located_on: vec![MachineName::parse("second").unwrap()],
             },
         ],
         &[
-            "Docker Volume 'split_a' is already on Machine 'first'",
-            "Docker Volume 'split_b' is already on Machine 'second'",
+            "Docker Volume 'app_split_a' is already on Machine 'first'",
+            "Docker Volume 'app_split_b' is already on Machine 'second'",
         ],
     );
 }
@@ -684,25 +637,18 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "ewr1"), machine('2', "ord1")],
-                volumes: vec![ployz::deploy::ObservedDockerVolume {
-                    id: DockerVolumeId {
-                        machine_id: machine_id('1'),
-                        name: DockerVolumeName::parse("data").unwrap(),
-                    },
-                    driver: "local".into(),
-                    options: Default::default(),
-                }],
+                volumes: vec![observed_volume(machine_id('1'), "data")],
                 ..Default::default()
             },
             PlanOptions::default(),
         ),
         &[EliminatingConstraint::VolumeConflictsWithPlacement {
-            volume: DockerVolumeName::parse("data").unwrap(),
+            volume: app_volume("data"),
             located_on: vec![MachineName::parse("ewr1").unwrap()],
             requested: vec![MachineTarget::parse("ord1").unwrap()],
         }],
         &[
-            "Docker Volume 'data' is already on Machine 'ewr1', which conflicts with x-machines 'ord1'",
+            "Docker Volume 'app_data' is already on Machine 'ewr1', which conflicts with x-machines 'ord1'",
         ],
     );
 }

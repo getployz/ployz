@@ -18,12 +18,12 @@ use ployz_core::{
     MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachinePath,
     MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
     ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
-    Placement, PlanOptions, PortPublication, PreDeployHook, ProjectName, PruneRefusal, PullPolicy,
-    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError,
-    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
-    ServiceAttempt, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeReference, TransportProtocol,
+    Placement, PlanOptions, PortPublication, PreDeployHook, PreservedVolume, ProjectName,
+    PruneRefusal, PullPolicy, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy,
+    RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds,
+    SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, TransportProtocol,
     UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
@@ -186,6 +186,7 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ),
         ("DeployIntent", to_value(&deploy_intent())),
         ("DeployPreview", to_value(&deploy_preview())),
+        ("PreservedVolume", to_value(&preserved_volume())),
         ("RequestedServiceSpec", to_value(&requested_spec())),
         ("ResolvedServiceSpec", to_value(&resolved_spec())),
         ("ServiceVolume", to_value(&service_volume())),
@@ -630,6 +631,13 @@ fn deploy_preview() -> DeployPreview {
         deploy_warnings().to_vec(),
         ProjectName::parse("app").unwrap(),
     )
+}
+
+fn preserved_volume() -> PreservedVolume {
+    PreservedVolume {
+        id: docker_volume().id,
+        machine_name: Some(MachineName::parse("edge").expect("fixture Machine Name is valid")),
+    }
 }
 
 fn deploy_event_progress() -> DeployEvent {

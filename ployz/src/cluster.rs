@@ -620,6 +620,7 @@ pub(crate) fn snapshot_from_partial(
                 id: volume.id,
                 driver: volume.driver,
                 options: volume.options,
+                labels: volume.labels,
             })
             .collect(),
         container_failures,

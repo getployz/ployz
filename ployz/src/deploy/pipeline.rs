@@ -215,6 +215,7 @@ async fn prepare_intent(
         operations: pending_rows(&plan.operations, &snapshot),
         warnings,
         would_remove: plan.would_remove,
+        preserved_volumes: plan.preserved_volumes,
         prune_refusal: plan.prune_refusal,
     })
 }

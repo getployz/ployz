@@ -18,7 +18,7 @@ mod volumes;
 
 use volumes::{
     VolumePins, named_volume_uses, plan_volume_operations, prepare_shared_replicated_volumes,
-    reject_mixed_volume_modes,
+    preserved_owned_volumes, reject_mixed_volume_modes, scope_requested,
 };
 
 /// Plan operations for the Services this Deploy applies from the target.
@@ -89,6 +89,16 @@ fn assemble_plan(
     warnings: Vec<DeployWarning>,
 ) -> Result<DeployPlan, PlanError> {
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
+    let mut intent = intent.clone();
+    intent.target = intent
+        .target
+        .iter()
+        .map(|spec| scope_requested(spec.clone(), &intent.project_name))
+        .collect();
+    let requested: Vec<_> = requested
+        .into_iter()
+        .map(|spec| scope_requested(spec, &intent.project_name))
+        .collect();
     let options = &intent.options;
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
@@ -114,14 +124,16 @@ fn assemble_plan(
     }
     let mut operations = pins.into_creates();
     operations.extend(service_operations);
-    let would_remove = obsolete_services(intent, &services);
+    let would_remove = obsolete_services(&intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
+    let preserved_volumes = preserved_owned_volumes(&intent, snapshot);
     if prune_refusal.is_none() {
         operations.extend(removal_operations(&services, &would_remove));
     }
     Ok(DeployPlan {
         operations,
         would_remove,
+        preserved_volumes,
         prune_refusal,
         warnings,
     })

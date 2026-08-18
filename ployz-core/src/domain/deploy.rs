@@ -12,7 +12,8 @@ use super::{
     ServiceVolume,
 };
 use crate::{
-    ContainerId, MachineId, MachineName, ProjectName, QualifiedService, RpcError, ServiceName,
+    ContainerId, DockerVolumeId, MachineId, MachineName, ProjectName, QualifiedService, RpcError,
+    ServiceName,
 };
 use thiserror::Error;
 
@@ -329,9 +330,24 @@ pub struct DeployPreview {
     /// Visible Services in the Project that Compose no longer declares.
     #[serde(default)]
     pub would_remove: Vec<QualifiedService>,
+    /// Compose-declared Docker Volumes owned by this Project that this Compose
+    /// input no longer declares. They are not deleted.
+    #[serde(default)]
+    pub preserved_volumes: Vec<PreservedVolume>,
     /// Why pruning will not run. `None` means obsolete Services are removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prune_refusal: Option<PruneRefusal>,
+}
+
+/// A Compose-declared Docker Volume this Deploy keeps because it is omitted
+/// from this Deploy's target.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreservedVolume {
+    /// Machine-local Docker Volume identity.
+    pub id: DockerVolumeId,
+    /// Machine Name from this observer's snapshot when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_name: Option<MachineName>,
 }
 
 /// Why a loaded Compose Project is incomplete for reconciliation.
@@ -398,6 +414,7 @@ impl DeployPreview {
             operations,
             warnings,
             would_remove: Vec::new(),
+            preserved_volumes: Vec::new(),
             prune_refusal: None,
         }
     }

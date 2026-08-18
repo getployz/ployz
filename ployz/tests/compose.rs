@@ -8,12 +8,10 @@ use std::{
 
 use ployz::{
     compose::parse_normalized,
-    deploy::{
-        DeployOperation, DeploySnapshot, EliminatingConstraint, ObservedDockerVolume, PlanError,
-    },
+    deploy::{DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError},
 };
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname, PortPublication,
+    HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL, PROJECT_NAME_LABEL, PortPublication,
     RestartPolicy, ServiceMode, TransportProtocol, UpdateOrder, VolumeSource,
 };
 
@@ -475,14 +473,7 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![existing.clone(), machine('b', "two")],
-            volumes: vec![ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: existing.machine.id,
-                    name: DockerVolumeName::parse("shared").unwrap(),
-                },
-                driver: "local".into(),
-                options: BTreeMap::new(),
-            }],
+            volumes: vec![snapshot_volume(existing.machine.id, "shared")],
             ..Default::default()
         },
     )
@@ -557,14 +548,7 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![existing.clone(), machine('b', "two")],
-            volumes: vec![ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: existing.machine.id,
-                    name: DockerVolumeName::parse("ext-vol").unwrap(),
-                },
-                driver: "local".into(),
-                options: BTreeMap::new(),
-            }],
+            volumes: vec![snapshot_volume(existing.machine.id, "ext-vol")],
             ..Default::default()
         },
     )
@@ -649,14 +633,7 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![first.clone(), second.clone()],
-            volumes: vec![ObservedDockerVolume {
-                id: DockerVolumeId {
-                    machine_id: first.machine.id,
-                    name: DockerVolumeName::parse("shared").unwrap(),
-                },
-                driver: "local".into(),
-                options: BTreeMap::new(),
-            }],
+            volumes: vec![snapshot_volume(first.machine.id, "shared")],
             ..Default::default()
         },
     )
@@ -668,7 +645,10 @@ volumes:
             DeployOperation::RunContainer { machine_id: first_machine, .. },
             DeployOperation::RunContainer { machine_id: second_machine, .. },
         ] if volume_machine == &second.machine.id
-            && matches!(&volume.source, VolumeSource::Named { name, external: true, .. } if name.as_str() == "shared")
+            && matches!(&volume.source, VolumeSource::Named { name, external: true, labels, .. }
+                if name.as_str() == "shared"
+                    && !labels.contains_key(MANAGED_LABEL)
+                    && !labels.contains_key(PROJECT_NAME_LABEL))
             && first_machine == &first.machine.id
             && second_machine == &second.machine.id
     ));
@@ -942,7 +922,14 @@ secrets: {token: {x-command: "printf resolved"}}
             DeployOperation::RunHook { .. },
             DeployOperation::RunContainer { spec: db, .. },
             DeployOperation::RunContainer { spec: api, .. },
-        ] if volume == &requested_volume
+        ] if matches!(
+                &volume.source,
+                VolumeSource::Named { name, external: false, labels, .. }
+                    if name.as_str() == "app_data"
+                        && labels.get(MANAGED_LABEL) == Some(&String::new())
+                        && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
+            )
+            && volume.reference == requested_volume.reference
             && db.name.as_str() == "db"
             && db.container.environment.get("TOKEN").map(String::as_str) == Some("resolved")
             && api.name.as_str() == "api"
@@ -956,6 +943,120 @@ secrets: {token: {x-command: "printf resolved"}}
         Some("secret://token"),
         "planning must not mutate the unresolved project"
     );
+}
+
+#[test]
+fn two_projects_with_the_same_logical_volume_get_distinct_physical_volumes() {
+    let project = parse_normalized(
+        r#"
+services:
+  app: {image: app, volumes: [{type: volume, source: data, target: /data}]}
+volumes: {data: {}}
+"#,
+        ".",
+    )
+    .unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('a', "one")],
+        ..Default::default()
+    };
+    let production = plan_compose_for(&project, &snapshot, "shop-production").unwrap();
+    let staging = plan_compose_for(&project, &snapshot, "shop-staging").unwrap();
+    let production_volume = created_named_volume(&production, "shop-production");
+    let staging_volume = created_named_volume(&staging, "shop-staging");
+    assert_eq!(production_volume.as_str(), "shop-production_data");
+    assert_eq!(staging_volume.as_str(), "shop-staging_data");
+    assert_ne!(production_volume, staging_volume);
+}
+
+fn created_named_volume(
+    plan: &ployz::deploy::DeployPlan,
+    project: &str,
+) -> ployz_core::DockerVolumeName {
+    let volume = plan
+        .operations
+        .iter()
+        .find_map(|operation| match operation {
+            DeployOperation::CreateVolume { volume, .. } => Some(volume),
+            DeployOperation::RunContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. } => None,
+        })
+        .expect("plan creates a Docker Volume");
+    let VolumeSource::Named { name, labels, .. } = &volume.source else {
+        panic!("expected a named Docker Volume, got {:?}", volume.source);
+    };
+    assert_eq!(labels.get(MANAGED_LABEL), Some(&String::new()));
+    assert_eq!(
+        labels.get(PROJECT_NAME_LABEL).map(String::as_str),
+        Some(project)
+    );
+    name.clone()
+}
+
+#[test]
+fn omitted_owned_volume_is_listed_as_preserved() {
+    let machine = machine('a', "one");
+    let with_volume = parse_normalized(
+        r#"
+services:
+  app: {image: app, volumes: [{type: volume, source: data, target: /data}]}
+volumes: {data: {}}
+"#,
+        ".",
+    )
+    .unwrap();
+    let without_volume = parse_normalized("services: {app: {image: app}}\n", ".").unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine.clone()],
+        volumes: vec![owned_volume(machine.machine.id, "data")],
+        ..Default::default()
+    };
+    let plan = plan_compose(&without_volume, &snapshot).unwrap();
+    let preserved = plan
+        .preserved_volumes
+        .first()
+        .expect("omitted owned volume is listed");
+    assert_eq!(preserved.id.name.as_str(), "app_data");
+    assert_eq!(
+        preserved.machine_name,
+        Some(ployz_core::MachineName::parse("one").unwrap())
+    );
+    assert!(
+        plan.operations
+            .iter()
+            .all(|operation| { !matches!(operation, DeployOperation::CreateVolume { .. }) })
+    );
+    let still_declared = plan_compose(&with_volume, &snapshot).unwrap();
+    assert!(still_declared.preserved_volumes.is_empty());
+}
+
+#[test]
+fn unprefixed_snapshot_volume_is_not_reused() {
+    let machine = machine('a', "one");
+    let project = parse_normalized(
+        r#"
+services:
+  app: {image: app, volumes: [{type: volume, source: data, target: /data}]}
+volumes: {data: {}}
+"#,
+        ".",
+    )
+    .unwrap();
+    let plan = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![machine.clone()],
+            volumes: vec![snapshot_volume(machine.machine.id, "data")],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let created = created_named_volume(&plan, "app");
+    assert_eq!(created.as_str(), "app_data");
 }
 
 #[test]
@@ -1051,14 +1152,7 @@ volumes: {data: {name: demo_data}}
     existing_snapshot.volumes = snapshot
         .machines
         .iter()
-        .map(|machine| ObservedDockerVolume {
-            id: ployz_core::DockerVolumeId {
-                machine_id: machine.machine.id,
-                name: existing_name.clone(),
-            },
-            driver: "local".into(),
-            options: BTreeMap::new(),
-        })
+        .map(|machine| snapshot_volume(machine.machine.id, existing_name.as_str()))
         .collect();
     let existing_on_both = plan_compose(&replicated, &existing_snapshot).unwrap();
     assert!(existing_on_both.operations.iter().all(|operation| matches!(
@@ -1127,14 +1221,7 @@ volumes:
         &constrained,
         &DeploySnapshot {
             machines: snapshot.machines.clone(),
-            volumes: vec![ObservedDockerVolume {
-                id: ployz_core::DockerVolumeId {
-                    machine_id: existing_machine,
-                    name: ployz_core::DockerVolumeName::parse("existing").unwrap(),
-                },
-                driver: "local".into(),
-                options: BTreeMap::new(),
-            }],
+            volumes: vec![observed_volume(existing_machine, "existing")],
             ..Default::default()
         },
     )
@@ -1187,7 +1274,7 @@ volumes: {data: {name: shared}}
                                 volume,
                                 requested,
                             }]
-                                if volume.as_str() == "shared"
+                                if volume.as_str() == "app_data"
                                     && requested.iter().map(|target| target.as_str()).eq(["one", "two"])
                         )
                 )
@@ -1196,7 +1283,7 @@ volumes: {data: {name: shared}}
     );
     assert!(
         display.contains(
-            "x-machines 'one', 'two' have no Machine in common for Docker Volume 'shared'"
+            "x-machines 'one', 'two' have no Machine in common for Docker Volume 'app_data'"
         ),
         "{display}"
     );
@@ -1219,7 +1306,7 @@ volumes: {data: {name: shared}}
     assert!(matches!(
         plan_compose(&mixed, &snapshot),
         Err(PlanError::MixedVolumeModes { name, global, replicated })
-            if name.as_str() == "shared" && global == "everywhere" && replicated == "singleton"
+            if name.as_str() == "app_data" && global == "everywhere" && replicated == "singleton"
     ));
 }
 

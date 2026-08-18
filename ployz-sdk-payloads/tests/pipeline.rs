@@ -412,6 +412,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("deadline_ms: number"));
     assert!(dts.contains("warnings: DeployWarning[]"));
     assert!(dts.contains("would_remove: QualifiedService[]"));
+    assert!(dts.contains("preserved_volumes: PreservedVolume[]"));
     assert!(dts.contains("prune_refusal?: PruneRefusal"));
     assert!(dts.contains("export type PruneRefusal ="));
     assert!(dts.contains("selected: ServiceAttempt[]"));

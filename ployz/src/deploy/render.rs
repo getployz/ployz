@@ -33,7 +33,11 @@ pub fn progress_text(event: &DeployEvent, title: &str) -> String {
 /// Tree plan plus footer. Empty operations with no listed drift are "No changes."
 #[must_use]
 pub fn plan_text(preview: &DeployPreview, context: &str, project_source: Option<&str>) -> String {
-    if preview.noop() && preview.would_remove.is_empty() && preview.prune_refusal.is_none() {
+    if preview.noop()
+        && preview.would_remove.is_empty()
+        && preview.preserved_volumes.is_empty()
+        && preview.prune_refusal.is_none()
+    {
         return "No changes.\n".into();
     }
     let mut out = String::from("Deployment plan\n");
@@ -53,6 +57,7 @@ pub fn plan_text(preview: &DeployPreview, context: &str, project_source: Option<
         out.push('\n');
     }
     out.push_str(&prune_lines(preview));
+    out.push_str(&preserved_lines(preview));
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -68,6 +73,22 @@ fn prune_lines(preview: &DeployPreview) -> String {
         let _ = writeln!(out, "  would remove {service}");
     }
     let _ = writeln!(out, "{reason}");
+    out
+}
+
+fn preserved_lines(preview: &DeployPreview) -> String {
+    let mut out = String::new();
+    for volume in &preview.preserved_volumes {
+        let machine = volume
+            .machine_name
+            .as_ref()
+            .map_or_else(|| volume.id.machine_id.to_string(), ToString::to_string);
+        let _ = writeln!(
+            out,
+            "  would preserve volume {} on {machine}",
+            volume.id.name
+        );
+    }
     out
 }
 
@@ -531,6 +552,25 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("authoritative"));
+        assert!(!text.contains("No changes."));
+    }
+
+    #[test]
+    fn plan_lists_preserved_volumes_instead_of_no_changes() {
+        let mut preview =
+            DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
+        preview.preserved_volumes = vec![ployz_core::PreservedVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id: MachineId::parse("d".repeat(32)).unwrap(),
+                name: ployz_core::DockerVolumeName::parse("shop_data").unwrap(),
+            },
+            machine_name: Some(MachineName::parse("edge").unwrap()),
+        }];
+        let text = plan_text(&preview, "default", None);
+        assert!(
+            text.contains("would preserve volume shop_data on edge"),
+            "{text}"
+        );
         assert!(!text.contains("No changes."));
     }
 
