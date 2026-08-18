@@ -273,7 +273,7 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
         })
         .collect();
     assert!(
-        hostnames.contains(&"web.opaque.ployz.example"),
+        hostnames.contains(&"web-app.opaque.ployz.example"),
         "ingress expansion must assign the hosted hostname: {hostnames:?}"
     );
     assert!(
@@ -293,6 +293,42 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
         }),
         "DNS warning must match the CLI body: {:?}",
         preview.warnings
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn preview_rejects_a_combined_ingress_label_over_63_characters() {
+    let mut machine = machine('a', "one");
+    machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
+    let service = DeployService::new(machine).with_domain("opaque.ployz.example");
+    let (mut client, server) = connected(service).await;
+    let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+        "name": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "always" },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": { "kind": "assign_from_cluster_domain" },
+            "load_balancer_port": 443,
+            "container_port": 8080,
+            "http_protocol": "https"
+        }]
+    }))
+    .unwrap();
+
+    let error = client
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+            spec,
+            skip_health(),
+        ))
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "generated Ingress Hostname label \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" exceeds the 63-character DNS label limit; shorten the Service Name or Project Name, or supply a custom hostname"
     );
     server.abort();
 }

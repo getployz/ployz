@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     compose::{BuildService, ComposeProject},
     connect::{Client, ConnectError},
-    dns::{DomainRequired, IngressDnsWarning, resolve_ingress_dns_warnings},
+    dns::{ExpandIngressError, IngressDnsWarning, resolve_ingress_dns_warnings},
     failure::Failure,
     image::PushError,
 };
@@ -40,7 +40,7 @@ pub enum DeployError {
     #[error(transparent)]
     Plan(#[from] PlanError),
     #[error(transparent)]
-    Ingress(#[from] DomainRequired),
+    Ingress(#[from] ExpandIngressError),
 }
 
 impl Client {
@@ -197,7 +197,7 @@ async fn prepare_intent(
     mut warnings: Vec<DeployWarning>,
     intent: &mut DeployIntent,
 ) -> Result<DeployPreview, DeployError> {
-    expand_ingress(client, intent.target.iter_mut()).await?;
+    expand_ingress(client, &intent.project_name, intent.target.iter_mut()).await?;
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
     let plan = plan_deploy(intent, &snapshot)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
@@ -299,6 +299,7 @@ fn observation_warnings<T>(
 
 async fn expand_ingress<'a>(
     client: &mut Client,
+    project: &ProjectName,
     specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
 ) -> Result<(), DeployError> {
     let specs: Vec<_> = specs.into_iter().collect();
@@ -307,7 +308,7 @@ async fn expand_ingress<'a>(
     }
     let domain = client.domain_if_reserved().await?;
     for spec in specs {
-        crate::dns::expand_ingress_ports(spec, domain.as_deref())?;
+        crate::dns::expand_ingress_ports(spec, project, domain.as_deref())?;
     }
     Ok(())
 }

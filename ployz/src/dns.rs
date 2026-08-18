@@ -7,8 +7,9 @@ use std::{
 
 use ployz_core::{
     CADDY_VERIFY_PATH, ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
-    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, MachineObservation,
-    PortPublication, RequestedServiceSpec, cluster_dns_verdict, op,
+    HttpProtocol, IngressHost, IngressHostname, IngressLabelTooLong, Machine, MachineId,
+    MachineObservation, PortPublication, ProjectName, QualifiedService, RequestedServiceSpec,
+    cluster_dns_verdict, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -39,6 +40,15 @@ pub struct NoReachableMachines;
 pub struct DomainRequired {
     pub container_port: u16,
     pub protocol: HttpProtocol,
+}
+
+/// Failure assigning a generated Ingress Hostname before planning mutates ports.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum ExpandIngressError {
+    #[error(transparent)]
+    DomainRequired(#[from] DomainRequired),
+    #[error(transparent)]
+    LabelTooLong(#[from] IngressLabelTooLong),
 }
 
 fn protocol_label(protocol: &HttpProtocol) -> &'static str {
@@ -212,16 +222,35 @@ fn records_from_machines(machines: &[Machine]) -> Result<Vec<DnsRecord>, NoReach
     }
 }
 
+/// Assign generated Ingress Hostnames for ports that still need one.
+///
+/// A generated name is `{service}-{project}.{cluster_domain}`. Custom hostnames
+/// are left unchanged. Generation is skipped when every ingress port already
+/// has a hostname under the Cluster Domain.
+///
+/// # Errors
+///
+/// Returns [`ExpandIngressError::DomainRequired`] when a port asks for
+/// assignment and no Cluster Domain is reserved. Returns
+/// [`ExpandIngressError::LabelTooLong`] when the combined `{service}-{project}`
+/// label exceeds 63 characters, before any port is rewritten.
 pub fn expand_ingress_ports(
     spec: &mut RequestedServiceSpec,
+    project: &ProjectName,
     cluster_domain: Option<&str>,
-) -> Result<(), DomainRequired> {
+) -> Result<(), ExpandIngressError> {
     let domain = cluster_domain.filter(|domain| !domain.is_empty());
-    // A Service Name plus a reserved hosted domain is always a valid Ingress Hostname.
-    let assigned = domain.map(|domain| {
-        IngressHost::parse(format!("{}.{domain}", spec.name))
-            .expect("service name and reserved cluster domain form a hostname")
-    });
+    let assigned = match domain {
+        Some(domain) if needs_generated_hostname(spec, domain) => {
+            let label =
+                QualifiedService::new(project.clone(), spec.name.clone()).ingress_label()?;
+            Some(
+                IngressHost::parse(format!("{label}.{domain}"))
+                    .expect("validated ingress label and reserved cluster domain form a hostname"),
+            )
+        }
+        _ => None,
+    };
     let mut extras = Vec::new();
     for port in &mut spec.ports {
         let PortPublication::Ingress {
@@ -260,6 +289,16 @@ pub fn expand_ingress_ports(
     }
     spec.ports.extend(extras);
     Ok(())
+}
+
+fn needs_generated_hostname(spec: &RequestedServiceSpec, domain: &str) -> bool {
+    spec.ports.iter().any(|port| match port {
+        PortPublication::Ingress { hostname, .. } => match hostname {
+            IngressHostname::AssignFromClusterDomain => true,
+            IngressHostname::Explicit { hostname } => !hostname.under_cluster_domain(Some(domain)),
+        },
+        PortPublication::Host { .. } => false,
+    })
 }
 
 /// An Ingress Hostname that does not resolve into this Cluster.
@@ -399,12 +438,13 @@ mod tests {
 
     use ployz_core::{
         DnsRecord, DnsRecordType, HttpProtocol, IngressHostname, Machine, MachineId,
-        PortPublication, RequestedServiceSpec,
+        PortPublication, ProjectName, RequestedServiceSpec,
     };
 
     use super::{
-        DomainRequired, NoReachableMachines, expand_ingress_ports, ingress_dns_warnings,
-        reachability_matches, records_from_machines, remaining_members, resolve_ingress_addresses,
+        DomainRequired, ExpandIngressError, NoReachableMachines, expand_ingress_ports,
+        ingress_dns_warnings, reachability_matches, records_from_machines, remaining_members,
+        resolve_ingress_addresses,
     };
 
     #[test]
@@ -489,14 +529,14 @@ mod tests {
             HttpProtocol::Https,
         )]);
         assert_eq!(
-            expand_ingress_ports(&mut spec, None),
-            Err(DomainRequired {
+            expand_ingress_ports(&mut spec, &project("app"), None),
+            Err(ExpandIngressError::DomainRequired(DomainRequired {
                 container_port: 8080,
                 protocol: HttpProtocol::Https,
-            })
+            }))
         );
         assert_eq!(
-            expand_ingress_ports(&mut spec, Some(""))
+            expand_ingress_ports(&mut spec, &project("app"), Some(""))
                 .unwrap_err()
                 .to_string(),
             "ingress port has no generated hostname until a cluster domain is reserved: 8080/https"
@@ -517,11 +557,14 @@ mod tests {
             },
         ]);
 
-        expand_ingress_ports(&mut spec, Some("opaque.ployz.example")).unwrap();
+        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();
         assert_eq!(
             spec.ports,
             vec![
-                ingress(explicit("web.opaque.ployz.example"), HttpProtocol::Http),
+                ingress(
+                    explicit("web-app.opaque.ployz.example"),
+                    HttpProtocol::Http
+                ),
                 ingress(explicit("app.example.com"), HttpProtocol::Https),
                 ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http,),
                 PortPublication::Host {
@@ -530,8 +573,85 @@ mod tests {
                     container_port: NonZeroU16::new(8080).unwrap(),
                     transport_protocol: ployz_core::TransportProtocol::Tcp,
                 },
-                ingress(explicit("web.opaque.ployz.example"), HttpProtocol::Https),
+                ingress(
+                    explicit("web-app.opaque.ployz.example"),
+                    HttpProtocol::Https
+                ),
             ]
+        );
+    }
+
+    #[test]
+    fn two_projects_get_distinct_generated_ingress_names_for_the_same_service() {
+        let domain = Some("opaque.ployz.example");
+        let mut shop = requested(vec![ingress(
+            IngressHostname::AssignFromClusterDomain,
+            HttpProtocol::Http,
+        )]);
+        let mut blog = requested(vec![ingress(
+            IngressHostname::AssignFromClusterDomain,
+            HttpProtocol::Http,
+        )]);
+
+        expand_ingress_ports(&mut shop, &project("shop"), domain).unwrap();
+        expand_ingress_ports(&mut blog, &project("blog"), domain).unwrap();
+
+        assert_eq!(
+            shop.ports,
+            vec![ingress(
+                explicit("web-shop.opaque.ployz.example"),
+                HttpProtocol::Http
+            )]
+        );
+        assert_eq!(
+            blog.ports,
+            vec![ingress(
+                explicit("web-blog.opaque.ployz.example"),
+                HttpProtocol::Http
+            )]
+        );
+    }
+
+    #[test]
+    fn combined_ingress_label_over_63_characters_fails_before_mutating_ports() {
+        let mut spec = requested(vec![
+            ingress(explicit("app.example.com"), HttpProtocol::Https),
+            ingress(
+                IngressHostname::AssignFromClusterDomain,
+                HttpProtocol::Https,
+            ),
+        ]);
+        spec.name = ployz_core::ServiceName::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+        let before = spec.clone();
+
+        let error = expand_ingress_ports(
+            &mut spec,
+            &project("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some("opaque.ployz.example"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "generated Ingress Hostname label \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" exceeds the 63-character DNS label limit; shorten the Service Name or Project Name, or supply a custom hostname"
+        );
+        assert_eq!(spec, before);
+    }
+
+    #[test]
+    fn custom_hostname_under_the_cluster_domain_is_unchanged_when_the_combined_label_is_long() {
+        let hostname = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.opaque.ployz.example";
+        let mut spec = requested(vec![ingress(explicit(hostname), HttpProtocol::Https)]);
+        spec.name = ployz_core::ServiceName::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+
+        expand_ingress_ports(
+            &mut spec,
+            &project("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some("opaque.ployz.example"),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.ports,
+            vec![ingress(explicit(hostname), HttpProtocol::Https)]
         );
     }
 
@@ -547,6 +667,10 @@ mod tests {
 
     fn explicit(hostname: &str) -> IngressHostname {
         IngressHostname::explicit(hostname).unwrap()
+    }
+
+    fn project(name: &str) -> ProjectName {
+        ProjectName::parse(name).unwrap()
     }
 
     fn ingress(hostname: IngressHostname, http_protocol: HttpProtocol) -> PortPublication {
@@ -615,16 +739,16 @@ mod tests {
             IngressHostname::AssignFromClusterDomain,
             HttpProtocol::Https,
         )]);
-        expand_ingress_ports(&mut spec, Some("opaque.ployz.example")).unwrap();
+        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();
 
         let warnings = ingress_dns_warnings([&spec], &cluster, |hostname| {
-            assert_eq!(hostname.as_str(), "web.opaque.ployz.example");
+            assert_eq!(hostname.as_str(), "web-app.opaque.ployz.example");
             Vec::new()
         });
         assert_eq!(
             warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
             [
-                "Ingress Hostname web.opaque.ployz.example does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
+                "Ingress Hostname web-app.opaque.ployz.example does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
             ]
         );
     }

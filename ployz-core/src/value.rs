@@ -482,6 +482,19 @@ impl QualifiedService {
         format!("{}.{}", self.name, self.project)
     }
 
+    /// Combined public ingress DNS label `{name}-{project}` under a Cluster Domain wildcard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngressLabelTooLong`] when the hyphenated label exceeds 63 characters.
+    pub fn ingress_label(&self) -> Result<String, IngressLabelTooLong> {
+        let label = format!("{}-{}", self.name, self.project);
+        if label.len() > 63 {
+            return Err(IngressLabelTooLong { label });
+        }
+        Ok(label)
+    }
+
     /// Parse Internal DNS labels `{name}.{project}`.
     ///
     /// # Errors
@@ -508,6 +521,15 @@ impl QualifiedService {
             ServiceName::parse("caddy").expect("caddy is a DNS-label Service Name"),
         )
     }
+}
+
+/// Combined `{name}-{project}` label for a public Ingress Hostname.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error(
+    "generated Ingress Hostname label \"{label}\" exceeds the 63-character DNS label limit; shorten the Service Name or Project Name, or supply a custom hostname"
+)]
+pub struct IngressLabelTooLong {
+    pub label: String,
 }
 
 fn qualified_service_error(value: &str) -> ValueError {

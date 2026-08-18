@@ -15,7 +15,7 @@ use ployz_core::{
     MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
     ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy,
-    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
@@ -123,6 +123,41 @@ fn qualified_service_is_project_slash_name() {
             "{invalid}"
         );
     }
+}
+
+#[test]
+fn qualified_service_ingress_label_is_name_hyphen_project_under_63() {
+    let shop = QualifiedService::parse("shop/web").unwrap();
+    let blog = QualifiedService::parse("blog/web").unwrap();
+    assert_eq!(shop.ingress_label().unwrap(), "web-shop");
+    assert_eq!(blog.ingress_label().unwrap(), "web-blog");
+
+    let name = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let project = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let exact = QualifiedService::new(
+        ProjectName::parse(project).unwrap(),
+        ServiceName::parse(name).unwrap(),
+    );
+    assert_eq!(
+        exact.ingress_label().unwrap(),
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+}
+
+#[test]
+fn qualified_service_ingress_label_rejects_more_than_63_characters() {
+    let name = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let project = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let error = QualifiedService::new(
+        ProjectName::parse(project).unwrap(),
+        ServiceName::parse(name).unwrap(),
+    )
+    .ingress_label()
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "generated Ingress Hostname label \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" exceeds the 63-character DNS label limit; shorten the Service Name or Project Name, or supply a custom hostname"
+    );
 }
 
 #[test]

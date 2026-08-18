@@ -1,8 +1,9 @@
 use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
-    AmbiguousDataLossName, CodecError, ContainerSelectorError, MachineSelectorError,
-    MachineUpdateError, RpcError, ServiceSelectorError, StreamProtocolError, ValueError,
+    AmbiguousDataLossName, CodecError, ContainerSelectorError, IngressLabelTooLong,
+    MachineSelectorError, MachineUpdateError, RpcError, ServiceSelectorError, StreamProtocolError,
+    ValueError,
 };
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
     deploy::{DeployError, PlanError},
-    dns::{DomainRequired, Error as DnsError, NoReachableMachines},
+    dns::{DomainRequired, Error as DnsError, ExpandIngressError, NoReachableMachines},
     image::PushError,
     operator::OperatorError,
     project::ProjectError,
@@ -120,6 +121,7 @@ from_error!(
     ComposeError,
     MachineUpdateError,
     DomainRequired,
+    IngressLabelTooLong,
     NoReachableMachines,
     StreamProtocolError,
     ConfigError,
@@ -172,6 +174,15 @@ impl From<DeployError> for Failure {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into(),
             DeployError::Ingress(error) => error.into(),
+        }
+    }
+}
+
+impl From<ExpandIngressError> for Failure {
+    fn from(error: ExpandIngressError) -> Self {
+        match error {
+            ExpandIngressError::DomainRequired(error) => error.into(),
+            ExpandIngressError::LabelTooLong(error) => error.into(),
         }
     }
 }
