@@ -127,6 +127,8 @@ pub enum RelayError {
     EmptyCredential,
     #[error("Pairing Credential and Dial Credential must be distinct")]
     CredentialCollision,
+    #[error("Relay requires at least one Relay Tenant")]
+    EmptyTenants,
 }
 
 impl PairingCredential {
@@ -203,16 +205,74 @@ enum Phase {
 }
 
 /// Plaintext Cloud Relay: Register, Dial, Attach, opaque splice.
+///
+/// Register and Dial slots are keyed by Relay Tenant and Machine ID. The
+/// Pairing Credential selects the Register tenant; the Dial Credential selects
+/// the Dial tenant. Machine IDs are not a process-wide primary key.
 #[derive(Clone)]
 pub struct Relay {
-    pairing: PairingCredential,
-    dial: DialCredential,
+    tenants: Arc<TenantIndex>,
     state: Arc<Mutex<State>>,
     phase: watch::Sender<Phase>,
 }
 
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct RelayTenant(u64);
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct Slot {
+    tenant: RelayTenant,
+    machine_id: MachineId,
+}
+
+struct TenantIndex {
+    by_pairing: HashMap<String, RelayTenant>,
+    by_dial: HashMap<String, RelayTenant>,
+}
+
+impl TenantIndex {
+    fn from_pairs(
+        tenants: impl IntoIterator<Item = (PairingCredential, DialCredential)>,
+    ) -> Result<Self, RelayError> {
+        let mut by_pairing = HashMap::new();
+        let mut by_dial = HashMap::new();
+        for (id, (pairing, dial)) in (0_u64..).zip(tenants) {
+            if pairing.as_str() == dial.as_str()
+                || by_pairing.contains_key(pairing.as_str())
+                || by_pairing.contains_key(dial.as_str())
+                || by_dial.contains_key(pairing.as_str())
+                || by_dial.contains_key(dial.as_str())
+            {
+                return Err(RelayError::CredentialCollision);
+            }
+            let tenant = RelayTenant(id);
+            by_pairing.insert(pairing.0, tenant);
+            by_dial.insert(dial.0, tenant);
+        }
+        if by_pairing.is_empty() {
+            return Err(RelayError::EmptyTenants);
+        }
+        Ok(Self {
+            by_pairing,
+            by_dial,
+        })
+    }
+
+    fn pairing(&self, bearer: &str) -> Option<RelayTenant> {
+        self.by_pairing.get(bearer).copied()
+    }
+
+    fn is_pairing(&self, bearer: &str) -> bool {
+        self.by_pairing.contains_key(bearer)
+    }
+
+    fn dial(&self, bearer: &str) -> Option<RelayTenant> {
+        self.by_dial.get(bearer).copied()
+    }
+}
+
 struct State {
-    machines: HashMap<MachineId, Registration>,
+    machines: HashMap<Slot, Registration>,
     pending: HashMap<TunnelId, Pending>,
     next_generation: u64,
 }
@@ -227,7 +287,7 @@ struct Registration {
 }
 
 struct Pending {
-    machine_id: MachineId,
+    slot: Slot,
     to_machine: mpsc::Receiver<Result<TunnelFrame, Status>>,
     from_machine: mpsc::Sender<Result<TunnelFrame, Status>>,
     cancel: watch::Receiver<()>,
@@ -240,12 +300,25 @@ impl Relay {
     ///
     /// Returns [`RelayError::CredentialCollision`] when the two credentials are equal.
     pub fn new(pairing: PairingCredential, dial: DialCredential) -> Result<Self, RelayError> {
-        if pairing.as_str() == dial.as_str() {
-            return Err(RelayError::CredentialCollision);
-        }
+        Self::with_tenants(std::iter::once((pairing, dial)))
+    }
+
+    /// Construct a Relay that partitions Register and Dial by Relay Tenant.
+    ///
+    /// Each pair is one Relay Tenant: the Pairing Credential authenticates
+    /// Register, the Dial Credential authenticates Dial. The same Machine ID
+    /// may be Registered in two tenants without one Dial stealing the other.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::EmptyTenants`] when `tenants` is empty.
+    /// Returns [`RelayError::CredentialCollision`] when any Pairing Credential
+    /// equals any Dial Credential, or when a credential is reused.
+    pub fn with_tenants(
+        tenants: impl IntoIterator<Item = (PairingCredential, DialCredential)>,
+    ) -> Result<Self, RelayError> {
         Ok(Self {
-            pairing,
-            dial,
+            tenants: Arc::new(TenantIndex::from_pairs(tenants)?),
             state: Arc::new(Mutex::new(State {
                 machines: HashMap::new(),
                 pending: HashMap::new(),
@@ -385,10 +458,11 @@ impl CloudRelay for Relay {
         &self,
         request: Request<Streaming<RegisterRequest>>,
     ) -> Result<Response<Self::RegisterStream>, Status> {
-        match bearer(request.metadata()) {
-            Some(bearer) if bearer == self.pairing.as_str() => {}
-            _ => return Err(Status::unauthenticated("invalid Pairing Credential")),
-        }
+        let tenant =
+            match bearer(request.metadata()).and_then(|bearer| self.tenants.pairing(bearer)) {
+                Some(tenant) => tenant,
+                None => return Err(Status::unauthenticated("invalid Pairing Credential")),
+            };
         if !self.accepting() {
             return Err(Status::unavailable("GOAWAY"));
         }
@@ -400,17 +474,16 @@ impl CloudRelay for Relay {
         let machine_id = first
             .machine_id()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let slot = Slot { tenant, machine_id };
         let (open_tx, open_rx) = mpsc::channel(TUNNEL_BUFFER);
         let (cancel, _) = watch::channel(());
         let generation = {
             let mut state = self.lock();
             let generation = state.next_generation;
             state.next_generation += 1;
-            state
-                .pending
-                .retain(|_, pending| pending.machine_id != machine_id);
+            state.pending.retain(|_, pending| pending.slot != slot);
             state.machines.insert(
-                machine_id,
+                slot,
                 Registration {
                     generation,
                     open_tx,
@@ -425,13 +498,11 @@ impl CloudRelay for Relay {
             if let Ok(mut state) = state.lock()
                 && state
                     .machines
-                    .get(&machine_id)
+                    .get(&slot)
                     .is_some_and(|current| current.generation == generation)
             {
-                state
-                    .pending
-                    .retain(|_, pending| pending.machine_id != machine_id);
-                state.machines.remove(&machine_id);
+                state.pending.retain(|_, pending| pending.slot != slot);
+                state.machines.remove(&slot);
             }
         });
         Ok(Response::new(ReceiverStream::new(open_rx)))
@@ -441,13 +512,16 @@ impl CloudRelay for Relay {
         &self,
         request: Request<Streaming<TunnelFrame>>,
     ) -> Result<Response<Self::DialStream>, Status> {
-        match bearer(request.metadata()) {
-            Some(bearer) if bearer == self.pairing.as_str() => {
+        let tenant = match bearer(request.metadata()) {
+            Some(bearer) if self.tenants.is_pairing(bearer) => {
                 return Err(Status::permission_denied("Pairing Credential cannot Dial"));
             }
-            Some(bearer) if bearer == self.dial.as_str() => {}
-            _ => return Err(Status::unauthenticated("invalid Dial Credential")),
-        }
+            Some(bearer) => match self.tenants.dial(bearer) {
+                Some(tenant) => tenant,
+                None => return Err(Status::unauthenticated("invalid Dial Credential")),
+            },
+            None => return Err(Status::unauthenticated("invalid Dial Credential")),
+        };
         if !self.accepting() {
             return Err(Status::unavailable("GOAWAY"));
         }
@@ -456,6 +530,7 @@ impl CloudRelay for Relay {
                 .ok_or_else(|| Status::invalid_argument("missing or invalid machine-id"))?,
         )
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let slot = Slot { tenant, machine_id };
         let tunnel_id = TunnelId::random();
         let (to_machine_tx, to_machine_rx) = mpsc::channel(TUNNEL_BUFFER);
         let (from_machine_tx, from_machine_rx) = mpsc::channel(TUNNEL_BUFFER);
@@ -463,14 +538,14 @@ impl CloudRelay for Relay {
             let mut state = self.lock();
             let registration = state
                 .machines
-                .get(&machine_id)
+                .get(&slot)
                 .ok_or_else(|| Status::not_found("unknown Machine ID"))?;
             let open_tx = registration.open_tx.clone();
             let cancel = registration.cancel.subscribe();
             state.pending.insert(
                 tunnel_id,
                 Pending {
-                    machine_id,
+                    slot,
                     to_machine: to_machine_rx,
                     from_machine: from_machine_tx,
                     cancel: cancel.clone(),
@@ -533,6 +608,48 @@ mod tests {
         let pairing = PairingCredential::parse("same").unwrap();
         let dial = DialCredential::parse("same").unwrap();
         let Err(error) = Relay::new(pairing, dial) else {
+            panic!("expected credential collision");
+        };
+        assert_eq!(error, RelayError::CredentialCollision);
+    }
+
+    #[test]
+    fn with_tenants_rejects_an_empty_list() {
+        let Err(error) = Relay::with_tenants(std::iter::empty()) else {
+            panic!("expected empty tenants to fail");
+        };
+        assert_eq!(error, RelayError::EmptyTenants);
+    }
+
+    #[test]
+    fn with_tenants_rejects_a_pairing_that_matches_another_dial() {
+        let Err(error) = Relay::with_tenants([
+            (
+                PairingCredential::parse("pairing-a").unwrap(),
+                DialCredential::parse("dial-a").unwrap(),
+            ),
+            (
+                PairingCredential::parse("pairing-b").unwrap(),
+                DialCredential::parse("pairing-a").unwrap(),
+            ),
+        ]) else {
+            panic!("expected credential collision");
+        };
+        assert_eq!(error, RelayError::CredentialCollision);
+    }
+
+    #[test]
+    fn with_tenants_rejects_duplicate_pairing_credentials() {
+        let Err(error) = Relay::with_tenants([
+            (
+                PairingCredential::parse("pairing-a").unwrap(),
+                DialCredential::parse("dial-a").unwrap(),
+            ),
+            (
+                PairingCredential::parse("pairing-a").unwrap(),
+                DialCredential::parse("dial-b").unwrap(),
+            ),
+        ]) else {
             panic!("expected credential collision");
         };
         assert_eq!(error, RelayError::CredentialCollision);
