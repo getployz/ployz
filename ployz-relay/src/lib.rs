@@ -42,6 +42,9 @@ mod transport {
 use transport::cloud_relay_server::CloudRelay;
 pub use transport::{cloud_relay_client::CloudRelayClient, cloud_relay_server::CloudRelayServer};
 
+mod tunnel;
+pub use tunnel::TunnelIo;
+
 /// Machine identity sent on the held Register stream.
 #[derive(Clone, PartialEq, Message)]
 pub struct RegisterRequest {

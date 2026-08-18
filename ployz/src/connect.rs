@@ -12,8 +12,8 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FanoutFailure, FramingError, MachineTarget, RoutingMetadataError, RpcError,
-    RpcErrorCode, apply_one_target,
+    CodecError, FanoutFailure, FramingError, MachineId, MachineTarget, RoutingMetadataError,
+    RpcError, RpcErrorCode, apply_one_target,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -29,7 +29,10 @@ use crate::context::{
     SelectedConnections, Transport, expand_home, select_connections,
 };
 
+mod relay;
+
 pub use crate::cluster::{Client, MachineImagesObservation};
+pub use ployz_relay::DialCredential;
 
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 
@@ -99,6 +102,12 @@ impl Connector for SystemConnector {
                 destination,
                 key_file,
             } => connect_ssh(destination, key_file.as_deref(), &self.ssh_program).await,
+            Transport::Relay { url, credential } => {
+                let machine_id = connection
+                    .machine_id()
+                    .expect("Relay connections carry an entry Machine ID");
+                relay::connect_channel(url, credential, machine_id).await
+            }
         }
     }
 
@@ -128,6 +137,7 @@ impl Connector for SystemConnector {
                     .map(|stream| Box::new(stream) as BoxProxyStream)
                     .map_err(ConnectError::from)
             }
+            Transport::Relay { .. } => Err(ConnectError::ProxyUnsupported(connection.to_string())),
         }
     }
 }
@@ -299,6 +309,16 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
+        ConnectError::InvalidDialCredential => RpcError {
+            code: RpcErrorCode::Unauthenticated,
+            message: ConnectError::InvalidDialCredential.to_string(),
+            details: Value::Null,
+        },
+        ConnectError::UnknownMachine => RpcError {
+            code: RpcErrorCode::NotFound,
+            message: ConnectError::UnknownMachine.to_string(),
+            details: Value::Null,
+        },
         error @ (ConnectError::Attempt(_)
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
@@ -471,8 +491,37 @@ pub async fn connect(
     connect_selected_with(selected, Arc::new(SystemConnector::default())).await
 }
 
+/// Open a Machine RPC channel through Cloud Relay.
+///
+/// Succeeds only after Relay Dial and Machine Attach produce a usable RPC
+/// channel. Does not mint Attach credentials, perform Cloud Pairing, or choose
+/// an entry Machine.
+///
+/// # Errors
+///
+/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected,
+/// [`ConnectError::UnknownMachine`] when the Machine ID is not registered, or
+/// another [`ConnectError`] when the Relay or inner RPC channel fails.
+pub async fn connect_relay(
+    url: impl AsRef<str>,
+    credential: DialCredential,
+    machine_id: MachineId,
+) -> Result<Client, ConnectError> {
+    let connector: Arc<dyn Connector> = Arc::new(SystemConnector::default());
+    connect_one(
+        &Connection::relay(url.as_ref(), credential, machine_id),
+        &ConnectionSource::Direct,
+        &connector,
+    )
+    .await
+}
+
 #[derive(Debug, Error)]
 pub enum ConnectError {
+    #[error("invalid Dial Credential")]
+    InvalidDialCredential,
+    #[error("unknown Machine ID")]
+    UnknownMachine,
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
     #[error("connection attempt failed: {0}")]
@@ -537,6 +586,8 @@ impl ConnectError {
             | Self::Join(_) => true,
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
+            | Self::InvalidDialCredential
+            | Self::UnknownMachine
             | Self::MissingMachineDetails
             | Self::Routing(_)
             | Self::ProxyUnsupported(_)

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf, str::FromStr};
 
 use ployz::{
-    connect::resolve_connections,
+    connect::{DialCredential, resolve_connections},
     context::{
         Config, ConfigError, Connection, ConnectionSource, Context, ContextError, SshDestination,
         select_connections,
@@ -157,6 +157,22 @@ fn connection_sources_follow_direct_context_and_local_precedence() {
             "/run/ployz/ployz.sock",
         )
         .is_err()
+    );
+}
+
+#[test]
+fn relay_connections_are_not_persisted() {
+    let error = serde_norway::to_string(&Connection::relay(
+        "http://127.0.0.1:1",
+        DialCredential::parse("dial-secret").unwrap(),
+        machine_id('a'),
+    ))
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Cloud Relay connections are not persisted"),
+        "{error}"
     );
 }
 

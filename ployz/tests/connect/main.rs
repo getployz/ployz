@@ -27,6 +27,7 @@ use tonic::{
     transport::{Channel, Endpoint, Server},
 };
 
+mod relay;
 mod support;
 use support::*;
 

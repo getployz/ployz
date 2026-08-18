@@ -11,6 +11,7 @@ repository = "https://github.com/getployz/ployz2"
 
 [workspace.dependencies]
 ployz-core = { path = "ployz-core" }
+ployz-relay = { path = "ployz-relay" }
 ployz-testkit = { path = "ployz-testkit" }
 
 [workspace.lints.rust]
