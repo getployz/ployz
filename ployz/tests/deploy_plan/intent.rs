@@ -150,7 +150,8 @@ fn run_names(plan: &ployz::deploy::DeployPlan) -> Vec<&str> {
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. } => None,
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect()
 }
@@ -163,7 +164,8 @@ fn targets_container(plan: &ployz::deploy::DeployPlan, id: &ContainerId) -> bool
         DeployOperation::ReplaceContainer(replacement) => &replacement.old_container_id == id,
         DeployOperation::CreateVolume { .. }
         | DeployOperation::RunContainer { .. }
-        | DeployOperation::RunHook { .. } => false,
+        | DeployOperation::RunHook { .. }
+        | DeployOperation::RemoveVolume { .. } => false,
     })
 }
 

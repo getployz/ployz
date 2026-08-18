@@ -616,6 +616,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ),
                 ("stopping_container", &[]),
                 ("removing_container", &[]),
+                ("removing_volume", &[]),
                 ("compensating", &[]),
             ],
         },
@@ -697,6 +698,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                         ("old_hook_containers", "Array<[MachineId, ContainerId]>"),
                     ],
                 ),
+                ("remove_volume", &[("id", "DockerVolumeId")]),
             ],
         },
     ),
@@ -709,6 +711,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             "InspectContainer",
             "StopContainer",
             "RemoveContainer",
+            "RemoveVolume",
         ]),
     ),
     (

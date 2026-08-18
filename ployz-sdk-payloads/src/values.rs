@@ -316,6 +316,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                 to_value(&MachineAction::InspectContainer),
                 to_value(&MachineAction::StopContainer),
                 to_value(&MachineAction::RemoveContainer),
+                to_value(&MachineAction::RemoveVolume),
             ],
         ),
         (
@@ -709,7 +710,7 @@ fn replacement_operation() -> ReplacementOperation {
     }
 }
 
-fn deploy_operations() -> [DeployOperation; 7] {
+fn deploy_operations() -> [DeployOperation; 8] {
     let machine_id = machine_id(MACHINE_ID_HEX);
     let container_id = container_id();
     [
@@ -739,6 +740,12 @@ fn deploy_operations() -> [DeployOperation; 7] {
             machine_id,
             spec: resolved_spec(),
             old_hook_containers: vec![(machine_id, container_id)],
+        },
+        DeployOperation::RemoveVolume {
+            id: DockerVolumeId {
+                machine_id,
+                name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
+            },
         },
     ]
 }
@@ -918,7 +925,7 @@ fn operation_statuses() -> [OperationStatus; 5] {
     ]
 }
 
-fn operation_phases() -> [OperationPhase; 9] {
+fn operation_phases() -> [OperationPhase; 10] {
     [
         OperationPhase::Starting,
         OperationPhase::CreatingVolume,
@@ -937,6 +944,7 @@ fn operation_phases() -> [OperationPhase; 9] {
         },
         OperationPhase::StoppingContainer,
         OperationPhase::RemovingContainer,
+        OperationPhase::RemovingVolume,
         OperationPhase::Compensating,
     ]
 }

@@ -1,5 +1,6 @@
 //! Relay-only Cloud session: connect, about, runtime.watch, preview, run,
-//! remove_volumes, Data Loss for Machine removal, remove_machine, and close.
+//! preview_project_removal, remove_volumes, Data Loss for Machine removal,
+//! remove_machine, and close.
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,12 +10,12 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
-use crate::deploy::{DeployError, DeployIntent, DeployPreview};
+use crate::deploy::{DeployError, DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
     ContractDescription, DataLoss, DeployEvent, DeployOutcome, DescribeContractRequest,
     DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
-    ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
-    RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
+    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_CAPABILITY,
+    RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
 struct SessionInner {
@@ -153,6 +154,30 @@ impl Session {
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
         let preview = client.preview(intent).await.map_err(deploy_error)?;
+        Ok(PreparedDeploy {
+            preview,
+            client,
+            session_cancel: self.inner.cancel.clone(),
+            confirmed: AtomicBool::new(false),
+        })
+    }
+
+    /// Calculate a Project-removal preview. Confirming executes these operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, the Project
+    /// is reserved, snapshot gathering fails, or planning fails.
+    pub async fn preview_project_removal(
+        &self,
+        project_name: ProjectName,
+        volumes: VolumeFate,
+    ) -> Result<PreparedDeploy, RpcError> {
+        let mut client = self.client().await?;
+        let preview = client
+            .preview_project_removal(&project_name, volumes)
+            .await
+            .map_err(deploy_error)?;
         Ok(PreparedDeploy {
             preview,
             client,
@@ -403,6 +428,7 @@ fn deploy_error(error: DeployError) -> RpcError {
         DeployError::Connect(error) => error.into(),
         DeployError::Plan(error) => invalid_argument(error.to_string()),
         DeployError::Ingress(error) => invalid_argument(error.to_string()),
+        DeployError::Project(error) => invalid_argument(error.to_string()),
     }
 }
 

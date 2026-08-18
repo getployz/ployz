@@ -18,6 +18,12 @@ class Client {
     return wrapPreview(await this._inner.preview(intent));
   }
 
+  async previewProjectRemoval(projectName, destroyVolumes) {
+    return wrapPreview(
+      await this._inner.previewProjectRemoval(projectName, destroyVolumes),
+    );
+  }
+
   async run(intent, options = {}) {
     const preview = await this.preview(intent);
     const running = preview.confirm(options);

@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    DeployOutcome, DeployPreview, ExecutionError,
+    DeployOutcome, DeployPreview, ExecutionError, VolumeFate,
     pipeline::{
         PushOutcome, ReconciliationHints, list_machines, plan_options, plan_project, plan_scale,
         plan_spec, push_project_images,
@@ -153,11 +153,52 @@ async fn confirm_and_execute(
     if preview.noop() {
         return Ok(());
     }
-    if !gate.auto_confirm && !confirm(gate.context)? {
+    if !gate.auto_confirm && !confirm(&render::confirm_prompt(gate.context))? {
         println!("No changes were made.");
         return Ok(());
     }
     finish(stream_confirm(client, preview, format!("Deploying to {}", gate.context)).await)
+}
+
+pub(crate) async fn remove_project(
+    client: &mut Client,
+    name: &ProjectName,
+    volumes: VolumeFate,
+    auto_confirm: bool,
+    context: &str,
+) -> Result<(), Failure> {
+    let preview = client.preview_project_removal(name, volumes).await?;
+    print_warnings(&preview);
+    if let Some(reason) = preview.prune_refusal {
+        print!("{}", render::removal_plan_text(&preview, context));
+        return Err(Failure::usage(reason.to_string()));
+    }
+    if project_not_found(&preview) {
+        return Err(Failure::usage(format!("Project '{name}' was not found")));
+    }
+    print!("{}", render::removal_plan_text(&preview, context));
+    if preview.operations.is_empty() {
+        return Ok(());
+    }
+    if !auto_confirm && !confirm(&render::confirm_removal_prompt(name, context))? {
+        println!("No changes were made.");
+        return Ok(());
+    }
+    finish(
+        stream_confirm(
+            client,
+            &preview,
+            format!("Removing Project {name} from {context}"),
+        )
+        .await,
+    )
+}
+
+fn project_not_found(preview: &DeployPreview) -> bool {
+    preview.prune_refusal.is_none()
+        && preview.operations.is_empty()
+        && preview.preserved_volumes.is_empty()
+        && preview.would_remove.is_empty()
 }
 
 async fn stream_confirm(
@@ -256,13 +297,13 @@ fn print_warnings(preview: &DeployPreview) {
     }
 }
 
-fn confirm(context: &str) -> Result<bool, Failure> {
+fn confirm(prompt: &str) -> Result<bool, Failure> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(Failure::usage(
             "confirmation requires a terminal; pass --yes to continue",
         ));
     }
-    print!("{}", render::confirm_prompt(context));
+    print!("{prompt}");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -285,7 +326,7 @@ mod tests {
     use super::*;
     use crate::deploy::DeployWarning;
     use crate::dns::ingress_dns_warnings;
-    use ployz_core::RequestedServiceSpec;
+    use ployz_core::{PruneRefusal, RequestedServiceSpec};
 
     #[test]
     fn deploy_prints_ingress_misses_as_warning_lines_without_failing() {
@@ -343,5 +384,14 @@ mod tests {
                 .any(|line| line.contains("plain.example.com")
                     && line.to_ascii_lowercase().contains("certificate"))
         );
+    }
+
+    #[test]
+    fn incomplete_empty_view_is_not_reported_as_missing() {
+        let mut preview =
+            DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
+        assert!(project_not_found(&preview));
+        preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
+        assert!(!project_not_found(&preview));
     }
 }

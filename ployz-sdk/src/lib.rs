@@ -2,11 +2,14 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / about / runtime.watch / preview / run /
-//! remove_volumes / dataLossIfMachineRemoved / removeMachine / close.
+//! previewProjectRemoval / remove_volumes / dataLossIfMachineRemoved /
+//! removeMachine / close.
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
-use ployz_core::{DataLoss, DeployIntent, RemoveVolumesRequest, RpcError, RpcErrorCode};
+use ployz_core::{
+    DataLoss, DeployIntent, ProjectName, RemoveVolumesRequest, RpcError, RpcErrorCode,
+};
 
 /// npm package name.
 #[must_use]
@@ -85,6 +88,39 @@ impl Client {
     pub async fn preview(&self, intent: serde_json::Value) -> Result<DeployPreviewHandle> {
         let intent = parse_intent(intent)?;
         let inner = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
+        Ok(DeployPreviewHandle { inner })
+    }
+
+    /// Calculate a Project-removal preview. Confirming executes these operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `project_name` is not
+    /// a Project Name, the Project is reserved, the session is closed, or
+    /// planning fails.
+    #[napi]
+    pub async fn preview_project_removal(
+        &self,
+        project_name: String,
+        destroy_volumes: bool,
+    ) -> Result<DeployPreviewHandle> {
+        let project_name = ProjectName::parse(project_name).map_err(|error| {
+            rpc_to_napi(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: error.to_string(),
+                details: serde_json::Value::Null,
+            })
+        })?;
+        let volumes = if destroy_volumes {
+            ployz::deploy::VolumeFate::Destroy
+        } else {
+            ployz::deploy::VolumeFate::Preserve
+        };
+        let inner = self
+            .inner
+            .preview_project_removal(project_name, volumes)
+            .await
+            .map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })
     }
 

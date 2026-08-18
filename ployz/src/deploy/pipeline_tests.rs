@@ -103,7 +103,8 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             DeployOperation::CreateVolume { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::StopHook { .. } => None,
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         });
     assert_eq!(image, Some("v1"));
 }

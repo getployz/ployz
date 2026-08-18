@@ -357,6 +357,7 @@ export type OperationPhase =
   | Additive<{ type: "waiting_for_hook"; container_id: ContainerId; elapsed_ms: number; deadline_ms: number }>
   | Additive<{ type: "stopping_container" }>
   | Additive<{ type: "removing_container" }>
+  | Additive<{ type: "removing_volume" }>
   | Additive<{ type: "compensating" }>
   | Additive<{ type?: string }>;
 
@@ -380,9 +381,10 @@ export type DeployOperation =
   | Additive<{ type: "replace_container"; machine_id: MachineId; old_container_id: ContainerId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
   | Additive<{ type: "stop_hook"; machine_id: MachineId; container_id: ContainerId }>
   | Additive<{ type: "run_hook"; machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> }>
+  | Additive<{ type: "remove_volume"; id: DockerVolumeId }>
   | Additive<{ type?: string }>;
 
-export type MachineAction = "CreateVolume" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer";
+export type MachineAction = "CreateVolume" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
 export type HealthFailure =
   | Additive<{ type: "cancelled" }>

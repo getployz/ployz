@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineObservation, MachineTarget, PROJECT_NAME_LABEL,
-    PreservedVolume, ProjectName, RequestedServiceSpec, ServiceMode, ServiceVolume,
-    ServiceVolumeGraph, VolumeSource, machine_matches_target,
+    DockerVolumeName, MachineId, MachineObservation, MachineTarget, PreservedVolume, ProjectName,
+    RequestedServiceSpec, ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource,
+    machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -96,9 +96,7 @@ pub(super) fn preserved_owned_volumes(
     let declared = declared_physical_names(intent);
     let mut preserved = Vec::new();
     for volume in &snapshot.volumes {
-        if volume.labels.get(PROJECT_NAME_LABEL).map(String::as_str)
-            != Some(intent.project_name.as_str())
-        {
+        if owned_volume_project(&volume.labels).as_ref() != Some(&intent.project_name) {
             continue;
         }
         if declared.contains(&volume.id.name) {

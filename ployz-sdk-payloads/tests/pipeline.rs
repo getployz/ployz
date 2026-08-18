@@ -494,6 +494,8 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("readonly runtime:"));
     assert!(dts.contains("watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>"));
     assert!(dts.contains("preview(intent: DeployIntent): Promise<PreparedDeploy>"));
+    assert!(dts.contains("previewProjectRemoval("));
+    assert!(dts.contains("destroy_volumes: boolean"));
     assert!(dts.contains("run("));
     assert!(dts.contains("Promise<DeployOutcome<ExecutionError>>"));
     assert!(dts.contains("confirm(options?: ConfirmOptions): RunningDeploy"));

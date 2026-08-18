@@ -21,6 +21,43 @@ use volumes::{
     preserved_owned_volumes, reject_mixed_volume_modes, scope_requested,
 };
 
+/// Whether Project removal keeps or destroys observer-visible managed volumes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VolumeFate {
+    /// Leave owned Docker Volumes in place. They keep listing under the Project.
+    Preserve,
+    /// Destroy each preserved owned Docker Volume after Services are removed.
+    Destroy,
+}
+
+/// Plan removal of observer-visible compute for `project`.
+///
+/// Empty target is full reconciliation of nothing: owned Services are obsolete.
+/// Managed volumes stay in `preserved_volumes` unless `volumes` is
+/// [`VolumeFate::Destroy`] and pruning is not refused. Incomplete snapshots
+/// reuse [`DeployIntent::prune_refusal`]; reserved names are refused at the
+/// command boundary by [`crate::project::refuse_reserved`].
+///
+/// # Errors
+///
+/// Returns when [`plan_deploy`] cannot produce a plan.
+pub fn plan_project_removal(
+    project: &ProjectName,
+    snapshot: &DeploySnapshot,
+    volumes: VolumeFate,
+) -> Result<DeployPlan, PlanError> {
+    let intent = DeployIntent::apply_all(project.clone(), [], PlanOptions::default());
+    let mut plan = plan_deploy(&intent, snapshot)?;
+    if volumes == VolumeFate::Destroy && plan.prune_refusal.is_none() {
+        plan.operations.extend(
+            plan.preserved_volumes
+                .drain(..)
+                .map(|volume| DeployOperation::RemoveVolume { id: volume.id }),
+        );
+    }
+    Ok(plan)
+}
+
 /// Plan operations for the Services this Deploy applies from the target.
 ///
 /// Matching and replacement use only Containers owned by
@@ -476,7 +513,8 @@ fn pre_deploy_operations(
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. } => None,
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         });
     let Some((machine_id, spec)) = target else {
         return Vec::new();

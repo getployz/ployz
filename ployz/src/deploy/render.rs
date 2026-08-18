@@ -33,6 +33,21 @@ pub fn progress_text(event: &DeployEvent, title: &str) -> String {
 /// Tree plan plus footer. Empty operations with no listed drift are "No changes."
 #[must_use]
 pub fn plan_text(preview: &DeployPreview, context: &str, project_source: Option<&str>) -> String {
+    titled_plan_text("Deployment plan", preview, context, project_source)
+}
+
+/// Same tree as [`plan_text`], titled for Project removal.
+#[must_use]
+pub fn removal_plan_text(preview: &DeployPreview, context: &str) -> String {
+    titled_plan_text("Removal plan", preview, context, None)
+}
+
+fn titled_plan_text(
+    title: &str,
+    preview: &DeployPreview,
+    context: &str,
+    project_source: Option<&str>,
+) -> String {
     if preview.noop()
         && preview.would_remove.is_empty()
         && preview.preserved_volumes.is_empty()
@@ -40,7 +55,7 @@ pub fn plan_text(preview: &DeployPreview, context: &str, project_source: Option<
     {
         return "No changes.\n".into();
     }
-    let mut out = String::from("Deployment plan\n");
+    let mut out = format!("{title}\n");
     let _ = writeln!(out, "context: {context}");
     match project_source {
         Some(source) => {
@@ -98,6 +113,12 @@ pub fn confirm_prompt(context: &str) -> String {
     format!("Proceed with deployment to {context}? [y/N] ")
 }
 
+/// Confirm prompt for removing one observer-derived Project.
+#[must_use]
+pub fn confirm_removal_prompt(project: &ployz_core::ProjectName, context: &str) -> String {
+    format!("Proceed with removal of Project {project} from {context}? [y/N] ")
+}
+
 /// Completed-prefix / failed op / unexecuted rest, plus endpoints on success.
 #[must_use]
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
@@ -130,7 +151,10 @@ fn service_trees(preview: &DeployPreview) -> String {
     let mut groups: BTreeMap<String, Vec<&OperationRow>> = BTreeMap::new();
     let mut volumes = Vec::new();
     for row in &preview.operations {
-        if matches!(row.operation, DeployOperation::CreateVolume { .. }) {
+        if matches!(
+            row.operation,
+            DeployOperation::CreateVolume { .. } | DeployOperation::RemoveVolume { .. }
+        ) {
             volumes.push(row);
             continue;
         }
@@ -155,14 +179,21 @@ fn service_trees(preview: &DeployPreview) -> String {
 }
 
 fn volume_line(row: &OperationRow) -> String {
-    let DeployOperation::CreateVolume { volume, .. } = &row.operation else {
-        return String::new();
-    };
-    format!(
-        "+ create volume {} on {}",
-        volume.reference,
-        machine_label(row)
-    )
+    let machine = machine_label(row);
+    match &row.operation {
+        DeployOperation::CreateVolume { volume, .. } => {
+            format!("+ create volume {} on {machine}", volume.reference)
+        }
+        DeployOperation::RemoveVolume { id } => {
+            format!("- remove volume {} on {machine}", id.name)
+        }
+        DeployOperation::RunContainer { .. }
+        | DeployOperation::StopContainer { .. }
+        | DeployOperation::RemoveContainer { .. }
+        | DeployOperation::ReplaceContainer(_)
+        | DeployOperation::StopHook { .. }
+        | DeployOperation::RunHook { .. } => String::new(),
+    }
 }
 
 fn service_block(name: &str, rows: &[&OperationRow], pruned: bool) -> String {
@@ -219,7 +250,8 @@ fn spec_image(operation: &DeployOperation) -> Option<&str> {
         DeployOperation::CreateVolume { .. }
         | DeployOperation::StopContainer { .. }
         | DeployOperation::RemoveContainer { .. }
-        | DeployOperation::StopHook { .. } => None,
+        | DeployOperation::StopHook { .. }
+        | DeployOperation::RemoveVolume { .. } => None,
     }
 }
 
@@ -255,6 +287,9 @@ fn child_line(row: &OperationRow) -> String {
         DeployOperation::CreateVolume { volume, .. } => {
             format!("+ create volume {} on {machine}", volume.reference)
         }
+        DeployOperation::RemoveVolume { id } => {
+            format!("- remove volume {} on {machine}", id.name)
+        }
     }
 }
 
@@ -274,7 +309,9 @@ fn plan_footer(preview: &DeployPreview) -> String {
                 replaces += 1;
                 order = Some(replacement.spec.update.order);
             }
-            DeployOperation::RemoveContainer { .. } | DeployOperation::StopContainer { .. } => {
+            DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveVolume { .. } => {
                 removes += 1;
             }
             DeployOperation::StopHook { .. } | DeployOperation::RunHook { .. } => {}
@@ -323,6 +360,7 @@ fn container_label(row: &OperationRow) -> String {
         | DeployOperation::RemoveContainer { container_id, .. }
         | DeployOperation::StopHook { container_id, .. } => container_id.to_string(),
         DeployOperation::CreateVolume { volume, .. } => volume.reference.to_string(),
+        DeployOperation::RemoveVolume { id } => id.name.to_string(),
     }
 }
 
@@ -338,7 +376,9 @@ pub(super) fn status_kind(status: &OperationStatus) -> &'static str {
         OperationStatus::Running { phase } => match phase {
             OperationPhase::WaitingForHealth { .. } => "health",
             OperationPhase::WaitingForHook { .. } => "hook",
-            OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => "removing",
+            OperationPhase::StoppingContainer
+            | OperationPhase::RemovingContainer
+            | OperationPhase::RemovingVolume => "removing",
             OperationPhase::Compensating => "compensating",
             OperationPhase::Starting
             | OperationPhase::CreatingVolume
@@ -361,9 +401,9 @@ fn status_columns(row: &OperationRow) -> (&'static str, &'static str, String) {
             OperationPhase::WaitingForHook { elapsed_ms, .. } => {
                 ("…", "Hook", elapsed(*elapsed_ms))
             }
-            OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => {
-                ("…", "Removed", String::new())
-            }
+            OperationPhase::StoppingContainer
+            | OperationPhase::RemovingContainer
+            | OperationPhase::RemovingVolume => ("…", "Removed", String::new()),
             OperationPhase::Compensating => ("…", "Compensating", String::new()),
             OperationPhase::Starting
             | OperationPhase::CreatingVolume
@@ -380,7 +420,8 @@ fn completed_label(operation: &DeployOperation) -> &'static str {
     match operation {
         DeployOperation::RemoveContainer { .. }
         | DeployOperation::StopContainer { .. }
-        | DeployOperation::StopHook { .. } => "Removed",
+        | DeployOperation::StopHook { .. }
+        | DeployOperation::RemoveVolume { .. } => "Removed",
         DeployOperation::CreateVolume { .. } => "Created",
         DeployOperation::RunContainer { .. }
         | DeployOperation::ReplaceContainer(_)
@@ -402,7 +443,8 @@ fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. } => continue,
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => continue,
         };
         for port in &spec.ports {
             let PortPublication::Ingress {
@@ -478,15 +520,19 @@ fn operation_label(operation: &DeployOperation) -> String {
         DeployOperation::RunHook {
             machine_id, spec, ..
         } => format!("run pre-deploy hook for {} on {machine_id}", spec.name),
+        DeployOperation::RemoveVolume { id } => {
+            format!("remove volume {} on {}", id.name, id.machine_id)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerId, DeployOperation, MachineId, MachineName, OperationRow, OperationStatus,
-        ProjectName, PruneRefusal, QualifiedService, ReplacementOperation, RequestedServiceSpec,
-        ResolvedServiceSpec, ServiceName, UpdateOrder,
+        ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, MachineId, MachineName,
+        OperationRow, OperationStatus, PreservedVolume, ProjectName, PruneRefusal,
+        QualifiedService, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
+        ServiceName, UpdateOrder,
     };
 
     use super::*;
@@ -499,6 +545,57 @@ mod tests {
         assert_eq!(
             confirm_prompt("default"),
             "Proceed with deployment to default? [y/N] "
+        );
+        assert_eq!(
+            confirm_removal_prompt(&ProjectName::parse("shop").unwrap(), "prod"),
+            "Proceed with removal of Project shop from prod? [y/N] "
+        );
+    }
+
+    #[test]
+    fn removal_plan_lists_container_and_volume_removes() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let container_id = ContainerId::parse("f".repeat(64)).unwrap();
+        let volume_id = DockerVolumeId {
+            machine_id,
+            name: DockerVolumeName::parse("shop_data").unwrap(),
+        };
+        let rows = vec![
+            OperationRow::pending(
+                0,
+                DeployOperation::RemoveContainer {
+                    machine_id,
+                    container_id,
+                },
+                Some(MachineName::parse("edge").unwrap()),
+                Some("web-1".into()),
+                Some(ServiceName::parse("web").unwrap()),
+            ),
+            OperationRow::pending(
+                1,
+                DeployOperation::RemoveVolume {
+                    id: volume_id.clone(),
+                },
+                Some(MachineName::parse("edge").unwrap()),
+                None,
+                None,
+            ),
+        ];
+        let mut preview = DeployPreview::new(rows, Vec::new(), ProjectName::parse("shop").unwrap());
+        preview.would_remove = vec![QualifiedService::parse("shop/web").unwrap()];
+        let text = removal_plan_text(&preview, "default");
+        assert!(text.starts_with("Removal plan\n"), "{text}");
+        assert!(text.contains("- remove container web-1 on edge"), "{text}");
+        assert!(text.contains("- remove volume shop_data on edge"), "{text}");
+        preview.operations.clear();
+        preview.preserved_volumes = vec![PreservedVolume {
+            id: volume_id,
+            machine_name: Some(MachineName::parse("edge").unwrap()),
+        }];
+        let preserved = removal_plan_text(&preview, "default");
+        assert!(
+            preserved.contains("would preserve volume shop_data on edge"),
+            "{preserved}"
         );
     }
 

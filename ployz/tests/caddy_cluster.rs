@@ -598,7 +598,8 @@ async fn deploy(
             ployz::deploy::DeployOperation::CreateVolume { .. }
             | ployz::deploy::DeployOperation::StopContainer { .. }
             | ployz::deploy::DeployOperation::RemoveContainer { .. }
-            | ployz::deploy::DeployOperation::StopHook { .. } => None,
+            | ployz::deploy::DeployOperation::StopHook { .. }
+            | ployz::deploy::DeployOperation::RemoveVolume { .. } => None,
         })
         .expect("deployed operations carry a Service ID")
 }

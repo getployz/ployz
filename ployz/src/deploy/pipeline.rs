@@ -47,6 +47,8 @@ pub enum DeployError {
     Plan(#[from] PlanError),
     #[error(transparent)]
     Ingress(#[from] ExpandIngressError),
+    #[error(transparent)]
+    Project(#[from] crate::project::ProjectError),
 }
 
 impl Client {
@@ -65,6 +67,33 @@ impl Client {
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_snapshot(self, machines).await?;
         prepare_intent(self, snapshot, warnings, &mut intent).await
+    }
+
+    /// Calculate a Project-removal preview. Confirming executes these operations.
+    ///
+    /// Reserved names reuse [`crate::project::refuse_reserved`]. Incomplete
+    /// snapshots reuse [`DeployIntent::prune_refusal`].
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Project is reserved or snapshot gathering or planning fails.
+    pub async fn preview_project_removal(
+        &mut self,
+        project: &ProjectName,
+        volumes: super::VolumeFate,
+    ) -> Result<DeployPreview, DeployError> {
+        crate::project::refuse_reserved(project)?;
+        let machines = self.machines().await?;
+        let (snapshot, warnings) = gather_snapshot(self, machines).await?;
+        let plan = planning::plan_project_removal(project, &snapshot, volumes)?;
+        Ok(DeployPreview {
+            project_name: project.clone(),
+            operations: pending_rows(&plan.operations, &snapshot),
+            warnings,
+            would_remove: plan.would_remove,
+            preserved_volumes: plan.preserved_volumes,
+            prune_refusal: plan.prune_refusal,
+        })
     }
 
     /// Execute the operations on this Deploy Preview. Does not re-plan.

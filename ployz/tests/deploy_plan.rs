@@ -6,6 +6,8 @@ mod hostnames;
 mod intent;
 #[path = "deploy_plan/placement.rs"]
 mod placement;
+#[path = "deploy_plan/project.rs"]
+mod project;
 #[path = "deploy_plan/prune.rs"]
 mod prune;
 #[path = "deploy_plan/rollout.rs"]

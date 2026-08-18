@@ -51,6 +51,7 @@ pub fn command() -> Command {
         .subcommand(logs("logs", true))
         .subcommand(service_ls("ls"))
         .subcommand(machine())
+        .subcommand(project())
         .subcommand(proxy())
         .subcommand(ps())
         .subcommand(service_rm("rm"))
@@ -352,6 +353,21 @@ fn machine_init() -> Command {
     provisioning_flags(command).arg(positional("destination", false))
 }
 
+fn project() -> Command {
+    base("project", "Manage projects")
+        .arg_required_else_help(true)
+        .subcommand(base("ls", "List projects").visible_alias("list"))
+        .subcommand(
+            base("rm", "Remove a project")
+                .visible_aliases(["remove", "delete"])
+                .arg(switch("volumes", None).help(
+                    "Also remove this Project's visible managed volumes after the plan identifies each one",
+                ))
+                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+                .arg(positional("project", true)),
+        )
+}
+
 fn proxy() -> Command {
     base("proxy", "Proxy a local port to a service")
         .arg(positional("service", true))
@@ -597,6 +613,39 @@ mod tests {
             .unwrap();
         assert!(rm.get_flag("yes"));
         assert!(rm.get_many::<String>("data-loss").is_none());
+    }
+
+    #[test]
+    fn project_commands_use_list_remove_aliases_and_long_only_volumes() {
+        let listed = super::command()
+            .try_get_matches_from(["ployz", "project", "list"])
+            .unwrap();
+        assert_eq!(
+            listed
+                .subcommand_matches("project")
+                .unwrap()
+                .subcommand_name(),
+            Some("ls")
+        );
+        let removed = super::command()
+            .try_get_matches_from(["ployz", "project", "delete", "shop", "--volumes", "--yes"])
+            .unwrap();
+        let rm = removed
+            .subcommand_matches("project")
+            .unwrap()
+            .subcommand_matches("rm")
+            .unwrap();
+        assert_eq!(
+            rm.get_one::<String>("project").map(String::as_str),
+            Some("shop")
+        );
+        assert!(rm.get_flag("volumes"));
+        assert!(rm.get_flag("yes"));
+        assert!(
+            super::command()
+                .try_get_matches_from(["ployz", "project", "rm", "shop", "-v"])
+                .is_err()
+        );
     }
 
     #[test]

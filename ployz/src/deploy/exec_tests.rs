@@ -1,8 +1,8 @@
 use std::{collections::VecDeque, sync::Mutex};
 
 use ployz_core::{
-    ContainerRuntimeObservation, DockerVolumeName, HealthFailure, HealthObservation, ProjectName,
-    ServiceVolumeReference, VolumeSource,
+    ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName, HealthFailure,
+    HealthObservation, ProjectName, ServiceVolumeReference, VolumeSource,
 };
 
 use crate::deploy::{DeployOutcome, FailedOperation};
@@ -31,6 +31,7 @@ enum Call {
     Stop(MachineId, ContainerId),
     StopWithGrace(MachineId, ContainerId, i32),
     Remove(MachineId, ContainerId),
+    RemoveVolume(DockerVolumeId),
 }
 
 #[derive(Clone)]
@@ -148,6 +149,10 @@ impl MachineOperations for Scripted {
         container_id: &ContainerId,
     ) -> Result<(), RpcError> {
         unit(self.next(Call::Remove(*machine_id, *container_id)))
+    }
+
+    async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
+        unit(self.next(Call::RemoveVolume(id.clone())))
     }
 }
 

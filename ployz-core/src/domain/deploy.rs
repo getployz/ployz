@@ -313,6 +313,8 @@ pub enum DeployOperation {
         spec: ResolvedServiceSpec,
         old_hook_containers: Vec<(MachineId, ContainerId)>,
     },
+    /// Destroy a named Docker Volume. Project removal may emit this; `plan_deploy` never does.
+    RemoveVolume { id: DockerVolumeId },
 }
 
 /// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
@@ -491,6 +493,7 @@ pub enum MachineAction {
     InspectContainer,
     StopContainer,
     RemoveContainer,
+    RemoveVolume,
 }
 
 /// Why health monitoring rejected a started container.
@@ -611,6 +614,7 @@ pub enum OperationPhase {
     },
     StoppingContainer,
     RemovingContainer,
+    RemovingVolume,
     Compensating,
 }
 
@@ -648,6 +652,7 @@ impl DeployOperation {
             | Self::StopHook { machine_id, .. }
             | Self::RunHook { machine_id, .. } => *machine_id,
             Self::ReplaceContainer(replacement) => replacement.machine_id,
+            Self::RemoveVolume { id } => id.machine_id,
         }
     }
 
@@ -660,7 +665,8 @@ impl DeployOperation {
             Self::CreateVolume { .. }
             | Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
-            | Self::StopHook { .. } => None,
+            | Self::StopHook { .. }
+            | Self::RemoveVolume { .. } => None,
         }
     }
 
@@ -672,7 +678,10 @@ impl DeployOperation {
             | Self::RemoveContainer { container_id, .. }
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
-            Self::CreateVolume { .. } | Self::RunContainer { .. } | Self::RunHook { .. } => None,
+            Self::CreateVolume { .. }
+            | Self::RunContainer { .. }
+            | Self::RunHook { .. }
+            | Self::RemoveVolume { .. } => None,
         }
     }
 }

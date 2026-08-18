@@ -58,6 +58,11 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
     let mut actual = BTreeMap::new();
     collect_clap_shapes(&command, "", &mut actual);
     actual.remove("ployz completion").unwrap();
+    if deviations.contains("project-list-and-remove") {
+        actual.remove("ployz project").unwrap();
+        actual.remove("ployz project ls").unwrap();
+        actual.remove("ployz project rm").unwrap();
+    }
     assert_eq!(
         actual.keys().collect::<Vec<_>>(),
         expected.keys().collect::<Vec<_>>()
@@ -86,6 +91,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "no-nightly-daemon-channel".to_owned(),
             "plain-caddy-config".to_owned(),
             "product-identity".to_owned(),
+            "project-list-and-remove".to_owned(),
             "project-name-no-short-flag".to_owned(),
             "qualified-service-container-target".to_owned(),
             "root-version-flag".to_owned(),
@@ -367,10 +373,12 @@ fn reference_aliases(path: &str) -> BTreeSet<String> {
         "ployz ctx" => &["context"],
         "ployz ctx connection" => &["conn"],
         "ployz ctx ls" | "ployz image ls" | "ployz machine ls" | "ployz service ls"
-        | "ployz volume ls" => &["list"],
+        | "ployz volume ls" | "ployz project ls" => &["list"],
         "ployz machine" => &["m"],
         "ployz service" => &["svc"],
-        "ployz machine rm" | "ployz service rm" | "ployz volume rm" => &["delete", "remove"],
+        "ployz machine rm" | "ployz service rm" | "ployz volume rm" | "ployz project rm" => {
+            &["delete", "remove"]
+        }
         _ => &[],
     };
     aliases.iter().map(|alias| (*alias).into()).collect()

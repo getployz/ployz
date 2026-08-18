@@ -233,7 +233,8 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. }) => panic!("unexpected operation: {other:?}"),
         })
         .collect::<Vec<_>>();
     assert_eq!(targets, vec![machine_id('1'), machine_id('2')]);
@@ -257,7 +258,10 @@ fn empty_placement_keeps_every_eligible_machine_and_all_is_a_name() {
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(..)
                 | DeployOperation::StopHook { .. }
-                | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
+                | DeployOperation::RunHook { .. }
+                | DeployOperation::RemoveVolume { .. }) => {
+                    panic!("unexpected operation: {other:?}")
+                }
             })
             .collect::<Vec<_>>()
     };
@@ -388,7 +392,8 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::StopHook { .. }
-                | DeployOperation::RunHook { .. } => None,
+                | DeployOperation::RunHook { .. }
+                | DeployOperation::RemoveVolume { .. } => None,
             })
             .unwrap();
         assert_eq!(order, expected, "{name}");
@@ -447,7 +452,8 @@ fn two_global_services_sharing_a_missing_volume_create_it_once_per_machine() {
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. } => None,
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(created_on.len(), 2);

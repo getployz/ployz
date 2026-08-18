@@ -16,11 +16,13 @@ mod planning;
 mod progress;
 mod render;
 
-pub(crate) use apply::{ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec};
+pub(crate) use apply::{
+    ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec, remove_project,
+};
 pub use exec::execute_plan;
 pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
-pub use planning::plan_deploy;
+pub use planning::{VolumeFate, plan_deploy, plan_project_removal};
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
     ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,

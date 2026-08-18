@@ -5,6 +5,7 @@ const DATA_LOSS_PROTOCOL: &str = "Deploy Plan destroyed stored data; Deploy is a
 
 fn destroys_stored_data(operation: &DeployOperation) -> bool {
     match operation {
+        DeployOperation::RemoveVolume { .. } => true,
         DeployOperation::CreateVolume { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::StopContainer { .. }
@@ -84,6 +85,12 @@ fn deploy_operation_variants_do_not_destroy_stored_data() {
             "{DATA_LOSS_PROTOCOL}: {operation:?}"
         );
     }
+    assert!(destroys_stored_data(&DeployOperation::RemoveVolume {
+        id: DockerVolumeId {
+            machine_id,
+            name: DockerVolumeName::parse("data").unwrap(),
+        },
+    }));
 }
 
 #[test]

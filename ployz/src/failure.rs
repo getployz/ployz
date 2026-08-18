@@ -174,6 +174,7 @@ impl From<DeployError> for Failure {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into(),
             DeployError::Ingress(error) => error.into(),
+            DeployError::Project(error) => error.into(),
         }
     }
 }

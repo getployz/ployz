@@ -983,7 +983,8 @@ fn created_named_volume(
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. } => None,
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         })
         .expect("plan creates a Docker Volume");
     let VolumeSource::Named { name, labels, .. } = &volume.source else {
@@ -1196,7 +1197,9 @@ volumes: {a: {}, b: {}}
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(..)
                 | DeployOperation::StopHook { .. }
-                | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
+                | DeployOperation::RunHook { .. }
+                | DeployOperation::RemoveVolume { .. }) =>
+                    panic!("unexpected operation: {other:?}"),
             })
     );
 

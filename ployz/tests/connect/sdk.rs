@@ -307,6 +307,32 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
 }
 
 #[tokio::test]
+async fn preview_project_removal_reserved_is_a_typed_rpc_error() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone()),
+        )
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+
+    let error = client
+        .preview_project_removal(ProjectName::system(), ployz::deploy::VolumeFate::Preserve)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        "Project 'ployz-system' is reserved for Ployz infrastructure"
+    );
+}
+
+#[tokio::test]
 async fn preview_then_confirm_executes_the_shown_plan() {
     let description = advertised_description();
     let session = RelaySession::start().await;

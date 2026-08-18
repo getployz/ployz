@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use ployz::deploy::{
     DeployError, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployWarning,
-    ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal,
+    ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal, VolumeFate,
 };
 use ployz_core::{ContainerId, OperationPhase, ProjectName, RequestedServiceSpec};
 use tokio_util::sync::CancellationToken;
@@ -349,6 +349,20 @@ async fn preview_surfaces_a_planning_error_instead_of_a_preview() {
     assert!(matches!(
         error,
         DeployError::Plan(PlanError::NoEligibleMachines { .. })
+    ));
+    server.abort();
+}
+
+#[tokio::test]
+async fn preview_project_removal_refuses_the_reserved_project() {
+    let (mut client, server) = connected(DeployService::empty()).await;
+    let error = client
+        .preview_project_removal(&ProjectName::system(), VolumeFate::Preserve)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DeployError::Project(ployz::project::ProjectError::Reserved { .. })
     ));
     server.abort();
 }

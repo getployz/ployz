@@ -51,6 +51,12 @@ async fn dispatches_the_complete_algebra() {
             spec: service,
             skip_health_monitor: true,
         },
+        DeployOperation::RemoveVolume {
+            id: DockerVolumeId {
+                machine_id: first,
+                name: DockerVolumeName::parse("data").unwrap(),
+            },
+        },
     ];
     let plan = plan(operations.clone());
     let client = Scripted::new(vec![
@@ -80,6 +86,10 @@ async fn dispatches_the_complete_algebra() {
             &nested,
         ),
         ok(Call::Start(second, nested)),
+        ok(Call::RemoveVolume(DockerVolumeId {
+            machine_id: first,
+            name: DockerVolumeName::parse("data").unwrap(),
+        })),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -181,6 +191,10 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
     let stopped = container('9');
     let removed = container('a');
     let suffix = container('b');
+    let volume = DockerVolumeId {
+        machine_id: machine,
+        name: DockerVolumeName::parse("data").unwrap(),
+    };
     let mut missing = error("not found");
     missing.code = RpcErrorCode::NotFound;
     let plan = plan(vec![
@@ -192,12 +206,17 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
             machine_id: machine,
             container_id: removed,
         },
+        DeployOperation::RemoveVolume { id: volume.clone() },
         stop(&machine, &suffix),
     ]);
     let client = Scripted::new(vec![
         Step(Call::Stop(machine, stopped), Reply::Error(missing.clone())),
         Step(Call::Stop(machine, removed), Reply::Error(missing.clone())),
-        Step(Call::Remove(machine, removed), Reply::Error(missing)),
+        Step(
+            Call::Remove(machine, removed),
+            Reply::Error(missing.clone()),
+        ),
+        Step(Call::RemoveVolume(volume), Reply::Error(missing)),
         ok(Call::Stop(machine, suffix)),
     ]);
 

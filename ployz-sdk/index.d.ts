@@ -65,6 +65,10 @@ export declare class Client {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>;
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
+  previewProjectRemoval(
+    project_name: ProjectName,
+    destroy_volumes: boolean,
+  ): Promise<PreparedDeploy>;
   run(
     intent: DeployIntent,
     options?: RunOptions,

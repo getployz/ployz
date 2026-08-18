@@ -3,10 +3,10 @@ use std::{future::Future, time::Duration};
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
-    ExecutionError, HookFailure, InspectContainerRequest, MachineAction, MachineId, MachineTarget,
-    OperationPhase, OperationRow, ProjectName, RemoveContainerRequest, ResolvedServiceSpec,
-    RpcError, RpcErrorCode, ServiceVolume, StartContainerRequest, StopContainerRequest,
-    UpdateOrder, VolumeSource, op,
+    DockerVolumeId, ExecutionError, HookFailure, InspectContainerRequest, MachineAction, MachineId,
+    MachineTarget, OperationPhase, OperationRow, ProjectName, RemoveContainerRequest,
+    RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume,
+    StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -74,6 +74,7 @@ pub(super) trait MachineOperations {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<(), RpcError>;
+    async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
 }
 
 impl MachineOperations for Client {
@@ -206,6 +207,19 @@ impl MachineOperations for Client {
         .await
         .map(|_| ())
     }
+
+    async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
+        self.invoke::<op::RemoveVolume>(
+            RemoveVolumeRequest {
+                name: id.name.clone(),
+                force: false,
+            },
+            &MachineTarget::from(&id.machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map(|_| ())
+    }
 }
 
 enum OperationFailure {
@@ -301,6 +315,10 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
             self.inner.remove_container(machine_id, container_id)
         })
         .await
+    }
+
+    async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
+        wait_out_restart(self.cancellation, || self.inner.remove_volume(id)).await
     }
 }
 
@@ -507,6 +525,11 @@ async fn execute_operation<C: MachineOperations>(
         )
         .await
         .map_err(Into::into),
+        DeployOperation::RemoveVolume { id } => {
+            progress.set_running(index, OperationPhase::RemovingVolume);
+            ignore_not_found(client.remove_volume(id).await)
+                .map_err(|error| machine_error(MachineAction::RemoveVolume, error).into())
+        }
     }
 }
 

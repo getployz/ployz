@@ -18,6 +18,7 @@ mod dns;
 mod image;
 mod machine;
 mod operator;
+mod project;
 mod service;
 mod volume;
 
@@ -238,6 +239,8 @@ stub_handlers! {
     machine_rtt(root) { machine::rtt(root) } => "machine rtt";
     machine_update(root) { machine::update(root) } => "machine update";
     proxy(root) { operator::proxy(root) } => "proxy";
+    project_list(root) { project::list(root) } => "project ls";
+    project_remove(root) { project::remove(root) } => "project rm";
     process_list(root) { service::processes(root) } => "ps";
     remove(root) { service::remove(root) } => "rm";
     run_service(root) { deploy::run(root) } => "run";
@@ -450,6 +453,26 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             crate::context::ContextError::NoConfig.to_string(),
+        );
+        let project_remove = command
+            .clone()
+            .try_get_matches_from(["ployz", "project", "rm", "ployz-system"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&project_remove, &mut command)
+                .unwrap_err()
+                .to_string(),
+            "Project 'ployz-system' is reserved for Ployz infrastructure",
+        );
+        let invalid_project_remove = command
+            .clone()
+            .try_get_matches_from(["ployz", "project", "rm", "My_App"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&invalid_project_remove, &mut command)
+                .unwrap_err()
+                .to_string(),
+            "invalid Project Name \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
         );
     }
 
