@@ -27,7 +27,7 @@ publish_sdk_package() {
     cdylib="$ROOT/target/release/libployz_sdk.so"
     [ -f "$cdylib" ] || fail "ployz-sdk cdylib was not produced"
     dest=$(mktemp -d)
-    trap 'rm -rf "$dest"' EXIT
+    trap "rm -rf $(printf '%q' "$dest")" EXIT
     bash "$ROOT/scripts/pack-sdk-package.sh" "$dest" "$cdylib"
     packed=$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$dest/package.json" | head -n1)
     [ "$packed" = "$version" ] || fail "tag '$tag' does not match packed version '$packed'"
