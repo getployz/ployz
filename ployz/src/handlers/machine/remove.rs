@@ -3,7 +3,7 @@ use std::io::{self, IsTerminal, Write};
 use clap::ArgMatches;
 use ployz_core::{
     DataLoss, DescribeContractRequest, LiveServices, Machine, MachineId, MachineName,
-    MachineTarget, NameMatches, ObservedDataLoss, RemoveMachineRequest, RpcError, ServiceName,
+    MachineTarget, NameMatches, ObservedDataLoss, QualifiedService, RemoveMachineRequest, RpcError,
     UnconfirmedDataLoss, op,
 };
 
@@ -181,7 +181,7 @@ fn refusal_from_rpc(error: RpcError) -> Error {
 }
 
 #[must_use]
-fn services_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<ServiceName> {
+fn services_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<QualifiedService> {
     live.services()
         .into_iter()
         .filter(|service| {
@@ -190,12 +190,12 @@ fn services_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<Ser
                 .iter()
                 .any(|container| container.as_observation().machine_id == *machine_id)
         })
-        .filter_map(|service| service.service_name().cloned())
+        .map(|service| service.identity)
         .collect()
 }
 
 #[must_use]
-fn service_warnings(machine: &MachineName, services: &[ServiceName]) -> Vec<String> {
+fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec<String> {
     if services.is_empty() {
         return Vec::new();
     }
@@ -203,7 +203,7 @@ fn service_warnings(machine: &MachineName, services: &[ServiceName]) -> Vec<Stri
         "WARNING: Machine {machine} is running Services: {}",
         services
             .iter()
-            .map(ServiceName::as_str)
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ")
     )]
@@ -214,8 +214,8 @@ mod tests {
     use ployz_core::{
         ContainerKind, ContainerObservation, ContainerRuntimeObservation, DataLoss, DockerVolumeId,
         DockerVolumeName, HealthObservation, LiveServices, MachineId, MachineName, MachineSuccess,
-        ObservedDataLoss, PartialResult, RpcError, ServiceId, ServiceName, UnconfirmedDataLoss,
-        derive_live_services,
+        ObservedDataLoss, PartialResult, QualifiedService, RpcError, ServiceId, ServiceName,
+        UnconfirmedDataLoss, derive_live_services,
     };
     use serde_json::json;
 
@@ -286,11 +286,11 @@ mod tests {
             service_warnings(
                 &MachineName::parse("ams1").unwrap(),
                 &[
-                    ServiceName::parse("api").unwrap(),
-                    ServiceName::parse("web").unwrap(),
+                    QualifiedService::parse("app/api").unwrap(),
+                    QualifiedService::parse("app/web").unwrap(),
                 ],
             ),
-            vec!["WARNING: Machine ams1 is running Services: api, web".to_owned()]
+            vec!["WARNING: Machine ams1 is running Services: app/api, app/web".to_owned()]
         );
     }
 
@@ -322,7 +322,7 @@ mod tests {
         });
         assert_eq!(
             services_on(&machine_id('a'), &live),
-            [ServiceName::parse("api").unwrap()]
+            [QualifiedService::parse("app/api").unwrap()]
         );
     }
 

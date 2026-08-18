@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
-    MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource,
-    compare_specs, machine_matches_target, same_service_mode_kind,
+    MachineObservation, MembershipObservation, PortPublication, ProjectName, QualifiedService,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
+    ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
+    VolumeSource, compare_specs, machine_matches_target, same_service_mode_kind,
 };
 
 use super::{
@@ -53,7 +53,15 @@ pub fn plan_deploy(
     let mut service_operations = Vec::new();
     for spec in &requested {
         service_operations.extend(
-            plan_one_service(spec, snapshot, &services, &mut pins, options).map_err(|source| {
+            plan_one_service(
+                spec,
+                &intent.project_name,
+                snapshot,
+                &services,
+                &mut pins,
+                options,
+            )
+            .map_err(|source| {
                 service_error(name_errors_with_service, spec.name.as_str(), source)
             })?,
         );
@@ -159,6 +167,7 @@ fn order_included<'intent>(
 
 fn plan_one_service(
     requested: &RequestedServiceSpec,
+    project_name: &ProjectName,
     snapshot: &DeploySnapshot,
     services: &[ServiceObservation],
     pins: &mut VolumePins,
@@ -166,22 +175,8 @@ fn plan_one_service(
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options)?;
     plan_volume_operations(requested, snapshot, pins, &mut machines)?;
-    let matching = services
-        .iter()
-        .filter(|service| service.has_name(requested.name.as_str()))
-        .collect::<Vec<_>>();
-    let existing = match matching.as_slice() {
-        [] => None,
-        [service] => Some(*service),
-        _ => {
-            return Err(PlanError::AmbiguousService {
-                matches: matching
-                    .into_iter()
-                    .map(|service| service.service_id)
-                    .collect(),
-            });
-        }
-    };
+    let identity = QualifiedService::new(project_name.clone(), requested.name.clone());
+    let existing = services.iter().find(|service| service.identity == identity);
     let (service_id, current, hooks) = match existing {
         None => (ServiceId::random(), &[][..], &[][..]),
         Some(service) => {

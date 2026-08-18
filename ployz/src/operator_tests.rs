@@ -88,6 +88,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         [ContainerRef::Hook(_)]
     ));
     let hook_only = ServiceObservation {
+        identity: service.identity.clone(),
         service_id: service.service_id,
         containers: vec![],
         hook_containers: service.hook_containers.clone(),
@@ -170,7 +171,14 @@ fn service_args_tail_and_proxy_ports_cover_the_argument_tables() {
     assert!(service_logs_use_compose(&[]));
     assert!(!service_logs_use_compose(&["api".into()]));
     assert_eq!(
-        parse_service_args(&strings(["api/one", "api/two", "worker/x", "api"])).unwrap(),
+        parse_service_args(&strings([
+            "api:one",
+            "api:two",
+            "worker:x",
+            "api",
+            "shop-staging/web:one",
+        ]))
+        .unwrap(),
         [
             ServiceArg {
                 service: service_selector("api"),
@@ -179,6 +187,10 @@ fn service_args_tail_and_proxy_ports_cover_the_argument_tables() {
             ServiceArg {
                 service: service_selector("worker"),
                 containers: vec![container_selector("x")],
+            },
+            ServiceArg {
+                service: service_selector("shop-staging/web"),
+                containers: vec![container_selector("one")],
             },
         ]
     );
@@ -500,13 +512,19 @@ fn machine_observation(seed: u8, name: &str) -> MachineObservation {
 
 fn observed_service() -> ServiceObservation {
     let service_id = ServiceId::parse("1".repeat(32)).unwrap();
+    let containers = vec![
+        service_container(&"a".repeat(64), "api-one", service_id),
+        service_container(&"b".repeat(64), "api-two", service_id),
+        service_container(&format!("{}c", "b".repeat(63)), "b", service_id),
+    ];
     ServiceObservation {
+        identity: containers
+            .first()
+            .expect("fixture Service has a container")
+            .as_observation()
+            .identity(),
         service_id,
-        containers: vec![
-            service_container(&"a".repeat(64), "api-one", service_id),
-            service_container(&"b".repeat(64), "api-two", service_id),
-            service_container(&format!("{}c", "b".repeat(63)), "b", service_id),
-        ],
+        containers,
         hook_containers: vec![hook_container(&"c".repeat(64), "api-hook", service_id)],
     }
 }

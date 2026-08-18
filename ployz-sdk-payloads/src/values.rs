@@ -589,6 +589,7 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
         }],
         containers: vec![container.clone()],
         services: vec![ServiceObservation {
+            identity: container.identity(),
             service_id: service_id(),
             containers: vec![ServiceContainer::try_from(container)
                 .expect("fixture container is a Service Container")],

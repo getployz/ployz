@@ -26,6 +26,8 @@ export type ServiceName = string;
 
 export type ProjectName = string;
 
+export type QualifiedService = string;
+
 export type MachineName = string;
 
 export type MachineTarget = string;
@@ -268,6 +270,7 @@ export type ServiceContainer = ContainerObservation;
 export type HookContainer = ContainerObservation;
 
 export type ServiceObservation = Additive<{
+  identity: QualifiedService;
   service_id: ServiceId;
   containers: ServiceContainer[];
   hook_containers: HookContainer[];

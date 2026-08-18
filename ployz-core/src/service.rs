@@ -4,13 +4,14 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Container, ContainerObservation, ContainerRef, HookContainer, PartialResult, ServiceContainer,
-    ServiceId, ServiceName, ServiceSelector,
+    Container, ContainerObservation, ContainerRef, HookContainer, PartialResult, QualifiedService,
+    ServiceContainer, ServiceId, ServiceSelector,
 };
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ServiceObservation {
+    pub identity: QualifiedService,
     pub service_id: ServiceId,
     #[serde(default)]
     pub containers: Vec<ServiceContainer>,
@@ -19,19 +20,17 @@ pub struct ServiceObservation {
 }
 
 impl ServiceObservation {
-    /// Service Name carried by any member, if the observation is non-empty.
-    #[must_use]
-    pub fn service_name(&self) -> Option<&ServiceName> {
-        self.members()
-            .next()
-            .map(|container| &container.as_observation().service_name)
-    }
-
-    /// True when any member carries this Service Name.
+    /// True when this Service's logical name equals `selector`.
     #[must_use]
     pub fn has_name(&self, selector: &str) -> bool {
+        self.identity.name.as_str() == selector
+    }
+
+    /// True when any member carries this opaque Service ID.
+    #[must_use]
+    pub fn has_service_id(&self, service_id: &ServiceId) -> bool {
         self.members()
-            .any(|container| container.as_observation().service_name.as_str() == selector)
+            .any(|container| container.as_observation().service_id == *service_id)
     }
 
     /// Every role-proven member of this Service.
@@ -96,19 +95,31 @@ pub fn derive_live_services<E>(
 pub fn derive_services(
     containers: impl IntoIterator<Item = ContainerObservation>,
 ) -> Vec<ServiceObservation> {
-    let mut services = BTreeMap::<ServiceId, ServiceObservation>::new();
+    let mut services = BTreeMap::<QualifiedService, ServiceObservation>::new();
     for observation in containers {
-        let service =
-            services
-                .entry(observation.service_id)
-                .or_insert_with(|| ServiceObservation {
-                    service_id: observation.service_id,
-                    containers: Vec::new(),
-                    hook_containers: Vec::new(),
-                });
+        let identity = observation.identity();
+        let service = services
+            .entry(identity.clone())
+            .or_insert_with(|| ServiceObservation {
+                identity,
+                service_id: observation.service_id,
+                containers: Vec::new(),
+                hook_containers: Vec::new(),
+            });
         match Container::from(observation) {
             Container::Service(container) => service.containers.push(container),
             Container::Hook(container) => service.hook_containers.push(container),
+        }
+    }
+    for service in services.values_mut() {
+        if let Some(newest) = service.members().max_by_key(|container| {
+            let observation = container.as_observation();
+            (
+                observation.created_at_unix_nanos,
+                observation.container_id.as_str(),
+            )
+        }) {
+            service.service_id = newest.as_observation().service_id;
         }
     }
     services.into_values().collect()
@@ -147,34 +158,55 @@ pub fn serving_replicas<'a>(
 pub enum ServiceSelectorError {
     #[error("Service \"{selector}\" was not found")]
     NotFound { selector: ServiceSelector },
-    #[error("Service Name \"{selector}\" matches multiple Service IDs: {service_ids:?}")]
+    #[error(
+        "Service Name \"{selector}\" matches multiple Services: {}",
+        slash_list(.matches)
+    )]
     NameAmbiguity {
         selector: ServiceSelector,
-        service_ids: Vec<ServiceId>,
+        matches: Vec<QualifiedService>,
     },
 }
 
-/// Resolve a Service by exact Service ID, then Service Name.
+fn slash_list(matches: &[QualifiedService]) -> String {
+    matches
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Resolve a Service by exact Service ID, then Qualified Service, then unique Service Name.
 ///
 /// # Errors
 ///
 /// Returns [`ServiceSelectorError::NotFound`] when no Service matches, or
-/// [`ServiceSelectorError::NameAmbiguity`] when a name matches more than one Service ID.
+/// [`ServiceSelectorError::NameAmbiguity`] when a short name matches more than one
+/// Qualified Service.
 pub fn select_service<'a>(
     services: &'a [ServiceObservation],
     selector: &ServiceSelector,
 ) -> Result<&'a ServiceObservation, ServiceSelectorError> {
-    // TODO(UT-103): same-named Service IDs remain ambiguous; never select or repair a winner.
-    if let Some(service) = services
-        .iter()
-        .find(|service| service.service_id.as_str() == selector.as_str())
+    if let Ok(service_id) = ServiceId::parse(selector.as_str())
+        && let Some(service) = services
+            .iter()
+            .find(|service| service.has_service_id(&service_id))
     {
         return Ok(service);
     }
-    let matches = services
+    if let Ok(identity) = QualifiedService::parse(selector.as_str()) {
+        return services
+            .iter()
+            .find(|service| service.identity == identity)
+            .ok_or_else(|| ServiceSelectorError::NotFound {
+                selector: selector.clone(),
+            });
+    }
+    let mut matches = services
         .iter()
         .filter(|service| service.has_name(selector.as_str()))
         .collect::<Vec<_>>();
+    matches.sort_by(|left, right| left.identity.cmp(&right.identity));
     match matches.as_slice() {
         [] => Err(ServiceSelectorError::NotFound {
             selector: selector.clone(),
@@ -182,9 +214,9 @@ pub fn select_service<'a>(
         [service] => Ok(service),
         _ => Err(ServiceSelectorError::NameAmbiguity {
             selector: selector.clone(),
-            service_ids: matches
+            matches: matches
                 .into_iter()
-                .map(|service| service.service_id)
+                .map(|service| service.identity.clone())
                 .collect(),
         }),
     }
@@ -199,8 +231,8 @@ mod tests {
     use crate::{
         ContainerAddress, ContainerId, ContainerKind, ContainerObservation, ContainerRef,
         ContainerRuntimeObservation, HealthObservation, MachineFailure, MachineId, MachineSuccess,
-        PartialResult, ProjectName, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceContainer,
-        ServiceId, ServiceName, ServiceSelector,
+        PartialResult, ProjectName, QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode,
+        ServiceContainer, ServiceId, ServiceName, ServiceSelector,
     };
 
     #[test]
@@ -382,30 +414,31 @@ mod tests {
     }
 
     #[test]
-    fn service_selectors_prioritize_ids_and_report_every_ambiguous_name_match() {
-        let first_id = ServiceId::parse("a".repeat(32)).unwrap();
-        let second_id = ServiceId::parse("b".repeat(32)).unwrap();
+    fn service_selectors_resolve_qualified_names_and_unique_short_names() {
+        let staging_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let prod_id = ServiceId::parse("b".repeat(32)).unwrap();
         let collision_id = ServiceId::parse("c".repeat(32)).unwrap();
         let unique_id = ServiceId::parse("d".repeat(32)).unwrap();
+        let leftover_id = ServiceId::parse("e".repeat(32)).unwrap();
         let services = super::derive_services([
-            observation(
-                '1',
-                &first_id,
-                "shared",
-                ContainerKind::ServiceContainer,
-                "v1",
+            in_project(
+                observation(
+                    '1',
+                    &staging_id,
+                    "web",
+                    ContainerKind::ServiceContainer,
+                    "v1",
+                ),
+                "shop-staging",
             ),
-            observation(
-                '2',
-                &second_id,
-                "shared",
-                ContainerKind::ServiceContainer,
-                "v2",
+            in_project(
+                observation('2', &prod_id, "web", ContainerKind::ServiceContainer, "v2"),
+                "shop-prod",
             ),
             observation(
                 '3',
                 &collision_id,
-                first_id.as_str(),
+                staging_id.as_str(),
                 ContainerKind::ServiceContainer,
                 "collision",
             ),
@@ -416,33 +449,82 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 "unique",
             ),
+            in_project(
+                observation(
+                    '5',
+                    &leftover_id,
+                    "web",
+                    ContainerKind::ServiceContainer,
+                    "old",
+                ),
+                "shop-staging",
+            ),
         ]);
 
+        assert_eq!(services.len(), 4);
+        let staging_web = QualifiedService::parse("shop-staging/web").unwrap();
         assert_eq!(
-            super::select_service(&services, &ServiceSelector::from(&first_id))
-                .unwrap()
-                .service_id,
-            first_id
+            super::select_service(
+                &services,
+                &ServiceSelector::parse("shop-staging/web").unwrap()
+            )
+            .unwrap()
+            .identity,
+            staging_web
         );
-        assert!(matches!(
-            super::select_service(&services, &ServiceSelector::parse("missing").unwrap()),
-            Err(super::ServiceSelectorError::NotFound { selector })
-                if selector.as_str() == "missing"
-        ));
+        assert_eq!(
+            super::select_service(&services, &ServiceSelector::from(&staging_id))
+                .unwrap()
+                .identity,
+            staging_web
+        );
+        assert_eq!(
+            super::select_service(&services, &ServiceSelector::from(&leftover_id))
+                .unwrap()
+                .identity,
+            staging_web
+        );
         assert_eq!(
             super::select_service(&services, &ServiceSelector::parse("unique").unwrap())
                 .unwrap()
                 .service_id,
             unique_id
         );
+        assert_eq!(
+            super::select_service(&services, &ServiceSelector::from(&staging_id))
+                .unwrap()
+                .service_id,
+            leftover_id
+        );
         assert!(matches!(
-            super::select_service(&services, &ServiceSelector::parse("shared").unwrap()),
-            Err(super::ServiceSelectorError::NameAmbiguity { selector, service_ids })
-                if selector.as_str() == "shared"
-                    && service_ids.len() == 2
-                    && service_ids.contains(&first_id)
-                    && service_ids.contains(&second_id)
+            super::select_service(&services, &ServiceSelector::parse("missing").unwrap()),
+            Err(super::ServiceSelectorError::NotFound { selector })
+                if selector.as_str() == "missing"
         ));
+        assert!(matches!(
+            super::select_service(&services, &ServiceSelector::parse("shop-prod/missing").unwrap()),
+            Err(super::ServiceSelectorError::NotFound { selector })
+                if selector.as_str() == "shop-prod/missing"
+        ));
+        let error = super::select_service(&services, &ServiceSelector::parse("web").unwrap())
+            .expect_err("short name web is ambiguous");
+        assert_eq!(
+            error.to_string(),
+            "Service Name \"web\" matches multiple Services: shop-prod/web, shop-staging/web"
+        );
+        assert!(matches!(
+            error,
+            super::ServiceSelectorError::NameAmbiguity { selector, matches }
+                if selector.as_str() == "web"
+                    && matches
+                        == [
+                            QualifiedService::parse("shop-prod/web").unwrap(),
+                            QualifiedService::parse("shop-staging/web").unwrap(),
+                        ]
+        ));
+        assert!(ServiceSelector::parse("").is_err());
+        assert!(ServiceSelector::parse("SHOP/web").is_err());
+        assert!(ServiceSelector::parse("shop/web/extra").is_err());
     }
 
     #[test]
@@ -612,6 +694,7 @@ mod tests {
         let derived = super::derive_services([regular, hook]).pop().unwrap();
         let inspected = serde_json::to_value(&derived).unwrap();
         assert_eq!(inspected.get("service_id"), Some(&json!(service_id)));
+        assert_eq!(inspected.get("identity"), Some(&json!("app/api")));
         assert_eq!(
             inspected.pointer("/containers/0/kind"),
             Some(&json!("service_container"))
@@ -753,5 +836,10 @@ mod tests {
             address: None,
             labels: BTreeMap::new(),
         }
+    }
+
+    fn in_project(mut observation: ContainerObservation, project: &str) -> ContainerObservation {
+        observation.project_name = ProjectName::parse(project).unwrap();
+        observation
     }
 }

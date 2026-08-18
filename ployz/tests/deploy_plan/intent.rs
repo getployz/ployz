@@ -301,7 +301,7 @@ fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
     let mut owned: Vec<_> = snapshot
         .services_in(&ProjectName::parse("shop").unwrap())
         .iter()
-        .filter_map(|service| service.service_name().map(|name| name.as_str().to_owned()))
+        .map(|service| service.identity.name.as_str().to_owned())
         .collect();
     owned.sort();
     assert_eq!(owned, ["debug", "web"]);

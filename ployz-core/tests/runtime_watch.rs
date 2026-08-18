@@ -205,6 +205,7 @@ fn expected_frame() -> RuntimeWatchFrame {
         }],
         containers: vec![container.clone()],
         services: vec![ServiceObservation {
+            identity: container.identity(),
             service_id: ServiceId::parse(SERVICE_ID).unwrap(),
             containers: vec![ServiceContainer::try_from(container).unwrap()],
             hook_containers: Vec::new(),

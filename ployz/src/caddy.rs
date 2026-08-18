@@ -5,14 +5,13 @@ use oci_client::{
 };
 use ployz_core::{
     ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath, MachineTarget,
-    Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainer,
-    ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    Placement, PortPublication, PullPolicy, QualifiedService, RequestedServiceSpec, RestartPolicy,
+    ServiceContainer, ServiceContainerSpec, ServiceMode, ServiceMount, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
 use thiserror::Error;
 
-pub const SERVICE_NAME: &str = "caddy";
 pub const DATA_PATH: &str = "/var/lib/ployz/caddy";
 pub const RUNTIME_PATH: &str = "/run/ployz/caddy";
 
@@ -53,7 +52,7 @@ pub fn select_image(tags: &[String]) -> String {
 /// True when this observation is the reserved Caddy Service.
 #[must_use]
 pub fn is_system_caddy(observation: &ContainerObservation) -> bool {
-    observation.project_name.is_reserved() && observation.service_name.as_str() == SERVICE_NAME
+    observation.identity() == QualifiedService::system_caddy()
 }
 
 #[must_use]
@@ -129,7 +128,7 @@ pub fn service_spec(
     )
     .expect("static Caddy Volume graph is valid");
     RequestedServiceSpec {
-        name: ServiceName::parse(SERVICE_NAME).expect("static Service Name is valid"),
+        name: QualifiedService::system_caddy().name,
         mode: ServiceMode::Global,
         container: ServiceContainerSpec {
             image,

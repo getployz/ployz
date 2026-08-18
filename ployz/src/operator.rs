@@ -229,7 +229,7 @@ pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, Operator
     for value in values {
         let value = value.trim();
         let (service, container) = value
-            .split_once('/')
+            .split_once(':')
             .map_or((value, None), |(service, container)| {
                 (service, Some(container))
             });

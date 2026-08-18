@@ -50,6 +50,14 @@ fn is_dns_label(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
+fn is_service_selector(value: &str) -> bool {
+    !value.is_empty()
+        && match value.split_once('/') {
+            None => true,
+            Some((project, name)) => is_dns_label(project) && is_dns_label(name),
+        }
+}
+
 fn is_hostname(value: &str) -> bool {
     (1..=253).contains(&value.len()) && value.split('.').all(is_dns_label)
 }
@@ -312,8 +320,8 @@ validated_string_newtype!(
     /// Unresolved name-or-ID text used to select a Service.
     ServiceSelector,
     "Service Selector",
-    "a non-empty Service Name or Service ID",
-    |value| !value.is_empty()
+    "a Service ID, Qualified Service (project/name), or Service Name",
+    |value| is_service_selector(value)
 );
 validated_string_newtype!(
     /// Unresolved Container ID, display name, or ID prefix used to select one Container.
@@ -433,6 +441,116 @@ impl ProjectName {
     #[must_use]
     pub fn is_reserved(&self) -> bool {
         self.as_str() == Self::SYSTEM
+    }
+}
+
+/// Logical Service identity: Project Name plus Service Name, written `project/name`.
+///
+/// A Service ID is a separate opaque deployment identity that survives updates.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct QualifiedService {
+    pub project: ProjectName,
+    pub name: ServiceName,
+}
+
+impl QualifiedService {
+    /// Combine an already-valid Project Name and Service Name.
+    #[must_use]
+    pub fn new(project: ProjectName, name: ServiceName) -> Self {
+        Self { project, name }
+    }
+
+    /// Parse `project/name` where both sides are DNS labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `value` is not exactly one `/` between two DNS labels.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        let Some((project, name)) = value.split_once('/') else {
+            return Err(qualified_service_error(value));
+        };
+        let project = ProjectName::parse(project).map_err(|_| qualified_service_error(value))?;
+        let name = ServiceName::parse(name).map_err(|_| qualified_service_error(value))?;
+        Ok(Self { project, name })
+    }
+
+    /// Internal DNS labels `{name}.{project}` under the `.internal` zone.
+    #[must_use]
+    pub fn dns_name(&self) -> String {
+        format!("{}.{}", self.name, self.project)
+    }
+
+    /// Parse Internal DNS labels `{name}.{project}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `value` is not exactly one `.` between two DNS labels.
+    pub fn parse_dns_name(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        let Some((name, project)) = value.split_once('.') else {
+            return Err(dns_name_error(value));
+        };
+        if project.contains('.') {
+            return Err(dns_name_error(value));
+        }
+        let project = ProjectName::parse(project).map_err(|_| dns_name_error(value))?;
+        let name = ServiceName::parse(name).map_err(|_| dns_name_error(value))?;
+        Ok(Self { project, name })
+    }
+
+    /// Infrastructure Caddy in the reserved Project.
+    #[must_use]
+    pub fn system_caddy() -> Self {
+        Self::new(
+            ProjectName::system(),
+            ServiceName::parse("caddy").expect("caddy is a DNS-label Service Name"),
+        )
+    }
+}
+
+fn qualified_service_error(value: &str) -> ValueError {
+    ValueError::new(
+        "Qualified Service",
+        value,
+        "a Project Name, '/', and a Service Name",
+    )
+}
+
+fn dns_name_error(value: &str) -> ValueError {
+    ValueError::new(
+        "Qualified Service DNS name",
+        value,
+        "a Service Name, '.', and a Project Name",
+    )
+}
+
+impl fmt::Display for QualifiedService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}/{}", self.project, self.name)
+    }
+}
+
+impl FromStr for QualifiedService {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for QualifiedService {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<QualifiedService> for String {
+    fn from(value: QualifiedService) -> Self {
+        value.to_string()
     }
 }
 validated_string_newtype!(

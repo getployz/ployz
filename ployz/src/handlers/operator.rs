@@ -9,7 +9,7 @@ use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerSelector, ExecRequestFrame, ExecResponseFrame, FanoutSelector, LogBody, LogEntry,
-    LogOrigin, LogsOptions, ServiceSelector, select_service,
+    LogOrigin, LogsOptions, QualifiedService, ServiceSelector, select_service,
 };
 use tokio::io::copy_bidirectional;
 use tokio_util::sync::CancellationToken;
@@ -98,7 +98,7 @@ pub fn service_logs(root: &ArgMatches) -> Result<(), Error> {
 }
 
 pub(super) fn caddy_logs(root: &ArgMatches) -> Result<(), Error> {
-    service_logs_with(root, vec![crate::caddy::SERVICE_NAME.into()])
+    service_logs_with(root, vec![QualifiedService::system_caddy().to_string()])
 }
 
 fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {

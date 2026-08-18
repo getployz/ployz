@@ -91,17 +91,31 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[1].id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("app").unwrap(),
+            ProjectName::parse("shop-staging").unwrap(),
             spec(&collision_id, "shared", "collision"),
         )
         .await
         .unwrap();
     let live = wait_for_services(&mut client, 2, 5).await;
-    assert!(select_service(&live.services(), &ServiceSelector::parse("shared").unwrap()).is_err());
+    let services = live.services();
+    let error = select_service(&services, &ServiceSelector::parse("shared").unwrap()).unwrap_err();
     assert_eq!(
-        select_service(&live.services(), &ServiceSelector::from(&collision_id))
+        error.to_string(),
+        "Service Name \"shared\" matches multiple Services: app/shared, shop-staging/shared"
+    );
+    assert_eq!(
+        select_service(&services, &ServiceSelector::parse("app/shared").unwrap())
             .unwrap()
             .service_id,
+        service_id
+    );
+    assert_eq!(
+        select_service(
+            &services,
+            &ServiceSelector::parse("shop-staging/shared").unwrap()
+        )
+        .unwrap()
+        .service_id,
         collision_id
     );
 

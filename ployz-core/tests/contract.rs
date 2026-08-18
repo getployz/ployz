@@ -89,6 +89,43 @@ fn identities_validate_and_serialize_as_their_wire_strings() {
 }
 
 #[test]
+fn qualified_service_is_project_slash_name() {
+    let identity = ployz_core::QualifiedService::parse("shop-staging/web").unwrap();
+    assert_eq!(identity.project.as_str(), "shop-staging");
+    assert_eq!(identity.name.as_str(), "web");
+    assert_eq!(identity.to_string(), "shop-staging/web");
+    assert_eq!(identity.dns_name(), "web.shop-staging");
+    assert_eq!(
+        ployz_core::QualifiedService::parse_dns_name(identity.dns_name()).unwrap(),
+        identity
+    );
+    assert_eq!(
+        ployz_core::QualifiedService::system_caddy().to_string(),
+        "ployz-system/caddy"
+    );
+    assert_eq!(
+        serde_json::to_string(&identity).unwrap(),
+        "\"shop-staging/web\""
+    );
+    assert_eq!(
+        serde_json::from_str::<ployz_core::QualifiedService>("\"shop-staging/web\"").unwrap(),
+        identity
+    );
+    for invalid in ["web", "SHOP/web", "shop/web/extra", "/web", "shop/", ""] {
+        assert!(
+            ployz_core::QualifiedService::parse(invalid).is_err(),
+            "{invalid}"
+        );
+    }
+    for invalid in ["web", "web.SHOP", "web.shop.extra", ".web", "web.", ""] {
+        assert!(
+            ployz_core::QualifiedService::parse_dns_name(invalid).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn machine_name_rejects_spaces() {
     assert_eq!(
         MachineName::parse("BAD NAME").unwrap_err().to_string(),

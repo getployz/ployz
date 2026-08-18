@@ -55,6 +55,7 @@
   ],
   "services": [
     {
+      "identity": "app/api",
       "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "containers": [
         {

@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fmt};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    MachineName, MachineObservation, MachineTarget, ProjectName, ServiceId, ServiceObservation,
+    MachineName, MachineObservation, MachineTarget, ProjectName, ServiceObservation,
     derive_services,
 };
 use thiserror::Error;
@@ -265,8 +265,6 @@ impl fmt::Display for EliminatingConstraints {
 pub enum PlanError {
     #[error("no machines available that satisfy all constraints: {constraints}")]
     NoEligibleMachines { constraints: EliminatingConstraints },
-    #[error("service name matches multiple Service IDs: {matches:?}")]
-    AmbiguousService { matches: Vec<ServiceId> },
     #[error("service mode cannot be changed")]
     ServiceModeCannotChange,
     #[error("mounted Service Volumes disagree about Docker Volume {name}")]

@@ -5,7 +5,9 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 use super::spec::{HealthcheckSpec, ResolvedServiceSpec};
-use crate::{ContainerAddress, ContainerId, MachineId, ProjectName, ServiceId, ServiceName};
+use crate::{
+    ContainerAddress, ContainerId, MachineId, ProjectName, QualifiedService, ServiceId, ServiceName,
+};
 
 crate::value::open_string_enum!(HealthObservation, Unrecognized {
     NotConfigured => "not_configured",
@@ -144,6 +146,14 @@ pub struct ContainerObservation {
     pub address: Option<ContainerAddress>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+}
+
+impl ContainerObservation {
+    /// Logical Service identity carried by this Container.
+    #[must_use]
+    pub fn identity(&self) -> QualifiedService {
+        QualifiedService::new(self.project_name.clone(), self.service_name.clone())
+    }
 }
 
 /// A Service Container after its role has been proven from a mixed observation.

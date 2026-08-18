@@ -19,12 +19,13 @@ impl MachineTarget {
 }
 
 impl ServiceSelector {
-    /// Resolve an exact Service ID, then a Service Name, reporting every ambiguous match.
+    /// Resolve an exact Service ID, then a Qualified Service, then a unique Service Name.
     ///
     /// # Errors
     ///
     /// Returns [`ServiceSelectorError::NotFound`] when no Service matches, or
-    /// [`ServiceSelectorError::NameAmbiguity`] when a name matches more than one Service ID.
+    /// [`ServiceSelectorError::NameAmbiguity`] when a short name matches more than one
+    /// Qualified Service.
     pub fn resolve<'a>(
         &self,
         services: &'a [ServiceObservation],

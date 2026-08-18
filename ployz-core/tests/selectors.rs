@@ -139,29 +139,34 @@ fn unicode_machine_text_round_trips_on_the_wire() {
 }
 
 #[test]
-fn service_selector_resolution_prefers_ids_and_reports_ambiguous_names() {
-    let first_id = ServiceId::parse("a".repeat(32)).unwrap();
-    let second_id = ServiceId::parse("b".repeat(32)).unwrap();
-    let collision_id = ServiceId::parse("c".repeat(32)).unwrap();
+fn service_selector_resolution_prefers_ids_then_qualified_then_unique_short_names() {
+    let staging_id = ServiceId::parse("a".repeat(32)).unwrap();
+    let prod_id = ServiceId::parse("b".repeat(32)).unwrap();
     let unique_id = ServiceId::parse("d".repeat(32)).unwrap();
+    let mut staging = observation('1', &staging_id, "web", ContainerKind::ServiceContainer);
+    staging.project_name = ProjectName::parse("shop-staging").unwrap();
+    let mut prod = observation('2', &prod_id, "web", ContainerKind::ServiceContainer);
+    prod.project_name = ProjectName::parse("shop-prod").unwrap();
     let services = derive_services([
-        observation('1', &first_id, "shared", ContainerKind::ServiceContainer),
-        observation('2', &second_id, "shared", ContainerKind::ServiceContainer),
-        observation(
-            '3',
-            &collision_id,
-            first_id.as_str(),
-            ContainerKind::ServiceContainer,
-        ),
+        staging,
+        prod,
         observation('4', &unique_id, "unique", ContainerKind::ServiceContainer),
     ]);
 
     assert_eq!(
-        ServiceSelector::from(&first_id)
+        ServiceSelector::from(&staging_id)
             .resolve(&services)
             .unwrap()
             .service_id,
-        first_id
+        staging_id
+    );
+    assert_eq!(
+        ServiceSelector::parse("shop-staging/web")
+            .unwrap()
+            .resolve(&services)
+            .unwrap()
+            .service_id,
+        staging_id
     );
     assert_eq!(
         ServiceSelector::parse("unique")
@@ -172,8 +177,8 @@ fn service_selector_resolution_prefers_ids_and_reports_ambiguous_names() {
         unique_id
     );
     assert_eq!(
-        serde_json::to_string(&ServiceSelector::parse("unique").unwrap()).unwrap(),
-        "\"unique\""
+        serde_json::to_string(&ServiceSelector::parse("shop-staging/web").unwrap()).unwrap(),
+        "\"shop-staging/web\""
     );
     assert_eq!(
         serde_json::to_value(&ServiceSelectorError::NotFound {
@@ -182,14 +187,18 @@ fn service_selector_resolution_prefers_ids_and_reports_ambiguous_names() {
         .unwrap(),
         json!({"error": "not_found", "selector": "missing"})
     );
-    assert!(matches!(
-        ServiceSelector::parse("shared").unwrap().resolve(&services),
-        Err(ServiceSelectorError::NameAmbiguity { selector, service_ids })
-            if selector.as_str() == "shared"
-                && service_ids.len() == 2
-                && service_ids.contains(&first_id)
-                && service_ids.contains(&second_id)
-    ));
+    let error = ServiceSelector::parse("web")
+        .unwrap()
+        .resolve(&services)
+        .unwrap_err();
+    assert_eq!(
+        serde_json::to_value(&error).unwrap(),
+        json!({
+            "error": "name_ambiguity",
+            "selector": "web",
+            "matches": ["shop-prod/web", "shop-staging/web"]
+        })
+    );
     assert!(matches!(
         ServiceSelector::parse("missing")
             .unwrap()
@@ -198,6 +207,7 @@ fn service_selector_resolution_prefers_ids_and_reports_ambiguous_names() {
             if selector.as_str() == "missing"
     ));
     assert!(ServiceSelector::parse("").is_err());
+    assert!(ServiceSelector::parse("shop/web/extra").is_err());
 }
 
 #[test]

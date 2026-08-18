@@ -13,16 +13,12 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let live = client.live_services().await?;
             print_observation_warning(&live);
-            println!("SERVICE ID\tNAME\tCONTAINERS\tHOOKS");
+            println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
             for service in live.services() {
-                let name = service
-                    .service_name()
-                    .map(|name| name.as_str())
-                    .unwrap_or("-");
                 println!(
                     "{}\t{}\t{}\t{}",
                     service.service_id,
-                    name,
+                    service.identity,
                     service.containers.len(),
                     service.hook_containers.len()
                 );
@@ -53,7 +49,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 println!(
                     "{}\t{}\t{}\t{}\t{:?}",
                     observation.container_id,
-                    observation.service_name,
+                    observation.identity(),
                     process_kind(container),
                     observation.machine_id,
                     observation.runtime
@@ -71,9 +67,8 @@ fn sort_processes(containers: &mut [ContainerRef<'_>], sort: &str) {
         let primary = match sort {
             "health" => health_rank(*left).cmp(&health_rank(*right)).then_with(|| {
                 left_observation
-                    .service_name
-                    .as_str()
-                    .cmp(right_observation.service_name.as_str())
+                    .identity()
+                    .cmp(&right_observation.identity())
             }),
             "machine" => left_observation
                 .machine_id
@@ -81,14 +76,12 @@ fn sort_processes(containers: &mut [ContainerRef<'_>], sort: &str) {
                 .cmp(right_observation.machine_id.as_str())
                 .then_with(|| {
                     left_observation
-                        .service_name
-                        .as_str()
-                        .cmp(right_observation.service_name.as_str())
+                        .identity()
+                        .cmp(&right_observation.identity())
                 }),
             _ => left_observation
-                .service_name
-                .as_str()
-                .cmp(right_observation.service_name.as_str()),
+                .identity()
+                .cmp(&right_observation.identity()),
         };
         primary.then_with(|| {
             left_observation
@@ -211,11 +204,11 @@ fn select_services<'a>(
     services: &'a [ployz_core::ServiceObservation],
     selectors: &[ServiceSelector],
 ) -> Result<Vec<&'a ployz_core::ServiceObservation>, Error> {
-    let mut ids = HashSet::new();
+    let mut seen = HashSet::new();
     let mut selected = Vec::new();
     for selector in selectors {
         let service = select_service(services, selector)?;
-        if ids.insert(service.service_id) {
+        if seen.insert(&service.identity) {
             selected.push(service);
         }
     }
@@ -373,6 +366,7 @@ mod tests {
         let container = observation('a', 'a', "api", ContainerRuntimeObservation::Created);
         let service_id = container.service_id;
         let services = vec![ployz_core::ServiceObservation {
+            identity: container.identity(),
             service_id,
             containers: vec![ServiceContainer::try_from(container).unwrap()],
             hook_containers: Vec::new(),

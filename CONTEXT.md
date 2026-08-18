@@ -44,16 +44,20 @@ _Avoid_: Machine status, cluster membership truth
 An observer-derived grouping of Service Containers. It is not an independently persisted entity and has no canonical current specification or state.
 _Avoid_: Workload, application, desired service
 
+**Qualified Service**:
+Logical Service identity: a Project Name plus a Service Name, written `project/name`. It is not a Service ID.
+_Avoid_: Service Name as identity, global service name
+
 **Service ID**:
-The durable opaque identity used to group Service Containers into a Service.
-_Avoid_: Service Name
+The opaque deployment identity that survives updates. It is not the grouping key for observer-derived Services.
+_Avoid_: Service Name, grouping key
 
 **Service Name**:
-A human-facing selector for a Service that may resolve to several Service IDs.
-_Avoid_: Service ID, unique service name
+The short selector that may match several Qualified Services in one Cluster view.
+_Avoid_: Service ID, unique service name, Qualified Service
 
 **Service Selector**:
-The unresolved name-or-ID text used to select a Service.
+The unresolved Service ID, Qualified Service (`project/name`), or Service Name used to select a Service.
 _Avoid_: Service Name as identity
 
 **Service Attempt**:
@@ -205,7 +209,7 @@ An Internal DNS selector that orders addresses from the observing Machine's subn
 _Avoid_: closest Machine, available endpoint
 
 **Machine-Service DNS Selector**:
-An Internal DNS selector that names one Machine ID together with one Service Name. It is not a Service identity.
+An Internal DNS selector that names one Machine ID together with one Qualified Service or Service Name. It is not a Service identity.
 _Avoid_: machine-qualified service name, replica address
 
 **Advertised Endpoint**:
@@ -253,5 +257,5 @@ A command or fan-out result containing both successful values and target-specifi
 _Avoid_: Complete result, rollback signal
 
 **Name Ambiguity**:
-The expected condition in which one Machine or Service name matches multiple durable identities. Ployz preserves every match and does not choose or repair a winner in the domain model.
+The expected condition in which one Machine Name or Service Name matches multiple durable identities. For Services, the matches are Qualified Services. Ployz preserves every match and does not choose or repair a winner in the domain model.
 _Avoid_: Duplicate error, canonical winner

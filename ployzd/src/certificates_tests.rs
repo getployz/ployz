@@ -382,8 +382,10 @@ fn caddy_challenge_ips_come_from_running_caddy_machines() {
     down.service_name = ServiceName::parse("caddy").unwrap();
     down.project_name = ProjectName::system();
     down.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+    let mut user = observation(3, "caddy", Vec::new());
+    user.machine_id = remote.id;
     assert_eq!(
-        caddy_challenge_ips(&[local, remote], &[caddy, down]),
+        caddy_challenge_ips(&[local, remote], &[caddy, down, user]),
         BTreeSet::from([ip("192.0.2.1")])
     );
 }

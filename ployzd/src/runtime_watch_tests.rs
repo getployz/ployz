@@ -104,6 +104,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
     assert_eq!(
         frame.services,
         vec![ServiceObservation {
+            identity: service.identity(),
             service_id: ServiceId::parse(SERVICE_ID).unwrap(),
             containers: vec![ServiceContainer::try_from(service).unwrap()],
             hook_containers: vec![HookContainer::try_from(hook).unwrap()],

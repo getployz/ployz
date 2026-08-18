@@ -19,7 +19,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, ServiceId, ServiceName, service_containers, serving_replicas,
+    ContainerObservation, Machine, QualifiedService, ServiceId, ServiceName, service_containers,
+    serving_replicas,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -31,7 +32,7 @@ use crate::corrosion::{ReplicatedStore, Subscription};
 
 mod query;
 
-use query::{InternalQuery, MachineServiceTarget, Query, Target, parse};
+use query::{InternalQuery, MachineServiceNameTarget, MachineServiceTarget, Query, Target, parse};
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
@@ -55,8 +56,8 @@ enum ServiceIdIndex<'index> {
 
 struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
-    names: HashMap<ServiceName, Vec<Ipv4Addr>>,
-    machine_services: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
+    identities: HashMap<QualifiedService, Vec<Ipv4Addr>>,
+    machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
 }
 
 impl Projection {
@@ -65,8 +66,8 @@ impl Projection {
         // product decision replaces the baseline's deliberately membership-blind behavior.
         let containers = service_containers(observations.iter().cloned());
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
-        let mut names = HashMap::<ServiceName, Vec<Ipv4Addr>>::new();
-        let mut machine_services = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
+        let mut identities = HashMap::<QualifiedService, Vec<Ipv4Addr>>::new();
+        let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
         // Known IDs enter the index even with no serving addresses so empty ≠ missing.
         for container in &containers {
             service_ids
@@ -78,26 +79,27 @@ impl Projection {
             let address = observation
                 .address
                 .expect("Serving Container has a Container Address");
+            let identity = observation.identity();
             service_ids
                 .entry(observation.service_id)
                 .or_default()
                 .push(address.0);
-            names
-                .entry(observation.service_name.clone())
+            identities
+                .entry(identity.clone())
                 .or_default()
                 .push(address.0);
-            machine_services
+            machine_identities
                 .entry(MachineServiceTarget {
                     machine_id: observation.machine_id,
-                    service_name: observation.service_name.clone(),
+                    identity,
                 })
                 .or_default()
                 .push(address.0);
         }
         Self {
             service_ids,
-            names,
-            machine_services,
+            identities,
+            machine_identities,
         }
     }
 
@@ -149,21 +151,42 @@ impl Projection {
             Target::Empty => Vec::new(),
             Target::ServiceId(id) => match self.service_id_index(id) {
                 ServiceIdIndex::Known(addresses) => addresses.to_vec(),
-                ServiceIdIndex::Unknown => self
-                    .names
-                    .get(
-                        &ServiceName::parse(id.as_str())
-                            .expect("a Service ID is a DNS-label Service Name"),
-                    )
-                    .cloned()
-                    .unwrap_or_default(),
+                ServiceIdIndex::Unknown => self.unique_name_addresses(
+                    &ServiceName::parse(id.as_str())
+                        .expect("a Service ID is a DNS-label Service Name"),
+                ),
             },
-            Target::ServiceName(name) => self.names.get(name).cloned().unwrap_or_default(),
-            Target::MachineService(target) => self
-                .machine_services
+            Target::Identity(identity) => {
+                self.identities.get(identity).cloned().unwrap_or_default()
+            }
+            Target::ServiceName(name) => self.unique_name_addresses(name),
+            Target::MachineIdentity(target) => self
+                .machine_identities
                 .get(target)
                 .cloned()
                 .unwrap_or_default(),
+            Target::MachineServiceName(target) => self.unique_machine_name_addresses(target),
+        }
+    }
+
+    fn unique_name_addresses(&self, name: &ServiceName) -> Vec<Ipv4Addr> {
+        let mut matches = self
+            .identities
+            .iter()
+            .filter(|(identity, _)| &identity.name == name);
+        match (matches.next(), matches.next()) {
+            (Some((_, addresses)), None) => addresses.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn unique_machine_name_addresses(&self, target: &MachineServiceNameTarget) -> Vec<Ipv4Addr> {
+        let mut matches = self.machine_identities.iter().filter(|(key, _)| {
+            key.machine_id == target.machine_id && key.identity.name == target.service_name
+        });
+        match (matches.next(), matches.next()) {
+            (Some((_, addresses)), None) => addresses.clone(),
+            _ => Vec::new(),
         }
     }
 
@@ -626,6 +649,69 @@ mod tests {
                 subnet,
             )),
             [Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)].into()
+        );
+    }
+
+    #[test]
+    fn two_projects_keep_separate_qualified_answers() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let staging_id = ServiceId::parse("b".repeat(32)).unwrap();
+        let prod_id = ServiceId::parse("c".repeat(32)).unwrap();
+        let name = ServiceName::parse("web").unwrap();
+        let mut staging = observation(
+            1,
+            &machine,
+            &staging_id,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 2]),
+        );
+        staging.project_name = ProjectName::parse("shop-staging").unwrap();
+        let mut prod = observation(
+            2,
+            &machine,
+            &prod_id,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 3]),
+        );
+        prod.project_name = ProjectName::parse("shop-prod").unwrap();
+        let projection = Projection::from_observations(&[staging, prod]);
+        let subnet = "10.210.1.0/24".parse().unwrap();
+
+        assert!(
+            addresses(projection.plan(
+                &Name::from_ascii("web.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+            ))
+            .is_empty()
+        );
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii("web.shop-staging.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 2)]
+        );
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii("web.shop-prod.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 3)]
+        );
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii(format!("{machine}.m.web.shop-staging.internal.")).unwrap(),
+                RecordType::A,
+                subnet,
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 2)]
         );
     }
 

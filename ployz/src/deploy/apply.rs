@@ -94,21 +94,24 @@ pub(crate) async fn deploy_scale(
     auto_confirm: bool,
     project: &ResolvedProject,
 ) -> Result<(), Failure> {
-    let preview = plan_scale(
+    let (preview, project_name) = plan_scale(
         client,
         selector,
         replicas,
         plan_options(false, skip_health_monitor),
-        &project.name,
     )
     .await?;
     print_warnings(&preview);
+    let project = ResolvedProject {
+        name: project_name,
+        source: project.source,
+    };
     if preview.operations.is_empty() {
-        render(&[], client.connection(), Some(project));
+        render(&[], client.connection(), Some(&project));
         println!("No changes.");
         return Ok(());
     }
-    confirm_and_execute(client, &preview.operations, auto_confirm, project).await
+    confirm_and_execute(client, &preview.operations, auto_confirm, &project).await
 }
 
 async fn confirm_and_execute(

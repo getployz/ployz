@@ -103,23 +103,22 @@ fn sequence_failure_keeps_completed_failed_and_unexecuted_operations_exact() {
 }
 
 #[test]
-fn duplicate_service_names_are_reported_without_selecting_a_winner() {
+fn two_projects_can_each_own_the_same_service_name() {
     let requested = requested(ServiceMode::Global);
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![
-            container('b', '1', &requested, &service_id('a')),
-            container('c', '1', &requested, &service_id('d')),
-        ],
-        ..Default::default()
-    };
+    let mut other = container('c', '1', &requested, &service_id('d'));
+    other.project_name = ProjectName::parse("shop-prod").unwrap();
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![container('b', '1', &requested, &service_id('a')), other],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
 
-    assert_eq!(
-        plan_deploy([&requested], &snapshot, PlanOptions::default(),),
-        Err(PlanError::AmbiguousService {
-            matches: vec![service_id('a'), service_id('d')],
-        })
-    );
+    assert!(plan.operations.is_empty());
 }
 
 #[test]

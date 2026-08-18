@@ -463,7 +463,7 @@ async fn custom_configs_exclude_hook_containers() {
     .await;
 
     assert!(caddyfile.contains(
-        "# User-defined config for Service 'api'.\n\
+        "# User-defined config for Service 'app/api'.\n\
 api.example { reverse_proxy 10.210.1.2 }"
     ));
     assert!(!caddyfile.contains("hook.example"));
@@ -580,24 +580,24 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
 # Automatically updated on Service or health status changes.\n\
 # Docs: https://github.com/getployz/ployz2\n\
 \n\
-# User-defined global config from Service 'caddy'.\n\
+# User-defined global config from Service 'ployz-system/caddy'.\n\
 {\n\tauto_https off\n\tadmin unix/10.210.1.2 10.210.2.2\n}\n\n"
     ));
     assert!(caddyfile.contains(
-        "# User-defined config for Service 'api'.\n\
+        "# User-defined config for Service 'app/api'.\n\
 api.example { reverse_proxy 10.210.1.2 10.210.2.2 }"
     ));
     assert!(!caddyfile.contains("old.example"));
     assert!(caddyfile.contains(
-        "# User-defined config for Service 'gateway'.\n\
+        "# User-defined config for Service 'app/gateway'.\n\
 gateway.example { reverse_proxy 10.210.1.2:9000 10.210.2.2:9000 }"
     ));
     assert!(caddyfile.contains(
         "# Skipped invalid user-defined configs:\n\
-# - Service 'invalid': validation failed: invalid config detected\n"
+# - Service 'app/invalid': validation failed: invalid config detected\n"
     ));
     assert!(caddyfile.contains(
-        "# User-defined config for Service 'web'.\n\
+        "# User-defined config for Service 'app/web'.\n\
 web.example { reverse_proxy 10.210.1.6:8080 }"
     ));
     assert!(caddyfile.contains("external.example { respond external }"));
@@ -660,7 +660,7 @@ async fn broken_global_template_does_not_hide_valid_service_configs() {
         Some(&FakeAdmin::default()),
     )
     .await;
-    assert!(caddyfile.contains("Service 'caddy': rendering failed"));
+    assert!(caddyfile.contains("Service 'ployz-system/caddy': rendering failed"));
     assert!(caddyfile.contains("#   injected.example { respond owned }"));
     assert!(
         !caddyfile

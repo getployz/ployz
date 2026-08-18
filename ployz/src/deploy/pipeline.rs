@@ -161,18 +161,24 @@ pub(super) async fn plan_scale(
     selector: &ServiceSelector,
     replicas: NonZeroU32,
     options: PlanOptions,
-    project_name: &ProjectName,
-) -> Result<DeployPreview, Failure> {
+) -> Result<(DeployPreview, ProjectName), Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    let Some(requested) = choose_scale_spec(&snapshot, selector, replicas, project_name)? else {
-        return Ok(DeployPreview {
-            operations: Vec::new(),
-            warnings,
-        });
+    let choice = choose_scale_spec(&snapshot, selector, replicas)?;
+    let Some(requested) = choice.requested else {
+        return Ok((
+            DeployPreview {
+                operations: Vec::new(),
+                warnings,
+            },
+            choice.project_name,
+        ));
     };
-    let mut intent = DeployIntent::apply_one(project_name.clone(), requested, options);
-    Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
+    let mut intent = DeployIntent::apply_one(choice.project_name.clone(), requested, options);
+    Ok((
+        prepare_intent(client, snapshot, warnings, &mut intent).await?,
+        choice.project_name,
+    ))
 }
 
 async fn prepare_intent(
@@ -209,13 +215,18 @@ pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> P
     }
 }
 
+#[derive(Debug)]
+struct ScaleSpec {
+    project_name: ProjectName,
+    requested: Option<RequestedServiceSpec>,
+}
+
 fn choose_scale_spec(
     snapshot: &DeploySnapshot,
     selector: &ServiceSelector,
     replicas: NonZeroU32,
-    project_name: &ProjectName,
-) -> Result<Option<RequestedServiceSpec>, Failure> {
-    let services = snapshot.services_in(project_name);
+) -> Result<ScaleSpec, Failure> {
+    let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
     let service = select_service(&services, selector)?;
     let observed_container = service
         .containers
@@ -226,13 +237,20 @@ fn choose_scale_spec(
         ServiceMode::Replicated { .. } => {}
         ServiceMode::Global => return Err(Failure::usage("global services cannot be scaled")),
     }
+    let project_name = service.identity.project.clone();
     if usize::try_from(replicas.get()) == Ok(service.containers.len()) {
-        return Ok(None);
+        return Ok(ScaleSpec {
+            project_name,
+            requested: None,
+        });
     }
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
     let mut requested = observed_container.resolved_spec.to_requested();
     requested.mode = ServiceMode::Replicated { replicas };
-    Ok(Some(requested))
+    Ok(ScaleSpec {
+        project_name,
+        requested: Some(requested),
+    })
 }
 
 pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {
