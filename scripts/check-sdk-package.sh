@@ -31,6 +31,12 @@ const pkg = require("@ployz/sdk/package.json");
 if (pkg.name !== "@ployz/sdk") {
   throw new Error(`expected npm name @ployz/sdk, got ${pkg.name}`);
 }
+if (pkg.private === true) {
+  throw new Error("@ployz/sdk must be publishable");
+}
+if (!pkg.publishConfig || pkg.publishConfig.access !== "public") {
+  throw new Error("@ployz/sdk must publish as a public scoped package");
+}
 const sdk = require("@ployz/sdk");
 if (typeof sdk.packageName !== "function") {
   throw new Error("packageName export is missing");

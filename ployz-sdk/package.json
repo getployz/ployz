@@ -1,7 +1,6 @@
 {
   "name": "@ployz/sdk",
   "version": "0.1.2-beta.3",
-  "private": true,
   "description": "Ployz Cloud SDK. Public payloads are generated from Rust.",
   "repository": {
     "type": "git",
@@ -16,7 +15,19 @@
     "generated",
     "ployz-sdk.node"
   ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

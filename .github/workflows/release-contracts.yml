@@ -14,6 +14,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - .github/workflows/release-published.yml
+      - .github/workflows/publish-sdk.yml
       - .github/workflows/release-contracts.yml
       - .goreleaser.yaml
       - install.sh
@@ -27,6 +28,8 @@ on:
       - scripts/release-tag.sh
       - scripts/homebrew-formula.sh
       - scripts/promote-release.sh
+      - scripts/pack-sdk-package.sh
+      - scripts/publish-sdk-package.sh
       - scripts/test-release-contracts.sh
       - scripts/test-cli-installer.sh
       - scripts/test-daemon-lifecycle.sh

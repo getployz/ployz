@@ -38,6 +38,11 @@ assert_contains "$ROOT/.github/workflows/release.yml" "uses: ./.github/workflows
 assert_contains "$ROOT/.github/workflows/release.yml" "needs: [tag, artifacts]"
 assert_contains "$ROOT/.github/workflows/release-published.yml" "promote-release.sh"
 assert_contains "$ROOT/.github/workflows/release-published.yml" "types: [published]"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "publish-sdk-package.sh"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "id-token: write"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "registry-url: https://registry.npmjs.org"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "types: [published]"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "workflow_dispatch"
 assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "branches: [main]"
 assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "workflow_dispatch"
 assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "stage-ployz-sh-site.sh"
@@ -332,5 +337,41 @@ if grep -Eq '^RUN |^ADD ' "$ROOT/ployz-relay/Dockerfile"; then
     echo "relay Dockerfile is not scratch-only" >&2
     exit 1
 fi
+
+PLOYZ_SDK_PUBLISH_TEST_ONLY=true source "$ROOT/scripts/publish-sdk-package.sh"
+assert_eq "$(sdk_npm_publish_args v1.2.3-beta.1 | tr '\n' ' ')" "--access public --tag beta "
+assert_eq "$(sdk_npm_publish_args v1.2.3 | tr '\n' ' ')" "--access public --tag latest "
+if sdk_npm_publish_args nightly >/dev/null 2>&1; then
+    echo "nightly tag was accepted for npm publish" >&2
+    exit 1
+fi
+
+sdk_src=$(mktemp -d)
+printf '%s\n' '{"name":"@ployz/sdk","version":"1.2.3","private":true,"main":"index.js"}' > "$sdk_src/package.json"
+printf 'js\n' > "$sdk_src/index.js"
+printf 'dts\n' > "$sdk_src/index.d.ts"
+mkdir -p "$sdk_src/generated"
+printf 'gen\n' > "$sdk_src/generated/payloads.d.ts"
+sdk_node=$(mktemp)
+printf 'cdylib\n' > "$sdk_node"
+sdk_dest=$(mktemp -d)
+if PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" "$sdk_node" >/dev/null 2>&1; then
+    echo "private sdk package was packed" >&2
+    exit 1
+fi
+printf '%s\n' '{"name":"@ployz/sdk","version":"1.2.3","main":"index.js","files":["index.js","index.d.ts","generated","ployz-sdk.node"],"publishConfig":{"access": "public"}}' > "$sdk_src/package.json"
+PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" "$sdk_node"
+assert_eq "$(cat "$sdk_dest/ployz-sdk.node")" cdylib
+assert_contains "$sdk_dest/package.json" '"access": "public"'
+if grep -Eq '"private":[[:space:]]*true' "$sdk_dest/package.json"; then
+    echo "packed sdk package is still private" >&2
+    exit 1
+fi
+if PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" >/dev/null 2>&1; then
+    echo "sdk pack without a native binding was accepted" >&2
+    exit 1
+fi
+rm -rf "$sdk_src" "$sdk_dest"
+rm -f "$sdk_node"
 
 echo "release contracts passed"

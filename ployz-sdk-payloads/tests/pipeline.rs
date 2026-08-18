@@ -33,6 +33,8 @@ fn npm_package_identity_matches_the_napi_crate() {
     assert_eq!(pkg_field(&pkg, "version"), env!("CARGO_PKG_VERSION"));
     assert_eq!(pkg_field(&pkg, "main"), "index.js");
     assert_eq!(pkg_field(&pkg, "types"), "index.d.ts");
+    assert_ne!(pkg.get("private"), Some(&Value::Bool(true)));
+    assert_eq!(pkg_field(&pkg, "publishConfig")["access"], "public");
 }
 
 #[test]

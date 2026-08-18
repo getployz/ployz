@@ -1,0 +1,27 @@
+name: Publish SDK
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose @ployz/sdk to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - run: bash scripts/publish-sdk-package.sh "${{ github.event.release.tag_name || inputs.tag }}"

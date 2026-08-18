@@ -36,6 +36,8 @@ Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. Nightly, `-rc`, and oth
 
 Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel updates use `GITHUB_TOKEN`. Publish then dispatches `ployz.sh`, which deploys `install.sh` plus the `channels` branch files to Cloudflare Pages.
 
+The same `release: published` event runs `publish-sdk.yml`, which publishes `@ployz/sdk` to npm (`beta` dist-tag on beta tags, `latest` on stable). The tarball is linux-x64-gnu. npm trusted publishing is configured for `getployz/ployz2` workflow `publish-sdk.yml` (no `NPM_TOKEN`). To publish a tag whose GitHub Release already exists, dispatch `publish-sdk.yml` from a commit whose `ployz-sdk/package.json` version matches the tag.
+
 ## Install
 
 ```sh
