@@ -620,7 +620,7 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
             1,
             &local,
             "caddy",
-            "{\n\tadmin unix/{{upstreams \"api\"}}\n}",
+            "{\n\tadmin unix/{{upstreams \"app/api\"}}\n}",
             [10, 210, 1, 1],
         )),
         custom_observation(
@@ -704,6 +704,84 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
     ));
     assert!(caddyfile.contains("external.example { respond external }"));
     assert_eq!(admin.adapted.lock().unwrap().len(), 6);
+}
+
+#[tokio::test]
+async fn custom_upstream_short_names_do_not_cross_projects() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let mut staging_web = custom_observation(
+        2,
+        1,
+        &local,
+        "web",
+        "staging.example { reverse_proxy {{upstreams \"api\"}} }",
+        [10, 210, 1, 2],
+    );
+    staging_web.project_name = ProjectName::parse("shop-staging").unwrap();
+    let mut prod_api = custom_observation(
+        3,
+        1,
+        &local,
+        "api",
+        "api.example { respond api }",
+        [10, 210, 1, 11],
+    );
+    prod_api.project_name = ProjectName::parse("shop-prod").unwrap();
+    let mut prod_web = custom_observation(
+        4,
+        1,
+        &local,
+        "web",
+        "prod.example { reverse_proxy {{upstreams \"api\"}} }",
+        [10, 210, 1, 3],
+    );
+    prod_web.project_name = ProjectName::parse("shop-prod").unwrap();
+    let mut staging_other = custom_observation(
+        5,
+        1,
+        &local,
+        "other",
+        "cross.example { reverse_proxy {{upstreams \"shop-prod/api\"}} }",
+        [10, 210, 1, 4],
+    );
+    staging_other.project_name = ProjectName::parse("shop-staging").unwrap();
+    let observations = vec![
+        reserved(custom_observation(
+            1,
+            1,
+            &local,
+            "caddy",
+            "{\n\tadmin unix/{{upstreams \"api\"}}\n}",
+            [10, 210, 1, 1],
+        )),
+        staging_web,
+        prod_api,
+        prod_web,
+        staging_other,
+    ];
+    let admin = FakeAdmin::default();
+
+    let caddyfile = generate_caddyfile(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &BTreeMap::new(),
+        Some(&admin),
+    )
+    .await;
+
+    assert!(caddyfile.contains("Service 'ployz-system/caddy': rendering failed:"));
+    assert!(caddyfile.contains("Service 'shop-staging/web': rendering failed:"));
+    assert!(caddyfile.contains(
+        "# User-defined config for Service 'shop-prod/web'.\n\
+prod.example { reverse_proxy 10.210.1.11 }"
+    ));
+    assert!(caddyfile.contains(
+        "# User-defined config for Service 'shop-staging/other'.\n\
+cross.example { reverse_proxy 10.210.1.11 }"
+    ));
+    assert!(!caddyfile.contains("staging.example"));
 }
 
 #[tokio::test]

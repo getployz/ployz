@@ -19,8 +19,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, ProjectName, QualifiedService, ServiceId, ServiceName,
-    service_containers, serving_replicas,
+    ContainerObservation, Machine, ProjectName, QualifiedService, ServiceId, service_containers,
+    serving_replicas,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -32,7 +32,7 @@ use crate::corrosion::{ReplicatedStore, Subscription};
 
 mod query;
 
-use query::{InternalQuery, MachineServiceNameTarget, MachineServiceTarget, Query, Target, parse};
+use query::{InternalQuery, MachineServiceTarget, Query, Target, parse};
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
@@ -46,12 +46,6 @@ enum ResponsePlan {
         code: ResponseCode,
         answers: Vec<Record>,
     },
-}
-
-/// ID-index lookup. [`Known`] empty is NXDOMAIN; [`Unknown`] falls back to names.
-enum ServiceIdIndex<'index> {
-    Known(&'index [Ipv4Addr]),
-    Unknown,
 }
 
 /// Observer-relative Caller Project from a source Container Address.
@@ -76,11 +70,9 @@ impl Projection {
         let mut identities = HashMap::<QualifiedService, Vec<Ipv4Addr>>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
         let mut callers = HashMap::<Ipv4Addr, CallerProject>::new();
-        // Known IDs enter the index even with no serving addresses so empty ≠ missing.
         // Caller matching uses every addressed Service Container, not Serving Containers.
         for container in &containers {
             let observation = container.as_observation();
-            service_ids.entry(observation.service_id).or_default();
             let Some(address) = observation.address else {
                 continue;
             };
@@ -161,11 +153,19 @@ impl Projection {
                     Target::Identity(QualifiedService::new(project.clone(), service_name))
                 })
                 .unwrap_or(Target::Empty),
+            Target::MachineServiceName(target) => self
+                .caller_project(source)
+                .map(|project| {
+                    Target::MachineIdentity(MachineServiceTarget {
+                        machine_id: target.machine_id,
+                        identity: QualifiedService::new(project.clone(), target.service_name),
+                    })
+                })
+                .unwrap_or(Target::Empty),
             target @ (Target::Empty
             | Target::ServiceId(_)
             | Target::Identity(_)
-            | Target::MachineIdentity(_)
-            | Target::MachineServiceName(_)) => target,
+            | Target::MachineIdentity(_)) => target,
         };
         let mut addresses = self.addresses(&target);
         if query.nearest {
@@ -190,25 +190,16 @@ impl Projection {
 
     fn addresses(&self, target: &Target) -> Vec<Ipv4Addr> {
         match target {
-            Target::Empty => Vec::new(),
-            Target::ServiceId(id) => match self.service_id_index(id) {
-                ServiceIdIndex::Known(addresses) => addresses.to_vec(),
-                ServiceIdIndex::Unknown => self.unique_name_addresses(
-                    &ServiceName::parse(id.as_str())
-                        .expect("a Service ID is a DNS-label Service Name"),
-                ),
-            },
+            Target::Empty | Target::ServiceName(_) | Target::MachineServiceName(_) => Vec::new(),
+            Target::ServiceId(id) => self.service_ids.get(id).cloned().unwrap_or_default(),
             Target::Identity(identity) => {
                 self.identities.get(identity).cloned().unwrap_or_default()
             }
-            // Short names become Identity or Empty in plan_internal before lookup.
-            Target::ServiceName(_) => Vec::new(),
             Target::MachineIdentity(target) => self
                 .machine_identities
                 .get(target)
                 .cloned()
                 .unwrap_or_default(),
-            Target::MachineServiceName(target) => self.unique_machine_name_addresses(target),
         }
     }
 
@@ -219,34 +210,6 @@ impl Projection {
         match self.callers.get(&source) {
             Some(CallerProject::Unique(project)) => Some(project),
             Some(CallerProject::Ambiguous) | None => None,
-        }
-    }
-
-    fn unique_name_addresses(&self, name: &ServiceName) -> Vec<Ipv4Addr> {
-        let mut matches = self
-            .identities
-            .iter()
-            .filter(|(identity, _)| &identity.name == name);
-        match (matches.next(), matches.next()) {
-            (Some((_, addresses)), None) => addresses.clone(),
-            _ => Vec::new(),
-        }
-    }
-
-    fn unique_machine_name_addresses(&self, target: &MachineServiceNameTarget) -> Vec<Ipv4Addr> {
-        let mut matches = self.machine_identities.iter().filter(|(key, _)| {
-            key.machine_id == target.machine_id && key.identity.name == target.service_name
-        });
-        match (matches.next(), matches.next()) {
-            (Some((_, addresses)), None) => addresses.clone(),
-            _ => Vec::new(),
-        }
-    }
-
-    fn service_id_index(&self, id: &ServiceId) -> ServiceIdIndex<'_> {
-        match self.service_ids.get(id) {
-            Some(addresses) => ServiceIdIndex::Known(addresses),
-            None => ServiceIdIndex::Unknown,
         }
     }
 }

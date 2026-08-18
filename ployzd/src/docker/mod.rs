@@ -22,7 +22,7 @@ use ployz_core::{
     ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation,
     HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, ProjectName,
-    RpcErrorCode, ServiceId, ServiceName, ValueError,
+    QualifiedService, RpcErrorCode, ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -76,7 +76,10 @@ impl LocalDocker {
     }
 
     async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
-        let filters = HashMap::from([("label", vec![LABEL_MANAGED, LABEL_SERVICE_ID])]);
+        let filters = HashMap::from([(
+            "label",
+            vec![LABEL_MANAGED, LABEL_PROJECT_NAME, LABEL_SERVICE_ID],
+        )]);
         let options = ListContainersOptionsBuilder::default()
             .all(true)
             .filters(&filters)
@@ -183,7 +186,11 @@ impl ContainerRuntime {
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::MissingField("container labels"))?;
-        let managed = ManagedLabels::parse(labels)?;
+        let ManagedLabels {
+            identity,
+            service_id,
+            kind,
+        } = ManagedLabels::parse(labels)?;
         let resolved_spec = self
             .specs
             .get(container_id)
@@ -195,10 +202,10 @@ impl ContainerRuntime {
             display_name: display_name(inspected.name.as_deref()),
             created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
             machine_id: *machine_id,
-            project_name: managed.project_name,
-            service_id: managed.service_id,
-            service_name: managed.service_name,
-            kind: managed.kind,
+            project_name: identity.project,
+            service_id,
+            service_name: identity.name,
+            kind,
             runtime: runtime_observation(inspected.state.as_ref()),
             effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
             resolved_spec,
@@ -340,9 +347,8 @@ fn created_at_unix_nanos(created: Option<&str>) -> i64 {
 }
 
 struct ManagedLabels {
-    project_name: ProjectName,
+    identity: QualifiedService,
     service_id: ServiceId,
-    service_name: ServiceName,
     kind: ContainerKind,
 }
 
@@ -354,28 +360,25 @@ impl ManagedLabels {
         let project_name = required_label(labels, LABEL_PROJECT_NAME)?;
         let service_id = required_label(labels, LABEL_SERVICE_ID)?;
         let service_name = required_label(labels, LABEL_SERVICE_NAME)?;
-        let kind = match labels.get(LABEL_HOOK) {
-            None => ContainerKind::ServiceContainer,
-            Some(_) => ContainerKind::PreDeployHook,
-        };
         Ok(Self {
-            project_name: ProjectName::parse(project_name).map_err(|source| {
-                Error::InvalidValue {
+            identity: QualifiedService::new(
+                ProjectName::parse(project_name).map_err(|source| Error::InvalidValue {
                     field: LABEL_PROJECT_NAME,
                     source,
-                }
-            })?,
+                })?,
+                ServiceName::parse(service_name).map_err(|source| Error::InvalidValue {
+                    field: LABEL_SERVICE_NAME,
+                    source,
+                })?,
+            ),
             service_id: ServiceId::parse(service_id).map_err(|source| Error::InvalidValue {
                 field: LABEL_SERVICE_ID,
                 source,
             })?,
-            service_name: ServiceName::parse(service_name).map_err(|source| {
-                Error::InvalidValue {
-                    field: LABEL_SERVICE_NAME,
-                    source,
-                }
-            })?,
-            kind,
+            kind: match labels.get(LABEL_HOOK) {
+                None => ContainerKind::ServiceContainer,
+                Some(_) => ContainerKind::PreDeployHook,
+            },
         })
     }
 }
@@ -1166,8 +1169,8 @@ mod tests {
         ]);
         let parsed = ManagedLabels::parse(&labels).unwrap();
         assert_eq!(parsed.kind, ContainerKind::ServiceContainer);
-        assert_eq!(parsed.project_name.as_str(), "app");
-        assert_eq!(parsed.service_name.as_str(), "api");
+        assert_eq!(parsed.identity.project.as_str(), "app");
+        assert_eq!(parsed.identity.name.as_str(), "api");
         labels.insert(LABEL_HOOK.to_owned(), LABEL_HOOK_PRE_DEPLOY.to_owned());
         assert_eq!(
             ManagedLabels::parse(&labels).unwrap().kind,

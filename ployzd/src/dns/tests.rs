@@ -171,9 +171,27 @@ fn resolves_name_id_machine_and_nearest_without_dropping_duplicates() {
         )),
         vec![Ipv4Addr::new(10, 210, 2, 2)]
     );
+    assert!(
+        addresses(projection.plan(
+            &Name::from_ascii(format!("{local}.m.api.internal.")).unwrap(),
+            RecordType::A,
+            subnet,
+            HOST,
+        ))
+        .is_empty()
+    );
     assert_eq!(
         addresses(projection.plan(
             &Name::from_ascii(format!("{local}.m.api.internal.")).unwrap(),
+            RecordType::A,
+            subnet,
+            caller,
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+    assert_eq!(
+        addresses(projection.plan(
+            &Name::from_ascii(format!("{local}.m.api.app.internal.")).unwrap(),
             RecordType::A,
             subnet,
             HOST,
@@ -265,6 +283,35 @@ fn two_projects_keep_separate_qualified_answers() {
         )),
         vec![Ipv4Addr::new(10, 210, 1, 2)]
     );
+    assert!(
+        addresses(projection.plan(
+            &Name::from_ascii(format!("{machine}.m.web.internal.")).unwrap(),
+            RecordType::A,
+            subnet,
+            HOST,
+        ))
+        .is_empty()
+    );
+    let staging_caller = IpAddr::V4(Ipv4Addr::new(10, 210, 1, 2));
+    let prod_caller = IpAddr::V4(Ipv4Addr::new(10, 210, 1, 3));
+    assert_eq!(
+        addresses(projection.plan(
+            &Name::from_ascii(format!("{machine}.m.web.internal.")).unwrap(),
+            RecordType::A,
+            subnet,
+            staging_caller,
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+    assert_eq!(
+        addresses(projection.plan(
+            &Name::from_ascii(format!("{machine}.m.web.internal.")).unwrap(),
+            RecordType::A,
+            subnet,
+            prod_caller,
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 3)]
+    );
 }
 
 #[test]
@@ -348,7 +395,7 @@ fn empty_service_id_selector_does_not_fall_back_to_a_colliding_name() {
 }
 
 #[test]
-fn unknown_service_id_falls_back_to_the_name_index() {
+fn unknown_service_id_does_not_resolve_as_a_service_name() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let missing_id = ServiceId::parse("b".repeat(32)).unwrap();
     let other_id = ServiceId::parse("c".repeat(32)).unwrap();
@@ -363,15 +410,18 @@ fn unknown_service_id_falls_back_to_the_name_index() {
         Some([10, 210, 1, 3]),
     )]);
 
-    assert_eq!(
-        addresses(projection.plan(
+    assert!(matches!(
+        projection.plan(
             &Name::from_ascii(format!("{missing_id}.internal.")).unwrap(),
             RecordType::A,
             "10.210.1.0/24".parse().unwrap(),
             HOST,
-        )),
-        vec![Ipv4Addr::new(10, 210, 1, 3)]
-    );
+        ),
+        ResponsePlan::Internal {
+            code: ResponseCode::NXDomain,
+            answers,
+        } if answers.is_empty()
+    ));
 }
 
 #[test]

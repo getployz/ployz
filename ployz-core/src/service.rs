@@ -727,6 +727,27 @@ mod tests {
     }
 
     #[test]
+    fn derived_service_observation_rejects_name_without_project_identity() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let derived = super::derive_services([observation(
+            '1',
+            &service_id,
+            "api",
+            ContainerKind::ServiceContainer,
+            "v1",
+        )])
+        .pop()
+        .unwrap();
+        let mut json = serde_json::to_value(&derived).unwrap();
+        let object = json
+            .as_object_mut()
+            .expect("Service observation serializes as an object");
+        object.remove("identity");
+        object.insert("name".into(), json!("api"));
+        assert!(serde_json::from_value::<super::ServiceObservation>(json).is_err());
+    }
+
+    #[test]
     fn start_excludes_hooks_while_stop_and_remove_include_them() {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
         let service = super::derive_services([

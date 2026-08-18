@@ -11,7 +11,7 @@ use ployz_core::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{ContainerRuntime, Error, LABEL_MANAGED};
+use super::{ContainerRuntime, Error, LABEL_MANAGED, LABEL_PROJECT_NAME};
 use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot, ReplicatedStore};
 use crate::machine::LocalMachineStore;
 
@@ -104,7 +104,7 @@ impl ContainerRuntime {
             HashMap::from([
                 ("type", vec!["container"]),
                 ("scope", vec!["local"]),
-                ("label", vec![LABEL_MANAGED]),
+                ("label", vec![LABEL_MANAGED, LABEL_PROJECT_NAME]),
                 (
                     "event",
                     vec![

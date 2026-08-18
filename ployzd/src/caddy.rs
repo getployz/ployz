@@ -1,7 +1,7 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, IngressHostname, Machine,
-    MachineId, PortPublication, QualifiedService, ServiceContainer, hostname_owners,
+    MachineId, PortPublication, QualifiedService, ServiceContainer, ServiceName, hostname_owners,
     service_containers, serving_replicas,
 };
 use reqwest::{Client, StatusCode, header};
@@ -511,27 +511,22 @@ fn upstream_identity(
     if argument == ".Name" {
         return Ok(current_service.clone());
     }
-    if let Ok(identity) = QualifiedService::parse(argument) {
-        return Ok(identity);
-    }
-    let mut matches = containers
+    let identity = if let Ok(identity) = QualifiedService::parse(argument) {
+        identity
+    } else {
+        let name = ServiceName::parse(argument)
+            .map_err(|_| Error::Template(format!("Service '{argument}' was not found")))?;
+        QualifiedService::new(current_service.project.clone(), name)
+    };
+    if containers
         .iter()
-        .map(|container| container.as_observation().identity())
-        .filter(|identity| identity.name.as_str() == argument)
-        .collect::<BTreeSet<_>>();
-    match matches.len() {
-        1 => Ok(matches.pop_first().expect("length checked")),
-        0 => Err(Error::Template(format!(
+        .any(|container| container.as_observation().identity() == identity)
+    {
+        Ok(identity)
+    } else {
+        Err(Error::Template(format!(
             "Service '{argument}' was not found"
-        ))),
-        _ => Err(Error::Template(format!(
-            "Service Name \"{argument}\" matches multiple Services: {}",
-            matches
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
+        )))
     }
 }
 
