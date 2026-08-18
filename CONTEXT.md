@@ -192,6 +192,10 @@ _Avoid_: replica, endpoint, upstream
 An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations. It is not persisted and is not authoritative Cluster state even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, membership-filtered endpoint set
 
+**Caller Project**:
+The Project attributed to an Internal DNS query by matching its source Container Address to exactly one visible Service Container. It is observer-relative attribution, not authenticated identity; zero or several matches mean there is no Caller Project.
+_Avoid_: caller identity, authenticated client, source registry
+
 **Ingress Hostname**:
 The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
 _Avoid_: empty hostname sentinel

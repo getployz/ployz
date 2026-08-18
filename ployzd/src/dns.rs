@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, RwLock},
@@ -19,8 +19,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, QualifiedService, ServiceId, ServiceName, service_containers,
-    serving_replicas,
+    ContainerObservation, Machine, ProjectName, QualifiedService, ServiceId, ServiceName,
+    service_containers, serving_replicas,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -54,10 +54,17 @@ enum ServiceIdIndex<'index> {
     Unknown,
 }
 
+/// Observer-relative Caller Project from a source Container Address.
+enum CallerProject {
+    Unique(ProjectName),
+    Ambiguous,
+}
+
 struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
     identities: HashMap<QualifiedService, Vec<Ipv4Addr>>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
+    callers: HashMap<Ipv4Addr, CallerProject>,
 }
 
 impl Projection {
@@ -68,11 +75,23 @@ impl Projection {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, Vec<Ipv4Addr>>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
+        let mut callers = HashMap::<Ipv4Addr, CallerProject>::new();
         // Known IDs enter the index even with no serving addresses so empty ≠ missing.
+        // Caller matching uses every addressed Service Container, not Serving Containers.
         for container in &containers {
-            service_ids
-                .entry(container.as_observation().service_id)
-                .or_default();
+            let observation = container.as_observation();
+            service_ids.entry(observation.service_id).or_default();
+            let Some(address) = observation.address else {
+                continue;
+            };
+            match callers.entry(address.0) {
+                Entry::Vacant(entry) => {
+                    entry.insert(CallerProject::Unique(observation.project_name.clone()));
+                }
+                Entry::Occupied(mut entry) => {
+                    *entry.get_mut() = CallerProject::Ambiguous;
+                }
+            }
         }
         for container in serving_replicas(&containers) {
             let observation = container.as_observation();
@@ -100,13 +119,22 @@ impl Projection {
             service_ids,
             identities,
             machine_identities,
+            callers,
         }
     }
 
-    fn plan(&self, name: &Name, record_type: RecordType, local_subnet: Ipv4Net) -> ResponsePlan {
+    fn plan(
+        &self,
+        name: &Name,
+        record_type: RecordType,
+        local_subnet: Ipv4Net,
+        source: IpAddr,
+    ) -> ResponsePlan {
         match parse(name) {
             Query::Forward => ResponsePlan::Forward,
-            Query::Internal(query) => self.plan_internal(name, record_type, local_subnet, query),
+            Query::Internal(query) => {
+                self.plan_internal(name, record_type, local_subnet, source, query)
+            }
         }
     }
 
@@ -115,6 +143,7 @@ impl Projection {
         name: &Name,
         record_type: RecordType,
         local_subnet: Ipv4Net,
+        source: IpAddr,
         query: InternalQuery,
     ) -> ResponsePlan {
         if record_type != RecordType::A {
@@ -125,7 +154,20 @@ impl Projection {
                 answers: Vec::new(),
             };
         }
-        let mut addresses = self.addresses(&query.target);
+        let target = match query.target {
+            Target::ServiceName(service_name) => self
+                .caller_project(source)
+                .map(|project| {
+                    Target::Identity(QualifiedService::new(project.clone(), service_name))
+                })
+                .unwrap_or(Target::Empty),
+            target @ (Target::Empty
+            | Target::ServiceId(_)
+            | Target::Identity(_)
+            | Target::MachineIdentity(_)
+            | Target::MachineServiceName(_)) => target,
+        };
+        let mut addresses = self.addresses(&target);
         if query.nearest {
             addresses.sort_by_key(|address| !local_subnet.contains(address));
         }
@@ -159,13 +201,24 @@ impl Projection {
             Target::Identity(identity) => {
                 self.identities.get(identity).cloned().unwrap_or_default()
             }
-            Target::ServiceName(name) => self.unique_name_addresses(name),
+            // Short names become Identity or Empty in plan_internal before lookup.
+            Target::ServiceName(_) => Vec::new(),
             Target::MachineIdentity(target) => self
                 .machine_identities
                 .get(target)
                 .cloned()
                 .unwrap_or_default(),
             Target::MachineServiceName(target) => self.unique_machine_name_addresses(target),
+        }
+    }
+
+    fn caller_project(&self, source: IpAddr) -> Option<&ProjectName> {
+        let IpAddr::V4(source) = source else {
+            return None;
+        };
+        match self.callers.get(&source) {
+            Some(CallerProject::Unique(project)) => Some(project),
+            Some(CallerProject::Ambiguous) | None => None,
         }
     }
 
@@ -222,6 +275,7 @@ impl RequestHandler for Handler {
                     info.query.original().name(),
                     info.query.query_type(),
                     self.local_subnet,
+                    info.src.ip(),
                 )
             })
             .unwrap_or(ResponsePlan::Internal {
@@ -461,501 +515,4 @@ fn failed_response(request: &Request, code: ResponseCode) -> ResponseInfo {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use ployz_core::{
-        ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation,
-        HealthObservation, MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName,
-    };
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn does_not_publish_hook_container_addresses() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        let service = ServiceId::parse("b".repeat(32)).unwrap();
-        let name = ServiceName::parse("api").unwrap();
-        let observations = [
-            observation(
-                1,
-                &machine,
-                &service,
-                &name,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, 2]),
-            ),
-            observation(
-                2,
-                &machine,
-                &service,
-                &name,
-                ContainerKind::PreDeployHook,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, 4]),
-            ),
-        ];
-
-        assert_eq!(
-            addresses(Projection::from_observations(&observations).plan(
-                &Name::from_ascii("api.internal.").unwrap(),
-                RecordType::A,
-                "10.210.1.0/24".parse().unwrap(),
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 2)]
-        );
-    }
-
-    #[test]
-    fn projects_only_healthy_addressed_service_containers() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        let service = ServiceId::parse("b".repeat(32)).unwrap();
-        let name = ServiceName::parse("api").unwrap();
-        let mut observations = vec![
-            observation(
-                1,
-                &machine,
-                &service,
-                &name,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, 2]),
-            ),
-            observation(
-                2,
-                &machine,
-                &service,
-                &name,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::NotConfigured),
-                Some([10, 210, 1, 3]),
-            ),
-        ];
-        for (suffix, kind, runtime, address) in [
-            (
-                3,
-                ContainerKind::PreDeployHook,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, 4]),
-            ),
-            (
-                4,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Starting),
-                Some([10, 210, 1, 5]),
-            ),
-            (
-                5,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Unhealthy),
-                Some([10, 210, 1, 6]),
-            ),
-            (
-                6,
-                ContainerKind::ServiceContainer,
-                ContainerRuntimeObservation::Exited { code: 0 },
-                Some([10, 210, 1, 7]),
-            ),
-            (
-                7,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                None,
-            ),
-        ] {
-            observations.push(observation(
-                suffix, &machine, &service, &name, kind, runtime, address,
-            ));
-        }
-
-        assert_eq!(
-            addresses(Projection::from_observations(&observations).plan(
-                &Name::from_ascii("api.internal.").unwrap(),
-                RecordType::A,
-                "10.210.1.0/24".parse().unwrap(),
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 1, 3)]
-        );
-    }
-
-    #[test]
-    fn resolves_name_id_machine_and_nearest_without_dropping_duplicates() {
-        let local = MachineId::parse("a".repeat(32)).unwrap();
-        let remote = MachineId::parse("c".repeat(32)).unwrap();
-        let first = ServiceId::parse("b".repeat(32)).unwrap();
-        let second = ServiceId::parse("d".repeat(32)).unwrap();
-        let name = ServiceName::parse("api").unwrap();
-        let observations = vec![
-            observation(
-                1,
-                &remote,
-                &first,
-                &name,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 2, 2]),
-            ),
-            observation(
-                2,
-                &local,
-                &second,
-                &name,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, 2]),
-            ),
-        ];
-        let projection = Projection::from_observations(&observations);
-        let subnet = "10.210.1.0/24".parse().unwrap();
-
-        assert_eq!(
-            address_set(projection.plan(
-                &Name::from_ascii("api.internal.").unwrap(),
-                RecordType::A,
-                subnet,
-            )),
-            [Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)].into()
-        );
-        assert_eq!(
-            addresses(projection.plan(
-                &Name::from_ascii(format!("{first}.internal.")).unwrap(),
-                RecordType::A,
-                subnet,
-            )),
-            vec![Ipv4Addr::new(10, 210, 2, 2)]
-        );
-        assert_eq!(
-            addresses(projection.plan(
-                &Name::from_ascii(format!("{local}.m.api.internal.")).unwrap(),
-                RecordType::A,
-                subnet,
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 2)]
-        );
-        assert_eq!(
-            addresses(projection.plan(
-                &Name::from_ascii("nearest.api.internal.").unwrap(),
-                RecordType::A,
-                subnet,
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
-        );
-        assert_eq!(
-            address_set(projection.plan(
-                &Name::from_ascii("rr.api.internal.").unwrap(),
-                RecordType::A,
-                subnet,
-            )),
-            [Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)].into()
-        );
-    }
-
-    #[test]
-    fn two_projects_keep_separate_qualified_answers() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        let staging_id = ServiceId::parse("b".repeat(32)).unwrap();
-        let prod_id = ServiceId::parse("c".repeat(32)).unwrap();
-        let name = ServiceName::parse("web").unwrap();
-        let mut staging = observation(
-            1,
-            &machine,
-            &staging_id,
-            &name,
-            ContainerKind::ServiceContainer,
-            running(HealthObservation::Healthy),
-            Some([10, 210, 1, 2]),
-        );
-        staging.project_name = ProjectName::parse("shop-staging").unwrap();
-        let mut prod = observation(
-            2,
-            &machine,
-            &prod_id,
-            &name,
-            ContainerKind::ServiceContainer,
-            running(HealthObservation::Healthy),
-            Some([10, 210, 1, 3]),
-        );
-        prod.project_name = ProjectName::parse("shop-prod").unwrap();
-        let projection = Projection::from_observations(&[staging, prod]);
-        let subnet = "10.210.1.0/24".parse().unwrap();
-
-        assert!(
-            addresses(projection.plan(
-                &Name::from_ascii("web.internal.").unwrap(),
-                RecordType::A,
-                subnet,
-            ))
-            .is_empty()
-        );
-        assert_eq!(
-            addresses(projection.plan(
-                &Name::from_ascii("web.shop-staging.internal.").unwrap(),
-                RecordType::A,
-                subnet,
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 2)]
-        );
-        assert_eq!(
-            addresses(projection.plan(
-                &Name::from_ascii("web.shop-prod.internal.").unwrap(),
-                RecordType::A,
-                subnet,
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 3)]
-        );
-        assert_eq!(
-            addresses(projection.plan(
-                &Name::from_ascii(format!("{machine}.m.web.shop-staging.internal.")).unwrap(),
-                RecordType::A,
-                subnet,
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 2)]
-        );
-    }
-
-    #[test]
-    fn service_id_selector_takes_precedence_over_a_colliding_name() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        let selected_id = ServiceId::parse("b".repeat(32)).unwrap();
-        let other_id = ServiceId::parse("c".repeat(32)).unwrap();
-        let colliding_name = ServiceName::parse(selected_id.to_string()).unwrap();
-        let selected_name = ServiceName::parse("selected").unwrap();
-        let projection = Projection::from_observations(&[
-            observation(
-                1,
-                &machine,
-                &selected_id,
-                &selected_name,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, 2]),
-            ),
-            observation(
-                2,
-                &machine,
-                &other_id,
-                &colliding_name,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, 3]),
-            ),
-        ]);
-
-        assert_eq!(
-            addresses(projection.plan(
-                &Name::from_ascii(format!("{selected_id}.internal.")).unwrap(),
-                RecordType::A,
-                "10.210.1.0/24".parse().unwrap(),
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 2)]
-        );
-    }
-
-    #[test]
-    fn empty_service_id_selector_does_not_fall_back_to_a_colliding_name() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        let selected_id = ServiceId::parse("b".repeat(32)).unwrap();
-        let other_id = ServiceId::parse("c".repeat(32)).unwrap();
-        let colliding_name = ServiceName::parse(selected_id.to_string()).unwrap();
-        let projection = Projection::from_observations(&[
-            observation(
-                1,
-                &machine,
-                &selected_id,
-                &ServiceName::parse("selected").unwrap(),
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Unhealthy),
-                Some([10, 210, 1, 2]),
-            ),
-            observation(
-                2,
-                &machine,
-                &other_id,
-                &colliding_name,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, 3]),
-            ),
-        ]);
-
-        assert!(matches!(
-            projection.plan(
-                &Name::from_ascii(format!("{selected_id}.internal.")).unwrap(),
-                RecordType::A,
-                "10.210.1.0/24".parse().unwrap(),
-            ),
-            ResponsePlan::Internal {
-                code: ResponseCode::NXDomain,
-                answers,
-            } if answers.is_empty()
-        ));
-    }
-
-    #[test]
-    fn unknown_service_id_falls_back_to_the_name_index() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        let missing_id = ServiceId::parse("b".repeat(32)).unwrap();
-        let other_id = ServiceId::parse("c".repeat(32)).unwrap();
-        let colliding_name = ServiceName::parse(missing_id.to_string()).unwrap();
-        let projection = Projection::from_observations(&[observation(
-            1,
-            &machine,
-            &other_id,
-            &colliding_name,
-            ContainerKind::ServiceContainer,
-            running(HealthObservation::Healthy),
-            Some([10, 210, 1, 3]),
-        )]);
-
-        assert_eq!(
-            addresses(projection.plan(
-                &Name::from_ascii(format!("{missing_id}.internal.")).unwrap(),
-                RecordType::A,
-                "10.210.1.0/24".parse().unwrap(),
-            )),
-            vec![Ipv4Addr::new(10, 210, 1, 3)]
-        );
-    }
-
-    #[test]
-    fn plans_internal_protocol_responses_and_external_forwarding() {
-        let projection = Projection::from_observations(&[]);
-        let subnet = "10.210.1.0/24".parse().unwrap();
-
-        assert_eq!(
-            projection.plan(
-                &Name::from_ascii("internal.").unwrap(),
-                RecordType::A,
-                subnet,
-            ),
-            ResponsePlan::Internal {
-                code: ResponseCode::NXDomain,
-                answers: Vec::new(),
-            }
-        );
-        assert_eq!(
-            projection.plan(
-                &Name::from_ascii("missing.internal.").unwrap(),
-                RecordType::A,
-                subnet,
-            ),
-            ResponsePlan::Internal {
-                code: ResponseCode::NXDomain,
-                answers: Vec::new(),
-            }
-        );
-        for record_type in [RecordType::AAAA, RecordType::SRV, RecordType::TXT] {
-            assert_eq!(
-                projection.plan(
-                    &Name::from_ascii("missing.internal.").unwrap(),
-                    record_type,
-                    subnet,
-                ),
-                ResponsePlan::Internal {
-                    code: ResponseCode::NoError,
-                    answers: Vec::new(),
-                }
-            );
-        }
-        assert_eq!(
-            projection.plan(
-                &Name::from_ascii("example.com.").unwrap(),
-                RecordType::A,
-                subnet,
-            ),
-            ResponsePlan::Forward
-        );
-    }
-
-    #[test]
-    fn explicit_upstreams_override_system_configuration() {
-        let upstreams = vec!["192.0.2.53:5353".parse().unwrap()];
-        assert_eq!(
-            configured_upstreams(Some(upstreams.clone()), Ipv4Addr::new(10, 210, 1, 1)),
-            upstreams
-        );
-    }
-
-    #[test]
-    fn parses_resolv_conf_nameservers_skips_listen_and_junk() {
-        let text = "\
-# generated
-search internal example.test
-nameserver 192.0.2.53
-nameserver 10.210.1.1
-nameserver 2001:db8::53
-nameserver not-an-ip
-options ndots:1
-	nameserver 198.51.100.53 # trailing comment
-";
-        assert_eq!(
-            nameservers_from_resolv_conf(text, Ipv4Addr::new(10, 210, 1, 1)),
-            vec![
-                "192.0.2.53:53".parse().unwrap(),
-                "[2001:db8::53]:53".parse().unwrap(),
-                "198.51.100.53:53".parse().unwrap(),
-            ]
-        );
-    }
-
-    fn running(health: HealthObservation) -> ContainerRuntimeObservation {
-        ContainerRuntimeObservation::Running { health }
-    }
-
-    fn observation(
-        suffix: u8,
-        machine_id: &MachineId,
-        service_id: &ServiceId,
-        service_name: &ServiceName,
-        kind: ContainerKind,
-        runtime: ContainerRuntimeObservation,
-        address: Option<[u8; 4]>,
-    ) -> ContainerObservation {
-        ContainerObservation {
-            container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
-            display_name: format!("{service_name}-{suffix}"),
-            created_at_unix_nanos: 0,
-            machine_id: *machine_id,
-            project_name: ProjectName::parse("app").unwrap(),
-            service_id: *service_id,
-            service_name: service_name.clone(),
-            kind,
-            runtime,
-            effective_healthcheck: None,
-            resolved_spec: fixture_spec(service_id, service_name),
-            address: address.map(|octets| ContainerAddress(octets.into())),
-            labels: BTreeMap::new(),
-        }
-    }
-
-    fn fixture_spec(service_id: &ServiceId, service_name: &ServiceName) -> ResolvedServiceSpec {
-        serde_json::from_value(json!({
-            "service_id": service_id,
-            "name": service_name,
-            "mode": { "mode": "replicated", "replicas": 1 },
-            "container": { "image": "example.test/image", "pull_policy": "missing" }
-        }))
-        .unwrap()
-    }
-
-    fn addresses(plan: ResponsePlan) -> Vec<Ipv4Addr> {
-        let ResponsePlan::Internal { answers, .. } = plan else {
-            panic!("expected internal answer")
-        };
-        answers
-            .into_iter()
-            .map(|record| {
-                let Some(IpAddr::V4(address)) = record.data.ip_addr() else {
-                    panic!("expected A record, got {:?}", record.data)
-                };
-                address
-            })
-            .collect()
-    }
-
-    fn address_set(plan: ResponsePlan) -> std::collections::BTreeSet<Ipv4Addr> {
-        addresses(plan).into_iter().collect()
-    }
-}
+mod tests;
