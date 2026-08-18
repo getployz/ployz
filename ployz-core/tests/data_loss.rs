@@ -1,8 +1,8 @@
 //! Data Loss identity.
 
 use ployz_core::{
-    DataLoss, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss, RpcErrorCode,
-    UnconfirmedDataLoss,
+    AmbiguousDataLossName, DataLoss, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss,
+    RpcError, RpcErrorCode, UnconfirmedDataLoss,
 };
 use serde_json::json;
 
@@ -97,8 +97,32 @@ fn unconfirmed_data_loss_names_missing_identities_in_the_rpc_error() {
             machine_id('a')
         )
     );
+    assert_eq!(
+        UnconfirmedDataLoss::from_rpc_error(&error).unwrap().missing,
+        missing
+    );
     let details: UnconfirmedDataLoss = serde_json::from_value(error.details).unwrap();
     assert_eq!(details.missing, missing);
+}
+
+#[test]
+fn from_rpc_error_is_none_when_the_error_is_not_unconfirmed_data_loss() {
+    assert!(
+        UnconfirmedDataLoss::from_rpc_error(&RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: "Machine was not found".into(),
+            details: json!(null),
+        })
+        .is_none()
+    );
+    assert!(
+        UnconfirmedDataLoss::from_rpc_error(&RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "gone".into(),
+            details: json!({ "missing": [] }),
+        })
+        .is_none()
+    );
 }
 
 #[test]
@@ -106,6 +130,57 @@ fn docker_volume_data_loss_display_is_name_on_machine() {
     assert_eq!(
         volume('a', "data").to_string(),
         format!("data on {}", machine_id('a'))
+    );
+}
+
+#[test]
+fn docker_volume_data_loss_name_is_the_volume_name() {
+    assert_eq!(volume('a', "data").name(), "data");
+}
+
+#[test]
+fn named_resolves_unique_display_names_to_listed_identities() {
+    let observed = ObservedDataLoss {
+        data_loss: vec![volume('a', "data"), volume('a', "logs")],
+    };
+    assert_eq!(
+        observed.named(["logs", "data"]).unwrap(),
+        vec![volume('a', "logs"), volume('a', "data")]
+    );
+}
+
+#[test]
+fn named_ignores_display_names_that_match_no_listed_entry() {
+    let observed = ObservedDataLoss {
+        data_loss: vec![volume('a', "data")],
+    };
+    assert_eq!(
+        observed.named(["data", "gone"]).unwrap(),
+        vec![volume('a', "data")]
+    );
+}
+
+#[test]
+fn named_refuses_a_display_name_that_matches_more_than_one_listed_entry() {
+    let observed = ObservedDataLoss {
+        data_loss: vec![volume('a', "data"), volume('b', "data")],
+    };
+    assert_eq!(
+        observed.named(["data"]).unwrap_err(),
+        AmbiguousDataLossName {
+            name: "data".into()
+        }
+    );
+}
+
+#[test]
+fn named_allows_an_empty_list_when_there_is_no_data_loss() {
+    let observed = ObservedDataLoss {
+        data_loss: Vec::new(),
+    };
+    assert_eq!(
+        observed.named([] as [&str; 0]).unwrap(),
+        Vec::<DataLoss>::new()
     );
 }
 

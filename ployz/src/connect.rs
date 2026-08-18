@@ -818,6 +818,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
+        assert!(
+            ConnectError::Rpc(TransportError::from(tonic::Status::unavailable(
+                "route failed"
+            )))
+            .is_unreachable()
+        );
+        assert!(
+            !ConnectError::Rpc(TransportError::from(tonic::Status::unimplemented(
+                "older daemon"
+            )))
+            .is_unreachable()
+        );
+        assert!(
+            !ConnectError::Remote(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Docker is unavailable".into(),
+                details: serde_json::Value::Null,
+            })
+            .is_unreachable()
+        );
+    }
+
+    #[test]
+    fn deadline_exceeded_is_retryable_not_unreachable() {
+        let error = ConnectError::Rpc(TransportError::from(tonic::Status::deadline_exceeded(
+            "timed out",
+        )));
+        assert!(error.is_retryable());
+        assert!(!error.is_unreachable());
+    }
+
     #[tokio::test]
     async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
         let root = std::env::temp_dir().join(format!("ployz-ssh-cancel-{}", std::process::id()));

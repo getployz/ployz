@@ -1,8 +1,8 @@
 use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
-    CodecError, ContainerSelectorError, MachineSelectorError, MachineUpdateError, RpcError,
-    ServiceSelectorError, StreamProtocolError, ValueError,
+    AmbiguousDataLossName, CodecError, ContainerSelectorError, MachineSelectorError,
+    MachineUpdateError, RpcError, ServiceSelectorError, StreamProtocolError, ValueError,
 };
 
 use crate::{
@@ -135,6 +135,7 @@ from_error!(
     CaddyImageError,
     RpcError,
     ProjectError,
+    AmbiguousDataLossName,
 );
 
 impl From<ConnectError> for Failure {

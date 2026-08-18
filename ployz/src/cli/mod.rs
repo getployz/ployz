@@ -291,8 +291,14 @@ fn machine() -> Command {
             base("rm", "Remove a machine")
                 .visible_aliases(["remove", "delete"])
                 .arg(switch("no-reset", None))
-                .arg(switch("yes", Some('y')))
-                .arg(positional("machine", true)),
+                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+                .arg(positional("machine", true))
+                .arg(
+                    Arg::new("data-loss")
+                        .help("Data Loss names to confirm")
+                        .num_args(0..)
+                        .action(ArgAction::Append),
+                ),
         )
         .subcommand(base("rtt", "Show round-trip times"))
         .subcommand(
@@ -560,6 +566,56 @@ mod tests {
             super::command()
                 .try_get_matches_from(["ployz", "deploy", "-P", "shop"])
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn machine_rm_takes_data_loss_names_as_arguments_and_yes_still_parses() {
+        let matches = super::command()
+            .try_get_matches_from(["ployz", "machine", "rm", "worker", "data", "logs", "--yes"])
+            .unwrap();
+        let rm = matches
+            .subcommand_matches("machine")
+            .unwrap()
+            .subcommand_matches("rm")
+            .unwrap();
+        assert!(rm.get_flag("yes"));
+        assert_eq!(
+            rm.get_many::<String>("data-loss")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["data", "logs"]
+        );
+        let yes_only = super::command()
+            .try_get_matches_from(["ployz", "machine", "rm", "worker", "--yes"])
+            .unwrap();
+        let rm = yes_only
+            .subcommand_matches("machine")
+            .unwrap()
+            .subcommand_matches("rm")
+            .unwrap();
+        assert!(rm.get_flag("yes"));
+        assert!(rm.get_many::<String>("data-loss").is_none());
+    }
+
+    #[test]
+    fn volume_rm_still_takes_volume_names_with_yes() {
+        let matches = super::command()
+            .try_get_matches_from(["ployz", "volume", "rm", "data", "logs", "--yes"])
+            .unwrap();
+        let rm = matches
+            .subcommand_matches("volume")
+            .unwrap()
+            .subcommand_matches("rm")
+            .unwrap();
+        assert!(rm.get_flag("yes"));
+        assert_eq!(
+            rm.get_many::<String>("volume-name")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["data", "logs"]
         );
     }
 }

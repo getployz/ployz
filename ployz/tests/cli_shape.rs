@@ -81,6 +81,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "fixed-wireguard-port".to_owned(),
             "images-json-output".to_owned(),
             "local-machine-init-stub".to_owned(),
+            "machine-remove-named-data-loss".to_owned(),
             "native-completion".to_owned(),
             "no-nightly-daemon-channel".to_owned(),
             "plain-caddy-config".to_owned(),
@@ -157,6 +158,9 @@ fn reference_shape(
     }
     if command_path == "ployz volume rm" && deviations.contains("volume-remove-auto-confirm-env") {
         flags.get_mut("yes").expect("volume rm has --yes").env = Some("PLOYZ_AUTO_CONFIRM".into());
+    }
+    if command_path == "ployz machine rm" && deviations.contains("machine-remove-named-data-loss") {
+        flags.get_mut("yes").expect("machine rm has --yes").env = Some("PLOYZ_AUTO_CONFIRM".into());
     }
     if matches!(command_path.as_str(), "ployz images" | "ployz image ls")
         && deviations.contains("images-json-output")
@@ -433,6 +437,15 @@ fn reference_positionals(
             Positional {
                 required: false,
                 multiple: false,
+            },
+        ));
+    }
+    if command_path == "ployz machine rm" && deviations.contains("machine-remove-named-data-loss") {
+        positionals.push((
+            "data-loss".into(),
+            Positional {
+                required: false,
+                multiple: true,
             },
         ));
     }
