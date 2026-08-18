@@ -38,6 +38,22 @@ impl ContainerRuntime {
             .collect()
     }
 
+    pub(super) async fn named_volumes(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<Vec<DockerVolume>, Error> {
+        self.docker
+            .client
+            .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
+            .await?
+            .volumes
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|volume| !volume.name.is_empty())
+            .map(|volume| docker_volume(machine_id, volume))
+            .collect()
+    }
+
     pub async fn inspect_volume(
         &self,
         machine_id: &MachineId,

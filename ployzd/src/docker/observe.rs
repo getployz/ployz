@@ -6,11 +6,13 @@ use std::{
 
 use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
-use ployz_core::{ContainerId, ContainerObservation, LocalMachinePhase};
+use ployz_core::{
+    ContainerId, ContainerObservation, DockerVolume, DockerVolumeName, LocalMachinePhase,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{ContainerRuntime, Error, LABEL_MANAGED};
-use crate::corrosion::{LocalContainerSnapshot, ReplicatedStore};
+use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot, ReplicatedStore};
 use crate::machine::LocalMachineStore;
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
@@ -48,13 +50,40 @@ impl ContainerRuntime {
     }
 
     pub async fn publish_observations(&self, shutdown: CancellationToken) -> Result<(), Error> {
-        let Some(sink) = &self.sink else {
+        let Some(sink) = self.sink.clone() else {
             shutdown.cancelled().await;
             return Ok(());
         };
+        tokio::try_join!(
+            self.retry_watch(
+                &sink,
+                shutdown.clone(),
+                "local Docker observation failed, retrying",
+                Self::watch_observations,
+            ),
+            self.retry_watch(
+                &sink,
+                shutdown,
+                "local Docker Volume observation failed, retrying",
+                Self::watch_volume_observations,
+            ),
+        )?;
+        Ok(())
+    }
+
+    async fn retry_watch<F>(
+        &self,
+        sink: &ObservationSink,
+        shutdown: CancellationToken,
+        retry: &str,
+        watch: F,
+    ) -> Result<(), Error>
+    where
+        F: AsyncFn(&Self, &ObservationSink, &CancellationToken) -> Result<(), Error>,
+    {
         while !shutdown.is_cancelled() {
-            if let Err(error) = self.watch_observations(sink, &shutdown).await {
-                eprintln!("local Docker observation failed, retrying: {error}");
+            if let Err(error) = watch(self, sink, &shutdown).await {
+                eprintln!("{retry}: {error}");
                 tokio::select! {
                     () = tokio::time::sleep(Duration::from_secs(1)) => {}
                     () = shutdown.cancelled() => {}
@@ -69,26 +98,61 @@ impl ContainerRuntime {
         sink: &ObservationSink,
         shutdown: &CancellationToken,
     ) -> Result<(), Error> {
-        let filters = HashMap::from([
-            ("type", vec!["container"]),
-            ("scope", vec!["local"]),
-            ("label", vec![LABEL_MANAGED]),
-            (
-                "event",
-                vec![
-                    "create",
-                    "start",
-                    "stop",
-                    "pause",
-                    "unpause",
-                    "kill",
-                    "die",
-                    "oom",
-                    "destroy",
-                    "health_status",
-                ],
-            ),
-        ]);
+        self.watch_docker_events(
+            sink,
+            shutdown,
+            HashMap::from([
+                ("type", vec!["container"]),
+                ("scope", vec!["local"]),
+                ("label", vec![LABEL_MANAGED]),
+                (
+                    "event",
+                    vec![
+                        "create",
+                        "start",
+                        "stop",
+                        "pause",
+                        "unpause",
+                        "kill",
+                        "die",
+                        "oom",
+                        "destroy",
+                        "health_status",
+                    ],
+                ),
+            ]),
+            Self::sync_observations,
+        )
+        .await
+    }
+
+    async fn watch_volume_observations(
+        &self,
+        sink: &ObservationSink,
+        shutdown: &CancellationToken,
+    ) -> Result<(), Error> {
+        self.watch_docker_events(
+            sink,
+            shutdown,
+            HashMap::from([
+                ("type", vec!["volume"]),
+                ("event", vec!["create", "destroy"]),
+            ]),
+            Self::sync_volume_observations,
+        )
+        .await
+    }
+
+    async fn watch_docker_events<F>(
+        &self,
+        sink: &ObservationSink,
+        shutdown: &CancellationToken,
+        filters: HashMap<&str, Vec<&str>>,
+        sync: F,
+    ) -> Result<(), Error>
+    where
+        F: AsyncFn(&Self, &ObservationSink) -> Result<(), Error>,
+    {
         let since = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|error| Error::Clock(error.to_string()))?
@@ -101,7 +165,7 @@ impl ContainerRuntime {
         // Bollard opens this lazy stream when first polled. The cursor replays any event
         // between capturing `since` and completing the initial snapshot.
         let mut events = Box::pin(self.docker.client.events(Some(options)));
-        self.sync_observations(sink).await?;
+        sync(self, sink).await?;
 
         let mut rescans = tokio::time::interval(sink.rescan_interval);
         rescans.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -116,7 +180,7 @@ impl ContainerRuntime {
                     Some(Err(error)) => return Err(error.into()),
                     None => return Err(Error::EventStreamClosed),
                 },
-                _ = rescans.tick() => self.sync_observations(sink).await?,
+                _ = rescans.tick() => sync(self, sink).await?,
                 () = async {
                     match scan_at {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -124,7 +188,7 @@ impl ContainerRuntime {
                     }
                 } => {
                     scan_at = None;
-                    self.sync_observations(sink).await?;
+                    sync(self, sink).await?;
                 }
                 () = shutdown.cancelled() => return Ok(()),
             }
@@ -169,6 +233,35 @@ impl ContainerRuntime {
             .await
             .map_err(Error::from)
     }
+
+    async fn sync_volume_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
+        let machine_id = sink
+            .local
+            .lock()
+            .map_err(|_| Error::LocalStorePoisoned)?
+            .record()
+            .id();
+        let mut live = LocalVolumeSnapshot::default();
+        for volume in self.named_volumes(&machine_id).await? {
+            live.observed(volume);
+        }
+        let publication = sink.replicated.machine_publication().await;
+        let local = sink
+            .local
+            .lock()
+            .map_err(|_| Error::LocalStorePoisoned)?
+            .record()
+            .clone();
+        if local.phase() != LocalMachinePhase::Participating || local.id() != machine_id {
+            return Ok(());
+        }
+        let existing = publication.local_volumes(&machine_id).await?;
+        let changes = local_volume_changes(&existing, &live);
+        publication
+            .apply_volume_rows(&machine_id, &changes.deletions, &changes.upserts)
+            .await
+            .map_err(Error::from)
+    }
 }
 
 fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
@@ -207,15 +300,40 @@ fn local_container_changes(
     }
 }
 
+struct LocalVolumeChanges {
+    deletions: Vec<DockerVolumeName>,
+    upserts: Vec<DockerVolume>,
+}
+
+fn local_volume_changes(
+    existing: &LocalVolumeSnapshot,
+    current: &LocalVolumeSnapshot,
+) -> LocalVolumeChanges {
+    LocalVolumeChanges {
+        deletions: existing
+            .inventory
+            .iter()
+            .filter(|name| !current.inventory.contains(name))
+            .cloned()
+            .collect(),
+        upserts: current
+            .observations
+            .values()
+            .filter(|volume| existing.observations.get(&volume.id.name) != Some(volume))
+            .cloned()
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use ployz_core::{ContainerId, ContainerObservation};
+    use ployz_core::{ContainerId, ContainerObservation, DockerVolume, DockerVolumeName};
     use serde_json::json;
 
-    use super::{local_container_changes, redacted_container};
-    use crate::corrosion::LocalContainerSnapshot;
+    use super::{local_container_changes, local_volume_changes, redacted_container};
+    use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot};
 
     #[test]
     fn publication_redacts_service_and_hook_environment_values() {
@@ -316,6 +434,50 @@ mod tests {
         let changes = local_container_changes(&existing, &current);
 
         assert_eq!(changes.deletions, vec![stale.container_id]);
+        assert_eq!(changes.upserts, vec![changed, new]);
+    }
+
+    #[test]
+    fn volume_snapshot_diff_upserts_changes_and_deletes_only_absent_names() {
+        let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
+        let volume = |name: &str, driver: &str| DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id,
+                name: DockerVolumeName::parse(name).unwrap(),
+            },
+            driver: driver.into(),
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+        };
+        let stable = volume("a-stable", "local");
+        let stale = volume("b-stale", "local");
+        let old_changed = volume("c-changed", "local");
+        let changed = volume("c-changed", "custom");
+        let new = volume("d-new", "local");
+
+        let existing = LocalVolumeSnapshot {
+            inventory: [stable.clone(), stale.clone(), old_changed.clone()]
+                .into_iter()
+                .map(|item| item.id.name)
+                .collect(),
+            observations: [stable.clone(), stale.clone(), old_changed]
+                .into_iter()
+                .map(|item| (item.id.name.clone(), item))
+                .collect(),
+        };
+        let current = LocalVolumeSnapshot {
+            inventory: [stable.clone(), changed.clone(), new.clone()]
+                .into_iter()
+                .map(|item| item.id.name)
+                .collect(),
+            observations: [stable, changed.clone(), new.clone()]
+                .into_iter()
+                .map(|item| (item.id.name.clone(), item))
+                .collect(),
+        };
+        let changes = local_volume_changes(&existing, &current);
+
+        assert_eq!(changes.deletions, vec![stale.id.name]);
         assert_eq!(changes.upserts, vec![changed, new]);
     }
 }

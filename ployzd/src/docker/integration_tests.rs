@@ -32,6 +32,7 @@ use super::*;
 static DOCKER_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const TEST_GATEWAY: MachineGateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
 
+mod observe_volumes;
 mod stream;
 
 #[tokio::test]

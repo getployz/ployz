@@ -97,6 +97,34 @@ async fn container_publication_waits_for_removal() {
 }
 
 #[tokio::test]
+async fn volume_publication_waits_for_removal() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let store = ReplicatedStore::new(
+        ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
+    );
+    let (machine, _local) = participating_record();
+    let machine_id = machine.id;
+    let first = store.machine_publication().await;
+    let clone = store.clone();
+    let (started, waiting) = tokio::sync::oneshot::channel();
+    let second = tokio::spawn(async move {
+        started.send(()).unwrap();
+        let publication = clone.machine_publication().await;
+        publication.apply_volume_rows(&machine_id, &[], &[]).await
+    });
+    waiting.await.unwrap();
+    tokio::task::yield_now().await;
+    assert!(!second.is_finished());
+
+    drop(first);
+    tokio::time::timeout(std::time::Duration::from_secs(1), second)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn volume_store_is_an_error_when_the_store_is_unreachable() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

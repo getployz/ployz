@@ -115,6 +115,45 @@ impl MachinePublicationGuard<'_> {
         }
         Ok(())
     }
+
+    pub(crate) async fn local_volumes(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<LocalVolumeSnapshot, Error> {
+        self.store.local_volumes(machine_id).await
+    }
+
+    pub(crate) async fn apply_volume_rows(
+        &self,
+        machine_id: &MachineId,
+        deletions: &[DockerVolumeName],
+        upserts: &[DockerVolume],
+    ) -> Result<(), Error> {
+        if upserts
+            .iter()
+            .any(|volume| &volume.id.machine_id != machine_id)
+        {
+            return Err(Error::Protocol(
+                "local volume reconciliation crossed Machine authority".into(),
+            ));
+        }
+        let mut statements = deletions
+            .iter()
+            .map(|name| {
+                Statement::new(
+                    "DELETE FROM volumes WHERE machine_id = ? AND name = ?",
+                    [json!(machine_id), json!(name)],
+                )
+            })
+            .collect::<Vec<_>>();
+        for volume in upserts {
+            statements.push(volume_upsert(volume)?);
+        }
+        if !statements.is_empty() {
+            self.store.api.execute(statements).await?;
+        }
+        Ok(())
+    }
 }
 
 impl ReplicatedStore {
@@ -346,16 +385,7 @@ impl ReplicatedStore {
         if self.volume(&volume.id).await?.as_ref() == Some(volume) {
             return Ok(());
         }
-        self.api
-            .execute([Statement::new(
-                "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
-                [
-                    json!(volume.id.machine_id),
-                    json!(volume.id.name),
-                    json!(serde_json::to_string(volume)?),
-                ],
-            )])
-            .await?;
+        self.api.execute([volume_upsert(volume)?]).await?;
         Ok(())
     }
 
@@ -407,6 +437,26 @@ impl ReplicatedStore {
             ));
         }
         decode_observations(rows)
+    }
+
+    async fn local_volumes(&self, machine_id: &MachineId) -> Result<LocalVolumeSnapshot, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT name, volume FROM volumes WHERE machine_id = ? ORDER BY name",
+                [json!(machine_id)],
+            ))
+            .await?;
+        let mut snapshot = LocalVolumeSnapshot::default();
+        for [name, encoded] in query.rows(["name", "volume"])? {
+            let name = DockerVolumeName::parse(text(&name, "Docker Volume name")?)?;
+            let observation = decode_json_document(text(&encoded, "replicated volume JSON")?)?;
+            snapshot.inventory.insert(name.clone());
+            if let Some(observation) = observation {
+                snapshot.observations.insert(name, observation);
+            }
+        }
+        Ok(snapshot)
     }
 
     pub async fn publish_certificate(
@@ -657,6 +707,19 @@ impl LocalContainerSnapshot {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct LocalVolumeSnapshot {
+    pub(crate) inventory: BTreeSet<DockerVolumeName>,
+    pub(crate) observations: BTreeMap<DockerVolumeName, DockerVolume>,
+}
+
+impl LocalVolumeSnapshot {
+    pub(crate) fn observed(&mut self, volume: DockerVolume) {
+        self.inventory.insert(volume.id.name.clone());
+        self.observations.insert(volume.id.name.clone(), volume);
+    }
+}
+
 fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Error> {
     Ok(Statement::new(
         "INSERT INTO containers (id, container, machine_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id, updated_at = excluded.updated_at",
@@ -664,6 +727,17 @@ fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Err
             json!(observation.container_id),
             json!(serde_json::to_string(observation)?),
             json!(observation.machine_id),
+        ],
+    ))
+}
+
+fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
+    Ok(Statement::new(
+        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
+        [
+            json!(volume.id.machine_id),
+            json!(volume.id.name),
+            json!(serde_json::to_string(volume)?),
         ],
     ))
 }
