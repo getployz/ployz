@@ -182,7 +182,7 @@ impl Daemon {
         .with_caddyfile(caddyfile.clone())
         .with_image_ingest(Arc::clone(&ingest));
         let proxy = MachineProxy::new(
-            Routes::new(MachineRpcServer::new(service)),
+            Routes::new(MachineRpcServer::new(service.clone())),
             local_id,
             MACHINE_API_PORT,
             replicated_store.clone(),
@@ -312,7 +312,7 @@ impl Daemon {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                crate::relay::run(cloud_pairing, local_id, shutdown.clone()).await
+                crate::relay::run(cloud_pairing, local_id, service, shutdown.clone()).await
             };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
