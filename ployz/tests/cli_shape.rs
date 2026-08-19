@@ -58,8 +58,9 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
     let mut actual = BTreeMap::new();
     collect_clap_shapes(&command, "", &mut actual);
     actual.remove("ployz completion").unwrap();
-    if deviations.contains("cloud-init") {
-        actual.remove("ployz init").unwrap();
+    if deviations.contains("cloud-enroll") {
+        actual.remove("ployz cloud").unwrap();
+        actual.remove("ployz cloud enroll").unwrap();
     }
     if deviations.contains("project-list-and-remove") {
         actual.remove("ployz project").unwrap();
@@ -81,7 +82,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
     assert_eq!(
         deviations,
         BTreeSet::from([
-            "cloud-init".to_owned(),
+            "cloud-enroll".to_owned(),
             "compose-diagnostics-source".to_owned(),
             "compose-plugin-scope".to_owned(),
             "compose-prerequisite-errors".to_owned(),

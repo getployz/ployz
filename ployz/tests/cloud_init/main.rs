@@ -1,4 +1,4 @@
-//! `ployz init --cloud` join and initialize paths against fake enroll HTTP.
+//! `ployz cloud enroll` join and initialize paths against fake enroll HTTP.
 
 mod harness;
 
@@ -29,8 +29,8 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
         .args([
             "--connect",
             &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
+            "cloud",
+            "enroll",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -97,8 +97,8 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
         .args([
             "--connect",
             &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
+            "cloud",
+            "enroll",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -184,8 +184,8 @@ async fn cloud_init_initialize_reserves_cloud_hosted_dns() {
         .args([
             "--connect",
             &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
+            "cloud",
+            "enroll",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -245,8 +245,8 @@ async fn cloud_init_retries_not_yet_then_joins() {
         .args([
             "--connect",
             &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
+            "cloud",
+            "enroll",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -306,8 +306,8 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         .args([
             "--connect",
             &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
+            "cloud",
+            "enroll",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -367,8 +367,8 @@ async fn cloud_init_initialize_callback_failure_is_nonfatal_when_on_list() {
         .args([
             "--connect",
             &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
+            "cloud",
+            "enroll",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -415,8 +415,8 @@ async fn init_cloud(
     command.args([
         "--connect",
         connect,
-        "init",
-        "--cloud",
+        "cloud",
+        "enroll",
         TOKEN,
         "--cloud-url",
         enroll_url,

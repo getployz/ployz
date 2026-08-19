@@ -24,26 +24,47 @@ pub enum ProvisionError {
     Sudo(#[source] io::Error),
     #[error("remote user {user} needs passwordless sudo to install Ployz")]
     SudoRequired { user: String },
-    #[error("run remote Ployz installer: {0}")]
+    #[error("run Ployz installer: {0}")]
     Install(#[source] io::Error),
-    #[error("remote Ployz installer exited with {status}")]
+    #[error("Ployz installer exited with {status}")]
     InstallFailed { status: std::process::ExitStatus },
+    #[error("run this command with sudo")]
+    NotRoot,
 }
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn install_command(script: &str, user: &str, version: &str) -> String {
+fn encoded_installer() -> String {
+    STANDARD.encode(include_bytes!("../../scripts/install.sh"))
+}
+
+fn pipefail(pipeline: &str) -> String {
+    format!("set -o pipefail; {pipeline}")
+}
+
+fn install_command(
+    script: &str,
+    version: &str,
+    group_user: Option<&str>,
+    via_sudo: bool,
+) -> String {
     let script = shell_quote(script);
     let version = shell_quote(version);
-    if user == "root" {
-        format!("printf '%s' {script} | base64 -d | PLOYZ_VERSION={version} bash")
+    let group = group_user
+        .map(|user| format!("PLOYZ_GROUP_ADD_USER={} ", shell_quote(user)))
+        .unwrap_or_default();
+    let sudo = if via_sudo { "sudo " } else { "" };
+    format!("printf '%s' {script} | base64 -d | {sudo}{group}PLOYZ_VERSION={version} bash")
+}
+
+fn installer_status(result: io::Result<std::process::ExitStatus>) -> Result<(), ProvisionError> {
+    let status = result.map_err(ProvisionError::Install)?;
+    if status.success() {
+        Ok(())
     } else {
-        let user = shell_quote(user);
-        format!(
-            "printf '%s' {script} | base64 -d | sudo PLOYZ_GROUP_ADD_USER={user} PLOYZ_VERSION={version} bash"
-        )
+        Err(ProvisionError::InstallFailed { status })
     }
 }
 
@@ -127,28 +148,58 @@ pub fn provision(matches: &ArgMatches) -> Result<(), ProvisionError> {
         }
     }
 
-    let encoded = STANDARD.encode(include_bytes!("../../scripts/install.sh"));
+    let encoded = encoded_installer();
     let version = matches
         .get_one::<String>("version")
         .expect("version has a default");
+    let via_sudo = user != "root";
     let remote = format!(
         "bash -c {}",
-        shell_quote(&format!(
-            "set -o pipefail; {}",
-            install_command(&encoded, user, version)
-        ))
+        shell_quote(&pipefail(&install_command(
+            &encoded,
+            version,
+            via_sudo.then_some(user),
+            via_sudo,
+        )))
     );
     let (mut install, destination) = ssh_command(matches)?;
-    let status = install
-        .arg(destination)
-        .arg(remote)
-        .status()
-        .map_err(ProvisionError::Install)?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(ProvisionError::InstallFailed { status })
+    installer_status(install.arg(destination).arg(remote).status())
+}
+
+/// Install and start local `ployzd` with the embedded Machine installer.
+///
+/// # Errors
+///
+/// Returns [`ProvisionError::NotRoot`] when this process is not root.
+/// Returns [`ProvisionError::Install`] when the installer cannot be spawned,
+/// or [`ProvisionError::InstallFailed`] when it exits non-zero.
+pub fn provision_local() -> Result<(), ProvisionError> {
+    if !process_is_root() {
+        return Err(ProvisionError::NotRoot);
     }
+    let group_user = std::env::var("SUDO_USER")
+        .ok()
+        .filter(|user| !user.is_empty());
+    installer_status(
+        Command::new("bash")
+            .arg("-c")
+            .arg(pipefail(&install_command(
+                &encoded_installer(),
+                env!("CARGO_PKG_VERSION"),
+                group_user.as_deref(),
+                false,
+            )))
+            .status(),
+    )
+}
+
+pub(crate) fn process_is_root() -> bool {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|uid| uid.trim() == "0")
 }
 
 #[cfg(test)]
@@ -156,14 +207,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_installer_command_preserves_root_and_sudo_paths() {
+    fn embedded_installer_command_preserves_root_sudo_and_local_group() {
         assert_eq!(
-            install_command("SCRIPT", "root", "latest"),
+            install_command("SCRIPT", "latest", None, false),
             "printf '%s' 'SCRIPT' | base64 -d | PLOYZ_VERSION='latest' bash"
         );
         assert_eq!(
-            install_command("SCRIPT", "deploy", "1.2.3"),
+            install_command("SCRIPT", "1.2.3", Some("deploy"), true),
             "printf '%s' 'SCRIPT' | base64 -d | sudo PLOYZ_GROUP_ADD_USER='deploy' PLOYZ_VERSION='1.2.3' bash"
         );
+        assert_eq!(
+            install_command("SCRIPT", "1.2.3", Some("nick"), false),
+            "printf '%s' 'SCRIPT' | base64 -d | PLOYZ_GROUP_ADD_USER='nick' PLOYZ_VERSION='1.2.3' bash"
+        );
+    }
+
+    #[test]
+    fn local_provision_requires_root() {
+        if process_is_root() {
+            return;
+        }
+        assert!(matches!(provision_local(), Err(ProvisionError::NotRoot)));
     }
 }

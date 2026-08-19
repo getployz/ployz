@@ -47,7 +47,7 @@ pub fn command() -> Command {
         .subcommand(exec("exec"))
         .subcommand(image())
         .subcommand(images())
-        .subcommand(init())
+        .subcommand(cloud())
         .subcommand(inspect("inspect"))
         .subcommand(logs("logs", true))
         .subcommand(service_ls("ls"))
@@ -239,10 +239,21 @@ fn images() -> Command {
         .arg(positional("image", false))
 }
 
-fn init() -> Command {
-    base("init", "Found or join a Cluster through Cloud")
-        .arg(value("cloud", None).required(true))
-        .arg(value("cloud-url", None).default_value("ployz.dev"))
+fn cloud() -> Command {
+    Command::new("cloud")
+        .about("Manage Cloud")
+        .arg_required_else_help(true)
+        .arg(
+            value("cloud-url", None)
+                .default_value("ployz.dev")
+                .global(true),
+        )
+        .subcommand(cloud_enroll())
+}
+
+fn cloud_enroll() -> Command {
+    base("enroll", "Found or join a Cluster through Cloud")
+        .arg(positional("token", true))
         .arg(value("name", Some('n')))
         .arg(value("network", None).default_value("10.210.0.0/16"))
         .arg(switch("no-caddy", None))

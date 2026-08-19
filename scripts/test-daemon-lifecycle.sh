@@ -101,6 +101,12 @@ if grep -Fq 'systemctl restart ployz.service' "$LOG"; then
     exit 1
 fi
 
+sudo rm -f "$TMP/systemd/ployz.service"
+: > "$LOG"
+run_installer latest
+grep -Fq 'systemctl restart ployz.service' "$LOG"
+[ -f "$TMP/systemd/ployz.service" ]
+
 : > "$LOG"
 set_installed_version 1.2.2
 run_installer latest

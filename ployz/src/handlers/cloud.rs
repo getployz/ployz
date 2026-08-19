@@ -1,4 +1,4 @@
-//! `ployz init --cloud`: enroll `initialize` or `join` on this Machine.
+//! `ployz cloud enroll`: enroll `initialize` or `join` on this Machine.
 
 use std::time::Duration;
 
@@ -8,13 +8,14 @@ use ployz_core::{
     MachineName, MachineTokenRequest, ReserveDomainRequest, ResetRequest, RpcErrorCode, op,
 };
 
-use super::{Error, connect_client, leaf_matches, required, runtime};
+use super::{Error, config_path, connect_client, leaf_matches, required, runtime};
 use crate::cloud_enroll::{self, EnrollIdentity, Outcome};
 use crate::connect::{Client, ConnectError};
+use crate::context::ContextError;
 
-pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let token = CloudEnrollToken::parse(required(matches, "cloud")?)?;
+    let token = CloudEnrollToken::parse(required(matches, "token")?)?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
         .expect("cloud-url has a default");
@@ -34,7 +35,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let no_dns = matches.get_flag("no-dns");
 
     runtime()?.block_on(async {
-        let mut client = connect_client(matches, None).await?;
+        let mut client = connect_machine(matches).await?;
         loop {
             client = ensure_uninitialized(matches, yes, client).await?;
             let machine_token = client
@@ -127,6 +128,41 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
+    let config = config_path(matches)?;
+    let connect = matches.get_one::<String>("connect").map(String::as_str);
+    match crate::connect::connect(&config, connect, None).await {
+        Ok(client) => Ok(client),
+        Err(ConnectError::Context(ContextError::NoConfig)) => {
+            crate::provisioning::provision_local()?;
+            wait_client(matches).await
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn retry_local_connect(error: &ConnectError) -> bool {
+    matches!(error, ConnectError::Context(ContextError::NoConfig)) || error.is_unreachable()
+}
+
+async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
+    let config = config_path(matches)?;
+    let connect = matches.get_one::<String>("connect").map(String::as_str);
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match crate::connect::connect(&config, connect, None).await {
+                Ok(client) => return Ok(client),
+                Err(error) if retry_local_connect(&error) => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => return Err(Error::from(error)),
+            }
+        }
+    })
+    .await
+    .map_err(|_| Error::usage("local daemon did not start".to_owned()))?
+}
+
 async fn ensure_uninitialized(
     matches: &ArgMatches,
     yes: bool,
@@ -175,4 +211,31 @@ async fn wait_phase(
     })
     .await
     .map_err(|_| Error::usage(timeout_message.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io, path::PathBuf};
+
+    use crate::context::ConnectionSource;
+
+    #[test]
+    fn wait_retries_no_config_and_unreachable_connect_errors() {
+        assert!(retry_local_connect(&ConnectError::Context(
+            ContextError::NoConfig
+        )));
+        assert!(retry_local_connect(&ConnectError::Io(io::Error::from(
+            io::ErrorKind::ConnectionRefused
+        ))));
+        assert!(retry_local_connect(&ConnectError::AllFailed {
+            source: ConnectionSource::LocalSocket,
+            attempts: 1,
+            last: None,
+        }));
+        assert!(!retry_local_connect(&ConnectError::Context(
+            ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
+        )));
+        assert!(!retry_local_connect(&ConnectError::InvalidDialCredential));
+    }
 }

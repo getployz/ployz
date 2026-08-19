@@ -12,12 +12,12 @@ use crate::failure::Failure;
 
 mod build;
 mod caddy;
+mod cloud;
 mod context;
 mod data_loss;
 mod deploy;
 mod dns;
 mod image;
-mod init;
 mod machine;
 mod operator;
 mod project;
@@ -126,7 +126,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, Error> {
         .build()?)
 }
 
-fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Error> {
+pub(super) fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Error> {
     matches
         .get_one::<String>("ployz-config")
         .map(Path::new)
@@ -227,7 +227,7 @@ stub_handlers! {
     image_list(root) { image::list(root) } => "image ls";
     image_push(root) { image::push(root) } => "image push";
     images(root) { image::list(root) } => "images";
-    init(root) { init::run(root) } => "init";
+    cloud_enroll(root) { cloud::enroll(root) } => "cloud enroll";
     inspect(root) { service::inspect(root) } => "inspect";
     logs(root) {
         operator::service_logs(root)
@@ -326,35 +326,45 @@ mod tests {
     }
 
     #[test]
-    fn cloud_init_requires_the_cloud_flag() {
+    fn cloud_enroll_takes_a_positional_token() {
         assert!(
             crate::cli::command()
-                .try_get_matches_from(["ployz", "init"])
+                .try_get_matches_from(["ployz", "cloud"])
+                .is_err()
+        );
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from(["ployz", "init", "--cloud", "pmet_test"])
                 .is_err()
         );
         let parsed = crate::cli::command()
-            .try_get_matches_from(["ployz", "init", "--cloud", "pmet_test"])
+            .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_test"])
             .unwrap();
-        let init = parsed.subcommand_matches("init").unwrap();
+        let cloud = parsed.subcommand_matches("cloud").unwrap();
         assert_eq!(
-            init.get_one::<String>("cloud-url").map(String::as_str),
+            cloud.get_one::<String>("cloud-url").map(String::as_str),
             Some("ployz.dev")
         );
+        let enroll = cloud.subcommand_matches("enroll").unwrap();
         assert_eq!(
-            init.get_one::<String>("network").map(String::as_str),
+            enroll.get_one::<String>("token").map(String::as_str),
+            Some("pmet_test")
+        );
+        assert_eq!(
+            enroll.get_one::<String>("network").map(String::as_str),
             Some("10.210.0.0/16")
         );
         assert!(
             crate::cli::command()
-                .try_get_matches_from(["ployz", "init", "--cloud", "pmet_x", "root@host"])
+                .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_x", "root@host"])
                 .is_err()
         );
         assert!(
             crate::cli::command()
                 .try_get_matches_from([
                     "ployz",
-                    "init",
-                    "--cloud",
+                    "cloud",
+                    "enroll",
                     "pmet_x",
                     "--ssh-key",
                     "/tmp/key"
@@ -364,8 +374,8 @@ mod tests {
         let flags = crate::cli::command()
             .try_get_matches_from([
                 "ployz",
-                "init",
-                "--cloud",
+                "cloud",
+                "enroll",
                 "pmet_x",
                 "--name",
                 "edge",
@@ -376,15 +386,44 @@ mod tests {
                 "--yes",
                 "--wg-mtu",
                 "1400",
+                "--cloud-url",
+                "example.test",
             ])
             .unwrap();
-        let init = flags.subcommand_matches("init").unwrap();
-        assert_eq!(init.get_one::<String>("name").unwrap(), "edge");
-        assert_eq!(init.get_one::<String>("network").unwrap(), "10.220.0.0/16");
-        assert!(init.get_flag("no-caddy"));
-        assert!(init.get_flag("no-dns"));
-        assert!(init.get_flag("yes"));
-        assert_eq!(init.get_one::<u32>("wg-mtu").copied(), Some(1400));
+        let enroll = flags
+            .subcommand_matches("cloud")
+            .unwrap()
+            .subcommand_matches("enroll")
+            .unwrap();
+        assert_eq!(enroll.get_one::<String>("name").unwrap(), "edge");
+        assert_eq!(
+            enroll.get_one::<String>("network").unwrap(),
+            "10.220.0.0/16"
+        );
+        assert!(enroll.get_flag("no-caddy"));
+        assert!(enroll.get_flag("no-dns"));
+        assert!(enroll.get_flag("yes"));
+        assert_eq!(enroll.get_one::<u32>("wg-mtu").copied(), Some(1400));
+        assert_eq!(
+            enroll.get_one::<String>("cloud-url").map(String::as_str),
+            Some("example.test")
+        );
+    }
+
+    #[test]
+    fn cloud_enroll_without_a_daemon_requires_sudo() {
+        if crate::provisioning::process_is_root() {
+            return;
+        }
+        let mut command = crate::cli::command();
+        let matches = command
+            .clone()
+            .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_test"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            "run this command with sudo",
+        );
     }
 
     #[test]

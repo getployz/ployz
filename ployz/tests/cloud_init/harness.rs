@@ -1,4 +1,4 @@
-//! Fake enroll HTTP, Relay, and Machine RPC for `ployz init --cloud` tests.
+//! Fake enroll HTTP, Relay, and Machine RPC for `ployz cloud enroll` tests.
 
 use std::{
     collections::VecDeque,
