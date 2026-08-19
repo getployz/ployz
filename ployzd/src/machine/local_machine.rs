@@ -309,7 +309,8 @@ impl LocalMachine {
         Ok(Initialized { machine })
     }
 
-    /// Assign a new Machine into the Cluster from this participating Machine.
+    /// Assign a new Machine into the Cluster from this participating Machine
+    /// when cluster KV names this Machine as Allocator.
     ///
     /// # Errors
     ///
@@ -325,16 +326,27 @@ impl LocalMachine {
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
         }
-        let record = self.record()?;
-        if record.phase() != LocalMachinePhase::Participating {
-            return Err(Error::NotParticipating);
+        let me = {
+            let record = self.record()?;
+            if record.phase() != LocalMachinePhase::Participating {
+                return Err(Error::NotParticipating);
+            }
+            record.id()
+        };
+        match self.replicated()?.allocator().await? {
+            Some(row) if row.machine_id == me => self.admit_local_register(request).await,
+            _ => Err(Error::NotAllocator),
         }
+    }
+
+    async fn admit_local_register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let replicated = self.replicated()?;
         let assigned_machine = {
             let publication = replicated.machine_publication().await;
+            let me = self.record()?.id();
             match replicated.allocator().await? {
-                Some(row) if row.machine_id == record.id() && row.quiet => {}
-                Some(row) if row.machine_id == record.id() => {
+                Some(row) if row.machine_id == me && row.quiet => {}
+                Some(row) if row.machine_id == me => {
                     return Err(Error::AllocatorNotQuiet);
                 }
                 Some(_) | None => return Err(Error::NotAllocator),

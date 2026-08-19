@@ -35,6 +35,7 @@ pub(crate) const INSERT_ALLOCATOR_NOW: &str =
     "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now'))";
 pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AllocatorRow {
     pub machine_id: MachineId,
     pub quiet: bool,

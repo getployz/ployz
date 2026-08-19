@@ -11,7 +11,7 @@ use ployz_core::{
 };
 use serde_json::json;
 
-use super::ReplicatedStore;
+use super::{ReplicatedStore, fake_cluster};
 use crate::corrosion::ApiClient;
 use crate::corrosion::publisher::founder_allocator_id;
 use crate::corrosion::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, INSERT_ALLOCATOR_NOW};
@@ -281,6 +281,31 @@ fn only_a_participating_founder_claims_allocator() {
         ..joined
     };
     assert_eq!(founder_allocator_id(&joining), None);
+}
+
+#[tokio::test]
+async fn allocator_row_names_the_machine() {
+    let id = MachineId::parse("a".repeat(32)).unwrap();
+    let (store, server) = fake_cluster::store().await;
+    store.publish_founder_allocator(&id).await.unwrap();
+    let row = store.allocator().await.unwrap().expect("allocator row");
+    assert_eq!(row.machine_id, id);
+    assert!(row.quiet);
+    server.abort();
+}
+
+#[tokio::test]
+async fn missing_allocator_row_is_none() {
+    let (store, server) = fake_cluster::store().await;
+    assert_eq!(store.allocator().await.unwrap(), None);
+    server.abort();
+}
+
+#[tokio::test]
+async fn invalid_allocator_value_is_an_error() {
+    let (store, server) = fake_cluster::store_with_allocator_value("not-a-machine-id").await;
+    assert!(store.allocator().await.is_err());
+    server.abort();
 }
 
 #[tokio::test]

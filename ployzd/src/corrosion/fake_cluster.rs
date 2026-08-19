@@ -26,12 +26,22 @@ struct Statement {
 }
 
 pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    bind(None).await
+}
+
+pub(crate) async fn store_with_allocator_value(
+    value: &str,
+) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    bind(Some((value.to_owned(), true))).await
+}
+
+async fn bind(allocator: Option<(String, bool)>) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let kv = Arc::new(Mutex::new(ClusterKv {
         network: "10.210.0.0/16".into(),
         machines: BTreeMap::new(),
-        allocator: None,
+        allocator,
     }));
     let server = tokio::spawn(async move {
         axum::serve(
