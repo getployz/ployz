@@ -38,6 +38,7 @@ assert_contains "$ROOT/.github/workflows/release.yml" "uses: ./.github/workflows
 assert_contains "$ROOT/.github/workflows/release.yml" "needs: [tag, artifacts]"
 assert_contains "$ROOT/.github/workflows/release.yml" "workflow_dispatch"
 assert_contains "$ROOT/.github/workflows/release.yml" "bounce-release-to-main.sh"
+assert_contains "$ROOT/.github/workflows/release.yml" 'bounce-release-to-main.sh release.yml "Release ${{ github.ref_name }}"'
 assert_contains "$ROOT/.github/workflows/release.yml" "run-name: Release \${{ inputs.tag || github.ref_name }}"
 assert_contains "$ROOT/.github/workflows/release.yml" "if: github.event_name == 'push'"
 assert_contains "$ROOT/.github/workflows/release.yml" "if: github.event_name == 'workflow_dispatch'"
@@ -57,6 +58,17 @@ assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "Swatinem/rust-cache@v
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "registry-url: https://registry.npmjs.org"
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "types: [published]"
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "workflow_dispatch"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "bounce-release-to-main.sh"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" 'bounce-release-to-main.sh publish-sdk.yml "Publish SDK ${{ github.event.release.tag_name }}"'
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "run-name: Publish SDK \${{ inputs.tag || github.event.release.tag_name }}"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "if: github.event_name == 'release'"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "if: github.event_name == 'workflow_dispatch'"
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" 'ref: ${{ inputs.tag }}'
+assert_contains "$ROOT/.github/workflows/publish-sdk.yml" 'publish-sdk-package.sh "${{ inputs.tag }}"'
+if grep -Fq 'publish-sdk-package.sh "${{ github.event.release.tag_name || inputs.tag }}"' "$ROOT/.github/workflows/publish-sdk.yml"; then
+    echo "sdk publish still uses the release event tag, which is empty after the bounce" >&2
+    exit 1
+fi
 assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "branches: [main]"
 assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "workflow_dispatch"
 assert_contains "$ROOT/.github/workflows/ployz-sh.yml" "stage-ployz-sh-site.sh"
@@ -327,11 +339,15 @@ assert_eq "$(release_artifacts_needed pull_request scripts/publish-relay-image.s
 PLOYZ_BOUNCE_RELEASE_TEST_ONLY=true source "$ROOT/scripts/bounce-release-to-main.sh"
 assert_eq "$(printf '%s\n' '[{"databaseId":2,"displayTitle":"Release v1.2.3"},{"databaseId":3,"displayTitle":"Release v1.2.3"}]' | newest_run_id_named_except "Release v1.2.3" $'2\n')" "3"
 assert_eq "$(printf '%s\n' '[]' | newest_run_id_named_except "Release v1.2.3" "")" ""
-assert_contains "$ROOT/scripts/bounce-release-to-main.sh" 'wanted="Release $tag"'
-assert_contains "$ROOT/scripts/bounce-release-to-main.sh" "gh workflow run release.yml"
+assert_contains "$ROOT/scripts/bounce-release-to-main.sh" 'wanted=${2:-}'
+assert_contains "$ROOT/scripts/bounce-release-to-main.sh" 'gh workflow run "$workflow"'
 assert_contains "$ROOT/scripts/bounce-release-to-main.sh" "--event=workflow_dispatch"
 assert_contains "$ROOT/scripts/bounce-release-to-main.sh" "gh run watch"
 assert_contains "$ROOT/scripts/bounce-release-to-main.sh" "--exit-status"
+if grep -Fq "gh workflow run release.yml" "$ROOT/scripts/bounce-release-to-main.sh"; then
+    echo "bounce script is still hardcoded to release.yml" >&2
+    exit 1
+fi
 if grep -Fq GITHUB_REF_NAME "$ROOT/scripts/pack-release.sh"; then
     echo "pack-release still takes the tag from GITHUB_REF_NAME, which is main after the bounce" >&2
     exit 1
