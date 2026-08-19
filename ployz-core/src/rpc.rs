@@ -10,9 +10,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AdvertisedEndpoint, CapabilityName, ContainerId, ContainerKind, ContainerObservation,
-    DockerVolume, LocalMachinePhase, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
+    AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
+    ContainerObservation, DockerVolume, LocalMachinePhase, Machine, MachineId, MachineLogService,
+    MachineName, MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
     PublicIpDiscovery, ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
@@ -228,6 +228,8 @@ pub struct InitializeRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_pairing: Option<CloudPairing>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -246,6 +248,8 @@ pub struct JoinRequest {
     pub registration: Registered,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_pairing: Option<CloudPairing>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

@@ -31,6 +31,7 @@ impl Cluster {
             JoinRequest {
                 registration,
                 wireguard_mtu: None,
+                cloud_pairing: None,
             },
         )
         .await?;

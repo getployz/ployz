@@ -4,12 +4,12 @@ use std::{
 };
 
 use ipnet::IpNet;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::NameMatches;
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSubnet, MachineTarget,
-    ManagementAddress, SelectedEndpoint, WireGuardPublicKey,
+    ManagementAddress, PairingCredential, SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -383,5 +383,120 @@ impl MembershipObservation {
     #[must_use]
     pub fn invites_rpc(&self) -> bool {
         matches!(self, Self::Up | Self::Suspect)
+    }
+}
+
+/// Cluster-scoped grant of a Cloud Relay endpoint and Pairing Credential.
+///
+/// Absence means no Machine dials Relay. The Dial Credential is not a field
+/// here and is never stored on a Machine.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudPairing {
+    relay_url: String,
+    secret: PairingCredential,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CloudPairingWire {
+    relay_url: String,
+    secret: PairingCredential,
+}
+
+impl CloudPairing {
+    /// Build Cloud Pairing from a Relay endpoint and Pairing Credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `relay_url` is empty.
+    pub fn parse(
+        relay_url: impl Into<String>,
+        secret: PairingCredential,
+    ) -> Result<Self, ValueError> {
+        let relay_url = relay_url.into();
+        if relay_url.is_empty() {
+            return Err(ValueError::new(
+                "Cloud Pairing relay URL",
+                relay_url,
+                "a non-empty URL",
+            ));
+        }
+        Ok(Self { relay_url, secret })
+    }
+
+    /// Cloud Relay endpoint this Machine should dial. Not `--cloud-url`.
+    #[must_use]
+    pub fn relay_url(&self) -> &str {
+        &self.relay_url
+    }
+
+    /// Pairing Credential used to authenticate Register.
+    #[must_use]
+    pub fn secret(&self) -> &PairingCredential {
+        &self.secret
+    }
+}
+
+impl<'de> Deserialize<'de> for CloudPairing {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = CloudPairingWire::deserialize(deserializer)?;
+        Self::parse(wire.relay_url, wire.secret).map_err(de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod cloud_pairing_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn pairing() -> CloudPairing {
+        CloudPairing::parse(
+            "https://relay.example.invalid",
+            PairingCredential::parse("pairing-secret").unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cloud_pairing_wire_shape_is_relay_url_and_secret() {
+        let value = serde_json::to_value(pairing()).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "relayUrl": "https://relay.example.invalid",
+                "secret": "pairing-secret",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<CloudPairing>(value).unwrap(),
+            pairing()
+        );
+    }
+
+    #[test]
+    fn cloud_pairing_rejects_a_dial_credential_field() {
+        let error = serde_json::from_value::<CloudPairing>(json!({
+            "relayUrl": "https://relay.example.invalid",
+            "secret": "pairing-secret",
+            "dial": "dial-credential",
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+
+    #[test]
+    fn pairing_credential_and_relay_url_must_be_non_empty() {
+        assert!(PairingCredential::parse("").is_err());
+        assert!(
+            CloudPairing::parse("", PairingCredential::parse("pairing-secret").unwrap()).is_err()
+        );
+    }
+
+    #[test]
+    fn pairing_credential_debug_redacts_the_bearer() {
+        let secret = PairingCredential::parse("pairing-secret").unwrap();
+        assert_eq!(format!("{secret:?}"), "PairingCredential(..)");
+        assert!(!format!("{:?}", pairing()).contains("pairing-secret"));
     }
 }

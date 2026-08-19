@@ -41,7 +41,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
     }))
     .unwrap();
     local
-        .join(machine.clone(), vec![machine], BTreeMap::new(), None)
+        .join(machine.clone(), vec![machine], BTreeMap::new(), None, None)
         .unwrap();
     let local = Arc::new(Mutex::new(local));
 
@@ -320,6 +320,7 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
         },
         wireguard_private_key: crate::network::WireGuardPrivateKey::from_bytes([0; 32]),
         wireguard_mtu: None,
+        cloud_pairing: None,
         selected_endpoints: BTreeMap::new(),
     };
     (machine, local)

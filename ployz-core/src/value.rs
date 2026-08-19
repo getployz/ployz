@@ -736,3 +736,57 @@ validated_string_newtype!(
         value.split('.').count() >= 3 && value.split('.').all(valid_segment)
     }
 );
+
+/// Bearer Cloud Pairing grants a Machine to authenticate Register for one Relay Tenant.
+///
+/// It is rejected on Dial. The Dial Credential is a different type and never
+/// lives on a Machine.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PairingCredential(String);
+
+impl PairingCredential {
+    /// Parse a non-empty Pairing Credential bearer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `value` is empty.
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
+        let value = value.into();
+        if value.is_empty() {
+            Err(ValueError::new(
+                "Pairing Credential",
+                value,
+                "a non-empty bearer",
+            ))
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    /// Pairing Credential bearer. Do not log this value.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for PairingCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PairingCredential(..)")
+    }
+}
+
+impl TryFrom<String> for PairingCredential {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<PairingCredential> for String {
+    fn from(value: PairingCredential) -> Self {
+        value.0
+    }
+}
