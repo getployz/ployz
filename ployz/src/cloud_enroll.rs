@@ -10,16 +10,29 @@ use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
 const DEFAULT_RETRY_AFTER: u64 = 2;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+// Healthy production enroll measured 8.15s for Relay List + registerHeld.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Failures talking to Cloud enroll.
 #[derive(Debug, Error)]
 pub(crate) enum Error {
+    #[error("enroll timed out waiting for Cloud")]
+    Timeout(#[source] reqwest::Error),
+    #[error("could not connect to Cloud")]
+    Connect(#[source] reqwest::Error),
     #[error(transparent)]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error("enroll HTTP {status}: {body}")]
     Status { status: u16, body: String },
+}
+
+impl Error {
+    fn is_transport(&self) -> bool {
+        matches!(self, Self::Timeout(_) | Self::Connect(_) | Self::Http(_))
+    }
 }
 
 /// Identity POSTed to `POST /api/enroll/<token>`.
@@ -122,16 +135,25 @@ struct EnrollCallback {
 
 /// POST identity until Cloud returns `initialize` or `join`.
 ///
+/// Transport errors and `not_yet` are retried with backoff. A timed-out enroll
+/// is safe to repeat: the founding claim is CAS and joins are idempotent.
+///
 /// # Errors
 ///
-/// HTTP or unexpected JSON.
+/// HTTP status, unexpected JSON, or a non-transport HTTP failure.
 pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outcome, Error> {
     let http = http_client()?;
     loop {
-        match parse_enroll(&post_json(&http, url, identity).await?)? {
-            Response::Join(join) => return Ok(Outcome::Join(join)),
-            Response::Initialize { pairing } => return Ok(Outcome::Initialize { pairing }),
-            Response::NotYet { retry_after } => tokio::time::sleep(retry_after).await,
+        match post_json(&http, url, identity).await {
+            Ok(bytes) => match parse_enroll(&bytes)? {
+                Response::Join(join) => return Ok(Outcome::Join(join)),
+                Response::Initialize { pairing } => return Ok(Outcome::Initialize { pairing }),
+                Response::NotYet { retry_after } => tokio::time::sleep(retry_after).await,
+            },
+            Err(error) if error.is_transport() => {
+                tokio::time::sleep(Duration::from_secs(DEFAULT_RETRY_AFTER)).await;
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -147,9 +169,22 @@ pub(crate) async fn callback(url: &str, machine_id: MachineId) -> Result<(), Err
 }
 
 fn http_client() -> Result<reqwest::Client, Error> {
-    Ok(reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?)
+    // No total timeout: `not_yet` polling bounds overall wait.
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .map_err(classify_http)
+}
+
+fn classify_http(error: reqwest::Error) -> Error {
+    if error.is_connect() {
+        Error::Connect(error)
+    } else if error.is_timeout() {
+        Error::Timeout(error)
+    } else {
+        Error::Http(error)
+    }
 }
 
 async fn post_json(
@@ -157,9 +192,14 @@ async fn post_json(
     url: &str,
     body: &impl Serialize,
 ) -> Result<Vec<u8>, Error> {
-    let sent = http.post(url).json(body).send().await?;
+    let sent = http
+        .post(url)
+        .json(body)
+        .send()
+        .await
+        .map_err(classify_http)?;
     let status = sent.status();
-    let bytes = sent.bytes().await?;
+    let bytes = sent.bytes().await.map_err(classify_http)?;
     if !status.is_success() {
         return Err(Error::Status {
             status: status.as_u16(),
@@ -333,6 +373,121 @@ mod tests {
             panic!("expected not_yet");
         };
         assert_eq!(retry_after, Duration::from_secs(5));
+    }
+
+    fn identity() -> EnrollIdentity {
+        EnrollIdentity::from_machine_token(
+            MachineName::parse("joiner").unwrap(),
+            &MachineToken {
+                public_key: WireGuardPublicKey([1; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+            },
+        )
+    }
+
+    fn join_body() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "kind": "join",
+            "pairing": {
+                "relayUrl": "https://relay.example.invalid",
+                "secret": "pairing-secret",
+            },
+            "registration": registration(),
+        }))
+        .unwrap()
+    }
+
+    fn http_response(status: u16, reason: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    async fn listen() -> (tokio::net::TcpListener, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        (listener, url)
+    }
+
+    async fn read_http(stream: &mut tokio::net::TcpStream) {
+        let mut buf = vec![0; 8192];
+        let _ = tokio::io::AsyncReadExt::read(stream, &mut buf).await;
+    }
+
+    #[tokio::test]
+    async fn timeout_is_distinct_from_connection_failure() {
+        let (listener, hang) = listen().await;
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(1))
+            .read_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let timeout = post_json(&http, &hang, &identity()).await.unwrap_err();
+        assert_eq!(timeout.to_string(), "enroll timed out waiting for Cloud");
+        assert!(
+            !timeout.to_string().contains("error sending request"),
+            "{timeout}"
+        );
+
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refused = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let connect = post_json(&http, &refused, &identity()).await.unwrap_err();
+        assert_eq!(connect.to_string(), "could not connect to Cloud");
+        assert_ne!(timeout.to_string(), connect.to_string());
+    }
+
+    #[tokio::test]
+    async fn enroll_retries_transport_error_then_joins() {
+        let (listener, url) = listen().await;
+        let body = join_body();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            drop(stream);
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let response = http_response(200, "OK", &body);
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                .await
+                .unwrap();
+        });
+        let Outcome::Join(join) = enroll(&url, &identity()).await.unwrap() else {
+            panic!("expected join");
+        };
+        assert_eq!(join.pairing, pairing());
+        assert_eq!(join.registration, registration());
+    }
+
+    #[tokio::test]
+    async fn enroll_http_status_error_is_not_retried() {
+        let (listener, url) = listen().await;
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let response = http_response(503, "Error", b"busy");
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                .await
+                .unwrap();
+        });
+        let error = tokio::time::timeout(Duration::from_millis(500), enroll(&url, &identity()))
+            .await
+            .expect("HTTP status must not retry like transport")
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Status { status: 503, .. }),
+            "{error}"
+        );
     }
 
     #[test]
