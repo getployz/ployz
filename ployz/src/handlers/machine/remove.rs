@@ -82,7 +82,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
 
         // Drop the local connection before DNS refresh. A refresh failure
-        // must not leave the removed Machine named in the context (#249).
+        // must not leave the removed Machine named in the context (#249)
+        // and must not fail the command (#449).
         let mut config = options.load_or_empty_config()?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
@@ -93,10 +94,13 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         if let Err(error) =
             crate::dns::update_records_after_removal(&mut client, machines, &selected.id).await
         {
-            return Err(Error::warned(
-                "hosted DNS refresh failed after removing the Machine",
-                error,
-            ));
+            eprintln!(
+                "{}",
+                Error::warned(
+                    "hosted DNS refresh failed after removing the Machine",
+                    error,
+                )
+            );
         }
         println!("Removed Machine {} ({})", selected.name, selected.id);
         Ok::<_, Error>(())
