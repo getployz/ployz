@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -8,15 +8,18 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
-use super::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, INSERT_ALLOCATOR_NOW};
+use super::store::{AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, STEAL_ALLOCATOR};
 use super::{ApiClient, ReplicatedStore};
 use ployz_core::MachineId;
+
+const PUSH_ALLOCATOR_READ: &str = "INSERT INTO allocator_script (value) VALUES (?)";
 
 #[derive(Clone)]
 struct ClusterKv {
     network: String,
     machines: BTreeMap<String, String>,
     allocator: Option<(String, bool)>,
+    allocator_script: VecDeque<(String, bool)>,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +45,7 @@ async fn bind(allocator: Option<(String, bool)>) -> (ReplicatedStore, tokio::tas
         network: "10.210.0.0/16".into(),
         machines: BTreeMap::new(),
         allocator,
+        allocator_script: VecDeque::new(),
     }));
     let server = tokio::spawn(async move {
         axum::serve(
@@ -69,7 +73,7 @@ async fn transactions(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> V
 }
 
 fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
-    let kv = kv.lock().unwrap();
+    let mut kv = kv.lock().unwrap();
     match statement.query.as_str() {
         "SELECT id, info FROM machines ORDER BY name" => events(
             &["id", "info"],
@@ -84,12 +88,17 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
-        ALLOCATOR_ROW => events(
-            &["allocator", "quiet"],
-            kv.allocator
-                .iter()
-                .map(|(id, quiet)| vec![json!(id), json!(u8::from(*quiet))]),
-        ),
+        ALLOCATOR_ROW => {
+            if let Some(row) = kv.allocator_script.pop_front() {
+                kv.allocator = Some(row);
+            }
+            events(
+                &["allocator", "quiet"],
+                kv.allocator
+                    .iter()
+                    .map(|(id, quiet)| vec![json!(id), json!(u8::from(*quiet))]),
+            )
+        }
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }
@@ -105,8 +114,17 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 let id = text_param(&statement.params, 0).to_owned();
                 kv.allocator.get_or_insert((id, true));
             }
-            INSERT_ALLOCATOR_NOW => {
+            STEAL_ALLOCATOR => {
                 kv.allocator = Some((text_param(&statement.params, 0).to_owned(), false));
+            }
+            AGE_ALLOCATOR => {
+                if let Some((_, quiet)) = &mut kv.allocator {
+                    *quiet = true;
+                }
+            }
+            PUSH_ALLOCATOR_READ => {
+                kv.allocator_script
+                    .push_back((text_param(&statement.params, 0).to_owned(), true));
             }
             query if query.starts_with("INSERT INTO machines (id, info,") => {
                 kv.machines.insert(
@@ -141,10 +159,27 @@ fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes
     body.into()
 }
 
-pub(crate) async fn insert_young_allocator(store: &ReplicatedStore, id: &MachineId) {
+pub(crate) async fn age_allocator(store: &ReplicatedStore) {
     store
         .api()
-        .execute([super::Statement::new(INSERT_ALLOCATOR_NOW, [json!(id)])])
+        .execute([super::Statement::new(AGE_ALLOCATOR, [])])
+        .await
+        .unwrap();
+}
+
+/// Next `allocator()` reads: `current`, `current`, then `then` (quiet).
+pub(crate) async fn name_allocator_on_reread(
+    store: &ReplicatedStore,
+    current: &MachineId,
+    then: &MachineId,
+) {
+    store
+        .api()
+        .execute([
+            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(current)]),
+            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(current)]),
+            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(then)]),
+        ])
         .await
         .unwrap();
 }

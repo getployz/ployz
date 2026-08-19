@@ -30,9 +30,10 @@ pub struct ReplicatedStore {
 // Solo founder backdates so the first Register is already quiet. ON CONFLICT
 // leaves a later steal's `updated_at = now` alone.
 pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
+pub(crate) const STEAL_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
 #[cfg(test)]
-pub(crate) const INSERT_ALLOCATOR_NOW: &str =
-    "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now'))";
+pub(crate) const AGE_ALLOCATOR: &str =
+    "UPDATE cluster SET updated_at = datetime('now', '-5 seconds') WHERE key = 'allocator'";
 pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -228,6 +229,17 @@ impl ReplicatedStore {
     pub async fn publish_founder_allocator(&self, machine_id: &MachineId) -> Result<(), Error> {
         self.api
             .execute([Statement::new(CLAIM_FOUNDER_ALLOCATOR, [json!(machine_id)])])
+            .await
+    }
+
+    /// Write `cluster.allocator` naming this Machine, with `updated_at = now`.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the Cluster store cannot be written.
+    pub(crate) async fn steal_allocator(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(STEAL_ALLOCATOR, [json!(machine_id)])])
             .await
     }
 

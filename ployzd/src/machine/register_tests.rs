@@ -1,19 +1,22 @@
 use std::{
+    collections::BTreeMap,
     net::Ipv6Addr,
     sync::{Arc, Mutex},
 };
 
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineName, MachineRpc, MachineRpcServer,
-    MachineRuntime, MachineSubnet, ManagementAddress, RegisterRequest, Registered, RpcError,
-    RpcResponseBody, WireGuardPublicKey, op,
+    MachineRuntime, MachineSubnet, ManagementAddress, MembershipObservation, RegisterRequest,
+    Registered, RpcError, RpcErrorCode, RpcResponseBody, WireGuardPublicKey, op,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, transport::Server};
 
-use super::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError};
+use super::{
+    LocalMachine, LocalMachineError, LocalMachineStore, RuntimeWatchTelemetry, StoreError,
+};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore, fake_cluster},
     rpc::{MachineService, REGISTER_FORWARDED_METADATA},
@@ -163,7 +166,7 @@ async fn register_does_not_allocate_when_this_machine_is_not_the_allocator() {
 #[tokio::test]
 async fn register_is_not_quiet_when_the_allocator_row_is_young() {
     let (local, replicated, founder, data_dir, server) = participating_without_allocator().await;
-    fake_cluster::insert_young_allocator(&replicated, &founder.id).await;
+    replicated.steal_allocator(&founder.id).await.unwrap();
     let error = local
         .register(request("peer", WireGuardPublicKey([1; 32])))
         .await
@@ -310,19 +313,10 @@ async fn forwarded_register_does_not_admit_or_forward_when_kv_names_another_mach
 }
 
 #[tokio::test]
-async fn unreachable_allocator_does_not_steal() {
-    let (data_dir, store, _local_machine) = open_store("ployzd-register-unreachable");
+async fn unreachable_allocator_steals_retryable_not_quiet_without_a_subnet() {
+    let (data_dir, store, founder) = open_store("ployzd-register-steal");
     let allocator_id = MachineId::parse("c".repeat(32)).unwrap();
-    let named = Machine {
-        id: allocator_id,
-        name: MachineName::parse("allocator").unwrap(),
-        subnet: "10.210.0.0/24".parse().unwrap(),
-        management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
-        public_key: WireGuardPublicKey([3; 32]),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.3:51820".parse().unwrap())],
-        runtime: MachineRuntime::default(),
-    };
+    let named = unreachable_allocator(allocator_id);
     let (replicated, server) = fake_cluster::store().await;
     replicated.publish_local_machine(&named).await.unwrap();
     replicated
@@ -339,18 +333,258 @@ async fn unreachable_allocator_does_not_steal() {
     .await
     .unwrap_err();
 
-    assert_eq!(error.message, "Allocator is unreachable");
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(error.message, "Allocator is not quiet");
+    assert_eq!(
+        replicated
+            .allocator()
+            .await
+            .unwrap()
+            .map(|row| (row.machine_id, row.quiet)),
+        Some((founder.id, false))
+    );
+    assert!(
+        replicated
+            .machines()
+            .await
+            .unwrap()
+            .observations
+            .iter()
+            .all(|machine| machine.name.as_str() != "joiner"),
+        "steal must not assign a Machine Subnet on that call"
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn stealer_admits_after_the_quiet_gate() {
+    let (data_dir, store, founder) = open_store("ployzd-register-steal-admit");
+    let (replicated, server) = fake_cluster::store().await;
+    replicated.publish_local_machine(&founder).await.unwrap();
+    replicated
+        .publish_local_machine(&unreachable_allocator(
+            MachineId::parse("c".repeat(32)).unwrap(),
+        ))
+        .await
+        .unwrap();
+    replicated
+        .publish_founder_allocator(&MachineId::parse("c".repeat(32)).unwrap())
+        .await
+        .unwrap();
+    let local = machine_service(store, replicated.clone(), Some(1));
+
+    let error = rpc_register(&local, request("first", WireGuardPublicKey([7; 32])), false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.message, "Allocator is not quiet");
+
+    fake_cluster::age_allocator(&replicated).await;
+    let registered = rpc_register(
+        &local,
+        request("joiner", WireGuardPublicKey([8; 32])),
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
+    assert_eq!(
+        registered.assigned_machine.subnet,
+        "10.210.1.0/24".parse().unwrap()
+    );
+    assert_eq!(
+        replicated
+            .allocator()
+            .await
+            .unwrap()
+            .map(|row| (row.machine_id, row.quiet)),
+        Some((founder.id, true))
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn unreachable_allocator_forwards_when_reread_names_a_reachable_allocator() {
+    let (allocator_dir, allocator_store, mut reachable) = open_store("ployzd-register-moved");
+    let (allocator_replica, allocator_cluster) = fake_cluster::store().await;
+    reachable.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
+    allocator_replica
+        .publish_local_machine(&reachable)
+        .await
+        .unwrap();
+    allocator_replica
+        .publish_founder_allocator(&reachable.id)
+        .await
+        .unwrap();
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(machine_service(
+                allocator_store,
+                allocator_replica.clone(),
+                None,
+            )))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+
+    let (contact_dir, contact_store, _contact_machine) = open_store("ployzd-register-reread");
+    let (contact_replica, contact_cluster) = fake_cluster::store().await;
+    let unreachable_id = MachineId::parse("c".repeat(32)).unwrap();
+    contact_replica
+        .publish_local_machine(&reachable)
+        .await
+        .unwrap();
+    contact_replica
+        .publish_founder_allocator(&unreachable_id)
+        .await
+        .unwrap();
+    fake_cluster::name_allocator_on_reread(&contact_replica, &unreachable_id, &reachable.id).await;
+    let contact = machine_service(contact_store, contact_replica.clone(), Some(port));
+
+    let registered = rpc_register(
+        &contact,
+        request("joiner", WireGuardPublicKey([7; 32])),
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
+    assert_eq!(
+        contact_replica
+            .allocator()
+            .await
+            .unwrap()
+            .map(|row| row.machine_id),
+        Some(reachable.id)
+    );
+    allocator_cluster.abort();
+    contact_cluster.abort();
+    let _ = std::fs::remove_dir_all(allocator_dir);
+    let _ = std::fs::remove_dir_all(contact_dir);
+}
+
+#[tokio::test]
+async fn membership_down_or_suspect_does_not_steal() {
+    let (local, replicated, founder, data_dir, server) = participating().await;
+    let before = replicated.allocator().await.unwrap();
+    let founder_id = founder.id;
+    let peer = unreachable_allocator(MachineId::parse("d".repeat(32)).unwrap());
+    let _observations = RuntimeWatchTelemetry {
+        states: BTreeMap::from([
+            (founder.management_address, MembershipObservation::Down),
+            (peer.management_address, MembershipObservation::Suspect),
+        ]),
+        selected_endpoints: BTreeMap::new(),
+        rtts: Vec::new(),
+    }
+    .overlay(vec![founder, peer], &founder_id);
+
+    assert_eq!(replicated.allocator().await.unwrap(), before);
+    local
+        .register(request("joiner", WireGuardPublicKey([7; 32])))
+        .await
+        .unwrap();
     assert_eq!(
         replicated
             .allocator()
             .await
             .unwrap()
             .map(|row| row.machine_id),
-        Some(allocator_id)
+        Some(founder_id)
     );
+
     server.abort();
     drop(local);
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn two_steals_leave_one_writer_and_the_loser_forwards() {
+    let (winner_dir, winner_store, mut winner_machine) = open_store("ployzd-steal-winner");
+    let (loser_dir, loser_store, loser_machine) = open_store("ployzd-steal-loser");
+    let (replica, cluster) = fake_cluster::store().await;
+    winner_machine.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
+    let unreachable_id = MachineId::parse("c".repeat(32)).unwrap();
+    replica
+        .publish_local_machine(&unreachable_allocator(unreachable_id))
+        .await
+        .unwrap();
+    replica
+        .publish_local_machine(&winner_machine)
+        .await
+        .unwrap();
+    replica.publish_local_machine(&loser_machine).await.unwrap();
+    replica
+        .publish_founder_allocator(&unreachable_id)
+        .await
+        .unwrap();
+
+    let loser = machine_service(loser_store.clone(), replica.clone(), Some(1));
+    let winner = machine_service(winner_store, replica.clone(), Some(1));
+    assert_eq!(
+        rpc_register(&loser, request("first", WireGuardPublicKey([7; 32])), false)
+            .await
+            .unwrap_err()
+            .message,
+        "Allocator is not quiet"
+    );
+    assert_eq!(
+        rpc_register(
+            &winner,
+            request("second", WireGuardPublicKey([8; 32])),
+            false
+        )
+        .await
+        .unwrap_err()
+        .message,
+        "Allocator is not quiet"
+    );
+    assert_eq!(
+        replica.allocator().await.unwrap().map(|row| row.machine_id),
+        Some(winner_machine.id)
+    );
+
+    fake_cluster::age_allocator(&replica).await;
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(winner.clone()))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    let loser = machine_service(loser_store, replica.clone(), Some(port));
+
+    let forwarded = rpc_register(
+        &loser,
+        request("joiner", WireGuardPublicKey([9; 32])),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(forwarded.assigned_machine.name.as_str(), "joiner");
+    assert_eq!(
+        replica.allocator().await.unwrap().map(|row| row.machine_id),
+        Some(winner_machine.id)
+    );
+
+    let admitted = rpc_register(
+        &winner,
+        request("other", WireGuardPublicKey([10; 32])),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(admitted.assigned_machine.name.as_str(), "other");
+
+    cluster.abort();
+    let _ = std::fs::remove_dir_all(winner_dir);
+    let _ = std::fs::remove_dir_all(loser_dir);
 }
 
 #[tokio::test]
@@ -438,6 +672,19 @@ fn machine_service(
     match port {
         Some(port) => service.with_machine_api_port(port),
         None => service,
+    }
+}
+
+fn unreachable_allocator(id: MachineId) -> Machine {
+    Machine {
+        id,
+        name: MachineName::parse("allocator").unwrap(),
+        subnet: "10.210.0.0/24".parse().unwrap(),
+        management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
+        public_key: WireGuardPublicKey([3; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.3:51820".parse().unwrap())],
+        runtime: MachineRuntime::default(),
     }
 }
 

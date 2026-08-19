@@ -8,9 +8,9 @@ use std::{
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
     ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload,
-    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
-    VolumeRemoved, op,
+    LogMetadata, LogOrigin, MachineId, MachineLogService, MachineRpc, MachineRpcClient,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -131,16 +131,48 @@ impl MachineService {
             Ok(store) => store,
             Err(error) => return local_error(error),
         };
-        let allocator = match replicated.allocator().await {
+        let first = match replicated.allocator().await {
             Ok(Some(row)) => row.machine_id,
             Ok(None) => return local_error(LocalMachineError::NotAllocator),
             Err(error) => return local_error(error.into()),
         };
+        if let Some(response) = self.dial_allocator(first, payload.clone()).await? {
+            return Ok(response);
+        }
+        let named = match replicated.allocator().await {
+            Ok(row) => row.map(|row| row.machine_id),
+            Err(error) => return local_error(error.into()),
+        };
+        if named != Some(first)
+            && let Some(allocator) = named
+            && let Some(response) = self.dial_allocator(allocator, payload).await?
+        {
+            return Ok(response);
+        }
+        let me = match self.local_record() {
+            Ok(record) => record.id(),
+            Err(error) => return Err(error),
+        };
+        match replicated.steal_allocator(&me).await {
+            Ok(()) => local_error(LocalMachineError::AllocatorNotQuiet),
+            Err(error) => local_error(error.into()),
+        }
+    }
+
+    async fn dial_allocator(
+        &self,
+        allocator: MachineId,
+        payload: OpaquePayload,
+    ) -> Result<Option<Response<OpaquePayload>>, Status> {
+        let replicated = match self.local.replicated() {
+            Ok(store) => store,
+            Err(error) => return local_error(error).map(Some),
+        };
         let Some(target) = (match replicated.machine(allocator.as_str()).await {
             Ok(machine) => machine,
-            Err(error) => return local_error(error.into()),
+            Err(error) => return local_error(error.into()).map(Some),
         }) else {
-            return allocator_unreachable();
+            return Ok(None);
         };
         let endpoint = Endpoint::from_shared(format!(
             "http://[{}]:{}",
@@ -150,7 +182,7 @@ impl MachineService {
         .connect_timeout(Duration::from_secs(10));
         let mut client = MachineRpcClient::new(match endpoint.connect().await {
             Ok(channel) => channel,
-            Err(_) => return allocator_unreachable(),
+            Err(_) => return Ok(None),
         });
         let mut outbound = Request::new(payload);
         outbound.metadata_mut().insert(
@@ -158,8 +190,8 @@ impl MachineService {
             "1".parse().expect("ASCII metadata"),
         );
         match client.register(outbound).await {
-            Ok(response) => Ok(response),
-            Err(_) => allocator_unreachable(),
+            Ok(response) => Ok(Some(response)),
+            Err(_) => Ok(None),
         }
     }
 }
@@ -791,14 +823,6 @@ fn unavailable(message: &str) -> RpcError {
         message: message.into(),
         details: Value::Null,
     }
-}
-
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic Status is the RPC error type used by every MachineService handler"
-)]
-fn allocator_unreachable() -> Result<Response<OpaquePayload>, Status> {
-    respond(unavailable("Allocator is unreachable"))
 }
 
 fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {

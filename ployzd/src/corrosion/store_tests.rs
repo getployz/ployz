@@ -14,7 +14,9 @@ use serde_json::json;
 use super::{ReplicatedStore, fake_cluster};
 use crate::corrosion::ApiClient;
 use crate::corrosion::publisher::founder_allocator_id;
-use crate::corrosion::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, INSERT_ALLOCATOR_NOW};
+use crate::corrosion::store::{
+    AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, STEAL_ALLOCATOR,
+};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
 };
@@ -230,13 +232,34 @@ fn allocator_written_at_now_is_not_quiet() {
     let db = rusqlite::Connection::open_in_memory().unwrap();
     db.execute_batch(include_str!("schema.sql")).unwrap();
     let id = "a".repeat(32);
-    db.execute(INSERT_ALLOCATOR_NOW, rusqlite::params![id])
-        .unwrap();
+    db.execute(STEAL_ALLOCATOR, rusqlite::params![id]).unwrap();
     let (value, quiet): (String, i64) = db
         .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap();
     assert_eq!(value, id);
     assert_eq!(quiet, 0);
+}
+
+#[test]
+fn second_steal_overwrites_and_age_makes_quiet() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    db.execute(STEAL_ALLOCATOR, rusqlite::params!["a".repeat(32)])
+        .unwrap();
+    db.execute(STEAL_ALLOCATOR, rusqlite::params!["b".repeat(32)])
+        .unwrap();
+    let (value, quiet): (String, i64) = db
+        .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap();
+    assert_eq!(value, "b".repeat(32));
+    assert_eq!(quiet, 0);
+
+    db.execute(AGE_ALLOCATOR, []).unwrap();
+    let (value, quiet): (String, i64) = db
+        .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap();
+    assert_eq!(value, "b".repeat(32));
+    assert_eq!(quiet, 1);
 }
 
 #[test]
