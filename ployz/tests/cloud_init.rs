@@ -1,6 +1,7 @@
 //! `ployz init --cloud` join and initialize paths against fake enroll HTTP.
 
 use std::{
+    collections::VecDeque,
     net::SocketAddr,
     sync::{
         Arc, Mutex,
@@ -234,6 +235,119 @@ async fn cloud_init_initialize_reserves_cloud_hosted_dns() {
     assert_ne!(reserved.endpoint, "https://dns.uncloud.run/v1");
 }
 
+#[tokio::test]
+async fn cloud_init_retries_not_yet_then_joins() {
+    let registration = registration();
+    let machine_id = registration.assigned_machine.id;
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::script([
+        json!({"kind": "not_yet", "retryAfter": 0}),
+        json!({
+            "kind": "join",
+            "pairing": pairing,
+            "registration": registration,
+        }),
+    ])
+    .await;
+    let daemon = JoinDaemon::new(registration.clone());
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "init",
+            "--cloud",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
+        "{stdout}"
+    );
+
+    let posts = enroll.posts();
+    assert_eq!(posts.len(), 2);
+    assert_eq!(posts.first(), posts.get(1));
+    assert_eq!(enroll.paths(), vec![format!("/api/enroll/{TOKEN}"); 2]);
+    wait_for_held(&relay.url, machine_id).await;
+}
+
+#[tokio::test]
+async fn cloud_init_retries_not_yet_then_initializes() {
+    let founder = founder_machine();
+    let machine_id = founder.id;
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::script([
+        json!({"kind": "not_yet", "retryAfter": 0}),
+        json!({
+            "kind": "initialize",
+            "pairing": pairing,
+        }),
+    ])
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder,
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "init",
+            "--cloud",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--no-caddy",
+            "--no-dns",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
+        "{stdout}"
+    );
+
+    let posts = enroll.posts();
+    assert_eq!(posts.len(), 2);
+    assert_eq!(posts.first(), posts.get(1));
+    daemon.initialize_request();
+    wait_for_held(&relay.url, machine_id).await;
+}
+
 struct RelayListen {
     url: String,
     _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
@@ -256,16 +370,26 @@ impl RelayListen {
 struct EnrollListen {
     url: String,
     paths: Arc<Mutex<Vec<String>>>,
+    posts: Arc<Mutex<Vec<serde_json::Value>>>,
     _server: tokio::task::JoinHandle<()>,
 }
 
 impl EnrollListen {
     async fn start(body: serde_json::Value) -> Self {
+        Self::script([body]).await
+    }
+
+    async fn script(bodies: impl IntoIterator<Item = serde_json::Value>) -> Self {
+        let mut remaining: VecDeque<Vec<u8>> = bodies
+            .into_iter()
+            .map(|body| serde_json::to_vec(&body).unwrap())
+            .collect();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let paths = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&paths);
-        let body = serde_json::to_vec(&body).unwrap();
+        let posts = Arc::new(Mutex::new(Vec::new()));
+        let recorded_paths = Arc::clone(&paths);
+        let recorded_posts = Arc::clone(&posts);
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -273,8 +397,8 @@ impl EnrollListen {
                 };
                 let mut buf = vec![0; 8192];
                 let n = stream.read(&mut buf).await.unwrap();
-                let request =
-                    String::from_utf8_lossy(buf.get(..n).expect("read count is in bounds"));
+                let raw = buf.get(..n).expect("read count is in bounds");
+                let request = String::from_utf8_lossy(raw);
                 let path = request
                     .lines()
                     .next()
@@ -283,7 +407,9 @@ impl EnrollListen {
                     .nth(1)
                     .unwrap()
                     .to_owned();
-                recorded.lock().unwrap().push(path);
+                recorded_paths.lock().unwrap().push(path);
+                recorded_posts.lock().unwrap().push(enroll_json_body(raw));
+                let body = remaining.pop_front().expect("scripted enroll has a body");
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
@@ -295,6 +421,7 @@ impl EnrollListen {
         Self {
             url: format!("http://{address}"),
             paths,
+            posts,
             _server: server,
         }
     }
@@ -302,6 +429,18 @@ impl EnrollListen {
     fn paths(&self) -> Vec<String> {
         self.paths.lock().unwrap().clone()
     }
+
+    fn posts(&self) -> Vec<serde_json::Value> {
+        self.posts.lock().unwrap().clone()
+    }
+}
+
+fn enroll_json_body(raw: &[u8]) -> serde_json::Value {
+    let sep = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP request has a header separator");
+    serde_json::from_slice(raw.get(sep + 4..).expect("body follows headers")).unwrap()
 }
 
 #[derive(Clone)]

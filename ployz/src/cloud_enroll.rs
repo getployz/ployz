@@ -298,4 +298,14 @@ mod tests {
         };
         assert_eq!(retry_after, Duration::from_secs(2));
     }
+
+    #[test]
+    fn not_yet_honors_retry_after_seconds() {
+        let Response::NotYet { retry_after } =
+            parse_enroll(br#"{"kind":"not_yet","retryAfter":5}"#).unwrap()
+        else {
+            panic!("expected not_yet");
+        };
+        assert_eq!(retry_after, Duration::from_secs(5));
+    }
 }
