@@ -76,7 +76,12 @@ async fn failed_volume_listing_is_not_empty_data_loss() {
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            description.machine_id.as_str(),
+        ),
     )
     .await
     .expect("connect must not hang")
@@ -100,7 +105,12 @@ async fn omitted_volume_listing_is_not_empty_data_loss() {
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            description.machine_id.as_str(),
+        ),
     )
     .await
     .expect("connect must not hang")
@@ -137,6 +147,7 @@ async fn node_data_loss_reads_a_machine_with_volumes_and_one_with_none() {
                 .env("PLOYZ_SDK_PACKAGE", package)
                 .env("PLOYZ_RELAY_URL", url)
                 .env("PLOYZ_BEARER", relay::DIAL)
+                .env("PLOYZ_PAIRING", relay::PAIRING)
                 .env("PLOYZ_MACHINE_ID", entry)
                 .env("PLOYZ_LOADED_MACHINE", "loaded")
                 .env("PLOYZ_LOADED_MACHINE_ID", loaded_id)
@@ -169,7 +180,12 @@ async fn session_with_two_machines() -> (
     let spawned = session.spawn_machine(description.machine_id, service).await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            description.machine_id.as_str(),
+        ),
     )
     .await
     .expect("connect must not hang")

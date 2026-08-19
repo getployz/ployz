@@ -19,12 +19,21 @@ pub fn package_name() -> &'static str {
     "@ployz/sdk"
 }
 
-/// Dial Credential and selected entry Machine for a Relay-only session.
+/// Dial Credential, Pairing Credential, and selected entry Machine for a
+/// Relay-only session.
 #[napi(object)]
 pub struct ConnectOptions {
     pub relay_url: String,
     pub bearer: String,
+    pub pairing: String,
     pub machine_id: String,
+}
+
+/// One held Register from [`list_held`].
+#[napi(object)]
+pub struct HeldRegister {
+    pub machine_id: String,
+    pub register_rtt_ns: Option<i64>,
 }
 
 /// Cloud session over one Relay Attach.
@@ -403,14 +412,57 @@ impl WatchStream {
 ///
 /// # Errors
 ///
-/// Returns a generated [`RpcError`] JSON payload when the Dial Credential or
-/// Machine ID is rejected, or when the Relay or inner RPC channel fails.
+/// Returns a generated [`RpcError`] JSON payload when the Dial Credential,
+/// pairing, or Machine ID is rejected, or when the Relay or inner RPC channel
+/// fails.
 #[napi]
 pub async fn connect(options: ConnectOptions) -> Result<Client> {
-    let inner = sdk::connect(&options.relay_url, &options.bearer, &options.machine_id)
+    let inner = sdk::connect(
+        &options.relay_url,
+        &options.bearer,
+        &options.pairing,
+        &options.machine_id,
+    )
+    .await
+    .map_err(rpc_to_napi)?;
+    Ok(Client { inner })
+}
+
+/// List Machines currently holding Register for this pairing.
+///
+/// # Errors
+///
+/// Returns a generated [`RpcError`] JSON payload when the Dial Credential or
+/// pairing is rejected, or when the Relay call fails.
+#[napi]
+pub async fn list_held(
+    relay_url: String,
+    bearer: String,
+    pairing: String,
+) -> Result<Vec<HeldRegister>> {
+    let held = sdk::list_held(&relay_url, &bearer, &pairing)
         .await
         .map_err(rpc_to_napi)?;
-    Ok(Client { inner })
+    Ok(held
+        .into_iter()
+        .map(|row| HeldRegister {
+            machine_id: row.as_str().to_string(),
+            register_rtt_ns: row.register_rtt_ns,
+        })
+        .collect())
+}
+
+/// Revoke a Pairing Credential so later Register with that bearer fails.
+///
+/// # Errors
+///
+/// Returns a generated [`RpcError`] JSON payload when the Dial Credential or
+/// pairing is rejected, or when the Relay call fails.
+#[napi]
+pub async fn revoke_pairing(relay_url: String, bearer: String, pairing: String) -> Result<()> {
+    sdk::revoke_pairing(&relay_url, &bearer, &pairing)
+        .await
+        .map_err(rpc_to_napi)
 }
 
 fn volume_fate(destroy_volumes: bool) -> ployz::deploy::VolumeFate {

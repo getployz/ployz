@@ -8,6 +8,7 @@ const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
 const relayUrl = process.env.PLOYZ_RELAY_URL;
 const bearer = process.env.PLOYZ_BEARER;
+const pairing = process.env.PLOYZ_PAIRING;
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const machineA = process.env.PLOYZ_MACHINE_A;
 const machineB = process.env.PLOYZ_MACHINE_B;
@@ -17,6 +18,7 @@ if (
   !pkg ||
   !relayUrl ||
   !bearer ||
+  !pairing ||
   !machineId ||
   !machineA ||
   !machineB
@@ -58,7 +60,7 @@ function volume(machine, name) {
     throw new Error("Client.removeVolumes must be a method");
   }
 
-  const client = await sdk.connect({ relayUrl, bearer, machineId });
+  const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
 
   const destroyed = await client.removeVolumes({
     volumes: [volume(machineA, "data")],

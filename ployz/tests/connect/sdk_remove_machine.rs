@@ -110,7 +110,12 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
         .await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            description.machine_id.as_str(),
+        ),
     )
     .await
     .expect("connect must not hang")
@@ -161,6 +166,7 @@ async fn node_remove_machine_covers_volumes_and_unconfirmed_missing_names() {
                 .env("PLOYZ_SDK_PACKAGE", package)
                 .env("PLOYZ_RELAY_URL", url)
                 .env("PLOYZ_BEARER", relay::DIAL)
+                .env("PLOYZ_PAIRING", relay::PAIRING)
                 .env("PLOYZ_MACHINE_ID", entry)
                 .env("PLOYZ_WORKER_MACHINE", worker_name)
                 .env("PLOYZ_EMPTY_MACHINE", empty_name)
@@ -195,7 +201,12 @@ async fn removal_session() -> (
         .await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            description.machine_id.as_str(),
+        ),
     )
     .await
     .expect("connect must not hang")

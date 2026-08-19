@@ -25,7 +25,13 @@ export * from "./generated/payloads";
 export type ConnectOptions = {
   readonly relayUrl: string;
   readonly bearer: string;
+  readonly pairing: string;
   readonly machineId: MachineId;
+};
+
+export type HeldRegister = {
+  readonly machineId: string;
+  readonly registerRttNs?: number | null;
 };
 
 export type WatchOptions = {
@@ -47,6 +53,16 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 };
 
 export declare function connect(options: ConnectOptions): Promise<Client>;
+export declare function listHeld(
+  relayUrl: string,
+  bearer: string,
+  pairing: string,
+): Promise<HeldRegister[]>;
+export declare function revokePairing(
+  relayUrl: string,
+  bearer: string,
+  pairing: string,
+): Promise<void>;
 
 export declare function applyAll(
   project_name: ProjectName,

@@ -129,9 +129,14 @@ async fn remove_volumes_omits_machines_that_do_not_invite_rpc() {
     down.membership = MembershipObservation::Down;
     service.machines = vec![machine('a', "one"), machine('b', "two"), down];
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
 
     let result = client
         .remove_volumes(remove(
@@ -187,6 +192,7 @@ async fn node_smoke_covers_successful_and_partial_volume_removal() {
                 .env("PLOYZ_SDK_PACKAGE", package)
                 .env("PLOYZ_RELAY_URL", url)
                 .env("PLOYZ_BEARER", relay::DIAL)
+                .env("PLOYZ_PAIRING", relay::PAIRING)
                 .env("PLOYZ_MACHINE_ID", entry_id)
                 .env("PLOYZ_MACHINE_A", machine_a)
                 .env("PLOYZ_MACHINE_B", machine_b)
@@ -212,9 +218,14 @@ async fn volume_session() -> (sdk::Session, RelaySession, super::relay::FakeMach
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
     let machine = session.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
     (client, session, machine)
 }
 

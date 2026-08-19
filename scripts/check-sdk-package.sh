@@ -169,6 +169,7 @@ async function expectRpc(fn, code) {
       sdk.connect({
         relayUrl: "http://127.0.0.1:1",
         bearer: "",
+        pairing: "pairing-secret",
         machineId: "0123456789abcdef0123456789abcdef",
       }),
     "unauthenticated",
@@ -178,6 +179,7 @@ async function expectRpc(fn, code) {
       sdk.connect({
         relayUrl: "http://127.0.0.1:1",
         bearer: "dial-secret",
+        pairing: "pairing-secret",
         machineId: "not-a-machine-id",
       }),
     "invalid_argument",

@@ -237,6 +237,7 @@ async fn node_watch_covers_abort_signal_and_async_iteration() {
                 .env("PLOYZ_SDK_PACKAGE", package)
                 .env("PLOYZ_RELAY_URL", url)
                 .env("PLOYZ_BEARER", relay::DIAL)
+                .env("PLOYZ_PAIRING", relay::PAIRING)
                 .env("PLOYZ_MACHINE_ID", machine_id)
                 .output()
         }),
@@ -275,7 +276,7 @@ async fn watching_session() -> (sdk::Session, DiscoveryService, RelaySession, Fa
 async fn connect(url: &str, machine_id: &str) -> sdk::Session {
     timeout(
         Duration::from_secs(5),
-        sdk::connect(url, relay::DIAL, machine_id),
+        sdk::connect(url, relay::DIAL, relay::PAIRING, machine_id),
     )
     .await
     .expect("connect must not hang")

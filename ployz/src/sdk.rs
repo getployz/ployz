@@ -10,7 +10,10 @@ use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
+use crate::connect::{
+    Client, ConnectError, DialCredential, HeldRegister, PairingCredential, connect_relay,
+    list_held as list_held_relay, revoke_cloud_pairing,
+};
 use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLoss, DeployEvent, DeployOutcome,
@@ -62,25 +65,75 @@ pub struct RunningDeploy {
 ///
 /// # Errors
 ///
-/// Returns a generated [`RpcError`] when the bearer or Machine ID is rejected,
-/// or when the Relay or inner RPC channel fails.
-pub async fn connect(relay_url: &str, bearer: &str, machine_id: &str) -> Result<Session, RpcError> {
-    let credential = DialCredential::parse(bearer).map_err(|error| RpcError {
-        code: RpcErrorCode::Unauthenticated,
-        message: error.to_string(),
-        details: Value::Null,
-    })?;
+/// Returns a generated [`RpcError`] when the bearer, pairing, or Machine ID is
+/// rejected, or when the Relay or inner RPC channel fails.
+pub async fn connect(
+    relay_url: &str,
+    bearer: &str,
+    pairing: &str,
+    machine_id: &str,
+) -> Result<Session, RpcError> {
+    let credential = parse_dial(bearer)?;
+    let pairing = parse_pairing(pairing)?;
     let machine_id = MachineId::parse(machine_id).map_err(|error| RpcError {
         code: RpcErrorCode::InvalidArgument,
         message: error.to_string(),
         details: Value::Null,
     })?;
-    let client = connect_relay(relay_url, credential, machine_id).await?;
+    let client = connect_relay(relay_url, credential, pairing, machine_id).await?;
     Ok(Session {
         inner: Arc::new(SessionInner {
             client: Mutex::new(Some(client)),
             cancel: CancellationToken::new(),
         }),
+    })
+}
+
+/// List Machines currently holding Register for this pairing.
+///
+/// # Errors
+///
+/// Returns a generated [`RpcError`] when the bearer or pairing is rejected, or
+/// when the Relay call fails.
+pub async fn list_held(
+    relay_url: &str,
+    bearer: &str,
+    pairing: &str,
+) -> Result<Vec<HeldRegister>, RpcError> {
+    let credential = parse_dial(bearer)?;
+    let pairing = parse_pairing(pairing)?;
+    list_held_relay(relay_url, &credential, &pairing)
+        .await
+        .map_err(RpcError::from)
+}
+
+/// Revoke a Pairing Credential so later Register with that bearer fails.
+///
+/// # Errors
+///
+/// Returns a generated [`RpcError`] when the bearer or pairing is rejected, or
+/// when the Relay call fails.
+pub async fn revoke_pairing(relay_url: &str, bearer: &str, pairing: &str) -> Result<(), RpcError> {
+    let credential = parse_dial(bearer)?;
+    let pairing = parse_pairing(pairing)?;
+    revoke_cloud_pairing(relay_url, &credential, &pairing)
+        .await
+        .map_err(RpcError::from)
+}
+
+fn parse_dial(bearer: &str) -> Result<DialCredential, RpcError> {
+    DialCredential::parse(bearer).map_err(|error| RpcError {
+        code: RpcErrorCode::Unauthenticated,
+        message: error.to_string(),
+        details: Value::Null,
+    })
+}
+
+fn parse_pairing(pairing: &str) -> Result<PairingCredential, RpcError> {
+    PairingCredential::parse(pairing).map_err(|error| RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message: error.to_string(),
+        details: Value::Null,
     })
 }
 

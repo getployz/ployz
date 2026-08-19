@@ -11,7 +11,7 @@ use std::{
 };
 
 use ployz_core::MachineId;
-use ployz_relay::DialCredential;
+use ployz_relay::{DialCredential, PairingCredential};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
@@ -282,6 +282,7 @@ pub enum Transport {
     Relay {
         url: String,
         credential: DialCredential,
+        pairing: PairingCredential,
     },
 }
 
@@ -335,18 +336,21 @@ impl Connection {
         })
     }
 
-    /// Connect through Cloud Relay with a caller-supplied Dial Credential and
-    /// entry Machine ID. Does not mint credentials or choose a Machine.
+    /// Connect through Cloud Relay with a caller-supplied Dial Credential,
+    /// Pairing Credential, and entry Machine ID. Does not mint credentials or
+    /// choose a Machine.
     #[must_use]
     pub fn relay(
         url: impl Into<String>,
         credential: DialCredential,
+        pairing: PairingCredential,
         machine_id: MachineId,
     ) -> Self {
         Self {
             transport: Transport::Relay {
                 url: url.into(),
                 credential,
+                pairing,
             },
             machine_id: Some(machine_id),
         }

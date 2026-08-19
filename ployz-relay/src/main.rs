@@ -3,10 +3,9 @@
 use std::{io, net::SocketAddr, process::ExitCode};
 
 use clap::{Parser, Subcommand};
-use ployz_relay::{DialCredential, PairingCredential, Relay, RelayError};
+use ployz_relay::{DialCredential, Relay, RelayError};
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:50051";
-const PAIRING_ENV: &str = "PLOYZ_RELAY_PAIRING_CREDENTIAL";
 const DIAL_ENV: &str = "PLOYZ_RELAY_DIAL_CREDENTIAL";
 
 #[derive(Parser)]
@@ -41,9 +40,8 @@ async fn run() -> Result<(), Error> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    let pairing = PairingCredential::parse(env_or_empty(PAIRING_ENV))?;
     let dial = DialCredential::parse(env_or_empty(DIAL_ENV))?;
-    let relay = Relay::new(pairing, dial)?;
+    let relay = Relay::new(dial);
     let (_address, handle, goaway) = relay.serve(args.listen).await?;
     shutdown_signal().await?;
     goaway.start();

@@ -24,9 +24,14 @@ async fn client_rpc_round_trip_through_relay_attach() {
         .spawn_machine(machine_id, DiscoveryService::new(description.clone()))
         .await;
 
-    let mut client = connect_relay(&session.url, dial_credential(), machine_id)
-        .await
-        .unwrap();
+    let mut client = connect_relay(
+        &session.url,
+        dial_credential(),
+        pairing_credential(),
+        machine_id,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         client
@@ -48,7 +53,7 @@ async fn bad_dial_credential_fails_closed() {
 
     let result = timeout(
         Duration::from_secs(2),
-        connect_relay(&session.url, bad, machine_id),
+        connect_relay(&session.url, bad, pairing_credential(), machine_id),
     )
     .await
     .expect("bad Dial Credential must not hang");
@@ -73,7 +78,12 @@ async fn unknown_machine_id_fails_closed() {
 
     let result = timeout(
         Duration::from_secs(2),
-        connect_relay(&session.url, dial_credential(), MachineId::random()),
+        connect_relay(
+            &session.url,
+            dial_credential(),
+            pairing_credential(),
+            MachineId::random(),
+        ),
     )
     .await
     .expect("unknown Machine ID must not hang");
@@ -92,11 +102,7 @@ pub(super) struct RelaySession {
 
 impl RelaySession {
     pub(super) async fn start() -> Self {
-        let relay = Relay::new(
-            PairingCredential::parse(PAIRING).unwrap(),
-            DialCredential::parse(DIAL).unwrap(),
-        )
-        .unwrap();
+        let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
         let listen = (Ipv4Addr::LOCALHOST, 0).into();
         let (address, server, _) = relay.serve(listen).await.unwrap();
         Self {
@@ -127,8 +133,13 @@ impl FakeMachine {
         let mut request = Request::new(ReceiverStream::new(rx));
         set_bearer(request.metadata_mut(), PAIRING);
         let mut opens = relay.register(request).await.unwrap().into_inner();
+        let pong = hold.clone();
         let accept = tokio::spawn(async move {
             while let Some(Ok(open)) = opens.next().await {
+                if let Some(nonce) = open.ping_nonce() {
+                    let _ = pong.send(RegisterRequest::pong(nonce)).await;
+                    continue;
+                }
                 let mut attach_client = relay.clone();
                 let service = service.clone();
                 tokio::spawn(async move {
@@ -198,6 +209,10 @@ fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, credential: &str) {
         AUTHORIZATION_METADATA,
         MetadataValue::try_from(format!("Bearer {credential}")).expect("bearer is ASCII"),
     );
+}
+
+fn pairing_credential() -> PairingCredential {
+    PairingCredential::parse(PAIRING).unwrap()
 }
 
 fn dial_credential() -> DialCredential {

@@ -17,7 +17,7 @@ A durable participant identity in a Cluster. Its local lifecycle and its members
 _Avoid_: Node, host, member
 
 **Machine ID**:
-The durable opaque identity of one Machine. It is distinct from its mutable Machine Name. Uniqueness is within one Cluster and its Relay Tenant, not across organizations.
+The durable opaque identity of one Machine. It is distinct from its mutable Machine Name. Uniqueness is within one Cluster and one Pairing Credential's slots, not across organizations.
 _Avoid_: Machine Name, hostname, globally unique Machine ID
 
 **Machine Name**:
@@ -241,20 +241,24 @@ The hosted byte pipe a Machine dials out to and holds open so Cloud can reach it
 _Avoid_: Machine Proxy, tunnel binary, control plane
 
 **Cloud Pairing**:
-The cluster-scoped grant of a Cloud Relay endpoint and Pairing Credential that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, and not proof any Machine is currently connected.
+The cluster-scoped grant of a Cloud Relay endpoint and Pairing Credential that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, not a distinct per-cluster Dial Credential, and not proof any Machine is currently connected.
 _Avoid_: per-Machine credential, login, daemon authn
 
 **Relay Tenant**:
-The Register and Dial partition identified by one Pairing Credential and its Dial Credential. Machine IDs are unique only inside one Relay Tenant. It is not a prefix on Machine ID and not an organization id on the wire.
-_Avoid_: global Machine ID namespace, org-prefixed Machine ID, shared pairing
+Not a customer object inside the Cloud Relay. Machine ID uniqueness is within one Pairing Credential's slots. The relay has no tenant type, org id, or pairing catalog.
+_Avoid_: tenant catalog, org id on the wire, per-cluster Dial Credential, global Machine ID namespace, org-prefixed Machine ID, shared pairing
 
 **Pairing Credential**:
-The bearer Cloud Pairing grants a Machine to authenticate Register for one Relay Tenant. It is rejected on Dial.
+The bearer a Machine presents on Register and the slot key Cloud presents as metadata on Dial, List, and Revoke. It is never the Dial bearer.
 _Avoid_: Dial Credential, per-Machine JWT, global Register secret
 
 **Dial Credential**:
-The bearer Cloud presents on Dial for the same Relay Tenant as that Cluster's Pairing Credential. It is not the Pairing Credential and does not authenticate Register.
-_Avoid_: Pairing Credential, cluster credential, global Dial secret, machine-id-only Dial
+The process-wide bearer Cloud presents on Dial, List, and Revoke. It is not the Pairing Credential and does not authenticate Register.
+_Avoid_: Pairing Credential, cluster credential, per-cluster Dial Credential, machine-id-only Dial
+
+**Register Path RTT**:
+Machine-to-this-relay-PoP latency sampled by ping/pong on the held Register bidi. It is not mesh RTT and not Cloud-to-Machine RPC RTT after Attach.
+_Avoid_: machine rtt, Corrosion statistics, TCP RTT, HTTP/2 PING
 
 **Tunnel ID**:
 The Relay-issued identity of one opaque splice, carried on Open and Attach. It is not a Machine ID.

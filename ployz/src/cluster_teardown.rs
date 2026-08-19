@@ -124,9 +124,11 @@ impl Client {
             }
         }
         let pairing_revoked = match self.connection().transport() {
-            Transport::Relay { url, credential } => {
-                revoke_cloud_pairing(url, credential).await.is_ok()
-            }
+            Transport::Relay {
+                url,
+                credential,
+                pairing,
+            } => revoke_cloud_pairing(url, credential, pairing).await.is_ok(),
             Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => false,
         };
         Ok(ClusterTeardown {

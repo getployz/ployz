@@ -8,6 +8,7 @@ const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
 const relayUrl = process.env.PLOYZ_RELAY_URL;
 const bearer = process.env.PLOYZ_BEARER;
+const pairing = process.env.PLOYZ_PAIRING;
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const workerMachine = process.env.PLOYZ_WORKER_MACHINE;
 const scratchMachineId = process.env.PLOYZ_SCRATCH_MACHINE_ID;
@@ -18,6 +19,7 @@ if (
   !pkg ||
   !relayUrl ||
   !bearer ||
+  !pairing ||
   !machineId ||
   !workerMachine ||
   !scratchMachineId ||
@@ -60,7 +62,7 @@ function dockerVolume(loss) {
     throw new Error("no API may confirm a read's Data Loss without naming its entries");
   }
 
-  const client = await sdk.connect({ relayUrl, bearer, machineId });
+  const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
 
   const observed = await client.dataLossIfClusterDestroyed();
   if (!Array.isArray(observed.data_loss) || observed.data_loss.length !== 3) {

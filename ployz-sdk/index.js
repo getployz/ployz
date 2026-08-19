@@ -192,6 +192,8 @@ async function connect(options) {
 
 module.exports = {
   connect,
+  listHeld: native.listHeld,
+  revokePairing: native.revokePairing,
   packageName: native.packageName,
   Client,
   applyAll,

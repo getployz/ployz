@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf, str::FromStr};
 
 use ployz::{
-    connect::{DialCredential, resolve_connections},
+    connect::{DialCredential, PairingCredential, resolve_connections},
     context::{
         Config, ConfigError, Connection, ConnectionSource, Context, ContextError, SshDestination,
         select_connections,
@@ -165,6 +165,7 @@ fn relay_connections_are_not_persisted() {
     let error = serde_norway::to_string(&Connection::relay(
         "http://127.0.0.1:1",
         DialCredential::parse("dial-secret").unwrap(),
+        PairingCredential::parse("pairing-secret").unwrap(),
         machine_id('a'),
     ))
     .unwrap_err();

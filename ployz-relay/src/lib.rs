@@ -1,11 +1,11 @@
 //! In-process plaintext HTTP/2 Cloud Relay.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ployz_core::{MachineId, TunnelId, ValueError};
@@ -24,6 +24,8 @@ use tonic::{Request, Response, Status, Streaming, metadata::MetadataMap, transpo
 
 /// In-flight tunnels drain for this long after GOAWAY, then remaining streams close.
 const DRAIN: Duration = Duration::from_secs(30);
+/// Register path RTT ping after hello, then this often.
+const PING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Bearer metadata key (`authorization`).
 pub const AUTHORIZATION_METADATA: &str = "authorization";
@@ -31,6 +33,8 @@ pub const AUTHORIZATION_METADATA: &str = "authorization";
 pub const MACHINE_ID_METADATA: &str = "machine-id";
 /// Attach metadata key for the Tunnel ID from Open.
 pub const TUNNEL_ID_METADATA: &str = "tunnel-id";
+/// Dial, List, and Revoke metadata key for the Pairing Credential slot.
+pub const PAIRING_METADATA: &str = "pairing";
 
 const BEARER_PREFIX: &str = "Bearer ";
 const TUNNEL_BUFFER: usize = 16;
@@ -45,23 +49,35 @@ pub use transport::{cloud_relay_client::CloudRelayClient, cloud_relay_server::Cl
 mod tunnel;
 pub use tunnel::TunnelIo;
 
-/// Machine identity sent on the held Register stream.
+/// Machine identity on hello (`echo` 0) or a pong (`echo` n) on Register.
 #[derive(Clone, PartialEq, Message)]
 pub struct RegisterRequest {
     #[prost(string, tag = "1")]
     machine_id: String,
+    #[prost(uint64, tag = "2")]
+    echo: u64,
 }
 
 impl RegisterRequest {
-    /// Build a Register message for this Machine ID.
+    /// Build a Register hello for this Machine ID.
     #[must_use]
     pub fn new(machine_id: &MachineId) -> Self {
         Self {
             machine_id: machine_id.to_string(),
+            echo: 0,
         }
     }
 
-    /// Parse the Machine ID from the wire string.
+    /// Build a pong for this Register ping nonce.
+    #[must_use]
+    pub fn pong(nonce: u64) -> Self {
+        Self {
+            machine_id: String::new(),
+            echo: nonce,
+        }
+    }
+
+    /// Parse the Machine ID from a hello.
     ///
     /// # Errors
     ///
@@ -69,13 +85,21 @@ impl RegisterRequest {
     pub fn machine_id(&self) -> Result<MachineId, ValueError> {
         MachineId::parse(&self.machine_id)
     }
+
+    /// Echo nonce. `0` is hello; non-zero is a pong.
+    #[must_use]
+    pub fn echo(&self) -> u64 {
+        self.echo
+    }
 }
 
-/// `Open(id)` sent on Register when Cloud Dials.
+/// `Open(id)` (`ping` 0) or a Register ping (`ping` n).
 #[derive(Clone, PartialEq, Message)]
 pub struct Open {
     #[prost(string, tag = "1")]
     id: String,
+    #[prost(uint64, tag = "2")]
+    ping: u64,
 }
 
 impl Open {
@@ -84,10 +108,26 @@ impl Open {
     pub fn new(tunnel_id: &TunnelId) -> Self {
         Self {
             id: tunnel_id.to_string(),
+            ping: 0,
         }
     }
 
-    /// Parse the Tunnel ID from the Open.
+    /// Build a Register ping for this nonce. `nonce` must be non-zero.
+    #[must_use]
+    pub fn ping(nonce: u64) -> Self {
+        Self {
+            id: String::new(),
+            ping: nonce,
+        }
+    }
+
+    /// Ping nonce when this message is a ping, not an Open.
+    #[must_use]
+    pub fn ping_nonce(&self) -> Option<u64> {
+        (self.ping != 0).then_some(self.ping)
+    }
+
+    /// Parse the Tunnel ID from an Open.
     ///
     /// # Errors
     ///
@@ -112,31 +152,72 @@ impl TunnelFrame {
     }
 }
 
-/// Dial-authenticated request to revoke this tenant's Pairing Credential.
+/// Dial-authenticated request to revoke a Pairing Credential.
 #[derive(Clone, PartialEq, Message)]
 pub struct RevokeRequest {}
 
-/// Pairing Credential for this Dial tenant is no longer accepted on Register.
+/// Pairing Credential is no longer accepted on Register.
 #[derive(Clone, PartialEq, Message)]
 pub struct RevokeResponse {}
 
-/// Bearer that authenticates Register and is rejected on Dial.
-#[derive(Clone, Eq, PartialEq)]
+/// Dial-authenticated request to list held Registers for a pairing.
+#[derive(Clone, PartialEq, Message)]
+pub struct ListRequest {}
+
+/// One held Register as listed for a pairing.
+#[derive(Clone, PartialEq, Message)]
+pub struct HeldRegister {
+    #[prost(string, tag = "1")]
+    machine_id: String,
+    #[prost(int64, optional, tag = "2")]
+    pub register_rtt_ns: Option<i64>,
+}
+
+impl HeldRegister {
+    /// Machine ID as listed on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.machine_id
+    }
+
+    /// Parse the Machine ID from this row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the wire string is not a Machine ID.
+    pub fn machine_id(&self) -> Result<MachineId, ValueError> {
+        MachineId::parse(&self.machine_id)
+    }
+}
+
+/// Live Observation of currently held Registers for one pairing.
+#[derive(Clone, PartialEq, Message)]
+pub struct ListResponse {
+    #[prost(message, repeated, tag = "1")]
+    registers: Vec<HeldRegister>,
+}
+
+impl ListResponse {
+    /// Held Registers for the requested pairing. Empty is success.
+    #[must_use]
+    pub fn registers(&self) -> &[HeldRegister] {
+        &self.registers
+    }
+}
+
+/// Bearer that authenticates Register and is the Dial/List/Revoke slot key.
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct PairingCredential(String);
 
-/// Bearer Cloud presents on Dial.
+/// Process-wide bearer Cloud presents on Dial, List, and Revoke.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DialCredential(String);
 
-/// Failures constructing a [`Relay`] or its credentials.
+/// Failures constructing a credential.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RelayError {
     #[error("credential must be a non-empty bearer")]
     EmptyCredential,
-    #[error("Pairing Credential and Dial Credential must be distinct")]
-    CredentialCollision,
-    #[error("Relay requires at least one Relay Tenant")]
-    EmptyTenants,
 }
 
 impl PairingCredential {
@@ -212,88 +293,28 @@ enum Phase {
     Draining,
 }
 
-/// Plaintext Cloud Relay: Register, Dial, Attach, opaque splice.
+/// Plaintext Cloud Relay: Register, Dial, Attach, List, Revoke, opaque splice.
 ///
-/// Register and Dial slots are keyed by Relay Tenant and Machine ID. The
-/// Pairing Credential selects the Register tenant; the Dial Credential selects
-/// the Dial tenant. Machine IDs are not a process-wide primary key.
+/// Slots are keyed by Pairing Credential and Machine ID. One process Dial
+/// Credential authenticates Cloud. Pairings are not loaded at boot.
 #[derive(Clone)]
 pub struct Relay {
-    tenants: Arc<TenantIndex>,
+    dial: DialCredential,
     state: Arc<Mutex<State>>,
     phase: watch::Sender<Phase>,
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct RelayTenant(u64);
-
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 struct Slot {
-    tenant: RelayTenant,
+    pairing: PairingCredential,
     machine_id: MachineId,
-}
-
-struct TenantIndex {
-    by_pairing: Mutex<HashMap<String, RelayTenant>>,
-    by_dial: HashMap<String, RelayTenant>,
-}
-
-impl TenantIndex {
-    fn from_pairs(
-        tenants: impl IntoIterator<Item = (PairingCredential, DialCredential)>,
-    ) -> Result<Self, RelayError> {
-        let mut by_pairing = HashMap::new();
-        let mut by_dial = HashMap::new();
-        for (id, (pairing, dial)) in (0_u64..).zip(tenants) {
-            if pairing.as_str() == dial.as_str()
-                || by_pairing.contains_key(pairing.as_str())
-                || by_pairing.contains_key(dial.as_str())
-                || by_dial.contains_key(pairing.as_str())
-                || by_dial.contains_key(dial.as_str())
-            {
-                return Err(RelayError::CredentialCollision);
-            }
-            let tenant = RelayTenant(id);
-            by_pairing.insert(pairing.0, tenant);
-            by_dial.insert(dial.0, tenant);
-        }
-        if by_pairing.is_empty() {
-            return Err(RelayError::EmptyTenants);
-        }
-        Ok(Self {
-            by_pairing: Mutex::new(by_pairing),
-            by_dial,
-        })
-    }
-
-    fn pairing(&self, bearer: &str) -> Option<RelayTenant> {
-        self.by_pairing
-            .lock()
-            .expect("pairing map poisoned")
-            .get(bearer)
-            .copied()
-    }
-
-    fn is_pairing(&self, bearer: &str) -> bool {
-        self.pairing(bearer).is_some()
-    }
-
-    fn dial(&self, bearer: &str) -> Option<RelayTenant> {
-        self.by_dial.get(bearer).copied()
-    }
-
-    fn revoke(&self, tenant: RelayTenant) {
-        self.by_pairing
-            .lock()
-            .expect("pairing map poisoned")
-            .retain(|_, id| *id != tenant);
-    }
 }
 
 struct State {
     machines: HashMap<Slot, Registration>,
     pending: HashMap<TunnelId, Pending>,
     next_generation: u64,
+    revoked: HashSet<PairingCredential>,
 }
 
 struct Registration {
@@ -303,6 +324,7 @@ struct Registration {
     open_tx: mpsc::Sender<Result<Open, Status>>,
     // Dropped when this Register is displaced; Dial/Attach forwarders abort.
     cancel: watch::Sender<()>,
+    register_rtt: Option<Duration>,
 }
 
 struct Pending {
@@ -313,38 +335,19 @@ struct Pending {
 }
 
 impl Relay {
-    /// Construct a Relay with distinct Pairing and Dial credentials.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RelayError::CredentialCollision`] when the two credentials are equal.
-    pub fn new(pairing: PairingCredential, dial: DialCredential) -> Result<Self, RelayError> {
-        Self::with_tenants(std::iter::once((pairing, dial)))
-    }
-
-    /// Construct a Relay that partitions Register and Dial by Relay Tenant.
-    ///
-    /// Each pair is one Relay Tenant: the Pairing Credential authenticates
-    /// Register, the Dial Credential authenticates Dial. The same Machine ID
-    /// may be Registered in two tenants without one Dial stealing the other.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RelayError::EmptyTenants`] when `tenants` is empty.
-    /// Returns [`RelayError::CredentialCollision`] when any Pairing Credential
-    /// equals any Dial Credential, or when a credential is reused.
-    pub fn with_tenants(
-        tenants: impl IntoIterator<Item = (PairingCredential, DialCredential)>,
-    ) -> Result<Self, RelayError> {
-        Ok(Self {
-            tenants: Arc::new(TenantIndex::from_pairs(tenants)?),
+    /// Construct a Relay with one process-wide Dial Credential.
+    #[must_use]
+    pub fn new(dial: DialCredential) -> Self {
+        Self {
+            dial,
             state: Arc::new(Mutex::new(State {
                 machines: HashMap::new(),
                 pending: HashMap::new(),
                 next_generation: 0,
+                revoked: HashSet::new(),
             })),
             phase: watch::channel(Phase::Live).0,
-        })
+        }
     }
 
     /// Serve plaintext HTTP/2 on `listen`.
@@ -435,6 +438,50 @@ impl Relay {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().expect("relay state mutex poisoned")
     }
+
+    fn register_pairing(&self, metadata: &MetadataMap) -> Option<PairingCredential> {
+        let token = bearer(metadata)?;
+        if token == self.dial.as_str() {
+            return None;
+        }
+        let pairing = PairingCredential::parse(token).ok()?;
+        if self.lock().revoked.contains(&pairing) {
+            return None;
+        }
+        Some(pairing)
+    }
+
+    fn is_dial(&self, metadata: &MetadataMap) -> bool {
+        bearer(metadata) == Some(self.dial.as_str())
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic Status is the Dial/List/Revoke error"
+    )]
+    fn cloud_pairing(&self, metadata: &MetadataMap) -> Result<PairingCredential, Status> {
+        if !self.is_dial(metadata) {
+            return Err(Status::unauthenticated("invalid Dial Credential"));
+        }
+        pairing_metadata(metadata)
+            .ok_or_else(|| Status::invalid_argument("missing or invalid pairing"))
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic Status is the Dial/List error"
+    )]
+    fn cloud_pairing_live(&self, metadata: &MetadataMap) -> Result<PairingCredential, Status> {
+        let pairing = self.cloud_pairing(metadata)?;
+        if !self.accepting() {
+            return Err(Status::unavailable("GOAWAY"));
+        }
+        Ok(pairing)
+    }
+}
+
+fn pairing_metadata(metadata: &MetadataMap) -> Option<PairingCredential> {
+    metadata_str(metadata, PAIRING_METADATA).and_then(|value| PairingCredential::parse(value).ok())
 }
 
 fn bearer(metadata: &MetadataMap) -> Option<&str> {
@@ -447,6 +494,17 @@ fn bearer(metadata: &MetadataMap) -> Option<&str> {
 
 fn metadata_str<'a>(metadata: &'a MetadataMap, key: &'static str) -> Option<&'a str> {
     metadata.get(key).and_then(|value| value.to_str().ok())
+}
+
+fn next_nonce(nonce: u64) -> u64 {
+    match nonce.wrapping_add(1) {
+        0 => 1,
+        next => next,
+    }
+}
+
+fn rtt_ns(rtt: Duration) -> Option<i64> {
+    i64::try_from(rtt.as_nanos()).ok()
 }
 
 async fn forward_frames(
@@ -477,11 +535,9 @@ impl CloudRelay for Relay {
         &self,
         request: Request<Streaming<RegisterRequest>>,
     ) -> Result<Response<Self::RegisterStream>, Status> {
-        let tenant =
-            match bearer(request.metadata()).and_then(|bearer| self.tenants.pairing(bearer)) {
-                Some(tenant) => tenant,
-                None => return Err(Status::unauthenticated("invalid Pairing Credential")),
-            };
+        let pairing = self
+            .register_pairing(request.metadata())
+            .ok_or_else(|| Status::unauthenticated("invalid Pairing Credential"))?;
         if !self.accepting() {
             return Err(Status::unavailable("GOAWAY"));
         }
@@ -490,30 +546,74 @@ impl CloudRelay for Relay {
             .next()
             .await
             .ok_or_else(|| Status::invalid_argument("Register requires a Machine ID"))??;
+        if first.echo() != 0 {
+            return Err(Status::invalid_argument("Register requires a Machine ID"));
+        }
         let machine_id = first
             .machine_id()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let slot = Slot { tenant, machine_id };
+        let slot = Slot {
+            pairing,
+            machine_id,
+        };
         let (open_tx, open_rx) = mpsc::channel(TUNNEL_BUFFER);
         let (cancel, _) = watch::channel(());
+        let mut ping_cancel = cancel.subscribe();
         let generation = {
             let mut state = self.lock();
             let generation = state.next_generation;
             state.next_generation += 1;
             state.pending.retain(|_, pending| pending.slot != slot);
             state.machines.insert(
-                slot,
+                slot.clone(),
                 Registration {
                     generation,
-                    open_tx,
+                    open_tx: open_tx.clone(),
                     cancel,
+                    register_rtt: None,
                 },
             );
             generation
         };
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
-            while inbound.next().await.is_some() {}
+            let mut interval = tokio::time::interval(PING_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut nonce = 0;
+            let mut ping_sent = None;
+            loop {
+                tokio::select! {
+                    message = inbound.next() => {
+                        let Some(Ok(message)) = message else { break };
+                        if message.echo() == 0 {
+                            continue;
+                        }
+                        let Some((expected, sent)) = ping_sent else {
+                            continue;
+                        };
+                        if expected != message.echo() {
+                            continue;
+                        }
+                        let rtt = Instant::now().saturating_duration_since(sent);
+                        let Ok(mut state) = state.lock() else { break };
+                        let Some(registration) = state.machines.get_mut(&slot) else {
+                            break;
+                        };
+                        if registration.generation != generation {
+                            break;
+                        }
+                        registration.register_rtt = Some(rtt);
+                    }
+                    _ = interval.tick() => {
+                        nonce = next_nonce(nonce);
+                        ping_sent = Some((nonce, Instant::now()));
+                        if open_tx.send(Ok(Open::ping(nonce))).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ = ping_cancel.changed() => break,
+                }
+            }
             if let Ok(mut state) = state.lock()
                 && state
                     .machines
@@ -531,25 +631,16 @@ impl CloudRelay for Relay {
         &self,
         request: Request<Streaming<TunnelFrame>>,
     ) -> Result<Response<Self::DialStream>, Status> {
-        let tenant = match bearer(request.metadata()) {
-            Some(bearer) if self.tenants.is_pairing(bearer) => {
-                return Err(Status::permission_denied("Pairing Credential cannot Dial"));
-            }
-            Some(bearer) => match self.tenants.dial(bearer) {
-                Some(tenant) => tenant,
-                None => return Err(Status::unauthenticated("invalid Dial Credential")),
-            },
-            None => return Err(Status::unauthenticated("invalid Dial Credential")),
-        };
-        if !self.accepting() {
-            return Err(Status::unavailable("GOAWAY"));
-        }
+        let pairing = self.cloud_pairing_live(request.metadata())?;
         let machine_id = MachineId::parse(
             metadata_str(request.metadata(), MACHINE_ID_METADATA)
                 .ok_or_else(|| Status::invalid_argument("missing or invalid machine-id"))?,
         )
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let slot = Slot { tenant, machine_id };
+        let slot = Slot {
+            pairing,
+            machine_id,
+        };
         let tunnel_id = TunnelId::random();
         let (to_machine_tx, to_machine_rx) = mpsc::channel(TUNNEL_BUFFER);
         let (from_machine_tx, from_machine_rx) = mpsc::channel(TUNNEL_BUFFER);
@@ -605,23 +696,28 @@ impl CloudRelay for Relay {
         Ok(Response::new(ReceiverStream::new(pending.to_machine)))
     }
 
+    async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
+        let pairing = self.cloud_pairing_live(request.metadata())?;
+        let registers = self
+            .lock()
+            .machines
+            .iter()
+            .filter(|(slot, _)| slot.pairing == pairing)
+            .map(|(slot, registration)| HeldRegister {
+                machine_id: slot.machine_id.to_string(),
+                register_rtt_ns: registration.register_rtt.and_then(rtt_ns),
+            })
+            .collect();
+        Ok(Response::new(ListResponse { registers }))
+    }
+
     async fn revoke(
         &self,
         request: Request<RevokeRequest>,
     ) -> Result<Response<RevokeResponse>, Status> {
-        match bearer(request.metadata()) {
-            Some(bearer) if self.tenants.is_pairing(bearer) => Err(Status::permission_denied(
-                "Pairing Credential cannot Revoke",
-            )),
-            Some(bearer) => match self.tenants.dial(bearer) {
-                Some(tenant) => {
-                    self.tenants.revoke(tenant);
-                    Ok(Response::new(RevokeResponse {}))
-                }
-                None => Err(Status::unauthenticated("invalid Dial Credential")),
-            },
-            None => Err(Status::unauthenticated("invalid Dial Credential")),
-        }
+        let pairing = self.cloud_pairing(request.metadata())?;
+        self.lock().revoked.insert(pairing);
+        Ok(Response::new(RevokeResponse {}))
     }
 }
 
@@ -642,64 +738,26 @@ mod tests {
     }
 
     #[test]
-    fn relay_rejects_identical_pairing_and_dial_credentials() {
-        let pairing = PairingCredential::parse("same").unwrap();
-        let dial = DialCredential::parse("same").unwrap();
-        let Err(error) = Relay::new(pairing, dial) else {
-            panic!("expected credential collision");
-        };
-        assert_eq!(error, RelayError::CredentialCollision);
-    }
-
-    #[test]
-    fn with_tenants_rejects_an_empty_list() {
-        let Err(error) = Relay::with_tenants(std::iter::empty()) else {
-            panic!("expected empty tenants to fail");
-        };
-        assert_eq!(error, RelayError::EmptyTenants);
-    }
-
-    #[test]
-    fn with_tenants_rejects_a_pairing_that_matches_another_dial() {
-        let Err(error) = Relay::with_tenants([
-            (
-                PairingCredential::parse("pairing-a").unwrap(),
-                DialCredential::parse("dial-a").unwrap(),
-            ),
-            (
-                PairingCredential::parse("pairing-b").unwrap(),
-                DialCredential::parse("pairing-a").unwrap(),
-            ),
-        ]) else {
-            panic!("expected credential collision");
-        };
-        assert_eq!(error, RelayError::CredentialCollision);
-    }
-
-    #[test]
-    fn with_tenants_rejects_duplicate_pairing_credentials() {
-        let Err(error) = Relay::with_tenants([
-            (
-                PairingCredential::parse("pairing-a").unwrap(),
-                DialCredential::parse("dial-a").unwrap(),
-            ),
-            (
-                PairingCredential::parse("pairing-a").unwrap(),
-                DialCredential::parse("dial-b").unwrap(),
-            ),
-        ]) else {
-            panic!("expected credential collision");
-        };
-        assert_eq!(error, RelayError::CredentialCollision);
-    }
-
-    #[test]
     fn register_request_rejects_a_non_machine_id() {
         assert!(RegisterRequest::default().machine_id().is_err());
     }
 
     #[test]
+    fn held_register_rejects_a_non_machine_id() {
+        assert!(HeldRegister::default().machine_id().is_err());
+    }
+
+    #[test]
     fn open_rejects_a_non_tunnel_id() {
         assert!(Open::default().tunnel_id().is_err());
+    }
+
+    #[test]
+    fn ping_zero_is_an_open_and_nonzero_is_a_ping() {
+        let tunnel_id = TunnelId::random();
+        let open = Open::new(&tunnel_id);
+        assert_eq!(open.ping_nonce(), None);
+        assert_eq!(open.tunnel_id().unwrap(), tunnel_id);
+        assert_eq!(Open::ping(7).ping_nonce(), Some(7));
     }
 }

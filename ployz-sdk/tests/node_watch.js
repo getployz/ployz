@@ -9,9 +9,10 @@ const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
 const relayUrl = process.env.PLOYZ_RELAY_URL;
 const bearer = process.env.PLOYZ_BEARER;
+const pairing = process.env.PLOYZ_PAIRING;
 const machineId = process.env.PLOYZ_MACHINE_ID;
 
-if (!addon || !pkg || !relayUrl || !bearer || !machineId) {
+if (!addon || !pkg || !relayUrl || !bearer || !pairing || !machineId) {
   throw new Error("Node Watch smoke is missing environment");
 }
 
@@ -68,7 +69,7 @@ async function takeOne(client) {
 }
 
 (async () => {
-  const client = await sdk.connect({ relayUrl, bearer, machineId });
+  const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
   const first = await takeOne(client);
   assertFrame(first, "first Watch");
   const about = await client.about();

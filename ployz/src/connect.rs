@@ -32,7 +32,7 @@ use crate::context::{
 mod relay;
 
 pub use crate::cluster::{Client, MachineImagesObservation};
-pub use ployz_relay::DialCredential;
+pub use ployz_relay::{DialCredential, HeldRegister, PairingCredential};
 
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 
@@ -102,11 +102,15 @@ impl Connector for SystemConnector {
                 destination,
                 key_file,
             } => connect_ssh(destination, key_file.as_deref(), &self.ssh_program).await,
-            Transport::Relay { url, credential } => {
+            Transport::Relay {
+                url,
+                credential,
+                pairing,
+            } => {
                 let machine_id = connection
                     .machine_id()
                     .expect("Relay connections carry an entry Machine ID");
-                relay::connect_channel(url, credential, machine_id).await
+                relay::connect_channel(url, credential, pairing, machine_id).await
             }
         }
     }
@@ -497,7 +501,7 @@ pub async fn connect(
     connect_selected_with(selected, Arc::new(SystemConnector::default())).await
 }
 
-/// Revoke the Cloud Pairing for this Dial tenant so Register fails afterwards.
+/// Revoke the Cloud Pairing so Register with that Pairing Credential fails afterwards.
 ///
 /// # Errors
 ///
@@ -505,8 +509,23 @@ pub async fn connect(
 pub(crate) async fn revoke_cloud_pairing(
     url: &str,
     credential: &DialCredential,
+    pairing: &PairingCredential,
 ) -> Result<(), ConnectError> {
-    relay::revoke_pairing(url, credential).await
+    relay::revoke_pairing(url, credential, pairing).await
+}
+
+/// List Machines currently holding Register for this pairing.
+///
+/// # Errors
+///
+/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected,
+/// or another [`ConnectError`] when the Relay call fails.
+pub(crate) async fn list_held(
+    url: &str,
+    credential: &DialCredential,
+    pairing: &PairingCredential,
+) -> Result<Vec<HeldRegister>, ConnectError> {
+    relay::list_held(url, credential, pairing).await
 }
 
 /// Open a Machine RPC channel through Cloud Relay.
@@ -523,11 +542,12 @@ pub(crate) async fn revoke_cloud_pairing(
 pub async fn connect_relay(
     url: impl AsRef<str>,
     credential: DialCredential,
+    pairing: PairingCredential,
     machine_id: MachineId,
 ) -> Result<Client, ConnectError> {
     let connector: Arc<dyn Connector> = Arc::new(SystemConnector::default());
     connect_one(
-        &Connection::relay(url.as_ref(), credential, machine_id),
+        &Connection::relay(url.as_ref(), credential, pairing, machine_id),
         &ConnectionSource::Direct,
         &connector,
     )

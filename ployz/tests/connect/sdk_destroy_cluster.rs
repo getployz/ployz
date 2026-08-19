@@ -131,6 +131,7 @@ async fn node_destroy_cluster_covers_teardown_and_unconfirmed_missing_names() {
                 .env("PLOYZ_SDK_PACKAGE", package)
                 .env("PLOYZ_RELAY_URL", url)
                 .env("PLOYZ_BEARER", relay::DIAL)
+                .env("PLOYZ_PAIRING", relay::PAIRING)
                 .env("PLOYZ_MACHINE_ID", entry)
                 .env("PLOYZ_WORKER_MACHINE", worker_id)
                 .env("PLOYZ_SCRATCH_MACHINE_ID", scratch_machine)
@@ -167,7 +168,12 @@ async fn cluster_session() -> (
         .await;
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            description.machine_id.as_str(),
+        ),
     )
     .await
     .expect("connect must not hang")
