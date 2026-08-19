@@ -38,44 +38,23 @@ if (!pkg.publishConfig || pkg.publishConfig.access !== "public") {
   throw new Error("@ployz/sdk must publish as a public scoped package");
 }
 
-function resolveExport(entry, conditions) {
-  if (typeof entry === "string") {
-    return entry;
-  }
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-    throw new Error("invalid exports entry");
-  }
-  for (const key of Object.keys(entry)) {
-    if (key === "default" || conditions.includes(key)) {
-      return resolveExport(entry[key], conditions);
-    }
-  }
-  throw new Error(
-    `"." is not exported under the conditions ${JSON.stringify(conditions)}`,
-  );
-}
-
 const rootExport = pkg.exports && pkg.exports["."];
-if (!rootExport) {
+if (!rootExport || typeof rootExport !== "object") {
   throw new Error('package.json exports["."] is missing');
 }
-const nodeTarget = resolveExport(rootExport, ["node", "require"]);
-if (nodeTarget !== "./index.js") {
-  throw new Error(`node export must be ./index.js, got ${nodeTarget}`);
+if (rootExport.types !== "./index.d.ts") {
+  throw new Error(`types export must be ./index.d.ts, got ${rootExport.types}`);
 }
-const viteBrowserConditions = ["module", "browser", "development", "import"];
-const browserTarget = resolveExport(rootExport, viteBrowserConditions);
-if (browserTarget === nodeTarget) {
-  throw new Error("browser export must not be the Node native entry");
+if (rootExport.node !== "./index.js") {
+  throw new Error(`node export must be ./index.js, got ${rootExport.node}`);
+}
+if (rootExport.browser !== "./browser.mjs") {
+  throw new Error(`browser export must be ./browser.mjs, got ${rootExport.browser}`);
 }
 const pkgDir = path.dirname(require.resolve("@ployz/sdk/package.json"));
-const browserPath = path.join(pkgDir, browserTarget);
+const browserPath = path.join(pkgDir, rootExport.browser);
 if (!fs.existsSync(browserPath)) {
-  throw new Error(`browser export ${browserTarget} does not exist`);
-}
-const browserSrc = fs.readFileSync(browserPath, "utf8");
-if (browserSrc.includes("node:") || browserSrc.includes(".node")) {
-  throw new Error("browser export must not load Node builtins or native bindings");
+  throw new Error("browser.mjs is missing");
 }
 
 const sdk = require("@ployz/sdk");
