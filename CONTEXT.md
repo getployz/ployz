@@ -176,6 +176,18 @@ _Avoid_: Docker Volume, Provisioned Volume, persistent volume
 The IPv4 /24 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
 _Avoid_: Reserved subnet, globally allocated subnet
 
+**Allocator**:
+The Machine named in cluster KV as the one that may assign Machine Subnets. It is a Replicated Observation, not Cluster truth.
+_Avoid_: leader, master, IPAM, Cloud IPAM
+
+**Cloud Enroll Token**:
+Cloud's bearer that authorizes copy-paste founding and joining of one Cluster. It is not a Pairing Credential and not a Dial Credential.
+_Avoid_: pairing token, API key, join URL as identity
+
+**Founding Claim**:
+Cloud's exclusive, time-bounded permission to Initialize for one Cloud Enroll Token while Relay List is empty. It is not a mesh lock and not an Allocator steal.
+_Avoid_: init mutex, leader election, cluster lock
+
 **Management Address**:
 The address used to reach a Machine's management plane over the mesh. It is distinct from container, gateway, and endpoint addresses.
 _Avoid_: Container address, public endpoint
