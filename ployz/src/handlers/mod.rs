@@ -17,6 +17,7 @@ mod data_loss;
 mod deploy;
 mod dns;
 mod image;
+mod init;
 mod machine;
 mod operator;
 mod project;
@@ -226,6 +227,7 @@ stub_handlers! {
     image_list(root) { image::list(root) } => "image ls";
     image_push(root) { image::push(root) } => "image push";
     images(root) { image::list(root) } => "images";
+    init(root) { init::run(root) } => "init";
     inspect(root) { service::inspect(root) } => "inspect";
     logs(root) {
         operator::service_logs(root)
@@ -320,6 +322,23 @@ mod tests {
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
             "local machine initialisation is not implemented; specify a remote machine",
+        );
+    }
+
+    #[test]
+    fn cloud_init_requires_the_cloud_flag() {
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from(["ployz", "init"])
+                .is_err()
+        );
+        let parsed = crate::cli::command()
+            .try_get_matches_from(["ployz", "init", "--cloud", "pmet_test"])
+            .unwrap();
+        let init = parsed.subcommand_matches("init").unwrap();
+        assert_eq!(
+            init.get_one::<String>("cloud-url").map(String::as_str),
+            Some("ployz.dev")
         );
     }
 

@@ -790,3 +790,69 @@ impl From<PairingCredential> for String {
         value.0
     }
 }
+
+/// Cloud's bearer that authorizes founding and joining of one Cluster.
+///
+/// It is not a Pairing Credential and not a Dial Credential.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CloudEnrollToken(String);
+
+impl CloudEnrollToken {
+    /// Parse a non-empty Cloud Enroll Token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `value` is empty.
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
+        let value = value.into();
+        if value.is_empty() {
+            Err(ValueError::new(
+                "Cloud Enroll Token",
+                value,
+                "a non-empty bearer",
+            ))
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    /// Cloud Enroll Token bearer. Do not log this value.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CloudEnrollToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CloudEnrollToken(..)")
+    }
+}
+
+impl TryFrom<String> for CloudEnrollToken {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<CloudEnrollToken> for String {
+    fn from(value: CloudEnrollToken) -> Self {
+        value.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_enroll_token_rejects_empty_and_redacts_debug() {
+        assert!(CloudEnrollToken::parse("").is_err());
+        let token = CloudEnrollToken::parse("pmet_test").unwrap();
+        assert_eq!(token.as_str(), "pmet_test");
+        assert_eq!(format!("{token:?}"), "CloudEnrollToken(..)");
+    }
+}

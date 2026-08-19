@@ -47,6 +47,7 @@ pub fn command() -> Command {
         .subcommand(exec("exec"))
         .subcommand(image())
         .subcommand(images())
+        .subcommand(init())
         .subcommand(inspect("inspect"))
         .subcommand(logs("logs", true))
         .subcommand(service_ls("ls"))
@@ -236,6 +237,15 @@ fn images() -> Command {
         .arg(many("machine", Some('m')))
         .arg(value("output", Some('o')).value_parser(["json"]))
         .arg(positional("image", false))
+}
+
+fn init() -> Command {
+    base("init", "Found or join a Cluster through Cloud")
+        .arg(value("cloud", None).required(true))
+        .arg(value("cloud-url", None).default_value("ployz.dev"))
+        .arg(value("name", Some('n')))
+        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
+        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
 fn inspect(name: &'static str) -> Command {

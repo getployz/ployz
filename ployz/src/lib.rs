@@ -1,5 +1,6 @@
 pub mod caddy;
 pub mod cli;
+mod cloud_enroll;
 mod cluster;
 mod cluster_teardown;
 pub mod compose;

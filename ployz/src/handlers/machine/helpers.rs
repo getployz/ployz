@@ -38,7 +38,7 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<MachineTokenRequest,
     })
 }
 
-pub(super) fn machine_name(
+pub(in crate::handlers) fn machine_name(
     requested: Option<MachineName>,
     token: &MachineToken,
 ) -> Result<MachineName, Error> {
@@ -88,7 +88,7 @@ pub(super) async fn reconnect_direct(connection: &Connection) -> Result<Client, 
     Err(last.unwrap_or_else(|| Error::usage("Machine did not become reachable after reset")))
 }
 
-pub(super) fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
+pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
     if yes {
         return Ok(());
     }

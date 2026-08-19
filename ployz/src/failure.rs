@@ -8,6 +8,7 @@ use ployz_core::{
 
 use crate::{
     caddy::CaddyImageError,
+    cloud_enroll,
     compose::ComposeError,
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
@@ -156,6 +157,7 @@ from_error!(
     RpcError,
     ProjectError,
     AmbiguousDataLossName,
+    cloud_enroll::Error,
 );
 
 impl From<ConnectError> for Failure {
