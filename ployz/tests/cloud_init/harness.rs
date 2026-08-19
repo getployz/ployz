@@ -1,18 +1,18 @@
-//! `ployz init --cloud` join and initialize paths against fake enroll HTTP.
+//! Fake enroll HTTP, Relay, and Machine RPC for `ployz init --cloud` tests.
 
 use std::{
     collections::VecDeque,
     net::SocketAddr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     time::Duration,
 };
 
 use ployz::sdk;
 use ployz_core::{
-    AdvertisedEndpoint, CloudPairing, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, Domain,
+    AdvertisedEndpoint, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, Domain,
     InitializeRequest, Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine,
     MachineDetails, MachineId, MachineName, MachineRpc, MachineRpcServer, MachineToken,
     ManagementAddress, OpaquePayload, PROTOCOL_MAJOR, PairingCredential, Registered,
@@ -21,7 +21,6 @@ use ployz_core::{
 use ployz_relay::{
     AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, RegisterRequest, Relay,
 };
-use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -34,327 +33,18 @@ use tonic::{
     transport::{Endpoint, Server},
 };
 
-const TOKEN: &str = "pmet_test";
-const PAIRING: &str = "pairing-secret";
+pub const TOKEN: &str = "pmet_test";
+pub const PAIRING: &str = "pairing-secret";
 const DIAL: &str = "dial-secret";
-const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
+pub const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
 
-#[tokio::test]
-async fn cloud_init_join_participates_and_appears_on_list_held() {
-    let registration = registration();
-    let machine_id = registration.assigned_machine.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::start(json!({
-        "kind": "join",
-        "pairing": pairing,
-        "registration": registration,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(registration.clone());
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "joiner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
-        "{stdout}"
-    );
-
-    let joined = daemon.join_request();
-    let pairing_json = serde_json::to_value(joined.cloud_pairing.as_ref().unwrap()).unwrap();
-    assert_eq!(
-        pairing_json,
-        json!({
-            "relayUrl": relay.url,
-            "secret": PAIRING,
-        })
-    );
-    assert_eq!(joined.registration.assigned_machine.id, machine_id);
-
-    let paths = enroll.paths();
-    assert_eq!(paths, [format!("/api/enroll/{TOKEN}")]);
-
-    wait_for_held(&relay.url, machine_id).await;
-}
-
-#[tokio::test]
-async fn cloud_init_initialize_participates_and_appears_on_list_held() {
-    let founder = founder_machine();
-    let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::start(json!({
-        "kind": "initialize",
-        "pairing": pairing,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    });
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--network",
-            "10.210.0.0/16",
-            "--wg-mtu",
-            "1400",
-            "--no-caddy",
-            "--no-dns",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
-        "{stdout}"
-    );
-
-    let initialized = daemon.initialize_request();
-    assert_eq!(initialized.name.as_str(), "founder");
-    assert_eq!(initialized.cluster_network.to_string(), "10.210.0.0/16");
-    assert_eq!(initialized.wireguard_mtu, Some(1400));
-    let pairing_json = serde_json::to_value(initialized.cloud_pairing.as_ref().unwrap()).unwrap();
-    assert_eq!(
-        pairing_json,
-        json!({
-            "relayUrl": relay.url,
-            "secret": PAIRING,
-        })
-    );
-    assert!(pairing_json.get("dial").is_none());
-
-    let paths = enroll.paths();
-    assert_eq!(paths, [format!("/api/enroll/{TOKEN}")]);
-
-    assert!(
-        daemon.reserve_request().is_none(),
-        "initialize with --no-dns must not ReserveDomain"
-    );
-
-    wait_for_held(&relay.url, machine_id).await;
-}
-
-#[tokio::test]
-async fn cloud_init_initialize_reserves_cloud_hosted_dns() {
-    let founder = founder_machine();
-    let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::start(json!({
-        "kind": "initialize",
-        "pairing": pairing,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    });
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--no-caddy",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Reserved Cluster domain: {CLUSTER_DOMAIN}")),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
-        "{stdout}"
-    );
-
-    let reserved = daemon.reserve_request().expect("ReserveDomain was called");
-    assert_eq!(reserved.endpoint, format!("{}/api/dns/v1", enroll.url));
-    assert_ne!(reserved.endpoint, "https://dns.uncloud.run/v1");
-}
-
-#[tokio::test]
-async fn cloud_init_retries_not_yet_then_joins() {
-    let registration = registration();
-    let machine_id = registration.assigned_machine.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::script([
-        json!({"kind": "not_yet", "retryAfter": 0}),
-        json!({
-            "kind": "join",
-            "pairing": pairing,
-            "registration": registration,
-        }),
-    ])
-    .await;
-    let daemon = JoinDaemon::new(registration.clone());
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "joiner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
-        "{stdout}"
-    );
-
-    let posts = enroll.posts();
-    assert_eq!(posts.len(), 2);
-    assert_eq!(posts.first(), posts.get(1));
-    assert_eq!(enroll.paths(), vec![format!("/api/enroll/{TOKEN}"); 2]);
-    wait_for_held(&relay.url, machine_id).await;
-}
-
-#[tokio::test]
-async fn cloud_init_retries_not_yet_then_initializes() {
-    let founder = founder_machine();
-    let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::script([
-        json!({"kind": "not_yet", "retryAfter": 0}),
-        json!({
-            "kind": "initialize",
-            "pairing": pairing,
-        }),
-    ])
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    });
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "init",
-            "--cloud",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--no-caddy",
-            "--no-dns",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
-        "{stdout}"
-    );
-
-    let posts = enroll.posts();
-    assert_eq!(posts.len(), 2);
-    assert_eq!(posts.first(), posts.get(1));
-    daemon.initialize_request();
-    wait_for_held(&relay.url, machine_id).await;
-}
-
-struct RelayListen {
-    url: String,
+pub struct RelayListen {
+    pub url: String,
     _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 
 impl RelayListen {
-    async fn start() -> Self {
+    pub async fn start() -> Self {
         let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
         let (address, server, _goaway) = relay
             .serve((std::net::Ipv4Addr::LOCALHOST, 0).into())
@@ -367,19 +57,21 @@ impl RelayListen {
     }
 }
 
-struct EnrollListen {
-    url: String,
+pub struct EnrollListen {
+    pub url: String,
     paths: Arc<Mutex<Vec<String>>>,
     posts: Arc<Mutex<Vec<serde_json::Value>>>,
+    callbacks: Arc<Mutex<Vec<serde_json::Value>>>,
+    callback_status: Arc<AtomicU16>,
     _server: tokio::task::JoinHandle<()>,
 }
 
 impl EnrollListen {
-    async fn start(body: serde_json::Value) -> Self {
+    pub async fn start(body: serde_json::Value) -> Self {
         Self::script([body]).await
     }
 
-    async fn script(bodies: impl IntoIterator<Item = serde_json::Value>) -> Self {
+    pub async fn script(bodies: impl IntoIterator<Item = serde_json::Value>) -> Self {
         let mut remaining: VecDeque<Vec<u8>> = bodies
             .into_iter()
             .map(|body| serde_json::to_vec(&body).unwrap())
@@ -388,8 +80,12 @@ impl EnrollListen {
         let address = listener.local_addr().unwrap();
         let paths = Arc::new(Mutex::new(Vec::new()));
         let posts = Arc::new(Mutex::new(Vec::new()));
+        let callbacks = Arc::new(Mutex::new(Vec::new()));
+        let callback_status = Arc::new(AtomicU16::new(200));
         let recorded_paths = Arc::clone(&paths);
         let recorded_posts = Arc::clone(&posts);
+        let recorded_callbacks = Arc::clone(&callbacks);
+        let callback_code = Arc::clone(&callback_status);
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -407,7 +103,21 @@ impl EnrollListen {
                     .nth(1)
                     .unwrap()
                     .to_owned();
+                let is_callback = path.ends_with("/callback");
                 recorded_paths.lock().unwrap().push(path);
+                if is_callback {
+                    recorded_callbacks
+                        .lock()
+                        .unwrap()
+                        .push(enroll_json_body(raw));
+                    let status = callback_code.load(Ordering::SeqCst);
+                    let reason = if status == 200 { "OK" } else { "Error" };
+                    let response = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    continue;
+                }
                 recorded_posts.lock().unwrap().push(enroll_json_body(raw));
                 let body = remaining.pop_front().expect("scripted enroll has a body");
                 let response = format!(
@@ -422,16 +132,26 @@ impl EnrollListen {
             url: format!("http://{address}"),
             paths,
             posts,
+            callbacks,
+            callback_status,
             _server: server,
         }
     }
 
-    fn paths(&self) -> Vec<String> {
+    pub fn paths(&self) -> Vec<String> {
         self.paths.lock().unwrap().clone()
     }
 
-    fn posts(&self) -> Vec<serde_json::Value> {
+    pub fn posts(&self) -> Vec<serde_json::Value> {
         self.posts.lock().unwrap().clone()
+    }
+
+    pub fn callbacks(&self) -> Vec<serde_json::Value> {
+        self.callbacks.lock().unwrap().clone()
+    }
+
+    pub fn fail_callbacks(&self, status: u16) {
+        self.callback_status.store(status, Ordering::SeqCst);
     }
 }
 
@@ -444,7 +164,7 @@ fn enroll_json_body(raw: &[u8]) -> serde_json::Value {
 }
 
 #[derive(Clone)]
-struct JoinDaemon {
+pub struct JoinDaemon {
     inner: Arc<JoinInner>,
 }
 
@@ -458,7 +178,7 @@ struct JoinInner {
 }
 
 impl JoinDaemon {
-    fn new(registration: Registered) -> Self {
+    pub fn new(registration: Registered) -> Self {
         Self {
             inner: Arc::new(JoinInner {
                 registration,
@@ -471,7 +191,7 @@ impl JoinDaemon {
         }
     }
 
-    fn join_request(&self) -> JoinRequest {
+    pub fn join_request(&self) -> JoinRequest {
         self.inner
             .join_request
             .lock()
@@ -480,7 +200,7 @@ impl JoinDaemon {
             .expect("Join was called")
     }
 
-    fn initialize_request(&self) -> InitializeRequest {
+    pub fn initialize_request(&self) -> InitializeRequest {
         self.inner
             .initialize_request
             .lock()
@@ -489,7 +209,7 @@ impl JoinDaemon {
             .expect("Initialize was called")
     }
 
-    fn reserve_request(&self) -> Option<ReserveDomainRequest> {
+    pub fn reserve_request(&self) -> Option<ReserveDomainRequest> {
         self.inner.reserve_request.lock().unwrap().clone()
     }
 }
@@ -816,7 +536,7 @@ impl MachineRpc for JoinDaemon {
     }
 }
 
-async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
+pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
     let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = tcp.local_addr().unwrap();
     tokio::spawn(
@@ -859,7 +579,7 @@ async fn hold_register(
     *slot.lock().unwrap() = Some(tx);
 }
 
-async fn wait_for_held(url: &str, machine_id: MachineId) {
+pub async fn wait_for_held(url: &str, machine_id: MachineId) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
         let listed = sdk::list_held(url, DIAL, PAIRING).await.unwrap();
@@ -877,7 +597,7 @@ async fn wait_for_held(url: &str, machine_id: MachineId) {
     }
 }
 
-fn registration() -> Registered {
+pub fn registration() -> Registered {
     Registered {
         assigned_machine: joiner_machine(),
         visible_peers: Vec::new(),
@@ -898,7 +618,7 @@ fn joiner_machine() -> Machine {
     }
 }
 
-fn founder_machine() -> Machine {
+pub fn founder_machine() -> Machine {
     Machine {
         id: MachineId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
         name: MachineName::parse("founder").unwrap(),

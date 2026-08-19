@@ -97,6 +97,15 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
                     "initial Machine did not become ready",
                 )
                 .await?;
+                if let Err(error) = cloud_enroll::callback(
+                    &cloud_enroll::callback_url(cloud_url, &token),
+                    machine.id,
+                )
+                .await
+                {
+                    // List, not callback, is the lock.
+                    eprintln!("{}", Error::warned("enroll callback failed", error));
+                }
                 if !no_dns {
                     let domain = ready
                         .call::<op::ReserveDomain>(

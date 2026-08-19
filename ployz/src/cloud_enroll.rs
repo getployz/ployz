@@ -1,10 +1,10 @@
-//! Cloud enroll HTTP: POST identity, consume `initialize` / `join`.
+//! Cloud enroll HTTP: POST identity, consume `initialize` / `join`, founder callback.
 
 use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
-    AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineName, MachineToken, Registered,
-    WireGuardPublicKey,
+    AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
+    Registered, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -93,6 +93,12 @@ pub(crate) fn dns_endpoint(cloud_url: &str) -> String {
     format!("{}/api/dns/v1", cloud_origin(cloud_url))
 }
 
+/// Founder callback: `POST /api/enroll/<token>/callback`. UX, not the lock.
+#[must_use]
+pub(crate) fn callback_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
+    format!("{}/callback", enroll_url(cloud_url, token))
+}
+
 fn cloud_origin(cloud_url: &str) -> String {
     let host = cloud_url.trim().trim_end_matches('/');
     if host.contains("://") {
@@ -102,17 +108,21 @@ fn cloud_origin(cloud_url: &str) -> String {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnrollCallback {
+    machine_id: MachineId,
+}
+
 /// POST identity until Cloud returns `initialize` or `join`.
 ///
 /// # Errors
 ///
 /// HTTP or unexpected JSON.
 pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outcome, Error> {
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let http = http_client()?;
     loop {
-        match post_once(&http, url, identity).await? {
+        match parse_enroll(&post_json(&http, url, identity).await?)? {
             Response::Join(join) => return Ok(Outcome::Join(join)),
             Response::Initialize { pairing } => return Ok(Outcome::Initialize { pairing }),
             Response::NotYet { retry_after } => tokio::time::sleep(retry_after).await,
@@ -120,12 +130,28 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
     }
 }
 
-async fn post_once(
+/// POST `{ machineId }` after Relay Register is held. Not what makes waiters `join`.
+///
+/// # Errors
+///
+/// HTTP failure.
+pub(crate) async fn callback(url: &str, machine_id: MachineId) -> Result<(), Error> {
+    post_json(&http_client()?, url, &EnrollCallback { machine_id }).await?;
+    Ok(())
+}
+
+fn http_client() -> Result<reqwest::Client, Error> {
+    Ok(reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?)
+}
+
+async fn post_json(
     http: &reqwest::Client,
     url: &str,
-    identity: &EnrollIdentity,
-) -> Result<Response, Error> {
-    let sent = http.post(url).json(identity).send().await?;
+    body: &impl Serialize,
+) -> Result<Vec<u8>, Error> {
+    let sent = http.post(url).json(body).send().await?;
     let status = sent.status();
     let bytes = sent.bytes().await?;
     if !status.is_success() {
@@ -134,7 +160,7 @@ async fn post_once(
             body: String::from_utf8_lossy(&bytes).into_owned(),
         });
     }
-    parse_enroll(&bytes)
+    Ok(bytes.to_vec())
 }
 
 fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
@@ -197,6 +223,10 @@ mod tests {
         assert_eq!(
             enroll_url("http://127.0.0.1:9", &token()),
             "http://127.0.0.1:9/api/enroll/pmet_test"
+        );
+        assert_eq!(
+            callback_url("ployz.dev", &token()),
+            "https://ployz.dev/api/enroll/pmet_test/callback"
         );
     }
 
