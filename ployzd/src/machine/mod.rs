@@ -28,6 +28,9 @@ mod local_machine;
 pub(crate) use local_machine::RuntimeWatchTelemetry;
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
+#[cfg(test)]
+mod register_tests;
+
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";

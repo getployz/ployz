@@ -322,30 +322,32 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let replicated = self.replicated()?;
-        let snapshot = replicated.machines().await?;
-        if snapshot
-            .observations
-            .iter()
-            .any(|machine| machine.name == request.name || machine.public_key == request.public_key)
-        {
-            return Err(Error::DuplicateMachine);
-        }
-        let network = replicated.cluster_network().await?;
-        let assigned_machine = Machine {
-            id: MachineId::random(),
-            name: request.name,
-            subnet: allocate_machine_subnet(
-                network,
-                snapshot.observations.iter().map(|machine| machine.subnet),
-            )?,
-            management_address: management_address(request.public_key),
-            public_key: request.public_key,
-            public_ip: request.public_ip,
-            advertised_endpoints: request.advertised_endpoints,
-            runtime: request.runtime,
+        let assigned_machine = {
+            let publication = replicated.machine_publication().await;
+            let snapshot = replicated.machines().await?;
+            if snapshot.observations.iter().any(|machine| {
+                machine.name == request.name || machine.public_key == request.public_key
+            }) {
+                return Err(Error::DuplicateMachine);
+            }
+            let network = replicated.cluster_network().await?;
+            let assigned_machine = Machine {
+                id: MachineId::random(),
+                name: request.name,
+                subnet: allocate_machine_subnet(
+                    network,
+                    snapshot.observations.iter().map(|machine| machine.subnet),
+                )?,
+                management_address: management_address(request.public_key),
+                public_key: request.public_key,
+                public_ip: request.public_ip,
+                advertised_endpoints: request.advertised_endpoints,
+                runtime: request.runtime,
+            };
+            // TODO(UT-140): cross-process registration stays unfenced and has no rollback.
+            publication.publish(&assigned_machine).await?;
+            assigned_machine
         };
-        // TODO(UT-140): the imperative registration is deliberately unfenced and has no rollback.
-        replicated.publish_local_machine(&assigned_machine).await?;
         let target_versions = replicated.version().await?;
         let visible_peers = replicated
             .machines()

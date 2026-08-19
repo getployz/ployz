@@ -6,13 +6,15 @@ mod service;
 mod store;
 
 #[cfg(test)]
+pub(crate) mod fake_cluster;
+#[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
 mod store_tests;
 
 pub use admin::{AdminClient, MembershipState};
-pub(crate) use api::Subscription;
-use api::{ApiClient, Statement};
+use api::Statement;
+pub(crate) use api::{ApiClient, Subscription};
 pub use certificate::{CertificateChallenge, CertificateMaterial, CertificateRow};
 pub use publisher::{run_machine_publisher, wait_for_catch_up};
 pub use service::{

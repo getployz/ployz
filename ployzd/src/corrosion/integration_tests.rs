@@ -432,6 +432,7 @@ async fn founder_publisher_backdates_allocator() {
             },
             wireguard_private_key: WireGuardPrivateKey::generate(),
             wireguard_mtu: None,
+            cloud_pairing: None,
             selected_endpoints: BTreeMap::new(),
         },
     );

@@ -35,6 +35,19 @@ pub(crate) struct ApiClient {
 
 impl ApiClient {
     pub(crate) fn new(address: SocketAddr, token: &str) -> Result<Self, Error> {
+        Self::from_builder(address, token, |builder| builder.http2_prior_knowledge())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn http1(address: SocketAddr, token: &str) -> Result<Self, Error> {
+        Self::from_builder(address, token, |builder| builder)
+    }
+
+    fn from_builder(
+        address: SocketAddr,
+        token: &str,
+        configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+    ) -> Result<Self, Error> {
         let base_url = Url::parse(&format!("http://{address}"))
             .map_err(|error| Error::Protocol(error.to_string()))?;
         let mut headers = header::HeaderMap::new();
@@ -52,8 +65,7 @@ impl ApiClient {
                     request.success()
                 }
             });
-        let client = Client::builder()
-            .http2_prior_knowledge()
+        let client = configure(Client::builder())
             .connect_timeout(Duration::from_secs(3))
             .default_headers(headers)
             .retry(retry)
