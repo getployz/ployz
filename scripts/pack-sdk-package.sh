@@ -19,7 +19,8 @@ fi
 
 mkdir -p "$dest"
 rm -rf "$dest/npm" # never merge into a stale pack
-cp "$PACKAGE_ROOT/package.json" "$PACKAGE_ROOT/index.js" "$PACKAGE_ROOT/index.d.ts" "$dest/"
+[ -f "$PACKAGE_ROOT/browser.mjs" ] || fail "browser.mjs is missing"
+cp "$PACKAGE_ROOT/package.json" "$PACKAGE_ROOT/index.js" "$PACKAGE_ROOT/index.d.ts" "$PACKAGE_ROOT/browser.mjs" "$dest/"
 cp -a "$PACKAGE_ROOT/generated" "$dest/generated"
 
 # One package per binding: @ployz/sdk-<platform>-<arch>, injected into @ployz/sdk as an

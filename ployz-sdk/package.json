@@ -12,7 +12,8 @@
   "exports": {
     ".": {
       "types": "./index.d.ts",
-      "node": "./index.js"
+      "node": "./index.js",
+      "browser": "./browser.mjs"
     },
     "./package.json": "./package.json",
     "./index.d.ts": "./index.d.ts"
@@ -20,6 +21,7 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "browser.mjs",
     "generated"
   ],
   "engines": {

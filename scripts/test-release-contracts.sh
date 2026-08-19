@@ -377,6 +377,7 @@ sdk_src=$(mktemp -d)
 printf '%s\n' '{"name":"@ployz/sdk","version":"1.2.3","private":true,"main":"index.js"}' > "$sdk_src/package.json"
 printf 'js\n' > "$sdk_src/index.js"
 printf 'dts\n' > "$sdk_src/index.d.ts"
+printf 'browser\n' > "$sdk_src/browser.mjs"
 mkdir -p "$sdk_src/generated"
 printf 'gen\n' > "$sdk_src/generated/payloads.d.ts"
 sdk_bindings=$(mktemp -d)
@@ -396,6 +397,7 @@ assert_contains "$sdk_dest/npm/linux-x64/package.json" '"os": ['
 assert_contains "$sdk_dest/npm/darwin-arm64/package.json" '"arm64"'
 assert_contains "$sdk_dest/package.json" '"@ployz/sdk-darwin-arm64": "1.2.3"'
 assert_contains "$sdk_dest/package.json" '"access": "public"'
+assert_eq "$(cat "$sdk_dest/browser.mjs")" browser
 if [ -e "$sdk_dest/ployz-sdk.node" ]; then
     echo "the js package still ships a native binding" >&2
     exit 1
