@@ -1,14 +1,21 @@
-use std::{net::Ipv4Addr, time::Duration};
+use std::{
+    io,
+    net::Ipv4Addr,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use ployz::connect::{ConnectError, DialCredential, connect_relay};
 use ployz_core::{DescribeContractRequest, MachineId, MachineRpcServer, op};
 use ployz_relay::{
-    AUTHORIZATION_METADATA, CloudRelayClient, PairingCredential, RegisterRequest, Relay,
-    TUNNEL_ID_METADATA, TunnelIo,
+    ClientError, Open, PairingCredential, RegisterRequest, Relay, RelayClient, RelayWs, TunnelIo,
 };
-use tokio::{sync::mpsc, time::timeout};
-use tokio_stream::{StreamExt, wrappers::ReceiverStream};
-use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    time::timeout,
+};
+use tonic::transport::server::Connected;
 
 use super::support::{DiscoveryService, test_description};
 
@@ -97,7 +104,7 @@ async fn unknown_machine_id_fails_closed() {
 
 pub(super) struct RelaySession {
     pub(super) url: String,
-    _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    _server: tokio::task::JoinHandle<io::Result<()>>,
 }
 
 impl RelaySession {
@@ -121,59 +128,41 @@ impl RelaySession {
 }
 
 pub(super) struct FakeMachine {
-    _register_hold: mpsc::Sender<RegisterRequest>,
     _accept: tokio::task::JoinHandle<()>,
 }
 
 impl FakeMachine {
     async fn register(url: &str, machine_id: MachineId, service: DiscoveryService) -> Self {
-        let mut relay = relay_client(url).await;
-        let (hold, rx) = mpsc::channel(4);
-        hold.send(RegisterRequest::new(&machine_id)).await.unwrap();
-        let mut request = Request::new(ReceiverStream::new(rx));
-        set_bearer(request.metadata_mut(), PAIRING);
-        let mut opens = relay.register(request).await.unwrap().into_inner();
-        let pong = hold.clone();
+        let client = RelayClient::new(url).expect("test Relay URL is http");
+        let mut register = client.register(PAIRING, &machine_id).await.unwrap();
+        let url = url.to_owned();
         let accept = tokio::spawn(async move {
-            while let Some(Ok(open)) = opens.next().await {
+            while let Ok(Some(open)) = register.recv::<Open>().await {
                 if let Some(nonce) = open.ping_nonce() {
-                    let _ = pong.send(RegisterRequest::pong(nonce)).await;
+                    let _ = register.send(&RegisterRequest::pong(nonce)).await;
                     continue;
                 }
-                let mut attach_client = relay.clone();
+                let url = url.clone();
                 let service = service.clone();
                 tokio::spawn(async move {
-                    serve_attach(&mut attach_client, open, service).await;
+                    serve_attach(&url, open, service).await;
                 });
             }
         });
-        Self {
-            _register_hold: hold,
-            _accept: accept,
-        }
+        Self { _accept: accept }
     }
 }
 
-async fn serve_attach(
-    relay: &mut CloudRelayClient<tonic::transport::Channel>,
-    open: ployz_relay::Open,
-    service: DiscoveryService,
-) {
-    let (tx, rx) = mpsc::channel(16);
-    let mut request = Request::new(ReceiverStream::new(rx));
-    request.metadata_mut().insert(
-        TUNNEL_ID_METADATA,
-        open.tunnel_id()
-            .expect("Open carries a Tunnel ID")
-            .as_str()
-            .parse()
-            .expect("Tunnel ID is ASCII metadata"),
-    );
-    let inbound = relay.attach(request).await.unwrap().into_inner();
-    let io = TunnelIo::new(tx, inbound);
+async fn serve_attach(url: &str, open: Open, service: DiscoveryService) {
+    let tunnel = RelayClient::new(url)
+        .expect("test Relay URL is http")
+        .attach(open.tunnel_id().expect("Open carries a Tunnel ID").as_str())
+        .await
+        .unwrap();
+    let io = Incoming(tunnel.into_io());
     let _ = tonic::transport::Server::builder()
         .add_service(MachineRpcServer::new(service))
-        .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(io)))
+        .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(io)))
         .await;
 }
 
@@ -181,34 +170,44 @@ pub(super) async fn register_with_pairing(
     url: &str,
     pairing: &str,
     machine_id: MachineId,
-) -> Result<tonic::Streaming<ployz_relay::Open>, tonic::Status> {
-    let mut relay = relay_client(url).await;
-    let (hold, rx) = mpsc::channel(4);
-    hold.send(RegisterRequest::new(&machine_id)).await.unwrap();
-    let mut request = Request::new(ReceiverStream::new(rx));
-    set_bearer(request.metadata_mut(), pairing);
-    std::mem::forget(hold);
-    relay
-        .register(request)
-        .await
-        .map(tonic::Response::into_inner)
+) -> Result<RelayWs, ClientError> {
+    RelayClient::new(url)?.register(pairing, &machine_id).await
 }
 
-async fn relay_client(url: &str) -> CloudRelayClient<tonic::transport::Channel> {
-    let channel = Endpoint::from_shared(url.to_owned())
-        .unwrap()
-        .connect_timeout(Duration::from_secs(5))
-        .connect()
-        .await
-        .unwrap();
-    CloudRelayClient::new(channel)
+struct Incoming(TunnelIo);
+
+impl Connected for Incoming {
+    type ConnectInfo = ();
+
+    fn connect_info(&self) -> Self::ConnectInfo {}
 }
 
-fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, credential: &str) {
-    metadata.insert(
-        AUTHORIZATION_METADATA,
-        MetadataValue::try_from(format!("Bearer {credential}")).expect("bearer is ASCII"),
-    );
+impl AsyncRead for Incoming {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for Incoming {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(context, buffer)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(context)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(context)
+    }
 }
 
 fn pairing_credential() -> PairingCredential {

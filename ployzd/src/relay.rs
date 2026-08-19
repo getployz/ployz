@@ -1,18 +1,12 @@
 //! Cloud Relay Register client.
 
-use std::{io, time::Duration};
+use std::io;
 
 use ployz_core::{CloudPairing, MachineId, PairingCredential};
-use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, RegisterRequest};
+use ployz_relay::{ClientError, Open, RegisterRequest, RelayClient};
 use thiserror::Error;
-use tokio::{sync::mpsc, task::JoinHandle};
-use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tonic::{
-    Request,
-    metadata::MetadataValue,
-    transport::{Channel, Endpoint},
-};
 
 /// Held Cloud Relay Register. Dropping it ends the stream.
 #[must_use]
@@ -24,9 +18,7 @@ pub struct RegisterHold {
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    Transport(#[from] tonic::transport::Error),
-    #[error(transparent)]
-    Status(#[from] tonic::Status),
+    Client(#[from] ClientError),
 }
 
 /// Hold Register: hello with Machine ID, Pairing Credential bearer, echo pings.
@@ -39,19 +31,14 @@ pub async fn hold_register(
     pairing: &PairingCredential,
     machine_id: &MachineId,
 ) -> Result<RegisterHold, Error> {
-    let mut relay = CloudRelayClient::new(connect(url).await?);
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(RegisterRequest::new(machine_id))
-        .await
-        .expect("hello is sent before the hold task starts");
-    let mut request = Request::new(ReceiverStream::new(rx));
-    set_bearer(request.metadata_mut(), pairing);
-    let mut opens = relay.register(request).await?.into_inner();
+    let mut ws = RelayClient::new(url)?
+        .register(pairing.as_str(), machine_id)
+        .await?;
     let task = tokio::spawn(async move {
-        while let Some(Ok(message)) = opens.next().await {
+        while let Ok(Some(message)) = ws.recv::<Open>().await {
             // ponytail: Attach is a later ticket
             if let Some(nonce) = message.ping_nonce() {
-                let _ = tx.send(RegisterRequest::pong(nonce)).await;
+                let _ = ws.send(&RegisterRequest::pong(nonce)).await;
             }
         }
     });
@@ -86,34 +73,14 @@ pub(crate) async fn run(
     Ok(())
 }
 
-async fn connect(url: &str) -> Result<Channel, tonic::transport::Error> {
-    Endpoint::from_shared(url.to_owned())?
-        .connect_timeout(Duration::from_secs(5))
-        .connect()
-        .await
-}
-
-fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &PairingCredential) {
-    metadata.insert(
-        AUTHORIZATION_METADATA,
-        MetadataValue::try_from(format!("Bearer {}", pairing.as_str()))
-            .expect("Pairing Credential is ASCII metadata"),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use std::{net::Ipv4Addr, time::Duration};
 
+    use http::StatusCode;
     use ployz_core::{CloudPairing, MachineId, PairingCredential};
-    use ployz_relay::{
-        AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, ListRequest, MACHINE_ID_METADATA,
-        PAIRING_METADATA, Relay, RevokeRequest,
-    };
-    use tokio::sync::mpsc;
-    use tokio_stream::wrappers::ReceiverStream;
+    use ployz_relay::{ClientError, DialCredential, Relay, RelayClient};
     use tokio_util::sync::CancellationToken;
-    use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
     use super::{Error, hold_register, run};
 
@@ -140,27 +107,18 @@ mod tests {
     #[tokio::test]
     async fn pairing_credential_cannot_impersonate_cloud() {
         let session = Session::start().await;
-        let mut cloud = client(&session.url).await;
+        let cloud = client(&session.url);
 
-        let list = cloud
-            .list(cloud_request(ListRequest {}, PAIRING, PAIRING, None))
-            .await;
-        assert_eq!(list.unwrap_err().code(), tonic::Code::Unauthenticated);
+        let list = cloud.list(PAIRING, PAIRING).await;
+        assert_eq!(list.unwrap_err().status(), Some(StatusCode::UNAUTHORIZED));
 
-        let revoke = cloud
-            .revoke(cloud_request(RevokeRequest {}, PAIRING, PAIRING, None))
-            .await;
-        assert_eq!(revoke.unwrap_err().code(), tonic::Code::Unauthenticated);
+        let revoke = cloud.revoke(PAIRING, PAIRING).await;
+        assert_eq!(revoke.unwrap_err().status(), Some(StatusCode::UNAUTHORIZED));
 
         let dial = cloud
-            .dial(cloud_request(
-                ReceiverStream::new(mpsc::channel(1).1),
-                PAIRING,
-                PAIRING,
-                Some(&session.machine_id),
-            ))
+            .dial(PAIRING, PAIRING, session.machine_id.as_str())
             .await;
-        assert_eq!(dial.unwrap_err().code(), tonic::Code::Unauthenticated);
+        assert_eq!(dial.unwrap_err().status(), Some(StatusCode::UNAUTHORIZED));
     }
 
     #[tokio::test]
@@ -180,7 +138,7 @@ mod tests {
             Ok(_) => panic!("expected unreachable Relay to fail"),
             Err(error) => error,
         };
-        assert!(matches!(error, Error::Transport(_)));
+        assert!(matches!(error, Error::Client(_)));
     }
 
     #[tokio::test]
@@ -220,7 +178,7 @@ mod tests {
 
     struct RelayListen {
         url: String,
-        _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        _server: tokio::task::JoinHandle<std::io::Result<()>>,
         _goaway: ployz_relay::Goaway,
     }
 
@@ -296,48 +254,11 @@ mod tests {
         url: &str,
         dial: &str,
         pairing: &str,
-    ) -> Result<Vec<ployz_relay::HeldRegister>, tonic::Status> {
-        client(url)
-            .await
-            .list(cloud_request(ListRequest {}, dial, pairing, None))
-            .await
-            .map(|response| response.into_inner().registers().to_vec())
+    ) -> Result<Vec<ployz_relay::HeldRegister>, ClientError> {
+        client(url).list(dial, pairing).await
     }
 
-    async fn client(url: &str) -> CloudRelayClient<tonic::transport::Channel> {
-        let channel = Endpoint::from_shared(url.to_owned())
-            .unwrap()
-            .connect_timeout(Duration::from_secs(5))
-            .connect()
-            .await
-            .unwrap();
-        CloudRelayClient::new(channel)
-    }
-
-    fn cloud_request<T>(
-        body: T,
-        bearer: &str,
-        pairing: &str,
-        machine_id: Option<&MachineId>,
-    ) -> Request<T> {
-        let mut request = Request::new(body);
-        request.metadata_mut().insert(
-            AUTHORIZATION_METADATA,
-            MetadataValue::try_from(format!("Bearer {bearer}")).expect("bearer is ASCII"),
-        );
-        request.metadata_mut().insert(
-            PAIRING_METADATA,
-            pairing.parse().expect("pairing is ASCII metadata"),
-        );
-        if let Some(machine_id) = machine_id {
-            request.metadata_mut().insert(
-                MACHINE_ID_METADATA,
-                machine_id
-                    .as_str()
-                    .parse()
-                    .expect("Machine ID is ASCII metadata"),
-            );
-        }
-        request
+    fn client(url: &str) -> RelayClient {
+        RelayClient::new(url).expect("test Relay URL is http")
     }
 }

@@ -19,20 +19,13 @@ use ployz_core::{
     ReserveDomainRequest, ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     WireGuardPublicKey,
 };
-use ployz_relay::{
-    AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, RegisterRequest, Relay,
-};
+use ployz_relay::{ClientError, DialCredential, Open, RegisterRequest, Relay, RelayClient};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    sync::mpsc,
+    task::JoinHandle,
 };
-use tokio_stream::{StreamExt, wrappers::ReceiverStream};
-use tonic::{
-    Request, Response, Status, Streaming,
-    metadata::MetadataValue,
-    transport::{Endpoint, Server},
-};
+use tonic::{Request, Response, Status, Streaming, transport::Server};
 
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
@@ -41,7 +34,7 @@ pub const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
 
 pub struct RelayListen {
     pub url: String,
-    _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    _server: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
 impl RelayListen {
@@ -182,7 +175,7 @@ struct JoinInner {
     initialize_requests: Mutex<Vec<InitializeRequest>>,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
     resets: AtomicUsize,
-    _register: Mutex<Option<mpsc::Sender<RegisterRequest>>>,
+    _register: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl JoinDaemon {
@@ -511,7 +504,9 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.resets.fetch_add(1, Ordering::SeqCst);
         self.inner.joined.store(false, Ordering::SeqCst);
-        *self.inner._register.lock().unwrap() = None;
+        if let Some(hold) = self.inner._register.lock().unwrap().take() {
+            hold.abort();
+        }
         rpc_ok(ResetAccepted {})
     }
     async fn update_machine(
@@ -579,33 +574,34 @@ async fn hold_register(
     url: &str,
     pairing: &PairingCredential,
     machine_id: &MachineId,
-    slot: &Mutex<Option<mpsc::Sender<RegisterRequest>>>,
+    slot: &Mutex<Option<JoinHandle<()>>>,
 ) -> Result<(), Status> {
-    let channel = Endpoint::from_shared(url.to_owned())
-        .unwrap()
-        .connect_timeout(Duration::from_secs(5))
-        .connect()
+    let mut ws = RelayClient::new(url)
+        .map_err(status_from_client)?
+        .register(pairing.as_str(), machine_id)
         .await
-        .unwrap();
-    let mut relay = CloudRelayClient::new(channel);
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(RegisterRequest::new(machine_id)).await.unwrap();
-    let mut request = Request::new(ReceiverStream::new(rx));
-    request.metadata_mut().insert(
-        AUTHORIZATION_METADATA,
-        MetadataValue::try_from(format!("Bearer {}", pairing.as_str())).unwrap(),
-    );
-    let mut opens = relay.register(request).await?.into_inner();
-    let pong = tx.clone();
-    tokio::spawn(async move {
-        while let Some(Ok(message)) = opens.next().await {
+        .map_err(status_from_client)?;
+    let hold = tokio::spawn(async move {
+        while let Ok(Some(message)) = ws.recv::<Open>().await {
             if let Some(nonce) = message.ping_nonce() {
-                let _ = pong.send(RegisterRequest::pong(nonce)).await;
+                let _ = ws.send(&RegisterRequest::pong(nonce)).await;
             }
         }
     });
-    *slot.lock().unwrap() = Some(tx);
+    if let Some(old) = slot.lock().unwrap().replace(hold) {
+        old.abort();
+    }
     Ok(())
+}
+
+fn status_from_client(error: ClientError) -> Status {
+    match error.status() {
+        Some(http::StatusCode::UNAUTHORIZED) => Status::unauthenticated(error.to_string()),
+        Some(http::StatusCode::BAD_REQUEST) => Status::invalid_argument(error.to_string()),
+        Some(http::StatusCode::NOT_FOUND) => Status::not_found(error.to_string()),
+        Some(http::StatusCode::SERVICE_UNAVAILABLE) => Status::unavailable(error.to_string()),
+        _ => Status::unavailable(error.to_string()),
+    }
 }
 
 pub async fn wait_for_held(url: &str, pairing: &str, machine_id: MachineId) {

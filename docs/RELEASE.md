@@ -79,4 +79,4 @@ Goreleaser does not upload the tap (`skip_upload: true`). Bottles 404 if the for
 
 Linux musl archives `ployz-relay_linux_amd64.tar.gz` and `ployz-relay_linux_arm64.tar.gz` are GitHub Release assets. They are not in `checksums.txt`, Homebrew, or `ployz.sh`.
 
-The same binary is published as `ghcr.io/getployz/ployz-relay:<tag>` when the tag workflow runs. TLS stays on the terminator in front. Required env: `PLOYZ_RELAY_DIAL_CREDENTIAL`. Listen: `--listen` / `PLOYZ_RELAY_LISTEN` (default `0.0.0.0:50051`).
+The same binary is published as `ghcr.io/getployz/ployz-relay:<tag>` when the tag workflow runs. TLS stays on the terminator in front. Required env: `PLOYZ_RELAY_DIAL_CREDENTIAL`. Listen: `--listen` / `PLOYZ_RELAY_LISTEN` (default `0.0.0.0:8080`).

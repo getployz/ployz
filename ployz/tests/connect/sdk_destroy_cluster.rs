@@ -100,7 +100,7 @@ async fn destroy_cluster_resets_machines_destroys_projects_and_revokes_pairing()
     let error = relay::register_with_pairing(&session.url, relay::PAIRING, MachineId::random())
         .await
         .expect_err("revoked pairing must not Register");
-    assert_eq!(error.code(), tonic::Code::Unauthenticated);
+    assert_eq!(error.status(), Some(http::StatusCode::UNAUTHORIZED));
 
     let again = client.destroy_cluster(&loss.all()).await.unwrap();
     assert!(again.pairing_revoked, "{again:?}");

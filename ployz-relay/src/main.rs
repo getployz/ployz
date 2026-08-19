@@ -1,11 +1,11 @@
-//! Cloud Relay process: plaintext HTTP/2 behind a TLS terminator.
+//! Cloud Relay process: HTTP/1.1 behind a TLS terminator.
 
 use std::{io, net::SocketAddr, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 use ployz_relay::{DialCredential, Relay, RelayError};
 
-const DEFAULT_LISTEN: &str = "0.0.0.0:50051";
+const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
 const DIAL_ENV: &str = "PLOYZ_RELAY_DIAL_CREDENTIAL";
 
 #[derive(Parser)]
@@ -45,10 +45,8 @@ async fn run() -> Result<(), Error> {
     let (_address, handle, goaway) = relay.serve(args.listen).await?;
     shutdown_signal().await?;
     goaway.start();
-    handle
-        .await
-        .expect("relay serve task panicked")
-        .map_err(Error::Serve)
+    handle.await.expect("relay serve task panicked")?;
+    Ok(())
 }
 
 fn env_or_empty(key: &str) -> String {
@@ -78,6 +76,4 @@ enum Error {
     Relay(#[from] RelayError),
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error(transparent)]
-    Serve(tonic::transport::Error),
 }
