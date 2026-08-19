@@ -30,6 +30,15 @@ pub struct ReplicatedStore {
 // Solo founder backdates so the first Register is already quiet. ON CONFLICT
 // leaves a later steal's `updated_at = now` alone.
 pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
+#[cfg(test)]
+pub(crate) const INSERT_ALLOCATOR_NOW: &str =
+    "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now'))";
+pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
+
+pub(crate) struct AllocatorRow {
+    pub machine_id: MachineId,
+    pub quiet: bool,
+}
 
 pub(crate) struct MachinePublicationGuard<'a> {
     store: &'a ReplicatedStore,
@@ -219,6 +228,27 @@ impl ReplicatedStore {
         self.api
             .execute([Statement::new(CLAIM_FOUNDER_ALLOCATOR, [json!(machine_id)])])
             .await
+    }
+
+    /// Local Allocator observation: named Machine ID and whether the row is ≥5s old.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the Cluster store cannot be read or the row is malformed.
+    pub(crate) async fn allocator(&self) -> Result<Option<AllocatorRow>, Error> {
+        let query = self.api.query(Statement::new(ALLOCATOR_ROW, [])).await?;
+        match query.rows(["allocator", "quiet"])?.as_slice() {
+            [] => Ok(None),
+            [[value, Value::Number(quiet)]] => Ok(Some(AllocatorRow {
+                machine_id: MachineId::parse(text(value, "Allocator")?)?,
+                quiet: quiet
+                    .as_u64()
+                    .filter(|value| *value <= 1)
+                    .map(|value| value == 1)
+                    .ok_or_else(|| Error::Protocol("invalid Allocator quiet".into()))?,
+            })),
+            _ => Err(Error::Protocol("invalid Allocator row".into())),
+        }
     }
 
     pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {

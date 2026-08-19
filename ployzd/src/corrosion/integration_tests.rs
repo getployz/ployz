@@ -447,19 +447,10 @@ async fn founder_publisher_backdates_allocator() {
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            let query = store
-                .api()
-                .query(Statement::new(
-                    "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'",
-                    [],
-                ))
-                .await
-                .unwrap();
-            if let Ok(rows) = query.rows(["allocator", "quiet"])
-                && let Some([value, quiet]) = rows.first()
+            if let Ok(Some(row)) = store.allocator().await
+                && row.machine_id == published.id
+                && row.quiet
             {
-                assert_eq!(value.as_str(), Some(published.id.as_str()));
-                assert_eq!(quiet, &json!(1));
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

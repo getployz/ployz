@@ -697,6 +697,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             message,
             details: Value::Null,
         }),
+        LocalMachineError::AllocatorNotQuiet | LocalMachineError::NotAllocator => {
+            respond(unavailable(&error.to_string()))
+        }
     }
 }
 
@@ -811,9 +814,9 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::{MachineService, store_error};
-    use crate::machine::{LocalMachineStore, StoreError};
-    use ployz_core::{MachineRpc, RpcErrorCode, RuntimeWatchRequest, op};
+    use super::{MachineService, local_error, store_error};
+    use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
+    use ployz_core::{MachineRpc, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, op};
     use std::sync::{Arc, Mutex};
     use tokio::sync::watch;
     use tonic::{Code, Request};
@@ -824,6 +827,36 @@ mod tests {
             store_error(StoreError::NotParticipating).code,
             RpcErrorCode::Conflict
         );
+    }
+
+    #[test]
+    fn allocator_not_quiet_is_retryable_unavailable() {
+        let RpcResponseBody::Error(error) = local_error(LocalMachineError::AllocatorNotQuiet)
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .body
+        else {
+            panic!("expected error payload");
+        };
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.message, "Allocator is not quiet");
+    }
+
+    #[test]
+    fn not_allocator_does_not_allocate() {
+        let RpcResponseBody::Error(error) = local_error(LocalMachineError::NotAllocator)
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .body
+        else {
+            panic!("expected error payload");
+        };
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.message, "this Machine is not the Allocator");
     }
 
     #[tokio::test]

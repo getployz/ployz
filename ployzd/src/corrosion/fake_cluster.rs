@@ -8,12 +8,15 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
+use super::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, INSERT_ALLOCATOR_NOW};
 use super::{ApiClient, ReplicatedStore};
+use ployz_core::MachineId;
 
 #[derive(Clone)]
 struct ClusterKv {
     network: String,
     machines: BTreeMap<String, String>,
+    allocator: Option<(String, bool)>,
 }
 
 #[derive(Deserialize)]
@@ -28,6 +31,7 @@ pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let kv = Arc::new(Mutex::new(ClusterKv {
         network: "10.210.0.0/16".into(),
         machines: BTreeMap::new(),
+        allocator: None,
     }));
     let server = tokio::spawn(async move {
         axum::serve(
@@ -70,6 +74,12 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
+        ALLOCATOR_ROW => events(
+            &["allocator", "quiet"],
+            kv.allocator
+                .iter()
+                .map(|(id, quiet)| vec![json!(id), json!(u8::from(*quiet))]),
+        ),
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }
@@ -80,17 +90,22 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
 fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
     let mut kv = kv.lock().unwrap();
     for statement in &statements {
-        assert!(
-            statement
-                .query
-                .starts_with("INSERT INTO machines (id, info,"),
-            "unexpected statement {}",
-            statement.query
-        );
-        kv.machines.insert(
-            text_param(&statement.params, 0).to_owned(),
-            text_param(&statement.params, 1).to_owned(),
-        );
+        match statement.query.as_str() {
+            CLAIM_FOUNDER_ALLOCATOR => {
+                let id = text_param(&statement.params, 0).to_owned();
+                kv.allocator.get_or_insert((id, true));
+            }
+            INSERT_ALLOCATOR_NOW => {
+                kv.allocator = Some((text_param(&statement.params, 0).to_owned(), false));
+            }
+            query if query.starts_with("INSERT INTO machines (id, info,") => {
+                kv.machines.insert(
+                    text_param(&statement.params, 0).to_owned(),
+                    text_param(&statement.params, 1).to_owned(),
+                );
+            }
+            query => panic!("unexpected statement {query}"),
+        }
     }
     serde_json::to_vec(&json!({
         "results": vec![json!({"rows_affected": 1, "time": 0.0}); statements.len()],
@@ -114,4 +129,12 @@ fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes
     }
     body.extend(br#"{"eoq":{"time":0.0}}"#);
     body.into()
+}
+
+pub(crate) async fn insert_young_allocator(store: &ReplicatedStore, id: &MachineId) {
+    store
+        .api()
+        .execute([super::Statement::new(INSERT_ALLOCATOR_NOW, [json!(id)])])
+        .await
+        .unwrap();
 }

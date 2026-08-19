@@ -14,7 +14,7 @@ use serde_json::json;
 use super::ReplicatedStore;
 use crate::corrosion::ApiClient;
 use crate::corrosion::publisher::founder_allocator_id;
-use crate::corrosion::store::CLAIM_FOUNDER_ALLOCATOR;
+use crate::corrosion::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, INSERT_ALLOCATOR_NOW};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
 };
@@ -153,6 +153,7 @@ async fn volume_store_is_an_error_when_the_store_is_unreachable() {
             .await
             .is_err()
     );
+    assert!(store.allocator().await.is_err());
 }
 
 #[tokio::test]
@@ -207,11 +208,7 @@ fn founder_allocator_sql_is_quiet_and_does_not_overwrite() {
     db.execute(CLAIM_FOUNDER_ALLOCATOR, rusqlite::params![id])
         .unwrap();
     let (value, quiet): (String, i64) = db
-        .query_row(
-            "SELECT value, updated_at <= datetime('now', '-5 seconds') FROM cluster WHERE key = 'allocator'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap();
     assert_eq!(value, id);
     assert_eq!(quiet, 1);
@@ -226,6 +223,20 @@ fn founder_allocator_sql_is_quiet_and_does_not_overwrite() {
         )
         .unwrap();
     assert_eq!(value, id);
+}
+
+#[test]
+fn allocator_written_at_now_is_not_quiet() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let id = "a".repeat(32);
+    db.execute(INSERT_ALLOCATOR_NOW, rusqlite::params![id])
+        .unwrap();
+    let (value, quiet): (String, i64) = db
+        .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap();
+    assert_eq!(value, id);
+    assert_eq!(quiet, 0);
 }
 
 #[test]

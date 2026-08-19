@@ -131,7 +131,73 @@ async fn overlapping_registers_on_one_daemon_get_distinct_machine_subnets() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+#[tokio::test]
+async fn register_does_not_allocate_when_this_machine_is_not_the_allocator() {
+    let (local, replicated, _founder, data_dir, server) = participating_without_allocator().await;
+    replicated
+        .publish_founder_allocator(&ployz_core::MachineId::random())
+        .await
+        .unwrap();
+    let error = local
+        .register(request("peer", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LocalMachineError::NotAllocator));
+    assert_eq!(replicated.machines().await.unwrap().observations.len(), 1);
+
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn register_is_not_quiet_when_the_allocator_row_is_young() {
+    let (local, replicated, founder, data_dir, server) = participating_without_allocator().await;
+    fake_cluster::insert_young_allocator(&replicated, &founder.id).await;
+    let error = local
+        .register(request("peer", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LocalMachineError::AllocatorNotQuiet));
+    assert_eq!(replicated.machines().await.unwrap().observations.len(), 1);
+
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn register_does_not_allocate_when_allocator_row_is_missing() {
+    let (local, replicated, _founder, data_dir, server) = participating_without_allocator().await;
+    let error = local
+        .register(request("peer", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LocalMachineError::NotAllocator));
+    assert_eq!(replicated.machines().await.unwrap().observations.len(), 1);
+
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 async fn participating() -> (
+    LocalMachine,
+    ReplicatedStore,
+    Machine,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
+    let setup = participating_without_allocator().await;
+    setup
+        .1
+        .publish_founder_allocator(&setup.2.id)
+        .await
+        .unwrap();
+    setup
+}
+
+async fn participating_without_allocator() -> (
     LocalMachine,
     ReplicatedStore,
     Machine,
