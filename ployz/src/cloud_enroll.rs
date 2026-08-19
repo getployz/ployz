@@ -6,7 +6,7 @@ use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
     Registered, WireGuardPublicKey,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
 const DEFAULT_RETRY_AFTER: u64 = 2;
@@ -27,9 +27,21 @@ pub(crate) enum Error {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EnrollIdentity {
     name: MachineName,
+    // Cloud enroll HTTP expects Display/base64, not the RPC `number[]` wire.
+    #[serde(serialize_with = "serialize_as_wireguard_base64")]
     public_key: WireGuardPublicKey,
     advertised_endpoints: Vec<AdvertisedEndpoint>,
     public_ip: Option<IpAddr>,
+}
+
+fn serialize_as_wireguard_base64<S>(
+    key: &WireGuardPublicKey,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&key.to_string())
 }
 
 impl EnrollIdentity {
@@ -337,5 +349,30 @@ mod tests {
             panic!("expected not_yet");
         };
         assert_eq!(retry_after, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn enroll_identity_public_key_is_wireguard_base64_string() {
+        let identity = EnrollIdentity::from_machine_token(
+            MachineName::parse("ployz-c1").unwrap(),
+            &MachineToken {
+                public_key: WireGuardPublicKey([
+                    93, 8, 112, 97, 17, 191, 217, 250, 110, 95, 143, 145, 148, 219, 136, 176, 78,
+                    82, 126, 17, 157, 176, 106, 76, 85, 91, 240, 187, 92, 182, 2, 77,
+                ]),
+                public_ip: Some("207.246.89.244".parse().unwrap()),
+                advertised_endpoints: vec![AdvertisedEndpoint(
+                    "207.246.89.244:51820".parse().unwrap(),
+                )],
+                runtime: Default::default(),
+            },
+        );
+        let json = serde_json::to_value(&identity).unwrap();
+        assert_eq!(
+            json.get("publicKey"),
+            Some(&serde_json::json!(
+                "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0="
+            ))
+        );
     }
 }
