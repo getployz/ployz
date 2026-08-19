@@ -1,19 +1,21 @@
 "use strict";
 
-const fs = require("node:fs");
-const path = require("node:path");
-
-// ponytail: both specifiers are computed, so bundlers (vite/rolldown dep scan) cannot
-// follow the require into the binary and choke on it. Keep them computed.
-const devBuild = path.join(__dirname, "ployz-sdk.node"); // scripts/check-sdk-package.sh, tests
+// ponytail: specifiers are computed so bundlers cannot follow require into the
+// .node binary. Nitro/Vinxi emit this file as ESM without CJS module globals.
+const localBinding = [".", "ployz-sdk.node"].join("/"); // scripts/check-sdk-package.sh, tests
 const bindingPackage = `@ployz/sdk-${process.platform}-${process.arch}`;
 let native;
-try {
-  native = require(fs.existsSync(devBuild) ? devBuild : bindingPackage);
-} catch (error) {
-  if (error.code !== "MODULE_NOT_FOUND") {
-    throw error;
+for (const specifier of [localBinding, bindingPackage]) {
+  try {
+    native = require(specifier);
+    break;
+  } catch (error) {
+    if (error.code !== "MODULE_NOT_FOUND") {
+      throw error;
+    }
   }
+}
+if (!native) {
   throw new Error(
     `@ployz/sdk has no native binding for ${process.platform}-${process.arch}: install ${bindingPackage}`,
   );

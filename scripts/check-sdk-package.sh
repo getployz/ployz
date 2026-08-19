@@ -58,6 +58,12 @@ if (!fs.existsSync(browserPath)) {
 }
 
 const sdk = require("@ployz/sdk");
+const loader = fs.readFileSync(require.resolve("@ployz/sdk"), "utf8");
+if (/\b__dirname\b|\b__filename\b/.test(loader)) {
+  throw new Error(
+    "@ployz/sdk must not use __dirname/__filename (Nitro ESM wrap does not define them)",
+  );
+}
 if (typeof sdk.packageName !== "function") {
   throw new Error("packageName export is missing");
 }
