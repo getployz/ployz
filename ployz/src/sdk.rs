@@ -1,7 +1,7 @@
-//! Relay-only Cloud session: connect, about, runtime.watch, preview, run,
-//! preview_project_removal, remove_volumes, Data Loss for Machine, Project,
-//! and Cluster destroy, remove_machine, destroy_project, destroy_cluster, and
-//! close.
+//! Relay-only Cloud session: connect, list_held, register, revoke_pairing,
+//! about, runtime.watch, preview, run, preview_project_removal, remove_volumes,
+//! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
+//! destroy_project, destroy_cluster, and close.
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,8 +19,8 @@ use ployz_core::{
     ClusterTeardown, ContractDescription, DataLoss, DeployEvent, DeployOutcome,
     DescribeContractRequest, DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId,
     MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
-    RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, op,
+    RUNTIME_WATCH_CAPABILITY, RegisterRequest, Registered, RemoveVolumesRequest, RpcError,
+    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
 struct SessionInner {
@@ -87,6 +87,35 @@ pub async fn connect(
             cancel: CancellationToken::new(),
         }),
     })
+}
+
+/// Dial a held Machine, send Machine RPC Register, then close.
+///
+/// Same Dial tuple as [`connect`]. Callers never see the session.
+///
+/// # Errors
+///
+/// Returns a generated [`RpcError`] when the bearer, pairing, or Machine ID is
+/// rejected, when the Relay or inner RPC channel fails, or when Machine RPC
+/// Register fails.
+pub async fn register(
+    relay_url: &str,
+    bearer: &str,
+    pairing: &str,
+    machine_id: &str,
+    identity: RegisterRequest,
+) -> Result<Registered, RpcError> {
+    let session = connect(relay_url, bearer, pairing, machine_id).await?;
+    let result = async {
+        let mut client = session.client().await?;
+        client
+            .call::<op::Register>(identity, None)
+            .await
+            .map_err(RpcError::from)
+    }
+    .await;
+    session.close().await;
+    result
 }
 
 /// List Machines currently holding Register for this pairing.

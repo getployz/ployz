@@ -73,6 +73,15 @@ if (sdk.packageName() !== "@ployz/sdk") {
 if (typeof sdk.connect !== "function") {
   throw new Error("connect export is missing");
 }
+if (typeof sdk.listHeld !== "function") {
+  throw new Error("listHeld export is missing");
+}
+if (typeof sdk.register !== "function") {
+  throw new Error("register export is missing");
+}
+if (typeof sdk.revokePairing !== "function") {
+  throw new Error("revokePairing export is missing");
+}
 if (typeof sdk.Client !== "function") {
   throw new Error("Client export is missing");
 }
@@ -87,6 +96,7 @@ const forbidden = [
   "connectSsh",
   "connectUnix",
   "connectSSH",
+  "connectHeld",
 ];
 for (const name of forbidden) {
   if (Object.hasOwn(sdk, name)) {
@@ -97,6 +107,15 @@ for (const name of forbidden) {
 const dts = fs.readFileSync(require.resolve("@ployz/sdk/index.d.ts"), "utf8");
 if (!dts.includes("export declare function connect")) {
   throw new Error("index.d.ts is missing connect");
+}
+if (!dts.includes("export declare function listHeld")) {
+  throw new Error("index.d.ts is missing listHeld");
+}
+if (!dts.includes("export declare function register")) {
+  throw new Error("index.d.ts is missing register");
+}
+if (!dts.includes("RegisterRequest") || !dts.includes("Registered")) {
+  throw new Error("index.d.ts is missing RegisterRequest / Registered");
 }
 if (!dts.includes("about(): Promise<ContractDescription>")) {
   throw new Error("index.d.ts is missing about()");
@@ -128,7 +147,7 @@ if (!dts.includes("readonly runtime:")) {
 if (!dts.includes("watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>")) {
   throw new Error("index.d.ts is missing runtime.watch()");
 }
-for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watchRuntime"]) {
+for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watchRuntime", "connectHeld"]) {
   if (dts.includes(needle)) {
     throw new Error(`index.d.ts must not declare ${needle}`);
   }
@@ -141,6 +160,9 @@ if (typeof sdk.Client.prototype.run !== "function") {
 }
 if (typeof sdk.Client.prototype.deploy !== "undefined") {
   throw new Error("Client.deploy must not exist");
+}
+if (typeof sdk.Client.prototype.register !== "undefined") {
+  throw new Error("Client.register must not exist");
 }
 if (typeof sdk.applyAll !== "function" || typeof sdk.applyOne !== "function") {
   throw new Error("applyAll / applyOne must be exported");

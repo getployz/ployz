@@ -15,6 +15,8 @@ import type {
   PartialResult,
   PlanOptions,
   ProjectName,
+  RegisterRequest,
+  Registered,
   RemoveVolumesRequest,
   RequestedServiceSpec,
   RpcError,
@@ -58,6 +60,13 @@ export declare function listHeld(
   bearer: string,
   pairing: string,
 ): Promise<HeldRegister[]>;
+export declare function register(
+  relayUrl: string,
+  bearer: string,
+  pairing: string,
+  machineId: MachineId,
+  identity: RegisterRequest,
+): Promise<Registered>;
 export declare function revokePairing(
   relayUrl: string,
   bearer: string,

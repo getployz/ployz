@@ -20,13 +20,14 @@ use ployz_core::{
     MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
     ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
     Placement, PlanOptions, PortPublication, PreDeployHook, PreservedVolume, ProjectName,
-    PruneRefusal, PullPolicy, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy,
-    RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds,
-    SelectedEndpoint, ServiceAttempt, ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode,
-    ServiceMount, ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig,
-    UpdateOrder, VolumeDriver, VolumeSource, WireGuardPublicKey,
+    PruneRefusal, PullPolicy, RegisterRequest, Registered, RemoveVolumesRequest,
+    ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
+    ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver,
+    VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -78,6 +79,8 @@ pub fn fixtures() -> BTreeMap<String, Value> {
         }),
     );
     fixtures.insert("cluster_teardown".into(), to_value(&cluster_teardown()));
+    fixtures.insert("register_request".into(), to_value(&register_request()));
+    fixtures.insert("registered".into(), to_value(&registered()));
     fixtures.insert(
         "docker_volume_unknown_fields".into(),
         with_unknown_field(to_value(&docker_volume()), "quota_bytes", json!(1)),
@@ -299,6 +302,8 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
             to_value(&machine_observation.machine.runtime),
         ),
         ("Machine", to_value(&machine_observation.machine)),
+        ("RegisterRequest", to_value(&register_request())),
+        ("Registered", to_value(&registered())),
         ("RttStatistics", to_value(rtt)),
         ("MachineObservation", to_value(machine_observation)),
         ("ContainerObservation", to_value(container)),
@@ -1161,6 +1166,30 @@ fn cluster_teardown() -> ClusterTeardown {
             omissions: Vec::new(),
         },
         pairing_revoked: true,
+    }
+}
+
+fn register_request() -> RegisterRequest {
+    RegisterRequest {
+        name: MachineName::parse("joiner").expect("fixture Machine Name is valid"),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint(endpoint())],
+        runtime: MachineRuntime::default(),
+    }
+}
+
+fn registered() -> Registered {
+    let assigned = runtime_watch_frame()
+        .machines
+        .into_iter()
+        .next()
+        .expect("RuntimeWatchFrame fixture includes a Machine Observation")
+        .machine;
+    Registered {
+        assigned_machine: assigned.clone(),
+        visible_peers: vec![assigned],
+        target_versions: BTreeMap::from([("machines".into(), 1)]),
     }
 }
 

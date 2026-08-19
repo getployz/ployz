@@ -45,8 +45,8 @@ pub fn artifacts() -> Artifacts {
 
 /// Write generated files under the napi package root.
 ///
-/// Façade declarations (`connect` / `about` / `preview` /
-/// `previewProjectRemoval` / `run` / `removeVolumes` /
+/// Façade declarations (`connect` / `listHeld` / `register` / `revokePairing` /
+/// `about` / `preview` / `previewProjectRemoval` / `run` / `removeVolumes` /
 /// `dataLossIfMachineRemoved` / `removeMachine` /
 /// `dataLossIfProjectDestroyed` / `destroyProject` /
 /// `dataLossIfClusterDestroyed` / `destroyCluster` / `close`) live in handwritten

@@ -486,6 +486,20 @@ export type Machine = Additive<{
   runtime: MachineRuntime;
 }>;
 
+export type RegisterRequest = Additive<{
+  name: MachineName;
+  public_key: WireGuardPublicKey;
+  public_ip?: string;
+  advertised_endpoints: AdvertisedEndpoint[];
+  runtime: MachineRuntime;
+}>;
+
+export type Registered = Additive<{
+  assigned_machine: Machine;
+  visible_peers: Machine[];
+  target_versions: { readonly [key: string]: number };
+}>;
+
 export type RttStatistics = Additive<{
   median_ns: number;
   population_stddev_ns: number;

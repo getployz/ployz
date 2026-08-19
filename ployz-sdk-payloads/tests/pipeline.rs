@@ -144,6 +144,23 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert_eq!(teardown.machines.successes.len(), 1);
     assert_eq!(teardown.machines.failures.len(), 1);
 
+    let identity: ployz_core::RegisterRequest =
+        decode_fixture(fixture(&fixtures, "register_request"));
+    assert_eq!(identity.name.as_str(), "joiner");
+    assert_eq!(
+        serde_json::to_value(&identity).unwrap(),
+        *fixture(&fixtures, "register_request")
+    );
+
+    let registered: ployz_core::Registered = decode_fixture(fixture(&fixtures, "registered"));
+    assert_eq!(registered.assigned_machine.name.as_str(), "edge");
+    assert_eq!(registered.visible_peers.len(), 1);
+    assert_eq!(registered.target_versions.get("machines"), Some(&1));
+    assert_eq!(
+        serde_json::to_value(&registered).unwrap(),
+        *fixture(&fixtures, "registered")
+    );
+
     let encoded = fixture(&fixtures, "partial_result");
     let successes = encoded
         .get("successes")
@@ -481,7 +498,13 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type RuntimeWatchFrame = Additive<{"));
     assert!(dts.contains("incomplete_ids: RuntimeWatchIncompleteIds"));
     assert!(dts.contains("hosted_dns_hostname?: string"));
-    assert!(dts.contains("export type MachineObservation = Additive<{"));
+    assert!(dts.contains("export type Machine = Additive<{"));
+    assert!(dts.contains("export type RegisterRequest = Additive<{"));
+    assert!(dts.contains("public_key: WireGuardPublicKey"));
+    assert!(dts.contains("export type Registered = Additive<{"));
+    assert!(dts.contains("assigned_machine: Machine"));
+    assert!(dts.contains("visible_peers: Machine[]"));
+    assert!(dts.contains("target_versions: { readonly [key: string]: number }"));
     assert!(dts.contains("export type ContainerObservation = Additive<{"));
     assert!(dts.contains("export type ServiceObservation = Additive<{"));
     assert!(dts.contains("export type RttStatistics = Additive<{"));
@@ -534,9 +557,16 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("DataLoss"));
     assert!(dts.contains("LocalMachineRemoved"));
     assert!(dts.contains("ClusterTeardown"));
+    assert!(dts.contains("RegisterRequest"));
+    assert!(dts.contains("Registered"));
     assert!(dts.contains("RuntimeWatchFrame"));
     assert!(dts.contains("export * from \"./generated/payloads\""));
     assert!(dts.contains("export declare function connect"));
+    assert!(dts.contains("export declare function listHeld"));
+    assert!(dts.contains("export declare function register("));
+    assert!(dts.contains("identity: RegisterRequest"));
+    assert!(dts.contains("Promise<Registered>"));
+    assert!(!dts.contains("connectHeld"));
     assert!(dts.contains("relayUrl: string"));
     assert!(dts.contains("bearer: string"));
     assert!(dts.contains("machineId: MachineId"));

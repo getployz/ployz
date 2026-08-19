@@ -934,6 +934,30 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "RegisterRequest",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("name", "MachineName"),
+                ("public_key", "WireGuardPublicKey"),
+                ("public_ip", "string?"),
+                ("advertised_endpoints", "AdvertisedEndpoint[]"),
+                ("runtime", "MachineRuntime"),
+            ],
+        },
+    ),
+    (
+        "Registered",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("assigned_machine", "Machine"),
+                ("visible_peers", "Machine[]"),
+                ("target_versions", "{ readonly [key: string]: number }"),
+            ],
+        },
+    ),
+    (
         "RttStatistics",
         Shape::Additive {
             params: "",

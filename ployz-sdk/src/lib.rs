@@ -1,15 +1,17 @@
 //! Napi package `@ployz/sdk`. Public payloads are generated from Rust.
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / about / runtime.watch / preview / run /
-//! previewProjectRemoval / remove_volumes / dataLossIfMachineRemoved /
-//! removeMachine / dataLossIfProjectDestroyed / destroyProject /
-//! dataLossIfClusterDestroyed / destroyCluster / close.
+//! The handwritten façade is connect / listHeld / register / revokePairing /
+//! about / runtime.watch / preview / run / previewProjectRemoval /
+//! remove_volumes / dataLossIfMachineRemoved / removeMachine /
+//! dataLossIfProjectDestroyed / destroyProject / dataLossIfClusterDestroyed /
+//! destroyCluster / close.
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
 use ployz_core::{
-    DataLoss, DeployIntent, ProjectName, RemoveVolumesRequest, RpcError, RpcErrorCode,
+    DataLoss, DeployIntent, ProjectName, RegisterRequest, RemoveVolumesRequest, RpcError,
+    RpcErrorCode,
 };
 
 /// npm package name.
@@ -428,6 +430,30 @@ pub async fn connect(options: ConnectOptions) -> Result<Client> {
     Ok(Client { inner })
 }
 
+/// Dial a held Machine, send Machine RPC Register, then close.
+///
+/// Same Dial tuple as [`connect`]. Callers never see the session.
+///
+/// # Errors
+///
+/// Returns a generated [`RpcError`] JSON payload when the Dial Credential,
+/// pairing, or Machine ID is rejected, when `identity` is not Register request
+/// data, or when Machine RPC Register fails.
+#[napi]
+pub async fn register(
+    relay_url: String,
+    bearer: String,
+    pairing: String,
+    machine_id: String,
+    identity: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let identity = parse_register(identity)?;
+    let registered = sdk::register(&relay_url, &bearer, &pairing, &machine_id, identity)
+        .await
+        .map_err(rpc_to_napi)?;
+    serde_json::to_value(&registered).map_err(|error| Error::from_reason(error.to_string()))
+}
+
 /// List Machines currently holding Register for this pairing.
 ///
 /// # Errors
@@ -474,12 +500,18 @@ fn volume_fate(destroy_volumes: bool) -> ployz::deploy::VolumeFate {
 }
 
 fn parse_intent(intent: serde_json::Value) -> Result<DeployIntent> {
-    serde_json::from_value(intent).map_err(|error| {
-        rpc_to_napi(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: error.to_string(),
-            details: serde_json::Value::Null,
-        })
+    serde_json::from_value(intent).map_err(invalid_json)
+}
+
+fn parse_register(identity: serde_json::Value) -> Result<RegisterRequest> {
+    serde_json::from_value(identity).map_err(invalid_json)
+}
+
+fn invalid_json(error: serde_json::Error) -> Error {
+    rpc_to_napi(RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message: error.to_string(),
+        details: serde_json::Value::Null,
     })
 }
 

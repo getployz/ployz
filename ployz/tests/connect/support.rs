@@ -19,9 +19,9 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
     DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachineRemoved, Machine, MachineId,
     MachineList, MachineName, MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RemoveMachineRequest,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
-    VolumeList, VolumeRemoved, WireGuardPublicKey, op,
+    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered,
+    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeList, VolumeRemoved, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -138,6 +138,7 @@ pub(super) struct DiscoveryService {
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
+    register_error: Arc<Mutex<Option<RpcError>>>,
 }
 
 impl DiscoveryService {
@@ -157,7 +158,12 @@ impl DiscoveryService {
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
+            register_error: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(super) fn set_register_error(&self, error: RpcError) {
+        *self.register_error.lock().unwrap() = Some(error);
     }
 
     pub(super) fn emit_watch_frame_on_open(&self, frame: RuntimeWatchFrame) {
@@ -276,9 +282,42 @@ impl MachineRpc for DiscoveryService {
 
     async fn register(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        if let Some(error) = self.register_error.lock().unwrap().clone() {
+            return Ok(Response::new(RpcResponse::from(error).encode().unwrap()));
+        }
+        let RpcRequestBody::Register(body) = request.body else {
+            return Err(Status::invalid_argument("expected Register"));
+        };
+        let assigned_machine = Machine {
+            id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+            name: body.name,
+            subnet: "10.210.1.0/24".parse().unwrap(),
+            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
+            public_key: body.public_key,
+            public_ip: body.public_ip,
+            advertised_endpoints: body.advertised_endpoints,
+            runtime: body.runtime,
+        };
+        let visible_peers = self
+            .machines
+            .iter()
+            .map(|observation| observation.machine.clone())
+            .collect();
+        Ok(Response::new(
+            RpcResponse::from(Registered {
+                assigned_machine,
+                visible_peers,
+                target_versions: BTreeMap::new(),
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn join(
