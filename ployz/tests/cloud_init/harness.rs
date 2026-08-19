@@ -5,7 +5,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -16,7 +16,8 @@ use ployz_core::{
     InitializeRequest, Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine,
     MachineDetails, MachineId, MachineName, MachineRpc, MachineRpcServer, MachineToken,
     ManagementAddress, OpaquePayload, PROTOCOL_MAJOR, PairingCredential, Registered,
-    ReserveDomainRequest, RpcRequestBody, RpcResponse, WireGuardPublicKey,
+    ReserveDomainRequest, ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    WireGuardPublicKey,
 };
 use ployz_relay::{
     AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, RegisterRequest, Relay,
@@ -54,6 +55,12 @@ impl RelayListen {
             url: format!("http://{address}"),
             _server: server,
         }
+    }
+
+    pub async fn revoke(&self, pairing: &str) {
+        sdk::revoke_pairing(&self.url, DIAL, pairing)
+            .await
+            .expect("test Relay accepts Dial revoke");
     }
 }
 
@@ -172,8 +179,9 @@ struct JoinInner {
     registration: Registered,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
-    initialize_request: Mutex<Option<InitializeRequest>>,
+    initialize_requests: Mutex<Vec<InitializeRequest>>,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
+    resets: AtomicUsize,
     _register: Mutex<Option<mpsc::Sender<RegisterRequest>>>,
 }
 
@@ -184,8 +192,9 @@ impl JoinDaemon {
                 registration,
                 joined: AtomicBool::new(false),
                 join_request: Mutex::new(None),
-                initialize_request: Mutex::new(None),
+                initialize_requests: Mutex::new(Vec::new()),
                 reserve_request: Mutex::new(None),
+                resets: AtomicUsize::new(0),
                 _register: Mutex::new(None),
             }),
         }
@@ -201,12 +210,18 @@ impl JoinDaemon {
     }
 
     pub fn initialize_request(&self) -> InitializeRequest {
-        self.inner
-            .initialize_request
-            .lock()
-            .unwrap()
-            .clone()
+        self.initialize_requests()
+            .last()
+            .cloned()
             .expect("Initialize was called")
+    }
+
+    pub fn initialize_requests(&self) -> Vec<InitializeRequest> {
+        self.inner.initialize_requests.lock().unwrap().clone()
+    }
+
+    pub fn reset_count(&self) -> usize {
+        self.inner.resets.load(Ordering::SeqCst)
     }
 
     pub fn reserve_request(&self) -> Option<ReserveDomainRequest> {
@@ -316,7 +331,7 @@ impl MachineRpc for JoinDaemon {
             &join.registration.assigned_machine.id,
             &self.inner._register,
         )
-        .await;
+        .await?;
         *self.inner.join_request.lock().unwrap() = Some(join);
         self.inner.joined.store(true, Ordering::SeqCst);
         rpc_ok(JoinAccepted {})
@@ -339,15 +354,25 @@ impl MachineRpc for JoinDaemon {
             .ok_or_else(|| Status::invalid_argument("Initialize must persist Cloud Pairing"))?;
         let mut machine = self.inner.registration.assigned_machine.clone();
         machine.name = init.name.clone();
-        hold_register(
+        self.inner.initialize_requests.lock().unwrap().push(init);
+        self.inner.joined.store(true, Ordering::SeqCst);
+        if let Err(status) = hold_register(
             pairing.relay_url(),
             pairing.secret(),
             &machine.id,
             &self.inner._register,
         )
-        .await;
-        *self.inner.initialize_request.lock().unwrap() = Some(init);
-        self.inner.joined.store(true, Ordering::SeqCst);
+        .await
+        {
+            if status.code() == tonic::Code::Unauthenticated {
+                return rpc_ok(RpcError {
+                    code: RpcErrorCode::Unauthenticated,
+                    message: status.message().to_owned(),
+                    details: serde_json::Value::Null,
+                });
+            }
+            return Err(status);
+        }
         rpc_ok(Initialized { machine })
     }
     async fn register(
@@ -484,7 +509,10 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        self.inner.resets.fetch_add(1, Ordering::SeqCst);
+        self.inner.joined.store(false, Ordering::SeqCst);
+        *self.inner._register.lock().unwrap() = None;
+        rpc_ok(ResetAccepted {})
     }
     async fn update_machine(
         &self,
@@ -552,7 +580,7 @@ async fn hold_register(
     pairing: &PairingCredential,
     machine_id: &MachineId,
     slot: &Mutex<Option<mpsc::Sender<RegisterRequest>>>,
-) {
+) -> Result<(), Status> {
     let channel = Endpoint::from_shared(url.to_owned())
         .unwrap()
         .connect_timeout(Duration::from_secs(5))
@@ -567,7 +595,7 @@ async fn hold_register(
         AUTHORIZATION_METADATA,
         MetadataValue::try_from(format!("Bearer {}", pairing.as_str())).unwrap(),
     );
-    let mut opens = relay.register(request).await.unwrap().into_inner();
+    let mut opens = relay.register(request).await?.into_inner();
     let pong = tx.clone();
     tokio::spawn(async move {
         while let Some(Ok(message)) = opens.next().await {
@@ -577,12 +605,13 @@ async fn hold_register(
         }
     });
     *slot.lock().unwrap() = Some(tx);
+    Ok(())
 }
 
-pub async fn wait_for_held(url: &str, machine_id: MachineId) {
+pub async fn wait_for_held(url: &str, pairing: &str, machine_id: MachineId) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        let listed = sdk::list_held(url, DIAL, PAIRING).await.unwrap();
+        let listed = sdk::list_held(url, DIAL, pairing).await.unwrap();
         if listed
             .iter()
             .any(|row| row.machine_id().ok() == Some(machine_id) && row.register_rtt_ns.is_some())
@@ -595,6 +624,17 @@ pub async fn wait_for_held(url: &str, machine_id: MachineId) {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+pub async fn assert_not_held(url: &str, pairing: &str, machine_id: MachineId) {
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let listed = sdk::list_held(url, DIAL, pairing).await.unwrap();
+    assert!(
+        listed
+            .iter()
+            .all(|row| row.machine_id().ok() != Some(machine_id)),
+        "Machine must stay off List for revoked pairing, got {listed:?}"
+    );
 }
 
 pub fn registration() -> Registered {
