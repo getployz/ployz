@@ -2220,6 +2220,7 @@ dependencies = [
  "netlink-packet-wireguard",
  "ployz",
  "ployz-core",
+ "ployz-relay",
  "ployz-testkit",
  "rcgen",
  "reqwest",

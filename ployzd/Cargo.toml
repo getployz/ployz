@@ -24,6 +24,7 @@ http-body-util = "0.1.5"
 instant-acme = "0.8.5"
 ipnet = "2.12.1"
 ployz-core.workspace = true
+ployz-relay.workspace = true
 rcgen = "0.14.6"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls", "stream"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
