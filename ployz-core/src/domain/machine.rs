@@ -386,6 +386,9 @@ impl MembershipObservation {
     }
 }
 
+/// Rejection when a Cloud response tries to hand a Machine a Dial Credential.
+pub const DIAL_IN_PAIRING: &str = "Cloud Pairing must not carry a Dial Credential";
+
 /// Cluster-scoped grant of a Cloud Relay endpoint and Pairing Credential.
 ///
 /// Absence means no Machine dials Relay. The Dial Credential is not a field
@@ -397,11 +400,15 @@ pub struct CloudPairing {
     secret: PairingCredential,
 }
 
+/// Cloud deploys ahead of installed CLIs, so unknown fields are ignored. A
+/// `dial` field is still refused by name: a Machine never holds Dial.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct CloudPairingWire {
     relay_url: String,
     secret: PairingCredential,
+    #[serde(default)]
+    dial: Option<de::IgnoredAny>,
 }
 
 impl CloudPairing {
@@ -441,6 +448,9 @@ impl CloudPairing {
 impl<'de> Deserialize<'de> for CloudPairing {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = CloudPairingWire::deserialize(deserializer)?;
+        if wire.dial.is_some() {
+            return Err(de::Error::custom(DIAL_IN_PAIRING));
+        }
         Self::parse(wire.relay_url, wire.secret).map_err(de::Error::custom)
     }
 }
@@ -482,7 +492,18 @@ mod cloud_pairing_tests {
             "dial": "dial-credential",
         }))
         .unwrap_err();
-        assert!(error.to_string().contains("unknown field"), "{error}");
+        assert!(error.to_string().contains(DIAL_IN_PAIRING), "{error}");
+    }
+
+    #[test]
+    fn cloud_pairing_ignores_fields_the_cloud_adds_later() {
+        let parsed = serde_json::from_value::<CloudPairing>(json!({
+            "relayUrl": "https://relay.example.invalid",
+            "secret": "pairing-secret",
+            "privateRelayUrl": "http://relay.railway.internal",
+        }))
+        .unwrap();
+        assert_eq!(parsed, pairing());
     }
 
     #[test]

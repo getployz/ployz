@@ -27,6 +27,8 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("enroll HTTP {status}: {body}")]
     Status { status: u16, body: String },
+    #[error("Cloud response must not carry a Dial Credential")]
+    DialOffered,
 }
 
 impl Error {
@@ -90,12 +92,16 @@ pub(crate) enum Response {
     NotYet { retry_after: Duration },
 }
 
+/// Cloud deploys ahead of installed CLIs, so unknown fields are ignored. A
+/// `dial` field is still refused by name: a Machine never holds Dial.
 #[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 enum EnrollWire {
     Join {
         pairing: CloudPairing,
         registration: Box<Registered>,
+        #[serde(default)]
+        dial: Option<serde::de::IgnoredAny>,
     },
     NotYet {
         #[serde(default, rename = "retryAfter")]
@@ -103,6 +109,8 @@ enum EnrollWire {
     },
     Initialize {
         pairing: CloudPairing,
+        #[serde(default)]
+        dial: Option<serde::de::IgnoredAny>,
     },
 }
 
@@ -211,9 +219,13 @@ async fn post_json(
 
 fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
     match serde_json::from_slice::<EnrollWire>(bytes)? {
+        EnrollWire::Join { dial: Some(_), .. } | EnrollWire::Initialize { dial: Some(_), .. } => {
+            Err(Error::DialOffered)
+        }
         EnrollWire::Join {
             pairing,
             registration,
+            dial: None,
         } => Ok(Response::Join(Box::new(Join {
             pairing,
             registration: *registration,
@@ -221,7 +233,10 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
         EnrollWire::NotYet { retry_after } => Ok(Response::NotYet {
             retry_after: Duration::from_secs(retry_after.unwrap_or(DEFAULT_RETRY_AFTER)),
         }),
-        EnrollWire::Initialize { pairing } => Ok(Response::Initialize { pairing }),
+        EnrollWire::Initialize {
+            pairing,
+            dial: None,
+        } => Ok(Response::Initialize { pairing }),
     }
 }
 
@@ -307,7 +322,7 @@ mod tests {
             "registration": registration(),
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("unknown field"), "{error}");
+        assert!(error.to_string().contains("Dial Credential"), "{error}");
     }
 
     #[test]
@@ -322,7 +337,7 @@ mod tests {
             "dial": "dial-credential",
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("unknown field"), "{error}");
+        assert!(error.to_string().contains("Dial Credential"), "{error}");
     }
 
     #[test]
@@ -353,7 +368,7 @@ mod tests {
             },
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("unknown field"), "{error}");
+        assert!(error.to_string().contains("Dial Credential"), "{error}");
     }
 
     #[test]
@@ -373,6 +388,28 @@ mod tests {
             panic!("expected not_yet");
         };
         assert_eq!(retry_after, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn enroll_ignores_fields_the_cloud_adds_later() {
+        let Response::NotYet { retry_after } = parse_enroll(
+            br#"{"kind":"not_yet","retryAfter":5,"claimExpiresAt":"2026-08-19T22:58:13.733Z"}"#,
+        )
+        .unwrap() else {
+            panic!("expected not_yet");
+        };
+        assert_eq!(retry_after, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn initialize_ignores_fields_the_cloud_adds_later() {
+        let Response::Initialize { pairing: parsed } = parse_enroll(
+            br#"{"kind":"initialize","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret","privateRelayUrl":"http://relay.internal"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#,
+        )
+        .unwrap() else {
+            panic!("expected initialize");
+        };
+        assert_eq!(parsed, pairing());
     }
 
     fn identity() -> EnrollIdentity {
