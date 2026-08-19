@@ -1928,13 +1928,13 @@ dependencies = [
  "http-auth",
  "jsonwebtoken",
  "lazy_static",
- "oci-spec 0.9.0",
+ "oci-spec",
  "olpc-cjson",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -1946,23 +1946,6 @@ name = "oci-spec"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8445a2631507cec628a15fdd6154b54a3ab3f20ed4fe9d73a3b8b7a4e1ba03a"
-dependencies = [
- "const_format",
- "derive_builder",
- "getset",
- "regex",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "oci-spec"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3df6f876ad774d6a676f7e968f5c3edacc32f90e65fe680a8b686235396556fb"
 dependencies = [
  "const_format",
  "derive_builder",
@@ -2123,10 +2106,10 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "futures-util",
+ "hex",
  "http",
  "hyper-util",
  "oci-client",
- "oci-spec 0.10.0",
  "ployz-core",
  "ployz-relay",
  "ployz-testkit",
@@ -2135,7 +2118,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
- "sha2 0.10.9",
+ "sha2",
  "shell-words",
  "thiserror 2.0.20",
  "tokio",
@@ -2210,7 +2193,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 2.0.20",
  "time",
  "tokio",
@@ -2230,6 +2213,7 @@ dependencies = [
  "defguard_wireguard_rs",
  "fs2",
  "futures-util",
+ "hex",
  "hickory-server",
  "http",
  "http-body",
@@ -2247,7 +2231,7 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "shell-words",
  "thiserror 2.0.20",
  "tokio",
@@ -2898,17 +2882,6 @@ name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
-]
-
-[[package]]
-name = "sha2"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",

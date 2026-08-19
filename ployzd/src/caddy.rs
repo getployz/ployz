@@ -1,4 +1,5 @@
 use chrono::{SecondsFormat, Utc};
+use hex::encode as hex_encode;
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, Machine, MachineId,
     PortPublication, QualifiedService, ServiceContainer, ServiceName, hostname_owners,
@@ -277,7 +278,7 @@ fn certificate_file_stem(hostname: &IngressHost, material: &CertificateMaterial)
     digest.update(material.certificate().as_bytes());
     digest.update((material.private_key().len() as u64).to_le_bytes());
     digest.update(material.private_key().as_bytes());
-    format!("{hostname}-{:x}", digest.finalize())
+    format!("{hostname}-{}", hex_encode(digest.finalize()))
 }
 
 fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {

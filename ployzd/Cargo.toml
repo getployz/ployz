@@ -18,6 +18,7 @@ netlink-packet-wireguard = "=0.2.3"
 fs2 = "0.4.3"
 futures-util = { version = "0.3.34", features = ["sink"] }
 hickory-server = "0.26.1"
+hex = "0.4.3"
 http = "1.4.0"
 http-body = "1.1.0"
 http-body-util = "0.1.5"
@@ -31,7 +32,7 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 sd-notify = "0.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 shell-words = "1.1.1"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

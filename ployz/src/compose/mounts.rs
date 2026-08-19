@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use hex::encode as hex_encode;
 use ployz_core::{
     ContainerPath, DockerVolumeName, MachinePath, ServiceMount, ServiceVolume,
     ServiceVolumeReference, VolumeDriver, VolumeSource,
@@ -170,5 +171,5 @@ pub(super) fn relative_bind_source(service: &RawService) -> Option<&str> {
 }
 
 fn sha256(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    hex_encode(Sha256::digest(value.as_bytes()))
 }

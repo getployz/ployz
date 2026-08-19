@@ -5,7 +5,7 @@ use std::{
     process::{Output, Stdio},
 };
 
-use oci_spec::distribution::Reference;
+use oci_client::Reference;
 use ployz_core::{
     EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason,
     ListMachinesRequest, Machine, MachineFailure, MachineId, MachineImages, MachineSuccess,

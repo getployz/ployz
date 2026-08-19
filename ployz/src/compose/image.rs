@@ -2,7 +2,7 @@ use std::{path::Path, process::Command};
 
 use chrono::{DateTime, Local, TimeZone as _, Utc};
 use chrono_tz::Tz;
-use oci_spec::distribution::Reference;
+use oci_client::Reference;
 
 use super::{convert::invalid, model::ComposeError};
 

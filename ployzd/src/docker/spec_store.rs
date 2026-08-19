@@ -8,6 +8,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use hex::encode as hex_encode;
 use ployz_core::{ConfigMount, ConfigSpec, ContainerId, ResolvedServiceSpec};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -190,7 +191,7 @@ fn config_identity(
     digest.update(uid.to_le_bytes());
     digest.update(gid.to_le_bytes());
     digest.update(mode.to_le_bytes());
-    Ok((format!("{:x}", digest.finalize()), uid, gid, mode))
+    Ok((hex_encode(digest.finalize()), uid, gid, mode))
 }
 
 fn config_directory(database: &Path) -> Result<PathBuf, Error> {
