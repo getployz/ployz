@@ -153,6 +153,11 @@ impl MachineService {
             Ok(record) => record.id(),
             Err(error) => return Err(error),
         };
+        match self.local.isolation_locked().await {
+            Ok(true) => return local_error(LocalMachineError::IsolationLocked),
+            Ok(false) => {}
+            Err(error) => return local_error(error),
+        }
         match replicated.steal_allocator(&me).await {
             Ok(()) => local_error(LocalMachineError::AllocatorNotQuiet),
             Err(error) => local_error(error.into()),
@@ -801,9 +806,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             message,
             details: Value::Null,
         }),
-        LocalMachineError::AllocatorNotQuiet | LocalMachineError::NotAllocator => {
-            respond(unavailable(&error.to_string()))
-        }
+        LocalMachineError::AllocatorNotQuiet
+        | LocalMachineError::NotAllocator
+        | LocalMachineError::IsolationLocked => respond(unavailable(&error.to_string())),
     }
 }
 

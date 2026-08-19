@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
+    io,
     net::Ipv6Addr,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -9,7 +11,8 @@ use ployz_core::{
     MachineRuntime, MachineSubnet, ManagementAddress, MembershipObservation, RegisterRequest,
     Registered, RpcError, RpcErrorCode, RpcResponseBody, WireGuardPublicKey, op,
 };
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, transport::Server};
@@ -610,6 +613,116 @@ async fn forwarded_rpc_metadata_admits_locally_only() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+#[tokio::test]
+async fn isolation_lock_refuses_admit_when_replica_exceeds_three_and_others_are_uncontactable() {
+    let (data_dir, store, founder) = open_store("ployzd-register-isolation-admit");
+    let (replicated, server) = fake_cluster::store().await;
+    replicated.publish_local_machine(&founder).await.unwrap();
+    publish_peers(&replicated, 3).await;
+    replicated
+        .publish_founder_allocator(&founder.id)
+        .await
+        .unwrap();
+    let (admin_server, admin, admin_root) = serve_membership(&[]).await;
+    let local = LocalMachine::new(store, watch::channel(false).0)
+        .with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
+    let error = local
+        .register(request("joiner", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LocalMachineError::IsolationLocked));
+    assert_eq!(replicated.machines().await.unwrap().observations.len(), 4);
+
+    admin_server.abort();
+    let _ = std::fs::remove_dir_all(admin_root);
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn isolation_lock_refuses_steal_when_replica_exceeds_three_and_others_are_uncontactable() {
+    let (data_dir, store, founder) = open_store("ployzd-register-isolation-steal");
+    let named = unreachable_allocator(MachineId::parse("c".repeat(32)).unwrap());
+    let (replicated, server) = fake_cluster::store().await;
+    replicated.publish_local_machine(&founder).await.unwrap();
+    replicated.publish_local_machine(&named).await.unwrap();
+    publish_peers(&replicated, 2).await;
+    replicated
+        .publish_founder_allocator(&named.id)
+        .await
+        .unwrap();
+    let (admin_server, admin, admin_root) = serve_membership(&[]).await;
+    let local = MachineService::with_cluster(
+        store,
+        watch::channel(false).0,
+        Some((replicated.clone(), AdminClient::new(&admin))),
+    )
+    .with_machine_api_port(1);
+
+    let error = rpc_register(
+        &local,
+        request("joiner", WireGuardPublicKey([7; 32])),
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(error.message, "this Machine is isolation-locked");
+    assert_eq!(
+        replicated
+            .allocator()
+            .await
+            .unwrap()
+            .map(|row| row.machine_id),
+        Some(named.id)
+    );
+    assert!(
+        replicated
+            .machines()
+            .await
+            .unwrap()
+            .observations
+            .iter()
+            .all(|machine| machine.name.as_str() != "joiner"),
+        "isolation must not steal or assign a Machine Subnet"
+    );
+    admin_server.abort();
+    let _ = std::fs::remove_dir_all(admin_root);
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn isolation_lock_does_not_fire_when_a_peer_is_still_up() {
+    let (data_dir, store, founder) = open_store("ployzd-register-isolation-split-admit");
+    let (replicated, cluster) = fake_cluster::store().await;
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let peers = publish_peers(&replicated, 3).await;
+    replicated
+        .publish_founder_allocator(&founder.id)
+        .await
+        .unwrap();
+    let visible = peers.first().expect("three peers");
+    let (admin_server, admin, admin_root) = serve_membership(&[(visible, "Alive")]).await;
+    let local = LocalMachine::new(store, watch::channel(false).0)
+        .with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
+
+    let registered = local
+        .register(request("joiner", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap();
+    assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
+
+    admin_server.abort();
+    let _ = std::fs::remove_dir_all(admin_root);
+    cluster.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 async fn participating() -> (
     LocalMachine,
     ReplicatedStore,
@@ -673,6 +786,76 @@ fn machine_service(
         Some(port) => service.with_machine_api_port(port),
         None => service,
     }
+}
+
+async fn publish_peers(replicated: &ReplicatedStore, count: usize) -> Vec<Machine> {
+    let mut peers = Vec::with_capacity(count);
+    for index in 0..count {
+        let seed = u8::try_from(index + 10).expect("peer seeds fit u8");
+        let machine = Machine {
+            id: MachineId::random(),
+            name: MachineName::parse(format!("peer-{seed}")).unwrap(),
+            subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+            management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
+            public_key: WireGuardPublicKey([seed; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint(
+                format!("192.0.2.{seed}:51820").parse().unwrap(),
+            )],
+            runtime: MachineRuntime::default(),
+        };
+        replicated.publish_local_machine(&machine).await.unwrap();
+        peers.push(machine);
+    }
+    peers
+}
+
+async fn serve_membership(
+    states: &[(&Machine, &'static str)],
+) -> (tokio::task::JoinHandle<()>, PathBuf, PathBuf) {
+    let states: Vec<_> = states
+        .iter()
+        .map(|&(machine, state)| (format!("[{}]:51001", machine.management_address.0), state))
+        .collect();
+    let root = std::env::temp_dir().join(format!("ployzd-register-admin-{}", MachineId::random()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("admin.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            if read_admin_frame(&mut stream).await.is_err() {
+                continue;
+            }
+            for (addr, state) in &states {
+                let payload = serde_json::json!({
+                    "Json": {"id": {"addr": addr}, "state": state}
+                });
+                if write_admin_frame(&mut stream, &serde_json::to_vec(&payload).unwrap())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            let _ = write_admin_frame(&mut stream, br#""Success""#).await;
+        }
+    });
+    (server, path, root)
+}
+
+async fn read_admin_frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
+    let length = stream.read_u32().await?;
+    let mut data = vec![0; length as usize];
+    stream.read_exact(&mut data).await?;
+    Ok(data)
+}
+
+async fn write_admin_frame(stream: &mut UnixStream, data: &[u8]) -> io::Result<()> {
+    stream.write_u32(data.len() as u32).await?;
+    stream.write_all(data).await
 }
 
 fn unreachable_allocator(id: MachineId) -> Machine {

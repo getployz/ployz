@@ -106,6 +106,8 @@ pub enum Error {
     AllocatorNotQuiet,
     #[error("this Machine is not the Allocator")]
     NotAllocator,
+    #[error("this Machine is isolation-locked")]
+    IsolationLocked,
 }
 
 impl LocalMachine {
@@ -316,12 +318,13 @@ impl LocalMachine {
     ///
     /// Returns [`Error::Store`] when endpoints are missing, [`Error::NotParticipating`]
     /// when this Machine is not participating, [`Error::ClusterStoreUnavailable`]
-    /// when the Cluster store is missing, [`Error::AllocatorNotQuiet`] when this
-    /// Machine is named Allocator but the row is younger than 5s,
-    /// [`Error::NotAllocator`] when the row names another Machine or is missing,
-    /// [`Error::DuplicateMachine`] when the name or public key already exists,
-    /// [`Error::Network`] when subnet allocation fails, and [`Error::Cluster`]
-    /// when replicated I/O fails.
+    /// when the Cluster store is missing, [`Error::IsolationLocked`] when the
+    /// machines replica is larger than three and every other Machine is
+    /// uncontactable, [`Error::AllocatorNotQuiet`] when this Machine is named
+    /// Allocator but the row is younger than 5s, [`Error::NotAllocator`] when
+    /// the row names another Machine or is missing, [`Error::DuplicateMachine`]
+    /// when the name or public key already exists, [`Error::Network`] when
+    /// subnet allocation fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
@@ -333,10 +336,38 @@ impl LocalMachine {
             }
             record.id()
         };
+        if self.isolation_locked().await? {
+            return Err(Error::IsolationLocked);
+        }
         match self.replicated()?.allocator().await? {
             Some(row) if row.machine_id == me => self.admit_local_register(request).await,
             _ => Err(Error::NotAllocator),
         }
+    }
+
+    /// Isolation lock: replica larger than three and every other Machine
+    /// uncontactable on Membership Observation. Mesh membership, not Relay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
+    /// and [`Error::Cluster`] when the machines replica cannot be read.
+    /// Unreadable Membership Observation does not lock.
+    pub(crate) async fn isolation_locked(&self) -> Result<bool, Error> {
+        let me = self.record()?.id();
+        let Some(cluster) = &self.cluster else {
+            return Err(Error::ClusterStoreUnavailable);
+        };
+        let machines = cluster.replicated.machines().await?.observations;
+        let Ok(states) = cluster.admin.membership_states().await else {
+            return Ok(false);
+        };
+        Ok(isolation_lock(
+            &me,
+            &machines,
+            &membership_states_by_address(states),
+        ))
     }
 
     async fn admit_local_register(&self, request: RegisterRequest) -> Result<Registered, Error> {
@@ -624,6 +655,20 @@ fn membership_states_by_address(
         .collect()
 }
 
+fn isolation_lock(
+    me: &MachineId,
+    machines: &[Machine],
+    states: &BTreeMap<ManagementAddress, MembershipObservation>,
+) -> bool {
+    machines.len() > 3
+        && machines.iter().all(|machine| {
+            machine.id == *me
+                || !states
+                    .get(&machine.management_address)
+                    .is_some_and(MembershipObservation::invites_rpc)
+        })
+}
+
 /// Associate one value per management address; duplicate addresses are dropped.
 fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTreeMap<IpAddr, T> {
     let mut identities = BTreeMap::new();
@@ -652,7 +697,10 @@ fn local_removal_response(
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{RuntimeWatchTelemetry, local_removal_response, read_admin, unique_identities};
+    use super::{
+        RuntimeWatchTelemetry, isolation_lock, local_removal_response, read_admin,
+        unique_identities,
+    };
     use crate::corrosion::AdminClient;
     use ployz_core::{
         AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
@@ -749,10 +797,47 @@ mod tests {
         assert_eq!(peer_row.rtt, None);
     }
 
+    #[test]
+    fn isolation_lock_ignores_replicas_of_three() {
+        let me = machine("edge", ENTRY_ID, 1);
+        let machines = [
+            me.clone(),
+            machine("peer", PEER_ID, 2),
+            machine("third", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3),
+        ];
+        assert!(!isolation_lock(&me.id, &machines, &BTreeMap::new()));
+    }
+
+    #[test]
+    fn isolation_lock_fires_when_every_other_machine_is_uncontactable() {
+        let [me, peer, third, fourth] = four_machines();
+        let machines = [me.clone(), peer, third, fourth];
+        assert!(isolation_lock(&me.id, &machines, &BTreeMap::new()));
+    }
+
+    #[test]
+    fn isolation_lock_does_not_fire_when_a_peer_invites_rpc() {
+        let [me, peer, third, fourth] = four_machines();
+        let machines = [me.clone(), peer.clone(), third, fourth];
+        let up = BTreeMap::from([(peer.management_address, MembershipObservation::Up)]);
+        let suspect = BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]);
+        assert!(!isolation_lock(&me.id, &machines, &up));
+        assert!(!isolation_lock(&me.id, &machines, &suspect));
+    }
+
     #[tokio::test]
     async fn missing_admin_socket_is_unavailable_telemetry() {
         let admin = AdminClient::new("/no/such/ployz-admin.sock");
         assert!(read_admin(&admin).await.is_none());
+    }
+
+    fn four_machines() -> [Machine; 4] {
+        [
+            machine("edge", ENTRY_ID, 1),
+            machine("peer", PEER_ID, 2),
+            machine("third", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3),
+            machine("fourth", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 4),
+        ]
     }
 
     fn machine(name: &str, id: &str, seed: u8) -> Machine {
