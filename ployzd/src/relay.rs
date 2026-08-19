@@ -1,12 +1,13 @@
 //! Cloud Relay Register client.
 
-use std::time::Duration;
+use std::{io, time::Duration};
 
-use ployz_core::MachineId;
-use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, PairingCredential, RegisterRequest};
+use ployz_core::{CloudPairing, MachineId, PairingCredential};
+use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, RegisterRequest};
 use thiserror::Error;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tokio_util::sync::CancellationToken;
 use tonic::{
     Request,
     metadata::MetadataValue,
@@ -48,7 +49,7 @@ pub async fn hold_register(
     let mut opens = relay.register(request).await?.into_inner();
     let task = tokio::spawn(async move {
         while let Some(Ok(message)) = opens.next().await {
-            // ponytail: Attach is #408
+            // ponytail: Attach is a later ticket
             if let Some(nonce) = message.ping_nonce() {
                 let _ = tx.send(RegisterRequest::pong(nonce)).await;
             }
@@ -61,6 +62,28 @@ impl Drop for RegisterHold {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// Hold Register for stored Cloud Pairing, or idle if none.
+///
+/// # Errors
+///
+/// If the Relay is unreachable or Register is rejected.
+pub(crate) async fn run(
+    pairing: Option<CloudPairing>,
+    machine_id: MachineId,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    let _hold = match pairing {
+        Some(pairing) => Some(
+            hold_register(pairing.relay_url(), pairing.secret(), &machine_id)
+                .await
+                .map_err(io::Error::other)?,
+        ),
+        None => None,
+    };
+    shutdown.cancelled().await;
+    Ok(())
 }
 
 async fn connect(url: &str) -> Result<Channel, tonic::transport::Error> {
@@ -82,16 +105,17 @@ fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &PairingCred
 mod tests {
     use std::{net::Ipv4Addr, time::Duration};
 
-    use ployz_core::MachineId;
+    use ployz_core::{CloudPairing, MachineId, PairingCredential};
     use ployz_relay::{
         AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, ListRequest, MACHINE_ID_METADATA,
-        PAIRING_METADATA, PairingCredential, Relay, RevokeRequest,
+        PAIRING_METADATA, Relay, RevokeRequest,
     };
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
+    use tokio_util::sync::CancellationToken;
     use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
-    use super::{Error, hold_register};
+    use super::{Error, hold_register, run};
 
     const PAIRING: &str = "pairing-secret";
     const DIAL: &str = "dial-secret";
@@ -110,20 +134,7 @@ mod tests {
     #[tokio::test]
     async fn register_pings_are_echoed() {
         let session = Session::start().await;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let listed = list(&session.url, DIAL, PAIRING).await.unwrap();
-            if listed.iter().any(|row| {
-                row.machine_id().ok() == Some(session.machine_id) && row.register_rtt_ns.is_some()
-            }) {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "path RTT must be present after a pong"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        wait_for_held(&session.url, session.machine_id).await;
     }
 
     #[tokio::test]
@@ -165,41 +176,120 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_relay_fails() {
-        let pairing = PairingCredential::parse(PAIRING).unwrap();
-        let error = match hold_register("not-a-url", &pairing, &MachineId::random()).await {
+        let error = match hold_register("not-a-url", &secret(), &MachineId::random()).await {
             Ok(_) => panic!("expected unreachable Relay to fail"),
             Err(error) => error,
         };
         assert!(matches!(error, Error::Transport(_)));
     }
 
-    struct Session {
+    #[tokio::test]
+    async fn cloud_pairing_hold_appears_on_list_held() {
+        let relay = RelayListen::start().await;
+        let machine_id = MachineId::random();
+        let shutdown = CancellationToken::new();
+        let hold = tokio::spawn(run(
+            Some(CloudPairing::parse(&relay.url, secret()).unwrap()),
+            machine_id,
+            shutdown.clone(),
+        ));
+        wait_for_held(&relay.url, machine_id).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_cloud_pairing_stays_off_list_held() {
+        let relay = RelayListen::start().await;
+        let machine_id = MachineId::random();
+        let shutdown = CancellationToken::new();
+        let hold = tokio::spawn(run(None, machine_id, shutdown.clone()));
+        assert_not_held(&relay.url, machine_id).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn unreachable_cloud_pairing_fails() {
+        let pairing = CloudPairing::parse("not-a-url", secret()).unwrap();
+        let error = run(Some(pairing), MachineId::random(), CancellationToken::new())
+            .await
+            .expect_err("unreachable Relay must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    }
+
+    struct RelayListen {
         url: String,
-        machine_id: MachineId,
-        _hold: super::RegisterHold,
         _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         _goaway: ployz_relay::Goaway,
     }
 
-    impl Session {
+    impl RelayListen {
         async fn start() -> Self {
             let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
             let listen = (Ipv4Addr::LOCALHOST, 0).into();
             let (address, server, goaway) = relay.serve(listen).await.unwrap();
-            let url = format!("http://{address}");
-            let machine_id = MachineId::random();
-            let pairing = PairingCredential::parse(PAIRING).unwrap();
-            let hold = hold_register(&url, &pairing, &machine_id)
-                .await
-                .expect("Register hello is accepted");
             Self {
-                url,
-                machine_id,
-                _hold: hold,
+                url: format!("http://{address}"),
                 _server: server,
                 _goaway: goaway,
             }
         }
+    }
+
+    struct Session {
+        url: String,
+        machine_id: MachineId,
+        _hold: super::RegisterHold,
+        _relay: RelayListen,
+    }
+
+    impl Session {
+        async fn start() -> Self {
+            let relay = RelayListen::start().await;
+            let machine_id = MachineId::random();
+            let hold = hold_register(&relay.url, &secret(), &machine_id)
+                .await
+                .expect("Register hello is accepted");
+            Self {
+                url: relay.url.clone(),
+                machine_id,
+                _hold: hold,
+                _relay: relay,
+            }
+        }
+    }
+
+    fn secret() -> PairingCredential {
+        PairingCredential::parse(PAIRING).unwrap()
+    }
+
+    async fn wait_for_held(url: &str, machine_id: MachineId) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let listed = list(url, DIAL, PAIRING).await.unwrap();
+            if listed.iter().any(|row| {
+                row.machine_id().ok() == Some(machine_id) && row.register_rtt_ns.is_some()
+            }) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "expected {machine_id} on List with path RTT, got {listed:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn assert_not_held(url: &str, machine_id: MachineId) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let listed = list(url, DIAL, PAIRING).await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .all(|row| row.machine_id().ok() != Some(machine_id)),
+            "Machine must stay off List, got {listed:?}"
+        );
     }
 
     async fn list(

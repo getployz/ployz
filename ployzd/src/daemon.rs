@@ -161,6 +161,7 @@ impl Daemon {
         );
         let (participating, participating_rx) =
             watch::channel(local_phase == LocalMachinePhase::Participating);
+        let cloud_pairing = local_record.cloud_pairing;
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
@@ -307,6 +308,12 @@ impl Daemon {
                     }
                 }
             };
+            let relay_register = async {
+                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                crate::relay::run(cloud_pairing, local_id, shutdown.clone()).await
+            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 metrics,
@@ -317,6 +324,7 @@ impl Daemon {
                 dns,
                 caddy,
                 certificates,
+                relay_register,
             )
             .map(|_| ())
         });
