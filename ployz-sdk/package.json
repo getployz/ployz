@@ -9,20 +9,18 @@
   },
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "node": "./index.js"
+    },
+    "./package.json": "./package.json",
+    "./index.d.ts": "./index.d.ts"
+  },
   "files": [
     "index.js",
     "index.d.ts",
-    "generated",
-    "ployz-sdk.node"
-  ],
-  "os": [
-    "linux"
-  ],
-  "cpu": [
-    "x64"
-  ],
-  "libc": [
-    "glibc"
+    "generated"
   ],
   "engines": {
     "node": ">=18"

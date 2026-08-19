@@ -10,24 +10,83 @@ on:
         required: true
         type: string
 
+env:
+  ZIG_VERSION: 0.13.0
+  CARGO_ZIGBUILD_VERSION: 0.19.7
+
 permissions:
   contents: read
   id-token: write
   actions: write
 
 jobs:
-  publish-sdk:
-    runs-on: ubuntu-latest
+  build-binding:
+    strategy:
+      matrix:
+        include:
+          # zigbuild pins the glibc floor at 2.28 (Node 18's own floor) instead of inheriting
+          # the runner's, and cross-links arm64 from the x64 runner. Apple targets link with
+          # the macOS toolchain: zig 0.13 segfaults on them, same as the CLI's darwin build.
+          - runner: ubuntu-latest
+            command: zigbuild
+            target: x86_64-unknown-linux-gnu
+            glibc: ".2.28"
+            cdylib: libployz_sdk.so
+            binding: ployz-sdk.linux-x64.node
+          - runner: ubuntu-latest
+            command: zigbuild
+            target: aarch64-unknown-linux-gnu
+            glibc: ".2.28"
+            cdylib: libployz_sdk.so
+            binding: ployz-sdk.linux-arm64.node
+          - runner: macos-14
+            command: build
+            target: aarch64-apple-darwin
+            cdylib: libployz_sdk.dylib
+            binding: ployz-sdk.darwin-arm64.node
+          - runner: macos-14
+            command: build
+            target: x86_64-apple-darwin
+            cdylib: libployz_sdk.dylib
+            binding: ployz-sdk.darwin-x64.node
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v1
+        if: matrix.command == 'zigbuild'
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: taiki-e/install-action@v2
+        if: matrix.command == 'zigbuild'
+        with:
+          tool: cargo-zigbuild@${{ env.CARGO_ZIGBUILD_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci
+          shared-key: sdk-${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      - run: cargo ${{ matrix.command }} -p ployz-sdk --release --locked --target ${{ matrix.target }}${{ matrix.glibc }}
+      - run: cp "target/${{ matrix.target }}/release/${{ matrix.cdylib }}" "${{ matrix.binding }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binding }}
+          path: ${{ matrix.binding }}
+          if-no-files-found: error
+
+  publish-sdk:
+    needs: build-binding
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
-      - run: bash scripts/publish-sdk-package.sh "${{ github.event.release.tag_name || inputs.tag }}"
+      - uses: actions/download-artifact@v4
+        with:
+          path: bindings
+          merge-multiple: true
+      - run: bash scripts/publish-sdk-package.sh "${{ github.event.release.tag_name || inputs.tag }}" bindings/*.node

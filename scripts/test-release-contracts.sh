@@ -379,17 +379,27 @@ printf 'js\n' > "$sdk_src/index.js"
 printf 'dts\n' > "$sdk_src/index.d.ts"
 mkdir -p "$sdk_src/generated"
 printf 'gen\n' > "$sdk_src/generated/payloads.d.ts"
-sdk_node=$(mktemp)
-printf 'cdylib\n' > "$sdk_node"
+sdk_bindings=$(mktemp -d)
+printf 'linux\n' > "$sdk_bindings/ployz-sdk.linux-x64.node"
+printf 'darwin\n' > "$sdk_bindings/ployz-sdk.darwin-arm64.node"
 sdk_dest=$(mktemp -d)
-if PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" "$sdk_node" >/dev/null 2>&1; then
+if PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" "$sdk_bindings"/*.node >/dev/null 2>&1; then
     echo "private sdk package was packed" >&2
     exit 1
 fi
-printf '%s\n' '{"name":"@ployz/sdk","version":"1.2.3","main":"index.js","files":["index.js","index.d.ts","generated","ployz-sdk.node"],"publishConfig":{"access": "public"}}' > "$sdk_src/package.json"
-PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" "$sdk_node"
-assert_eq "$(cat "$sdk_dest/ployz-sdk.node")" cdylib
+printf '%s\n' '{"name":"@ployz/sdk","version":"1.2.3","main":"index.js","files":["index.js","index.d.ts","generated"],"engines":{"node":">=18"},"publishConfig":{"access": "public"}}' > "$sdk_src/package.json"
+PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" "$sdk_bindings"/*.node
+assert_eq "$(cat "$sdk_dest/npm/linux-x64/ployz-sdk.node")" linux
+assert_eq "$(cat "$sdk_dest/npm/darwin-arm64/ployz-sdk.node")" darwin
+assert_contains "$sdk_dest/npm/linux-x64/package.json" '"name": "@ployz/sdk-linux-x64"'
+assert_contains "$sdk_dest/npm/linux-x64/package.json" '"os": ['
+assert_contains "$sdk_dest/npm/darwin-arm64/package.json" '"arm64"'
+assert_contains "$sdk_dest/package.json" '"@ployz/sdk-darwin-arm64": "1.2.3"'
 assert_contains "$sdk_dest/package.json" '"access": "public"'
+if [ -e "$sdk_dest/ployz-sdk.node" ]; then
+    echo "the js package still ships a native binding" >&2
+    exit 1
+fi
 if grep -Eq '"private":[[:space:]]*true' "$sdk_dest/package.json"; then
     echo "packed sdk package is still private" >&2
     exit 1
@@ -398,7 +408,10 @@ if PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$
     echo "sdk pack without a native binding was accepted" >&2
     exit 1
 fi
-rm -rf "$sdk_src" "$sdk_dest"
-rm -f "$sdk_node"
+if PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$sdk_dest" "$sdk_src/index.js" >/dev/null 2>&1; then
+    echo "sdk pack accepted a misnamed binding" >&2
+    exit 1
+fi
+rm -rf "$sdk_src" "$sdk_dest" "$sdk_bindings"
 
 echo "release contracts passed"

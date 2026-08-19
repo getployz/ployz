@@ -16,7 +16,7 @@ Release process: [docs/RELEASE.md](docs/RELEASE.md).
 - `ployz-core`: domain and wire contracts shared by both binaries
 - `ployz`: CLI for Linux, macOS, and Windows through WSL
 - `ployz-relay`: Cloud Relay plaintext HTTP/2 splice (Linux binary + `ghcr.io/getployz/ployz-relay`)
-- `ployz-sdk`: napi package `@ployz/sdk` (linux-x64-gnu; published on GitHub Release Publish)
+- `ployz-sdk`: napi package `@ployz/sdk` (linux and macOS x64/arm64 gnu bindings; published on GitHub Release Publish)
 - `ployz-sdk-payloads`: Rust-sourced TypeScript and JSON fixtures for `@ployz/sdk`
 - `ployzd`: Linux-only daemon
 - `ployz-testkit`: unpublished support crate used only by tests
