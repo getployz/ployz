@@ -854,5 +854,6 @@ mod tests {
         let token = CloudEnrollToken::parse("pmet_test").unwrap();
         assert_eq!(token.as_str(), "pmet_test");
         assert_eq!(format!("{token:?}"), "CloudEnrollToken(..)");
+        assert!(!format!("{token:?}").contains("pmet_test"));
     }
 }

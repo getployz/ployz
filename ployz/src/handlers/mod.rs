@@ -340,6 +340,51 @@ mod tests {
             init.get_one::<String>("cloud-url").map(String::as_str),
             Some("ployz.dev")
         );
+        assert_eq!(
+            init.get_one::<String>("network").map(String::as_str),
+            Some("10.210.0.0/16")
+        );
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from(["ployz", "init", "--cloud", "pmet_x", "root@host"])
+                .is_err()
+        );
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "init",
+                    "--cloud",
+                    "pmet_x",
+                    "--ssh-key",
+                    "/tmp/key"
+                ])
+                .is_err()
+        );
+        let flags = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "init",
+                "--cloud",
+                "pmet_x",
+                "--name",
+                "edge",
+                "--network",
+                "10.220.0.0/16",
+                "--no-caddy",
+                "--no-dns",
+                "--yes",
+                "--wg-mtu",
+                "1400",
+            ])
+            .unwrap();
+        let init = flags.subcommand_matches("init").unwrap();
+        assert_eq!(init.get_one::<String>("name").unwrap(), "edge");
+        assert_eq!(init.get_one::<String>("network").unwrap(), "10.220.0.0/16");
+        assert!(init.get_flag("no-caddy"));
+        assert!(init.get_flag("no-dns"));
+        assert!(init.get_flag("yes"));
+        assert_eq!(init.get_one::<u32>("wg-mtu").copied(), Some(1400));
     }
 
     #[test]

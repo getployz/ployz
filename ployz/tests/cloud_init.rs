@@ -1,4 +1,4 @@
-//! `ployz init --cloud` join path against fake enroll HTTP.
+//! `ployz init --cloud` join and initialize paths against fake enroll HTTP.
 
 use std::{
     net::SocketAddr,
@@ -11,10 +11,11 @@ use std::{
 
 use ployz::sdk;
 use ployz_core::{
-    AdvertisedEndpoint, CloudPairing, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
-    JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId, MachineName,
-    MachineRpc, MachineRpcServer, MachineToken, ManagementAddress, OpaquePayload, PROTOCOL_MAJOR,
-    PairingCredential, Registered, RpcRequestBody, RpcResponse, WireGuardPublicKey,
+    AdvertisedEndpoint, CloudPairing, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, Domain,
+    InitializeRequest, Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine,
+    MachineDetails, MachineId, MachineName, MachineRpc, MachineRpcServer, MachineToken,
+    ManagementAddress, OpaquePayload, PROTOCOL_MAJOR, PairingCredential, Registered,
+    ReserveDomainRequest, RpcRequestBody, RpcResponse, WireGuardPublicKey,
 };
 use ployz_relay::{
     AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, RegisterRequest, Relay,
@@ -35,6 +36,7 @@ use tonic::{
 const TOKEN: &str = "pmet_test";
 const PAIRING: &str = "pairing-secret";
 const DIAL: &str = "dial-secret";
+const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
 
 #[tokio::test]
 async fn cloud_init_join_participates_and_appears_on_list_held() {
@@ -95,6 +97,141 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
     assert_eq!(paths, [format!("/api/enroll/{TOKEN}")]);
 
     wait_for_held(&relay.url, machine_id).await;
+}
+
+#[tokio::test]
+async fn cloud_init_initialize_participates_and_appears_on_list_held() {
+    let founder = founder_machine();
+    let machine_id = founder.id;
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "pairing": pairing,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder,
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "init",
+            "--cloud",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--network",
+            "10.210.0.0/16",
+            "--wg-mtu",
+            "1400",
+            "--no-caddy",
+            "--no-dns",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
+        "{stdout}"
+    );
+
+    let initialized = daemon.initialize_request();
+    assert_eq!(initialized.name.as_str(), "founder");
+    assert_eq!(initialized.cluster_network.to_string(), "10.210.0.0/16");
+    assert_eq!(initialized.wireguard_mtu, Some(1400));
+    let pairing_json = serde_json::to_value(initialized.cloud_pairing.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        pairing_json,
+        json!({
+            "relayUrl": relay.url,
+            "secret": PAIRING,
+        })
+    );
+    assert!(pairing_json.get("dial").is_none());
+
+    let paths = enroll.paths();
+    assert_eq!(paths, [format!("/api/enroll/{TOKEN}")]);
+
+    assert!(
+        daemon.reserve_request().is_none(),
+        "initialize with --no-dns must not ReserveDomain"
+    );
+
+    wait_for_held(&relay.url, machine_id).await;
+}
+
+#[tokio::test]
+async fn cloud_init_initialize_reserves_cloud_hosted_dns() {
+    let founder = founder_machine();
+    let machine_id = founder.id;
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "pairing": pairing,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder,
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "init",
+            "--cloud",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--no-caddy",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("Reserved Cluster domain: {CLUSTER_DOMAIN}")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
+        "{stdout}"
+    );
+
+    let reserved = daemon.reserve_request().expect("ReserveDomain was called");
+    assert_eq!(reserved.endpoint, format!("{}/api/dns/v1", enroll.url));
+    assert_ne!(reserved.endpoint, "https://dns.uncloud.run/v1");
 }
 
 struct RelayListen {
@@ -176,6 +313,8 @@ struct JoinInner {
     registration: Registered,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
+    initialize_request: Mutex<Option<InitializeRequest>>,
+    reserve_request: Mutex<Option<ReserveDomainRequest>>,
     _register: Mutex<Option<mpsc::Sender<RegisterRequest>>>,
 }
 
@@ -186,6 +325,8 @@ impl JoinDaemon {
                 registration,
                 joined: AtomicBool::new(false),
                 join_request: Mutex::new(None),
+                initialize_request: Mutex::new(None),
+                reserve_request: Mutex::new(None),
                 _register: Mutex::new(None),
             }),
         }
@@ -198,6 +339,19 @@ impl JoinDaemon {
             .unwrap()
             .clone()
             .expect("Join was called")
+    }
+
+    fn initialize_request(&self) -> InitializeRequest {
+        self.inner
+            .initialize_request
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("Initialize was called")
+    }
+
+    fn reserve_request(&self) -> Option<ReserveDomainRequest> {
+        self.inner.reserve_request.lock().unwrap().clone()
     }
 }
 
@@ -311,9 +465,31 @@ impl MachineRpc for JoinDaemon {
 
     async fn initialize(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::Initialize(init) = decoded.body else {
+            return Err(Status::invalid_argument("expected Initialize"));
+        };
+        let pairing = init
+            .cloud_pairing
+            .clone()
+            .ok_or_else(|| Status::invalid_argument("Initialize must persist Cloud Pairing"))?;
+        let mut machine = self.inner.registration.assigned_machine.clone();
+        machine.name = init.name.clone();
+        hold_register(
+            pairing.relay_url(),
+            pairing.secret(),
+            &machine.id,
+            &self.inner._register,
+        )
+        .await;
+        *self.inner.initialize_request.lock().unwrap() = Some(init);
+        self.inner.joined.store(true, Ordering::SeqCst);
+        rpc_ok(Initialized { machine })
     }
     async fn register(
         &self,
@@ -413,9 +589,19 @@ impl MachineRpc for JoinDaemon {
     }
     async fn reserve_domain(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::ReserveDomain(reserve) = decoded.body else {
+            return Err(Status::invalid_argument("expected ReserveDomain"));
+        };
+        *self.inner.reserve_request.lock().unwrap() = Some(reserve);
+        rpc_ok(Domain {
+            name: CLUSTER_DOMAIN.into(),
+        })
     }
     async fn get_domain(
         &self,
@@ -554,17 +740,34 @@ async fn wait_for_held(url: &str, machine_id: MachineId) {
 
 fn registration() -> Registered {
     Registered {
-        assigned_machine: Machine {
-            id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
-            name: MachineName::parse("joiner").unwrap(),
-            subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: ManagementAddress("fd00::1".parse().unwrap()),
-            public_key: WireGuardPublicKey([1; 32]),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
-            runtime: Default::default(),
-        },
+        assigned_machine: joiner_machine(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+    }
+}
+
+fn joiner_machine() -> Machine {
+    Machine {
+        id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+        name: MachineName::parse("joiner").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        management_address: ManagementAddress("fd00::1".parse().unwrap()),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+        runtime: Default::default(),
+    }
+}
+
+fn founder_machine() -> Machine {
+    Machine {
+        id: MachineId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
+        name: MachineName::parse("founder").unwrap(),
+        subnet: "10.210.0.0/24".parse().unwrap(),
+        management_address: ManagementAddress("fd00::2".parse().unwrap()),
+        public_key: WireGuardPublicKey([2; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+        runtime: Default::default(),
     }
 }

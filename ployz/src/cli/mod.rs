@@ -244,6 +244,9 @@ fn init() -> Command {
         .arg(value("cloud", None).required(true))
         .arg(value("cloud-url", None).default_value("ployz.dev"))
         .arg(value("name", Some('n')))
+        .arg(value("network", None).default_value("10.210.0.0/16"))
+        .arg(switch("no-caddy", None))
+        .arg(switch("no-dns", None))
         .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
