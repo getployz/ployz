@@ -18,6 +18,9 @@ use crate::connect::{Client, ConnectError};
 
 const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Default hosted DNS API. `dns reserve`, `machine init`, and `cloud enroll` share this.
+pub(crate) const HOSTED_DNS_ENDPOINT: &str = "https://dns.uncloud.run/v1";
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]

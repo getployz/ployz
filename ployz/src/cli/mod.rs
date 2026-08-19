@@ -200,7 +200,7 @@ fn dns() -> Command {
         .subcommand(base("release", "Release the cluster domain"))
         .subcommand(
             base("reserve", "Reserve a cluster domain")
-                .arg(value("endpoint", None).default_value("https://dns.uncloud.run/v1")),
+                .arg(value("endpoint", None).default_value(crate::dns::HOSTED_DNS_ENDPOINT)),
         )
         .subcommand(base("show", "Show the cluster domain"))
 }
@@ -371,7 +371,7 @@ fn machine_init() -> Command {
         .about("Initialise a cluster on a remote machine")
         .args(connection_args(false))
         .arg(value("context", Some('c')).default_value("default"))
-        .arg(value("dns-endpoint", None).default_value("https://dns.uncloud.run/v1"))
+        .arg(value("dns-endpoint", None).default_value(crate::dns::HOSTED_DNS_ENDPOINT))
         .arg(value("network", None).default_value("10.210.0.0/16"))
         .arg(switch("no-dns", None));
     provisioning_flags(command).arg(positional("destination", false))

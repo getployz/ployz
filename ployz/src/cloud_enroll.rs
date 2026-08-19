@@ -99,12 +99,6 @@ pub(crate) fn enroll_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     format!("{}/api/enroll/{}", cloud_origin(cloud_url), token.as_str())
 }
 
-/// Hosted DNS API on the same Cloud host as enroll. Not `dns.uncloud.run`.
-#[must_use]
-pub(crate) fn dns_endpoint(cloud_url: &str) -> String {
-    format!("{}/api/dns/v1", cloud_origin(cloud_url))
-}
-
 /// Founder callback: `POST /api/enroll/<token>/callback`. UX, not the lock.
 #[must_use]
 pub(crate) fn callback_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
@@ -240,16 +234,6 @@ mod tests {
             callback_url("ployz.dev", &token()),
             "https://ployz.dev/api/enroll/pmet_test/callback"
         );
-    }
-
-    #[test]
-    fn hosted_dns_is_on_the_same_cloud_host_not_uncloud_run() {
-        assert_eq!(dns_endpoint("ployz.dev"), "https://ployz.dev/api/dns/v1");
-        assert_eq!(
-            dns_endpoint("http://127.0.0.1:9"),
-            "http://127.0.0.1:9/api/dns/v1"
-        );
-        assert!(!dns_endpoint("ployz.dev").contains("dns.uncloud.run"));
     }
 
     #[test]

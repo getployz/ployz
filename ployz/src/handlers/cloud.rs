@@ -105,7 +105,7 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                         let domain = ready
                             .call::<op::ReserveDomain>(
                                 ReserveDomainRequest {
-                                    endpoint: cloud_enroll::dns_endpoint(cloud_url),
+                                    endpoint: crate::dns::HOSTED_DNS_ENDPOINT.to_owned(),
                                 },
                                 None,
                             )

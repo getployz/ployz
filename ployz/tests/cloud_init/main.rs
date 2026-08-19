@@ -162,7 +162,7 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
 }
 
 #[tokio::test]
-async fn cloud_init_initialize_reserves_cloud_hosted_dns() {
+async fn cloud_init_initialize_reserves_hosted_dns() {
     let founder = founder_machine();
     let machine_id = founder.id;
     let relay = RelayListen::start().await;
@@ -214,8 +214,12 @@ async fn cloud_init_initialize_reserves_cloud_hosted_dns() {
     );
 
     let reserved = daemon.reserve_request().expect("ReserveDomain was called");
-    assert_eq!(reserved.endpoint, format!("{}/api/dns/v1", enroll.url));
-    assert_ne!(reserved.endpoint, "https://dns.uncloud.run/v1");
+    assert_eq!(reserved.endpoint, "https://dns.uncloud.run/v1");
+    assert_ne!(
+        reserved.endpoint,
+        format!("{}/api/dns/v1", enroll.url),
+        "Cloud enroll must not derive hosted DNS from --cloud-url"
+    );
     assert_eq!(
         enroll.callbacks(),
         [json!({ "machineId": machine_id.as_str() })]
