@@ -36,6 +36,18 @@ assert_contains "$ROOT/.github/workflows/release.yml" "release --clean --skip=pu
 assert_contains "$ROOT/.github/workflows/release.yml" "publish-github-release.sh"
 assert_contains "$ROOT/.github/workflows/release.yml" "uses: ./.github/workflows/release-contracts.yml"
 assert_contains "$ROOT/.github/workflows/release.yml" "needs: [tag, artifacts]"
+assert_contains "$ROOT/.github/workflows/release.yml" "workflow_dispatch"
+assert_contains "$ROOT/.github/workflows/release.yml" "bounce-release-to-main.sh"
+assert_contains "$ROOT/.github/workflows/release.yml" "run-name: Release \${{ inputs.tag || github.ref_name }}"
+assert_contains "$ROOT/.github/workflows/release.yml" "if: github.event_name == 'push'"
+assert_contains "$ROOT/.github/workflows/release.yml" "if: github.event_name == 'workflow_dispatch'"
+assert_contains "$ROOT/.github/workflows/release.yml" 'publish-github-release.sh "${{ inputs.tag }}"'
+assert_contains "$ROOT/.github/workflows/release.yml" 'check-release-tag.sh "${{ inputs.tag }}"'
+assert_contains "$ROOT/.github/workflows/release.yml" "release-tag: \${{ inputs.tag }}"
+if grep -Fq 'publish-github-release.sh "${{ github.ref_name }}"' "$ROOT/.github/workflows/release.yml"; then
+    echo "publish still uses github.ref_name, which is main after the bounce" >&2
+    exit 1
+fi
 assert_contains "$ROOT/.github/workflows/release-published.yml" "promote-release.sh"
 assert_contains "$ROOT/.github/workflows/release-published.yml" "types: [published]"
 assert_contains "$ROOT/.github/workflows/publish-sdk.yml" "publish-sdk-package.sh"
@@ -88,6 +100,14 @@ assert_contains "$ROOT/.github/workflows/release-contracts.yml" "merge-multiple:
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "taiki-e/install-action@v2"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "Swatinem/rust-cache@v2"
 assert_contains "$ROOT/.github/workflows/release-contracts.yml" "scripts/pack-release.sh"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "release-tag:"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "ref: \${{ inputs.release-tag || github.sha }}"
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" 'publish-relay-image.sh "${{ inputs.release-tag || github.ref_name }}"'
+assert_contains "$ROOT/.github/workflows/release-contracts.yml" "scripts/bounce-release-to-main.sh"
+if grep -Fq 'publish-relay-image.sh "${{ github.ref_name }}"' "$ROOT/.github/workflows/release-contracts.yml"; then
+    echo "relay publish still uses github.ref_name, which is main after the bounce" >&2
+    exit 1
+fi
 assert_contains "$ROOT/.goreleaser.yaml" 'RELEASE_ID'
 assert_contains "$ROOT/.goreleaser.yaml" "id: ployz-linux-amd64"
 assert_contains "$ROOT/.goreleaser.yaml" "id: ployz-linux-arm64"
@@ -303,6 +323,20 @@ assert_eq "$(release_artifacts_needed pull_request ployz-relay/Dockerfile)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/build-relay-image.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/verify-relay-image.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/publish-relay-image.sh)" true
+
+PLOYZ_BOUNCE_RELEASE_TEST_ONLY=true source "$ROOT/scripts/bounce-release-to-main.sh"
+assert_eq "$(printf '%s\n' '[{"databaseId":2,"displayTitle":"Release v1.2.3"},{"databaseId":3,"displayTitle":"Release v1.2.3"}]' | newest_run_id_named_except "Release v1.2.3" $'2\n')" "3"
+assert_eq "$(printf '%s\n' '[]' | newest_run_id_named_except "Release v1.2.3" "")" ""
+assert_contains "$ROOT/scripts/bounce-release-to-main.sh" 'wanted="Release $tag"'
+assert_contains "$ROOT/scripts/bounce-release-to-main.sh" "gh workflow run release.yml"
+assert_contains "$ROOT/scripts/bounce-release-to-main.sh" "--event=workflow_dispatch"
+assert_contains "$ROOT/scripts/bounce-release-to-main.sh" "gh run watch"
+assert_contains "$ROOT/scripts/bounce-release-to-main.sh" "--exit-status"
+if grep -Fq GITHUB_REF_NAME "$ROOT/scripts/pack-release.sh"; then
+    echo "pack-release still takes the tag from GITHUB_REF_NAME, which is main after the bounce" >&2
+    exit 1
+fi
+assert_contains "$ROOT/scripts/pack-release.sh" "tag=v\$version"
 
 pack_dist=$(mktemp -d)
 pack_bin=$(mktemp -d)

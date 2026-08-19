@@ -24,7 +24,7 @@ git push origin v0.2.0
 
 Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. Nightly, `-rc`, and other suffixes are rejected.
 
-4. Wait for the Release workflow. It builds the eight archives and the `ployz-relay` image, then opens a **draft** GitHub release (`--prerelease` on beta tags).
+4. Wait for the Release workflow. The tag run bounces the compile onto `main` so rust-cache can reuse the previous release, then builds the eight archives and the `ployz-relay` image and opens a **draft** GitHub release (`--prerelease` on beta tags).
 5. Fill `## Notes`. Click **Publish**. That click is the review gate. Drafts are not public downloads.
 
 ## What Publish does

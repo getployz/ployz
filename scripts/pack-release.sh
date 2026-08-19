@@ -28,8 +28,7 @@ done
 
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)
 [ -n "$version" ] || fail "workspace version is missing"
-tag=${GITHUB_REF_NAME:-v$version}
-[[ "$tag" == v* ]] || tag="v$tag"
+tag=v$version
 repo=${GITHUB_REPOSITORY:-getployz/ployz2}
 
 (
