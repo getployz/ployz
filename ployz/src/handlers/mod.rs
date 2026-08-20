@@ -424,6 +424,7 @@ mod tests {
                 "10.220.0.0/16",
                 "--no-caddy",
                 "--no-dns",
+                "--reset",
                 "--yes",
                 "--wg-mtu",
                 "1400",
@@ -442,6 +443,7 @@ mod tests {
             "10.220.0.0/16"
         );
         assert!(enroll.get_flag("no-caddy"));
+        assert!(enroll.get_flag("reset"));
         assert!(enroll.get_flag("no-dns"));
         assert!(enroll.get_flag("yes"));
         assert_eq!(enroll.get_one::<u32>("wg-mtu").copied(), Some(1400));

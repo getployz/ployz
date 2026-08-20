@@ -309,18 +309,7 @@ fn report_failures<T>(result: &PartialResult<T, RpcError>) {
 }
 
 fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
-    let failures = result
-        .failures
-        .iter()
-        .map(|failure| format!("{}: {}", failure.machine_id, failure.error.message))
-        .chain(
-            result
-                .omissions
-                .iter()
-                .map(|machine_id| format!("{machine_id}: no terminal response")),
-        )
-        .collect::<Vec<_>>()
-        .join("; ");
+    let failures = crate::failure::partial_failure_details(result);
     format!("one or more Machines failed: {failures}")
 }
 

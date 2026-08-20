@@ -2,8 +2,8 @@ use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
     AmbiguousDataLossName, CodecError, ContainerSelectorError, DataLoss, IngressLabelTooLong,
-    MachineSelectorError, MachineUpdateError, RpcError, ServiceSelectorError, StreamProtocolError,
-    UnconfirmedDataLoss, ValueError,
+    MachineSelectorError, MachineUpdateError, PartialResult, RpcError, ServiceSelectorError,
+    StreamProtocolError, UnconfirmedDataLoss, ValueError,
 };
 
 use crate::{
@@ -67,6 +67,21 @@ impl Failure {
     pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
         Self::usage(format!("WARNING: {context}: {cause}."))
     }
+}
+
+pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) -> String {
+    result
+        .failures
+        .iter()
+        .map(|failure| format!("{}: {}", failure.machine_id, failure.error.message))
+        .chain(
+            result
+                .omissions
+                .iter()
+                .map(|machine_id| format!("{machine_id}: no terminal response")),
+        )
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {

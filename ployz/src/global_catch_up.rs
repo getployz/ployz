@@ -1,11 +1,9 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
 
-use std::time::Duration;
-
 use ployz_core::{
-    ContainerRuntimeObservation, EnsureGlobalSlotRequest, Machine, MachineTarget, QualifiedService,
-    ResolvedServiceSpec, ServiceContainer, ServiceMode, ServiceObservation,
-    machine_matches_placement, op,
+    ContainerRuntimeObservation, EnsureGlobalSlotRequest, LiveServices, Machine, MachineTarget,
+    QualifiedService, ResolvedServiceSpec, RpcError, ServiceContainer, ServiceMode,
+    ServiceObservation, machine_matches_placement, op,
 };
 
 use crate::{
@@ -121,32 +119,9 @@ fn caddy_running_on(services: &[ServiceObservation], this_machine: &Machine) -> 
     })
 }
 
-async fn wait_for_observations(
-    client: &mut Client,
-    skip_caddy: bool,
-) -> Result<Vec<ServiceObservation>, CatchUpError> {
-    match tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let live = client.live_services().await?;
-            if live.containers.all_targets_succeeded() {
-                return Ok(live.services());
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(if skip_caddy {
-            CatchUpError::Other(Failure::usage(
-                "timed out waiting for Cluster Service observations".to_owned(),
-            ))
-        } else {
-            CatchUpError::Caddy(Failure::usage(
-                "timed out waiting for Caddy to become observable".to_owned(),
-            ))
-        }),
-    }
+fn partial_observation_warning(live: &LiveServices<RpcError>) -> Option<String> {
+    (!live.containers.all_targets_succeeded())
+        .then(|| crate::failure::partial_failure_details(&live.containers))
 }
 
 /// Copy every observed eligible Global onto `this_machine` only.
@@ -161,7 +136,11 @@ pub async fn catch_up_globals(
     this_machine: &Machine,
     skip_caddy: bool,
 ) -> Result<(), CatchUpError> {
-    let services = wait_for_observations(client, skip_caddy).await?;
+    let live = client.live_services().await?;
+    if let Some(warning) = partial_observation_warning(&live) {
+        eprintln!("WARNING: Global catch-up used partial Service observations: {warning}");
+    }
+    let services = live.services();
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
     let expect_caddy = caddy_expected(&services, this_machine, skip_caddy, &slots);
     if !slots.is_empty() {
@@ -218,6 +197,49 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn partial_observation_names_failures_and_omissions() {
+        let joiner = machine('1', "joiner");
+        let reachable = machine('2', "reachable");
+        let failed = MachineId::parse("a".repeat(32)).unwrap();
+        let omitted = MachineId::parse("b".repeat(32)).unwrap();
+        let caddy = global_service(
+            QualifiedService::system_caddy(),
+            'c',
+            Placement::default(),
+            running_on(&reachable, 'c'),
+        );
+        let live = LiveServices {
+            containers: ployz_core::PartialResult {
+                successes: vec![ployz_core::MachineSuccess {
+                    machine_id: reachable.id,
+                    value: caddy
+                        .containers
+                        .iter()
+                        .cloned()
+                        .map(ServiceContainer::into_observation)
+                        .collect(),
+                }],
+                failures: vec![ployz_core::MachineFailure {
+                    machine_id: failed,
+                    error: RpcError {
+                        code: ployz_core::RpcErrorCode::Unavailable,
+                        message: "unreachable".to_owned(),
+                        details: serde_json::Value::Null,
+                    },
+                }],
+                omissions: vec![omitted],
+            },
+        };
+        let warning = partial_observation_warning(&live).unwrap();
+        assert!(warning.contains("unreachable"));
+        assert!(warning.contains("no terminal response"));
+        assert_eq!(
+            identities(&plan_global_catch_up(&live.services(), &joiner, false)),
+            ["ployz-system/caddy"]
+        );
+    }
 
     #[test]
     fn two_joiners_each_plan_only_their_own_slot() {

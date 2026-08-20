@@ -32,13 +32,14 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
         .map_err(|error| Error::usage(format!("invalid Cluster network: {error}")))?;
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
+    let reset = matches.get_flag("reset");
     let no_caddy = matches.get_flag("no-caddy");
     let no_dns = matches.get_flag("no-dns");
 
     runtime()?.block_on(async {
         let mut client = connect_machine(matches).await?;
         loop {
-            client = ensure_uninitialized(matches, yes, client).await?;
+            client = ensure_uninitialized(matches, yes, reset, client).await?;
             let machine_token = client
                 .call::<op::MachineToken>(MachineTokenRequest::default(), None)
                 .await?;
@@ -64,8 +65,12 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                         "joined Machine did not become ready",
                     )
                     .await?;
-                    crate::global_catch_up::catch_up_globals(&mut ready, &assigned, no_caddy)
-                        .await?;
+                    if let Err(error) =
+                        crate::global_catch_up::catch_up_globals(&mut ready, &assigned, no_caddy)
+                            .await
+                    {
+                        return Err(Error::usage(joined_catch_up_error(error)));
+                    }
                     println!("Joined Machine {} ({})", assigned.name, assigned.id);
                     return Ok(());
                 }
@@ -177,6 +182,7 @@ async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
 async fn ensure_uninitialized(
     matches: &ArgMatches,
     yes: bool,
+    reset: bool,
     mut client: Client,
 ) -> Result<Client, Error> {
     let details = client
@@ -184,6 +190,12 @@ async fn ensure_uninitialized(
         .await?;
     if details.phase == LocalMachinePhase::Uninitialized {
         return Ok(client);
+    }
+    if !reset {
+        return Err(Error::usage(
+            "Machine is already initialised; rerun with --reset to reset it before enrollment"
+                .to_owned(),
+        ));
     }
     crate::handlers::machine::confirm(yes, "Reset the Machine before joining this Cluster?")?;
     client.call::<op::Reset>(ResetRequest {}, None).await?;
@@ -193,6 +205,18 @@ async fn ensure_uninitialized(
         "Machine did not reset",
     )
     .await
+}
+
+fn joined_catch_up_error(error: crate::global_catch_up::CatchUpError) -> String {
+    let recovery = match error {
+        crate::global_catch_up::CatchUpError::Caddy(error) => {
+            format!(" {error}. Do not rerun enrollment; run `ployz caddy deploy` instead.")
+        }
+        crate::global_catch_up::CatchUpError::Other(error) => format!(" {error}"),
+    };
+    format!(
+        "Machine joined, but Global catch-up failed afterward; it remains a Cluster member.{recovery}"
+    )
 }
 
 fn pairing_revoked(error: &ConnectError) -> bool {
@@ -248,5 +272,24 @@ mod tests {
             ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
         )));
         assert!(!retry_local_connect(&ConnectError::InvalidDialCredential));
+    }
+
+    #[test]
+    fn post_join_caddy_error_names_membership_and_recovery() {
+        let message = joined_catch_up_error(crate::global_catch_up::CatchUpError::Caddy(
+            crate::failure::Failure::usage("not running".to_owned()),
+        ));
+        assert!(message.contains("Machine joined"));
+        assert!(message.contains("Do not rerun enrollment"));
+        assert!(message.contains("ployz caddy deploy"));
+    }
+
+    #[test]
+    fn post_join_other_error_names_membership() {
+        let message = joined_catch_up_error(crate::global_catch_up::CatchUpError::Other(
+            crate::failure::Failure::usage("listing failed".to_owned()),
+        ));
+        assert!(message.contains("Machine joined"));
+        assert!(message.contains("listing failed"));
     }
 }
