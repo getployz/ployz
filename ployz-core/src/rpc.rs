@@ -631,6 +631,9 @@ pub struct MachineDetails {
     pub store_version: BTreeMap<String, i64>,
     #[serde(default)]
     pub rtts: Vec<RttObservation>,
+    /// Stored Cloud Pairing is present. The Pairing Credential is not returned.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cloud_paired: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

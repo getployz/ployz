@@ -408,6 +408,32 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
 
     assert_eq!(details.public_key, public_key);
     assert_eq!(details.advertised_endpoints, [endpoint]);
+    assert!(!details.cloud_paired);
+}
+
+#[tokio::test]
+async fn inspect_reports_stored_cloud_pairing_without_the_secret() {
+    let dir = TestDir::new("ployzd-inspect-cloud-pairing");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let (reset, _) = tokio::sync::watch::channel(false);
+    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    local
+        .initialize(ployz_core::InitializeRequest {
+            name: MachineName::parse("first").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: Some(sample_cloud_pairing()),
+        })
+        .unwrap();
+
+    let details = local.inspect(InspectRequest::default()).await.unwrap();
+    assert!(details.cloud_paired);
+    let encoded = serde_json::to_value(&details).unwrap();
+    assert_eq!(encoded.get("cloud_paired"), Some(&serde_json::json!(true)));
+    assert!(encoded.get("cloud_pairing").is_none());
+    assert!(encoded.get("secret").is_none());
 }
 
 #[tokio::test]

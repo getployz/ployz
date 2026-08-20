@@ -225,6 +225,7 @@ impl LocalMachine {
             advertised_endpoints,
             store_version,
             rtts,
+            cloud_paired: record.cloud_pairing.is_some(),
         })
     }
 

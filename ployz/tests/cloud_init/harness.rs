@@ -305,6 +305,7 @@ impl MachineRpc for JoinDaemon {
                 .clone(),
             store_version: Default::default(),
             rtts: Vec::new(),
+            cloud_paired: false,
         })
     }
 
