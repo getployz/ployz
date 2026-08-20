@@ -149,18 +149,9 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub fn remove(root: &ArgMatches) -> Result<(), Error> {
-    let _ = crate::project::resolve_explicit(leaf_matches(root))?;
-    change(root, ContainerAction::Remove)
-}
-
 pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let selectors = leaf
-        .get_many::<String>("service")
-        .ok_or_else(|| Error::usage("at least one Service selector is required"))?
-        .map(|selector| ServiceSelector::parse(selector.as_str()))
-        .collect::<Result<Vec<_>, _>>()?;
+    let selectors = change_selectors(leaf)?;
     let (signal, timeout) = stop_options(leaf, action)?;
     with_client(root, |client| {
         Box::pin(async move {
@@ -198,6 +189,21 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             }
         })
     })
+}
+
+fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error> {
+    let project = crate::project::resolve_explicit(matches)?;
+    matches
+        .get_many::<String>("service")
+        .ok_or_else(|| Error::usage("at least one Service selector is required"))?
+        .map(|selector| {
+            let selector = ServiceSelector::parse(selector.as_str())?;
+            match project.as_ref() {
+                Some(project) => selector.with_project(&project.name).map_err(Into::into),
+                None => Ok(selector),
+            }
+        })
+        .collect()
 }
 
 fn select_services<'a>(
@@ -377,6 +383,37 @@ mod tests {
         ];
 
         assert_eq!(select_services(&services, &selectors).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rm_project_name_removes_an_ambiguous_service_name() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "rm", "alpha", "--project-name", "st1"])
+            .unwrap();
+        let services = vec![
+            service_named('a', "st1", "alpha"),
+            service_named('b', "st2", "alpha"),
+        ];
+        let selectors = change_selectors(leaf_matches(&matches)).unwrap();
+        assert_eq!(
+            select_services(&services, &selectors)
+                .unwrap()
+                .into_iter()
+                .map(|service| service.identity.to_string())
+                .collect::<Vec<_>>(),
+            ["st1/alpha"]
+        );
+    }
+
+    fn service_named(id: char, project: &str, name: &str) -> ployz_core::ServiceObservation {
+        let mut container = observation(id, id, name, ContainerRuntimeObservation::Created);
+        container.project_name = ployz_core::ProjectName::parse(project).unwrap();
+        ployz_core::ServiceObservation {
+            identity: container.identity(),
+            service_id: container.service_id,
+            containers: vec![ServiceContainer::try_from(container).unwrap()],
+            hook_containers: Vec::new(),
+        }
     }
 
     fn names<'a>(containers: &'a [ContainerRef<'a>]) -> Vec<&'a str> {

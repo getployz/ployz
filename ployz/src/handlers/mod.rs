@@ -245,14 +245,14 @@ stub_handlers! {
     project_list(root) { project::list(root) } => "project ls";
     project_remove(root) { project::remove(root) } => "project rm";
     process_list(root) { service::processes(root) } => "ps";
-    remove(root) { service::remove(root) } => "rm";
+    remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "rm";
     run_service(root) { deploy::run(root) } => "run";
     scale(root) { deploy::scale(root) } => "scale";
     service_exec(root) { operator::exec(root) } => "service exec";
     service_inspect(root) { service::inspect(root) } => "service inspect";
     service_logs(root) { operator::service_logs(root) } => "service logs";
     service_list(root) { service::list(root) } => "service ls";
-    service_remove(root) { service::remove(root) } => "service rm";
+    service_remove(root) { service::change(root, ployz_core::ContainerAction::Remove) } => "service rm";
     service_run(root) { deploy::run(root) } => "service run";
     service_scale(root) { deploy::scale(root) } => "service scale";
     service_start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "service start";

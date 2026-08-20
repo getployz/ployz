@@ -587,6 +587,12 @@ impl From<QualifiedService> for String {
         value.to_string()
     }
 }
+
+impl From<&QualifiedService> for ServiceSelector {
+    fn from(value: &QualifiedService) -> Self {
+        Self(value.to_string())
+    }
+}
 validated_string_newtype!(
     /// One DNS label under the Cluster Domain for a public Ingress Hostname.
     ClusterDomainLabel,

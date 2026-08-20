@@ -4,7 +4,8 @@ use thiserror::Error;
 
 use crate::{
     ContainerId, ContainerObservation, ContainerSelector, Machine, MachineTarget, NameMatches,
-    ServiceObservation, ServiceSelector, ServiceSelectorError, select_service,
+    ProjectName, QualifiedService, ServiceId, ServiceName, ServiceObservation, ServiceSelector,
+    ServiceSelectorError, ValueError, select_service,
 };
 
 impl MachineTarget {
@@ -31,6 +32,20 @@ impl ServiceSelector {
         services: &'a [ServiceObservation],
     ) -> Result<&'a ServiceObservation, ServiceSelectorError> {
         select_service(services, self)
+    }
+
+    /// Qualify a Service Name with `project`. Service IDs and Qualified Services are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the leftover selector is not a Service Name.
+    pub fn with_project(self, project: &ProjectName) -> Result<Self, ValueError> {
+        if ServiceId::parse(self.as_str()).is_ok() || QualifiedService::parse(self.as_str()).is_ok()
+        {
+            return Ok(self);
+        }
+        let name = ServiceName::parse(self.as_str())?;
+        Ok(Self::from(&QualifiedService::new(project.clone(), name)))
     }
 }
 

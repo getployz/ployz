@@ -211,6 +211,43 @@ fn service_selector_resolution_prefers_ids_then_qualified_then_unique_short_name
 }
 
 #[test]
+fn service_selector_with_project_qualifies_names_and_rejects_invalid_names() {
+    let project = ProjectName::parse("st1").unwrap();
+    assert_eq!(
+        ServiceSelector::parse("alpha")
+            .unwrap()
+            .with_project(&project)
+            .unwrap()
+            .as_str(),
+        "st1/alpha"
+    );
+    let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+    assert_eq!(
+        ServiceSelector::from(&service_id)
+            .with_project(&project)
+            .unwrap()
+            .as_str(),
+        service_id.as_str()
+    );
+    assert_eq!(
+        ServiceSelector::parse("st2/alpha")
+            .unwrap()
+            .with_project(&project)
+            .unwrap()
+            .as_str(),
+        "st2/alpha"
+    );
+    assert_eq!(
+        ServiceSelector::parse("My_App")
+            .unwrap()
+            .with_project(&project)
+            .unwrap_err()
+            .to_string(),
+        "invalid Service Name \"My_App\": a 1-63 character lowercase DNS label"
+    );
+}
+
+#[test]
 fn container_selector_uses_exact_id_then_display_name_then_prefix() {
     let service_id = ServiceId::parse("1".repeat(32)).unwrap();
     let first = container(
