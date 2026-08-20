@@ -363,13 +363,22 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::SetCloudPairing(set) = decoded.body else {
             return Err(Status::invalid_argument("expected SetCloudPairing"));
         };
-        hold_register(
-            set.cloud_pairing.relay_url(),
-            set.cloud_pairing.secret(),
-            &self.inner.registration.assigned_machine.id,
-            &self.inner._register,
-        )
-        .await?;
+        match set.cloud_pairing {
+            Some(pairing) => {
+                hold_register(
+                    pairing.relay_url(),
+                    pairing.secret(),
+                    &self.inner.registration.assigned_machine.id,
+                    &self.inner._register,
+                )
+                .await?;
+            }
+            None => {
+                if let Some(old) = self.inner._register.lock().unwrap().take() {
+                    old.abort();
+                }
+            }
+        }
         rpc_ok(CloudPairingSet {})
     }
 

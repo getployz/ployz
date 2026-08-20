@@ -314,7 +314,7 @@ impl MachineRpc for MachineService {
             return local_error(error);
         }
         if let Some(sender) = &self.cloud_pairing {
-            sender.send_replace(Some(request.cloud_pairing));
+            sender.send_replace(request.cloud_pairing);
         }
         respond(CloudPairingSet {})
     }

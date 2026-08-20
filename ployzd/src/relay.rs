@@ -133,25 +133,21 @@ pub(crate) async fn run(
     service: MachineService,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let mut hold = None;
     loop {
         let current = pairing.borrow_and_update().clone();
-        match (current, hold.is_some()) {
-            (Some(pairing), false) => {
-                hold = Some(
-                    hold_register(
-                        pairing.relay_url(),
-                        pairing.secret(),
-                        &machine_id,
-                        service.clone(),
-                    )
-                    .await
-                    .map_err(io::Error::other)?,
-                );
-            }
-            (None, true) => hold = None,
-            (Some(_), true) | (None, false) => {}
-        }
+        let _hold = match current {
+            Some(current) => Some(
+                hold_register(
+                    current.relay_url(),
+                    current.secret(),
+                    &machine_id,
+                    service.clone(),
+                )
+                .await
+                .map_err(io::Error::other)?,
+            ),
+            None => None,
+        };
         tokio::select! {
             () = shutdown.cancelled() => return Ok(()),
             changed = pairing.changed() => {
@@ -298,6 +294,38 @@ mod tests {
         assert_not_held(&relay.url, machine_id).await;
         pairing_tx.send_replace(Some(CloudPairing::parse(&relay.url, secret()).unwrap()));
         wait_for_held(&relay.url, machine_id).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn clearing_cloud_pairing_leaves_list() {
+        let relay = RelayListen::start().await;
+        let (machine_id, service) = test_service();
+        let shutdown = CancellationToken::new();
+        let (pairing_tx, pairing_rx) =
+            watch::channel(Some(CloudPairing::parse(&relay.url, secret()).unwrap()));
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
+        wait_for_held(&relay.url, machine_id).await;
+        pairing_tx.send_replace(None);
+        assert_not_held(&relay.url, machine_id).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacing_cloud_pairing_moves_register_hold() {
+        let first = RelayListen::start().await;
+        let second = RelayListen::start().await;
+        let (machine_id, service) = test_service();
+        let shutdown = CancellationToken::new();
+        let (pairing_tx, pairing_rx) =
+            watch::channel(Some(CloudPairing::parse(&first.url, secret()).unwrap()));
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
+        wait_for_held(&first.url, machine_id).await;
+        pairing_tx.send_replace(Some(CloudPairing::parse(&second.url, secret()).unwrap()));
+        wait_for_held(&second.url, machine_id).await;
+        assert_not_held(&first.url, machine_id).await;
         shutdown.cancel();
         hold.await.unwrap().unwrap();
     }

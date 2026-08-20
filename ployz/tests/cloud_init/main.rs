@@ -629,13 +629,65 @@ async fn initialize_without_pairing_stays_off_list_until_set_cloud_pairing() {
     client
         .call::<op::SetCloudPairing>(
             SetCloudPairingRequest {
-                cloud_pairing: pairing,
+                cloud_pairing: Some(pairing),
             },
             None,
         )
         .await
         .unwrap();
     wait_for_held(&relay.url, PAIRING, machine_id).await;
+}
+
+#[tokio::test]
+async fn set_cloud_pairing_none_leaves_relay_list() {
+    let founder = founder_machine();
+    let machine_id = founder.id;
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon).await;
+    let mut client = connect_daemon(machine_addr).await;
+
+    client
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: founder.name.clone(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: founder.advertised_endpoints.clone(),
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    client
+        .call::<op::SetCloudPairing>(
+            SetCloudPairingRequest {
+                cloud_pairing: Some(pairing),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    wait_for_held(&relay.url, PAIRING, machine_id).await;
+
+    client
+        .call::<op::SetCloudPairing>(
+            SetCloudPairingRequest {
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_not_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]

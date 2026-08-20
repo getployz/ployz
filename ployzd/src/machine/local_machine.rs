@@ -450,14 +450,15 @@ impl LocalMachine {
         Ok(JoinAccepted {})
     }
 
-    /// Persist Cloud Pairing so this Machine can hold Relay Register.
+    /// Persist Cloud Pairing so this Machine can hold Relay Register, or clear
+    /// it so Register is dropped.
     ///
     /// # Errors
     ///
     /// Returns [`Error::NotParticipating`] when this Machine is not
     /// participating, [`Error::LockPoisoned`] when the local record lock is
     /// poisoned, and [`Error::Store`] when the record cannot be written.
-    pub fn set_cloud_pairing(&self, pairing: CloudPairing) -> Result<(), Error> {
+    pub fn set_cloud_pairing(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
         let mut store = self.lock_store()?;
         if store.record().phase() != LocalMachinePhase::Participating {
             return Err(Error::NotParticipating);

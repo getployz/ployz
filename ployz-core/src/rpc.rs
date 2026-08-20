@@ -279,9 +279,12 @@ pub struct EnsureGlobalSlotRequest {
     pub resolved_spec: ResolvedServiceSpec,
 }
 
+/// Set or clear this Machine's Cloud Pairing. `None` unlinks Cloud.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SetCloudPairingRequest {
-    pub cloud_pairing: CloudPairing,
+    /// `Some` holds Relay Register with this pairing. `None` unlinks Cloud.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_pairing: Option<CloudPairing>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -932,4 +935,45 @@ pub struct RpcError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub details: Value,
+}
+
+#[cfg(test)]
+mod set_cloud_pairing_wire {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn omitted_pairing_unlinks() {
+        let request = serde_json::from_value::<SetCloudPairingRequest>(json!({})).unwrap();
+        assert_eq!(request.cloud_pairing, None);
+        assert_eq!(serde_json::to_value(&request).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn some_pairing_sets() {
+        let pairing = CloudPairing::parse(
+            "https://relay.example.invalid",
+            crate::PairingCredential::parse("pairing-secret").unwrap(),
+        )
+        .unwrap();
+        let request = SetCloudPairingRequest {
+            cloud_pairing: Some(pairing.clone()),
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "cloud_pairing": {
+                    "relayUrl": "https://relay.example.invalid",
+                    "secret": "pairing-secret",
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<SetCloudPairingRequest>(value)
+                .unwrap()
+                .cloud_pairing,
+            Some(pairing)
+        );
+    }
 }

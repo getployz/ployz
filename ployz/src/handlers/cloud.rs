@@ -125,7 +125,7 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                         ready
                             .call::<op::SetCloudPairing>(
                                 SetCloudPairingRequest {
-                                    cloud_pairing: pairing,
+                                    cloud_pairing: Some(pairing),
                                 },
                                 None,
                             )

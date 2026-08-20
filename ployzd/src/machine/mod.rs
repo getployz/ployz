@@ -551,9 +551,12 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    pub fn persist_cloud_pairing(&mut self, pairing: CloudPairing) -> Result<(), StoreError> {
+    pub fn persist_cloud_pairing(
+        &mut self,
+        pairing: Option<CloudPairing>,
+    ) -> Result<(), StoreError> {
         let mut updated = self.record.clone();
-        updated.cloud_pairing = Some(pairing);
+        updated.cloud_pairing = pairing;
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())
