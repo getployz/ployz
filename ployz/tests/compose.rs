@@ -276,26 +276,37 @@ services:
     image: app:1
     dns: 8.8.8.8
     dns_search: example.test
+    extra_hosts: ["db:1.2.3.4"]
     labels: {a: b}
     links: [db]
     mem_swappiness: 10
     memswap_limit: 20
     networks: {custom: null}
-    security_opt: [no-new-privileges]
     secrets: [{source: token}]
     storage_opt: {size: 1G}
     unsupported_future_field: accepted
+    deploy:
+      restart_policy: {condition: on-failure}
   db: {image: db:1, networks: {default: null}}
 secrets:
   token: {file: /tmp/token}
 "#;
     let project = parse_normalized(warning_yaml, ".").unwrap();
-    assert_eq!(project.warnings.len(), 10);
-    assert!(
-        project
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("networks"))
+    assert_eq!(
+        project.warnings,
+        [
+            "service 'app': unsupported feature 'dns'",
+            "service 'app': unsupported feature 'dns_search'",
+            "service 'app': unsupported feature 'extra_hosts'",
+            "service 'app': unsupported feature 'labels'",
+            "service 'app': unsupported feature 'links'",
+            "service 'app': unsupported feature 'storage_opt'",
+            "service 'app': unsupported feature 'mem_swappiness'",
+            "service 'app': unsupported feature 'memswap_limit'",
+            "service 'app': unsupported feature 'networks'",
+            "service 'app': unsupported feature 'secrets'",
+            "service 'app': unsupported feature 'deploy.restart_policy'",
+        ]
     );
     assert!(
         !project

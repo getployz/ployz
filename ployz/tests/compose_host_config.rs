@@ -6,6 +6,48 @@ fn app(project: &ComposeProject) -> &RequestedServiceSpec {
 }
 
 #[test]
+fn compose_refuses_read_only_true_and_ignores_read_only_false() {
+    let error = parse_normalized("services: {app: {image: app, read_only: true}}", ".")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        error,
+        "invalid normalized Compose project: service 'app': unsupported feature 'read_only'"
+    );
+
+    let project = parse_normalized("services: {app: {image: app, read_only: false}}", ".").unwrap();
+    assert!(project.warnings.is_empty());
+}
+
+#[test]
+fn compose_refuses_security_opt() {
+    let error = parse_normalized(
+        "services: {app: {image: app, security_opt: [no-new-privileges]}}",
+        ".",
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        error,
+        "invalid normalized Compose project: service 'app': unsupported feature 'security_opt'"
+    );
+}
+
+#[test]
+fn compose_refuses_deploy_placement_and_points_at_x_machines() {
+    let error = parse_normalized(
+        "services: {app: {image: app, deploy: {placement: {constraints: [\"node.hostname == a\"]}}}}",
+        ".",
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        error,
+        "invalid normalized Compose project: service 'app': unsupported feature 'deploy.placement'; use x-machines"
+    );
+}
+
+#[test]
 fn compose_maps_stop_grace_period_to_whole_docker_seconds() {
     let project = parse_normalized(
         "services: {app: {image: app, stop_grace_period: 1500ms}}",

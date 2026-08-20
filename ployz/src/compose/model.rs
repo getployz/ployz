@@ -264,6 +264,8 @@ pub(super) struct RawDeploy {
     pub replicas: Option<u32>,
     pub update_config: Option<RawUpdate>,
     pub resources: Option<RawDeployResources>,
+    #[serde(flatten)]
+    pub other: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]

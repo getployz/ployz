@@ -67,7 +67,7 @@ pub(super) fn convert_raw_project(
     let mut service_profiles = BTreeMap::new();
     let mut warnings = Vec::new();
     for (service_name, service) in &raw.services {
-        warnings.extend(classify(service_name, service));
+        warnings.extend(classify(service_name, service)?);
         let service_dependencies = dependency_names(service);
         if let Some(missing) = service_dependencies
             .iter()
@@ -495,25 +495,46 @@ fn update(deploy: Option<&RawDeploy>) -> Result<UpdateConfig, ComposeError> {
     })
 }
 
-fn classify(name: &str, service: &RawService) -> Vec<String> {
+fn classify(name: &str, service: &RawService) -> Result<Vec<String>, ComposeError> {
     const FEATURES: &[&str] = &[
         "dns",
+        "dns_opt",
         "dns_search",
+        "extra_hosts",
+        "group_add",
+        "ipc",
         "labels",
         "links",
-        "security_opt",
+        "network_mode",
+        "oom_kill_disable",
+        "pids_limit",
+        "runtime",
         "storage_opt",
+        "tmpfs",
+        "userns_mode",
+        "uts",
+        "volumes_from",
     ];
-    // TODO(UT-077): unsupported-field detection intentionally remains incomplete.
+    if service.other.get("read_only") == Some(&Value::Bool(true)) {
+        return Err(invalid(unsupported_feature(name, "read_only")));
+    }
+    if present(&service.other, "security_opt") {
+        return Err(invalid(unsupported_feature(name, "security_opt")));
+    }
+    if service
+        .deploy
+        .as_ref()
+        .is_some_and(|deploy| present(&deploy.other, "placement"))
+    {
+        return Err(invalid(format!(
+            "{}; use x-machines",
+            unsupported_feature(name, "deploy.placement")
+        )));
+    }
     let mut warnings = FEATURES
         .iter()
-        .filter(|feature| {
-            service
-                .other
-                .get(**feature)
-                .is_some_and(|value| !value.is_null())
-        })
-        .map(|feature| format!("service '{name}': unsupported feature '{feature}'"))
+        .filter(|feature| present(&service.other, feature))
+        .map(|feature| unsupported_feature(name, feature))
         .collect::<Vec<_>>();
     for feature in ["mem_swappiness", "memswap_limit"] {
         if service
@@ -522,17 +543,34 @@ fn classify(name: &str, service: &RawService) -> Vec<String> {
             .and_then(integer)
             .is_some_and(|value| value > 0)
         {
-            warnings.push(format!("service '{name}': unsupported feature '{feature}'"));
+            warnings.push(unsupported_feature(name, feature));
         }
     }
     if service.other.get("networks").is_some_and(custom_networks) {
-        warnings.push(format!("service '{name}': unsupported feature 'networks'"));
+        warnings.push(unsupported_feature(name, "networks"));
     }
     // TODO(UT-047): secret file mounts remain unsupported; plaintext env references are separate.
     if !service.secrets.is_empty() {
-        warnings.push(format!("service '{name}': unsupported feature 'secrets'"));
+        warnings.push(unsupported_feature(name, "secrets"));
     }
-    warnings
+    if let Some(deploy) = &service.deploy {
+        warnings.extend(
+            deploy
+                .other
+                .iter()
+                .filter(|(feature, value)| !feature.starts_with("x-") && !value.is_null())
+                .map(|(feature, _)| unsupported_feature(name, &format!("deploy.{feature}"))),
+        );
+    }
+    Ok(warnings)
+}
+
+fn present(map: &BTreeMap<String, Value>, key: &str) -> bool {
+    map.get(key).is_some_and(|value| !value.is_null())
+}
+
+fn unsupported_feature(name: &str, feature: &str) -> String {
+    format!("service '{name}': unsupported feature '{feature}'")
 }
 
 fn validate_definitions(project: &RawProject) -> Result<(), ComposeError> {
