@@ -653,15 +653,16 @@ volumes:
         operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: volume_machine, volume },
-            DeployOperation::RunContainer { machine_id: first_machine, .. },
-            DeployOperation::RunContainer { machine_id: second_machine, .. },
+            DeployOperation::RunContainer { machine_id: run_a, .. },
+            DeployOperation::RunContainer { machine_id: run_b, .. },
         ] if volume_machine == &second.machine.id
+            && run_a != run_b
+            && [*run_a, *run_b].contains(&first.machine.id)
+            && [*run_a, *run_b].contains(&second.machine.id)
             && matches!(&volume.source, VolumeSource::Named { name, external: true, labels, .. }
                 if name.as_str() == "shared"
                     && !labels.contains_key(MANAGED_LABEL)
                     && !labels.contains_key(PROJECT_NAME_LABEL))
-            && first_machine == &first.machine.id
-            && second_machine == &second.machine.id
     ));
 }
 

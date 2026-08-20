@@ -210,6 +210,7 @@ fn assemble_plan(
     prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, &intent.options)?;
     let name_errors_with_service = bound.requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
+    let mut occupancy = BTreeMap::<MachineId, usize>::new();
     let mut service_operations = Vec::new();
     for spec in &bound.requested {
         service_operations.extend(
@@ -219,6 +220,7 @@ fn assemble_plan(
                 snapshot,
                 &services,
                 &mut pins,
+                &mut occupancy,
                 &intent.options,
             )
             .map_err(|source| {
@@ -419,6 +421,7 @@ fn plan_one_service(
     snapshot: &DeploySnapshot,
     services: &[ServiceObservation],
     pins: &mut VolumePins,
+    occupancy: &mut BTreeMap<MachineId, usize>,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options)?;
@@ -450,9 +453,17 @@ fn plan_one_service(
             current,
             machines,
             replicas.get() as usize,
+            occupancy,
             options,
         ),
-        ServiceMode::Global => plan_global(requested, &service_id, current, machines, options),
+        ServiceMode::Global => plan_global(
+            requested,
+            &service_id,
+            current,
+            machines,
+            occupancy,
+            options,
+        ),
     };
     let mut operations = pre_deploy_operations(requested, hooks, &service_operations);
     operations.extend(service_operations);
@@ -484,7 +495,10 @@ fn eligible_machines<'a>(
     if machines.is_empty() {
         return Err(placement_error(requested, snapshot));
     }
-    shuffle(&mut machines, options.placement_seed);
+    shuffle(
+        &mut machines,
+        placement_state(options.placement_seed, &requested.name),
+    );
     Ok(machines)
 }
 
@@ -543,14 +557,26 @@ fn normalize(requested: &RequestedServiceSpec) -> RequestedServiceSpec {
     requested
 }
 
+fn placement_state(seed: u64, name: &ServiceName) -> u64 {
+    name.as_str().bytes().fold(seed, |state, byte| {
+        scramble(
+            state
+                .wrapping_add(u64::from(byte))
+                .wrapping_add(0x9e37_79b9_7f4a_7c15),
+        )
+    })
+}
+
+fn scramble(mut state: u64) -> u64 {
+    state = (state ^ (state >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    state = (state ^ (state >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    state ^ (state >> 31)
+}
+
 fn shuffle<T>(values: &mut [T], mut state: u64) {
     for upper in (1..values.len()).rev() {
         state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut random = state;
-        random = (random ^ (random >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        random = (random ^ (random >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        random ^= random >> 31;
-        values.swap(upper, random as usize % (upper + 1));
+        values.swap(upper, scramble(state) as usize % (upper + 1));
     }
 }
 
@@ -619,12 +645,14 @@ fn plan_global(
     service_id: &ServiceId,
     current: &[ServiceContainer],
     machines: Vec<&MachineObservation>,
+    occupancy: &mut BTreeMap<MachineId, usize>,
     options: &PlanOptions,
 ) -> Vec<DeployOperation> {
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
 
     for machine in machines {
+        *occupancy.entry(machine.machine.id).or_default() += 1;
         let on_machine = current
             .iter()
             .filter(|container| container.as_observation().machine_id == machine.machine.id)
@@ -692,6 +720,7 @@ fn plan_replicated(
     current: &[ServiceContainer],
     mut machines: Vec<&MachineObservation>,
     replicas: usize,
+    occupancy: &mut BTreeMap<MachineId, usize>,
     options: &PlanOptions,
 ) -> Vec<DeployOperation> {
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
@@ -714,12 +743,14 @@ fn plan_replicated(
         (
             std::cmp::Reverse(up_to_date),
             std::cmp::Reverse(containers.map_or(0, Vec::len)),
+            occupancy.get(&machine.machine.id).copied().unwrap_or(0),
         )
     });
 
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
     for machine in machines.iter().cycle().take(replicas) {
+        *occupancy.entry(machine.machine.id).or_default() += 1;
         let existing = by_machine
             .get_mut(&machine.machine.id)
             .and_then(Vec::pop)

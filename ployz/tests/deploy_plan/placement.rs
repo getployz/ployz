@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::support::*;
 #[test]
 fn new_replicated_service_runs_the_requested_count_across_available_machines() {
@@ -657,4 +659,104 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
             "Docker Volume 'app_data' is already on Machine 'ewr1', which conflicts with x-machines 'ord1'",
         ],
     );
+}
+
+fn replicated(name: &str, replicas: u32) -> RequestedServiceSpec {
+    let mut spec = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(replicas).unwrap(),
+    });
+    spec.name = ServiceName::parse(name).unwrap();
+    spec
+}
+
+fn cluster(ids: impl IntoIterator<Item = char>) -> Vec<MachineObservation> {
+    ids.into_iter()
+        .map(|id| machine(id, &format!("n{id}")))
+        .collect()
+}
+
+fn run_machine_ids(plan: &DeployPreview) -> Vec<MachineId> {
+    plan.operations
+        .iter()
+        .filter_map(|row| match &row.operation {
+            DeployOperation::RunContainer { machine_id, .. } => Some(*machine_id),
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        })
+        .collect()
+}
+
+#[test]
+fn service_identity_changes_equal_priority_machine_order() {
+    let snapshot = DeploySnapshot {
+        machines: cluster(['1', '2', '3', '4', '5']),
+        ..Default::default()
+    };
+    let options = PlanOptions {
+        placement_seed: 7,
+        ..PlanOptions::default()
+    };
+    let order = |name: &str| {
+        let spec = replicated(name, 3);
+        run_machine_ids(&plan_deploy([&spec], &snapshot, options.clone()).unwrap())
+    };
+
+    assert_ne!(order("alpha"), order("bravo"));
+}
+
+#[test]
+fn later_replicated_service_prefers_machines_unused_by_earlier_services() {
+    let alpha = replicated("alpha", 1);
+    let bravo = replicated("bravo", 1);
+    let plan = plan_deploy(
+        [&alpha, &bravo],
+        &DeploySnapshot {
+            machines: cluster(['1', '2']),
+            ..Default::default()
+        },
+        PlanOptions {
+            placement_seed: 0,
+            ..PlanOptions::default()
+        },
+    )
+    .unwrap();
+
+    let machines = run_machine_ids(&plan).into_iter().collect::<BTreeSet<_>>();
+    assert_eq!(machines.len(), 2);
+}
+
+#[test]
+fn first_deploy_spreads_replicated_services_past_max_replicas() {
+    let specs = [
+        replicated("alpha", 2),
+        replicated("bravo", 3),
+        replicated("charlie", 3),
+        replicated("delta", 2),
+        replicated("echo", 2),
+    ];
+    let plan = plan_deploy(
+        specs.iter(),
+        &DeploySnapshot {
+            machines: cluster(['1', '2', '3', '4', '5', '6', '7', '8', '9', 'a']),
+            ..Default::default()
+        },
+        PlanOptions {
+            placement_seed: 1,
+            ..PlanOptions::default()
+        },
+    )
+    .unwrap();
+
+    let used = run_machine_ids(&plan).into_iter().collect::<BTreeSet<_>>();
+    assert!(
+        used.len() > 3,
+        "expected more than max(replicas)=3 machines, used {}",
+        used.len()
+    );
+    assert_eq!(run_machine_ids(&plan).len(), 12);
 }
