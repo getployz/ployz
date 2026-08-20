@@ -247,6 +247,59 @@ volumes:
     fs::remove_dir_all(root).unwrap();
 }
 
+/// #474: both successful removal paths warn instead of silently losing replicas.
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image and Docker Compose"]
+async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
+    for no_reset in [false, true] {
+        let plan = ClusterPlan::new(
+            &format!("l3-machine-rm-warning-{no_reset}-{}", std::process::id()),
+            2,
+        )
+        .unwrap();
+        let cluster = Cluster::create(plan).unwrap();
+        cluster.initialize_two().await.unwrap();
+        let address = cluster.api_socket_address(0).unwrap();
+
+        assert_success(ployz(
+            address,
+            [
+                "run",
+                "--name",
+                "replicated",
+                "--machine",
+                "machine-2",
+                "--skip-health",
+                SERVICE_CONTAINER_IMAGE,
+                "sleep",
+                "60",
+            ],
+        ));
+
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .args(["--connect", &format!("tcp://{address}"), "machine", "rm"])
+            .args(no_reset.then_some("--no-reset"))
+            .args(["--yes", "machine-2"]);
+        let removed = command.output().unwrap();
+        assert!(
+            removed.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&removed.stdout),
+            String::from_utf8_lossy(&removed.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&removed.stderr);
+        assert!(
+            stderr.contains("Replicated Services may now be under-replicated: default/replicated"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("Replicas are not re-placed automatically."),
+            "{stderr}"
+        );
+    }
+}
+
 fn deploy(
     address: std::net::SocketAddr,
     root: &std::path::Path,

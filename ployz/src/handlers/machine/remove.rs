@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
     DescribeContractRequest, LiveServices, Machine, MachineId, MachineName, MachineTarget,
-    NameMatches, QualifiedService, RpcError, RpcErrorCode, op,
+    NameMatches, QualifiedService, RpcError, RpcErrorCode, ServiceMode, op,
 };
 
 use super::super::{connect_client, runtime, string_values};
@@ -44,12 +44,11 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 &observed, &named,
             )?)
         };
-        let services = services_on(
-            &selected.id,
-            &client
-                .live_services_from(std::slice::from_ref(selected_observation))
-                .await?,
-        );
+        let live = client
+            .live_services_from(std::slice::from_ref(selected_observation))
+            .await?;
+        let services = services_on(&selected.id, &live);
+        let replicated_services = replicated_services_on(&selected.id, &live);
         for line in service_warnings(&selected.name, &services) {
             eprintln!("{line}");
         }
@@ -73,6 +72,16 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     eprintln!("WARNING: target cleanup/reset failed: {warning}");
                 }
             }
+        }
+        if !replicated_services.is_empty() {
+            eprintln!(
+                "WARNING: Replicated Services may now be under-replicated: {}. Replicas are not re-placed automatically.",
+                replicated_services
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
 
         // Drop the local connection before DNS refresh. A refresh failure
@@ -159,16 +168,37 @@ fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec
     )]
 }
 
+#[must_use]
+fn replicated_services_on(
+    machine_id: &MachineId,
+    live: &LiveServices<RpcError>,
+) -> Vec<QualifiedService> {
+    live.services()
+        .into_iter()
+        .filter(|service| {
+            service.containers.iter().any(|container| {
+                let observation = container.as_observation();
+                observation.machine_id == *machine_id
+                    && matches!(
+                        observation.resolved_spec.mode,
+                        ServiceMode::Replicated { .. }
+                    )
+            })
+        })
+        .map(|service| service.identity)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use ployz_core::{
         ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
         LiveServices, MachineId, MachineName, MachineSuccess, PartialResult, QualifiedService,
-        RpcError, RpcErrorCode, ServiceId, ServiceName, derive_live_services,
+        RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceName, derive_live_services,
     };
     use serde_json::{Value, json};
 
-    use super::{machine_removal_refusal, service_warnings, services_on};
+    use super::{machine_removal_refusal, replicated_services_on, service_warnings, services_on};
 
     #[test]
     fn service_warnings_are_silent_when_nothing_is_at_stake() {
@@ -246,6 +276,30 @@ mod tests {
         });
         assert_eq!(
             services_on(&machine_id('a'), &live),
+            [QualifiedService::parse("app/api").unwrap()]
+        );
+    }
+
+    #[test]
+    fn replicated_services_on_excludes_global_services() {
+        let live: LiveServices<RpcError> = derive_live_services(PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: machine_id('a'),
+                value: vec![
+                    observation('1', 'a', "api", ContainerKind::ServiceContainer, 'a'),
+                    {
+                        let mut global =
+                            observation('2', 'a', "caddy", ContainerKind::ServiceContainer, 'b');
+                        global.resolved_spec.mode = ServiceMode::Global;
+                        global
+                    },
+                ],
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+        assert_eq!(
+            replicated_services_on(&machine_id('a'), &live),
             [QualifiedService::parse("app/api").unwrap()]
         );
     }
