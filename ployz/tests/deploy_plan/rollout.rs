@@ -53,6 +53,198 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
 }
 
 #[test]
+fn replacement_requires_one_temporary_endpoint() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut current = requested.clone();
+    current.container.image = "ghcr.io/getployz/api:old".into();
+    requested.update.order = Some(UpdateOrder::StartFirst);
+    let snapshot = |free| DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![container('b', '1', &current, &service_id('a'))],
+        capacity: capacity([('1', free)]),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        plan_deploy([&requested], &snapshot(0), PlanOptions::default()),
+        Err(PlanError::InsufficientCapacity)
+    );
+    assert!(plan_deploy([&requested], &snapshot(1), PlanOptions::default()).is_ok());
+}
+
+#[test]
+fn hook_and_replacement_each_require_a_spare_endpoint() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut current = requested.clone();
+    current.container.image = "ghcr.io/getployz/api:old".into();
+    let snapshot = |free| DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![container('b', '1', &current, &service_id('a'))],
+        capacity: capacity([('1', free)]),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        plan_deploy([&requested], &snapshot(1), PlanOptions::default()),
+        Err(PlanError::InsufficientCapacity)
+    );
+    let plan = plan_deploy([&requested], &snapshot(2), PlanOptions::default()).unwrap();
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::RunHook { .. },
+            DeployOperation::ReplaceContainer(_)
+        ]
+    ));
+}
+
+#[test]
+fn replaced_hooks_credit_all_reclaimed_endpoints() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut current = requested.clone();
+    current.container.image = "ghcr.io/getployz/api:old".into();
+    let current_service_id = service_id('a');
+    let mut old_hook = container('c', '1', &current, &current_service_id);
+    old_hook.kind = ContainerKind::PreDeployHook;
+    let mut other_old_hook = container('d', '1', &current, &current_service_id);
+    other_old_hook.kind = ContainerKind::PreDeployHook;
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![
+                container('b', '1', &current, &current_service_id),
+                old_hook,
+                other_old_hook,
+            ],
+            capacity: capacity([('1', 0)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::StopHook { .. },
+            DeployOperation::StopHook { .. },
+            DeployOperation::RunHook { .. },
+            DeployOperation::ReplaceContainer(_)
+        ]
+    ));
+}
+
+#[test]
+fn hook_capacity_is_charged_only_to_its_selected_machine() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            capacity: capacity([('1', 2), ('2', 1)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::RunHook { machine_id: hook, .. },
+            DeployOperation::RunContainer { machine_id: first, .. },
+            DeployOperation::RunContainer { machine_id: second, .. }
+        ] if hook == first && first != second
+    ));
+}
+
+#[test]
+fn global_hook_uses_a_changed_machine_with_an_extra_slot() {
+    let mut requested = requested(ServiceMode::Global);
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let machines = vec![machine('1', "first"), machine('2', "second")];
+    let baseline = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: machines.clone(),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+    let ordered = operations(&baseline)
+        .into_iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::RunContainer { machine_id, .. } => Some(machine_id),
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let [first, hook] = ordered.as_slice() else {
+        panic!("Global baseline should create exactly two Containers")
+    };
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines,
+            capacity: Some(BTreeMap::from([
+                (*first, BridgeEndpointCapacity::new(1, 0)),
+                (*hook, BridgeEndpointCapacity::new(2, 0)),
+            ])),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).first(),
+        Some(DeployOperation::RunHook { machine_id, .. }) if machine_id == hook
+    ));
+}
+
+#[test]
 fn planning_does_not_count_hook_containers_toward_replicated_count() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

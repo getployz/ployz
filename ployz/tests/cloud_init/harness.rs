@@ -29,6 +29,9 @@ use tokio::{
 };
 use tonic::{Request, Response, Status, Streaming, transport::Server};
 
+#[path = "../support/inspect_telemetry.rs"]
+mod inspect_telemetry_fixture;
+
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
 const DIAL: &str = "dial-secret";
@@ -292,9 +295,17 @@ impl MachineRpc for JoinDaemon {
 
     async fn inspect(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::Inspect(inspect) = request.body else {
+            return Err(Status::invalid_argument("expected Inspect"));
+        };
         let joined = self.inner.joined.load(Ordering::SeqCst);
+        let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
             id: self.inner.registration.assigned_machine.id,
             phase: if joined {
@@ -313,6 +324,7 @@ impl MachineRpc for JoinDaemon {
             store_version: Default::default(),
             rtts: Vec::new(),
             cloud_paired: false,
+            telemetry,
         })
     }
 

@@ -67,6 +67,9 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
         actual.remove("ployz project ls").unwrap();
         actual.remove("ployz project rm").unwrap();
     }
+    if deviations.contains("machine-inspect-telemetry") {
+        actual.remove("ployz machine inspect").unwrap();
+    }
     assert_eq!(
         actual.keys().collect::<Vec<_>>(),
         expected.keys().collect::<Vec<_>>()
@@ -92,6 +95,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "images-json-output".to_owned(),
             "local-machine-init-stub".to_owned(),
             "machine-remove-named-data-loss".to_owned(),
+            "machine-inspect-telemetry".to_owned(),
             "native-completion".to_owned(),
             "no-nightly-daemon-channel".to_owned(),
             "plain-caddy-config".to_owned(),

@@ -56,10 +56,10 @@ pub(super) fn assert_no_eligible(
 }
 
 pub(super) use ployz_core::{
-    AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
-    ContainerResources, ContainerRuntimeObservation, DeviceMapping, DeviceReservation,
-    DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver, MANAGED_LABEL,
-    Machine, MachineId, MachineName, MachineObservation, MachinePath, MachineTarget,
+    AdvertisedEndpoint, BridgeEndpointCapacity, ContainerId, ContainerKind, ContainerObservation,
+    ContainerPath, ContainerResources, ContainerRuntimeObservation, DeviceMapping,
+    DeviceReservation, DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver,
+    MANAGED_LABEL, Machine, MachineId, MachineName, MachineObservation, MachinePath, MachineTarget,
     ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement,
     PortPublication, PreDeployHook, ProjectName, PullPolicy, RequestedServiceSpec,
     ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
@@ -124,6 +124,17 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
 
 pub(super) fn machine_id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
+}
+
+pub(super) fn capacity(
+    entries: impl IntoIterator<Item = (char, u64)>,
+) -> Option<BTreeMap<MachineId, BridgeEndpointCapacity>> {
+    Some(
+        entries
+            .into_iter()
+            .map(|(machine, free)| (machine_id(machine), BridgeEndpointCapacity::new(free, 0)))
+            .collect(),
+    )
 }
 
 pub(super) fn service_id(hex: char) -> ServiceId {

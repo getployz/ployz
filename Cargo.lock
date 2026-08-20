@@ -2221,6 +2221,7 @@ dependencies = [
  "instant-acme",
  "ipnet",
  "netlink-packet-wireguard",
+ "nix",
  "ployz",
  "ployz-core",
  "ployz-relay",

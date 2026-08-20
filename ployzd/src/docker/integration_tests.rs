@@ -12,7 +12,8 @@ use std::{
 use bollard::{
     exec::StartExecResults,
     models::{
-        ContainerCreateBody, ExecConfig as DockerExecConfig, MountType, NetworkCreateRequest,
+        ContainerCreateBody, ExecConfig as DockerExecConfig, Ipam, IpamConfig, MountType,
+        NetworkCreateRequest,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder,
@@ -197,6 +198,69 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
 
 #[tokio::test]
 #[ignore = "requires Docker and alpine:3.23.3"]
+async fn concurrent_runtime_creates_admit_only_one_last_bridge_endpoint() {
+    let _lock = DOCKER_NETWORK_LOCK.lock().await;
+    let docker = LocalDocker::connect().unwrap();
+    let created_network = ensure_small_ployz_network(&docker.client).await;
+    if !created_network {
+        return;
+    }
+    let root = TestRoot::new();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    let first = ContainerRuntime::new(docker.clone(), specs.clone());
+    let second = ContainerRuntime::new(docker.clone(), specs);
+    let machine = MachineId::random();
+    let project = ProjectName::parse("app").unwrap();
+    let first_spec = fixture_spec(&ServiceId::random(), &ServiceName::parse("first").unwrap());
+    let second_spec = fixture_spec(&ServiceId::random(), &ServiceName::parse("second").unwrap());
+
+    let (first_result, second_result) = tokio::join!(
+        first.create(
+            &machine,
+            TEST_GATEWAY,
+            ContainerKind::ServiceContainer,
+            &project,
+            &first_spec
+        ),
+        second.create(
+            &machine,
+            TEST_GATEWAY,
+            ContainerKind::ServiceContainer,
+            &project,
+            &second_spec
+        ),
+    );
+    assert_eq!(
+        [first_result.is_ok(), second_result.is_ok()]
+            .into_iter()
+            .filter(|result| *result)
+            .count(),
+        1,
+        "first={first_result:?}; second={second_result:?}"
+    );
+    assert_eq!(
+        [first_result, second_result]
+            .into_iter()
+            .filter(|result| matches!(result, Err(Error::EndpointCapacity)))
+            .count(),
+        1
+    );
+    let attachments = docker
+        .client
+        .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
+        .await
+        .unwrap()
+        .containers
+        .map_or(0, |containers| containers.len());
+    assert_eq!(attachments, 1);
+    first.remove_all_managed().await.unwrap();
+    cleanup_ployz_network(&docker.client, created_network).await;
+}
+
+#[tokio::test]
+#[ignore = "requires Docker and alpine:3.23.3"]
 async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     let _lock = DOCKER_NETWORK_LOCK.lock().await;
     let root = TestRoot::new();
@@ -345,6 +409,37 @@ async fn ensure_ployz_network(docker: &Docker) -> bool {
             docker
                 .create_network(NetworkCreateRequest {
                     name: crate::network::DOCKER_NETWORK_NAME.into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            true
+        }
+        Err(error) => panic!("failed to inspect Ployz Docker network: {error}"),
+    }
+}
+
+async fn ensure_small_ployz_network(docker: &Docker) -> bool {
+    match docker
+        .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
+        .await
+    {
+        Ok(_) => false,
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => {
+            docker
+                .create_network(NetworkCreateRequest {
+                    name: crate::network::DOCKER_NETWORK_NAME.into(),
+                    ipam: Some(Ipam {
+                        config: Some(vec![IpamConfig {
+                            subnet: Some("10.211.0.0/30".into()),
+                            ip_range: Some("10.211.0.2/32".into()),
+                            gateway: Some("10.211.0.1".into()),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 })
                 .await

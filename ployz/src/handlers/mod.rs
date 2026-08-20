@@ -235,6 +235,7 @@ stub_handlers! {
     list(root) { service::list(root) } => "ls";
     machine_add(root) { machine::add(root) } => "machine add";
     machine_init(root) { machine::init(root) } => "machine init";
+    machine_inspect(root) { machine::inspect(root) } => "machine inspect";
     machine_logs(root) { operator::machine_logs(root) } => "machine logs";
     machine_list(root) { machine::list(root) } => "machine ls";
     machine_rename(root) { machine::rename(root) } => "machine rename";

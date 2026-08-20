@@ -153,7 +153,7 @@ impl ImageIngest {
         let Some(docker) = &self.docker else {
             return Ok(());
         };
-        ManagedService::new(docker.client.clone(), NAME, IMAGE)
+        ManagedService::endpoint(docker.clone(), NAME, IMAGE)
             .remove()
             .await
             .map_err(Into::into)
@@ -190,7 +190,7 @@ impl LocalDocker {
         socket: PathBuf,
     ) -> Result<RunningUnregistry, Error> {
         let service = RunningUnregistry {
-            service: ManagedService::new(self.client.clone(), NAME, IMAGE),
+            service: ManagedService::endpoint(self.clone(), NAME, IMAGE),
             socket,
             gateway,
         };
@@ -208,11 +208,10 @@ pub(crate) struct RunningUnregistry {
 impl RunningUnregistry {
     async fn start(&self) -> Result<(), Error> {
         self.service
-            .ensure(self.config(), |container| {
+            .ensure_endpoint(self.config(), |container| {
                 unregistry_matches(container, &self.socket, self.gateway)
             })
             .await
-            .map_err(Into::into)
     }
 
     fn config(&self) -> ContainerCreateBody {

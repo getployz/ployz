@@ -80,7 +80,7 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     let expected_container_omissions = containers.omissions.clone();
     let expected_volume_failures = volumes.failures.clone();
     let expected_volume_omissions = volumes.omissions.clone();
-    let snapshot = snapshot_from_partial(machines.clone(), containers, volumes);
+    let snapshot = snapshot_from_partial(machines.clone(), containers, volumes, BTreeMap::new());
 
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);

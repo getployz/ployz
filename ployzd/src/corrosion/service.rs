@@ -85,7 +85,7 @@ impl CorrosionConfig {
         let admin = AdminClient::new(self.run_dir.join("admin.sock"));
         let docker = Docker::connect_with_socket_defaults()?;
         let service = DockerService {
-            service: ManagedService::new(docker, self.container_name.clone(), IMAGE),
+            service: ManagedService::host(docker, self.container_name.clone(), IMAGE),
             data_dir: self.data_dir.clone(),
             run_dir: self.run_dir.clone(),
         };
@@ -220,7 +220,7 @@ impl DockerService {
             ..Default::default()
         };
         self.service
-            .ensure(config, |container| {
+            .ensure_host(config, |container| {
                 container
                     .config
                     .as_ref()

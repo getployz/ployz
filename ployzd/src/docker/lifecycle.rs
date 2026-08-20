@@ -1,6 +1,7 @@
 use bollard::{
     Docker,
     errors::Error as DockerError,
+    models::ContainerCreateBody,
     models::{Mount, MountType},
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -200,14 +201,14 @@ impl ContainerRuntime {
                         .build();
                     match self
                         .docker
-                        .client
-                        .create_container(Some(options), body)
+                        .create_endpoint_container(Some(options), body)
                         .await
                     {
                         Ok(created) => (created, display_name),
-                        Err(DockerError::DockerResponseServerError {
-                            status_code: 409, ..
-                        }) => {
+                        Err(Error::Docker(DockerError::DockerResponseServerError {
+                            status_code: 409,
+                            ..
+                        })) => {
                             let existing = self
                                 .inspect_managed_by_name(machine_id, &display_name)
                                 .await?;
@@ -216,7 +217,7 @@ impl ContainerRuntime {
                                 display_name: existing.display_name,
                             });
                         }
-                        Err(error) => return Err(error.into()),
+                        Err(error) => return Err(error),
                     }
                 }
                 None => {
@@ -237,13 +238,12 @@ impl ContainerRuntime {
                             .build();
                         match self
                             .docker
-                            .client
-                            .create_container(Some(options), body.clone())
+                            .create_endpoint_container(Some(options), body.clone())
                             .await
                         {
                             Ok(created) => break (created, display_name),
-                            Err(error) if retry_name_conflict(attempt, &error) => {}
-                            Err(error) => return Err(error.into()),
+                            Err(Error::Docker(error)) if retry_name_conflict(attempt, &error) => {}
+                            Err(error) => return Err(error),
                         }
                     }
                 }
@@ -411,6 +411,20 @@ impl ContainerRuntime {
             Ok(()) | Err(Error::ContainerNotFound(_)) => Ok(()),
             Err(error) => Err(error),
         }
+    }
+}
+
+impl super::LocalDocker {
+    pub(super) async fn create_endpoint_container(
+        &self,
+        options: Option<bollard::query_parameters::CreateContainerOptions>,
+        body: ContainerCreateBody,
+    ) -> Result<bollard::models::ContainerCreateResponse, Error> {
+        let _gate = self.endpoint_creates.lock().await;
+        if self.bridge_capacity().await?.free_endpoints() == 0 {
+            return Err(Error::EndpointCapacity);
+        }
+        Ok(self.client.create_container(options, body).await?)
     }
 }
 

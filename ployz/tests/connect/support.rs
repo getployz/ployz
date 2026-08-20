@@ -33,6 +33,9 @@ use tonic::{
     transport::{Channel, Server},
 };
 
+#[path = "../support/inspect_telemetry.rs"]
+mod inspect_telemetry_fixture;
+
 pub(super) async fn serve_discovery(
     service: DiscoveryService,
 ) -> (
@@ -264,8 +267,16 @@ impl MachineRpc for DiscoveryService {
 
     async fn inspect(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::Inspect(inspect) = request.body else {
+            return Err(Status::invalid_argument("expected Inspect"));
+        };
+        let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         Ok(Response::new(
             RpcResponse::from(MachineDetails {
                 id: self.description.machine_id,
@@ -276,6 +287,7 @@ impl MachineRpc for DiscoveryService {
                 store_version: Default::default(),
                 rtts: Vec::new(),
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
+                telemetry,
             })
             .encode()
             .unwrap(),

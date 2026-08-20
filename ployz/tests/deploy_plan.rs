@@ -1,3 +1,5 @@
+#[path = "deploy_plan/capacity.rs"]
+mod capacity;
 #[path = "deploy_plan/comparison.rs"]
 mod comparison;
 #[path = "deploy_plan/hostnames.rs"]

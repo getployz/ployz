@@ -8,52 +8,106 @@ use bollard::{
 };
 use futures_util::TryStreamExt;
 
+use super::{Error, LocalDocker};
+
 pub(crate) struct ManagedService {
-    docker: Docker,
+    engine: Engine,
     name: String,
     image: &'static str,
 }
 
+enum Engine {
+    Host(Docker),
+    Endpoint(LocalDocker),
+}
+
 impl ManagedService {
-    pub(crate) fn new(docker: Docker, name: impl Into<String>, image: &'static str) -> Self {
+    pub(crate) fn host(docker: Docker, name: impl Into<String>, image: &'static str) -> Self {
         Self {
-            docker,
+            engine: Engine::Host(docker),
             name: name.into(),
             image,
         }
     }
 
-    pub(crate) async fn ensure(
+    pub(crate) fn endpoint(
+        docker: LocalDocker,
+        name: impl Into<String>,
+        image: &'static str,
+    ) -> Self {
+        Self {
+            engine: Engine::Endpoint(docker),
+            name: name.into(),
+            image,
+        }
+    }
+
+    pub(crate) async fn ensure_host(
         &self,
         config: ContainerCreateBody,
         matches: impl FnOnce(&ContainerInspectResponse) -> bool,
     ) -> Result<(), DockerError> {
-        match self.docker.inspect_container(&self.name, None).await {
+        let Engine::Host(docker) = &self.engine else {
+            unreachable!("endpoint service uses ensure_endpoint")
+        };
+        self.ensure(docker, config, matches, |config| async move {
+            self.create_host(config).await
+        })
+        .await
+    }
+
+    pub(crate) async fn ensure_endpoint(
+        &self,
+        config: ContainerCreateBody,
+        matches: impl FnOnce(&ContainerInspectResponse) -> bool,
+    ) -> Result<(), Error> {
+        let Engine::Endpoint(docker) = &self.engine else {
+            unreachable!("host service uses ensure_host")
+        };
+        self.ensure(&docker.client, config, matches, |config| async move {
+            self.create_endpoint(config).await
+        })
+        .await
+    }
+
+    async fn ensure<E, F, Fut>(
+        &self,
+        docker: &Docker,
+        config: ContainerCreateBody,
+        matches: impl FnOnce(&ContainerInspectResponse) -> bool,
+        create: F,
+    ) -> Result<(), E>
+    where
+        E: From<DockerError>,
+        F: FnOnce(ContainerCreateBody) -> Fut,
+        Fut: std::future::Future<Output = Result<(), E>>,
+    {
+        match docker.inspect_container(&self.name, None).await {
             Ok(container) if matches(&container) => {
                 if !container
                     .state
                     .and_then(|state| state.running)
                     .unwrap_or(false)
                 {
-                    self.docker.start_container(&self.name, None).await?;
+                    docker.start_container(&self.name, None).await?;
                 }
             }
             Ok(_) => {
-                self.remove().await?;
-                self.create(config).await?;
+                self.remove().await.map_err(E::from)?;
+                create(config).await?;
             }
-            Err(error) if is_not_found(&error) => self.create(config).await?,
-            Err(error) => return Err(error),
+            Err(error) if is_not_found(&error) => create(config).await?,
+            Err(error) => return Err(error.into()),
         }
         Ok(())
     }
 
-    async fn create(&self, config: ContainerCreateBody) -> Result<(), DockerError> {
-        if let Err(error) = self.docker.inspect_image(self.image).await {
+    async fn prepare_image(&self, docker: &Docker) -> Result<(), DockerError> {
+        if let Err(error) = docker.inspect_image(self.image).await {
             if !is_not_found(&error) {
                 return Err(error);
             }
-            self.docker
+            docker
                 .create_image(
                     Some(
                         CreateImageOptionsBuilder::default()
@@ -66,7 +120,15 @@ impl ManagedService {
                 .try_collect::<Vec<_>>()
                 .await?;
         }
-        self.docker
+        Ok(())
+    }
+
+    async fn create_host(&self, config: ContainerCreateBody) -> Result<(), DockerError> {
+        let Engine::Host(docker) = &self.engine else {
+            unreachable!()
+        };
+        self.prepare_image(docker).await?;
+        docker
             .create_container(
                 Some(
                     CreateContainerOptionsBuilder::default()
@@ -76,11 +138,30 @@ impl ManagedService {
                 config,
             )
             .await?;
-        self.docker.start_container(&self.name, None).await
+        docker.start_container(&self.name, None).await
+    }
+
+    async fn create_endpoint(&self, config: ContainerCreateBody) -> Result<(), Error> {
+        let Engine::Endpoint(docker) = &self.engine else {
+            unreachable!()
+        };
+        self.prepare_image(&docker.client).await?;
+        docker
+            .create_endpoint_container(
+                Some(
+                    CreateContainerOptionsBuilder::default()
+                        .name(&self.name)
+                        .build(),
+                ),
+                config,
+            )
+            .await?;
+        docker.client.start_container(&self.name, None).await?;
+        Ok(())
     }
 
     pub(crate) async fn stop(&self) -> Result<(), DockerError> {
-        match self.docker.stop_container(&self.name, None).await {
+        match self.docker().stop_container(&self.name, None).await {
             Ok(()) => Ok(()),
             Err(error) if is_already_stopped(&error) || is_not_found(&error) => Ok(()),
             Err(error) => Err(error),
@@ -90,7 +171,7 @@ impl ManagedService {
     pub(crate) async fn remove(&self) -> Result<(), DockerError> {
         self.stop().await?;
         match self
-            .docker
+            .docker()
             .remove_container(
                 &self.name,
                 Some(RemoveContainerOptionsBuilder::default().v(true).build()),
@@ -100,6 +181,13 @@ impl ManagedService {
             Ok(()) => Ok(()),
             Err(error) if is_not_found(&error) => Ok(()),
             Err(error) => Err(error),
+        }
+    }
+
+    fn docker(&self) -> &Docker {
+        match &self.engine {
+            Engine::Host(docker) => docker,
+            Engine::Endpoint(docker) => &docker.client,
         }
     }
 }

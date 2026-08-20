@@ -66,6 +66,31 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// Print fresh targeted Machine telemetry without adding host probes to list/watch.
+pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
+    let selector = MachineTarget::parse(
+        leaf_matches(root)
+            .get_one::<String>("machine")
+            .ok_or_else(|| Error::usage("machine is required"))?,
+    )?;
+    with_client(root, |client| {
+        Box::pin(async move {
+            let details = client
+                .invoke::<op::Inspect>(
+                    InspectRequest {
+                        telemetry: ployz_core::InspectTelemetry::Full,
+                        ..Default::default()
+                    },
+                    &selector,
+                    Some(TARGET_RPC_TIMEOUT),
+                )
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&details)?);
+            Ok(())
+        })
+    })
+}
+
 #[derive(Serialize)]
 struct MachineObservationOutput<'a> {
     #[serde(flatten)]

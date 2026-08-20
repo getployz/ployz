@@ -5,13 +5,14 @@ mod observe;
 mod peer_pull;
 mod spec_store;
 mod stream;
+mod telemetry;
 mod unregistry;
 mod volume;
 
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf};
+use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf, sync::Arc};
 
 use bollard::{
     Docker,
@@ -19,14 +20,16 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, ListImagesOptionsBuilder},
 };
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, ProjectName,
-    QualifiedService, RpcErrorCode, ServiceId, ServiceName, ValueError,
+    BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL,
+    HealthObservation, HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages,
+    MachineTelemetry, ProjectName, QualifiedService, RpcErrorCode, ServiceId, ServiceName,
+    ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 use observe::ObservationSink;
 
@@ -48,21 +51,29 @@ pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 #[derive(Clone)]
 pub struct LocalDocker {
     client: Docker,
+    endpoint_creates: Arc<Mutex<()>>,
 }
 
 impl LocalDocker {
     pub fn connect() -> Result<Self, Error> {
-        Ok(Self {
-            client: Docker::connect_with_defaults()?,
-        })
+        Ok(Self::from_client(Docker::connect_with_defaults()?))
+    }
+
+    fn from_client(client: Docker) -> Self {
+        Self {
+            client,
+            endpoint_creates: Arc::new(Mutex::new(())),
+        }
     }
 
     #[cfg(test)]
     fn connect_socket(socket: &str) -> Result<Self, Error> {
         let socket = socket.trim_start_matches("unix://");
-        Ok(Self {
-            client: Docker::connect_with_socket(socket, 120, bollard::API_DEFAULT_VERSION)?,
-        })
+        Ok(Self::from_client(Docker::connect_with_socket(
+            socket,
+            120,
+            bollard::API_DEFAULT_VERSION,
+        )?))
     }
 
     async fn uses_containerd_store(&self) -> Result<bool, Error> {
@@ -167,6 +178,24 @@ impl ContainerRuntime {
             }
         }
         Ok(observations)
+    }
+
+    /// Read fresh Docker bridge and host telemetry.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker or a required host probe cannot be read.
+    pub(crate) async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
+        self.docker.telemetry().await
+    }
+
+    /// Read fresh Ployz bridge endpoint capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Ployz bridge.
+    pub(crate) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
+        self.docker.bridge_capacity().await
     }
 
     pub async fn inspect_managed(
@@ -514,6 +543,12 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
 
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A required host telemetry read failed.
+    #[error("host telemetry failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// The Ployz bridge has no endpoint available for a new Container.
+    #[error("Ployz Docker bridge has no free endpoint capacity")]
+    EndpointCapacity,
     #[error("Docker operation failed: {0}")]
     Docker(#[from] bollard::errors::Error),
     #[error("Docker inspect JSON failed: {0}")]
@@ -573,6 +608,7 @@ impl Error {
                 ..
             }) => RpcErrorCode::Conflict,
             Self::MissingPreDeployHook
+            | Self::EndpointCapacity
             | Self::DurationOverflow
             | Self::SizeOverflow
             | Self::InvalidContainerConfig(_)
@@ -582,6 +618,7 @@ impl Error {
             | Self::InvalidValue { .. }
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
+            | Self::Io(_)
             | Self::Json(_)
             | Self::Network(_)
             | Self::SpecStore(_)

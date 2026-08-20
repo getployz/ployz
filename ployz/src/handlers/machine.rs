@@ -25,7 +25,7 @@ mod remove;
 pub(super) use add::add;
 pub(super) use helpers::{confirm, machine_name};
 pub(super) use init::init;
-pub(super) use inspect::{list, rtt, wireguard_show};
+pub(super) use inspect::{inspect, list, rtt, wireguard_show};
 pub(super) use remove::remove;
 
 const DEFAULT_WIREGUARD_PORT: u16 = 51820;

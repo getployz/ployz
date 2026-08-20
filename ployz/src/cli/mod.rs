@@ -296,6 +296,7 @@ fn machine() -> Command {
         .arg_required_else_help(true)
         .subcommand(machine_add())
         .subcommand(machine_init())
+        .subcommand(base("inspect", "Inspect a machine").arg(positional("machine", true)))
         .subcommand(
             log_flags(
                 base("logs", "Show machine logs").visible_alias("log"),

@@ -3,6 +3,7 @@
 pub mod domain;
 pub mod framing;
 mod host_config;
+mod machine_telemetry;
 pub mod project;
 pub mod routing;
 pub mod rpc;
@@ -14,6 +15,7 @@ pub mod value;
 pub use domain::*;
 pub use framing::*;
 pub use host_config::*;
+pub use machine_telemetry::*;
 pub use project::*;
 pub use routing::*;
 pub use rpc::*;

@@ -1,13 +1,14 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
 
 use ployz_core::{
-    ContainerRuntimeObservation, EnsureGlobalSlotRequest, LiveServices, Machine, MachineTarget,
-    QualifiedService, ResolvedServiceSpec, RpcError, ServiceContainer, ServiceMode,
-    ServiceObservation, machine_matches_placement, op,
+    BridgeEndpointCapacity, ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest,
+    LiveServices, Machine, MachineId, MachineTarget, QualifiedService, ResolvedServiceSpec,
+    RpcError, ServiceContainer, ServiceMode, ServiceObservation, machine_matches_placement, op,
 };
 
 use crate::{
     connect::{Client, ConnectError},
+    deploy::endpoint_capacity_error,
     failure::Failure,
 };
 
@@ -38,6 +39,53 @@ impl From<CatchUpError> for Failure {
 impl From<ConnectError> for CatchUpError {
     fn from(error: ConnectError) -> Self {
         Self::Other(error.into())
+    }
+}
+
+pub(crate) trait CatchUpClient {
+    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, CatchUpError>;
+    async fn bridge_capacity(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError>;
+    async fn ensure_global_slot(
+        &self,
+        machine_id: &MachineId,
+        request: EnsureGlobalSlotRequest,
+    ) -> Result<(), RpcError>;
+}
+
+impl CatchUpClient for Client {
+    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, CatchUpError> {
+        Client::live_services(self).await.map_err(Into::into)
+    }
+
+    async fn bridge_capacity(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError> {
+        let details = self
+            .invoke::<op::Inspect>(
+                InspectRequest {
+                    telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
+                    ..Default::default()
+                },
+                &MachineTarget::from(machine_id),
+                None,
+            )
+            .await
+            .map_err(|error| CatchUpError::Other(error.into()))?;
+        Ok(details.telemetry.map(|telemetry| telemetry.into_bridge()))
+    }
+
+    async fn ensure_global_slot(
+        &self,
+        machine_id: &MachineId,
+        request: EnsureGlobalSlotRequest,
+    ) -> Result<(), RpcError> {
+        self.invoke::<op::EnsureGlobalSlot>(request, &MachineTarget::from(machine_id), None)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -72,7 +120,9 @@ fn slot_for(
     }
     if service.containers.iter().any(|container| {
         let observation = container.as_observation();
-        observation.machine_id == this_machine.id && is_running(&observation.runtime)
+        observation.machine_id == this_machine.id
+            && observation.service_id == spec.service_id
+            && is_running(&observation.runtime)
     }) {
         return None;
     }
@@ -131,8 +181,8 @@ fn partial_observation_warning(live: &LiveServices<RpcError>) -> Option<String> 
 /// Fails when listing Services fails, when expected Caddy cannot be placed, or
 /// when Caddy was expected and is still not running after catch-up. Other
 /// Global failures are warnings.
-pub async fn catch_up_globals(
-    client: &mut Client,
+pub(crate) async fn catch_up_globals<C: CatchUpClient>(
+    client: &mut C,
     this_machine: &Machine,
     skip_caddy: bool,
 ) -> Result<(), CatchUpError> {
@@ -142,6 +192,16 @@ pub async fn catch_up_globals(
     }
     let services = live.services();
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
+    let endpoint_creates = slots
+        .iter()
+        .filter(|slot| !service_has_slot(&services, this_machine, &slot.spec.service_id))
+        .count();
+    if endpoint_creates > 0 {
+        let capacity = client.bridge_capacity(&this_machine.id).await?;
+        if let Some(error) = endpoint_capacity_error(endpoint_creates, capacity.as_ref()) {
+            return Err(CatchUpError::Other(Failure::usage(error.to_string())));
+        }
+    }
     let expect_caddy = caddy_expected(&services, this_machine, skip_caddy, &slots);
     if !slots.is_empty() {
         eprintln!("Placing Global Services on this Machine.");
@@ -149,13 +209,12 @@ pub async fn catch_up_globals(
     for slot in slots {
         let identity = slot.identity.clone();
         match client
-            .invoke::<op::EnsureGlobalSlot>(
+            .ensure_global_slot(
+                &this_machine.id,
                 EnsureGlobalSlotRequest {
                     project_name: slot.identity.project,
                     resolved_spec: slot.spec,
                 },
-                &MachineTarget::from(&this_machine.id),
-                None,
             )
             .await
         {
@@ -184,9 +243,23 @@ pub async fn catch_up_globals(
     Ok(())
 }
 
+fn service_has_slot(
+    services: &[ServiceObservation],
+    machine: &Machine,
+    service_id: &ployz_core::ServiceId,
+) -> bool {
+    services
+        .iter()
+        .flat_map(|service| &service.containers)
+        .any(|container| {
+            let observation = container.as_observation();
+            observation.machine_id == machine.id && observation.service_id == *service_id
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv6Addr, num::NonZeroU32};
+    use std::{cell::Cell, net::Ipv6Addr, num::NonZeroU32};
 
     use ployz_core::{
         ContainerId, ContainerKind, ContainerObservation, ContainerResources,
@@ -239,6 +312,79 @@ mod tests {
             identities(&plan_global_catch_up(&live.services(), &joiner, false)),
             ["ployz-system/caddy"]
         );
+    }
+
+    #[tokio::test]
+    async fn stale_local_generation_checks_capacity_before_ensuring_current_slot() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let stale = global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            created_on(&joiner, 'a'),
+        );
+        let current = global_service(
+            qualified("app", "api"),
+            'b',
+            Placement::default(),
+            running_on(&founder, 'b'),
+        );
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![stale, current],
+            capacity: None,
+            ensure_calls: Cell::new(0),
+        };
+
+        assert!(matches!(
+            catch_up_globals(&mut client, &joiner, true).await,
+            Err(CatchUpError::Other(_))
+        ));
+        assert_eq!(client.ensure_calls.get(), 0);
+    }
+
+    struct FakeCatchUpClient {
+        machine_id: MachineId,
+        services: Vec<ServiceObservation>,
+        capacity: Option<BridgeEndpointCapacity>,
+        ensure_calls: Cell<usize>,
+    }
+
+    impl CatchUpClient for FakeCatchUpClient {
+        async fn live_services(&mut self) -> Result<LiveServices<RpcError>, CatchUpError> {
+            Ok(LiveServices {
+                containers: ployz_core::PartialResult {
+                    successes: vec![ployz_core::MachineSuccess {
+                        machine_id: self.machine_id,
+                        value: self
+                            .services
+                            .iter()
+                            .flat_map(|service| service.containers.iter().cloned())
+                            .map(ServiceContainer::into_observation)
+                            .collect(),
+                    }],
+                    failures: Vec::new(),
+                    omissions: Vec::new(),
+                },
+            })
+        }
+
+        async fn bridge_capacity(
+            &self,
+            _machine_id: &MachineId,
+        ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError> {
+            Ok(self.capacity.clone())
+        }
+
+        async fn ensure_global_slot(
+            &self,
+            _machine_id: &MachineId,
+            _request: EnsureGlobalSlotRequest,
+        ) -> Result<(), RpcError> {
+            self.ensure_calls.set(self.ensure_calls.get() + 1);
+            Ok(())
+        }
     }
 
     #[test]

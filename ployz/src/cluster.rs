@@ -1,16 +1,21 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Duration,
+};
 
 use ployz_core::{
-    ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume, DockerVolumeName,
-    FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, InspectRequest,
-    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
-    LiveServices, LocalMachineRemoved, MachineFailure, MachineId, MachineImages, MachineName,
-    MachineObservation, MachineRpcClient, MachineSuccess, MachineTarget, NameMatches,
-    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RemoveContainerRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
-    StopContainerRequest, UnconfirmedDataLoss, apply_many_targets, derive_live_services, op,
+    BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
+    ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
+    DockerVolumeName, FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest,
+    InspectRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
+    ListVolumesRequest, LiveServices, LocalMachineRemoved, MachineFailure, MachineId,
+    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
+    MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
+    RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
+    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, apply_many_targets,
+    derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -27,6 +32,8 @@ use crate::{
     deploy::{DeploySnapshot, ObservedDockerVolume},
     service::ContainerOperationFailure,
 };
+
+mod capacity;
 
 #[derive(Clone)]
 pub struct Client {
@@ -587,7 +594,10 @@ impl Client {
     ) -> Result<DeploySnapshot, ConnectError> {
         let containers = self.live_services_from(&machines).await?.containers;
         let volumes = self.list_volumes(&machines).await;
-        Ok(snapshot_from_partial(machines, containers, volumes))
+        let capacity = capacity::observe(self, &machines).await;
+        Ok(snapshot_from_partial(
+            machines, containers, volumes, capacity,
+        ))
     }
 }
 
@@ -595,6 +605,7 @@ pub(crate) fn snapshot_from_partial(
     machines: Vec<MachineObservation>,
     containers: PartialResult<Vec<ContainerObservation>, RpcError>,
     volumes: PartialResult<Vec<DockerVolume>, RpcError>,
+    capacity: BTreeMap<MachineId, BridgeEndpointCapacity>,
 ) -> DeploySnapshot {
     let PartialResult {
         successes: container_successes,
@@ -626,6 +637,7 @@ pub(crate) fn snapshot_from_partial(
         container_omissions,
         volume_failures,
         volume_omissions,
+        capacity: Some(capacity),
     }
 }
 

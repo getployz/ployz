@@ -1,9 +1,13 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use ployz_core::{
-    ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineTarget, ProjectName, QualifiedService, RpcError, ServiceObservation, derive_services,
+    BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
+    DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName,
+    MachineObservation, MachineTarget, ProjectName, QualifiedService, RpcError, ServiceObservation,
+    derive_services,
 };
 use thiserror::Error;
 
@@ -24,6 +28,7 @@ pub(crate) use apply::{
 };
 pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
+pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
     IngressContext, VolumeFate, data_loss_from_plan, plan_project_removal, preview_deploy,
 };
@@ -59,6 +64,9 @@ pub struct DeploySnapshot {
     pub volume_failures: Vec<MachineFailure<RpcError>>,
     /// Required Docker Volume queries that produced no terminal response.
     pub volume_omissions: Vec<MachineId>,
+    /// Fresh targeted bridge observations used only for capacity admission.
+    /// Fresh telemetry by Machine, or `None` for snapshot paths that cannot create endpoints.
+    pub capacity: Option<BTreeMap<MachineId, BridgeEndpointCapacity>>,
 }
 
 impl DeploySnapshot {
@@ -237,6 +245,12 @@ impl fmt::Display for EliminatingConstraints {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
+    /// At least one relevant Machine did not return a fresh capacity observation.
+    #[error("capacity unknown: an eligible Machine did not return fresh bridge telemetry")]
+    CapacityUnknown,
+    /// Fresh observations confirm the requested operations cannot fit.
+    #[error("insufficient capacity on observed eligible Machines")]
+    InsufficientCapacity,
     #[error("no machines available that satisfy all constraints: {constraints}")]
     NoEligibleMachines { constraints: EliminatingConstraints },
     #[error("service mode cannot be changed")]

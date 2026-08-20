@@ -1,13 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRuntimeObservation, DataLoss, HookContainer, HostBind,
-    IngressHost, MachineId, MachineObservation, MembershipObservation, ObservedDataLoss,
-    PortPublication, PreservedVolume, ProjectName, PruneRefusal, QualifiedService,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
-    ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners,
-    machine_matches_placement, machine_matches_target, same_service_mode_kind,
+    ContainerAction, DataLoss, HookContainer, IngressHost, MachineId, MachineObservation,
+    MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName, PruneRefusal,
+    QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
+    machine_matches_target, same_service_mode_kind,
 };
 
 use super::{
@@ -15,11 +13,19 @@ use super::{
     EliminatingConstraint, PlanError, PlanOptions, ReplacementOperation,
 };
 
+pub(super) mod capacity;
+mod placement;
 mod volumes;
 
+use capacity::CapacityBudget;
+use placement::{
+    CapacityAdmission, PlacementState, ReplicatedPlacement, is_up_to_date, plan_global,
+    plan_replicated,
+};
 use volumes::{
-    VolumePins, named_volume_uses, plan_volume_operations, prepare_shared_replicated_volumes,
-    preserved_owned_volumes, reject_mixed_volume_modes, scope_requested,
+    VolumePins, constrain_volume_candidates, named_volume_uses, plan_volume_operations,
+    prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
+    scope_requested,
 };
 
 /// Whether Project removal keeps or destroys observer-visible managed volumes.
@@ -207,10 +213,19 @@ fn assemble_plan(
     let volume_uses = named_volume_uses(&bound.requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::default();
-    prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, &intent.options)?;
     let name_errors_with_service = bound.requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
-    let mut occupancy = BTreeMap::<MachineId, usize>::new();
+    let mut capacity = CapacityBudget::from_snapshot(snapshot);
+    let reservations = prepare_shared_replicated_volumes(
+        &volume_uses,
+        snapshot,
+        &bound.requested,
+        &services,
+        &mut pins,
+        &mut capacity,
+        &intent.options,
+    )?;
+    let mut placement = PlacementState::new(capacity, reservations);
     let mut service_operations = Vec::new();
     for spec in &bound.requested {
         service_operations.extend(
@@ -220,7 +235,7 @@ fn assemble_plan(
                 snapshot,
                 &services,
                 &mut pins,
-                &mut occupancy,
+                &mut placement,
                 &intent.options,
             )
             .map_err(|source| {
@@ -421,11 +436,10 @@ fn plan_one_service(
     snapshot: &DeploySnapshot,
     services: &[ServiceObservation],
     pins: &mut VolumePins,
-    occupancy: &mut BTreeMap<MachineId, usize>,
+    placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options)?;
-    plan_volume_operations(requested, snapshot, pins, &mut machines)?;
     let identity = QualifiedService::new(project_name.clone(), requested.name.clone());
     let existing = services.iter().find(|service| service.identity == identity);
     let (service_id, current, hooks) = match existing {
@@ -446,26 +460,68 @@ fn plan_one_service(
             )
         }
     };
-    let service_operations = match requested.mode {
+    let reservation = placement.take_reservation(&requested.name);
+    let mut capacity_error = None;
+    if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
+        constrain_volume_candidates(requested, snapshot, pins, &mut machines)?;
+        let ServiceMode::Replicated { replicas } = requested.mode else {
+            unreachable!("replicated branch has replicated mode")
+        };
+        let up_to_date = current
+            .iter()
+            .filter(|container| {
+                machines
+                    .iter()
+                    .any(|machine| machine.machine.id == container.as_observation().machine_id)
+                    && is_up_to_date(container, requested, options)
+            })
+            .count();
+        if requested.pre_deploy.is_some() && up_to_date < replicas.get() as usize {
+            placement.release_hooks(hooks);
+        }
+        let relevant = machines
+            .iter()
+            .map(|machine| machine.machine.id)
+            .collect::<Vec<_>>();
+        capacity_error = Some(placement.capacity_error_for(&relevant));
+        machines.retain(|machine| {
+            current.iter().any(|container| {
+                container.as_observation().machine_id == machine.machine.id
+                    && is_up_to_date(container, requested, options)
+            }) || placement.capacity_fits(&machine.machine.id, 1)
+        });
+        if machines.is_empty() {
+            return Err(placement.capacity_error_for(&relevant));
+        }
+    }
+    plan_volume_operations(requested, snapshot, pins, &mut machines)?;
+    let (service_operations, hook_machine) = match requested.mode {
         ServiceMode::Replicated { replicas } => plan_replicated(
             requested,
             &service_id,
             current,
-            machines,
-            replicas.get() as usize,
-            occupancy,
+            ReplicatedPlacement {
+                machines,
+                replicas: replicas.get() as usize,
+                admission: reservation.unwrap_or_else(|| CapacityAdmission::Pending {
+                    error: capacity_error.expect("unreserved capacity has relevant Machines"),
+                }),
+            },
+            placement,
             options,
-        ),
+        )?,
         ServiceMode::Global => plan_global(
             requested,
             &service_id,
             current,
+            hooks,
             machines,
-            occupancy,
+            placement,
             options,
-        ),
+        )?,
     };
-    let mut operations = pre_deploy_operations(requested, hooks, &service_operations);
+    let mut operations =
+        pre_deploy_operations(requested, hooks, &service_operations, hook_machine.as_ref());
     operations.extend(service_operations);
     Ok(operations)
 }
@@ -584,6 +640,7 @@ fn pre_deploy_operations(
     requested: &RequestedServiceSpec,
     hooks: &[HookContainer],
     service_operations: &[DeployOperation],
+    hook_machine: Option<&MachineId>,
 ) -> Vec<DeployOperation> {
     if requested.pre_deploy.is_none() {
         return Vec::new();
@@ -596,7 +653,8 @@ fn pre_deploy_operations(
             }
             | DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id, spec, ..
-            }) => Some((machine_id, spec)),
+            }) if hook_machine == Some(machine_id) => Some((machine_id, spec)),
+            DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => None,
             DeployOperation::CreateVolume { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
@@ -631,266 +689,4 @@ fn pre_deploy_operations(
             .collect(),
     });
     operations
-}
-
-fn has_mounted_named_volume(graph: &ServiceVolumeGraph) -> bool {
-    graph
-        .mounts()
-        .iter()
-        .any(|mount| matches!(graph.volume_for(mount).source, VolumeSource::Named { .. }))
-}
-
-fn plan_global(
-    requested: &RequestedServiceSpec,
-    service_id: &ServiceId,
-    current: &[ServiceContainer],
-    machines: Vec<&MachineObservation>,
-    occupancy: &mut BTreeMap<MachineId, usize>,
-    options: &PlanOptions,
-) -> Vec<DeployOperation> {
-    let mut used = BTreeSet::new();
-    let mut operations = Vec::new();
-
-    for machine in machines {
-        *occupancy.entry(machine.machine.id).or_default() += 1;
-        let on_machine = current
-            .iter()
-            .filter(|container| container.as_observation().machine_id == machine.machine.id)
-            .collect::<Vec<_>>();
-        if let Some(kept) = on_machine
-            .iter()
-            .copied()
-            .find(|container| is_up_to_date(container, requested, options))
-        {
-            used.insert(kept.as_observation().container_id);
-            continue;
-        }
-
-        if let Some(container) = on_machine
-            .iter()
-            .copied()
-            .find(|container| super::is_active_runtime(&container.as_observation().runtime))
-        {
-            let observation = container.as_observation();
-            used.insert(observation.container_id);
-            for other in &on_machine {
-                let other_observation = other.as_observation();
-                if other_observation.container_id != observation.container_id
-                    && super::is_active_runtime(&other_observation.runtime)
-                    && other_observation.resolved_spec.ports.iter().any(|old| {
-                        requested
-                            .ports
-                            .iter()
-                            .any(|new| host_ports_conflict(old, new))
-                    })
-                {
-                    operations.push(DeployOperation::StopContainer {
-                        machine_id: machine.machine.id,
-                        container_id: other_observation.container_id,
-                    });
-                }
-            }
-            let order = determine_update_order(container, requested);
-            operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
-                machine_id: machine.machine.id,
-                old_container_id: observation.container_id,
-                spec: resolve(requested, *service_id, order),
-                skip_health_monitor: options.skip_health_monitor,
-            }));
-        } else {
-            operations.push(DeployOperation::RunContainer {
-                machine_id: machine.machine.id,
-                spec: resolve(
-                    requested,
-                    *service_id,
-                    requested.update.order.unwrap_or(UpdateOrder::StartFirst),
-                ),
-                skip_health_monitor: options.skip_health_monitor,
-            });
-        }
-    }
-
-    remove_unused(&mut operations, current, &used);
-    operations
-}
-
-fn plan_replicated(
-    requested: &RequestedServiceSpec,
-    service_id: &ServiceId,
-    current: &[ServiceContainer],
-    mut machines: Vec<&MachineObservation>,
-    replicas: usize,
-    occupancy: &mut BTreeMap<MachineId, usize>,
-    options: &PlanOptions,
-) -> Vec<DeployOperation> {
-    let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
-    for container in current {
-        by_machine
-            .entry(container.as_observation().machine_id)
-            .or_default()
-            .push(container);
-    }
-    for containers in by_machine.values_mut() {
-        containers.sort_by_key(|container| is_up_to_date(container, requested, options));
-    }
-    machines.sort_by_key(|machine| {
-        let containers = by_machine.get(&machine.machine.id);
-        let up_to_date = containers
-            .into_iter()
-            .flatten()
-            .filter(|container| is_up_to_date(container, requested, options))
-            .count();
-        (
-            std::cmp::Reverse(up_to_date),
-            std::cmp::Reverse(containers.map_or(0, Vec::len)),
-            occupancy.get(&machine.machine.id).copied().unwrap_or(0),
-        )
-    });
-
-    let mut used = BTreeSet::new();
-    let mut operations = Vec::new();
-    for machine in machines.iter().cycle().take(replicas) {
-        *occupancy.entry(machine.machine.id).or_default() += 1;
-        let existing = by_machine
-            .get_mut(&machine.machine.id)
-            .and_then(Vec::pop)
-            .inspect(|container| {
-                used.insert(container.as_observation().container_id);
-            });
-        match existing {
-            Some(container) if is_up_to_date(container, requested, options) => {}
-            Some(container) => {
-                let order = determine_update_order(container, requested);
-                operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
-                    machine_id: machine.machine.id,
-                    old_container_id: container.as_observation().container_id,
-                    spec: resolve(requested, *service_id, order),
-                    skip_health_monitor: options.skip_health_monitor,
-                }));
-            }
-            None => operations.push(DeployOperation::RunContainer {
-                machine_id: machine.machine.id,
-                spec: resolve(
-                    requested,
-                    *service_id,
-                    requested.update.order.unwrap_or(UpdateOrder::StartFirst),
-                ),
-                skip_health_monitor: options.skip_health_monitor,
-            }),
-        }
-    }
-    remove_unused(&mut operations, current, &used);
-    operations
-}
-
-fn remove_unused(
-    operations: &mut Vec<DeployOperation>,
-    current: &[ServiceContainer],
-    used: &BTreeSet<ContainerId>,
-) {
-    for container in current {
-        let observation = container.as_observation();
-        if !used.contains(&observation.container_id) {
-            // TODO(UT-075): placement changes remove now-ineligible containers; there is no
-            // deploy-time Machine filter that leaves excluded containers running.
-            operations.push(DeployOperation::RemoveContainer {
-                machine_id: observation.machine_id,
-                container_id: observation.container_id,
-            });
-        }
-    }
-}
-
-fn is_up_to_date(
-    container: &ServiceContainer,
-    requested: &RequestedServiceSpec,
-    options: &PlanOptions,
-) -> bool {
-    let observation = container.as_observation();
-    !options.force_recreate
-        && is_running(&observation.runtime)
-        && compare_specs(&observation.resolved_spec, requested) == SpecChange::UpToDate
-}
-
-fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
-    matches!(runtime, ContainerRuntimeObservation::Running { .. })
-}
-
-fn determine_update_order(
-    current: &ServiceContainer,
-    requested: &RequestedServiceSpec,
-) -> UpdateOrder {
-    if let Some(order) = requested.update.order {
-        return order;
-    }
-    let current = current.as_observation();
-    if current.resolved_spec.ports.iter().any(|old| {
-        requested
-            .ports
-            .iter()
-            .any(|new| host_ports_conflict(old, new))
-    }) {
-        return UpdateOrder::StopFirst;
-    }
-    if (matches!(requested.mode, ServiceMode::Global)
-        || matches!(
-            requested.mode,
-            ServiceMode::Replicated { replicas } if replicas.get() == 1
-        ))
-        && has_mounted_named_volume(&requested.volume_graph)
-    {
-        return UpdateOrder::StopFirst;
-    }
-    UpdateOrder::StartFirst
-}
-
-fn host_ports_conflict(left: &PortPublication, right: &PortPublication) -> bool {
-    let (
-        PortPublication::Host {
-            bind: left_bind,
-            published_port: left_port,
-            transport_protocol: left_protocol,
-            ..
-        },
-        PortPublication::Host {
-            bind: right_bind,
-            published_port: right_port,
-            transport_protocol: right_protocol,
-            ..
-        },
-    ) = (left, right)
-    else {
-        return false;
-    };
-    left_port == right_port
-        && left_protocol == right_protocol
-        && binds_overlap(left_bind, right_bind)
-}
-
-fn binds_overlap(left: &HostBind, right: &HostBind) -> bool {
-    match (left, right) {
-        (HostBind::All, _) | (_, HostBind::All) => true,
-        (HostBind::Address { address: left }, HostBind::Address { address: right }) => {
-            left == right
-        }
-        (HostBind::Address { address }, HostBind::Prefix { prefix })
-        | (HostBind::Prefix { prefix }, HostBind::Address { address }) => prefix.contains(address),
-        (HostBind::Prefix { prefix: left }, HostBind::Prefix { prefix: right }) => {
-            left.contains(&right.network()) || right.contains(&left.network())
-        }
-    }
-}
-
-fn resolve(
-    requested: &RequestedServiceSpec,
-    service_id: ServiceId,
-    order: UpdateOrder,
-) -> ResolvedServiceSpec {
-    requested.to_resolved(
-        service_id,
-        ResolvedUpdateConfig {
-            order,
-            monitor_millis: requested.update.monitor_millis,
-        },
-    )
 }

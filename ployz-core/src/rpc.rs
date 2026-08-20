@@ -11,9 +11,10 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
-    ContainerObservation, DockerVolume, LocalMachinePhase, Machine, MachineId, MachineLogService,
-    MachineName, MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
-    PublicIpDiscovery, ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
+    ContainerObservation, DockerVolume, InspectTelemetry, LocalMachinePhase, Machine, MachineId,
+    MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineToken,
+    MachineUpdate, ProjectName, PublicIpDiscovery, ResolvedServiceSpec, RttObservation,
+    TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -182,6 +183,9 @@ pub struct InspectRequest {
     pub wireguard_port: u16,
     #[serde(default)]
     pub include_rtts: bool,
+    /// Fresh telemetry to collect for this inspection.
+    #[serde(default)]
+    pub telemetry: InspectTelemetry,
 }
 
 impl Default for InspectRequest {
@@ -191,6 +195,7 @@ impl Default for InspectRequest {
             public_ip_override: None,
             wireguard_port: default_wireguard_port(),
             include_rtts: false,
+            telemetry: InspectTelemetry::None,
         }
     }
 }
@@ -228,7 +233,7 @@ pub struct InitializeRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud_pairing: Option<CloudPairing>,
 }
 
@@ -634,6 +639,9 @@ pub struct MachineDetails {
     /// Stored Cloud Pairing is present. The Pairing Credential is not returned.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cloud_paired: bool,
+    /// Fresh telemetry requested only by targeted inspect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryObservation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
