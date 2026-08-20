@@ -109,23 +109,7 @@ async fn send_entry(
 }
 
 pub async fn open_journal_logs(unit: &str, options: &LogsOptions) -> Result<LogSource, Status> {
-    let mut command = Command::new("journalctl");
-    command.args(["-u", unit, "--no-hostname", "-n"]);
-    command.arg(if options.tail < 0 {
-        "all".to_owned()
-    } else {
-        options.tail.to_string()
-    });
-    if options.follow {
-        command.arg("-f");
-    }
-    command.args(["-o", "short-unix"]);
-    if !options.since.is_empty() {
-        command.args(["-S", &options.since]);
-    }
-    if !options.until.is_empty() {
-        command.args(["-U", &options.until]);
-    }
+    let mut command = journal_log_command(unit, options);
     let mut child = command
         .stdout(Stdio::piped())
         .kill_on_drop(true)
@@ -165,6 +149,27 @@ pub async fn open_journal_logs(unit: &str, options: &LogsOptions) -> Result<LogS
         }
     });
     Ok(Box::pin(ReceiverStream::new(receiver)))
+}
+
+fn journal_log_command(unit: &str, options: &LogsOptions) -> Command {
+    let mut command = Command::new("journalctl");
+    command.args(["-u", unit, "--no-hostname", "-n"]);
+    command.arg(if options.tail < 0 {
+        "all".to_owned()
+    } else {
+        options.tail.to_string()
+    });
+    if options.follow {
+        command.arg("-f");
+    }
+    command.args(["-o", "short-unix"]);
+    if let Some(since) = options.since_unix_seconds {
+        command.args(["-S", &format!("@{since}")]);
+    }
+    if let Some(until) = options.until_unix_seconds {
+        command.args(["-U", &format!("@{until}")]);
+    }
+    command
 }
 
 fn parse_journal_entry(line: &[u8]) -> RawLogEntry {
@@ -215,6 +220,27 @@ mod tests {
                 message: b"systemd[1]: \xff\n".to_vec(),
             }
         );
+    }
+
+    #[test]
+    fn journal_log_bounds_are_absolute_unix_seconds() {
+        let command = journal_log_command(
+            "ployz",
+            &LogsOptions {
+                follow: false,
+                tail: 100,
+                since_unix_seconds: Some(1_786_698_000),
+                until_unix_seconds: Some(1_786_701_600),
+            },
+        );
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(args.windows(2).any(|args| args == ["-S", "@1786698000"]));
+        assert!(args.windows(2).any(|args| args == ["-U", "@1786701600"]));
     }
 
     #[tokio::test]

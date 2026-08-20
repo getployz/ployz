@@ -489,8 +489,8 @@ fn log_options() -> LogsOptions {
     LogsOptions {
         follow: false,
         tail: -1,
-        since: String::new(),
-        until: String::new(),
+        since_unix_seconds: None,
+        until_unix_seconds: None,
     }
 }
 

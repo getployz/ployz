@@ -966,8 +966,8 @@ fn streaming_requests_keep_typed_control_options_outside_raw_frames() {
     let options = LogsOptions {
         follow: true,
         tail: -1,
-        since: "2m30s".into(),
-        until: "2026-08-14T09:00:00Z".into(),
+        since_unix_seconds: Some(1_786_698_000),
+        until_unix_seconds: Some(1_786_701_600),
     };
     for request in [
         op::ContainerLogs::into_request(ContainerLogsRequest {

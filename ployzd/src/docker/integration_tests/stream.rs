@@ -146,8 +146,8 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         options: LogsOptions {
             follow: false,
             tail: -1,
-            since: String::new(),
-            until: String::new(),
+            since_unix_seconds: None,
+            until_unix_seconds: None,
         },
     })
     .encode()

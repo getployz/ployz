@@ -1,11 +1,9 @@
-use std::str::FromStr;
-
 use bollard::{
     container::LogOutput,
     exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults},
     query_parameters::LogsOptionsBuilder,
 };
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::DateTime;
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerLogsRequest, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
@@ -283,69 +281,19 @@ fn docker_log_options(
         .follow(options.follow)
         .timestamps(true)
         .tail(&tail);
-    if !options.since.is_empty() {
-        builder = builder.since(parse_log_time(&options.since)?);
+    if let Some(since) = options.since_unix_seconds {
+        builder = builder.since(docker_log_timestamp(since)?);
     }
-    if !options.until.is_empty() {
-        builder = builder.until(parse_log_time(&options.until)?);
+    if let Some(until) = options.until_unix_seconds {
+        builder = builder.until(docker_log_timestamp(until)?);
     }
     Ok(builder.build())
 }
 
 #[allow(clippy::result_large_err)]
-fn parse_log_time(value: &str) -> Result<i32, Status> {
-    let timestamp = value
-        .parse::<i64>()
-        .ok()
-        .or_else(|| {
-            DateTime::parse_from_rfc3339(value)
-                .ok()
-                .map(|time| time.timestamp())
-        })
-        .or_else(|| {
-            NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
-                .ok()
-                .and_then(|time| Local.from_local_datetime(&time).single())
-                .map(|time| time.timestamp())
-        })
-        .or_else(|| {
-            NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                .ok()
-                .and_then(|date| date.and_hms_opt(0, 0, 0))
-                .and_then(|time| Local.from_local_datetime(&time).single())
-                .map(|time| time.timestamp())
-        })
-        .or_else(|| parse_duration(value).map(|duration| Utc::now().timestamp() - duration))
-        .ok_or_else(|| Status::invalid_argument(format!("invalid log time {value:?}")))?;
+fn docker_log_timestamp(timestamp: i64) -> Result<i32, Status> {
     i32::try_from(timestamp)
-        .map_err(|_| Status::invalid_argument(format!("log time {value:?} is out of range")))
-}
-
-fn parse_duration(value: &str) -> Option<i64> {
-    let mut remaining = value;
-    let mut seconds = 0_f64;
-    while !remaining.is_empty() {
-        let number_end =
-            remaining.find(|character: char| !character.is_ascii_digit() && character != '.')?;
-        let number = f64::from_str(&remaining[..number_end]).ok()?;
-        remaining = &remaining[number_end..];
-        let unit_end = remaining
-            .find(|character: char| character.is_ascii_digit() || character == '.')
-            .unwrap_or(remaining.len());
-        let (unit, rest) = remaining.split_at(unit_end);
-        let multiplier = match unit {
-            "h" => 3_600_f64,
-            "m" => 60_f64,
-            "s" => 1_f64,
-            "ms" => 0.001_f64,
-            "us" | "µs" => 0.000_001_f64,
-            "ns" => 0.000_000_001_f64,
-            _ => return None,
-        };
-        seconds += number * multiplier;
-        remaining = rest;
-    }
-    (seconds.is_finite() && seconds >= 0.0).then_some(seconds as i64)
+        .map_err(|_| Status::invalid_argument(format!("log time {timestamp} is out of range")))
 }
 
 #[cfg(test)]
@@ -369,8 +317,16 @@ mod tests {
     }
 
     #[test]
-    fn relative_log_duration_accepts_compound_values() {
-        assert_eq!(parse_duration("2m30s"), Some(150));
-        assert_eq!(parse_duration("bad"), None);
+    fn docker_log_bounds_are_absolute_unix_seconds() {
+        let options = docker_log_options(&LogsOptions {
+            follow: false,
+            tail: 100,
+            since_unix_seconds: Some(1_786_698_000),
+            until_unix_seconds: Some(1_786_701_600),
+        })
+        .unwrap();
+
+        assert_eq!(options.since, 1_786_698_000);
+        assert_eq!(options.until, 1_786_701_600);
     }
 }

@@ -261,6 +261,7 @@ fn parse_fanout_selectors(values: Vec<String>) -> Result<Vec<FanoutSelector>, Er
 }
 
 fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
+    let now = Utc::now().timestamp();
     Ok(LogsOptions {
         follow: matches.get_flag("follow"),
         tail: parse_tail(
@@ -268,17 +269,19 @@ fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
                 .get_one::<String>("tail")
                 .ok_or_else(|| Error::usage("log tail is required"))?,
         )?,
-        since: parse_log_time(
+        since_unix_seconds: parse_log_time(
             matches
                 .get_one::<String>("since")
                 .map(String::as_str)
                 .unwrap_or(""),
+            now,
         )?,
-        until: parse_log_time(
+        until_unix_seconds: parse_log_time(
             matches
                 .get_one::<String>("until")
                 .map(String::as_str)
                 .unwrap_or(""),
+            now,
         )?,
     })
 }

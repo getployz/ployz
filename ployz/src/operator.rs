@@ -275,7 +275,7 @@ pub fn parse_tail(value: &str) -> Result<i32, OperatorError> {
         .ok_or_else(|| OperatorError::InvalidTail(value.to_owned()))
 }
 
-/// Parse a `--since` / `--until` value, keeping the original text for the wire.
+/// Parse a `--since` / `--until` value into absolute Unix seconds.
 ///
 /// Empty means no bound. A non-empty value must be a relative duration, RFC 3339
 /// date/time, local date or date-time, or Unix timestamp.
@@ -284,26 +284,35 @@ pub fn parse_tail(value: &str) -> Result<i32, OperatorError> {
 ///
 /// Returns [`OperatorError::InvalidLogTime`] when the value is not one of those
 /// forms.
-pub fn parse_log_time(value: &str) -> Result<String, OperatorError> {
-    if value.is_empty() || log_time_is_valid(value) {
-        return Ok(value.to_owned());
+pub fn parse_log_time(value: &str, now_unix_seconds: i64) -> Result<Option<i64>, OperatorError> {
+    if value.is_empty() {
+        return Ok(None);
     }
-    Err(OperatorError::InvalidLogTime(value.to_owned()))
-}
-
-fn log_time_is_valid(value: &str) -> bool {
-    value.parse::<i64>().is_ok()
-        || DateTime::parse_from_rfc3339(value).is_ok()
-        || NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
-            .ok()
-            .and_then(|time| Local.from_local_datetime(&time).single())
-            .is_some()
-        || NaiveDate::parse_from_str(value, "%Y-%m-%d")
-            .ok()
-            .and_then(|date| date.and_hms_opt(0, 0, 0))
-            .and_then(|time| Local.from_local_datetime(&time).single())
-            .is_some()
-        || parse_log_duration(value).is_some()
+    let timestamp = value
+        .parse::<i64>()
+        .ok()
+        .or_else(|| {
+            DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|time| time.timestamp())
+        })
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+                .ok()
+                .and_then(|time| Local.from_local_datetime(&time).single())
+                .map(|time| time.timestamp())
+        })
+        .or_else(|| {
+            NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+                .and_then(|time| Local.from_local_datetime(&time).single())
+                .map(|time| time.timestamp())
+        })
+        .or_else(|| parse_log_duration(value).map(|duration| now_unix_seconds - duration));
+    timestamp
+        .map(Some)
+        .ok_or_else(|| OperatorError::InvalidLogTime(value.to_owned()))
 }
 
 fn parse_log_duration(value: &str) -> Option<i64> {

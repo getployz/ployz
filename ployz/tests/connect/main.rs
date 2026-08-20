@@ -608,8 +608,8 @@ async fn stream_after_redial_uses_the_replaced_channel() {
         LogsOptions {
             follow: false,
             tail: 0,
-            since: String::new(),
-            until: String::new(),
+            since_unix_seconds: None,
+            until_unix_seconds: None,
         },
         CancellationToken::new(),
     )

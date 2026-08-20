@@ -322,10 +322,10 @@ pub struct RemoveContainerRequest {
 pub struct LogsOptions {
     pub follow: bool,
     pub tail: i32,
-    #[serde(default)]
-    pub since: String,
-    #[serde(default)]
-    pub until: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_unix_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_unix_seconds: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
