@@ -288,8 +288,8 @@ impl Client {
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible or is
-    /// ambiguous, or when this observer cannot list Docker Volumes on that
-    /// Machine.
+    /// ambiguous, or when the Machine did not respond so Data Loss cannot be
+    /// listed.
     pub async fn data_loss_if_machine_removed(
         &mut self,
         machine: &MachineTarget,
@@ -308,9 +308,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible or is
-    /// the current entry while another Machine is visible, when this observer
-    /// cannot list Docker Volumes on that Machine, when the confirmation does
-    /// not cover the fresh Data Loss, or when reset or shared-row removal
+    /// the current entry while another Machine is visible, when the Machine
+    /// did not respond so Data Loss cannot be listed, when the confirmation
+    /// does not cover the fresh Data Loss, or when reset or shared-row removal
     /// fails.
     pub async fn remove_machine(
         &mut self,
@@ -739,17 +739,17 @@ async fn data_loss_on_machine(
 ) -> Result<ObservedDataLoss, RpcError> {
     let selected = observation.machine.id;
     if !observation.membership.invites_rpc() {
-        return Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: format!(
-                "Machine {selected} did not produce a Volume listing from this observer"
-            ),
-            details: Value::Null,
-        });
+        return Err(machine_did_not_respond(selected));
     }
     let volumes = list_volumes_on_machine(client, selected)
         .await
-        .map_err(|failure| failure.error)?;
+        .map_err(|failure| {
+            if failure.error.code == RpcErrorCode::Unavailable {
+                machine_did_not_respond(selected)
+            } else {
+                failure.error
+            }
+        })?;
     Ok(ObservedDataLoss {
         data_loss: volumes
             .value
@@ -757,6 +757,14 @@ async fn data_loss_on_machine(
             .map(|volume| DataLoss::DockerVolume(volume.id))
             .collect(),
     })
+}
+
+fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: format!("Machine {machine_id} did not respond"),
+        details: Value::Null,
+    }
 }
 
 async fn list_volumes_on_machine(

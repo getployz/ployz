@@ -320,7 +320,7 @@ impl Session {
     ///
     /// Returns a generated [`RpcError`] when the session is closed, `machine`
     /// is not a Machine Target, the Machine is not visible or is ambiguous, or
-    /// this observer cannot list Docker Volumes on that Machine.
+    /// the Machine did not respond so Data Loss cannot be listed.
     pub async fn data_loss_if_machine_removed(
         &self,
         machine: &str,
@@ -341,9 +341,10 @@ impl Session {
     ///
     /// Returns a generated [`RpcError`] when the session is closed, `machine`
     /// is not a Machine Target, the Machine is not visible or is the current
-    /// entry while another Machine is visible, the confirmation does not cover
-    /// the fresh Data Loss, or reset or shared-row removal fails. Unconfirmed
-    /// names are in `UnconfirmedDataLoss` details.
+    /// entry while another Machine is visible, the Machine did not respond so
+    /// Data Loss cannot be listed, the confirmation does not cover the fresh
+    /// Data Loss, or reset or shared-row removal fails. Unconfirmed names are
+    /// in `UnconfirmedDataLoss` details.
     pub async fn remove_machine(
         &self,
         machine: &str,

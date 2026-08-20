@@ -315,7 +315,9 @@ fn machine() -> Command {
         .subcommand(
             base("rm", "Remove a machine")
                 .visible_aliases(["remove", "delete"])
-                .arg(switch("no-reset", None))
+                .arg(switch("no-reset", None).help(
+                    "Remove the Machine from the Cluster without resetting it; use when the Machine is unreachable",
+                ))
                 .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
                 .arg(positional("machine", true))
                 .arg(
@@ -612,6 +614,25 @@ mod tests {
             super::command()
                 .try_get_matches_from(["ployz", "deploy", "-P", "shop"])
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn machine_rm_no_reset_help_says_when_to_skip_reset() {
+        let help = super::command()
+            .find_subcommand("machine")
+            .expect("machine")
+            .find_subcommand("rm")
+            .expect("rm")
+            .get_arguments()
+            .find(|arg| arg.get_id() == "no-reset")
+            .expect("no-reset")
+            .get_help()
+            .map(ToString::to_string)
+            .expect("help text");
+        assert_eq!(
+            help,
+            "Remove the Machine from the Cluster without resetting it; use when the Machine is unreachable"
         );
     }
 

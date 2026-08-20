@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
     DescribeContractRequest, LiveServices, Machine, MachineId, MachineName, MachineTarget,
-    NameMatches, QualifiedService, RemoveMachineRequest, RpcError, op,
+    NameMatches, QualifiedService, RemoveMachineRequest, RpcError, RpcErrorCode, op,
 };
 
 use super::super::{connect_client, runtime, string_values};
@@ -38,7 +38,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         } else {
             let observed = client
                 .data_loss_if_machine_removed(&selected_target)
-                .await?;
+                .await
+                .map_err(machine_removal_refusal)?;
             Some(super::super::data_loss::collect_data_loss_confirmation(
                 &observed, &named,
             )?)
@@ -126,6 +127,16 @@ fn select_machine(
     }
 }
 
+fn machine_removal_refusal(error: RpcError) -> Error {
+    if error.code == RpcErrorCode::Unavailable {
+        Error::usage(format!(
+            "{error}; use --no-reset to remove it from the Cluster without resetting"
+        ))
+    } else {
+        error.into()
+    }
+}
+
 #[must_use]
 fn services_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<QualifiedService> {
     live.services()
@@ -160,11 +171,11 @@ mod tests {
     use ployz_core::{
         ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
         LiveServices, MachineId, MachineName, MachineSuccess, PartialResult, QualifiedService,
-        RpcError, ServiceId, ServiceName, derive_live_services,
+        RpcError, RpcErrorCode, ServiceId, ServiceName, derive_live_services,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    use super::{service_warnings, services_on};
+    use super::{machine_removal_refusal, service_warnings, services_on};
 
     #[test]
     fn service_warnings_are_silent_when_nothing_is_at_stake() {
@@ -185,6 +196,32 @@ mod tests {
                 ],
             ),
             vec!["WARNING: Machine ams1 is running Services: app/api, app/web".to_owned()]
+        );
+    }
+
+    #[test]
+    fn unreachable_removal_names_no_reset() {
+        let error = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
+            details: Value::Null,
+        };
+        assert_eq!(
+            machine_removal_refusal(error).to_string(),
+            "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond; use --no-reset to remove it from the Cluster without resetting"
+        );
+    }
+
+    #[test]
+    fn other_data_loss_errors_keep_their_message() {
+        let error = RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "Machine \"gone\" was not found".into(),
+            details: Value::Null,
+        };
+        assert_eq!(
+            machine_removal_refusal(error).to_string(),
+            "Machine \"gone\" was not found"
         );
     }
 
