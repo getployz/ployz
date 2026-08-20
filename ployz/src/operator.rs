@@ -4,9 +4,11 @@ use std::{
     collections::{BinaryHeap, HashSet},
     future::Future,
     pin::Pin,
+    str::FromStr,
     time::Duration,
 };
 
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
@@ -34,7 +36,7 @@ const LOG_STALL_CHECK: Duration = Duration::from_secs(1);
 #[derive(Debug, Error)]
 pub enum LogError {
     #[error("{0}")]
-    Transport(Box<tonic::Status>),
+    Transport(#[from] TransportError),
     #[error("{0}")]
     Protocol(#[from] StreamProtocolError),
     #[error("{0}")]
@@ -43,7 +45,7 @@ pub enum LogError {
 
 impl From<tonic::Status> for LogError {
     fn from(status: tonic::Status) -> Self {
-        Self::Transport(Box::new(status))
+        Self::from(TransportError::from(status))
     }
 }
 
@@ -132,6 +134,10 @@ pub enum OperatorError {
     InvalidServiceSelector(String),
     #[error("invalid log tail {0:?}: expected a non-negative integer or all")]
     InvalidTail(String),
+    #[error(
+        "invalid log time {0:?}: expected a relative duration, RFC 3339 date, or Unix timestamp"
+    )]
+    InvalidLogTime(String),
     #[error("invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT")]
     InvalidProxyPort,
     #[error("invalid local port {0:?}: expected 0-65535")]
@@ -267,6 +273,64 @@ pub fn parse_tail(value: &str) -> Result<i32, OperatorError> {
         .ok()
         .filter(|tail| *tail >= 0)
         .ok_or_else(|| OperatorError::InvalidTail(value.to_owned()))
+}
+
+/// Parse a `--since` / `--until` value, keeping the original text for the wire.
+///
+/// Empty means no bound. A non-empty value must be a relative duration, RFC 3339
+/// date/time, local date or date-time, or Unix timestamp.
+///
+/// # Errors
+///
+/// Returns [`OperatorError::InvalidLogTime`] when the value is not one of those
+/// forms.
+pub fn parse_log_time(value: &str) -> Result<String, OperatorError> {
+    if value.is_empty() || log_time_is_valid(value) {
+        return Ok(value.to_owned());
+    }
+    Err(OperatorError::InvalidLogTime(value.to_owned()))
+}
+
+fn log_time_is_valid(value: &str) -> bool {
+    value.parse::<i64>().is_ok()
+        || DateTime::parse_from_rfc3339(value).is_ok()
+        || NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+            .ok()
+            .and_then(|time| Local.from_local_datetime(&time).single())
+            .is_some()
+        || NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .ok()
+            .and_then(|date| date.and_hms_opt(0, 0, 0))
+            .and_then(|time| Local.from_local_datetime(&time).single())
+            .is_some()
+        || parse_log_duration(value).is_some()
+}
+
+fn parse_log_duration(value: &str) -> Option<i64> {
+    let mut remaining = value;
+    let mut seconds = 0_f64;
+    while !remaining.is_empty() {
+        let number_end =
+            remaining.find(|character: char| !character.is_ascii_digit() && character != '.')?;
+        let number = f64::from_str(&remaining[..number_end]).ok()?;
+        remaining = &remaining[number_end..];
+        let unit_end = remaining
+            .find(|character: char| character.is_ascii_digit() || character == '.')
+            .unwrap_or(remaining.len());
+        let (unit, rest) = remaining.split_at(unit_end);
+        let multiplier = match unit {
+            "h" => 3_600_f64,
+            "m" => 60_f64,
+            "s" => 1_f64,
+            "ms" => 0.001_f64,
+            "us" | "µs" => 0.000_001_f64,
+            "ns" => 0.000_000_001_f64,
+            _ => return None,
+        };
+        seconds += number * multiplier;
+        remaining = rest;
+    }
+    (seconds.is_finite() && seconds >= 0.0).then_some(seconds as i64)
 }
 
 #[must_use]

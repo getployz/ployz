@@ -298,6 +298,47 @@ mod tests {
     }
 
     #[test]
+    fn logs_since_rejects_garbage_before_connecting() {
+        let mut command = crate::cli::command();
+        let cases = [
+            (
+                "since",
+                "notatime",
+                r#"invalid log time "notatime": expected a relative duration, RFC 3339 date, or Unix timestamp"#,
+            ),
+            (
+                "until",
+                "notatime",
+                r#"invalid log time "notatime": expected a relative duration, RFC 3339 date, or Unix timestamp"#,
+            ),
+            (
+                "tail",
+                "abc",
+                r#"invalid log tail "abc": expected a non-negative integer or all"#,
+            ),
+        ];
+        for (flag, value, expected) in cases {
+            let matches = command
+                .clone()
+                .try_get_matches_from([
+                    "ployz",
+                    "--connect",
+                    "tcp://127.0.0.1:1",
+                    "logs",
+                    "api",
+                    &format!("--{flag}"),
+                    value,
+                ])
+                .unwrap();
+            assert_eq!(
+                dispatch(&matches, &mut command).unwrap_err().to_string(),
+                expected,
+                "{flag}",
+            );
+        }
+    }
+
+    #[test]
     fn machine_rename_rejects_an_invalid_machine_name_before_connecting() {
         let mut command = crate::cli::command();
         let matches = command

@@ -325,6 +325,21 @@ mod tests {
     }
 
     #[test]
+    fn machine_rpc_status_prints_the_message_not_transport_metadata() {
+        let status = tonic::Status::invalid_argument("invalid log time \"notatime\"");
+        let failure = Failure::from(OperatorError::from(status));
+        assert_eq!(
+            failure.to_string(),
+            "Machine RPC failed: invalid log time \"notatime\""
+        );
+        assert!(
+            !failure.to_string().contains("MetadataMap"),
+            "{}",
+            failure.to_string()
+        );
+    }
+
+    #[test]
     fn usage_is_not_a_library_error() {
         let failure = Failure::usage("nope");
         assert_eq!(failure.to_string(), "nope");

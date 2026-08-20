@@ -19,7 +19,7 @@ use crate::{
     context::Transport,
     operator::{
         ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
-        open_service_logs, parse_proxy_ports, parse_service_args, parse_tail,
+        open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
         select_proxy_container, service_logs_use_compose,
     },
 };
@@ -103,6 +103,7 @@ pub(super) fn caddy_logs(root: &ArgMatches) -> Result<(), Error> {
 
 fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {
     let leaf = leaf_matches(root);
+    let options = log_options(leaf)?;
     let (args, context, compose_selection) = if service_logs_use_compose(&explicit) {
         let project = load_project(&LoadOptions {
             command: "logs".into(),
@@ -135,7 +136,6 @@ fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Err
     } else {
         (parse_service_args(&explicit)?, None, false)
     };
-    let options = log_options(leaf)?;
     let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let utc = leaf.get_flag("utc");
     with_client_context(root, context.as_deref(), |client| {
@@ -268,14 +268,18 @@ fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
                 .get_one::<String>("tail")
                 .ok_or_else(|| Error::usage("log tail is required"))?,
         )?,
-        since: matches
-            .get_one::<String>("since")
-            .cloned()
-            .unwrap_or_default(),
-        until: matches
-            .get_one::<String>("until")
-            .cloned()
-            .unwrap_or_default(),
+        since: parse_log_time(
+            matches
+                .get_one::<String>("since")
+                .map(String::as_str)
+                .unwrap_or(""),
+        )?,
+        until: parse_log_time(
+            matches
+                .get_one::<String>("until")
+                .map(String::as_str)
+                .unwrap_or(""),
+        )?,
     })
 }
 

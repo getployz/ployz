@@ -649,13 +649,12 @@ impl ConnectError {
     }
 }
 
-/// A gRPC transport failure with Display frozen to `tonic::Status`.
+/// A gRPC transport failure. Display is the status message, not Status Debug.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error("{display}")]
+#[error("{message}")]
 pub struct TransportError {
     code: tonic::Code,
     message: String,
-    display: String,
     details: Value,
 }
 
@@ -698,7 +697,6 @@ impl From<tonic::Status> for TransportError {
         Self {
             code: status.code(),
             message: status.message().to_owned(),
-            display: status.to_string(),
             details: if status.details().is_empty() {
                 Value::Null
             } else {
@@ -848,6 +846,21 @@ mod tests {
             assert_eq!(error.is_not_found(), not_found, "{code:?}");
             assert_eq!(error.to_rpc_error().code, rpc, "{code:?}");
         }
+    }
+
+    #[test]
+    fn machine_rpc_status_prints_the_message_not_transport_metadata() {
+        let status = tonic::Status::invalid_argument("invalid log time \"notatime\"");
+        let leaked = status.to_string();
+        assert!(leaked.contains("MetadataMap"), "{leaked}");
+        assert!(leaked.contains("InvalidArgument"), "{leaked}");
+
+        let error = TransportError::from(status);
+        assert_eq!(error.to_string(), "invalid log time \"notatime\"");
+        assert_eq!(
+            ConnectError::Rpc(error).to_string(),
+            "Machine RPC failed: invalid log time \"notatime\""
+        );
     }
 
     #[test]

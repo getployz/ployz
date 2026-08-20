@@ -210,6 +210,37 @@ fn service_args_tail_and_proxy_ports_cover_the_argument_tables() {
     }
 }
 
+#[test]
+fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
+    for valid in [
+        "",
+        "2m30s",
+        "1h",
+        "2025-11-24",
+        "2024-05-14T22:50:00",
+        "2024-01-31T10:30:00Z",
+        "1763953966",
+    ] {
+        assert_eq!(parse_log_time(valid).as_deref().unwrap(), valid, "{valid}");
+    }
+    assert_eq!(
+        parse_log_time("notatime").unwrap_err().to_string(),
+        "invalid log time \"notatime\": expected a relative duration, RFC 3339 date, or Unix timestamp"
+    );
+    assert_eq!(
+        parse_tail("abc").unwrap_err().to_string(),
+        "invalid log tail \"abc\": expected a non-negative integer or all"
+    );
+}
+
+#[test]
+fn log_stream_status_prints_the_message_not_transport_metadata() {
+    let error = LogError::from(tonic::Status::invalid_argument(
+        "invalid log time \"notatime\"",
+    ));
+    assert_eq!(error.to_string(), "invalid log time \"notatime\"");
+}
+
 #[tokio::test]
 async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls() {
     let first_metadata = metadata("first");
