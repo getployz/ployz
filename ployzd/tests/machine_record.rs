@@ -162,6 +162,46 @@ fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
 }
 
 #[test]
+fn set_cloud_pairing_after_initialize_persists() {
+    let dir = TestDir::new("ployzd-set-cloud-pairing");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let (reset, _) = tokio::sync::watch::channel(false);
+    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let pairing = sample_cloud_pairing();
+
+    local
+        .initialize(ployz_core::InitializeRequest {
+            name: MachineName::parse("first").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
+        .unwrap();
+    assert_eq!(local.record().unwrap().cloud_pairing, None);
+
+    local.set_cloud_pairing(pairing.clone()).unwrap();
+    assert_eq!(
+        local.record().unwrap().cloud_pairing.as_ref(),
+        Some(&pairing)
+    );
+    drop(local);
+    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(reopened.record().cloud_pairing.as_ref(), Some(&pairing));
+}
+
+#[test]
+fn set_cloud_pairing_before_initialize_is_not_participating() {
+    let dir = TestDir::new("ployzd-set-cloud-pairing-uninitialized");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let (reset, _) = tokio::sync::watch::channel(false);
+    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let error = local.set_cloud_pairing(sample_cloud_pairing()).unwrap_err();
+    assert!(matches!(error, LocalMachineError::NotParticipating));
+}
+
+#[test]
 fn join_with_cloud_pairing_stores_the_same_two_fields() {
     let first_dir = TestDir::new("ployzd-join-cloud-pairing-first");
     let mut first = LocalMachineStore::open(&first_dir.0).unwrap();

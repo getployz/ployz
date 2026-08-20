@@ -5,7 +5,8 @@ use std::time::Duration;
 use clap::ArgMatches;
 use ployz_core::{
     CloudEnrollToken, InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase,
-    MachineName, MachineTokenRequest, ReserveDomainRequest, ResetRequest, RpcErrorCode, op,
+    MachineName, MachineTokenRequest, ReserveDomainRequest, ResetRequest, RpcErrorCode,
+    SetCloudPairingRequest, op,
 };
 
 use super::{Error, config_path, connect_client, leaf_matches, required, runtime};
@@ -57,12 +58,14 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                             None,
                         )
                         .await?;
-                    wait_phase(
+                    let mut ready = wait_phase(
                         matches,
                         LocalMachinePhase::Participating,
                         "joined Machine did not become ready",
                     )
                     .await?;
+                    crate::global_catch_up::catch_up_globals(&mut ready, &assigned, no_caddy)
+                        .await?;
                     println!("Joined Machine {} ({})", assigned.name, assigned.id);
                     return Ok(());
                 }
@@ -75,7 +78,7 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                                 public_ip: machine_token.public_ip,
                                 advertised_endpoints: machine_token.advertised_endpoints,
                                 wireguard_mtu,
-                                cloud_pairing: Some(pairing),
+                                cloud_pairing: no_caddy.then(|| pairing.clone()),
                             },
                             None,
                         )
@@ -119,6 +122,14 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                         if !no_dns {
                             crate::dns::update_records_for_caddy(&mut ready).await?;
                         }
+                        ready
+                            .call::<op::SetCloudPairing>(
+                                SetCloudPairingRequest {
+                                    cloud_pairing: pairing,
+                                },
+                                None,
+                            )
+                            .await?;
                     }
                     println!("Initialised Machine {} ({})", machine.name, machine.id);
                     return Ok(());

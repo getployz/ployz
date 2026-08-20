@@ -8,13 +8,13 @@ use std::{
 };
 
 use ployz_core::{
-    InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
-    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated,
-    ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest, Registered,
-    RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics,
-    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
-    synthesize_membership,
+    CloudPairing, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
+    LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
+    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
+    MachineUpdated, ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest,
+    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
+    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
+    associate_wireguard_peers, synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -448,6 +448,22 @@ impl LocalMachine {
         drop(store);
         self.restart.send_replace(true);
         Ok(JoinAccepted {})
+    }
+
+    /// Persist Cloud Pairing so this Machine can hold Relay Register.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotParticipating`] when this Machine is not
+    /// participating, [`Error::LockPoisoned`] when the local record lock is
+    /// poisoned, and [`Error::Store`] when the record cannot be written.
+    pub fn set_cloud_pairing(&self, pairing: CloudPairing) -> Result<(), Error> {
+        let mut store = self.lock_store()?;
+        if store.record().phase() != LocalMachinePhase::Participating {
+            return Err(Error::NotParticipating);
+        }
+        store.persist_cloud_pairing(pairing)?;
+        Ok(())
     }
 
     /// Membership Observation of Machines visible from this participating Machine.

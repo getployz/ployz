@@ -12,12 +12,14 @@ use std::{
 
 use ployz::sdk;
 use ployz_core::{
-    AdvertisedEndpoint, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, Domain,
+    AdvertisedEndpoint, CloudPairingSet, ContainerCreated, ContainerId, ContainerKind,
+    ContainerList, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
+    DESCRIBE_CONTRACT_CAPABILITY, Domain, EnsureGlobalSlotRequest, HealthObservation,
     InitializeRequest, Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine,
-    MachineDetails, MachineId, MachineName, MachineRpc, MachineRpcServer, MachineToken,
-    ManagementAddress, OpaquePayload, PROTOCOL_MAJOR, PairingCredential, Registered,
-    ReserveDomainRequest, ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    WireGuardPublicKey,
+    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachineRpc,
+    MachineRpcServer, MachineToken, ManagementAddress, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, PairingCredential, Registered, ReserveDomainRequest, ResetAccepted, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, WireGuardPublicKey,
 };
 use ployz_relay::{ClientError, DialCredential, Open, RegisterRequest, Relay, RelayClient};
 use tokio::{
@@ -175,6 +177,9 @@ struct JoinInner {
     initialize_requests: Mutex<Vec<InitializeRequest>>,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
     resets: AtomicUsize,
+    containers: Mutex<Vec<ContainerObservation>>,
+    ensure_requests: Mutex<Vec<EnsureGlobalSlotRequest>>,
+    fail_ensure: AtomicBool,
     _register: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -188,6 +193,9 @@ impl JoinDaemon {
                 initialize_requests: Mutex::new(Vec::new()),
                 reserve_request: Mutex::new(None),
                 resets: AtomicUsize::new(0),
+                containers: Mutex::new(Vec::new()),
+                ensure_requests: Mutex::new(Vec::new()),
+                fail_ensure: AtomicBool::new(false),
                 _register: Mutex::new(None),
             }),
         }
@@ -219,6 +227,20 @@ impl JoinDaemon {
 
     pub fn reserve_request(&self) -> Option<ReserveDomainRequest> {
         self.inner.reserve_request.lock().unwrap().clone()
+    }
+
+    pub fn with_containers(self, containers: Vec<ContainerObservation>) -> Self {
+        *self.inner.containers.lock().unwrap() = containers;
+        self
+    }
+
+    pub fn fail_ensure(self) -> Self {
+        self.inner.fail_ensure.store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn ensure_requests(&self) -> Vec<EnsureGlobalSlotRequest> {
+        self.inner.ensure_requests.lock().unwrap().clone()
     }
 }
 
@@ -330,6 +352,27 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(JoinAccepted {})
     }
 
+    async fn set_cloud_pairing(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::SetCloudPairing(set) = decoded.body else {
+            return Err(Status::invalid_argument("expected SetCloudPairing"));
+        };
+        hold_register(
+            set.cloud_pairing.relay_url(),
+            set.cloud_pairing.secret(),
+            &self.inner.registration.assigned_machine.id,
+            &self.inner._register,
+        )
+        .await?;
+        rpc_ok(CloudPairingSet {})
+    }
+
     async fn initialize(
         &self,
         request: Request<OpaquePayload>,
@@ -341,21 +384,19 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::Initialize(init) = decoded.body else {
             return Err(Status::invalid_argument("expected Initialize"));
         };
-        let pairing = init
-            .cloud_pairing
-            .clone()
-            .ok_or_else(|| Status::invalid_argument("Initialize must persist Cloud Pairing"))?;
+        let pairing = init.cloud_pairing.clone();
         let mut machine = self.inner.registration.assigned_machine.clone();
         machine.name = init.name.clone();
         self.inner.initialize_requests.lock().unwrap().push(init);
         self.inner.joined.store(true, Ordering::SeqCst);
-        if let Err(status) = hold_register(
-            pairing.relay_url(),
-            pairing.secret(),
-            &machine.id,
-            &self.inner._register,
-        )
-        .await
+        if let Some(pairing) = pairing
+            && let Err(status) = hold_register(
+                pairing.relay_url(),
+                pairing.secret(),
+                &machine.id,
+                &self.inner._register,
+            )
+            .await
         {
             if status.code() == tonic::Code::Unauthenticated {
                 return rpc_ok(RpcError {
@@ -378,13 +419,25 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let assigned = self.inner.registration.assigned_machine.clone();
+        let mut machines = vec![up_machine(assigned)];
+        machines.extend(
+            self.inner
+                .registration
+                .visible_peers
+                .iter()
+                .cloned()
+                .map(up_machine),
+        );
+        rpc_ok(MachineList { machines })
     }
     async fn list_containers(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        rpc_ok(ContainerList {
+            containers: self.inner.containers.lock().unwrap().clone(),
+        })
     }
     async fn create_volume(
         &self,
@@ -415,6 +468,58 @@ impl MachineRpc for JoinDaemon {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
+    }
+    async fn ensure_global_slot(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::EnsureGlobalSlot(ensure) = decoded.body else {
+            return Err(Status::invalid_argument("expected EnsureGlobalSlot"));
+        };
+        if self.inner.fail_ensure.load(Ordering::SeqCst) {
+            return rpc_ok(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "ensure failed".into(),
+                details: serde_json::Value::Null,
+            });
+        }
+        self.inner
+            .ensure_requests
+            .lock()
+            .unwrap()
+            .push(ensure.clone());
+        let n = self.inner.ensure_requests.lock().unwrap().len();
+        let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
+        let machine_id = self.inner.registration.assigned_machine.id;
+        self.inner
+            .containers
+            .lock()
+            .unwrap()
+            .push(ContainerObservation {
+                container_id,
+                display_name: format!("{}-slot", ensure.resolved_spec.name),
+                created_at_unix_nanos: n as i64,
+                machine_id,
+                project_name: ensure.project_name,
+                service_id: ensure.resolved_spec.service_id,
+                service_name: ensure.resolved_spec.name.clone(),
+                kind: ContainerKind::ServiceContainer,
+                runtime: ContainerRuntimeObservation::Running {
+                    health: HealthObservation::NotConfigured,
+                },
+                effective_healthcheck: None,
+                resolved_spec: ensure.resolved_spec,
+                address: None,
+                labels: Default::default(),
+            });
+        rpc_ok(ContainerCreated {
+            container_id,
+            display_name: format!("slot-{n}"),
+        })
     }
     async fn remove_volume(
         &self,
@@ -638,6 +743,15 @@ pub fn registration() -> Registered {
         assigned_machine: joiner_machine(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+    }
+}
+
+fn up_machine(machine: Machine) -> MachineObservation {
+    MachineObservation {
+        machine,
+        membership: MembershipObservation::Up,
+        selected_endpoint: None,
+        rtt: None,
     }
 }
 

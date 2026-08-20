@@ -7,8 +7,8 @@ use bollard::{
     },
 };
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, MachineGateway, MachineId, ProjectName,
-    ResolvedServiceSpec,
+    ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, CreateVolumeRequest,
+    MachineGateway, MachineId, ProjectName, ResolvedServiceSpec, VolumeSource,
 };
 
 use crate::docker_image::prepare_image;
@@ -39,6 +39,123 @@ impl ContainerRuntime {
             },
             "create container"
         );
+        self.prepare_and_create(machine_id, gateway, kind, project_name, spec, None)
+            .await
+    }
+
+    /// One running Service Container for this Global on this Machine. No loop after return.
+    ///
+    /// # Errors
+    ///
+    /// Returns when listing managed Containers, creating named Volumes, pulling
+    /// the image, creating the Container, or starting it fails.
+    pub async fn ensure_global_slot(
+        &self,
+        machine_id: &MachineId,
+        gateway: MachineGateway,
+        project_name: &ProjectName,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerCreated, Error> {
+        if let Some(existing) = self.existing_global_slot(machine_id, spec).await? {
+            if !runtime_is_running(&existing.runtime) {
+                self.start(&existing.container_id).await?;
+            }
+            return Ok(ContainerCreated {
+                container_id: existing.container_id,
+                display_name: existing.display_name,
+            });
+        }
+        self.ensure_named_volumes(machine_id, spec).await?;
+        let created = self
+            .prepare_and_create(
+                machine_id,
+                gateway,
+                ContainerKind::ServiceContainer,
+                project_name,
+                spec,
+                Some(global_slot_name(spec)),
+            )
+            .await?;
+        self.start(&created.container_id).await?;
+        Ok(created)
+    }
+
+    async fn existing_global_slot(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<Option<ployz_core::ContainerObservation>, Error> {
+        let mut found = None;
+        for observation in self.list_managed(machine_id).await? {
+            if observation.kind != ContainerKind::ServiceContainer
+                || observation.service_id != spec.service_id
+            {
+                continue;
+            }
+            let running = runtime_is_running(&observation.runtime);
+            match found {
+                Some(_) if !running => {}
+                _ => found = Some(observation),
+            }
+            if running {
+                break;
+            }
+        }
+        Ok(found)
+    }
+
+    async fn ensure_named_volumes(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        for volume in spec.volume_graph.volumes() {
+            let VolumeSource::Named {
+                name,
+                external,
+                driver,
+                labels,
+                ..
+            } = &volume.source
+            else {
+                continue;
+            };
+            if *external {
+                continue;
+            }
+            match self
+                .create_volume(
+                    machine_id,
+                    CreateVolumeRequest {
+                        name: name.clone(),
+                        driver: driver
+                            .as_ref()
+                            .map_or_else(|| "local".into(), |driver| driver.name.clone()),
+                        options: driver
+                            .as_ref()
+                            .map_or_else(Default::default, |driver| driver.options.clone()),
+                        labels: labels.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(_) => {}
+                Err(error) if volume_conflict(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    async fn prepare_and_create(
+        &self,
+        machine_id: &MachineId,
+        gateway: MachineGateway,
+        kind: ContainerKind,
+        project_name: &ProjectName,
+        spec: &ResolvedServiceSpec,
+        reserved_name: Option<String>,
+    ) -> Result<ContainerCreated, Error> {
         let mut body =
             create::container_create_body(machine_id, gateway, kind, project_name, spec)?;
         let mounts = body
@@ -55,27 +172,80 @@ impl ContainerRuntime {
         .await?;
         let mut config_operation = self.specs.config_operation().await;
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
+        self.finish_create(
+            machine_id,
+            kind,
+            spec,
+            body,
+            config_operation,
+            reserved_name,
+        )
+        .await
+    }
+
+    async fn finish_create(
+        &self,
+        machine_id: &MachineId,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+        body: bollard::models::ContainerCreateBody,
+        mut config_operation: ConfigOperation<'_>,
+        reserved_name: Option<String>,
+    ) -> Result<ContainerCreated, Error> {
         let result = async {
-            let mut attempt = 0;
-            let (created, display_name) = loop {
-                attempt += 1;
-                let suffix = MachineId::random().as_str()[..4].to_owned();
-                let display_name = match kind {
-                    ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
-                    ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
-                };
-                let options = CreateContainerOptionsBuilder::default()
-                    .name(&display_name)
-                    .build();
-                match self
-                    .docker
-                    .client
-                    .create_container(Some(options), body.clone())
-                    .await
-                {
-                    Ok(created) => break (created, display_name),
-                    Err(error) if retry_name_conflict(attempt, &error) => {}
-                    Err(error) => return Err(error.into()),
+            let (created, display_name) = match reserved_name {
+                Some(display_name) => {
+                    let options = CreateContainerOptionsBuilder::default()
+                        .name(&display_name)
+                        .build();
+                    match self
+                        .docker
+                        .client
+                        .create_container(Some(options), body)
+                        .await
+                    {
+                        Ok(created) => (created, display_name),
+                        Err(DockerError::DockerResponseServerError {
+                            status_code: 409, ..
+                        }) => {
+                            let existing = self
+                                .inspect_managed_by_name(machine_id, &display_name)
+                                .await?;
+                            return Ok(ContainerCreated {
+                                container_id: existing.container_id,
+                                display_name: existing.display_name,
+                            });
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                None => {
+                    let mut attempt = 0;
+                    loop {
+                        attempt += 1;
+                        let suffix = MachineId::random().as_str()[..4].to_owned();
+                        let display_name = match kind {
+                            ContainerKind::ServiceContainer => {
+                                format!("{}-{suffix}", spec.name)
+                            }
+                            ContainerKind::PreDeployHook => {
+                                format!("{}-pre-deploy-{suffix}", spec.name)
+                            }
+                        };
+                        let options = CreateContainerOptionsBuilder::default()
+                            .name(&display_name)
+                            .build();
+                        match self
+                            .docker
+                            .client
+                            .create_container(Some(options), body.clone())
+                            .await
+                        {
+                            Ok(created) => break (created, display_name),
+                            Err(error) if retry_name_conflict(attempt, &error) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
                 }
             };
             let container_id =
@@ -83,7 +253,6 @@ impl ContainerRuntime {
                     field: "container ID",
                     source,
                 })?;
-
             if let Err(error) = config_operation.put(&container_id, spec).await {
                 self.force_remove_container(&container_id).await?;
                 return Err(error.into());
@@ -100,6 +269,22 @@ impl ContainerRuntime {
             eprintln!("failed to reclaim materialized configs: {error}");
         }
         result
+    }
+
+    async fn inspect_managed_by_name(
+        &self,
+        machine_id: &MachineId,
+        name: &str,
+    ) -> Result<ployz_core::ContainerObservation, Error> {
+        let inspected = self.docker.client.inspect_container(name, None).await?;
+        let container_id = ContainerId::parse(
+            inspected.id.ok_or(Error::MissingField("container ID"))?,
+        )
+        .map_err(|source| Error::InvalidValue {
+            field: "container ID",
+            source,
+        })?;
+        self.inspect_managed(&container_id, machine_id).await
     }
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
@@ -288,6 +473,10 @@ fn idempotent_lifecycle_result(
     }
 }
 
+fn runtime_is_running(runtime: &ContainerRuntimeObservation) -> bool {
+    matches!(runtime, ContainerRuntimeObservation::Running { .. })
+}
+
 fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
     attempt < CONTAINER_NAME_ATTEMPTS
         && matches!(
@@ -297,6 +486,22 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
                 ..
             }
         )
+}
+
+fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
+    let id = spec.service_id.as_str();
+    let suffix = id.get(..8).unwrap_or(id);
+    format!("{}-{suffix}", spec.name)
+}
+
+fn volume_conflict(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Docker(DockerError::DockerResponseServerError {
+            status_code: 409,
+            ..
+        })
+    )
 }
 
 #[cfg(test)]
@@ -317,5 +522,19 @@ mod tests {
         assert!(retry_name_conflict(1, &conflict));
         assert!(!retry_name_conflict(CONTAINER_NAME_ATTEMPTS, &conflict));
         assert!(!retry_name_conflict(1, &server_error));
+    }
+
+    #[test]
+    fn named_volume_409_is_conflict() {
+        let conflict = Error::Docker(DockerError::DockerResponseServerError {
+            status_code: 409,
+            message: "already exists".into(),
+        });
+        let missing = Error::Docker(DockerError::DockerResponseServerError {
+            status_code: 404,
+            message: "no such volume".into(),
+        });
+        assert!(volume_conflict(&conflict));
+        assert!(!volume_conflict(&missing));
     }
 }

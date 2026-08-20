@@ -36,18 +36,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         crate::provisioning::provision(matches)?;
     }
 
-    let (assigned, caddy_settings) = runtime()?.block_on(async {
+    let assigned = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
         let visible = machine_list(&mut entry).await?;
-        let caddy_settings = if deploy_caddy {
-            let live = entry.live_services().await?;
-            let services = live.services();
-            crate::caddy::newest_existing_settings(
-                services.iter().flat_map(|service| &service.containers),
-            )
-        } else {
-            None
-        };
         let mut target_client = helpers::connect_direct(&connection).await?;
         let mut token = target_client
             .call::<op::MachineToken>(token_request.clone(), None)
@@ -99,7 +90,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?;
 
-        Ok::<_, Error>((assigned, caddy_settings))
+        Ok::<_, Error>(assigned)
     })?;
 
     connection = connection.with_machine_id(assigned.id);
@@ -112,30 +103,26 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     config.save()?;
     println!("{}", added_machine_line(&assigned));
 
-    let caddy = if let Some((image, machines, caddy_config)) = caddy_settings {
-        Some(
-            runtime()?
-                .block_on(async {
-                    let mut entry = connect_client(matches, options.context()).await?;
-                    wait_machine_up(&mut entry, &assigned.id).await?;
-                    // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
-                    let requested = crate::caddy::service_spec(image, machines, caddy_config);
-                    crate::deploy::apply_requested(&mut entry, &requested).await
-                })
-                .map_err(|error| error.to_string()),
+    let catch_up = runtime()?.block_on(async {
+        let mut entry = connect_client(matches, options.context()).await?;
+        wait_machine_up(&mut entry, &assigned.id).await?;
+        Ok::<_, Error>(
+            crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_caddy).await,
         )
-    } else {
-        None
-    };
-    let caddy_error = caddy.and_then(Result::err);
+    })?;
+    if let Err(error) = catch_up {
+        return Err(match error {
+            crate::global_catch_up::CatchUpError::Caddy(error) => {
+                Error::usage(caddy_follow_on_error(&error.to_string()))
+            }
+            crate::global_catch_up::CatchUpError::Other(error) => error,
+        });
+    }
     let dns_result = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
         crate::dns::update_records_if_reserved(&mut entry).await?;
         Ok::<_, Error>(())
     });
-    if let Some(error) = caddy_error {
-        return Err(Error::usage(caddy_follow_on_error(&error)));
-    }
     if let Err(error) = dns_result {
         eprintln!(
             "{}",
@@ -160,7 +147,7 @@ async fn wait_machine_up(entry: &mut Client, machine_id: &MachineId) -> Result<(
         }
     })
     .await
-    .map_err(|_| Error::usage("new Machine did not become available for Caddy deployment"))
+    .map_err(|_| Error::usage("new Machine did not become available for Global catch-up"))
 }
 
 fn cluster_membership_conflict(

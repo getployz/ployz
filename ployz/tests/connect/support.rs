@@ -327,6 +327,13 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
+    async fn set_cloud_pairing(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn list_machines(
         &self,
         _request: Request<OpaquePayload>,
@@ -433,6 +440,13 @@ impl MachineRpc for DiscoveryService {
             .encode()
             .unwrap(),
         ))
+    }
+
+    async fn ensure_global_slot(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
     }
 
     async fn remove_volume(

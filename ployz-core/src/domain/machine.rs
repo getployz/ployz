@@ -9,7 +9,8 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use super::NameMatches;
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSubnet, MachineTarget,
-    ManagementAddress, PairingCredential, SelectedEndpoint, ValueError, WireGuardPublicKey,
+    ManagementAddress, PairingCredential, Placement, SelectedEndpoint, ValueError,
+    WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -169,6 +170,16 @@ pub struct MachineObservation {
 #[must_use]
 pub fn machine_matches_target(machine: &Machine, target: &MachineTarget) -> bool {
     machine.id.as_str() == target.as_str() || machine.name.as_str() == target.as_str()
+}
+
+/// Empty Placement is every Machine; otherwise any Machine Target matches.
+#[must_use]
+pub fn machine_matches_placement(machine: &Machine, placement: &Placement) -> bool {
+    placement.machines.is_empty()
+        || placement
+            .machines
+            .iter()
+            .any(|target| machine_matches_target(machine, target))
 }
 
 /// Resolve fan-out selection to visible Machines. `*` selects every visible Machine;
@@ -519,5 +530,53 @@ mod cloud_pairing_tests {
         let secret = PairingCredential::parse("pairing-secret").unwrap();
         assert_eq!(format!("{secret:?}"), "PairingCredential(..)");
         assert!(!format!("{:?}", pairing()).contains("pairing-secret"));
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use std::net::Ipv6Addr;
+
+    use crate::{
+        MachineId, MachineName, MachineSubnet, MachineTarget, ManagementAddress, Placement,
+        WireGuardPublicKey,
+    };
+
+    use super::{Machine, machine_matches_placement};
+
+    fn machine(hex: char, name: &str) -> Machine {
+        Machine {
+            id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
+            name: MachineName::parse(name).unwrap(),
+            subnet: MachineSubnet::parse("10.210.0.0/24").unwrap(),
+            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
+            public_key: WireGuardPublicKey([hex as u8; 32]),
+            public_ip: None,
+            advertised_endpoints: Vec::new(),
+            runtime: Default::default(),
+        }
+    }
+
+    #[test]
+    fn empty_placement_matches_every_machine() {
+        let first = machine('a', "first");
+        assert!(machine_matches_placement(&first, &Placement::default()));
+    }
+
+    #[test]
+    fn placement_targets_match_by_name_or_id() {
+        let first = machine('a', "first");
+        let by_name = Placement {
+            machines: vec![MachineTarget::parse("first").unwrap()],
+        };
+        let by_id = Placement {
+            machines: vec![MachineTarget::parse(first.id.as_str()).unwrap()],
+        };
+        let other = Placement {
+            machines: vec![MachineTarget::parse("other").unwrap()],
+        };
+        assert!(machine_matches_placement(&first, &by_name));
+        assert!(machine_matches_placement(&first, &by_id));
+        assert!(!machine_matches_placement(&first, &other));
     }
 }

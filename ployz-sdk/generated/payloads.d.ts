@@ -573,6 +573,7 @@ export type RuntimeWatchFrame = Additive<{
 export const GET_CADDY_CONFIG_CAPABILITY: CapabilityName = "ployz.caddy.config.v1";
 export const CERTIFICATE_POLICY_CAPABILITY: CapabilityName = "ployz.certificates.policy.v1";
 export const CREATE_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.create.v1";
+export const ENSURE_GLOBAL_SLOT_CAPABILITY: CapabilityName = "ployz.container.ensure-global-slot.v1";
 export const EXEC_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.exec.v1";
 export const INSPECT_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.inspect.v1";
 export const LIST_CONTAINERS_CAPABILITY: CapabilityName = "ployz.container.list.v1";
@@ -596,6 +597,7 @@ export const REGISTER_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.regist
 export const REMOVE_LOCAL_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.remove-local.v1";
 export const REMOVE_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.remove.v1";
 export const RESET_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.reset.v1";
+export const SET_CLOUD_PAIRING_CAPABILITY: CapabilityName = "ployz.machine.set-cloud-pairing.v1";
 export const MACHINE_TOKEN_CAPABILITY: CapabilityName = "ployz.machine.token.v1";
 export const UPDATE_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.update.v1";
 export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName = "ployz.rpc.describe-contract.v1";
@@ -610,6 +612,7 @@ export const CATALOGUED_CAPABILITIES = [
   "ployz.caddy.config.v1",
   "ployz.certificates.policy.v1",
   "ployz.container.create.v1",
+  "ployz.container.ensure-global-slot.v1",
   "ployz.container.exec.v1",
   "ployz.container.inspect.v1",
   "ployz.container.list.v1",
@@ -633,6 +636,7 @@ export const CATALOGUED_CAPABILITIES = [
   "ployz.machine.remove-local.v1",
   "ployz.machine.remove.v1",
   "ployz.machine.reset.v1",
+  "ployz.machine.set-cloud-pairing.v1",
   "ployz.machine.token.v1",
   "ployz.machine.update.v1",
   "ployz.rpc.describe-contract.v1",

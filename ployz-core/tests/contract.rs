@@ -45,6 +45,7 @@ fn response_kinds_match_the_frozen_wire_contract() {
         (ResponseKind::Initialized, "initialized"),
         (ResponseKind::Registered, "registered"),
         (ResponseKind::JoinAccepted, "join_accepted"),
+        (ResponseKind::CloudPairingSet, "cloud_pairing_set"),
         (ResponseKind::MachineList, "machine_list"),
         (ResponseKind::ContainerList, "container_list"),
         (ResponseKind::ContainerDetails, "container_details"),

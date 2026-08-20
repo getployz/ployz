@@ -1,19 +1,19 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use ployz_core::{
-    CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
-    ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineId, MachineLogService, MachineRpc, MachineRpcClient,
-    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    VolumeList, VolumeRemoved, op,
+    CaddyConfig, CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged,
+    ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason,
+    ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId, MachineLogService,
+    MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
@@ -38,6 +38,8 @@ pub struct MachineService {
     caddyfile: Option<PathBuf>,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
+    cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
+    slot_locks: Arc<Mutex<HashMap<QualifiedService, Arc<AsyncMutex<()>>>>>,
 }
 
 impl MachineService {
@@ -58,6 +60,8 @@ impl MachineService {
             caddyfile: None,
             ingest: ImageIngest::new(None, CancellationToken::new(), None),
             machine_api_port: MACHINE_API_PORT,
+            cloud_pairing: None,
+            slot_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -83,6 +87,20 @@ impl MachineService {
     pub fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.ingest = ingest;
         self
+    }
+
+    #[must_use]
+    pub fn with_cloud_pairing(mut self, pairing: watch::Sender<Option<CloudPairing>>) -> Self {
+        self.cloud_pairing = Some(pairing);
+        self
+    }
+
+    fn slot_lock(&self, identity: &QualifiedService) -> Arc<AsyncMutex<()>> {
+        let mut locks = self.slot_locks.lock().expect("slot lock map");
+        locks
+            .entry(identity.clone())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
     }
 
     #[cfg(test)]
@@ -287,6 +305,20 @@ impl MachineRpc for MachineService {
         finish(self.local.join(expect::<op::Join>(request)?))
     }
 
+    async fn set_cloud_pairing(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetCloudPairing>(request)?;
+        if let Err(error) = self.local.set_cloud_pairing(request.cloud_pairing.clone()) {
+            return local_error(error);
+        }
+        if let Some(sender) = &self.cloud_pairing {
+            sender.send_replace(Some(request.cloud_pairing));
+        }
+        respond(CloudPairingSet {})
+    }
+
     async fn list_machines(
         &self,
         request: Request<OpaquePayload>,
@@ -353,6 +385,40 @@ impl MachineRpc for MachineService {
                 &record.id(),
                 gateway,
                 request.kind,
+                &request.project_name,
+                &request.resolved_spec,
+            )
+            .await
+        {
+            Ok(created) => respond(created),
+            Err(error) => respond(docker_rpc_error(error)),
+        }
+    }
+
+    async fn ensure_global_slot(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::EnsureGlobalSlot>(request)?;
+        let identity = QualifiedService::new(
+            request.project_name.clone(),
+            request.resolved_spec.name.clone(),
+        );
+        let lock = self.slot_lock(&identity);
+        let _guard = lock.lock().await;
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(error),
+        };
+        let record = self.local_record()?;
+        let machine = record
+            .machine()
+            .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
+        let gateway = machine.subnet.gateway();
+        match containers
+            .ensure_global_slot(
+                &record.id(),
+                gateway,
                 &request.project_name,
                 &request.resolved_spec,
             )
@@ -925,7 +991,10 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 mod tests {
     use super::{MachineService, local_error, store_error};
     use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
-    use ployz_core::{MachineRpc, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, op};
+    use ployz_core::{
+        MachineRpc, ProjectName, QualifiedService, RpcErrorCode, RpcResponseBody,
+        RuntimeWatchRequest, ServiceName, op,
+    };
     use std::sync::{Arc, Mutex};
     use tokio::sync::watch;
     use tonic::{Code, Request};
@@ -986,6 +1055,28 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), Code::Unavailable);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn global_slot_lock_is_per_qualified_service() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "ployzd-slot-lock-{}",
+            ployz_core::MachineId::random()
+        ));
+        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+        let (restart, _) = watch::channel(false);
+        let service = MachineService::new(store, restart);
+        let caddy = QualifiedService::system_caddy();
+        let other = QualifiedService::new(
+            ProjectName::parse("app").unwrap(),
+            ServiceName::parse("api").unwrap(),
+        );
+        let first = service.slot_lock(&caddy);
+        let again = service.slot_lock(&caddy);
+        let different = service.slot_lock(&other);
+        assert!(Arc::ptr_eq(&first, &again));
+        assert!(!Arc::ptr_eq(&first, &different));
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }

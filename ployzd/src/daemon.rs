@@ -161,7 +161,7 @@ impl Daemon {
         );
         let (participating, participating_rx) =
             watch::channel(local_phase == LocalMachinePhase::Participating);
-        let cloud_pairing = local_record.cloud_pairing;
+        let (cloud_pairing_tx, cloud_pairing_rx) = watch::channel(local_record.cloud_pairing);
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
@@ -180,7 +180,8 @@ impl Daemon {
         )
         .with_optional_containers(containers.clone())
         .with_caddyfile(caddyfile.clone())
-        .with_image_ingest(Arc::clone(&ingest));
+        .with_image_ingest(Arc::clone(&ingest))
+        .with_cloud_pairing(cloud_pairing_tx);
         let proxy = MachineProxy::new(
             Routes::new(MachineRpcServer::new(service.clone())),
             local_id,
@@ -312,7 +313,7 @@ impl Daemon {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                crate::relay::run(cloud_pairing, local_id, service, shutdown.clone()).await
+                crate::relay::run(cloud_pairing_rx, local_id, service, shutdown.clone()).await
             };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },

@@ -274,6 +274,20 @@ pub struct CreateContainerRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EnsureGlobalSlotRequest {
+    pub project_name: ProjectName,
+    pub resolved_spec: ResolvedServiceSpec,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SetCloudPairingRequest {
+    pub cloud_pairing: CloudPairing,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CloudPairingSet {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartContainerRequest {
     pub container_id: ContainerId,
 }
@@ -783,6 +797,7 @@ define_responses! {
     Initialized(Initialized) => "initialized";
     Registered(Registered) => "registered";
     JoinAccepted(JoinAccepted) => "join_accepted";
+    CloudPairingSet(CloudPairingSet) => "cloud_pairing_set";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";

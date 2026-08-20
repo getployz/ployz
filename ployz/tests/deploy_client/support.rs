@@ -201,6 +201,13 @@ impl MachineRpc for DeployService {
         }))
     }
 
+    async fn ensure_global_slot(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+
     async fn start_container(
         &self,
         request: Request<OpaquePayload>,
@@ -241,6 +248,12 @@ impl MachineRpc for DeployService {
         unused()
     }
     async fn join(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn set_cloud_pairing(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

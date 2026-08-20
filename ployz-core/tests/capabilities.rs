@@ -1,17 +1,17 @@
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY,
     CREATE_DOMAIN_RECORDS_CAPABILITY, CREATE_VOLUME_CAPABILITY, CapabilityAdvertisement,
-    CapabilityName, DESCRIBE_CONTRACT_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY,
-    EXEC_CONTAINER_CAPABILITY, GET_CADDY_CONFIG_CAPABILITY, GET_DOMAIN_CAPABILITY,
-    INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY, JOIN_MACHINE_CAPABILITY,
-    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
-    LIST_VOLUMES_CAPABILITY, MACHINE_LOGS_CAPABILITY, MACHINE_TOKEN_CAPABILITY,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, RELEASE_DOMAIN_CAPABILITY,
-    REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY,
-    RUNTIME_WATCH_CAPABILITY, Rpc, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, op,
+    CapabilityName, DESCRIBE_CONTRACT_CAPABILITY, ENSURE_GLOBAL_SLOT_CAPABILITY,
+    ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY, GET_CADDY_CONFIG_CAPABILITY,
+    GET_DOMAIN_CAPABILITY, INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY,
+    INSPECT_MACHINE_CAPABILITY, INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY,
+    JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
+    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, MACHINE_LOGS_CAPABILITY,
+    MACHINE_TOKEN_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY,
+    RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY,
+    REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY,
+    RESET_MACHINE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SET_CLOUD_PAIRING_CAPABILITY,
+    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -28,10 +28,18 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (INITIALIZE_MACHINE_CAPABILITY, "ployz.machine.initialize.v1"),
         (REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1"),
         (JOIN_MACHINE_CAPABILITY, "ployz.machine.join.v1"),
+        (
+            SET_CLOUD_PAIRING_CAPABILITY,
+            "ployz.machine.set-cloud-pairing.v1",
+        ),
         (LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1"),
         (LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1"),
         (INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1"),
         (CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1"),
+        (
+            ENSURE_GLOBAL_SLOT_CAPABILITY,
+            "ployz.container.ensure-global-slot.v1",
+        ),
         (START_CONTAINER_CAPABILITY, "ployz.container.start.v1"),
         (STOP_CONTAINER_CAPABILITY, "ployz.container.stop.v1"),
         (REMOVE_CONTAINER_CAPABILITY, "ployz.container.remove.v1"),
@@ -90,6 +98,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.initialize.v1",
             "ployz.machine.register.v1",
             "ployz.machine.join.v1",
+            "ployz.machine.set-cloud-pairing.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
             "ployz.machine.remove-local.v1",
@@ -106,6 +115,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.list.v1",
             "ployz.container.inspect.v1",
             "ployz.container.create.v1",
+            "ployz.container.ensure-global-slot.v1",
             "ployz.container.start.v1",
             "ployz.container.stop.v1",
             "ployz.container.remove.v1",
@@ -167,7 +177,11 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         "/ployz.rpc.v1.MachineRpc/CreateDomainRecords"
     );
     assert_eq!(
-        op::RuntimeWatch::PATH,
-        "/ployz.rpc.v1.MachineRpc/RuntimeWatch"
+        op::SetCloudPairing::PATH,
+        "/ployz.rpc.v1.MachineRpc/SetCloudPairing"
+    );
+    assert_eq!(
+        op::EnsureGlobalSlot::PATH,
+        "/ployz.rpc.v1.MachineRpc/EnsureGlobalSlot"
     );
 }

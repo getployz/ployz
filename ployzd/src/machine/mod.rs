@@ -551,6 +551,14 @@ impl LocalMachineStore {
         Ok(())
     }
 
+    pub fn persist_cloud_pairing(&mut self, pairing: CloudPairing) -> Result<(), StoreError> {
+        let mut updated = self.record.clone();
+        updated.cloud_pairing = Some(pairing);
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
+    }
+
     pub fn complete_reset(&self) -> Result<(), StoreError> {
         if self.record.phase() != LocalMachinePhase::Resetting {
             return Err(StoreError::NotResetting);

@@ -6,8 +6,8 @@ use ployz_core::{
     PortPublication, PreservedVolume, ProjectName, PruneRefusal, QualifiedService,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
     ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners, machine_matches_target,
-    same_service_mode_kind,
+    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners,
+    machine_matches_placement, machine_matches_target, same_service_mode_kind,
 };
 
 use super::{
@@ -479,14 +479,7 @@ fn eligible_machines<'a>(
         .machines
         .iter()
         .filter(|machine| machine.membership != MembershipObservation::Down)
-        .filter(|machine| {
-            requested.placement.machines.is_empty()
-                || requested
-                    .placement
-                    .machines
-                    .iter()
-                    .any(|target| machine_matches_target(&machine.machine, target))
-        })
+        .filter(|machine| machine_matches_placement(&machine.machine, &requested.placement))
         .collect::<Vec<_>>();
     if machines.is_empty() {
         return Err(placement_error(requested, snapshot));

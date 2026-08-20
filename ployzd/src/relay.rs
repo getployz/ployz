@@ -11,6 +11,7 @@ use ployz_relay::{ClientError, Open, RegisterRequest, RelayClient, TunnelIo};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
+    sync::watch,
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -127,21 +128,37 @@ impl Drop for RegisterHold {
 ///
 /// If the Relay is unreachable or Register is rejected.
 pub(crate) async fn run(
-    pairing: Option<CloudPairing>,
+    mut pairing: watch::Receiver<Option<CloudPairing>>,
     machine_id: MachineId,
     service: MachineService,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let _hold = match pairing {
-        Some(pairing) => Some(
-            hold_register(pairing.relay_url(), pairing.secret(), &machine_id, service)
-                .await
-                .map_err(io::Error::other)?,
-        ),
-        None => None,
-    };
-    shutdown.cancelled().await;
-    Ok(())
+    let mut hold = None;
+    loop {
+        let current = pairing.borrow_and_update().clone();
+        match (current, hold.is_some()) {
+            (Some(pairing), false) => {
+                hold = Some(
+                    hold_register(
+                        pairing.relay_url(),
+                        pairing.secret(),
+                        &machine_id,
+                        service.clone(),
+                    )
+                    .await
+                    .map_err(io::Error::other)?,
+                );
+            }
+            (None, true) => hold = None,
+            (Some(_), true) | (None, false) => {}
+        }
+        tokio::select! {
+            () = shutdown.cancelled() => return Ok(()),
+            changed = pairing.changed() => {
+                changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -251,12 +268,9 @@ mod tests {
         let relay = RelayListen::start().await;
         let (machine_id, service) = test_service();
         let shutdown = CancellationToken::new();
-        let hold = tokio::spawn(run(
-            Some(CloudPairing::parse(&relay.url, secret()).unwrap()),
-            machine_id,
-            service,
-            shutdown.clone(),
-        ));
+        let (_pairing_tx, pairing_rx) =
+            watch::channel(Some(CloudPairing::parse(&relay.url, secret()).unwrap()));
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
         wait_for_held(&relay.url, machine_id).await;
         shutdown.cancel();
         hold.await.unwrap().unwrap();
@@ -267,8 +281,23 @@ mod tests {
         let relay = RelayListen::start().await;
         let (machine_id, service) = test_service();
         let shutdown = CancellationToken::new();
-        let hold = tokio::spawn(run(None, machine_id, service, shutdown.clone()));
+        let (_pairing_tx, pairing_rx) = watch::channel(None);
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
         assert_not_held(&relay.url, machine_id).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn cloud_pairing_arriving_later_appears_on_list_held() {
+        let relay = RelayListen::start().await;
+        let (machine_id, service) = test_service();
+        let shutdown = CancellationToken::new();
+        let (pairing_tx, pairing_rx) = watch::channel(None);
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
+        assert_not_held(&relay.url, machine_id).await;
+        pairing_tx.send_replace(Some(CloudPairing::parse(&relay.url, secret()).unwrap()));
+        wait_for_held(&relay.url, machine_id).await;
         shutdown.cancel();
         hold.await.unwrap().unwrap();
     }
@@ -277,7 +306,7 @@ mod tests {
     async fn unreachable_cloud_pairing_fails() {
         let pairing = CloudPairing::parse("not-a-url", secret()).unwrap();
         let error = run(
-            Some(pairing),
+            watch::channel(Some(pairing)).1,
             MachineId::random(),
             test_service().1,
             CancellationToken::new(),
