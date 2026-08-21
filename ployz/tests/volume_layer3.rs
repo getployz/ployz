@@ -266,7 +266,16 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     assert!(!partial_inspect.status.success());
 
     let partial_remove = ployz(address, ["volume", "rm", "reachable", "--yes"]);
-    assert!(!partial_remove.status.success());
+    assert!(
+        partial_remove.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&partial_remove.stdout),
+        String::from_utf8_lossy(&partial_remove.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&partial_remove.stderr)
+            .contains("was not checked and may hold a same-named Docker Volume")
+    );
     let reachable = client
         .list_volumes(std::slice::from_ref(first_machine))
         .await;

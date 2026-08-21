@@ -15,8 +15,9 @@ use ployz::{
     operator::open_machine_logs,
 };
 use ployz_core::{
-    CapabilityName, ContractDescription, DescribeContractRequest, LogsOptions, MachineId,
-    MachineRpcServer, MembershipObservation, PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
+    CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId,
+    DockerVolumeName, LogsOptions, MachineId, MachineRpcServer, MembershipObservation,
+    PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
 };
 use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
@@ -278,6 +279,122 @@ async fn volume_listing_retains_successes_and_target_failures() {
     };
     assert_eq!(failure.machine_id, machine_id('b'));
     assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
+    server.abort();
+}
+
+#[tokio::test]
+async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is_unreachable() {
+    let description = test_description();
+    let mut service = DiscoveryService::new(description);
+    service.machines = vec![machine('a', "owner"), machine('b', "unreachable")];
+    let removed_volumes = Arc::clone(&service.removed_volumes);
+    let listed_volumes = Arc::clone(&service.listed_volumes);
+    let (address, server) = serve_discovery(service).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "volume",
+            "rm",
+            "data",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        *removed_volumes.lock().unwrap(),
+        [DockerVolumeId {
+            machine_id: machine_id('a'),
+            name: DockerVolumeName::parse("data").unwrap(),
+        }]
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("WARNING:"), "{stderr}");
+    assert!(stderr.contains(machine_id('b').as_str()), "{stderr}");
+    assert!(stderr.contains("not checked"), "{stderr}");
+    assert!(
+        stderr.contains("may hold a same-named Docker Volume"),
+        "{stderr}"
+    );
+
+    removed_volumes.lock().unwrap().clear();
+    let exact = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "volume",
+            "rm",
+            "data",
+            "--machine",
+            "owner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(exact.status.success(), "{exact:?}");
+    assert!(exact.stderr.is_empty(), "{exact:?}");
+    assert_eq!(removed_volumes.lock().unwrap().len(), 1);
+
+    removed_volumes.lock().unwrap().clear();
+    listed_volumes.lock().unwrap().insert(
+        machine_id('a'),
+        vec![DockerVolume {
+            id: DockerVolumeId {
+                machine_id: machine_id('a'),
+                name: DockerVolumeName::parse("busy").unwrap(),
+            },
+            driver: "local".into(),
+            options: Default::default(),
+            labels: Default::default(),
+        }],
+    );
+    let failed = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "volume",
+            "rm",
+            "busy",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(!failed.status.success(), "{failed:?}");
+    assert!(removed_volumes.lock().unwrap().is_empty());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("volume is in use"),
+        "{failed:?}"
+    );
+
+    let unseen = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "volume",
+            "rm",
+            "unseen",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(!unseen.status.success(), "{unseen:?}");
+    assert!(
+        String::from_utf8_lossy(&unseen.stderr)
+            .contains("was not checked and may hold a same-named Docker Volume"),
+        "{unseen:?}"
+    );
     server.abort();
 }
 

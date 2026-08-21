@@ -149,6 +149,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     "Docker Volume {name:?} was not found"
                 )));
             }
+            report_partial_removal_discovery(&result);
             if volumes.is_empty() {
                 return Err(Error::usage(failure_summary(&result)));
             }
@@ -179,16 +180,10 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 }
             })
             .await;
-            report_failures(&result);
-            match (
-                (!result.all_targets_succeeded()).then(|| failure_summary(&result)),
-                (!removal.all_targets_succeeded()).then(|| failure_summary(&removal)),
-            ) {
-                (None, None) => Ok(()),
-                (Some(failure), None) | (None, Some(failure)) => Err(Error::usage(failure)),
-                (Some(discovery), Some(removal)) => {
-                    Err(Error::usage(format!("{discovery}; {removal}")))
-                }
+            if removal.all_targets_succeeded() {
+                Ok(())
+            } else {
+                Err(Error::usage(failure_summary(&removal)))
             }
         })
     })
@@ -305,6 +300,20 @@ fn report_failures<T>(result: &PartialResult<T, RpcError>) {
     }
     for machine_id in &result.omissions {
         eprintln!("{machine_id}: no terminal response");
+    }
+}
+
+fn report_partial_removal_discovery<T>(result: &PartialResult<T, RpcError>) {
+    for failure in &result.failures {
+        eprintln!(
+            "WARNING: Machine {} was not checked and may hold a same-named Docker Volume: {}",
+            failure.machine_id, failure.error.message
+        );
+    }
+    for machine_id in &result.omissions {
+        eprintln!(
+            "WARNING: Machine {machine_id} was not checked and may hold a same-named Docker Volume: no terminal response"
+        );
     }
 }
 
