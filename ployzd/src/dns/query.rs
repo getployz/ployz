@@ -1,7 +1,7 @@
-//! Parse an Internal DNS name into a typed query and target.
+//! Parse an Internal DNS name into a typed query.
 
 use hickory_server::proto::rr::Name;
-use ployz_core::{MachineId, QualifiedService, ServiceId, ServiceName};
+use ployz_core::{MachineId, ProjectName, QualifiedService, ServiceId, ServiceName};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Query {
@@ -10,31 +10,19 @@ pub(super) enum Query {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct InternalQuery {
-    pub target: Target,
-    pub nearest: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Target {
+pub(super) enum InternalQuery {
     Empty,
+    Service(QualifiedService),
+    Nearest(QualifiedService),
     ServiceId(ServiceId),
-    Identity(QualifiedService),
-    ServiceName(ServiceName),
-    MachineIdentity(MachineServiceTarget),
-    MachineServiceName(MachineServiceNameTarget),
+    Machine(MachineServiceTarget),
+    Regional,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct MachineServiceTarget {
     pub machine_id: MachineId,
     pub identity: QualifiedService,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(super) struct MachineServiceNameTarget {
-    pub machine_id: MachineId,
-    pub service_name: ServiceName,
 }
 
 #[must_use]
@@ -50,44 +38,51 @@ fn parse_fqdn(fqdn: &str) -> Query {
     } else {
         return Query::Forward;
     };
-    let (selector, nearest) = selector
-        .strip_prefix("nearest.")
-        .map_or((selector, false), |selector| (selector, true));
-    let selector = selector.strip_prefix("rr.").unwrap_or(selector);
-    Query::Internal(InternalQuery {
-        target: parse_target(selector),
-        nearest,
-    })
+    Query::Internal(parse_internal(selector))
 }
 
-fn parse_target(selector: &str) -> Target {
-    if selector.is_empty() {
-        return Target::Empty;
-    }
-    if let Some((machine, rest)) = selector.split_once(".m.")
-        && let Ok(machine_id) = MachineId::parse(machine)
-    {
-        if let Ok(identity) = QualifiedService::parse_dns_name(rest) {
-            return Target::MachineIdentity(MachineServiceTarget {
-                machine_id,
-                identity,
-            });
+fn parse_internal(selector: &str) -> InternalQuery {
+    let mut labels = selector.split('.');
+    let labels = (
+        labels.next(),
+        labels.next(),
+        labels.next(),
+        labels.next(),
+        labels.next(),
+    );
+    match labels {
+        (Some(service), Some(project), None, None, None) => {
+            identity(service, project).map_or(InternalQuery::Empty, InternalQuery::Service)
         }
-        if let Ok(service_name) = ServiceName::parse(rest) {
-            return Target::MachineServiceName(MachineServiceNameTarget {
-                machine_id,
-                service_name,
-            });
+        (Some(service), Some(project), Some("nearest"), None, None) => {
+            identity(service, project).map_or(InternalQuery::Empty, InternalQuery::Nearest)
         }
-        return Target::Empty;
+        (Some(service_id), Some("id"), Some("lookup"), None, None) => {
+            ServiceId::parse(service_id).map_or(InternalQuery::Empty, InternalQuery::ServiceId)
+        }
+        (Some(service), Some(project), Some(machine_id), Some("machine"), None) => {
+            match (MachineId::parse(machine_id), identity(service, project)) {
+                (Ok(machine_id), Some(identity)) => InternalQuery::Machine(MachineServiceTarget {
+                    machine_id,
+                    identity,
+                }),
+                _ => InternalQuery::Empty,
+            }
+        }
+        (Some(service), Some(project), Some(region), Some("region"), None)
+            if !region.is_empty() && identity(service, project).is_some() =>
+        {
+            InternalQuery::Regional
+        }
+        _ => InternalQuery::Empty,
     }
-    if let Ok(id) = ServiceId::parse(selector) {
-        return Target::ServiceId(id);
-    }
-    if let Ok(identity) = QualifiedService::parse_dns_name(selector) {
-        return Target::Identity(identity);
-    }
-    ServiceName::parse(selector).map_or(Target::Empty, Target::ServiceName)
+}
+
+fn identity(service: &str, project: &str) -> Option<QualifiedService> {
+    Some(QualifiedService::new(
+        ProjectName::parse(project).ok()?,
+        ServiceName::parse(service).ok()?,
+    ))
 }
 
 #[cfg(test)]
@@ -102,135 +97,93 @@ mod tests {
     }
 
     #[test]
-    fn empty_internal_name_is_an_empty_target() {
-        assert_eq!(query("internal."), internal(Target::Empty, false));
-    }
+    fn parses_every_canonical_form() {
+        let service_id = ServiceId::parse("b".repeat(32)).unwrap();
+        let machine_id = MachineId::parse("a".repeat(32)).unwrap();
+        let identity = QualifiedService::parse("shop-staging/web").unwrap();
 
-    #[test]
-    fn service_id_target_wins_the_hex_label() {
-        let id = ServiceId::parse("b".repeat(32)).unwrap();
-        assert_eq!(
-            query(&format!("{id}.internal.")),
-            internal(Target::ServiceId(id), false)
-        );
-    }
-
-    #[test]
-    fn service_name_target_uses_the_remaining_label() {
-        assert_eq!(
-            query("api.internal."),
-            internal(
-                Target::ServiceName(ServiceName::parse("api").unwrap()),
-                false
-            )
-        );
-    }
-
-    #[test]
-    fn qualified_target_is_service_then_project() {
         assert_eq!(
             query("web.shop-staging.internal."),
-            internal(
-                Target::Identity(QualifiedService::parse("shop-staging/web").unwrap()),
-                false
-            )
+            internal(InternalQuery::Service(identity.clone()))
+        );
+        assert_eq!(
+            query("web.shop-staging.nearest.internal."),
+            internal(InternalQuery::Nearest(identity.clone()))
+        );
+        assert_eq!(
+            query(&format!("{service_id}.id.lookup.internal.")),
+            internal(InternalQuery::ServiceId(service_id))
+        );
+        assert_eq!(
+            query(&format!("web.shop-staging.{machine_id}.machine.internal.")),
+            internal(InternalQuery::Machine(MachineServiceTarget {
+                machine_id,
+                identity,
+            }))
+        );
+        assert_eq!(
+            query("web.shop-staging.eu-west.region.internal."),
+            internal(InternalQuery::Regional)
         );
     }
 
     #[test]
-    fn machine_service_target_splits_machine_id_and_service_name() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        let service = ServiceName::parse("api").unwrap();
+    fn reserved_words_remain_valid_service_and_project_names() {
+        for name in ["rr", "nearest", "machine", "region", "id", "lookup"] {
+            assert_eq!(
+                query(&format!("{name}.project.internal.")),
+                internal(InternalQuery::Service(
+                    QualifiedService::parse(format!("project/{name}")).unwrap()
+                ))
+            );
+            assert_eq!(
+                query(&format!("service.{name}.internal.")),
+                internal(InternalQuery::Service(
+                    QualifiedService::parse(format!("{name}/service")).unwrap()
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn hex_service_name_is_not_a_service_id() {
+        let name = "b".repeat(32);
         assert_eq!(
-            query(&format!("{machine}.m.api.internal.")),
-            internal(
-                Target::MachineServiceName(MachineServiceNameTarget {
-                    machine_id: machine,
-                    service_name: service,
-                }),
-                false
-            )
+            query(&format!("{name}.shop.internal.")),
+            internal(InternalQuery::Service(
+                QualifiedService::parse(format!("shop/{name}")).unwrap()
+            ))
+        );
+        assert_eq!(
+            query(&format!("{name}.internal.")),
+            internal(InternalQuery::Empty)
         );
     }
 
     #[test]
-    fn machine_identity_target_includes_the_project() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        assert_eq!(
-            query(&format!("{machine}.m.web.shop-staging.internal.")),
-            internal(
-                Target::MachineIdentity(MachineServiceTarget {
-                    machine_id: machine,
-                    identity: QualifiedService::parse("shop-staging/web").unwrap(),
-                }),
-                false
-            )
-        );
-    }
-
-    #[test]
-    fn nearest_prefix_marks_the_query_without_changing_the_target() {
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        assert_eq!(
-            query("nearest.api.internal."),
-            internal(
-                Target::ServiceName(ServiceName::parse("api").unwrap()),
-                true
-            )
-        );
-        assert_eq!(
-            query("nearest.web.shop-staging.internal."),
-            internal(
-                Target::Identity(QualifiedService::parse("shop-staging/web").unwrap()),
-                true
-            )
-        );
-        assert_eq!(
-            query(&format!("nearest.{machine}.m.api.internal.")),
-            internal(
-                Target::MachineServiceName(MachineServiceNameTarget {
-                    machine_id: machine,
-                    service_name: ServiceName::parse("api").unwrap(),
-                }),
-                true
-            )
-        );
-    }
-
-    #[test]
-    fn rr_prefix_is_stripped_and_does_not_set_nearest() {
-        assert_eq!(
-            query("rr.api.internal."),
-            internal(
-                Target::ServiceName(ServiceName::parse("api").unwrap()),
-                false
-            )
-        );
-        assert_eq!(
-            query("nearest.rr.api.internal."),
-            internal(
-                Target::ServiceName(ServiceName::parse("api").unwrap()),
-                true
-            )
-        );
-    }
-
-    #[test]
-    fn rr_before_nearest_is_not_a_mode() {
-        assert_eq!(
-            query("rr.nearest.api.internal."),
-            internal(
-                Target::Identity(QualifiedService::parse("api/nearest").unwrap()),
-                false
-            )
-        );
+    fn malformed_internal_names_do_not_fall_back() {
+        let machine_id = "a".repeat(32);
+        for name in [
+            "internal.".to_owned(),
+            "web.internal.".to_owned(),
+            "rr.web.shop.internal.".to_owned(),
+            "web.shop.lookup.internal.".to_owned(),
+            "web.shop.nearest.extra.internal.".to_owned(),
+            "not-an-id.id.lookup.internal.".to_owned(),
+            "web.shop.not-an-id.machine.internal.".to_owned(),
+            format!("web.{machine_id}.machine.internal."),
+            format!("web.shop.{machine_id}.m.internal."),
+            "web.shop.region.internal.".to_owned(),
+        ] {
+            assert_eq!(query(&name), internal(InternalQuery::Empty), "{name}");
+        }
     }
 
     fn query(name: &str) -> Query {
         parse(&Name::from_ascii(name).unwrap())
     }
 
-    fn internal(target: Target, nearest: bool) -> Query {
-        Query::Internal(InternalQuery { target, nearest })
+    fn internal(query: InternalQuery) -> Query {
+        Query::Internal(query)
     }
 }

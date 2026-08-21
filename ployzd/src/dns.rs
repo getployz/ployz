@@ -1,8 +1,11 @@
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::HashMap,
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -19,7 +22,7 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, ProjectName, QualifiedService, ServiceId, service_containers,
+    ContainerObservation, Machine, QualifiedService, ServiceId, service_containers,
     serving_replicas,
 };
 use tokio::{
@@ -32,7 +35,7 @@ use crate::corrosion::{ReplicatedStore, Subscription};
 
 mod query;
 
-use query::{InternalQuery, MachineServiceTarget, Query, Target, parse};
+use query::{InternalQuery, MachineServiceTarget, Query, parse};
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
@@ -48,17 +51,27 @@ enum ResponsePlan {
     },
 }
 
-/// Observer-relative Caller Project from a source Container Address.
-enum CallerProject {
-    Unique(ProjectName),
-    Ambiguous,
-}
-
 struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
-    identities: HashMap<QualifiedService, Vec<Ipv4Addr>>,
+    identities: HashMap<QualifiedService, ServiceAddresses>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
-    callers: HashMap<Ipv4Addr, CallerProject>,
+}
+
+#[derive(Default)]
+struct ServiceAddresses {
+    eligible: Vec<Ipv4Addr>,
+    next: AtomicUsize,
+}
+
+impl ServiceAddresses {
+    fn rotated(&self) -> Vec<Ipv4Addr> {
+        let mut addresses = self.eligible.clone();
+        if !addresses.is_empty() {
+            let offset = self.next.fetch_add(1, Ordering::Relaxed) % addresses.len();
+            addresses.rotate_left(offset);
+        }
+        addresses
+    }
 }
 
 impl Projection {
@@ -67,24 +80,8 @@ impl Projection {
         // product decision replaces the baseline's deliberately membership-blind behavior.
         let containers = service_containers(observations.iter().cloned());
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
-        let mut identities = HashMap::<QualifiedService, Vec<Ipv4Addr>>::new();
+        let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        let mut callers = HashMap::<Ipv4Addr, CallerProject>::new();
-        // Caller matching uses every addressed Service Container, not Serving Containers.
-        for container in &containers {
-            let observation = container.as_observation();
-            let Some(address) = observation.address else {
-                continue;
-            };
-            match callers.entry(address.0) {
-                Entry::Vacant(entry) => {
-                    entry.insert(CallerProject::Unique(observation.project_name.clone()));
-                }
-                Entry::Occupied(mut entry) => {
-                    *entry.get_mut() = CallerProject::Ambiguous;
-                }
-            }
-        }
         for container in serving_replicas(&containers) {
             let observation = container.as_observation();
             let address = observation
@@ -98,6 +95,7 @@ impl Projection {
             identities
                 .entry(identity.clone())
                 .or_default()
+                .eligible
                 .push(address.0);
             machine_identities
                 .entry(MachineServiceTarget {
@@ -111,22 +109,13 @@ impl Projection {
             service_ids,
             identities,
             machine_identities,
-            callers,
         }
     }
 
-    fn plan(
-        &self,
-        name: &Name,
-        record_type: RecordType,
-        local_subnet: Ipv4Net,
-        source: IpAddr,
-    ) -> ResponsePlan {
+    fn plan(&self, name: &Name, record_type: RecordType, local_subnet: Ipv4Net) -> ResponsePlan {
         match parse(name) {
             Query::Forward => ResponsePlan::Forward,
-            Query::Internal(query) => {
-                self.plan_internal(name, record_type, local_subnet, source, query)
-            }
+            Query::Internal(query) => self.plan_internal(name, record_type, local_subnet, query),
         }
     }
 
@@ -135,7 +124,6 @@ impl Projection {
         name: &Name,
         record_type: RecordType,
         local_subnet: Ipv4Net,
-        source: IpAddr,
         query: InternalQuery,
     ) -> ResponsePlan {
         if record_type != RecordType::A {
@@ -146,29 +134,35 @@ impl Projection {
                 answers: Vec::new(),
             };
         }
-        let target = match query.target {
-            Target::ServiceName(service_name) => self
-                .caller_project(source)
-                .map(|project| {
-                    Target::Identity(QualifiedService::new(project.clone(), service_name))
-                })
-                .unwrap_or(Target::Empty),
-            Target::MachineServiceName(target) => self
-                .caller_project(source)
-                .map(|project| {
-                    Target::MachineIdentity(MachineServiceTarget {
-                        machine_id: target.machine_id,
-                        identity: QualifiedService::new(project.clone(), target.service_name),
-                    })
-                })
-                .unwrap_or(Target::Empty),
-            target @ (Target::Empty
-            | Target::ServiceId(_)
-            | Target::Identity(_)
-            | Target::MachineIdentity(_)) => target,
+        let (mut addresses, nearest) = match query {
+            InternalQuery::Empty | InternalQuery::Regional => (Vec::new(), false),
+            InternalQuery::Service(identity) => (
+                self.identities
+                    .get(&identity)
+                    .map(ServiceAddresses::rotated)
+                    .unwrap_or_default(),
+                false,
+            ),
+            InternalQuery::Nearest(identity) => (
+                self.identities
+                    .get(&identity)
+                    .map(|addresses| addresses.eligible.clone())
+                    .unwrap_or_default(),
+                true,
+            ),
+            InternalQuery::ServiceId(id) => (
+                self.service_ids.get(&id).cloned().unwrap_or_default(),
+                false,
+            ),
+            InternalQuery::Machine(target) => (
+                self.machine_identities
+                    .get(&target)
+                    .cloned()
+                    .unwrap_or_default(),
+                false,
+            ),
         };
-        let mut addresses = self.addresses(&target);
-        if query.nearest {
+        if nearest {
             addresses.sort_by_key(|address| !local_subnet.contains(address));
         }
         if addresses.is_empty() {
@@ -185,31 +179,6 @@ impl Projection {
         ResponsePlan::Internal {
             code: ResponseCode::NoError,
             answers,
-        }
-    }
-
-    fn addresses(&self, target: &Target) -> Vec<Ipv4Addr> {
-        match target {
-            Target::Empty | Target::ServiceName(_) | Target::MachineServiceName(_) => Vec::new(),
-            Target::ServiceId(id) => self.service_ids.get(id).cloned().unwrap_or_default(),
-            Target::Identity(identity) => {
-                self.identities.get(identity).cloned().unwrap_or_default()
-            }
-            Target::MachineIdentity(target) => self
-                .machine_identities
-                .get(target)
-                .cloned()
-                .unwrap_or_default(),
-        }
-    }
-
-    fn caller_project(&self, source: IpAddr) -> Option<&ProjectName> {
-        let IpAddr::V4(source) = source else {
-            return None;
-        };
-        match self.callers.get(&source) {
-            Some(CallerProject::Unique(project)) => Some(project),
-            Some(CallerProject::Ambiguous) | None => None,
         }
     }
 }
@@ -238,7 +207,6 @@ impl RequestHandler for Handler {
                     info.query.original().name(),
                     info.query.query_type(),
                     self.local_subnet,
-                    info.src.ip(),
                 )
             })
             .unwrap_or(ResponsePlan::Internal {

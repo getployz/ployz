@@ -74,7 +74,11 @@ pub(super) fn container_create_body(
     let resources = &container.resources;
     let host_config = HostConfig {
         dns: Some(vec![gateway.0.to_string()]),
-        dns_search: Some(vec!["internal".into()]),
+        dns_search: Some(vec![if hook.is_none() {
+            format!("{project_name}.internal")
+        } else {
+            "internal".into()
+        }]),
         dns_options: Some(vec!["ndots:1".into()]),
         init: container.init,
         network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),

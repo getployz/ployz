@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(regular.cmd, Some(vec!["serve".into()]));
         let regular_host = regular.host_config.unwrap();
         assert_eq!(regular_host.dns, Some(vec![gateway.0.to_string()]));
-        assert_eq!(regular_host.dns_search, Some(vec!["internal".into()]));
+        assert_eq!(regular_host.dns_search, Some(vec!["shop.internal".into()]));
         assert_eq!(regular_host.dns_options, Some(vec!["ndots:1".into()]));
         assert_eq!(regular_host.memory, Some(1_048_576));
         assert_eq!(

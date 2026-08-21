@@ -345,7 +345,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     assert_eq!(host.memory, Some(67_108_864));
     assert_eq!(host.memory_reservation, Some(33_554_432));
     assert_eq!(host.dns, Some(vec![TEST_GATEWAY.0.to_string()]));
-    assert_eq!(host.dns_search, Some(vec!["internal".into()]));
+    assert_eq!(host.dns_search, Some(vec!["app.internal".into()]));
     assert_eq!(host.dns_options, Some(vec!["ndots:1".into()]));
     assert!(host.port_bindings.unwrap().contains_key("8080/tcp"));
     let mounts = host.mounts.unwrap();

@@ -124,7 +124,7 @@ fn assert_managed_container_dns(
         );
         assert_eq!(
             docker.pointer("/HostConfig/DnsSearch"),
-            Some(&serde_json::json!(["internal"]))
+            Some(&serde_json::json!(["app.internal"]))
         );
         assert_eq!(
             docker.pointer("/HostConfig/DnsOptions"),
@@ -141,7 +141,7 @@ async fn assert_internal_selectors(
     expected: &[Ipv4Addr],
 ) {
     // L3-071: every selector resolves all healthy Service Containers with authoritative TTL-zero answers.
-    probe.wait_addresses("dns-api.internal", expected).await;
+    probe.wait_addresses("dns-api.app.internal", expected).await;
     let searched = probe
         .cluster
         .machine_shell(
@@ -152,14 +152,14 @@ async fn assert_internal_selectors(
     for address in expected {
         assert!(searched.contains(&address.to_string()));
     }
-    probe.assert_addresses(&format!("{service_id}.internal"), expected);
+    probe.assert_addresses(&format!("{service_id}.id.lookup.internal"), expected);
     for machine in machines {
         probe.assert_addresses(
-            &format!("{}.m.dns-api.internal", machine.id),
+            &format!("dns-api.app.{}.machine.internal", machine.id),
             &[*by_machine.get(&machine.id).unwrap()],
         );
     }
-    let authoritative = probe.dig("dns-api.internal", "A", false);
+    let authoritative = probe.dig("dns-api.app.internal", "A", false);
     assert!(authoritative.contains("status: NOERROR"));
     assert!(authoritative.contains("flags: qr aa"));
     assert!(
@@ -171,11 +171,10 @@ async fn assert_internal_selectors(
 }
 
 fn assert_answer_modes(probe: &DnsProbe<'_>, local_address: Ipv4Addr, expected: &[Ipv4Addr]) {
-    // L3-072: nearest is local-first and rr keeps the complete answer set.
-    let nearest = dig_addresses(&probe.dig("nearest.dns-api.internal", "A", false));
+    // L3-072: nearest is local-first and keeps the complete answer set.
+    let nearest = dig_addresses(&probe.dig("dns-api.app.nearest.internal", "A", false));
     assert_eq!(nearest.first(), Some(&local_address));
     assert_eq!(sorted(nearest), sorted(expected.to_vec()));
-    probe.assert_addresses("rr.dns-api.internal", expected);
 }
 
 async fn assert_projection_changes(
@@ -201,7 +200,7 @@ async fn assert_projection_changes(
         .filter(|address| *address != second_address)
         .collect::<Vec<_>>();
     probe
-        .wait_addresses("dns-api.internal", &without_second)
+        .wait_addresses("dns-api.app.internal", &without_second)
         .await;
     probe
         .cluster
@@ -211,13 +210,13 @@ async fn assert_projection_changes(
         )
         .unwrap();
     wait_for_health(client, second_container, HealthObservation::Healthy).await;
-    probe.wait_addresses("dns-api.internal", expected).await;
+    probe.wait_addresses("dns-api.app.internal", expected).await;
     stop_container(client, second_machine.id, *second_container).await;
     probe
-        .wait_addresses("dns-api.internal", &without_second)
+        .wait_addresses("dns-api.app.internal", &without_second)
         .await;
     start_container(client, second_machine.id, *second_container).await;
-    probe.wait_addresses("dns-api.internal", expected).await;
+    probe.wait_addresses("dns-api.app.internal", expected).await;
 }
 
 fn assert_protocol_contract_and_forwarding(probe: &DnsProbe<'_>) {
@@ -276,7 +275,7 @@ async fn assert_membership_blind_projection(
             health: HealthObservation::Healthy
         }
     ));
-    probe.wait_addresses("dns-api.internal", expected).await;
+    probe.wait_addresses("dns-api.app.internal", expected).await;
 }
 
 struct DnsProbe<'a> {
