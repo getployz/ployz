@@ -28,6 +28,7 @@ pub const DEFAULT_API_ADDRESS: &str = "127.0.0.1:51002";
 pub const DEFAULT_GOSSIP_ADDRESS: &str = "127.0.0.1:51001";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
+const START_TIMEOUT: Duration = Duration::from_secs(4 * 60 + 30);
 
 pub struct CorrosionConfig {
     data_dir: PathBuf,
@@ -80,27 +81,25 @@ impl CorrosionConfig {
     }
 
     pub async fn start(&self) -> Result<RunningCorrosion, Error> {
-        let token = self.install()?;
-        let api = ApiClient::new(self.api_address, &token)?;
-        let admin = AdminClient::new(self.run_dir.join("admin.sock"));
-        let docker = Docker::connect_with_socket_defaults()?;
-        let service = DockerService {
-            service: ManagedService::host(docker, self.container_name.clone(), IMAGE),
-            data_dir: self.data_dir.clone(),
-            run_dir: self.run_dir.clone(),
-        };
-        service.start().await?;
-        wait_ready(|| async {
-            api.query(Statement::new("SELECT 1 FROM cluster LIMIT 1", []))
-                .await
-                .is_ok()
+        bounded_start(async {
+            let token = self.install()?;
+            let api = ApiClient::new(self.api_address, &token)?;
+            let admin = AdminClient::new(self.run_dir.join("admin.sock"));
+            let docker = Docker::connect_with_socket_defaults()?;
+            let service = DockerService {
+                service: ManagedService::host(docker, self.container_name.clone(), IMAGE),
+                data_dir: self.data_dir.clone(),
+                run_dir: self.run_dir.clone(),
+            };
+            service.start().await?;
+            wait_ready(|| async { api.query(Statement::new("SELECT 1", [])).await.is_ok() }).await;
+            Ok(RunningCorrosion {
+                store: ReplicatedStore::new(api),
+                admin,
+                service,
+            })
         })
-        .await;
-        Ok(RunningCorrosion {
-            store: ReplicatedStore::new(api),
-            admin,
-            service,
-        })
+        .await
     }
 
     fn install(&self) -> Result<String, Error> {
@@ -240,24 +239,30 @@ impl DockerService {
     }
 }
 
+async fn bounded_start<F, T>(start: F) -> Result<T, Error>
+where
+    F: Future<Output = Result<T, Error>>,
+{
+    tokio::time::timeout(START_TIMEOUT, start)
+        .await
+        .map_err(|_| {
+            Error::Api(format!(
+                "Corrosion did not start within {} seconds; inspect `journalctl -u ployz -n 100 --no-pager`",
+                START_TIMEOUT.as_secs(),
+            ))
+        })?
+}
+
 async fn wait_ready<F, Fut>(mut ready: F)
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
 {
-    let warning_interval = Duration::from_secs(5 * 60);
-    let mut warning_at = tokio::time::Instant::now() + warning_interval;
     loop {
         if ready().await {
             return;
         }
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_millis(500)) => {}
-            () = tokio::time::sleep_until(warning_at) => {
-                eprintln!("Corrosion is still not ready");
-                warning_at = tokio::time::Instant::now() + warning_interval;
-            }
-        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -357,6 +362,22 @@ mod tests {
             started.elapsed() >= Duration::from_secs(16),
             "probe must succeed only after 15 seconds, got {:?}",
             started.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn corrosion_start_is_bounded() {
+        let error = tokio::time::timeout(
+            Duration::from_secs(5 * 60),
+            bounded_start(std::future::pending::<Result<(), Error>>()),
+        )
+        .await
+        .expect("Corrosion startup must return before the systemd startup ceiling")
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("journalctl -u ployz -n 100 --no-pager")
         );
     }
 }
