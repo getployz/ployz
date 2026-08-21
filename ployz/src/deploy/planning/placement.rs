@@ -136,7 +136,7 @@ pub(super) fn plan_global(
                     });
                 }
             }
-            let order = determine_update_order(container, requested);
+            let order = determine_update_order(Some(container), requested);
             operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id,
                 old_container_id: observation.container_id,
@@ -156,7 +156,7 @@ pub(super) fn plan_global(
                 spec: resolve(
                     requested,
                     *service_id,
-                    requested.update.order.unwrap_or(UpdateOrder::StartFirst),
+                    determine_update_order(None, requested),
                 ),
                 skip_health_monitor: options.skip_health_monitor,
             });
@@ -344,7 +344,7 @@ pub(super) fn plan_replicated(
         match (operation, existing) {
             (EndpointOperation::Unchanged, Some(_)) => {}
             (EndpointOperation::Replace, Some(container)) => {
-                let order = determine_update_order(container, requested);
+                let order = determine_update_order(Some(container), requested);
                 operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                     machine_id: machine.machine.id,
                     old_container_id: container.as_observation().container_id,
@@ -357,7 +357,7 @@ pub(super) fn plan_replicated(
                 spec: resolve(
                     requested,
                     *service_id,
-                    requested.update.order.unwrap_or(UpdateOrder::StartFirst),
+                    determine_update_order(None, requested),
                 ),
                 skip_health_monitor: options.skip_health_monitor,
             }),
@@ -488,28 +488,28 @@ fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
 }
 
 fn determine_update_order(
-    current: &ServiceContainer,
+    current: Option<&ServiceContainer>,
     requested: &RequestedServiceSpec,
 ) -> UpdateOrder {
     if let Some(order) = requested.update.order {
         return order;
     }
-    let current = current.as_observation();
-    if current.resolved_spec.ports.iter().any(|old| {
-        requested
+    if current.is_some_and(|current| {
+        current
+            .as_observation()
+            .resolved_spec
             .ports
             .iter()
-            .any(|new| host_ports_conflict(old, new))
+            .any(|old| {
+                requested
+                    .ports
+                    .iter()
+                    .any(|new| host_ports_conflict(old, new))
+            })
     }) {
         return UpdateOrder::StopFirst;
     }
-    if (matches!(requested.mode, ServiceMode::Global)
-        || matches!(
-            requested.mode,
-            ServiceMode::Replicated { replicas } if replicas.get() == 1
-        ))
-        && has_mounted_named_volume(&requested.volume_graph)
-    {
+    if has_mounted_named_volume(&requested.volume_graph) {
         return UpdateOrder::StopFirst;
     }
     UpdateOrder::StartFirst

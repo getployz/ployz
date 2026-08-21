@@ -25,24 +25,93 @@ fn new_replicated_service_runs_the_requested_count_across_available_machines() {
 }
 
 #[test]
-fn new_container_keeps_an_explicit_stop_first_order_in_its_resolved_spec() {
-    let mut requested = requested(ServiceMode::Global);
-    requested.update.order = Some(UpdateOrder::StopFirst);
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
+fn new_container_keeps_an_explicit_order_in_its_resolved_spec() {
+    for (name, order, with_volume) in [
+        ("start-first named volume", UpdateOrder::StartFirst, true),
+        ("stop-first stateless", UpdateOrder::StopFirst, false),
+    ] {
+        let mut requested = requested(ServiceMode::Global);
+        requested.update.order = Some(order);
+        if with_volume {
+            add_named_volume(&mut requested, "data");
+        }
+        let plan = plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                volumes: with_volume
+                    .then(|| observed_volume(machine_id('1'), "data"))
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        )
+        .unwrap();
 
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::RunContainer { spec, .. }]
-            if spec.update.order == UpdateOrder::StopFirst
-    ));
+        assert!(
+            matches!(
+                operations(&plan).as_slice(),
+                [DeployOperation::RunContainer { spec, .. }] if spec.update.order == order
+            ),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn new_named_volume_containers_default_to_stop_first_in_every_mode() {
+    let cases = [
+        (
+            "single replica",
+            ServiceMode::Replicated {
+                replicas: NonZeroU32::new(1).unwrap(),
+            },
+            1,
+        ),
+        (
+            "multiple replicas",
+            ServiceMode::Replicated {
+                replicas: NonZeroU32::new(3).unwrap(),
+            },
+            3,
+        ),
+        ("global", ServiceMode::Global, 1),
+    ];
+
+    for (name, mode, expected) in cases {
+        let mut requested = requested(mode);
+        add_named_volume(&mut requested, "data");
+        let plan = plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                volumes: vec![observed_volume(machine_id('1'), "data")],
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        )
+        .unwrap();
+        let orders = operations(&plan)
+            .into_iter()
+            .filter_map(|operation| match operation {
+                DeployOperation::RunContainer { spec, .. } => Some(spec.update.order),
+                DeployOperation::CreateVolume { .. }
+                | DeployOperation::StopContainer { .. }
+                | DeployOperation::RemoveContainer { .. }
+                | DeployOperation::ReplaceContainer(_)
+                | DeployOperation::StopHook { .. }
+                | DeployOperation::RunHook { .. }
+                | DeployOperation::RemoveVolume { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(orders.len(), expected, "{name}");
+        assert!(
+            orders.iter().all(|order| *order == UpdateOrder::StopFirst),
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -112,6 +181,59 @@ fn changed_running_container_is_replaced_on_its_machine() {
             && spec.service_id == current_service_id
             && spec.update.order == UpdateOrder::StartFirst
     ));
+}
+
+#[test]
+fn explicit_order_is_deferred_until_the_next_replacement() {
+    let cases = [
+        (
+            "start-first named volume",
+            true,
+            UpdateOrder::StopFirst,
+            UpdateOrder::StartFirst,
+        ),
+        (
+            "stop-first stateless",
+            false,
+            UpdateOrder::StartFirst,
+            UpdateOrder::StopFirst,
+        ),
+    ];
+
+    for (name, with_volume, current_order, requested_order) in cases {
+        let mut requested = requested(ServiceMode::Replicated {
+            replicas: NonZeroU32::new(1).unwrap(),
+        });
+        if with_volume {
+            add_named_volume(&mut requested, "data");
+        }
+        let mut current = container('b', '1', &requested, &service_id('a'));
+        current.resolved_spec.update.order = current_order;
+        requested.update.order = Some(requested_order);
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![current],
+            volumes: with_volume
+                .then(|| observed_volume(machine_id('1'), "data"))
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+
+        let policy_only = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+        assert!(policy_only.operations.is_empty(), "{name}");
+
+        requested.container.image = "ghcr.io/getployz/api:2".into();
+        let replacement = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+        assert!(
+            matches!(
+                operations(&replacement).as_slice(),
+                [DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })]
+                    if spec.update.order == requested_order
+            ),
+            "{name}"
+        );
+    }
 }
 
 #[test]

@@ -445,7 +445,7 @@ fn incompatible_volume_excludes_only_its_machine() {
 }
 
 #[test]
-fn multi_replica_named_volume_replacement_defaults_to_start_first() {
+fn multi_replica_named_volume_replacement_never_overlaps_requested_replicas() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),
     });
@@ -457,7 +457,11 @@ fn multi_replica_named_volume_replacement_defaults_to_start_first() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            containers: vec![container('b', '1', &current, &current_service_id)],
+            containers: vec![
+                container('b', '1', &current, &current_service_id),
+                container('c', '1', &current, &current_service_id),
+                container('d', '1', &current, &current_service_id),
+            ],
             volumes: vec![observed_volume(machine_id('1'), "data")],
             ..Default::default()
         },
@@ -465,11 +469,12 @@ fn multi_replica_named_volume_replacement_defaults_to_start_first() {
     )
     .unwrap();
 
-    assert!(matches!(
-        operations(&plan).first(),
-        Some(DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. }))
-            if spec.update.order == UpdateOrder::StartFirst
-    ));
+    assert_eq!(plan.operations.len(), 3);
+    assert!(plan.operations.iter().all(|row| matches!(
+        &row.operation,
+        DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })
+            if spec.update.order == UpdateOrder::StopFirst
+    )));
 }
 
 #[test]
