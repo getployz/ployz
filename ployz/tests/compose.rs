@@ -437,6 +437,46 @@ services:
 }
 
 #[test]
+fn singular_ployz_extensions_warn_and_remain_ignored() {
+    for (typo, correction) in [("x-port", "x-ports"), ("x-machine", "x-machines")] {
+        let project = parse_normalized(
+            &format!("services: {{app: {{image: app, {typo}: ignored}}}}"),
+            ".",
+        )
+        .unwrap();
+
+        assert_eq!(
+            project.warnings,
+            [format!(
+                "service 'app': unsupported feature '{typo}'; use {correction}"
+            )]
+        );
+        assert!(service(&project, "app").ports.is_empty());
+        assert!(service(&project, "app").placement.machines.is_empty());
+    }
+}
+
+#[test]
+fn extension_namespace_stays_open() {
+    let project = parse_normalized(
+        r#"
+services:
+  app:
+    image: app
+    x-machines: one
+    x-ports: [80/http]
+    x-caddy: {}
+    x-pre_deploy: {command: [echo, ready]}
+    x-third-party: {enabled: true}
+"#,
+        ".",
+    )
+    .unwrap();
+
+    assert!(project.warnings.is_empty());
+}
+
+#[test]
 fn extensions_accept_machine_scalar_and_list_and_preserve_external_volumes() {
     let project = parse_normalized(
         r#"

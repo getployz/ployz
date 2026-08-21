@@ -536,6 +536,14 @@ fn classify(name: &str, service: &RawService) -> Result<Vec<String>, ComposeErro
         .filter(|feature| present(&service.other, feature))
         .map(|feature| unsupported_feature(name, feature))
         .collect::<Vec<_>>();
+    for (typo, correction) in [("x-port", "x-ports"), ("x-machine", "x-machines")] {
+        if service.other.contains_key(typo) {
+            warnings.push(format!(
+                "{}; use {correction}",
+                unsupported_feature(name, typo)
+            ));
+        }
+    }
     for feature in ["mem_swappiness", "memswap_limit"] {
         if service
             .other
