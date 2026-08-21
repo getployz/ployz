@@ -13,6 +13,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Mutex;
 
+#[path = "caddy_tests/watcher.rs"]
+mod watcher;
+
 #[test]
 fn automatic_sites_match_the_frozen_caddyfile_contract() {
     let local = MachineId::parse("a".repeat(32)).unwrap();

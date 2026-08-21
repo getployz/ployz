@@ -189,18 +189,21 @@ impl ApiClient {
                 StreamReader::new(chunks),
                 LinesCodec::new_with_max_length(8 * 1024 * 1024),
             ),
+            snapshot_in_progress: false,
         };
-        loop {
-            match subscription.next_event().await? {
-                QueryEvent::Columns(_) | QueryEvent::Row(_, _) => {}
-                QueryEvent::EndOfQuery { .. } => return Ok(subscription),
-                QueryEvent::Change(_) => {
-                    return Err(Error::Protocol(
-                        "subscription change preceded end-of-query".into(),
-                    ));
-                }
-                QueryEvent::Error(error) => return Err(Error::Api(error)),
+        match subscription.next_event().await? {
+            QueryEvent::Columns(_) => {
+                subscription.snapshot_in_progress = true;
+                subscription.finish_snapshot().await?;
+                Ok(subscription)
             }
+            QueryEvent::Change(_) => Err(Error::Protocol(
+                "subscription change preceded end-of-query".into(),
+            )),
+            QueryEvent::Error(error) => Err(Error::Api(error)),
+            QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
+                "subscription snapshot event arrived without columns".into(),
+            )),
         }
     }
 }
@@ -209,16 +212,42 @@ type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>;
 
 pub(crate) struct Subscription {
     lines: FramedRead<StreamReader<ByteStream, Bytes>, LinesCodec>,
+    snapshot_in_progress: bool,
 }
 
 impl Subscription {
     pub(crate) async fn changed(&mut self) -> Result<(), Error> {
+        if self.snapshot_in_progress {
+            return self.finish_snapshot().await;
+        }
         match self.next_event().await? {
             QueryEvent::Change(_) => Ok(()),
             QueryEvent::Error(error) => Err(Error::Api(error)),
-            QueryEvent::Columns(_) | QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(
-                Error::Protocol("initial subscription event followed end-of-query".into()),
-            ),
+            QueryEvent::Columns(_) => {
+                self.snapshot_in_progress = true;
+                self.finish_snapshot().await
+            }
+            QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
+                "subscription snapshot event arrived without columns".into(),
+            )),
+        }
+    }
+
+    async fn finish_snapshot(&mut self) -> Result<(), Error> {
+        loop {
+            match self.next_event().await? {
+                QueryEvent::Row(_, _) => {}
+                QueryEvent::EndOfQuery { .. } => {
+                    self.snapshot_in_progress = false;
+                    return Ok(());
+                }
+                QueryEvent::Error(error) => return Err(Error::Api(error)),
+                QueryEvent::Columns(_) | QueryEvent::Change(_) => {
+                    return Err(Error::Protocol(
+                        "subscription snapshot events arrived out of order".into(),
+                    ));
+                }
+            }
         }
     }
 
@@ -305,4 +334,72 @@ enum QueryEvent {
     },
     Change(IgnoredAny),
     Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        convert::Infallible,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use axum::{Router, body::Body, routing::post};
+    use bytes::Bytes;
+    use tokio::{net::TcpListener, sync::mpsc};
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+
+    use super::{ApiClient, Statement};
+
+    #[tokio::test]
+    async fn subscription_accepts_live_change_resnapshot_and_later_change() {
+        const BEFORE_CANCEL: &[u8] = b"{\"columns\":[\"id\"]}\n\
+{\"row\":[1,[\"initial\"]]}\n\
+{\"eoq\":{\"time\":0.0}}\n\
+{\"change\":{}}\n\
+{\"columns\":[\"id\"]}\n";
+        const AFTER_CANCEL: &[u8] = b"\
+{\"row\":[2,[\"replacement\"]]}\n\
+{\"eoq\":{\"time\":0.0}}\n\
+{\"change\":{}}\n";
+        let (events, receiver) = mpsc::unbounded_channel::<Result<Bytes, Infallible>>();
+        let receiver = Arc::new(Mutex::new(Some(receiver)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_receiver = receiver.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/subscriptions",
+                    post(move || {
+                        let receiver = server_receiver.lock().unwrap().take().unwrap();
+                        async move { Body::from_stream(UnboundedReceiverStream::new(receiver)) }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
+        events.send(Ok(Bytes::from_static(BEFORE_CANCEL))).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let mut subscription = client
+                .subscribe(Statement::new("SELECT id FROM test", []))
+                .await
+                .unwrap();
+            subscription.changed().await.unwrap();
+            tokio::time::timeout(Duration::from_millis(100), subscription.changed())
+                .await
+                .expect_err("replacement snapshot should wait for end-of-query");
+            assert!(subscription.snapshot_in_progress);
+            events.send(Ok(Bytes::from_static(AFTER_CANCEL))).unwrap();
+            subscription.changed().await.unwrap();
+            subscription.changed().await.unwrap();
+        })
+        .await
+        .unwrap();
+        server.abort();
+    }
 }
