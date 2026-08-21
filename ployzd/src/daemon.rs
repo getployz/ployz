@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{LocalMachinePhase, MachineRpcServer};
+use ployz_core::{LocalMachinePhase, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT};
 use sd_notify::NotifyState;
 use thiserror::Error;
 use tokio::{
@@ -183,7 +183,10 @@ impl Daemon {
         .with_image_ingest(Arc::clone(&ingest))
         .with_cloud_pairing(cloud_pairing_tx);
         let proxy = MachineProxy::new(
-            Routes::new(MachineRpcServer::new(service.clone())),
+            Routes::new(
+                MachineRpcServer::new(service.clone())
+                    .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
+            ),
             local_id,
             MACHINE_API_PORT,
             replicated_store.clone(),

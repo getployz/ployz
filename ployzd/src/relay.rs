@@ -7,7 +7,9 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{CloudPairing, MachineId, MachineRpcServer, PairingCredential};
+use ployz_core::{
+    CloudPairing, MachineId, MachineRpcServer, PairingCredential, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+};
 use ployz_relay::{ClientError, Open, RegisterRequest, RelayClient, TunnelIo};
 use thiserror::Error;
 use tokio::{
@@ -76,7 +78,10 @@ async fn serve_attach(client: RelayClient, open: Open, service: MachineService) 
     };
     let io = Incoming(tunnel.into_io());
     let _ = Server::builder()
-        .add_service(MachineRpcServer::new(service))
+        .add_service(
+            MachineRpcServer::new(service)
+                .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
+        )
         .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(io)))
         .await;
 }

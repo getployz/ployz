@@ -40,6 +40,9 @@ function assertFrame(frame, label) {
     throw new Error(`${label} must carry typed incomplete IDs`);
   }
   const text = JSON.stringify(frame);
+  if (Buffer.byteLength(text) <= 4 * 1024 * 1024) {
+    throw new Error(`${label} must exceed tonic's default decoding limit`);
+  }
   for (const forbidden of [
     "BEGIN CERTIFICATE",
     "BEGIN PRIVATE KEY",

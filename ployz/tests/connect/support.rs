@@ -20,9 +20,9 @@ use ployz_core::{
     DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachinePhase, LocalMachineRemoved,
     Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation,
     MachineRemoved, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, Registered, RemoveMachineRequest, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, VolumeRemoved,
-    WireGuardPublicKey, op,
+    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeList, VolumeRemoved, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -46,7 +46,10 @@ pub(super) async fn serve_discovery(
     let address = tcp.local_addr().unwrap();
     let server = tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(service))
+            .add_service(
+                MachineRpcServer::new(service)
+                    .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
+            )
             .serve_with_incoming(TcpListenerStream::new(tcp)),
     );
     (address, server)

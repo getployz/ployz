@@ -6,7 +6,7 @@ use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContainerId, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
     DockerVolumeId, DockerVolumeName, MachineId, PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY,
-    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
 };
 use serde_json::Value;
 use tokio::time::timeout;
@@ -212,11 +212,13 @@ async fn reconnect_starts_with_a_fresh_complete_frame_and_no_cursor() {
 }
 
 #[tokio::test]
-async fn node_watch_covers_abort_signal_and_async_iteration() {
+async fn node_watch_decodes_frames_above_tonics_default() {
     let description = watch_description();
     let session = RelaySession::start().await;
     let service = DiscoveryService::new(description.clone());
-    service.emit_watch_frame_on_open(frozen_frame());
+    let mut frame = frozen_frame();
+    frame.observed_at = "x".repeat(4 * 1024 * 1024);
+    service.emit_watch_frame_on_open(frame);
     let _machine = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
@@ -260,6 +262,39 @@ async fn node_watch_covers_abort_signal_and_async_iteration() {
         2
     );
     assert_no_list_rpc(&service);
+}
+
+#[tokio::test]
+async fn frame_above_ceiling_errors_without_closing_session() {
+    let (client, service, _session, _machine) = watching_session().await;
+    let mut frame = frozen_frame();
+    frame.observed_at = "x".repeat(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
+    service.push_watch_frame(frame);
+    let watch = client.watch().await.unwrap();
+
+    let error = timeout(Duration::from_secs(10), watch.next())
+        .await
+        .expect("Watch error")
+        .expect_err("oversized Watch frame must fail");
+
+    assert_eq!(error.code, RpcErrorCode::Internal);
+    assert!(
+        error.message.contains("message length too large"),
+        "{}",
+        error.message
+    );
+    assert!(
+        error
+            .message
+            .contains(&RUNTIME_WATCH_MESSAGE_SIZE_LIMIT.to_string())
+    );
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
 }
 
 async fn watching_session() -> (sdk::Session, DiscoveryService, RelaySession, FakeMachine) {

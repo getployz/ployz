@@ -95,6 +95,9 @@ pub use transport::{
     machine_rpc_server::MachineRpcServer,
 };
 
+/// Maximum encoded Runtime Watch message size accepted by Cloud and sent by the daemon.
+pub const RUNTIME_WATCH_MESSAGE_SIZE_LIMIT: usize = 64 * 1024 * 1024;
+
 impl OpaquePayload {
     #[must_use]
     pub fn new(json: Vec<u8>) -> Self {
