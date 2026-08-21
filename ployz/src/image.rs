@@ -230,12 +230,7 @@ pub(crate) async fn list(
             omissions: selection.omissions,
         });
     }
-    let ids = selection
-        .targets
-        .iter()
-        .map(|machine| machine.id.to_string())
-        .collect::<Vec<_>>();
-    let mut result = client.list_images(reference, &ids).await?;
+    let mut result = client.list_images(reference, &selection.targets).await;
     result.omissions.extend(selection.omissions);
     Ok(result)
 }
@@ -329,10 +324,16 @@ pub(crate) async fn ensure_cluster_image(
         PullPolicy::Always => return Ok(()),
         PullPolicy::Missing | PullPolicy::Never => {}
     }
-    let listings = client
-        .list_images(Some(image.to_owned()), &[])
-        .await
-        .map_err(rpc_error)?;
+    let mut listing_client = client.clone();
+    let machines = listing_client.machines().await.map_err(rpc_error)?;
+    let targets = machines
+        .into_iter()
+        .filter(|machine| machine.membership.invites_rpc())
+        .map(|machine| machine.machine)
+        .collect::<Vec<_>>();
+    let listings = listing_client
+        .list_images(Some(image.to_owned()), &targets)
+        .await;
     if destination_has_image(dest, &listings.successes, image) {
         return Ok(());
     }

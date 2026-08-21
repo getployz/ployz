@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -444,6 +444,55 @@ async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
         vec![machine_id('b')]
     );
     assert_eq!(result.omissions, vec![machine_id('e'), machine_id('c')]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn fanout_reads_retry_failed_legs_without_rerunning_successes() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines = vec![machine('a', "recovers"), machine('b', "fails")];
+    service.container_list_outcomes.lock().unwrap().extend([
+        (
+            machine_id('a'),
+            VecDeque::from([
+                Err(Status::unavailable("transient")),
+                Ok(ployz_core::ContainerList {
+                    containers: Vec::new(),
+                }),
+            ]),
+        ),
+        (
+            machine_id('b'),
+            VecDeque::from([
+                Err(Status::unavailable("permanent")),
+                Err(Status::unavailable("permanent")),
+                Err(Status::unavailable("permanent")),
+                Err(Status::unavailable("permanent")),
+            ]),
+        ),
+    ]);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let result = client.live_services().await.unwrap().containers;
+
+    assert_eq!(
+        result
+            .successes
+            .iter()
+            .map(|success| success.machine_id)
+            .collect::<Vec<_>>(),
+        [machine_id('a')]
+    );
+    let [failure] = result.failures.as_slice() else {
+        panic!("expected one exhausted failure: {result:?}")
+    };
+    assert_eq!(failure.machine_id, machine_id('b'));
+    assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        *service.container_list_calls.lock().unwrap(),
+        BTreeMap::from([(machine_id('a'), 2), (machine_id('b'), 4)])
+    );
+
     server.abort();
 }
 

@@ -72,6 +72,8 @@ struct WatchHub {
     live: Mutex<Vec<mpsc::Sender<Result<OpaquePayload, Status>>>>,
 }
 
+type ContainerListOutcomes = BTreeMap<MachineId, VecDeque<Result<ContainerList, Status>>>;
+
 impl WatchHub {
     fn new() -> Self {
         Self {
@@ -136,6 +138,8 @@ pub(super) struct DiscoveryService {
     pub(super) stream_opens: Arc<AtomicUsize>,
     pub(super) watch_opens: Arc<AtomicUsize>,
     pub(super) list_rpc_calls: Arc<AtomicUsize>,
+    pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
+    pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     watch: Arc<WatchHub>,
     pub(super) machines: Vec<MachineObservation>,
@@ -157,6 +161,8 @@ impl DiscoveryService {
             stream_opens: Arc::new(AtomicUsize::new(0)),
             watch_opens: Arc::new(AtomicUsize::new(0)),
             list_rpc_calls: Arc::new(AtomicUsize::new(0)),
+            container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
+            container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch: Arc::new(WatchHub::new()),
             machines: vec![machine('a', "one")],
@@ -386,9 +392,33 @@ impl MachineRpc for DiscoveryService {
 
     async fn list_containers(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(machine_id) = request
+            .metadata()
+            .get("machine")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| MachineId::parse(value).ok())
+        {
+            *self
+                .container_list_calls
+                .lock()
+                .unwrap()
+                .entry(machine_id)
+                .or_default() += 1;
+            if let Some(outcome) = self
+                .container_list_outcomes
+                .lock()
+                .unwrap()
+                .get_mut(&machine_id)
+                .and_then(VecDeque::pop_front)
+            {
+                return outcome.map(|containers| {
+                    Response::new(RpcResponse::from(containers).encode().unwrap())
+                });
+            }
+        }
         Ok(Response::new(
             RpcResponse::from(ContainerList {
                 containers: self.listed_containers.lock().unwrap().clone(),

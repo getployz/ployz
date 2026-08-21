@@ -4,6 +4,7 @@ use std::{
 };
 
 use clap::ArgMatches;
+use futures_util::future::join_all;
 use ployz_core::{
     InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSuccess,
     MachineTarget, PartialResult, RpcError, RttObservation, RttStatistics, WireGuardPeer, op,
@@ -102,6 +103,7 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let machines = machine_list(client).await?;
+            let mut requests = Vec::new();
             let mut result = PartialResult {
                 successes: Vec::new(),
                 failures: Vec::new(),
@@ -113,15 +115,20 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
                     result.omissions.push(id);
                     continue;
                 }
-                let selector = MachineTarget::from(&id);
-                let request = InspectRequest {
-                    include_rtts: true,
-                    ..Default::default()
-                };
-                match client
-                    .invoke::<op::Inspect>(request, &selector, Some(TARGET_RPC_TIMEOUT))
-                    .await
-                {
+                let mut client = client.clone();
+                requests.push(async move {
+                    let request = InspectRequest {
+                        include_rtts: true,
+                        ..Default::default()
+                    };
+                    let outcome = client
+                        .read::<op::Inspect>(request, &MachineTarget::from(&id))
+                        .await;
+                    (id, outcome)
+                });
+            }
+            for (id, outcome) in join_all(requests).await {
+                match outcome {
                     Ok(details) => result.successes.push(MachineSuccess {
                         machine_id: id,
                         value: details.rtts,

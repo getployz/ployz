@@ -12,8 +12,8 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FanoutFailure, FramingError, MachineId, MachineTarget, RoutingMetadataError,
-    RpcError, RpcErrorCode, apply_one_target,
+    CodecError, FramingError, MachineId, MachineTarget, RoutingMetadataError, RpcError,
+    RpcErrorCode, apply_one_target,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -375,32 +375,6 @@ pub(crate) async fn apply_timeout<T>(
 
 pub(crate) fn is_unary_retryable(error: &ConnectError) -> bool {
     error.is_retryable()
-}
-
-pub(crate) fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
-    let code = match tonic::Code::from_i32(i32::try_from(failure.code).unwrap_or(i32::MAX)) {
-        tonic::Code::InvalidArgument | tonic::Code::OutOfRange => RpcErrorCode::InvalidArgument,
-        tonic::Code::NotFound => RpcErrorCode::NotFound,
-        tonic::Code::AlreadyExists | tonic::Code::Aborted | tonic::Code::FailedPrecondition => {
-            RpcErrorCode::Conflict
-        }
-        tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
-        tonic::Code::Unauthenticated => RpcErrorCode::Unauthenticated,
-        tonic::Code::DeadlineExceeded
-        | tonic::Code::ResourceExhausted
-        | tonic::Code::Unavailable => RpcErrorCode::Unavailable,
-        tonic::Code::Internal | tonic::Code::DataLoss | tonic::Code::Unknown => {
-            RpcErrorCode::Internal
-        }
-        tonic::Code::Ok | tonic::Code::Cancelled | tonic::Code::PermissionDenied => {
-            RpcErrorCode::Unknown(format!("grpc_{}", failure.code))
-        }
-    };
-    RpcError {
-        code,
-        message: failure.message,
-        details: failure.details.into(),
-    }
 }
 
 pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> tonic::Request<T> {
@@ -789,31 +763,6 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg.contains("id_*")));
         assert!(!args.iter().any(|arg| arg.contains("BatchMode")));
-    }
-
-    #[test]
-    fn fanout_failures_preserve_status_code_and_details() {
-        let error = decode_fanout_failure(FanoutFailure {
-            code: tonic::Code::Internal as u32,
-            message: "Docker failed".into(),
-            details: vec![1, 2, 3],
-        });
-
-        assert_eq!(error.code, RpcErrorCode::Internal);
-        assert_eq!(error.message, "Docker failed");
-        assert_eq!(error.details, serde_json::json!([1, 2, 3]));
-    }
-
-    #[test]
-    fn fanout_deadline_exceeded_still_maps_to_unavailable() {
-        let error = decode_fanout_failure(FanoutFailure {
-            code: tonic::Code::DeadlineExceeded as u32,
-            message: "deadline".into(),
-            details: Vec::new(),
-        });
-
-        assert_eq!(error.code, RpcErrorCode::Unavailable);
-        assert_eq!(error.message, "deadline");
     }
 
     #[test]
