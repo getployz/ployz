@@ -60,6 +60,7 @@ http:// {{\n\
 \thandle {CADDY_VERIFY_PATH} {{\n\
 \t\trespond \"{local}\" 200\n\
 \t}}\n\
+\trespond \"Not Found\" 404\n\
 \tlog\n\
 }}\n\
 \n\
@@ -352,6 +353,7 @@ fn pending_challenge_is_answered_on_the_http_site() {
 \thandle /.well-known/acme-challenge/tok {\n\
 \t\trespond \"tok.thumb\" 200\n\
 \t}\n\
+\trespond \"Bad Gateway\" 502\n\
 \tlog\n\
 }\n"
     ));
@@ -458,7 +460,7 @@ fn automatic_sites_exclude_hook_containers() {
 }
 
 #[test]
-fn automatic_sites_omit_unaddressed_host_and_unassigned_ports() {
+fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let ports = vec![
         PortPublication::Host {
@@ -511,7 +513,12 @@ fn automatic_sites_omit_unaddressed_host_and_unassigned_ports() {
         &BTreeMap::new(),
     );
     assert!(caddyfile.contains(CADDY_VERIFY_PATH));
-    assert!(!caddyfile.contains("missing.example"));
+    assert!(caddyfile.contains(
+        "http://missing.example {\n\
+\trespond \"Bad Gateway\" 502\n\
+\tlog\n\
+}\n"
+    ));
     assert!(caddyfile.contains("http://web.opaque.ployz.example"));
     assert!(caddyfile.contains("reverse_proxy 10.210.1.9:8080"));
     assert!(
@@ -534,6 +541,59 @@ fn automatic_sites_omit_unaddressed_host_and_unassigned_ports() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn published_hosts_without_healthy_replicas_return_bad_gateway() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let healthy = observation(
+        1,
+        &local,
+        "healthy",
+        Some([10, 210, 1, 2]),
+        vec![ingress("healthy.example", 80, HttpProtocol::Http)],
+    );
+    let mut stopped = observation(
+        2,
+        &local,
+        "stopped",
+        Some([10, 210, 1, 3]),
+        vec![ingress("stopped.example", 80, HttpProtocol::Http)],
+    );
+    stopped.runtime = ContainerRuntimeObservation::Exited { code: 137 };
+    let mut unhealthy = observation(
+        3,
+        &local,
+        "unhealthy",
+        Some([10, 210, 1, 4]),
+        vec![ingress("unhealthy.example", 80, HttpProtocol::Http)],
+    );
+    unhealthy.runtime = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Unhealthy,
+    };
+
+    let caddyfile = automatic_caddyfile(
+        &local,
+        "node-a",
+        &service_containers([healthy, stopped, unhealthy]),
+        "TIMESTAMP",
+        None,
+        &BTreeMap::new(),
+    );
+
+    assert!(caddyfile.contains(
+        "http://healthy.example {\n\
+\treverse_proxy 10.210.1.2:80"
+    ));
+    for hostname in ["stopped.example", "unhealthy.example"] {
+        assert!(caddyfile.contains(&format!(
+            "http://{hostname} {{\n\
+\trespond \"Bad Gateway\" 502\n\
+\tlog\n\
+}}\n"
+        )));
+    }
+    assert!(!caddyfile.contains("unknown Host"));
 }
 
 #[tokio::test]

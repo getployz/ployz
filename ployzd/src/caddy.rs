@@ -558,8 +558,31 @@ fn automatic_caddyfile(
     certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> String {
     let owners = hostname_owners(containers.iter().map(ServiceContainer::as_observation));
-    let containers = eligible_containers(local_machine, containers);
     let mut sites = BTreeMap::<IngressHost, Site<'_>>::new();
+    for container in containers {
+        let observation = container.as_observation();
+        let identity = observation.identity();
+        for port in &observation.resolved_spec.ports {
+            let PortPublication::Ingress {
+                hostname,
+                http_protocol,
+                ..
+            } = port
+            else {
+                continue;
+            };
+            let Some(hostname) = hostname.as_explicit_host() else {
+                continue;
+            };
+            if owners.get(hostname) == Some(&identity) {
+                sites
+                    .entry(hostname.clone())
+                    .or_default()
+                    .publish(*http_protocol);
+            }
+        }
+    }
+    let containers = eligible_containers(local_machine, containers);
     for container in containers {
         let observation = container.as_observation();
         let address = observation.address.expect("address was filtered above");
@@ -583,11 +606,11 @@ fn automatic_caddyfile(
                 continue;
             }
             let upstream = format!("{}:{container_port}", address.0);
-            let site = sites.entry(hostname.clone()).or_default();
-            match http_protocol {
-                HttpProtocol::Http => site.http.push(upstream),
-                HttpProtocol::Https => site.https.push(upstream),
-            }
+            sites
+                .get_mut(hostname)
+                .expect("published hostname was collected above")
+                .publish(*http_protocol)
+                .push(upstream);
         }
     }
     for (hostname, row) in certificates {
@@ -610,6 +633,7 @@ http:// {{\n\
 \thandle {CADDY_VERIFY_PATH} {{\n\
 \t\trespond \"{local_machine}\" 200\n\
 \t}}\n\
+\trespond \"Not Found\" 404\n\
 \tlog\n\
 }}\n\
 \n\
@@ -621,19 +645,19 @@ http:// {{\n\
 }}\n"
     );
     if sites.values().any(|site| {
-        !site.http.is_empty()
+        site.http.is_some()
             || site.challenge.is_some()
-            || (!site.https.is_empty() && site.material.is_some())
+            || (site.https.is_some() && site.material.is_some())
     }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
     for (hostname, site) in &sites {
-        if !site.http.is_empty() || site.challenge.is_some() {
+        if site.http.is_some() || site.challenge.is_some() {
             write_site(
                 &mut output,
                 "http",
                 hostname,
-                &site.http,
+                site.http.as_deref().unwrap_or_default(),
                 "",
                 site.challenge,
             );
@@ -641,13 +665,13 @@ http:// {{\n\
         let Some(material) = site.material else {
             continue;
         };
-        if site.https.is_empty() {
+        let Some(upstreams) = site.https.as_deref() else {
             continue;
-        }
+        };
         let stem = certificate_file_stem(hostname, material);
         let tls =
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
-        write_site(&mut output, "https", hostname, &site.https, &tls, None);
+        write_site(&mut output, "https", hostname, upstreams, &tls, None);
     }
     write_certificate_errors(&mut output, certificates);
     output
@@ -674,11 +698,20 @@ fn write_certificate_errors(
 }
 
 #[derive(Default)]
-struct Site<'a> {
-    http: Vec<String>,
-    https: Vec<String>,
-    challenge: Option<&'a CertificateChallenge>,
-    material: Option<&'a CertificateMaterial>,
+struct Site<'certificate> {
+    http: Option<Vec<String>>,
+    https: Option<Vec<String>>,
+    challenge: Option<&'certificate CertificateChallenge>,
+    material: Option<&'certificate CertificateMaterial>,
+}
+
+impl Site<'_> {
+    fn publish(&mut self, protocol: HttpProtocol) -> &mut Vec<String> {
+        match protocol {
+            HttpProtocol::Http => self.http.get_or_insert_default(),
+            HttpProtocol::Https => self.https.get_or_insert_default(),
+        }
+    }
 }
 
 fn write_global_options(output: &mut String, global_config: Option<&str>) {
@@ -727,7 +760,7 @@ fn write_site(
         })
         .unwrap_or_default();
     let proxy = if upstreams.is_empty() {
-        String::new()
+        "\trespond \"Bad Gateway\" 502\n".to_owned()
     } else {
         format!(
             "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n",
