@@ -292,6 +292,82 @@ assert_eq "$(daemon_action 1.2.4 1.2.3 floating)" "keep"
 assert_eq "$(daemon_action 1.2.3 1.2.2 pin)" "replace"
 assert_eq "$(daemon_action 1.2.2 1.2.3 pin)" "replace"
 
+inherited_apt_config=$(mktemp)
+printf 'Acquire::Retries "7";' > "$inherited_apt_config"
+APT_CONFIG=$inherited_apt_config configure_apt_lock_wait
+assert_eq "$(cat "$APT_CONFIG")" $'Acquire::Retries "7";\nDPkg::Lock::Timeout "300";'
+assert_eq "$(run_with_apt_lock_wait sh -c 'printf %s "$LC_ALL"')" C
+rm -f "$inherited_apt_config"
+apt_root=$(mktemp -d)
+mkdir -p "$apt_root/lists/partial" "$apt_root/cache/archives/partial" "$apt_root/dpkg" "$apt_root/etc/sources.list.d"
+: > "$apt_root/dpkg/status"
+: > "$apt_root/etc/sources.list"
+apt_args=(
+    -o "Dir::State::lists=$apt_root/lists"
+    -o "Dir::Cache=$apt_root/cache"
+    -o "Dir::State::status=$apt_root/dpkg/status"
+    -o "Dir::Etc::sourcelist=$apt_root/etc/sources.list"
+    -o "Dir::Etc::sourceparts=$apt_root/etc/sources.list.d"
+)
+start_apt_lock_owner() {
+    local lock=$1 ready=$1.ready
+    rm -f "$ready"
+    python3 - "$lock" "$ready" "$2" <<'PY' &
+import fcntl
+import sys
+import time
+
+with open(sys.argv[1], "w") as lock:
+    fcntl.lockf(lock, fcntl.LOCK_EX)
+    open(sys.argv[2], "w").close()
+    time.sleep(int(sys.argv[3]))
+PY
+    lock_owner=$!
+    while [ ! -e "$ready" ]; do
+        kill -0 "$lock_owner" 2>/dev/null || return 1
+        sleep 0.01
+    done
+}
+
+APT_LOCK_TIMEOUT_SECONDS=3
+start_apt_lock_owner "$apt_root/lists/lock" 1
+run_with_apt_lock_wait apt-get "${apt_args[@]}" update >/dev/null
+wait "$lock_owner"
+
+APT_LOCK_TIMEOUT_SECONDS=1
+start_apt_lock_owner "$apt_root/lists/lock" 2
+if lock_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" update 2>&1); then
+    echo "apt accepted a lock held past its timeout" >&2
+    exit 1
+fi
+wait "$lock_owner"
+printf '%s\n' "$lock_error" | grep -Fq "$apt_root/lists/lock"
+printf '%s\n' "$lock_error" | grep -Fq "python3"
+printf '%s\n' "$lock_error" | grep -Fq "retry the installer"
+archive_attempts=$(mktemp)
+if archive_error=$(run_with_apt_lock_wait sh -c 'printf x >> "$1"; printf "%s\n" "E: Could not get lock /var/cache/apt/archives/lock. It is held by process 1 (apt-get)" "E: Unable to lock directory /var/cache/apt/archives/" >&2; exit 100' _ "$archive_attempts" 2>&1); then
+    echo "fake archive lock unexpectedly succeeded" >&2
+    exit 1
+fi
+assert_eq "$(cat "$archive_attempts")" xx
+printf '%s\n' "$archive_error" | grep -Fq "/var/cache/apt/archives/lock"
+printf '%s\n' "$archive_error" | grep -Fq "retry the installer"
+rm -f "$archive_attempts"
+if apt_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" install -y definitely-not-a-package 2>&1); then
+    echo "apt installed a nonexistent package" >&2
+    exit 1
+else
+    apt_status=$?
+fi
+assert_eq "$apt_status" 100
+printf '%s\n' "$apt_error" | grep -Fq "Unable to locate package definitely-not-a-package"
+if printf '%s\n' "$apt_error" | grep -Fq "retry the installer"; then
+    echo "non-lock apt failure was reported as a lock timeout" >&2
+    exit 1
+fi
+rm -rf "$apt_root"
+rm -f "$APT_CONFIG"
+
 PLOYZ_CLI_INSTALL_TEST_ONLY=true source "$ROOT/install.sh"
 assert_eq "$(cli_archive Linux x86_64)" "ployz_linux_amd64.tar.gz"
 assert_eq "$(cli_archive Linux aarch64)" "ployz_linux_arm64.tar.gz"

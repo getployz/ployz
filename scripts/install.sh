@@ -16,6 +16,8 @@ PLOYZ_GROUP_ADD_USER=${PLOYZ_GROUP_ADD_USER:-}
 PLOYZ_DATA_DIR=${PLOYZ_DATA_DIR:-/var/lib/ployz}
 PLOYZ_RUN_DIR=${PLOYZ_RUN_DIR:-/run/ployz}
 DOCKER_DAEMON_CONFIG_FILE=${DOCKER_DAEMON_CONFIG_FILE:-/etc/docker/daemon.json}
+APT_LOCK_TIMEOUT_SECONDS=300
+PLOYZ_APT_CONFIG=
 DAEMON_REPLACED=false
 DOCKER_DAEMON_CONFIG='{
   "features": { "containerd-snapshotter": true },
@@ -28,6 +30,53 @@ log() { echo "$1"; }
 warning() { echo "WARNING: $1" >&2; }
 error() { echo "ERROR: $1" >&2; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+configure_apt_lock_wait() {
+    local inherited_apt_config=${APT_CONFIG:-}
+    PLOYZ_APT_CONFIG=$(mktemp)
+    if [ -n "$inherited_apt_config" ]; then
+        cat "$inherited_apt_config" > "$PLOYZ_APT_CONFIG"
+        printf '\n' >> "$PLOYZ_APT_CONFIG"
+    fi
+    printf 'DPkg::Lock::Timeout "%s";\n' "$APT_LOCK_TIMEOUT_SECONDS" >> "$PLOYZ_APT_CONFIG"
+    export APT_CONFIG="$PLOYZ_APT_CONFIG"
+}
+
+run_with_apt_lock_wait() {
+    local deadline=0 error_dir error_log status tee_pid
+    while true; do
+        error_dir=$(mktemp -d)
+        error_log=$error_dir/stderr
+        mkfifo "$error_dir/pipe"
+        tee "$error_log" < "$error_dir/pipe" >&2 &
+        tee_pid=$!
+        if LC_ALL=C "$@" 2> "$error_dir/pipe"; then
+            status=0
+        else
+            status=$?
+        fi
+        wait "$tee_pid"
+        if [ "$status" -eq 0 ]; then
+            rm -rf "$error_dir"
+            return 0
+        fi
+        if grep -Eq '^E: Could not get lock .*/(lists|archives)/lock\. It is held by process' "$error_log"; then
+            [ "$deadline" -ne 0 ] || deadline=$((SECONDS + APT_LOCK_TIMEOUT_SECONDS))
+            if [ "$SECONDS" -lt "$deadline" ]; then
+                rm -rf "$error_dir"
+                sleep 1
+                continue
+            fi
+        fi
+        break
+    done
+    if grep -Eq '^E: (Could not get lock|Unable to acquire .* lock)' "$error_log"; then
+        rm -rf "$error_dir"
+        error "The package-manager lock named above stayed busy for five minutes. Let its owner finish, then retry the installer."
+    fi
+    rm -rf "$error_dir"
+    return "$status"
+}
 
 channel_version_from_file() {
     local version
@@ -89,8 +138,8 @@ verify_system() {
 install_prerequisites() {
     command_exists curl && return
     if command_exists apt-get; then
-        apt-get update -qq >/dev/null
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates
+        run_with_apt_lock_wait apt-get update -qq >/dev/null
+        run_with_apt_lock_wait env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates
     elif command_exists dnf; then dnf install -y curl ca-certificates
     elif command_exists yum; then yum install -y curl ca-certificates
     elif command_exists pacman; then pacman -Sy --noconfirm curl ca-certificates
@@ -106,7 +155,7 @@ install_docker() {
         fi
         return
     fi
-    curl -fsSL https://get.docker.com | sh
+    run_with_apt_lock_wait bash -o pipefail -c 'curl -fsSL https://get.docker.com | sh'
     mkdir -p "$(dirname "$DOCKER_DAEMON_CONFIG_FILE")"
     printf '%s\n' "$DOCKER_DAEMON_CONFIG" > "$DOCKER_DAEMON_CONFIG_FILE"
     [ "$INSTALL_ONLY" = true ] || systemctl restart docker
@@ -193,8 +242,16 @@ main() {
     [ "$EUID" -eq 0 ] || error "Run this installer with sudo or as root"
     [ "$PLOYZ_VERSION" != nightly ] || error "nightly is not a supported release channel"
     verify_system
+    if command_exists apt-get; then
+        configure_apt_lock_wait
+        trap 'rm -f "$PLOYZ_APT_CONFIG"' EXIT
+    fi
     install_prerequisites
     install_docker
+    if [ -n "$PLOYZ_APT_CONFIG" ]; then
+        rm -f "$PLOYZ_APT_CONFIG"
+        trap - EXIT
+    fi
     create_user_and_directories
     unit=$INSTALL_SYSTEMD_DIR/ployz.service
     [ -f "$unit" ] || DAEMON_REPLACED=true
