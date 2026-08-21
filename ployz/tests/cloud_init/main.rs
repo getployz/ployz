@@ -1,10 +1,11 @@
 //! `ployz cloud enroll` join and initialize paths against fake enroll HTTP.
 
+mod catch_up;
 mod harness;
 
 use harness::{
     CLUSTER_DOMAIN, EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, assert_not_held,
-    founder_machine, registration, serve_machine, wait_for_held,
+    caddy_on, founder_machine, registration, serve_machine, wait_for_held,
 };
 use ployz_core::{
     CloudPairing, InitializeRequest, PairingCredential, Registered, SetCloudPairingRequest, op,
@@ -1066,19 +1067,6 @@ async fn connect_daemon(address: std::net::SocketAddr) -> ployz::connect::Client
     )
     .await
     .unwrap()
-}
-
-fn caddy_on(machine: &ployz_core::Machine) -> ployz_core::ContainerObservation {
-    let spec = ployz::caddy::service_spec("caddy:2.10.0".into(), Vec::new(), None);
-    container_on(
-        machine,
-        spec.to_resolved(
-            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
-            ployz_core::ResolvedUpdateConfig::default(),
-        ),
-        ployz_core::ProjectName::system(),
-        'a',
-    )
 }
 
 fn global_on(

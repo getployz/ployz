@@ -111,12 +111,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         )
     })?;
     if let Err(error) = catch_up {
-        return Err(match error {
-            crate::global_catch_up::CatchUpError::Caddy(error) => {
-                Error::usage(caddy_follow_on_error(&error.to_string()))
-            }
-            crate::global_catch_up::CatchUpError::Other(error) => error,
-        });
+        return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
+            error,
+        )));
     }
     let dns_result = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
@@ -170,10 +167,6 @@ fn added_machine_line(assigned: &Machine) -> String {
     format!("Added Machine {} ({})", assigned.name, assigned.id)
 }
 
-fn caddy_follow_on_error(error: &str) -> String {
-    format!("Caddy Deploy failed after adding the Machine: {error}. Run `caddy deploy` to retry.")
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::{
@@ -193,10 +186,16 @@ mod tests {
     }
 
     #[test]
-    fn caddy_deploy_failure_after_add_is_reported_once() {
-        let error = caddy_follow_on_error("deploy timed out");
+    fn catch_up_failure_after_add_reports_joined_membership() {
+        let error = crate::global_catch_up::joined_catch_up_error(
+            crate::global_catch_up::CatchUpError::Caddy(crate::failure::Failure::usage(
+                "deploy timed out".to_owned(),
+            )),
+        );
+        assert!(error.contains("Machine joined"));
+        assert!(error.contains("remains a Cluster member"));
         assert!(
-            error.contains("`caddy deploy`"),
+            error.contains("`ployz caddy deploy`"),
             "failure must tell the operator to run `caddy deploy`, got {error:?}"
         );
         assert!(

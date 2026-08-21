@@ -69,7 +69,9 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                         crate::global_catch_up::catch_up_globals(&mut ready, &assigned, no_caddy)
                             .await
                     {
-                        return Err(Error::usage(joined_catch_up_error(error)));
+                        return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
+                            error,
+                        )));
                     }
                     println!("Joined Machine {} ({})", assigned.name, assigned.id);
                     return Ok(());
@@ -207,18 +209,6 @@ async fn ensure_uninitialized(
     .await
 }
 
-fn joined_catch_up_error(error: crate::global_catch_up::CatchUpError) -> String {
-    let recovery = match error {
-        crate::global_catch_up::CatchUpError::Caddy(error) => {
-            format!(" {error}. Do not rerun enrollment; run `ployz caddy deploy` instead.")
-        }
-        crate::global_catch_up::CatchUpError::Other(error) => format!(" {error}"),
-    };
-    format!(
-        "Machine joined, but Global catch-up failed afterward; it remains a Cluster member.{recovery}"
-    )
-}
-
 fn pairing_revoked(error: &ConnectError) -> bool {
     matches!(
         error,
@@ -276,19 +266,22 @@ mod tests {
 
     #[test]
     fn post_join_caddy_error_names_membership_and_recovery() {
-        let message = joined_catch_up_error(crate::global_catch_up::CatchUpError::Caddy(
-            crate::failure::Failure::usage("not running".to_owned()),
-        ));
+        let message = crate::global_catch_up::joined_catch_up_error(
+            crate::global_catch_up::CatchUpError::Caddy(crate::failure::Failure::usage(
+                "not running".to_owned(),
+            )),
+        );
         assert!(message.contains("Machine joined"));
-        assert!(message.contains("Do not rerun enrollment"));
         assert!(message.contains("ployz caddy deploy"));
     }
 
     #[test]
     fn post_join_other_error_names_membership() {
-        let message = joined_catch_up_error(crate::global_catch_up::CatchUpError::Other(
-            crate::failure::Failure::usage("listing failed".to_owned()),
-        ));
+        let message = crate::global_catch_up::joined_catch_up_error(
+            crate::global_catch_up::CatchUpError::Other(crate::failure::Failure::usage(
+                "listing failed".to_owned(),
+            )),
+        );
         assert!(message.contains("Machine joined"));
         assert!(message.contains("listing failed"));
     }

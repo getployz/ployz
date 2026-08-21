@@ -49,7 +49,7 @@ pub(crate) trait CatchUpClient {
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError>;
     async fn ensure_global_slot(
-        &self,
+        &mut self,
         machine_id: &MachineId,
         request: EnsureGlobalSlotRequest,
     ) -> Result<(), RpcError>;
@@ -79,14 +79,27 @@ impl CatchUpClient for Client {
     }
 
     async fn ensure_global_slot(
-        &self,
+        &mut self,
         machine_id: &MachineId,
         request: EnsureGlobalSlotRequest,
     ) -> Result<(), RpcError> {
-        self.invoke::<op::EnsureGlobalSlot>(request, &MachineTarget::from(machine_id), None)
+        self.call::<op::EnsureGlobalSlot>(request, Some(&MachineTarget::from(machine_id)))
             .await
             .map(|_| ())
+            .map_err(Into::into)
     }
+}
+
+pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
+    let recovery = match error {
+        CatchUpError::Caddy(error) => {
+            format!(" {error}. Run `ployz caddy deploy` to complete catch-up.")
+        }
+        CatchUpError::Other(error) => format!(" {error}"),
+    };
+    format!(
+        "Machine joined, but Global catch-up failed afterward; it remains a Cluster member.{recovery}"
+    )
 }
 
 /// Globals this Machine is eligible for and does not already run.
@@ -378,7 +391,7 @@ mod tests {
         }
 
         async fn ensure_global_slot(
-            &self,
+            &mut self,
             _machine_id: &MachineId,
             _request: EnsureGlobalSlotRequest,
         ) -> Result<(), RpcError> {

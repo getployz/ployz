@@ -1,4 +1,4 @@
-//! Fake enroll HTTP, Relay, and Machine RPC for `ployz cloud enroll` tests.
+//! Fake enroll HTTP, Relay, and Machine RPC for membership join tests.
 
 use std::{
     collections::VecDeque,
@@ -182,6 +182,8 @@ struct JoinInner {
     resets: AtomicUsize,
     containers: Mutex<Vec<ContainerObservation>>,
     ensure_requests: Mutex<Vec<EnsureGlobalSlotRequest>>,
+    ensure_attempts: AtomicUsize,
+    transient_ensure_failures: AtomicUsize,
     fail_ensure: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
     _register: Mutex<Option<JoinHandle<()>>>,
@@ -199,6 +201,8 @@ impl JoinDaemon {
                 resets: AtomicUsize::new(0),
                 containers: Mutex::new(Vec::new()),
                 ensure_requests: Mutex::new(Vec::new()),
+                ensure_attempts: AtomicUsize::new(0),
+                transient_ensure_failures: AtomicUsize::new(0),
                 fail_ensure: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
                 _register: Mutex::new(None),
@@ -244,6 +248,13 @@ impl JoinDaemon {
         self
     }
 
+    pub fn transient_ensure_failures(self, failures: usize) -> Self {
+        self.inner
+            .transient_ensure_failures
+            .store(failures, Ordering::SeqCst);
+        self
+    }
+
     pub fn fail_list_on(self, machine_id: MachineId) -> Self {
         *self.inner.fail_list_on.lock().unwrap() = Some(machine_id);
         self
@@ -251,6 +262,10 @@ impl JoinDaemon {
 
     pub fn ensure_requests(&self) -> Vec<EnsureGlobalSlotRequest> {
         self.inner.ensure_requests.lock().unwrap().clone()
+    }
+
+    pub fn ensure_attempts(&self) -> usize {
+        self.inner.ensure_attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -356,17 +371,15 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::Join(join) = decoded.body else {
             return Err(Status::invalid_argument("expected Join"));
         };
-        let pairing = join
-            .cloud_pairing
-            .clone()
-            .ok_or_else(|| Status::invalid_argument("Join must persist Cloud Pairing"))?;
-        hold_register(
-            pairing.relay_url(),
-            pairing.secret(),
-            &join.registration.assigned_machine.id,
-            &self.inner._register,
-        )
-        .await?;
+        if let Some(pairing) = join.cloud_pairing.clone() {
+            hold_register(
+                pairing.relay_url(),
+                pairing.secret(),
+                &join.registration.assigned_machine.id,
+                &self.inner._register,
+            )
+            .await?;
+        }
         *self.inner.join_request.lock().unwrap() = Some(join);
         self.inner.joined.store(true, Ordering::SeqCst);
         rpc_ok(JoinAccepted {})
@@ -442,7 +455,7 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        rpc_ok(self.inner.registration.clone())
     }
     async fn list_machines(
         &self,
@@ -527,6 +540,17 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::EnsureGlobalSlot(ensure) = decoded.body else {
             return Err(Status::invalid_argument("expected EnsureGlobalSlot"));
         };
+        self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
+        if self
+            .inner
+            .transient_ensure_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(Status::unavailable("transient ensure failure"));
+        }
         if self.inner.fail_ensure.load(Ordering::SeqCst) {
             return rpc_ok(RpcError {
                 code: RpcErrorCode::Unavailable,
@@ -636,7 +660,11 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        rpc_ok(RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "no reserved domain".into(),
+            details: serde_json::Value::Null,
+        })
     }
     async fn release_domain(
         &self,
@@ -790,6 +818,30 @@ pub fn registration() -> Registered {
         assigned_machine: joiner_machine(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+    }
+}
+
+pub fn caddy_on(machine: &Machine) -> ContainerObservation {
+    let spec = ployz::caddy::service_spec("caddy:2.10.0".into(), Vec::new(), None).to_resolved(
+        ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+        ployz_core::ResolvedUpdateConfig::default(),
+    );
+    ContainerObservation {
+        container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+        display_name: "caddy-a".into(),
+        created_at_unix_nanos: 1,
+        machine_id: machine.id,
+        project_name: ployz_core::ProjectName::system(),
+        service_id: spec.service_id,
+        service_name: spec.name.clone(),
+        kind: ContainerKind::ServiceContainer,
+        runtime: ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        },
+        effective_healthcheck: None,
+        resolved_spec: spec,
+        address: None,
+        labels: Default::default(),
     }
 }
 
