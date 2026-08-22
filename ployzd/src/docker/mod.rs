@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(hook.healthcheck.unwrap().test, Some(vec!["NONE".into()]));
         let hook_host = hook.host_config.unwrap();
         assert_eq!(hook_host.dns, Some(vec![gateway.0.to_string()]));
-        assert_eq!(hook_host.dns_search, Some(vec!["internal".into()]));
+        assert_eq!(hook_host.dns_search, Some(vec!["shop.internal".into()]));
         assert_eq!(hook_host.dns_options, Some(vec!["ndots:1".into()]));
         assert_eq!(hook_host.privileged, Some(true));
         assert!(hook_host.port_bindings.is_none());
