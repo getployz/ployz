@@ -1022,66 +1022,13 @@
         "labels": {},
         "machine_id": "0123456789abcdef0123456789abcdef",
         "project_name": "app",
-        "resolved_spec": {
-          "caddy_config": null,
-          "configs": [],
-          "container": {
-            "cap_add": [],
-            "cap_drop": [],
-            "command": [],
-            "config_mounts": [],
-            "entrypoint": [],
-            "environment": {},
-            "healthcheck": null,
-            "image": "api:1",
-            "init": null,
-            "log_driver": null,
-            "open_stdin": false,
-            "pid_mode": null,
-            "privileged": false,
-            "pull_policy": "missing",
-            "resources": {
-              "cpu_nanos": null,
-              "device_reservations": [],
-              "devices": [],
-              "memory_bytes": null,
-              "memory_reservation_bytes": null,
-              "shared_memory_bytes": null,
-              "ulimits": {}
-            },
-            "restart": {
-              "name": "unless-stopped"
-            },
-            "stop_timeout_secs": null,
-            "sysctls": {},
-            "tty": false,
-            "user": null,
-            "working_directory": null
-          },
-          "mode": {
-            "mode": "replicated",
-            "replicas": 1
-          },
-          "mounts": [],
-          "name": "api",
-          "placement": {
-            "machines": []
-          },
-          "ports": [],
-          "pre_deploy": null,
-          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "update": {
-            "monitor_millis": null,
-            "order": "start_first"
-          },
-          "volumes": []
-        },
         "runtime": {
           "health": "healthy",
           "state": "running"
         },
         "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "service_name": "api"
+        "service_name": "api",
+        "spec_index": 0
       }
     ],
     "hosted_dns_hostname": "cluster.example.ts.net",
@@ -1166,82 +1113,66 @@
     "observed_at": "2024-01-01T00:00:00Z",
     "services": [
       {
-        "containers": [
-          {
-            "address": null,
-            "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
-            "created_at_unix_nanos": 1700000000000000000,
-            "display_name": "api-1",
-            "effective_healthcheck": null,
-            "kind": "service_container",
-            "labels": {},
-            "machine_id": "0123456789abcdef0123456789abcdef",
-            "project_name": "app",
-            "resolved_spec": {
-              "caddy_config": null,
-              "configs": [],
-              "container": {
-                "cap_add": [],
-                "cap_drop": [],
-                "command": [],
-                "config_mounts": [],
-                "entrypoint": [],
-                "environment": {},
-                "healthcheck": null,
-                "image": "api:1",
-                "init": null,
-                "log_driver": null,
-                "open_stdin": false,
-                "pid_mode": null,
-                "privileged": false,
-                "pull_policy": "missing",
-                "resources": {
-                  "cpu_nanos": null,
-                  "device_reservations": [],
-                  "devices": [],
-                  "memory_bytes": null,
-                  "memory_reservation_bytes": null,
-                  "shared_memory_bytes": null,
-                  "ulimits": {}
-                },
-                "restart": {
-                  "name": "unless-stopped"
-                },
-                "stop_timeout_secs": null,
-                "sysctls": {},
-                "tty": false,
-                "user": null,
-                "working_directory": null
-              },
-              "mode": {
-                "mode": "replicated",
-                "replicas": 1
-              },
-              "mounts": [],
-              "name": "api",
-              "placement": {
-                "machines": []
-              },
-              "ports": [],
-              "pre_deploy": null,
-              "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "update": {
-                "monitor_millis": null,
-                "order": "start_first"
-              },
-              "volumes": []
-            },
-            "runtime": {
-              "health": "healthy",
-              "state": "running"
-            },
-            "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "service_name": "api"
-          }
-        ],
-        "hook_containers": [],
         "identity": "app/api",
-        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "member_ids": [
+          "1111111111111111111111111111111111111111111111111111111111111111"
+        ]
+      }
+    ],
+    "specs": [
+      {
+        "caddy_config": null,
+        "configs": [],
+        "container": {
+          "cap_add": [],
+          "cap_drop": [],
+          "command": [],
+          "config_mounts": [],
+          "entrypoint": [],
+          "environment": {},
+          "healthcheck": null,
+          "image": "api:1",
+          "init": null,
+          "log_driver": null,
+          "open_stdin": false,
+          "pid_mode": null,
+          "privileged": false,
+          "pull_policy": "missing",
+          "resources": {
+            "cpu_nanos": null,
+            "device_reservations": [],
+            "devices": [],
+            "memory_bytes": null,
+            "memory_reservation_bytes": null,
+            "shared_memory_bytes": null,
+            "ulimits": {}
+          },
+          "restart": {
+            "name": "unless-stopped"
+          },
+          "stop_timeout_secs": null,
+          "sysctls": {},
+          "tty": false,
+          "user": null,
+          "working_directory": null
+        },
+        "mode": {
+          "mode": "replicated",
+          "replicas": 1
+        },
+        "mounts": [],
+        "name": "api",
+        "placement": {
+          "machines": []
+        },
+        "ports": [],
+        "pre_deploy": null,
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "update": {
+          "monitor_millis": null,
+          "order": "start_first"
+        },
+        "volumes": []
       }
     ],
     "volumes": [
@@ -1288,66 +1219,13 @@
         "labels": {},
         "machine_id": "0123456789abcdef0123456789abcdef",
         "project_name": "app",
-        "resolved_spec": {
-          "caddy_config": null,
-          "configs": [],
-          "container": {
-            "cap_add": [],
-            "cap_drop": [],
-            "command": [],
-            "config_mounts": [],
-            "entrypoint": [],
-            "environment": {},
-            "healthcheck": null,
-            "image": "api:1",
-            "init": null,
-            "log_driver": null,
-            "open_stdin": false,
-            "pid_mode": null,
-            "privileged": false,
-            "pull_policy": "missing",
-            "resources": {
-              "cpu_nanos": null,
-              "device_reservations": [],
-              "devices": [],
-              "memory_bytes": null,
-              "memory_reservation_bytes": null,
-              "shared_memory_bytes": null,
-              "ulimits": {}
-            },
-            "restart": {
-              "name": "unless-stopped"
-            },
-            "stop_timeout_secs": null,
-            "sysctls": {},
-            "tty": false,
-            "user": null,
-            "working_directory": null
-          },
-          "mode": {
-            "mode": "replicated",
-            "replicas": 1
-          },
-          "mounts": [],
-          "name": "api",
-          "placement": {
-            "machines": []
-          },
-          "ports": [],
-          "pre_deploy": null,
-          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "update": {
-            "monitor_millis": null,
-            "order": "start_first"
-          },
-          "volumes": []
-        },
         "runtime": {
           "health": "healthy",
           "state": "running"
         },
         "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "service_name": "api"
+        "service_name": "api",
+        "spec_index": 0
       }
     ],
     "future_lens": {
@@ -1435,82 +1313,66 @@
     "observed_at": "2024-01-01T00:00:00Z",
     "services": [
       {
-        "containers": [
-          {
-            "address": null,
-            "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
-            "created_at_unix_nanos": 1700000000000000000,
-            "display_name": "api-1",
-            "effective_healthcheck": null,
-            "kind": "service_container",
-            "labels": {},
-            "machine_id": "0123456789abcdef0123456789abcdef",
-            "project_name": "app",
-            "resolved_spec": {
-              "caddy_config": null,
-              "configs": [],
-              "container": {
-                "cap_add": [],
-                "cap_drop": [],
-                "command": [],
-                "config_mounts": [],
-                "entrypoint": [],
-                "environment": {},
-                "healthcheck": null,
-                "image": "api:1",
-                "init": null,
-                "log_driver": null,
-                "open_stdin": false,
-                "pid_mode": null,
-                "privileged": false,
-                "pull_policy": "missing",
-                "resources": {
-                  "cpu_nanos": null,
-                  "device_reservations": [],
-                  "devices": [],
-                  "memory_bytes": null,
-                  "memory_reservation_bytes": null,
-                  "shared_memory_bytes": null,
-                  "ulimits": {}
-                },
-                "restart": {
-                  "name": "unless-stopped"
-                },
-                "stop_timeout_secs": null,
-                "sysctls": {},
-                "tty": false,
-                "user": null,
-                "working_directory": null
-              },
-              "mode": {
-                "mode": "replicated",
-                "replicas": 1
-              },
-              "mounts": [],
-              "name": "api",
-              "placement": {
-                "machines": []
-              },
-              "ports": [],
-              "pre_deploy": null,
-              "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "update": {
-                "monitor_millis": null,
-                "order": "start_first"
-              },
-              "volumes": []
-            },
-            "runtime": {
-              "health": "healthy",
-              "state": "running"
-            },
-            "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "service_name": "api"
-          }
-        ],
-        "hook_containers": [],
         "identity": "app/api",
-        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "member_ids": [
+          "1111111111111111111111111111111111111111111111111111111111111111"
+        ]
+      }
+    ],
+    "specs": [
+      {
+        "caddy_config": null,
+        "configs": [],
+        "container": {
+          "cap_add": [],
+          "cap_drop": [],
+          "command": [],
+          "config_mounts": [],
+          "entrypoint": [],
+          "environment": {},
+          "healthcheck": null,
+          "image": "api:1",
+          "init": null,
+          "log_driver": null,
+          "open_stdin": false,
+          "pid_mode": null,
+          "privileged": false,
+          "pull_policy": "missing",
+          "resources": {
+            "cpu_nanos": null,
+            "device_reservations": [],
+            "devices": [],
+            "memory_bytes": null,
+            "memory_reservation_bytes": null,
+            "shared_memory_bytes": null,
+            "ulimits": {}
+          },
+          "restart": {
+            "name": "unless-stopped"
+          },
+          "stop_timeout_secs": null,
+          "sysctls": {},
+          "tty": false,
+          "user": null,
+          "working_directory": null
+        },
+        "mode": {
+          "mode": "replicated",
+          "replicas": 1
+        },
+        "mounts": [],
+        "name": "api",
+        "placement": {
+          "machines": []
+        },
+        "ports": [],
+        "pre_deploy": null,
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "update": {
+          "monitor_millis": null,
+          "order": "start_first"
+        },
+        "volumes": []
       }
     ],
     "volumes": [

@@ -9,7 +9,7 @@ use ployz_core::{
     DockerVolume, ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname,
     LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
     RUNTIME_WATCH_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    RuntimeWatchFrame, ServiceAttempt, UnconfirmedDataLoss, VolumeSource,
+    RuntimeWatchTransportFrame, ServiceAttempt, UnconfirmedDataLoss, VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -285,7 +285,9 @@ fn json_fixtures_round_trip_through_rust_types() {
         *fixture(&fixtures, "deploy_outcome_failed")
     );
 
-    let frame: RuntimeWatchFrame = decode_fixture(fixture(&fixtures, "runtime_watch_frame"));
+    let frame =
+        decode_fixture::<RuntimeWatchTransportFrame>(fixture(&fixtures, "runtime_watch_frame"))
+            .into_frame();
     assert_eq!(frame.observed_at, "2024-01-01T00:00:00Z");
     assert_eq!(
         frame
@@ -305,7 +307,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert_eq!(frame.services.len(), 1);
     assert_eq!(frame.certificates.len(), 2);
     assert_eq!(
-        serde_json::to_value(&frame).unwrap(),
+        serde_json::to_value(RuntimeWatchTransportFrame::from_frame(&frame)).unwrap(),
         *fixture(&fixtures, "runtime_watch_frame")
     );
     let text = fixture(&fixtures, "runtime_watch_frame").to_string();
@@ -356,10 +358,13 @@ fn unknown_fields_are_accepted_on_public_payloads() {
         *fixture(&fixtures, "deploy_preview")
     );
 
-    let frame: RuntimeWatchFrame =
-        decode_fixture(fixture(&fixtures, "runtime_watch_frame_unknown_fields"));
+    let frame = decode_fixture::<RuntimeWatchTransportFrame>(fixture(
+        &fixtures,
+        "runtime_watch_frame_unknown_fields",
+    ))
+    .into_frame();
     assert_eq!(
-        serde_json::to_value(&frame).unwrap(),
+        serde_json::to_value(RuntimeWatchTransportFrame::from_frame(&frame)).unwrap(),
         *fixture(&fixtures, "runtime_watch_frame")
     );
 }
@@ -496,6 +501,9 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("unexecuted: DeployOperation[]"));
     assert!(dts.contains("failed: FailedOperation<E>"));
     assert!(dts.contains("export type RuntimeWatchFrame = Additive<{"));
+    assert!(
+        dts.contains("Rich SDK view reconstructed from the normalized Runtime Watch transport")
+    );
     assert!(dts.contains("incomplete_ids: RuntimeWatchIncompleteIds"));
     assert!(dts.contains("hosted_dns_hostname?: string"));
     assert!(dts.contains("export type Machine = Additive<{"));

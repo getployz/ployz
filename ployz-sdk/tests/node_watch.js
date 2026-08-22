@@ -39,6 +39,12 @@ function assertFrame(frame, label) {
   if (!frame.incomplete_ids || !Array.isArray(frame.incomplete_ids.containers)) {
     throw new Error(`${label} must carry typed incomplete IDs`);
   }
+  if (!frame.containers[0]?.resolved_spec || !frame.services[0]?.containers[0]?.resolved_spec) {
+    throw new Error(`${label} must reconstruct rich Container and Service views`);
+  }
+  if (frame.specs || frame.containers[0].spec_index != null || frame.services[0].member_ids) {
+    throw new Error(`${label} leaked the normalized transport graph`);
+  }
   const text = JSON.stringify(frame);
   if (Buffer.byteLength(text) <= 4 * 1024 * 1024) {
     throw new Error(`${label} must exceed tonic's default decoding limit`);

@@ -8,8 +8,8 @@ use ployz_core::{
     MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
     PROTOCOL_MAJOR, ProjectName, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody,
     RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchRequest,
-    SelectedEndpoint, ServiceContainer, ServiceId, ServiceName, ServiceObservation,
-    WireGuardPublicKey, op,
+    RuntimeWatchTransportFrame, SelectedEndpoint, ServiceContainer, ServiceId, ServiceName,
+    ServiceObservation, WireGuardPublicKey, derive_services, op,
 };
 use serde_json::{Value, json};
 
@@ -55,16 +55,24 @@ fn runtime_watch_request_is_empty_and_catalogued() {
 
 #[test]
 fn frozen_runtime_watch_frame_round_trips_complete_observations() {
-    let frame: RuntimeWatchFrame = serde_json::from_str(FROZEN_FRAME).unwrap();
+    let transport: RuntimeWatchTransportFrame = serde_json::from_str(FROZEN_FRAME).unwrap();
+    let frame = transport.into_frame();
     assert_eq!(frame, expected_frame());
-    let encoded = OpaquePayload::from_json(&frame).unwrap();
-    assert_eq!(encoded.decode_json::<RuntimeWatchFrame>().unwrap(), frame);
+    let encoded =
+        OpaquePayload::from_json(&RuntimeWatchTransportFrame::from_frame(&frame)).unwrap();
+    assert_eq!(
+        encoded
+            .decode_json::<RuntimeWatchTransportFrame>()
+            .unwrap()
+            .into_frame(),
+        frame
+    );
 }
 
 #[test]
 fn frozen_runtime_watch_frame_never_carries_certificate_material_or_dns_credentials() {
     let fixture: Value = serde_json::from_str(FROZEN_FRAME).unwrap();
-    let serialized = serde_json::to_value(expected_frame()).unwrap();
+    let serialized = transport_value(&expected_frame());
     for payload in [&fixture, &serialized] {
         assert_no_secret_material(payload);
     }
@@ -96,16 +104,19 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
         json!("http-01-token"),
     );
 
-    let decoded: RuntimeWatchFrame = serde_json::from_value(additive).unwrap();
+    let decoded = serde_json::from_value::<RuntimeWatchTransportFrame>(additive)
+        .unwrap()
+        .into_frame();
     assert_eq!(decoded, expected_frame());
-    let redacted = serde_json::to_value(&decoded).unwrap();
+    let redacted = transport_value(&decoded);
     assert!(redacted.get("future_lens").is_none());
     assert_no_secret_material(&redacted);
 
-    let defaults: RuntimeWatchFrame = serde_json::from_value(json!({
+    let defaults = serde_json::from_value::<RuntimeWatchTransportFrame>(json!({
         "observed_at": "2024-01-01T00:00:00Z"
     }))
-    .unwrap();
+    .unwrap()
+    .into_frame();
     assert!(defaults.machines.is_empty());
     assert!(defaults.containers.is_empty());
     assert!(defaults.services.is_empty());
@@ -117,6 +128,153 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
         RuntimeWatchIncompleteIds::default()
     );
     assert_eq!(defaults.observed_at, "2024-01-01T00:00:00Z");
+}
+
+#[test]
+fn normalized_transport_deduplicates_complete_specs_and_container_rows() {
+    let mut frame = replicated_frame(4);
+    frame
+        .containers
+        .get_mut(3)
+        .unwrap()
+        .resolved_spec
+        .container
+        .image = "api:2".into();
+    frame.services = derive_services(frame.containers.iter().cloned());
+
+    let transport = transport_value(&frame);
+    assert_eq!(json_array(&transport, "/specs").len(), 2);
+    assert_eq!(json_array(&transport, "/containers").len(), 4);
+    assert_eq!(json_array(&transport, "/services").len(), 1);
+    assert_eq!(json_array(&transport, "/services/0/member_ids").len(), 4);
+    assert!(transport.pointer("/containers/0/resolved_spec").is_none());
+    assert!(transport.pointer("/services/0/containers").is_none());
+
+    let decoded = serde_json::from_value::<RuntimeWatchTransportFrame>(transport)
+        .unwrap()
+        .into_frame();
+    assert_eq!(
+        decoded
+            .containers
+            .first()
+            .unwrap()
+            .resolved_spec
+            .container
+            .image,
+        "api:1"
+    );
+    assert_eq!(
+        decoded
+            .containers
+            .get(3)
+            .unwrap()
+            .resolved_spec
+            .container
+            .image,
+        "api:2"
+    );
+    assert_eq!(decoded.services.first().unwrap().members().count(), 4);
+}
+
+#[test]
+fn normalized_transport_is_canonical_and_keeps_rollout_specs_lossless() {
+    let mut forward = replicated_frame(3);
+    let changed = forward.containers.get_mut(1).unwrap();
+    changed.resolved_spec.container.image = "api:2".into();
+    changed.created_at_unix_nanos += 10;
+    forward.services = derive_services(forward.containers.iter().cloned());
+    let mut reversed = forward.clone();
+    reversed.containers.reverse();
+    reversed.services.reverse();
+
+    let forward_json =
+        serde_json::to_vec(&RuntimeWatchTransportFrame::from_frame(&forward)).unwrap();
+    let reversed_json =
+        serde_json::to_vec(&RuntimeWatchTransportFrame::from_frame(&reversed)).unwrap();
+    assert_eq!(forward_json, reversed_json);
+
+    let decoded = serde_json::from_slice::<RuntimeWatchTransportFrame>(&forward_json)
+        .unwrap()
+        .into_frame();
+    assert_eq!(
+        decoded
+            .containers
+            .get(1)
+            .unwrap()
+            .resolved_spec
+            .container
+            .image,
+        "api:2"
+    );
+    assert!(
+        decoded
+            .containers
+            .iter()
+            .all(|container| container.service_id == ServiceId::parse(SERVICE_ID).unwrap())
+    );
+}
+
+#[test]
+fn malformed_normalized_graphs_fail_as_whole_frames() {
+    let valid = transport_value(&expected_frame());
+
+    let mut broken_spec = valid.clone();
+    *json_mut(&mut broken_spec, "/containers/0/spec_index") = json!(99);
+    assert_invalid_transport(broken_spec);
+
+    let mut duplicate_spec = valid.clone();
+    let spec = duplicate_spec.pointer("/specs/0").unwrap().clone();
+    json_array_mut(&mut duplicate_spec, "/specs").push(spec);
+    assert_invalid_transport(duplicate_spec);
+
+    let mut duplicate_container = valid.clone();
+    let container = duplicate_container
+        .pointer("/containers/0")
+        .unwrap()
+        .clone();
+    json_array_mut(&mut duplicate_container, "/containers").push(container);
+    assert_invalid_transport(duplicate_container);
+
+    let mut duplicate_service = valid.clone();
+    let service = duplicate_service.pointer("/services/0").unwrap().clone();
+    json_array_mut(&mut duplicate_service, "/services").push(service);
+    assert_invalid_transport(duplicate_service);
+
+    let mut missing_member = valid.clone();
+    *json_mut(&mut missing_member, "/services/0/member_ids/0") = json!(INCOMPLETE_CONTAINER_ID);
+    assert_invalid_transport(missing_member);
+
+    let mut duplicate_member = valid.clone();
+    let member = duplicate_member
+        .pointer("/services/0/member_ids/0")
+        .unwrap()
+        .clone();
+    json_array_mut(&mut duplicate_member, "/services/0/member_ids").push(member);
+    assert_invalid_transport(duplicate_member);
+
+    let mut contradictory = valid.clone();
+    *json_mut(&mut contradictory, "/services/0/identity") = json!("app/worker");
+    assert_invalid_transport(contradictory);
+
+    let mut unassigned = valid;
+    *json_mut(&mut unassigned, "/services") = json!([]);
+    assert_invalid_transport(unassigned);
+}
+
+#[test]
+fn high_replica_transport_is_materially_smaller() {
+    let frame = replicated_frame(30);
+    let rich_size = serde_json::to_vec(&frame).unwrap().len();
+    let transport = serde_json::to_vec(&RuntimeWatchTransportFrame::from_frame(&frame)).unwrap();
+    let transport_value: Value = serde_json::from_slice(&transport).unwrap();
+
+    assert_eq!(json_array(&transport_value, "/specs").len(), 1);
+    assert_eq!(json_array(&transport_value, "/containers").len(), 30);
+    assert!(
+        transport.len() * 3 < rich_size,
+        "{}/{rich_size}",
+        transport.len()
+    );
 }
 
 #[test]
@@ -155,6 +313,29 @@ fn insert_json_field(payload: &mut Value, pointer: &str, key: &str, value: Value
         .and_then(Value::as_object_mut)
         .unwrap_or_else(|| panic!("{pointer}"))
         .insert(key.into(), value);
+}
+
+fn transport_value(frame: &RuntimeWatchFrame) -> Value {
+    serde_json::to_value(RuntimeWatchTransportFrame::from_frame(frame)).unwrap()
+}
+
+fn json_array<'value>(value: &'value Value, pointer: &str) -> &'value [Value] {
+    value.pointer(pointer).and_then(Value::as_array).unwrap()
+}
+
+fn json_array_mut<'value>(value: &'value mut Value, pointer: &str) -> &'value mut Vec<Value> {
+    value
+        .pointer_mut(pointer)
+        .and_then(Value::as_array_mut)
+        .unwrap()
+}
+
+fn json_mut<'value>(value: &'value mut Value, pointer: &str) -> &'value mut Value {
+    value.pointer_mut(pointer).unwrap()
+}
+
+fn assert_invalid_transport(value: Value) {
+    assert!(serde_json::from_value::<RuntimeWatchTransportFrame>(value).is_err());
 }
 
 fn assert_no_secret_material(payload: &Value) {
@@ -293,4 +474,28 @@ fn container_observation() -> ContainerObservation {
         address: None,
         labels: Default::default(),
     }
+}
+
+fn replicated_frame(replicas: usize) -> RuntimeWatchFrame {
+    let mut frame = expected_frame();
+    frame.machines.clear();
+    frame.volumes.clear();
+    frame.certificates.clear();
+    frame.hosted_dns_hostname = None;
+    frame.incomplete_ids = RuntimeWatchIncompleteIds::default();
+    let mut template = frame.containers.pop().unwrap();
+    template.resolved_spec.container.environment = (0..20)
+        .map(|index| (format!("SETTING_{index}"), "x".repeat(80)))
+        .collect();
+    frame.containers = (0..replicas)
+        .map(|index| {
+            let mut container = template.clone();
+            container.container_id = ContainerId::parse(format!("{index:064x}")).unwrap();
+            container.display_name = format!("api-{index}");
+            container.created_at_unix_nanos += i64::try_from(index).unwrap();
+            container
+        })
+        .collect();
+    frame.services = derive_services(frame.containers.iter().cloned());
+    frame
 }

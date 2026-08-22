@@ -13,8 +13,9 @@ use ployz_core::{
     ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
     HookContainer, IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName,
     MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
-    ProjectName, ResolvedServiceSpec, RttObservation, RttStatistics, SelectedEndpoint,
-    ServiceContainer, ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey,
+    ProjectName, ResolvedServiceSpec, RttObservation, RttStatistics, RuntimeWatchTransportFrame,
+    SelectedEndpoint, ServiceContainer, ServiceId, ServiceName, ServiceObservation,
+    WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -267,7 +268,8 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
         ]
     );
 
-    let encoded = OpaquePayload::from_json(&frame).unwrap();
+    let encoded =
+        OpaquePayload::from_json(&RuntimeWatchTransportFrame::from_frame(&frame)).unwrap();
     let round_trip: Value = encoded.decode_json().unwrap();
     assert_no_secret_material(&round_trip.to_string());
     assert_eq!(
@@ -507,6 +509,39 @@ async fn unchanged_assembled_observation_does_not_yield() {
             .await
             .is_err(),
         "a store wake whose reassembled observation is unchanged must not yield"
+    );
+}
+
+#[tokio::test]
+async fn reordered_container_rows_do_not_yield_a_phantom_update() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let service = container(CONTAINER_ID, "api", ContainerKind::ServiceContainer);
+    let hook = container(HOOK_ID, "api", ContainerKind::PreDeployHook);
+    let mut first = snapshot(vec![entry.clone()], Vec::new());
+    first.containers = observations(vec![service.clone(), hook.clone()]);
+    let fixture = WatchFixture::new(first);
+    let (wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+    let initial = next_frame(&mut stream).await;
+    assert_eq!(
+        initial
+            .containers
+            .iter()
+            .map(|container| container.container_id)
+            .collect::<Vec<_>>(),
+        vec![service.container_id, hook.container_id]
+    );
+
+    let mut reordered = snapshot(vec![entry], Vec::new());
+    reordered.containers = observations(vec![hook, service]);
+    fixture.set(reordered);
+    wake.send(Ok(())).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), stream.next())
+            .await
+            .is_err(),
+        "reordering replicated Containers must not produce a Watch update"
     );
 }
 
@@ -753,7 +788,10 @@ async fn next_frame(stream: &mut crate::logs::RpcStream) -> ployz_core::RuntimeW
         .expect("Watch frame")
         .expect("open stream")
         .expect("Watch status");
-    payload.decode_json().unwrap()
+    payload
+        .decode_json::<RuntimeWatchTransportFrame>()
+        .unwrap()
+        .into_frame()
 }
 
 fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchSnapshot {

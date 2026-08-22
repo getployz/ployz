@@ -12,7 +12,7 @@ use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
     IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, derive_services,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, derive_services,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -160,13 +160,15 @@ where
                 .as_ref()
                 .is_none_or(|previous| observation_changed(previous, &frame))
             {
-                let payload = match OpaquePayload::from_json(&frame) {
-                    Ok(payload) => payload,
-                    Err(error) => {
-                        let _ = sender.send(Err(Status::internal(error.to_string()))).await;
-                        return;
-                    }
-                };
+                let payload =
+                    match OpaquePayload::from_json(&RuntimeWatchTransportFrame::from_frame(&frame))
+                    {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            let _ = sender.send(Err(Status::internal(error.to_string()))).await;
+                            return;
+                        }
+                    };
                 if sender.send(Ok(payload)).await.is_err() {
                     return;
                 }
@@ -258,7 +260,9 @@ pub(crate) fn assemble_runtime_watch_frame(
         Some(telemetry) => telemetry.overlay(snapshot.machines.observations, entry_id),
         None => unavailable_machine_observations(snapshot.machines.observations, entry_id),
     };
-    let services = derive_services(snapshot.containers.observations.iter().cloned());
+    let mut containers = snapshot.containers.observations;
+    containers.sort_by_key(|container| container.container_id);
+    let services = derive_services(containers.iter().cloned());
     let certificates = snapshot
         .certificates
         .observations
@@ -267,7 +271,7 @@ pub(crate) fn assemble_runtime_watch_frame(
         .collect();
     RuntimeWatchFrame {
         machines,
-        containers: snapshot.containers.observations,
+        containers,
         services,
         volumes: snapshot.volumes.observations,
         certificates,

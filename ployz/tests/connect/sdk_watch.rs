@@ -5,8 +5,9 @@ use std::{path::PathBuf, process::Command, time::Duration};
 use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContainerId, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
-    DockerVolumeId, DockerVolumeName, MachineId, PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
+    DockerVolumeId, DockerVolumeName, MachineId, OpaquePayload, PROTOCOL_MAJOR,
+    RUNTIME_WATCH_CAPABILITY, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, RuntimeWatchTransportFrame,
 };
 use serde_json::Value;
 use tokio::time::timeout;
@@ -182,6 +183,24 @@ async fn store_or_rpc_failure_ends_the_iterable_with_a_typed_error() {
 }
 
 #[tokio::test]
+async fn malformed_reference_graph_fails_the_whole_stream_frame() {
+    let (client, service, _session, _machine) = watching_session().await;
+    let mut malformed: Value = serde_json::from_str(FROZEN_FRAME).unwrap();
+    *malformed
+        .pointer_mut("/containers/0/spec_index")
+        .expect("frozen frame has a Container spec reference") = 99.into();
+    service.push_watch_payload(OpaquePayload::from_json(&malformed).unwrap());
+    let watch = client.watch().await.unwrap();
+
+    let error = next_watch_result(&watch)
+        .await
+        .expect_err("a broken spec reference must reject the frame");
+    assert_eq!(error.code, RpcErrorCode::Internal);
+    assert!(error.message.contains("missing resolved spec 99"));
+    assert_eq!(next_watch_result(&watch).await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn reconnect_starts_with_a_fresh_complete_frame_and_no_cursor() {
     let (client, service, _session, _machine) = watching_session().await;
     let first = frozen_frame();
@@ -326,6 +345,14 @@ async fn next_frame(watch: &sdk::Watch) -> RuntimeWatchFrame {
         .expect("Watch item")
 }
 
+async fn next_watch_result(
+    watch: &sdk::Watch,
+) -> Result<Option<RuntimeWatchFrame>, ployz_core::RpcError> {
+    timeout(Duration::from_secs(2), watch.next())
+        .await
+        .expect("Watch result")
+}
+
 async fn wait_watch_rpc_dropped(service: &DiscoveryService) {
     timeout(Duration::from_secs(2), async {
         loop {
@@ -366,7 +393,9 @@ fn watch_description() -> ContractDescription {
 }
 
 fn frozen_frame() -> RuntimeWatchFrame {
-    serde_json::from_str(FROZEN_FRAME).unwrap()
+    serde_json::from_str::<RuntimeWatchTransportFrame>(FROZEN_FRAME)
+        .unwrap()
+        .into_frame()
 }
 
 fn frame_with_extra_volume(frame: &RuntimeWatchFrame) -> RuntimeWatchFrame {

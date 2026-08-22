@@ -22,7 +22,8 @@ use ployz_core::{
     MachineRemoved, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
     OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
     RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeList, VolumeRemoved, WireGuardPublicKey, op,
+    RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeList, VolumeRemoved, WireGuardPublicKey,
+    op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -63,6 +64,7 @@ pub(super) enum DescribeOutcome {
 #[derive(Clone)]
 enum WatchEvent {
     Frame(RuntimeWatchFrame),
+    Payload(OpaquePayload),
     Fail(Status),
 }
 
@@ -124,8 +126,10 @@ impl WatchHub {
 fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event: &WatchEvent) {
     let item = match event {
         WatchEvent::Frame(frame) => {
-            OpaquePayload::from_json(frame).map_err(|error| Status::internal(error.to_string()))
+            OpaquePayload::from_json(&RuntimeWatchTransportFrame::from_frame(frame))
+                .map_err(|error| Status::internal(error.to_string()))
         }
+        WatchEvent::Payload(payload) => Ok(payload.clone()),
         WatchEvent::Fail(status) => Err(status.clone()),
     };
     let _ = sender.try_send(item);
@@ -187,6 +191,10 @@ impl DiscoveryService {
 
     pub(super) fn push_watch_frame(&self, frame: RuntimeWatchFrame) {
         self.watch.push(WatchEvent::Frame(frame));
+    }
+
+    pub(super) fn push_watch_payload(&self, payload: OpaquePayload) {
+        self.watch.push(WatchEvent::Payload(payload));
     }
 
     pub(super) fn fail_watch(&self, status: Status) {

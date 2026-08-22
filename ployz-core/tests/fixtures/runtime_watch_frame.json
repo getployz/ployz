@@ -28,6 +28,17 @@
       }
     }
   ],
+  "specs": [
+    {
+      "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "api",
+      "mode": { "mode": "replicated", "replicas": 1 },
+      "container": {
+        "image": "api:1",
+        "pull_policy": "missing"
+      }
+    }
+  ],
   "containers": [
     {
       "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -42,47 +53,15 @@
         "state": "running",
         "health": "healthy"
       },
-      "resolved_spec": {
-        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "name": "api",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": {
-          "image": "api:1",
-          "pull_policy": "missing"
-        }
-      }
+      "spec_index": 0
     }
   ],
   "services": [
     {
       "identity": "app/api",
-      "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "containers": [
-        {
-          "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
-          "display_name": "api-1",
-          "created_at_unix_nanos": 1700000000000000000,
-          "machine_id": "0123456789abcdef0123456789abcdef",
-          "project_name": "app",
-          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "service_name": "api",
-          "kind": "service_container",
-          "runtime": {
-            "state": "running",
-            "health": "healthy"
-          },
-          "resolved_spec": {
-            "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "name": "api",
-            "mode": { "mode": "replicated", "replicas": 1 },
-            "container": {
-              "image": "api:1",
-              "pull_policy": "missing"
-            }
-          }
-        }
-      ],
-      "hook_containers": []
+      "member_ids": [
+        "1111111111111111111111111111111111111111111111111111111111111111"
+      ]
     }
   ],
   "volumes": [

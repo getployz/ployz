@@ -23,9 +23,9 @@ use ployz_core::{
     PruneRefusal, PullPolicy, RegisterRequest, Registered, RemoveVolumesRequest,
     ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
     ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
-    ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint,
+    ServiceAttempt, ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
     TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver,
     VolumeSource, WireGuardPublicKey,
 };
@@ -171,14 +171,11 @@ pub fn fixtures() -> BTreeMap<String, Value> {
         "deploy_outcome_failed".into(),
         to_value(&deploy_outcome_failed()),
     );
-    fixtures.insert(
-        "runtime_watch_frame".into(),
-        to_value(&runtime_watch_frame()),
-    );
+    fixtures.insert("runtime_watch_frame".into(), runtime_watch_transport());
     fixtures.insert(
         "runtime_watch_frame_unknown_fields".into(),
         with_unknown_field(
-            to_value(&runtime_watch_frame()),
+            runtime_watch_transport(),
             "future_lens",
             json!({ "vendor": true }),
         ),
@@ -1026,6 +1023,12 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
         },
         observed_at: "2024-01-01T00:00:00Z".into(),
     }
+}
+
+fn runtime_watch_transport() -> Value {
+    to_value(&RuntimeWatchTransportFrame::from_frame(
+        &runtime_watch_frame(),
+    ))
 }
 
 fn container_observation() -> ContainerObservation {

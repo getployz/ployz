@@ -97,6 +97,11 @@ fn typescript() -> String {
     );
     out.push_str(TYPESCRIPT_PREAMBLE);
     for (name, shape) in PAYLOADS {
+        if *name == "RuntimeWatchFrame" {
+            out.push_str(
+                "/** Rich SDK view reconstructed from the normalized Runtime Watch transport. */\n",
+            );
+        }
         out.push_str(&emit_shape(name, shape));
         out.push('\n');
     }

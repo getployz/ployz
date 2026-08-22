@@ -20,7 +20,7 @@ use ployz_core::{
     DescribeContractRequest, DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId,
     MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
     RUNTIME_WATCH_CAPABILITY, RegisterRequest, Registered, RemoveVolumesRequest, RpcError,
-    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
+    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, RuntimeWatchTransportFrame, op,
 };
 
 struct SessionInner {
@@ -566,10 +566,13 @@ impl Watch {
                 *guard = None;
                 Ok(None)
             }
-            Some(Ok(Some(payload))) => payload
-                .decode_json()
-                .map(Some)
-                .map_err(|error| RpcError::from(ConnectError::from(error))),
+            Some(Ok(Some(payload))) => match payload.decode_json::<RuntimeWatchTransportFrame>() {
+                Ok(frame) => Ok(Some(frame.into_frame())),
+                Err(error) => {
+                    *guard = None;
+                    Err(RpcError::from(ConnectError::from(error)))
+                }
+            },
             Some(Err(status))
                 if self.cancel.is_cancelled() || status.code() == tonic::Code::Cancelled =>
             {
