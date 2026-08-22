@@ -10,7 +10,7 @@ use std::{
 use bollard::{
     Docker,
     errors::Error as DockerError,
-    models::{Ipam, IpamConfig, NetworkCreateRequest, NetworkDisconnectRequest},
+    models::{Ipam, IpamConfig, NetworkCreateRequest, NetworkDisconnectRequest, NetworkInspect},
 };
 use defguard_wireguard_rs::{
     InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key,
@@ -34,6 +34,7 @@ use crate::{
 };
 
 const NETWORK_MTU: u32 = 1420;
+const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
 
 pub fn inspect_wireguard_device() -> Result<WireGuardDevice, NetworkError> {
     let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
@@ -367,61 +368,158 @@ impl NetworkPlane {
     async fn ensure_docker_network(&self) -> Result<bool, NetworkError> {
         let subnet = self.machine.subnet.to_string();
         let gateway = self.machine.subnet.gateway().0.to_string();
-        let required_options = HashMap::from([
-            (
-                "com.docker.network.bridge.name".into(),
-                DOCKER_NETWORK_NAME.into(),
-            ),
-            (
-                "com.docker.network.bridge.trusted_host_interfaces".into(),
-                WIREGUARD_INTERFACE_NAME.into(),
-            ),
-            ("com.docker.network.driver.mtu".into(), self.mtu.to_string()),
-        ]);
-        let exists = match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
+        let required_options = required_docker_network_options(self.mtu);
+        match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
             Ok(network) => {
-                let ipam = network
-                    .ipam
-                    .and_then(|ipam| ipam.config)
-                    .and_then(|configs| configs.into_iter().next());
-                let options = network.options.unwrap_or_default();
-                let matches = ipam.as_ref().and_then(|config| config.subnet.as_deref())
-                    == Some(&subnet)
-                    && ipam.as_ref().and_then(|config| config.gateway.as_deref()) == Some(&gateway)
-                    && required_options
-                        .iter()
-                        .all(|(key, value)| options.get(key) == Some(value));
-                if !matches {
-                    return Err(NetworkError::DockerNetworkConflict);
+                if docker_network_matches(&network, &subnet, &gateway, &required_options) {
+                    return Ok(false);
                 }
-                true
+                match stale_network_replacement_allowed(&network) {
+                    Ok(()) => {
+                        let Some(network_id) = network.id.as_deref() else {
+                            return Err(docker_network_conflict(
+                                &network,
+                                &subnet,
+                                &gateway,
+                                &required_options,
+                                "the inspected network has no stable Docker ID",
+                            ));
+                        };
+                        match self.docker.remove_network(network_id).await {
+                            Ok(()) => {}
+                            Err(error) if docker_not_found(&error) => {}
+                            Err(error) => {
+                                return Err(docker_network_conflict(
+                                    &network,
+                                    &subnet,
+                                    &gateway,
+                                    &required_options,
+                                    format!(
+                                        "Docker refused to remove the network after inspection: {error}"
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        return Err(docker_network_conflict(
+                            &network,
+                            &subnet,
+                            &gateway,
+                            &required_options,
+                            reason,
+                        ));
+                    }
+                }
             }
-            Err(error) if docker_not_found(&error) => false,
+            Err(error) if docker_not_found(&error) => {}
             Err(error) => return Err(error.into()),
-        };
-        if !exists {
-            self.docker
-                .create_network(NetworkCreateRequest {
-                    name: DOCKER_NETWORK_NAME.into(),
-                    driver: Some("bridge".into()),
-                    scope: Some("local".into()),
-                    ipam: Some(Ipam {
-                        config: Some(vec![IpamConfig {
-                            subnet: Some(subnet),
-                            gateway: Some(gateway),
-                            ..Default::default()
-                        }]),
-                        ..Default::default()
-                    }),
-                    options: Some(required_options),
-                    labels: Some(HashMap::from([("ployzd.managed".into(), String::new())])),
-                    ..Default::default()
-                })
-                .await?;
         }
+        self.docker
+            .create_network(NetworkCreateRequest {
+                name: DOCKER_NETWORK_NAME.into(),
+                driver: Some("bridge".into()),
+                scope: Some("local".into()),
+                ipam: Some(Ipam {
+                    config: Some(vec![IpamConfig {
+                        subnet: Some(subnet),
+                        gateway: Some(gateway),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                options: Some(required_options),
+                labels: Some(HashMap::from([(
+                    DOCKER_NETWORK_MANAGED_LABEL.into(),
+                    String::new(),
+                )])),
+                ..Default::default()
+            })
+            .await?;
         // TODO(UT-113): check if this works when firewalld used instead of raw iptables. The Docker daemon has a different
         // code path for firewalld.
-        Ok(!exists)
+        Ok(true)
+    }
+}
+
+fn required_docker_network_options(mtu: u32) -> HashMap<String, String> {
+    HashMap::from([
+        (
+            "com.docker.network.bridge.name".into(),
+            DOCKER_NETWORK_NAME.into(),
+        ),
+        (
+            "com.docker.network.bridge.trusted_host_interfaces".into(),
+            WIREGUARD_INTERFACE_NAME.into(),
+        ),
+        ("com.docker.network.driver.mtu".into(), mtu.to_string()),
+    ])
+}
+
+fn docker_network_matches(
+    network: &NetworkInspect,
+    subnet: &str,
+    gateway: &str,
+    required_options: &HashMap<String, String>,
+) -> bool {
+    let ipam = network
+        .ipam
+        .as_ref()
+        .and_then(|ipam| ipam.config.as_ref())
+        .and_then(|configs| configs.first());
+    docker_network_owned(network)
+        && network.driver.as_deref() == Some("bridge")
+        && network.scope.as_deref() == Some("local")
+        && ipam.and_then(|config| config.subnet.as_deref()) == Some(subnet)
+        && ipam.and_then(|config| config.gateway.as_deref()) == Some(gateway)
+        && required_options.iter().all(|(key, value)| {
+            network
+                .options
+                .as_ref()
+                .and_then(|options| options.get(key))
+                == Some(value)
+        })
+}
+
+fn docker_network_owned(network: &NetworkInspect) -> bool {
+    network.name.as_deref() == Some(DOCKER_NETWORK_NAME)
+        && network
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(DOCKER_NETWORK_MANAGED_LABEL))
+            .is_some_and(String::is_empty)
+}
+
+fn stale_network_replacement_allowed(network: &NetworkInspect) -> Result<(), &'static str> {
+    if !docker_network_owned(network) {
+        Err(
+            "ownership is unproven because the exact name and `ployzd.managed` label do not both match",
+        )
+    } else if network
+        .containers
+        .as_ref()
+        .is_some_and(|containers| !containers.is_empty())
+    {
+        Err("containers are attached")
+    } else {
+        Ok(())
+    }
+}
+
+fn docker_network_conflict(
+    network: &NetworkInspect,
+    subnet: &str,
+    gateway: &str,
+    required_options: &HashMap<String, String>,
+    reason: impl Into<String>,
+) -> NetworkError {
+    NetworkError::DockerNetworkConflict {
+        reason: reason.into(),
+        expected: format!(
+            "name={DOCKER_NETWORK_NAME}, driver=bridge, scope=local, label={DOCKER_NETWORK_MANAGED_LABEL}=\"\", subnet={subnet}, gateway={gateway}, options={required_options:?}"
+        ),
+        observed: format!("{network:?}"),
+        recovery: "run `systemctl stop ployz`; run `docker network inspect ployz` and identify the network owner from its labels and attached containers; safely remove or migrate every attached container through its owning deployment; after confirming the network is empty and no longer needed, run `docker network rm ployz`; run `systemctl start ployz`",
     }
 }
 
@@ -509,6 +607,81 @@ fn attached_container_ids<T>(containers: Option<&HashMap<String, T>>) -> Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stale_network(name: &str, managed_label: Option<&str>, attached: bool) -> NetworkInspect {
+        NetworkInspect {
+            name: Some(name.into()),
+            labels: managed_label
+                .map(|value| HashMap::from([(DOCKER_NETWORK_MANAGED_LABEL.into(), value.into())])),
+            containers: attached
+                .then(|| HashMap::from([("7074faa8a368".into(), Default::default())])),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn stale_network_deletion_requires_exact_name_label_and_no_attachments() {
+        assert_eq!(
+            stale_network_replacement_allowed(&stale_network("ployz", Some(""), false)),
+            Ok(())
+        );
+
+        for network in [
+            stale_network("ployz-old", Some(""), false),
+            stale_network("ployz", None, false),
+            stale_network("ployz", Some("other-owner"), false),
+            stale_network("ployz", Some(""), true),
+        ] {
+            assert!(stale_network_replacement_allowed(&network).is_err());
+        }
+    }
+
+    #[test]
+    fn matching_network_is_reused_with_attached_containers() {
+        let mut network = stale_network("ployz", Some(""), true);
+        network.driver = Some("bridge".into());
+        network.scope = Some("local".into());
+        network.ipam = Some(Ipam {
+            config: Some(vec![IpamConfig {
+                subnet: Some("10.210.1.0/24".into()),
+                gateway: Some("10.210.1.1".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        let expected_options = required_docker_network_options(1420);
+        network.options = Some(expected_options.clone());
+
+        assert!(docker_network_matches(
+            &network,
+            "10.210.1.0/24",
+            "10.210.1.1",
+            &expected_options,
+        ));
+    }
+
+    #[test]
+    fn stale_network_refusal_is_actionable() {
+        let network = stale_network("ployz", Some(""), true);
+        let expected_options = required_docker_network_options(1420);
+        let error = docker_network_conflict(
+            &network,
+            "10.210.1.0/24",
+            "10.210.1.1",
+            &expected_options,
+            "containers are attached",
+        )
+        .to_string();
+
+        assert!(error.contains("expected: name=ployz"));
+        assert!(error.contains("subnet=10.210.1.0/24"));
+        assert!(error.contains("observed: NetworkInspect"));
+        assert!(error.contains("7074faa8a368"));
+        assert!(error.contains("systemctl stop ployz"));
+        assert!(error.contains("docker network inspect ployz"));
+        assert!(error.contains("docker network rm ployz"));
+        assert!(error.contains("systemctl start ployz"));
+    }
 
     #[test]
     fn reset_cleanup_lists_attached_containers_before_removing_the_network() {

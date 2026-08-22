@@ -79,8 +79,15 @@ pub enum NetworkError {
     KeyMismatch,
     #[error("Management Address is not derived from the Machine public key")]
     ManagementAddressMismatch,
-    #[error("existing Docker network `ployz` does not match the Machine network")]
-    DockerNetworkConflict,
+    #[error(
+        "refusing to replace the existing Docker network: {reason}; expected: {expected}; observed: {observed}; safe recovery: {recovery}"
+    )]
+    DockerNetworkConflict {
+        reason: String,
+        expected: String,
+        observed: String,
+        recovery: &'static str,
+    },
     #[error("network I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("Docker network operation failed: {0}")]
