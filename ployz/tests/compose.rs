@@ -81,8 +81,8 @@ services:
     x-pre_deploy:
       command: [sh, -c, migrate]
       environment: {DB_HOST: db}
+      privileged: true
       timeout: 2m30s
-      unknown: ignored
     volumes:
       - {type: bind, source: /srv/api, target: /host, bind: {create_host_path: true, propagation: rprivate, recursive: disabled}}
       - {type: volume, source: data, target: /data, volume: {nocopy: true, subpath: current}}
@@ -207,10 +207,14 @@ configs:
             transport_protocol: TransportProtocol::Tcp,
         } if published_port.get() == 5000 && container_port.get() == 3000
     ));
+    let pre_deploy = api.pre_deploy.as_ref().unwrap();
+    assert_eq!(pre_deploy.command, ["sh", "-c", "migrate"]);
     assert_eq!(
-        api.pre_deploy.as_ref().unwrap().timeout_millis,
-        Some(150_000)
+        pre_deploy.environment,
+        BTreeMap::from([("DB_HOST".into(), "db".into())])
     );
+    assert_eq!(pre_deploy.privileged, Some(true));
+    assert_eq!(pre_deploy.timeout_millis, Some(150_000));
     assert_eq!(api.configs().first().unwrap().content, b"enabled=true\n");
     assert_eq!(api.configs().get(1).unwrap().content, b"hello");
     assert_eq!(api.config_mounts().first().unwrap().mode, Some(0o640));
@@ -361,7 +365,7 @@ secrets:
             "a secret using a driver cannot also define file or environment",
         ),
         (
-            "services: {app: {image: app, x-pre_deploy: {user: root}}}",
+            "services: {app: {image: app, x-pre_deploy: {}}}",
             "required attribute 'command'",
         ),
         (
@@ -467,6 +471,8 @@ services:
     x-ports: [80/http]
     x-caddy: {}
     x-pre_deploy: {command: [echo, ready]}
+    x-caddyy: ignored
+    x-predeploy: ignored
     x-third-party: {enabled: true}
 "#,
         ".",
@@ -474,6 +480,25 @@ services:
     .unwrap();
 
     assert!(project.warnings.is_empty());
+}
+
+#[test]
+fn pre_deploy_rejects_every_unknown_key() {
+    for key in ["timout", "user"] {
+        let error = parse_normalized(
+            &format!(
+                "services: {{app: {{image: app, x-pre_deploy: {{command: [echo], {key}: ignored}}}}}}"
+            ),
+            ".",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains(&format!("invalid x-pre_deploy key: {key}")),
+            "{error}"
+        );
+    }
 }
 
 #[test]

@@ -233,7 +233,6 @@ pub(super) struct RawPreDeploy {
     pub environment: Option<Value>,
     pub privileged: Option<bool>,
     pub timeout: Option<String>,
-    pub user: Option<Value>,
     #[serde(flatten)]
     pub other: BTreeMap<String, Value>,
 }

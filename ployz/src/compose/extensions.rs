@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use ployz_core::PreDeployHook;
 
 use super::{
-    convert::{duration_millis, environment, invalid, scalar, shell},
+    convert::{duration_millis, environment, invalid, shell},
     model::{ComposeError, RawCaddy, RawPreDeploy},
 };
 
@@ -43,14 +43,15 @@ pub(super) fn pre_deploy(
     let Some(value) = value else {
         return Ok(None);
     };
+    if let Some(key) = value.other.keys().next() {
+        return Err(invalid(format!("invalid x-pre_deploy key: {key}")));
+    }
     let command = shell(&value.command)?;
     if command.is_empty() {
         return Err(invalid(
             "missing required attribute 'command' in x-pre_deploy",
         ));
     }
-    // TODO(UT-048): unknown x-pre_deploy attributes remain ignored.
-    let _ = &value.other;
     Ok(Some(PreDeployHook {
         command,
         environment: value
@@ -61,6 +62,6 @@ pub(super) fn pre_deploy(
             .unwrap_or_default(),
         privileged: value.privileged,
         timeout_millis: duration_millis(value.timeout.as_deref())?,
-        user: value.user.as_ref().and_then(scalar),
+        user: None,
     }))
 }
