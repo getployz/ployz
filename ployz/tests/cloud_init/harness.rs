@@ -184,8 +184,11 @@ struct JoinInner {
     ensure_requests: Mutex<Vec<EnsureGlobalSlotRequest>>,
     ensure_attempts: AtomicUsize,
     transient_ensure_failures: AtomicUsize,
+    target_inspect_attempts: AtomicUsize,
+    transient_target_inspect_failures: AtomicUsize,
     fail_ensure: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
+    assigned_membership: Mutex<MembershipObservation>,
     _register: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -203,8 +206,11 @@ impl JoinDaemon {
                 ensure_requests: Mutex::new(Vec::new()),
                 ensure_attempts: AtomicUsize::new(0),
                 transient_ensure_failures: AtomicUsize::new(0),
+                target_inspect_attempts: AtomicUsize::new(0),
+                transient_target_inspect_failures: AtomicUsize::new(0),
                 fail_ensure: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
+                assigned_membership: Mutex::new(MembershipObservation::Up),
                 _register: Mutex::new(None),
             }),
         }
@@ -255,8 +261,22 @@ impl JoinDaemon {
         self
     }
 
+    /// Make this many targeted Inspect attempts transiently unavailable.
+    pub fn transient_target_inspect_failures(self, failures: usize) -> Self {
+        self.inner
+            .transient_target_inspect_failures
+            .store(failures, Ordering::SeqCst);
+        self
+    }
+
     pub fn fail_list_on(self, machine_id: MachineId) -> Self {
         *self.inner.fail_list_on.lock().unwrap() = Some(machine_id);
+        self
+    }
+
+    /// Set the entry Machine's membership observation for the assigned Machine.
+    pub fn with_membership(self, membership: MembershipObservation) -> Self {
+        *self.inner.assigned_membership.lock().unwrap() = membership;
         self
     }
 
@@ -266,6 +286,11 @@ impl JoinDaemon {
 
     pub fn ensure_attempts(&self) -> usize {
         self.inner.ensure_attempts.load(Ordering::SeqCst)
+    }
+
+    /// Count targeted Inspect attempts received by this fake daemon.
+    pub fn target_inspect_attempts(&self) -> usize {
+        self.inner.target_inspect_attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -312,6 +337,24 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if request
+            .metadata()
+            .contains_key(ployz_core::ONE_TARGET_HEADER)
+        {
+            self.inner
+                .target_inspect_attempts
+                .fetch_add(1, Ordering::SeqCst);
+            if self
+                .inner
+                .transient_target_inspect_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(Status::unavailable("target Machine is not ready"));
+            }
+        }
         let request = request
             .into_inner()
             .decode_request()
@@ -461,8 +504,13 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let assigned = self.inner.registration.assigned_machine.clone();
-        let mut machines = vec![up_machine(assigned)];
+        let assigned = MachineObservation {
+            machine: self.inner.registration.assigned_machine.clone(),
+            membership: self.inner.assigned_membership.lock().unwrap().clone(),
+            selected_endpoint: None,
+            rtt: None,
+        };
+        let mut machines = vec![assigned];
         machines.extend(
             self.inner
                 .registration

@@ -1,18 +1,12 @@
-use std::time::Duration;
-
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineObservation, MembershipObservation, RegisterRequest, ResetRequest, WireGuardPublicKey,
-    op,
+    InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, MachineObservation,
+    RegisterRequest, ResetRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_client, runtime};
 use super::{ConnectionOptions, helpers, machine_list, target};
-use crate::{
-    connect::Client,
-    handlers::{Error, leaf_matches},
-};
+use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -105,7 +99,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
     let catch_up = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
-        wait_machine_up(&mut entry, &assigned.id).await?;
         Ok::<_, Error>(
             crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_caddy).await,
         )
@@ -127,24 +120,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         );
     }
     Ok(())
-}
-
-async fn wait_machine_up(entry: &mut Client, machine_id: &MachineId) -> Result<(), Error> {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if machine_list(entry).await.is_ok_and(|machines| {
-                machines.iter().any(|observation| {
-                    observation.machine.id == *machine_id
-                        && observation.membership == MembershipObservation::Up
-                })
-            }) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .map_err(|_| Error::usage("new Machine did not become available for Global catch-up"))
 }
 
 fn cluster_membership_conflict(
@@ -188,9 +163,10 @@ mod tests {
     #[test]
     fn catch_up_failure_after_add_reports_joined_membership() {
         let error = crate::global_catch_up::joined_catch_up_error(
-            crate::global_catch_up::CatchUpError::Caddy(crate::failure::Failure::usage(
-                "deploy timed out".to_owned(),
-            )),
+            crate::global_catch_up::CatchUpError::new(
+                crate::failure::Failure::usage("deploy timed out".to_owned()),
+                vec![ployz_core::QualifiedService::system_caddy()],
+            ),
         );
         assert!(error.contains("Machine joined"));
         assert!(error.contains("remains a Cluster member"));

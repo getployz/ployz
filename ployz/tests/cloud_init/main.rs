@@ -931,7 +931,11 @@ async fn join_fails_visibly_when_expected_caddy_cannot_be_placed() {
         "success must not print when Caddy is missing, got {stdout}"
     );
     assert!(
-        stderr.contains("Caddy is not running on this Machine"),
+        stderr.contains("Global catch-up is incomplete"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("ployz-system/caddy: run `ployz caddy deploy`"),
         "stderr: {stderr}"
     );
 }
