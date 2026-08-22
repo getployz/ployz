@@ -73,3 +73,62 @@ fn http_ingress_records_hostname_intent_and_rejects_transport_ingress() {
         .contains("Ingress Hostname")
     );
 }
+
+#[test]
+fn numeric_two_field_ingress_is_always_a_range_checked_published_port() {
+    let parse = |port: &str| {
+        parse_normalized(
+            &format!("services: {{app: {{image: app, x-ports: [{port}]}}}}"),
+            ".",
+        )
+        .map(|project| {
+            project
+                .services
+                .into_values()
+                .next()
+                .expect("test project has one service")
+                .ports
+                .into_iter()
+                .next()
+                .expect("test service has one port")
+        })
+    };
+
+    for published in [1, 9000, u16::MAX] {
+        assert_eq!(
+            parse(&format!("{published}:80/http")).unwrap(),
+            PortPublication::Ingress {
+                hostname: IngressHostname::cluster_domain(),
+                load_balancer_port: published.try_into().unwrap(),
+                container_port: 80.try_into().unwrap(),
+                http_protocol: HttpProtocol::Http,
+            }
+        );
+    }
+    for (published, expected) in [
+        ("0", "published port must be non-zero"),
+        ("65536", "invalid port '65536'"),
+        ("900000", "invalid port '900000'"),
+    ] {
+        let error = parse(&format!("{published}:80/http"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(expected),
+            "published port {published} returned {error:?}"
+        );
+    }
+    assert_eq!(
+        parse("900000:80:80/http").unwrap(),
+        PortPublication::Ingress {
+            hostname: IngressHostname::cluster_domain_label("900000").unwrap(),
+            load_balancer_port: 80.try_into().unwrap(),
+            container_port: 80.try_into().unwrap(),
+            http_protocol: HttpProtocol::Http,
+        }
+    );
+    assert_eq!(
+        parse("9000:80/http").unwrap(),
+        parse("'9000:80/http'").unwrap()
+    );
+}

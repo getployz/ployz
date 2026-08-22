@@ -145,10 +145,10 @@ pub(crate) fn parse_extension_port(value: &str) -> Result<PortPublication, Compo
     }
     let (hostname, published) = match parts.as_slice() {
         [_] => ("", None),
-        [first, _] => match first.parse::<u16>() {
-            Ok(port) => ("", Some(nonzero_port(port, "load balancer")?)),
-            Err(_) => (first.as_str(), None),
-        },
+        [first, _] if !first.is_empty() && first.bytes().all(|byte| byte.is_ascii_digit()) => {
+            ("", Some(nonzero_port(parse_port(first)?, "published")?))
+        }
+        [hostname, _] => (hostname.as_str(), None),
         [hostname, published, _] => (
             hostname.as_str(),
             Some(nonzero_port(parse_port(published)?, "load balancer")?),
