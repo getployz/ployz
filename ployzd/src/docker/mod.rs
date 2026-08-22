@@ -698,6 +698,9 @@ mod tests {
                 "image": "alpine:3.23.3",
                 "command": ["serve"],
                 "environment": { "TOKEN": "service" },
+                "labels": { "example.empty": "", "example.value": "unchanged" },
+                "hostname": "shared-host",
+                "extra_hosts": ["api:192.0.2.10", "gateway:host-gateway"],
                 "pull_policy": "missing",
                 "privileged": false,
                 "resources": { "memory_bytes": 1048576 },
@@ -739,11 +742,16 @@ mod tests {
                 .contains(&format!("PLOYZ_MACHINE_ID={machine_id}"))
         );
         assert_eq!(regular.cmd, Some(vec!["serve".into()]));
+        assert_eq!(regular.hostname.as_deref(), Some("shared-host"));
         let regular_host = regular.host_config.unwrap();
         assert_eq!(regular_host.dns, Some(vec![gateway.0.to_string()]));
         assert_eq!(regular_host.dns_search, Some(vec!["shop.internal".into()]));
         assert_eq!(regular_host.dns_options, Some(vec!["ndots:1".into()]));
         assert_eq!(regular_host.memory, Some(1_048_576));
+        assert_eq!(
+            regular_host.extra_hosts,
+            Some(vec!["api:192.0.2.10".into(), "gateway:host-gateway".into()])
+        );
         assert_eq!(
             regular_host.restart_policy.unwrap().name,
             Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED)
@@ -758,6 +766,14 @@ mod tests {
             regular_labels.get(LABEL_SERVICE_NAME).map(String::as_str),
             Some("api")
         );
+        assert_eq!(
+            regular_labels.get("example.value").map(String::as_str),
+            Some("unchanged")
+        );
+        assert_eq!(
+            regular_labels.get("example.empty").map(String::as_str),
+            Some("")
+        );
         assert!(!regular_labels.contains_key(LABEL_HOOK));
 
         let hook = create::container_create_body(
@@ -769,6 +785,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
+        assert_eq!(hook.hostname.as_deref(), Some("shared-host"));
         assert_eq!(hook.user.as_deref(), Some("1000"));
         let hook_env = hook.env.as_ref().unwrap();
         assert!(hook_env.contains(&"TOKEN=hook".into()));
@@ -781,6 +798,10 @@ mod tests {
         assert_eq!(hook_host.dns_search, Some(vec!["shop.internal".into()]));
         assert_eq!(hook_host.dns_options, Some(vec!["ndots:1".into()]));
         assert_eq!(hook_host.privileged, Some(true));
+        assert_eq!(
+            hook_host.extra_hosts,
+            Some(vec!["api:192.0.2.10".into(), "gateway:host-gateway".into()])
+        );
         assert!(hook_host.port_bindings.is_none());
         assert_eq!(
             hook_host.restart_policy.unwrap().name,
@@ -798,6 +819,10 @@ mod tests {
         assert_eq!(
             hook_labels.get(LABEL_HOOK).map(String::as_str),
             Some(LABEL_HOOK_PRE_DEPLOY)
+        );
+        assert_eq!(
+            hook_labels.get("example.value").map(String::as_str),
+            Some("unchanged")
         );
     }
 

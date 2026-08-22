@@ -5,11 +5,12 @@ use std::{
 };
 
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerPath, ContainerResources, DeviceMapping, DeviceReservation,
-    DockerVolumeName, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver,
-    MachinePath, MachineTarget, Placement, PortPublication, PullPolicy, RequestedServiceSpec,
-    RestartPolicy, ServiceConfigGraph, ServiceContainerSpec, ServiceMode, ServiceName,
-    ServiceVolumeGraph, Ulimit, UpdateConfig, UpdateOrder,
+    ConfiguredHealthcheck, ContainerHostname, ContainerLabels, ContainerPath, ContainerResources,
+    DeviceMapping, DeviceReservation, DockerVolumeName, ExtraHost, HEALTHCHECK_DISABLE_SENTINEL,
+    HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath, MachineTarget, Placement,
+    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceConfigGraph,
+    ServiceContainerSpec, ServiceMode, ServiceName, ServiceVolumeGraph, Ulimit, UpdateConfig,
+    UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -227,6 +228,14 @@ fn convert_service(
         command: shell(&raw.command)?,
         entrypoint: shell(&raw.entrypoint)?,
         environment: environment(&raw.environment)?,
+        labels: labels(name, &raw.labels)?,
+        hostname: raw
+            .hostname
+            .as_ref()
+            .map(ContainerHostname::parse)
+            .transpose()
+            .map_err(|error| invalid(format!("service '{name}': {error}")))?,
+        extra_hosts: extra_hosts(&raw.extra_hosts)?,
         cap_add: raw.cap_add.clone(),
         cap_drop: raw.cap_drop.clone(),
         healthcheck: raw.healthcheck.as_ref().map(healthcheck).transpose()?,
@@ -500,10 +509,8 @@ fn classify(name: &str, service: &RawService) -> Result<Vec<String>, ComposeErro
         "dns",
         "dns_opt",
         "dns_search",
-        "extra_hosts",
         "group_add",
         "ipc",
-        "labels",
         "links",
         "network_mode",
         "oom_kill_disable",
@@ -614,6 +621,95 @@ pub(super) fn environment(value: &Value) -> Result<BTreeMap<String, String>, Com
             .collect()),
         Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {
             Err(invalid("environment must be a map or list"))
+        }
+    }
+}
+
+fn labels(name: &str, value: &Value) -> Result<ContainerLabels, ComposeError> {
+    let labels = match value {
+        Value::Null => BTreeMap::new(),
+        Value::Mapping(map) => map
+            .iter()
+            .map(|(key, value)| {
+                let key = key
+                    .as_str()
+                    .ok_or_else(|| invalid("label keys must be strings"))?
+                    .to_owned();
+                let value = match value {
+                    Value::Null => String::new(),
+                    Value::Bool(value) => value.to_string(),
+                    Value::Number(value) => value.to_string(),
+                    Value::String(value) => value.clone(),
+                    Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => {
+                        return Err(invalid("label values must be scalar"));
+                    }
+                };
+                Ok((key, value))
+            })
+            .collect::<Result<_, ComposeError>>()?,
+        Value::Sequence(items) => items
+            .iter()
+            .map(|item| {
+                let item = item
+                    .as_str()
+                    .ok_or_else(|| invalid("labels must be a map or list of strings"))?;
+                Ok(item.split_once('=').map_or_else(
+                    || (item.to_owned(), String::new()),
+                    |(key, value)| (key.to_owned(), value.to_owned()),
+                ))
+            })
+            .collect::<Result<_, ComposeError>>()?,
+        Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {
+            return Err(invalid("labels must be a map or list of strings"));
+        }
+    };
+    ContainerLabels::parse(labels).map_err(|error| invalid(format!("service '{name}': {error}")))
+}
+
+fn extra_hosts(value: &Value) -> Result<Vec<ExtraHost>, ComposeError> {
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::Sequence(items) => items
+            .iter()
+            .map(|item| {
+                let item = item
+                    .as_str()
+                    .ok_or_else(|| invalid("extra_hosts must be a map or list of strings"))?;
+                let (host, address) = item
+                    .split_once('=')
+                    .or_else(|| item.split_once(':'))
+                    .ok_or_else(|| invalid(format!("invalid extra_hosts entry '{item}'")))?;
+                ExtraHost::from_parts(host, address)
+                    .map_err(|_| invalid(format!("invalid extra_hosts entry '{item}'")))
+            })
+            .collect(),
+        Value::Mapping(map) => {
+            let mut entries = Vec::new();
+            for (host, addresses) in map {
+                let host = host
+                    .as_str()
+                    .ok_or_else(|| invalid("extra_hosts keys must be strings"))?;
+                let addresses = match addresses {
+                    Value::Sequence(addresses) => addresses.iter().collect(),
+                    address @ (Value::Null
+                    | Value::Bool(_)
+                    | Value::Number(_)
+                    | Value::String(_)
+                    | Value::Mapping(_)
+                    | Value::Tagged(_)) => vec![address],
+                };
+                for address in addresses {
+                    let address = scalar(address)
+                        .ok_or_else(|| invalid("extra_hosts values must be scalar"))?;
+                    entries.push(ExtraHost::from_parts(host, &address).map_err(|_| {
+                        invalid(format!("invalid extra_hosts entry '{host}:{address}'"))
+                    })?);
+                }
+            }
+            Ok(entries)
+        }
+        Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {
+            Err(invalid("extra_hosts must be a map or list of strings"))
         }
     }
 }

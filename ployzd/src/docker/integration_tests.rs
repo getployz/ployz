@@ -282,6 +282,9 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
             "image": "alpine:3.23.3",
             "command": ["sleep", "30"],
             "environment": { "TOKEN": "secret" },
+            "labels": { "example.value": "unchanged" },
+            "hostname": "shared-host",
+            "extra_hosts": ["full-api:192.0.2.10", "gateway:host-gateway"],
             "cap_add": ["CHOWN"],
             "cap_drop": ["NET_RAW"],
             "healthcheck": { "state": "configured", "test": ["CMD", "true"], "interval_millis": 1000 },
@@ -342,11 +345,27 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
             .unwrap()
             .contains(&format!("PLOYZ_MACHINE_ID={machine_id}"))
     );
+    assert_eq!(config.hostname.as_deref(), Some("shared-host"));
+    assert_eq!(
+        config
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get("example.value"))
+            .map(String::as_str),
+        Some("unchanged")
+    );
     assert_eq!(host.memory, Some(67_108_864));
     assert_eq!(host.memory_reservation, Some(33_554_432));
     assert_eq!(host.dns, Some(vec![TEST_GATEWAY.0.to_string()]));
     assert_eq!(host.dns_search, Some(vec!["app.internal".into()]));
     assert_eq!(host.dns_options, Some(vec!["ndots:1".into()]));
+    assert_eq!(
+        host.extra_hosts,
+        Some(vec![
+            "full-api:192.0.2.10".into(),
+            "gateway:host-gateway".into()
+        ])
+    );
     assert!(host.port_bindings.unwrap().contains_key("8080/tcp"));
     let mounts = host.mounts.unwrap();
     assert_eq!(mounts.first().unwrap().target.as_deref(), Some("/scratch"));
@@ -365,6 +384,41 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
 
     runtime.start(&created.container_id).await.unwrap();
     runtime.start(&created.container_id).await.unwrap();
+    let hosts_check = docker
+        .client
+        .create_exec(
+            created.container_id.as_str(),
+            DockerExecConfig {
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                cmd: Some(vec![
+                    "grep".into(),
+                    "-q".into(),
+                    "192\\.0\\.2\\.10[[:space:]]*full-api".into(),
+                    "/etc/hosts".into(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    if let StartExecResults::Attached { output, .. } = docker
+        .client
+        .start_exec(&hosts_check.id, None)
+        .await
+        .unwrap()
+    {
+        output.try_collect::<Vec<_>>().await.unwrap();
+    }
+    assert_eq!(
+        docker
+            .client
+            .inspect_exec(&hosts_check.id)
+            .await
+            .unwrap()
+            .exit_code,
+        Some(0)
+    );
     runtime
         .stop(&created.container_id, None, Some(0))
         .await

@@ -42,7 +42,8 @@ pub(super) fn container_create_body(
         environment.insert("PLOYZ_HOOK_PRE_DEPLOY".into(), "true".into());
     }
     environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
-    let mut labels = HashMap::from([
+    let mut labels: HashMap<_, _> = container.labels.clone().into_map().into_iter().collect();
+    labels.extend([
         (LABEL_MANAGED.into(), String::new()),
         (LABEL_PROJECT_NAME.into(), project_name.to_string()),
         (LABEL_SERVICE_ID.into(), spec.service_id.to_string()),
@@ -95,6 +96,13 @@ pub(super) fn container_create_body(
         cap_add: (!container.cap_add.is_empty()).then(|| container.cap_add.clone()),
         cap_drop: (!container.cap_drop.is_empty()).then(|| container.cap_drop.clone()),
         pid_mode: container.pid_mode.as_ref().map(ToString::to_string),
+        extra_hosts: (!container.extra_hosts.is_empty()).then(|| {
+            container
+                .extra_hosts
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }),
         privileged: Some(
             hook.and_then(|hook| hook.privileged)
                 .unwrap_or(container.privileged),
@@ -129,6 +137,7 @@ pub(super) fn container_create_body(
                 .transpose()?
         },
         image: Some(container.image.clone()),
+        hostname: container.hostname.as_ref().map(ToString::to_string),
         working_dir: container
             .working_directory
             .as_ref()

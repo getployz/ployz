@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
-    BindPropagation, BindRecursive, ClusterDomainLabel, ContainerPath, DockerVolumeId,
-    DockerVolumeName, IngressHost, MANAGED_LABEL, MachinePath, MachineTarget, PROJECT_NAME_LABEL,
-    PidMode, ProjectName, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
-    ValueError,
+    BindPropagation, BindRecursive, ClusterDomainLabel, ContainerHostname, ContainerLabels,
+    ContainerPath, DockerVolumeId, DockerVolumeName, ExtraHost, IngressHost, MANAGED_LABEL,
+    MachinePath, MachineTarget, PROJECT_NAME_LABEL, PidMode, ProjectName, RestartPolicy, ServiceId,
+    ServiceName, ServiceVolumeReference, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -461,6 +461,15 @@ pub struct ServiceContainerSpec {
     pub entrypoint: Vec<String>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    /// User Docker labels, excluding Ployz's reserved management namespace.
+    #[serde(default)]
+    pub labels: ContainerLabels,
+    /// The container's UTS hostname, with no Ployz identity or routing meaning.
+    #[serde(default)]
+    pub hostname: Option<ContainerHostname>,
+    /// Container-local Docker `/etc/hosts` entries.
+    #[serde(default)]
+    pub extra_hosts: Vec<ExtraHost>,
     #[serde(default)]
     pub cap_add: Vec<String>,
     #[serde(default)]
@@ -834,6 +843,9 @@ fn immutable_container_fields_changed(
         command: current_command,
         entrypoint: current_entrypoint,
         environment: current_environment,
+        labels: current_labels,
+        hostname: current_hostname,
+        extra_hosts: current_extra_hosts,
         cap_add: current_cap_add,
         cap_drop: current_cap_drop,
         healthcheck: current_healthcheck,
@@ -856,6 +868,9 @@ fn immutable_container_fields_changed(
         command: requested_command,
         entrypoint: requested_entrypoint,
         environment: requested_environment,
+        labels: requested_labels,
+        hostname: requested_hostname,
+        extra_hosts: requested_extra_hosts,
         cap_add: requested_cap_add,
         cap_drop: requested_cap_drop,
         healthcheck: requested_healthcheck,
@@ -878,6 +893,9 @@ fn immutable_container_fields_changed(
         || current_command != requested_command
         || current_entrypoint != requested_entrypoint
         || current_environment != requested_environment
+        || current_labels != requested_labels
+        || current_hostname != requested_hostname
+        || current_extra_hosts != requested_extra_hosts
         || !same_multiset(current_cap_add, requested_cap_add)
         || !same_multiset(current_cap_drop, requested_cap_drop)
         || current_healthcheck != requested_healthcheck

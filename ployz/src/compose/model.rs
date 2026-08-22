@@ -152,6 +152,11 @@ pub(super) struct RawService {
     #[serde(default)]
     pub environment: Value,
     #[serde(default)]
+    pub labels: Value,
+    pub hostname: Option<String>,
+    #[serde(default)]
+    pub extra_hosts: Value,
+    #[serde(default)]
     pub cap_add: Vec<String>,
     #[serde(default)]
     pub cap_drop: Vec<String>,
