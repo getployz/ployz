@@ -298,6 +298,7 @@ fn unavailable_machine_observations(
             } else {
                 MembershipObservation::Unknown
             },
+            storage: None,
             selected_endpoint: None,
             rtt: None,
             machine,

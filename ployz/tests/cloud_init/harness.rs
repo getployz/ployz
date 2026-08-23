@@ -383,6 +383,7 @@ impl MachineRpc for JoinDaemon {
             rtts: Vec::new(),
             cloud_paired: false,
             telemetry,
+            storage: None,
         })
     }
 
@@ -507,6 +508,7 @@ impl MachineRpc for JoinDaemon {
         let assigned = MachineObservation {
             machine: self.inner.registration.assigned_machine.clone(),
             membership: self.inner.assigned_membership.lock().unwrap().clone(),
+            storage: None,
             selected_endpoint: None,
             rtt: None,
         };
@@ -897,6 +899,7 @@ fn up_machine(machine: Machine) -> MachineObservation {
     MachineObservation {
         machine,
         membership: MembershipObservation::Up,
+        storage: None,
         selected_endpoint: None,
         rtt: None,
     }

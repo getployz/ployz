@@ -19,11 +19,11 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
     DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachinePhase, LocalMachineRemoved,
     Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation,
-    MachineRemoved, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeList, VolumeRemoved, WireGuardPublicKey,
-    op,
+    MachineRemoved, MachineRpc, MachineRpcServer, MachineStorageObservation, ManagementAddress,
+    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    Registered, RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RuntimeWatchFrame, RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeList, VolumeRemoved,
+    WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -59,6 +59,7 @@ pub(super) async fn serve_discovery(
 pub(super) enum DescribeOutcome {
     Status(Status),
     Remote(RpcError),
+    Hang,
 }
 
 #[derive(Clone)]
@@ -142,6 +143,7 @@ pub(super) struct DiscoveryService {
     pub(super) stream_opens: Arc<AtomicUsize>,
     pub(super) watch_opens: Arc<AtomicUsize>,
     pub(super) list_rpc_calls: Arc<AtomicUsize>,
+    pub(super) inspect_calls: Arc<AtomicUsize>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
@@ -165,6 +167,7 @@ impl DiscoveryService {
             stream_opens: Arc::new(AtomicUsize::new(0)),
             watch_opens: Arc::new(AtomicUsize::new(0)),
             list_rpc_calls: Arc::new(AtomicUsize::new(0)),
+            inspect_calls: Arc::new(AtomicUsize::new(0)),
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
@@ -261,11 +264,13 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        match self.describe_outcomes.lock().unwrap().pop_front() {
+        let outcome = self.describe_outcomes.lock().unwrap().pop_front();
+        match outcome {
             Some(DescribeOutcome::Status(status)) => return Err(status),
             Some(DescribeOutcome::Remote(error)) => {
                 return Ok(Response::new(RpcResponse::from(error).encode().unwrap()));
             }
+            Some(DescribeOutcome::Hang) => return std::future::pending().await,
             None => {}
         }
         let request = request
@@ -286,6 +291,7 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.inspect_calls.fetch_add(1, Ordering::SeqCst);
         let request = request
             .into_inner()
             .decode_request()
@@ -305,6 +311,9 @@ impl MachineRpc for DiscoveryService {
                 rtts: Vec::new(),
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
                 telemetry,
+                storage: inspect
+                    .include_storage
+                    .then_some(MachineStorageObservation::Ready),
             })
             .encode()
             .unwrap(),
@@ -753,6 +762,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             runtime: Default::default(),
         },
         membership: MembershipObservation::Up,
+        storage: None,
         selected_endpoint: None,
         rtt: None,
     }

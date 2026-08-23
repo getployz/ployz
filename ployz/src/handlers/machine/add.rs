@@ -207,6 +207,7 @@ mod tests {
         let visible = [MachineObservation {
             machine: assigned.clone(),
             membership: MembershipObservation::Up,
+            storage: None,
             selected_endpoint: None,
             rtt: None,
         }];

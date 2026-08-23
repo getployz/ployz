@@ -8,13 +8,14 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
     ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
     DockerVolumeName, GetDomainRequest, InspectRequest, ListContainersRequest, ListImagesRequest,
-    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved, Machine,
-    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
-    MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
-    ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
-    StopContainerRequest, UnconfirmedDataLoss, derive_live_services, op,
+    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
+    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
+    MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc,
+    RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
+    UnconfirmedDataLoss, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -33,6 +34,8 @@ use crate::{
 };
 
 mod capacity;
+
+const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 pub struct Client {
@@ -484,6 +487,25 @@ impl Client {
             .map(|list| list.machines)
     }
 
+    pub(crate) async fn observe_machine_storage(&self, machines: &mut [MachineObservation]) {
+        let mut tasks = JoinSet::new();
+        for (index, machine) in machines.iter().enumerate() {
+            if machine.membership.invites_rpc() {
+                tasks.spawn(observe_machine_storage(
+                    self.clone(),
+                    index,
+                    machine.machine.id,
+                ));
+            }
+        }
+        while let Some(observed) = tasks.join_next().await {
+            let (index, storage) = observed.expect("Machine storage observation does not panic");
+            if let Some(machine) = machines.get_mut(index) {
+                machine.storage = storage;
+            }
+        }
+    }
+
     pub async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
         let machines = self.machines().await?;
         self.live_services_from(&machines).await
@@ -862,6 +884,40 @@ fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
         message: format!("Machine {machine_id} did not respond"),
         details: Value::Null,
     }
+}
+
+async fn observe_machine_storage(
+    client: Client,
+    index: usize,
+    machine_id: MachineId,
+) -> (usize, Option<MachineStorageObservation>) {
+    let target = MachineTarget::from(&machine_id);
+    let observation = async {
+        let description = client
+            .invoke::<op::DescribeContract>(DescribeContractRequest {}, &target, None)
+            .await
+            .ok()?;
+        if !description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) {
+            return None;
+        }
+        client
+            .invoke::<op::Inspect>(
+                InspectRequest {
+                    include_storage: true,
+                    ..Default::default()
+                },
+                &target,
+                None,
+            )
+            .await
+            .ok()?
+            .storage
+    };
+    let storage = tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation)
+        .await
+        .ok()
+        .flatten();
+    (index, storage)
 }
 
 async fn list_volumes_on_machine(

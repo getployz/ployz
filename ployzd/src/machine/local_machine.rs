@@ -19,7 +19,10 @@ use ployz_core::{
 use thiserror::Error;
 use tokio::sync::watch;
 
-use super::{LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
+use super::{
+    LocalMachineRecord, LocalMachineStore, STORAGE_OBSERVATION_TIMEOUT, StoreError, local_runtime,
+    local_storage,
+};
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
@@ -234,6 +237,11 @@ impl LocalMachine {
                 Some(ployz_core::TelemetryObservation::Full { host, bridge })
             }
         };
+        let storage = if request.include_storage {
+            local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
+        } else {
+            None
+        };
         Ok(MachineDetails {
             id: record.id(),
             phase: record.phase(),
@@ -244,6 +252,7 @@ impl LocalMachine {
             rtts,
             cloud_paired: record.cloud_pairing.is_some(),
             telemetry,
+            storage,
         })
     }
 

@@ -250,6 +250,7 @@ impl MachineRpc for DeployService {
             rtts: Vec::new(),
             cloud_paired: false,
             telemetry,
+            storage: None,
         }))
     }
     async fn machine_token(
@@ -633,6 +634,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             runtime: Default::default(),
         },
         membership: MembershipObservation::Up,
+        storage: None,
         selected_endpoint: None,
         rtt: None,
     }

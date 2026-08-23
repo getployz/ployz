@@ -409,6 +409,7 @@ async fn inspect_keeps_the_v1_key_and_endpoint_payload() {
     assert_eq!(details.public_key, public_key);
     assert_eq!(details.advertised_endpoints, [endpoint]);
     assert!(!details.cloud_paired);
+    assert_eq!(details.storage, None);
 }
 
 #[tokio::test]

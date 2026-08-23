@@ -68,6 +68,8 @@ export type PullPolicy = "always" | "missing" | "never";
 
 export type StorageChoice = "none" | "zfs";
 
+export type MachineStorageObservation = "stateless" | "ready" | "pool";
+
 export type UpdateOrder = "start_first" | "stop_first";
 
 export type HttpProtocol = "http" | "https";
@@ -530,6 +532,7 @@ export type RttStatistics = Additive<{
 export type MachineObservation = Additive<{
   machine: Machine;
   membership: MembershipObservation;
+  storage?: MachineStorageObservation;
   selected_endpoint: SelectedEndpoint | null;
   rtt?: RttStatistics;
 }>;
@@ -621,6 +624,7 @@ export const REMOVE_LOCAL_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.re
 export const REMOVE_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.remove.v1";
 export const RESET_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.reset.v1";
 export const SET_CLOUD_PAIRING_CAPABILITY: CapabilityName = "ployz.machine.set-cloud-pairing.v1";
+export const MACHINE_STORAGE_OBSERVATION_CAPABILITY: CapabilityName = "ployz.machine.storage-observation.v1";
 export const MACHINE_TOKEN_CAPABILITY: CapabilityName = "ployz.machine.token.v1";
 export const UPDATE_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.update.v1";
 export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName = "ployz.rpc.describe-contract.v1";
@@ -660,6 +664,7 @@ export const CATALOGUED_CAPABILITIES = [
   "ployz.machine.remove.v1",
   "ployz.machine.reset.v1",
   "ployz.machine.set-cloud-pairing.v1",
+  "ployz.machine.storage-observation.v1",
   "ployz.machine.token.v1",
   "ployz.machine.update.v1",
   "ployz.rpc.describe-contract.v1",

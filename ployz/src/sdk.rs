@@ -39,6 +39,7 @@ pub struct Session {
 /// Drop or [`cancel`](Self::cancel) ends this stream only. The Client stays usable.
 pub struct Watch {
     cancel: CancellationToken,
+    client: Client,
     stream: Mutex<Option<tonic::Streaming<OpaquePayload>>>,
 }
 
@@ -222,6 +223,7 @@ impl Session {
             .map_err(ConnectError::Rpc)?;
         Ok(Watch {
             cancel: self.inner.cancel.child_token(),
+            client,
             stream: Mutex::new(Some(stream)),
         })
     }
@@ -567,7 +569,18 @@ impl Watch {
                 Ok(None)
             }
             Some(Ok(Some(payload))) => match payload.decode_json::<RuntimeWatchTransportFrame>() {
-                Ok(frame) => Ok(Some(frame.into_frame())),
+                Ok(frame) => {
+                    let mut frame = frame.into_frame();
+                    tokio::select! {
+                        () = self.cancel.cancelled() => {
+                            *guard = None;
+                            Ok(None)
+                        }
+                        () = self.client.observe_machine_storage(&mut frame.machines) => {
+                            Ok(Some(frame))
+                        }
+                    }
+                }
                 Err(error) => {
                     *guard = None;
                     Err(RpcError::from(ConnectError::from(error)))

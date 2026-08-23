@@ -17,18 +17,19 @@ use ployz_core::{
     ExecutionError, FailedOperation, HealthFailure, HealthObservation, HealthcheckCommand,
     HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol, IngressHost,
     IngressHostname, LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime, MachineSuccess,
-    ManagementAddress, MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase,
-    OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions,
-    PortPublication, PreDeployHook, PreservedVolume, ProjectName, PruneRefusal, PullPolicy,
-    QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest, ReplacementCompensation,
-    ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
-    RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint, ServiceAttempt,
-    ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StorageChoice,
-    TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver,
-    VolumeSource, WireGuardPublicKey,
+    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime,
+    MachineStorageObservation, MachineSuccess, ManagementAddress, MembershipObservation,
+    ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
+    PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
+    PreservedVolume, ProjectName, PruneRefusal, PullPolicy, QualifiedService, RegisterRequest,
+    Registered, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy,
+    RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds,
+    RuntimeWatchTransportFrame, SelectedEndpoint, ServiceAttempt, ServiceConfigGraph,
+    ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StorageChoice, TransportProtocol,
+    Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver, VolumeSource,
+    WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -570,6 +571,14 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             ],
         ),
         (
+            "MachineStorageObservation",
+            vec![
+                to_value(&MachineStorageObservation::Stateless),
+                to_value(&MachineStorageObservation::Ready),
+                to_value(&MachineStorageObservation::Pool),
+            ],
+        ),
+        (
             "UpdateOrder",
             vec![
                 to_value(&UpdateOrder::StartFirst),
@@ -1007,6 +1016,7 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
                 },
             },
             membership: MembershipObservation::Up,
+            storage: Some(MachineStorageObservation::Ready),
             selected_endpoint: Some(SelectedEndpoint(endpoint())),
             rtt: Some(RttStatistics {
                 median_ns: 1_500_000,

@@ -203,11 +203,26 @@ pub fn apply_machine_update(
     Ok(updated)
 }
 
+/// Current storage evidence observed from one Machine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineStorageObservation {
+    /// Usable ZFS support was not observed.
+    Stateless,
+    /// ZFS is usable and no Machine Pool is imported.
+    Ready,
+    /// At least one Machine Pool is imported.
+    Pool,
+}
+
 /// An observer-relative view layered over a Machine's advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineObservation {
     pub machine: Machine,
     pub membership: MembershipObservation,
+    /// Current storage evidence, absent when this observer could not obtain it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<MachineStorageObservation>,
     #[serde(default)]
     pub selected_endpoint: Option<SelectedEndpoint>,
     /// Entry-local RTT. `ListMachines` omits it; Runtime Watch may include it.
@@ -319,6 +334,7 @@ pub fn synthesize_membership(
                     .cloned()
                     .unwrap_or(MembershipObservation::Down)
             },
+            storage: None,
             selected_endpoint: None,
             rtt: None,
             machine,

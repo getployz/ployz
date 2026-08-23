@@ -548,6 +548,7 @@ fn machine_observation(seed: u8, name: &str) -> MachineObservation {
             runtime: Default::default(),
         },
         membership: MembershipObservation::Up,
+        storage: None,
         selected_endpoint: None,
         rtt: None,
     }

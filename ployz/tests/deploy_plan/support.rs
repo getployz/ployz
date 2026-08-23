@@ -120,6 +120,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             runtime: Default::default(),
         },
         membership: MembershipObservation::Up,
+        storage: None,
         selected_endpoint: None,
         rtt: None,
     }

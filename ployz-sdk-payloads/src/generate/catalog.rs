@@ -59,6 +59,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     ("StorageChoice", Shape::ClosedString(&["none", "zfs"])),
     (
+        "MachineStorageObservation",
+        Shape::ClosedString(&["stateless", "ready", "pool"]),
+    ),
+    (
         "UpdateOrder",
         Shape::ClosedString(&["start_first", "stop_first"]),
     ),
@@ -1020,6 +1024,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             fields: &[
                 ("machine", "Machine"),
                 ("membership", "MembershipObservation"),
+                ("storage", "MachineStorageObservation?"),
                 ("selected_endpoint", "SelectedEndpoint | null"),
                 ("rtt", "RttStatistics?"),
             ],

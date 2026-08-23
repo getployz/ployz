@@ -42,6 +42,9 @@ function assertFrame(frame, label) {
   if (!frame.containers[0]?.resolved_spec || !frame.services[0]?.containers[0]?.resolved_spec) {
     throw new Error(`${label} must reconstruct rich Container and Service views`);
   }
+  if (frame.machines[0]?.storage !== "ready") {
+    throw new Error(`${label} must expose Machine storage readiness`);
+  }
   if (frame.specs || frame.containers[0].spec_index != null || frame.services[0].member_ids) {
     throw new Error(`${label} leaked the normalized transport graph`);
   }

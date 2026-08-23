@@ -6,8 +6,9 @@ use std::{
 use clap::ArgMatches;
 use futures_util::future::join_all;
 use ployz_core::{
-    InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation, MachineSuccess,
-    MachineTarget, PartialResult, RpcError, RttObservation, RttStatistics, WireGuardPeer, op,
+    InspectRequest, InspectWireGuardRequest, MachineFailure, MachineObservation,
+    MachineStorageObservation, MachineSuccess, MachineTarget, PartialResult, RpcError,
+    RttObservation, RttStatistics, WireGuardPeer, op,
 };
 use serde::Serialize;
 
@@ -21,7 +22,8 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     let output = leaf_matches(root).get_one::<String>("output").cloned();
     with_client(root, |client| {
         Box::pin(async move {
-            let machines = machine_list(client).await?;
+            let mut machines = machine_list(client).await?;
+            client.observe_machine_storage(&mut machines).await;
             if output.as_deref() == Some("json") {
                 let machines = machines
                     .iter()
@@ -34,15 +36,16 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                 return Ok(());
             }
             println!(
-                "ID\tNAME\tMEMBERSHIP\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
+                "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
             );
             for observed in machines {
                 let machine = observed.machine;
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     machine.id,
                     machine.name,
                     observed.membership.as_str(),
+                    format_storage(observed.storage),
                     machine.subnet,
                     machine.subnet.gateway().0,
                     machine
@@ -67,7 +70,17 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Print fresh targeted Machine telemetry without adding host probes to list/watch.
+#[must_use]
+fn format_storage(storage: Option<MachineStorageObservation>) -> &'static str {
+    match storage {
+        None => "-",
+        Some(MachineStorageObservation::Stateless) => "STATELESS",
+        Some(MachineStorageObservation::Ready) => "READY (NO POOL)",
+        Some(MachineStorageObservation::Pool) => "POOL",
+    }
+}
+
+/// Print fresh targeted Machine telemetry; list/watch request only storage evidence.
 pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let selector = MachineTarget::parse(
         leaf_matches(root)
@@ -294,7 +307,24 @@ fn format_wg_show_peer_stats(peer: &WireGuardPeer, now_unix_seconds: u64) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::{MachineId, MachineIdentity, MachineName};
+    use ployz_core::{MachineId, MachineIdentity, MachineName, MachineStorageObservation};
+
+    #[test]
+    fn storage_column_distinguishes_ready_without_a_pool() {
+        assert_eq!(format_storage(None), "-");
+        assert_eq!(
+            format_storage(Some(MachineStorageObservation::Stateless)),
+            "STATELESS"
+        );
+        assert_eq!(
+            format_storage(Some(MachineStorageObservation::Ready)),
+            "READY (NO POOL)"
+        );
+        assert_eq!(
+            format_storage(Some(MachineStorageObservation::Pool)),
+            "POOL"
+        );
+    }
 
     #[test]
     fn missing_rtt_is_omitted_and_sub_millisecond_samples_are_not_printed_as_0ns() {
@@ -427,6 +457,7 @@ mod tests {
                 runtime: Default::default(),
             },
             membership: ployz_core::MembershipObservation::Up,
+            storage: None,
             selected_endpoint: None,
             rtt: None,
         };

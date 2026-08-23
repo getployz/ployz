@@ -29,6 +29,7 @@ use tonic::{
     transport::{Channel, Endpoint, Server},
 };
 
+mod machine_storage;
 mod relay;
 mod sdk;
 mod sdk_data_loss;
@@ -679,31 +680,6 @@ async fn fanout_reads_retry_failed_legs_without_rerunning_successes() {
         BTreeMap::from([(machine_id('a'), 2), (machine_id('b'), 4)])
     );
 
-    server.abort();
-}
-
-#[tokio::test]
-async fn machines_returns_list_machines_membership_observations() {
-    let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
-        machine_id: MachineId::random(),
-        protocol_major: PROTOCOL_MAJOR,
-        daemon_version: "test".into(),
-        capabilities: Default::default(),
-    }))
-    .await;
-    let mut client = connect_selected_with(
-        SelectedConnections {
-            source: ConnectionSource::Direct,
-            connections: vec![Connection::tcp(address)],
-        },
-        Arc::new(SystemConnector::default()),
-    )
-    .await
-    .unwrap();
-
-    let observed = client.machines().await.unwrap();
-
-    assert_eq!(observed, vec![machine('a', "one")]);
     server.abort();
 }
 

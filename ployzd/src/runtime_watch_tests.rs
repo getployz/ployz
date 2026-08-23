@@ -90,12 +90,14 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
             MachineObservation {
                 machine: entry,
                 membership: MembershipObservation::Up,
+                storage: None,
                 selected_endpoint: Some(endpoint),
                 rtt: Some(rtt),
             },
             MachineObservation {
                 machine: peer,
                 membership: MembershipObservation::Suspect,
+                storage: None,
                 selected_endpoint: None,
                 rtt: None,
             },
@@ -174,6 +176,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
         vec![MachineObservation {
             machine: entry,
             membership: MembershipObservation::Up,
+            storage: None,
             selected_endpoint: None,
             rtt: None,
         }]
@@ -316,12 +319,14 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
             MachineObservation {
                 machine: entry,
                 membership: MembershipObservation::Up,
+                storage: None,
                 selected_endpoint: None,
                 rtt: None,
             },
             MachineObservation {
                 machine: peer,
                 membership: MembershipObservation::Unknown,
+                storage: None,
                 selected_endpoint: None,
                 rtt: None,
             },

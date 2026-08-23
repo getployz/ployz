@@ -5,8 +5,8 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    AdvertisedEndpoint, ListMachinesRequest, MachineName, MachineObservation, MachineTarget,
-    MachineUpdate, PublicIpUpdate, UpdateMachineRequest, op,
+    AdvertisedEndpoint, MachineName, MachineObservation, MachineTarget, MachineUpdate,
+    PublicIpUpdate, UpdateMachineRequest, op,
 };
 
 use crate::{
@@ -76,10 +76,7 @@ impl ConnectionOptions {
 }
 
 pub(super) async fn machine_list(client: &mut Client) -> Result<Vec<MachineObservation>, Error> {
-    Ok(client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
-        .await?
-        .machines)
+    Ok(client.machines().await?)
 }
 
 pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str, Error> {

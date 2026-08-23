@@ -28,6 +28,7 @@
     "ployz.machine.remove.v1",
     "ployz.machine.reset.v1",
     "ployz.machine.set-cloud-pairing.v1",
+    "ployz.machine.storage-observation.v1",
     "ployz.machine.token.v1",
     "ployz.machine.update.v1",
     "ployz.rpc.describe-contract.v1",
@@ -1132,7 +1133,8 @@
           "median_ns": 1500000,
           "population_stddev_ns": 250000
         },
-        "selected_endpoint": "203.0.113.10:51820"
+        "selected_endpoint": "203.0.113.10:51820",
+        "storage": "ready"
       }
     ],
     "observed_at": "2024-01-01T00:00:00Z",
@@ -1335,7 +1337,8 @@
           "median_ns": 1500000,
           "population_stddev_ns": 250000
         },
-        "selected_endpoint": "203.0.113.10:51820"
+        "selected_endpoint": "203.0.113.10:51820",
+        "storage": "ready"
       }
     ],
     "observed_at": "2024-01-01T00:00:00Z",

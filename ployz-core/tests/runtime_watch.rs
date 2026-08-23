@@ -378,6 +378,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                 },
             },
             membership: MembershipObservation::Up,
+            storage: None,
             selected_endpoint: Some(SelectedEndpoint("203.0.113.10:51820".parse().unwrap())),
             rtt: Some(RttStatistics {
                 median_ns: 1_500_000,

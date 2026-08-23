@@ -14,8 +14,8 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CloudPairing, LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineUpdate,
-    MachineUpdateError, SelectedEndpoint, apply_machine_update,
+    CloudPairing, LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
+    MachineUpdate, MachineUpdateError, SelectedEndpoint, apply_machine_update,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -37,6 +37,7 @@ const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
 const PENDING_RESET_FILE_NAME: &str = ".machine.reset.pending";
 const LOCK_FILE_NAME: &str = ".ployzd.lock";
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
+const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// On-disk Local Machine Phase. Each variant owns only that phase's fields.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -595,6 +596,26 @@ pub fn local_runtime() -> MachineRuntime {
     }
 }
 
+async fn local_storage(program: &Path, timeout: Duration) -> Option<MachineStorageObservation> {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(["list", "-H", "-o", "name"])
+        .kill_on_drop(true);
+    match tokio::time::timeout(timeout, command.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            if output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                Some(MachineStorageObservation::Pool)
+            } else {
+                Some(MachineStorageObservation::Ready)
+            }
+        }
+        Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Some(MachineStorageObservation::Stateless)
+        }
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => None,
+    }
+}
+
 fn docker_version(program: &Path, timeout: Duration) -> String {
     let output_path =
         std::env::temp_dir().join(format!(".ployzd-docker-version-{}", MachineId::random()));
@@ -750,6 +771,48 @@ pub enum StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn current_zpool_evidence_distinguishes_states_and_is_not_persisted() {
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-storage-observation-{}",
+            ployz_core::MachineId::random()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let program = root.join("zpool");
+
+        assert_eq!(
+            local_storage(&program, Duration::from_secs(1)).await,
+            Some(MachineStorageObservation::Stateless)
+        );
+
+        for (script, expected) in [
+            ("#!/bin/sh\nexit 1\n", None),
+            (
+                "#!/bin/sh\nprintf 'ployz\\n'\n",
+                Some(MachineStorageObservation::Pool),
+            ),
+            (
+                "#!/bin/sh\nexit 0\n",
+                Some(MachineStorageObservation::Ready),
+            ),
+        ] {
+            fs::write(&program, script).unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(
+                local_storage(&program, Duration::from_secs(1)).await,
+                expected
+            );
+        }
+
+        fs::write(&program, "#!/bin/sh\nwhile :; do :; done\n").unwrap();
+        assert_eq!(
+            local_storage(&program, Duration::from_millis(10)).await,
+            None
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn prepared_reset_does_not_change_phase_until_commit() {

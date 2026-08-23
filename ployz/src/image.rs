@@ -645,6 +645,7 @@ mod tests {
                 runtime: Default::default(),
             },
             membership: MembershipObservation::Up,
+            storage: None,
             selected_endpoint: None,
             rtt: None,
         }
