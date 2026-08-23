@@ -119,6 +119,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "plain-caddy-config".to_owned(),
             "product-identity".to_owned(),
             "project-list-and-remove".to_owned(),
+            "provisioned-volume-size".to_owned(),
             "qualified-service-container-target".to_owned(),
             "root-version-flag".to_owned(),
             "scriptable-ctx-connection".to_owned(),
@@ -212,6 +213,16 @@ fn reference_shape(
     {
         flags.insert(
             "storage".into(),
+            Flag {
+                short: None,
+                default: None,
+                env: None,
+            },
+        );
+    }
+    if command_path == "ployz volume create" && deviations.contains("provisioned-volume-size") {
+        flags.insert(
+            "size".into(),
             Flag {
                 short: None,
                 default: None,

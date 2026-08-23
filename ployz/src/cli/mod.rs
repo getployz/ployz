@@ -524,6 +524,11 @@ fn volume() -> Command {
                 .arg(many("label", Some('l')))
                 .arg(value("machine", Some('m')))
                 .arg(many("opt", Some('o')))
+                .arg(
+                    value("size", None)
+                        .value_parser(crate::volume::ProvisionedVolumeSize::parse)
+                        .conflicts_with_all(["driver", "opt"]),
+                )
                 .arg(positional("volume-name", true)),
         )
         .subcommand(

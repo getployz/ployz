@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, future::Future};
+use std::{collections::BTreeMap, future::Future, num::NonZeroU64};
 
 use ployz_core::{
     DockerVolume, DockerVolumeId, DockerVolumeName, MachineFailure, MachineId, MachineName,
@@ -6,6 +6,63 @@ use ployz_core::{
 };
 use serde::Serialize;
 use thiserror::Error;
+
+/// A positive Provisioned Volume bound accepted by Docker's Ployz driver.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProvisionedVolumeSize {
+    option: String,
+    bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub(crate) enum ProvisionedVolumeSizeError {
+    #[error("invalid Volume size {0:?}; use a positive integer followed by k, m, g, or t")]
+    Invalid(String),
+    #[error("Volume size {0:?} overflows bytes")]
+    Overflow(String),
+}
+
+impl ProvisionedVolumeSize {
+    /// Parses a positive integer followed by a binary `k`, `m`, `g`, or `t` suffix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any other spelling, zero, or a byte count above `u64`.
+    pub(crate) fn parse(value: &str) -> Result<Self, ProvisionedVolumeSizeError> {
+        let invalid = || ProvisionedVolumeSizeError::Invalid(value.to_owned());
+        let (amount, multiplier) = match value.as_bytes().last() {
+            Some(b'k') => (&value[..value.len() - 1], 1024_u64),
+            Some(b'm') => (&value[..value.len() - 1], 1024_u64.pow(2)),
+            Some(b'g') => (&value[..value.len() - 1], 1024_u64.pow(3)),
+            Some(b't') => (&value[..value.len() - 1], 1024_u64.pow(4)),
+            _ => return Err(invalid()),
+        };
+        let amount = amount.parse::<NonZeroU64>().map_err(|_| invalid())?.get();
+        let bytes = amount
+            .checked_mul(multiplier)
+            .ok_or_else(|| ProvisionedVolumeSizeError::Overflow(value.to_owned()))?;
+        Ok(Self {
+            option: value.to_owned(),
+            bytes,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.option
+    }
+
+    #[must_use]
+    pub(crate) fn matches(&self, volume: &DockerVolume) -> bool {
+        volume.driver == "ployz"
+            && volume.options.len() == 1
+            && volume
+                .options
+                .get("size")
+                .and_then(|size| Self::parse(size).ok())
+                .is_some_and(|size| size.bytes == self.bytes)
+    }
+}
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum AssignmentError {

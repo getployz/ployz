@@ -437,6 +437,108 @@ async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process
         .unwrap()
 }
 
+#[tokio::test]
+async fn volume_create_size_uses_the_ployz_driver_and_plain_create_stays_ordinary() {
+    let mut service = DiscoveryService::new(test_description());
+    service.accept_volume_creates = true;
+    let created = Arc::clone(&service.created_volumes);
+    let (address, server) = serve_discovery(service).await;
+
+    for (name, size) in [
+        ("kilobytes", "1k"),
+        ("mebibytes", "2m"),
+        ("gibibytes", "3g"),
+        ("tebibytes", "4t"),
+    ] {
+        let output = run_ployz(address, &["volume", "create", name, "--size", size]).await;
+        assert!(output.status.success(), "{output:?}");
+        let (_, request) = created.lock().unwrap().pop().unwrap();
+        assert_eq!(request.name.as_str(), name);
+        assert_eq!(request.driver, "ployz");
+        assert_eq!(
+            request.options,
+            BTreeMap::from([("size".into(), size.into())])
+        );
+    }
+    let ordinary = run_ployz(
+        address,
+        &[
+            "volume",
+            "create",
+            "ordinary",
+            "--driver",
+            "local",
+            "--opt",
+            "type=none",
+        ],
+    )
+    .await;
+    assert!(ordinary.status.success(), "{ordinary:?}");
+
+    let (_, ordinary) = created.lock().unwrap().pop().unwrap();
+    assert_eq!(ordinary.driver, "local");
+    assert_eq!(
+        ordinary.options,
+        BTreeMap::from([("type".into(), "none".into())])
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn invalid_volume_sizes_fail_before_the_create_rpc() {
+    let mut service = DiscoveryService::new(test_description());
+    service.accept_volume_creates = true;
+    let created = Arc::clone(&service.created_volumes);
+    let (address, server) = serve_discovery(service).await;
+
+    for args in [
+        &["volume", "create", "data", "--size"][..],
+        &["volume", "create", "data", "--size", "0g"],
+        &["volume", "create", "data", "--size", "1024"],
+        &["volume", "create", "data", "--size", "1p"],
+        &[
+            "volume",
+            "create",
+            "data",
+            "--size",
+            "18446744073709551615t",
+        ],
+    ] {
+        let output = run_ployz(address, args).await;
+        assert!(!output.status.success(), "accepted {args:?}: {output:?}");
+    }
+
+    assert!(created.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn existing_provisioned_volume_accepts_the_same_bound_but_never_resizes() {
+    let mut service = DiscoveryService::new(test_description());
+    service.accept_volume_creates = true;
+    service.existing_created_volume = Some(DockerVolume {
+        id: DockerVolumeId {
+            machine_id: machine_id('a'),
+            name: DockerVolumeName::parse("data").unwrap(),
+        },
+        driver: "ployz".into(),
+        options: BTreeMap::from([("size".into(), "1g".into())]),
+        labels: BTreeMap::new(),
+    });
+    let (address, server) = serve_discovery(service).await;
+
+    let same = run_ployz(address, &["volume", "create", "data", "--size", "1024m"]).await;
+    assert!(same.status.success(), "{same:?}");
+
+    let different = run_ployz(address, &["volume", "create", "data", "--size", "2g"]).await;
+    assert!(!different.status.success(), "{different:?}");
+    assert!(
+        String::from_utf8_lossy(&different.stderr).contains("volume update"),
+        "{different:?}"
+    );
+    server.abort();
+}
+
 fn listing_container(
     container_hex: char,
     service_hex: char,

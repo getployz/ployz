@@ -17,13 +17,13 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachinePhase, LocalMachineRemoved,
-    Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation,
-    MachineRemoved, MachineRpc, MachineRpcServer, MachineStorageObservation, ManagementAddress,
-    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    Registered, RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeList, VolumeRemoved,
-    WireGuardPublicKey, op,
+    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachinePhase,
+    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineList, MachineName,
+    MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer, MachineStorageObservation,
+    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RemoveMachineRequest, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
+    RuntimeWatchTransportFrame, VolumeList, VolumeRemoved, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -151,6 +151,9 @@ pub(super) struct DiscoveryService {
     pub(super) machines: Vec<MachineObservation>,
     pub(super) listed_volumes: Arc<Mutex<BTreeMap<MachineId, Vec<DockerVolume>>>>,
     pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
+    pub(super) accept_volume_creates: bool,
+    pub(super) existing_created_volume: Option<DockerVolume>,
+    pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
@@ -175,6 +178,9 @@ impl DiscoveryService {
             machines: vec![machine('a', "one")],
             listed_volumes: Arc::new(Mutex::new(BTreeMap::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
+            accept_volume_creates: false,
+            existing_created_volume: None,
+            created_volumes: Arc::new(Mutex::new(Vec::new())),
             removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
@@ -447,9 +453,34 @@ impl MachineRpc for DiscoveryService {
 
     async fn create_volume(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        if !self.accept_volume_creates {
+            return Err(Status::unimplemented("unused"));
+        }
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::CreateVolume(create) = request.body else {
+            return Err(Status::invalid_argument("expected create_volume"));
+        };
+        self.created_volumes
+            .lock()
+            .unwrap()
+            .push((machine_id, create.clone()));
+        let volume = self
+            .existing_created_volume
+            .clone()
+            .unwrap_or_else(|| DockerVolume {
+                id: DockerVolumeId {
+                    machine_id,
+                    name: create.name,
+                },
+                driver: create.driver,
+                options: create.options,
+                labels: create.labels,
+            });
+        Ok(Response::new(RpcResponse::from(volume).encode().unwrap()))
     }
 
     async fn inspect_container(
