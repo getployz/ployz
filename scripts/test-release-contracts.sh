@@ -368,6 +368,209 @@ fi
 rm -rf "$apt_root"
 rm -f "$APT_CONFIG"
 
+assert_eq "$(zfs_arc_max_for_memory_kib 524288)" 268435456
+assert_eq "$(zfs_arc_max_for_memory_kib 2097152)" 536870912
+assert_eq "$(zfs_arc_max_for_memory_kib 8388608)" 1073741824
+
+zfs_package_log=$(mktemp)
+(
+    run_with_apt_lock_wait() { printf '%s\n' "$*" >> "$zfs_package_log"; }
+    function apt-cache {
+        [ "$1" = show ] && [ "$2" = linux-modules-extra-6.8.0-1008-azure ]
+    }
+    function dpkg-query {
+        printf '%s\n' /lib/modules/6.8.0-1008-azure/kernel/fs/zfs/zfs.ko.zst
+    }
+    install_zfs_packages_ubuntu 6.8.0-1008-azure
+)
+assert_contains "$zfs_package_log" "apt-get update -qq"
+assert_contains "$zfs_package_log" "zfsutils-linux linux-modules-extra-6.8.0-1008-azure"
+rm -f "$zfs_package_log"
+
+if missing_kernel_error=$(
+    (
+        run_with_apt_lock_wait() { return 0; }
+        function apt-cache { return 100; }
+        install_zfs_packages_ubuntu 6.8.0-unsupported
+    ) 2>&1
+); then
+    echo "installer accepted a running kernel without packaged ZFS support" >&2
+    exit 1
+fi
+printf '%s\n' "$missing_kernel_error" | grep -Fq \
+    "no packaged ZFS module for the running kernel 6.8.0-unsupported"
+
+assert_eq "$PLOYZ_STORAGE" none
+storage_selection_log=$(mktemp)
+(
+    prepare_zfs() { echo zfs >> "$storage_selection_log"; }
+    prepare_storage
+)
+[ ! -s "$storage_selection_log" ]
+if invalid_storage_error=$(PLOYZ_STORAGE=other prepare_storage 2>&1); then
+    echo "installer accepted an unsupported storage preparation" >&2
+    exit 1
+fi
+printf '%s\n' "$invalid_storage_error" | grep -Fq \
+    "Unsupported storage preparation 'other'; expected none or zfs"
+rm -f "$storage_selection_log"
+
+zfs_prepare_log=$(mktemp)
+(
+    operating_system_id() { echo ubuntu; }
+    container_virtualization() { echo none; }
+    command_exists() { return 0; }
+    uname() { echo 6.8.0-test-cloud; }
+    require_host_root_reserve() { printf 'reserve %s\n' "$1" >> "$zfs_prepare_log"; }
+    install_zfs_packages_ubuntu() { printf 'packages %s\n' "$1" >> "$zfs_prepare_log"; }
+    zfs_arc_max() { echo 536870912; }
+    persist_zfs_arc_max() { printf 'persist %s\n' "$1" >> "$zfs_prepare_log"; }
+    modprobe() { printf 'modprobe %s\n' "$1" >> "$zfs_prepare_log"; }
+    set_and_verify_zfs_arc_max() { printf 'verify %s\n' "$1" >> "$zfs_prepare_log"; }
+    validate_zfs() { echo smoke >> "$zfs_prepare_log"; }
+    PLOYZ_STORAGE=zfs prepare_storage >/dev/null
+)
+assert_eq "$(cat "$zfs_prepare_log")" "$(printf '%s\n' \
+    'reserve 134217728' \
+    'packages 6.8.0-test-cloud' \
+    'persist 536870912' \
+    'modprobe zfs' \
+    'verify 536870912' \
+    smoke)"
+rm -f "$zfs_prepare_log"
+
+if reserve_error=$(
+    (
+        function df { printf '%s\n' 'Size Avail' '21474836480 10737418240'; }
+        require_host_root_reserve 1
+    ) 2>&1
+); then
+    echo "ZFS preparation accepted an inadequate host-root reserve" >&2
+    exit 1
+fi
+printf '%s\n' "$reserve_error" | grep -Fq "preserving the 10737418240-byte host-root reserve"
+
+setup_zfs_smoke_fake() {
+    zfs_smoke_scenario=$1
+    zfs_smoke_state=$(mktemp)
+    zfs_smoke_log=$(mktemp)
+    rm -f "$zfs_smoke_state"
+}
+
+fake_zpool() {
+    printf 'zpool %s\n' "$*" >> "$zfs_smoke_log"
+    case "$1" in
+        create) printf '%s\n' "${@: -2:1}" > "$zfs_smoke_state" ;;
+        list)
+            if [ "$2" = -Hp ]; then
+                if [ "$zfs_smoke_scenario" = interrupt ]; then
+                    zfs_smoke_scenario=interrupted
+                    kill -TERM "${BASHPID:-$$}"
+                fi
+                [ "$zfs_smoke_scenario" != query-failure ] && [ -e "$zfs_smoke_state" ]
+            elif [ "$zfs_smoke_scenario" = cleanup-probe-failure ]; then
+                echo "simulated zpool list failure" >&2
+                return 2
+            else
+                [ ! -e "$zfs_smoke_state" ] || cat "$zfs_smoke_state"
+            fi
+            ;;
+        destroy)
+            [ "$zfs_smoke_scenario" != destroy-failure ] || return 1
+            rm -f "$zfs_smoke_state"
+            ;;
+    esac
+}
+
+fake_zfs() {
+    printf 'zfs %s\n' "$*" >> "$zfs_smoke_log"
+    [ ! -e "$zfs_smoke_state" ] || cat "$zfs_smoke_state"
+}
+
+run_fake_zfs_smoke() {
+    zfs_smoke_bytes() { echo 1048576; }
+    require_host_root_reserve() { return 0; }
+    findmnt() { [ "$1" = -n ] && echo /; }
+    zpool() { fake_zpool "$@"; }
+    zfs() { fake_zfs "$@"; }
+    validate_zfs
+}
+
+cleanup_zfs_smoke_fake() {
+    local backing
+    backing=$(awk '$1 == "zpool" && $2 == "create" { print $NF }' "$zfs_smoke_log")
+    rm -f "$zfs_smoke_state" "$zfs_smoke_log" "$backing"
+}
+
+setup_zfs_smoke_fake success
+(
+    trap : INT
+    trap : TERM
+    previous_int_trap=$(trap -p INT)
+    previous_term_trap=$(trap -p TERM)
+    run_fake_zfs_smoke
+    [ "$(trap -p INT)" = "$previous_int_trap" ]
+    [ "$(trap -p TERM)" = "$previous_term_trap" ]
+)
+assert_contains "$zfs_smoke_log" "zpool create -f -m none -o cachefile=none"
+assert_contains "$zfs_smoke_log" "zpool list -Hp -o name,size,alloc,free"
+assert_contains "$zfs_smoke_log" "zfs list -Hp -o name,mountpoint"
+assert_contains "$zfs_smoke_log" "zpool destroy -f"
+smoke_backing=$(awk '$1 == "zpool" && $2 == "create" { print $NF }' "$zfs_smoke_log")
+[ ! -e "$zfs_smoke_state" ]
+[ ! -e "$smoke_backing" ]
+cleanup_zfs_smoke_fake
+
+setup_zfs_smoke_fake query-failure
+if smoke_error=$(
+    (run_fake_zfs_smoke) 2>&1
+); then
+    echo "installer accepted a failed ZFS smoke query" >&2
+    exit 1
+fi
+printf '%s\n' "$smoke_error" | grep -Fq "Could not query temporary ZFS smoke Pool"
+assert_contains "$zfs_smoke_log" "zpool destroy -f"
+smoke_backing=$(awk '$1 == "zpool" && $2 == "create" { print $NF }' "$zfs_smoke_log")
+[ ! -e "$smoke_backing" ]
+cleanup_zfs_smoke_fake
+
+setup_zfs_smoke_fake destroy-failure
+if cleanup_error=$(
+    (run_fake_zfs_smoke) 2>&1
+); then
+    echo "installer accepted a failed ZFS smoke cleanup" >&2
+    exit 1
+fi
+printf '%s\n' "$cleanup_error" | grep -Fq "Could not destroy temporary ZFS smoke Pool"
+printf '%s\n' "$cleanup_error" | grep -Fq "then remove /var/tmp/ployz-zfs-smoke."
+cleanup_zfs_smoke_fake
+
+setup_zfs_smoke_fake cleanup-probe-failure
+if cleanup_probe_error=$(
+    (run_fake_zfs_smoke) 2>&1
+); then
+    echo "installer accepted an unverified ZFS smoke cleanup" >&2
+    exit 1
+fi
+printf '%s\n' "$cleanup_probe_error" | grep -Fq \
+    "Could not verify cleanup of temporary ZFS smoke Pool"
+printf '%s\n' "$cleanup_probe_error" | grep -Fq "simulated zpool list failure"
+cleanup_zfs_smoke_fake
+
+setup_zfs_smoke_fake interrupt
+if (run_fake_zfs_smoke); then
+    echo "installer accepted an interrupted ZFS smoke test" >&2
+    exit 1
+else
+    interrupt_status=$?
+fi
+assert_eq "$interrupt_status" 143
+assert_contains "$zfs_smoke_log" "zpool destroy -f"
+smoke_backing=$(awk '$1 == "zpool" && $2 == "create" { print $NF }' "$zfs_smoke_log")
+[ ! -e "$zfs_smoke_state" ]
+[ ! -e "$smoke_backing" ]
+cleanup_zfs_smoke_fake
+
 PLOYZ_CLI_INSTALL_TEST_ONLY=true source "$ROOT/install.sh"
 assert_eq "$(cli_archive Linux x86_64)" "ployz_linux_amd64.tar.gz"
 assert_eq "$(cli_archive Linux aarch64)" "ployz_linux_arm64.tar.gz"
