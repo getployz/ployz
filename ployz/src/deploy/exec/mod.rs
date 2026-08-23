@@ -29,6 +29,17 @@ pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
 
+fn provisioned_volume_unsupported() -> ExecutionError {
+    machine_error(
+        MachineAction::CreateVolume,
+        RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: "Provisioned Volume execution is not available".into(),
+            details: serde_json::Value::Null,
+        },
+    )
+}
+
 fn failure_outcome_from<E>(
     operations: &[DeployOperation],
     completed_count: usize,
@@ -452,6 +463,29 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     };
     let mut progress = Progress::new(rows, tx);
     progress.emit();
+    if let Some((index, operation)) = operations
+        .iter()
+        .enumerate()
+        .find(|(_, operation)| matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
+    {
+        let error = provisioned_volume_unsupported();
+        progress.fail(index, error.clone());
+        let outcome = DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::Operation {
+                operation: operation.clone(),
+                error,
+            },
+            unexecuted: operations
+                .iter()
+                .enumerate()
+                .filter(|(candidate, _)| *candidate != index)
+                .map(|(_, operation)| operation.clone())
+                .collect(),
+        };
+        progress.outcome(outcome.clone());
+        return outcome;
+    }
     for (index, operation) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             progress.fail(index, ExecutionError::Cancelled);
@@ -520,6 +554,9 @@ async fn execute_operation<C: MachineOperations>(
                 .create_volume(machine_id, volume)
                 .await
                 .map_err(|error| machine_error(MachineAction::CreateVolume, error).into())
+        }
+        DeployOperation::CreateProvisionedVolume { .. } => {
+            Err(provisioned_volume_unsupported().into())
         }
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, cancellation)

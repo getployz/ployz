@@ -119,8 +119,10 @@ impl Progress {
         if let Some(row) = self.rows.get_mut(index) {
             row.status = OperationStatus::Failed { error };
         }
-        for row in self.rows.iter_mut().skip(index.saturating_add(1)) {
-            row.status = OperationStatus::Unexecuted;
+        for (candidate, row) in self.rows.iter_mut().enumerate() {
+            if candidate != index && !matches!(row.status, OperationStatus::Completed) {
+                row.status = OperationStatus::Unexecuted;
+            }
         }
         self.emit();
     }

@@ -145,7 +145,7 @@ Live evidence of one in-flight Deploy: the current operation, the completed pref
 _Avoid_: Watch frame, durable Deploy status, workflow state
 
 **Deploy Outcome**:
-The evidence produced by executing a Deploy Plan: its completed prefix, any failed operation, its unexecuted suffix, and any narrow replacement compensation attempted. It does not imply atomicity or general rollback.
+The evidence from a Deploy Plan: completed operations, any failed operation, every unattempted operation, and narrow replacement compensation. Sequential failures retain prefix/suffix ordering, while a preflight rejection may name a later operation before any operation runs; neither implies atomicity or general rollback.
 _Avoid_: Bare deployment error, transaction result
 
 **Docker Volume**:

@@ -177,6 +177,23 @@
     "machine_id": "0123456789abcdef0123456789abcdef",
     "protocol_major": 1
   },
+  "create_provisioned_volume_operation": {
+    "machine_id": "0123456789abcdef0123456789abcdef",
+    "maximum_bytes": "1073741824",
+    "type": "create_provisioned_volume",
+    "volume": {
+      "reference": "data",
+      "source": {
+        "driver": null,
+        "external": false,
+        "kind": "named",
+        "labels": {},
+        "name": "data",
+        "no_copy": false,
+        "subpath": null
+      }
+    }
+  },
   "data_loss": {
     "DockerVolume": {
       "machine_id": "0123456789abcdef0123456789abcdef",

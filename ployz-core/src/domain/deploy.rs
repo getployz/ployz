@@ -285,18 +285,19 @@ pub fn profiles_enable_start(service_profiles: &[String], requested_profiles: &[
             .any(|profile| requested_profiles.contains(profile))
 }
 
-/// Evidence from executing a Deploy Plan: every operation completed, or the
-/// completed prefix plus the failed operation and the unexecuted rest.
+/// Evidence from executing a Deploy Plan: every operation completed, or the completed
+/// operations plus the failed operation and every operation that was not attempted.
+/// A preflight rejection may name a later operation before any operation runs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[expect(
     clippy::large_enum_variant,
-    reason = "Failed must own the named op and unexecuted rest; boxing would not change the states"
+    reason = "Failed must own the named op and unexecuted operations; boxing would not change the states"
 )]
 pub enum DeployOutcome<E> {
     /// Every planned operation completed.
     Success { completed: Vec<DeployOperation> },
-    /// Execution stopped at `failed`; `unexecuted` is the rest of the plan.
+    /// The plan failed at `failed`; `unexecuted` contains every operation not attempted.
     Failed {
         completed: Vec<DeployOperation>,
         failed: FailedOperation<E>,
@@ -308,7 +309,7 @@ pub enum DeployOutcome<E> {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FailedOperation<E> {
-    /// The named operation returned `error`.
+    /// The named operation returned `error` or caused the plan to be rejected in preflight.
     Operation {
         operation: DeployOperation,
         error: E,
@@ -363,6 +364,12 @@ pub enum DeployOperation {
     CreateVolume {
         machine_id: MachineId,
         volume: ServiceVolume,
+    },
+    /// Create a bounded Provisioned Volume on `machine_id`.
+    CreateProvisionedVolume {
+        machine_id: MachineId,
+        volume: ServiceVolume,
+        maximum_bytes: ProvisionedVolumeMaximumBytes,
     },
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {
@@ -631,7 +638,7 @@ pub enum HookFailure {
     Exit { code: i64 },
 }
 
-/// Error from executing one Deploy Operation.
+/// Error from preflighting or executing one Deploy Operation.
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionError {
@@ -664,7 +671,7 @@ pub enum ExecutionError {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[expect(
     clippy::large_enum_variant,
-    reason = "Outcome owns the completed prefix, failed op, and unexecuted rest"
+    reason = "Outcome owns the completed operations, failed op, and unexecuted operations"
 )]
 pub enum DeployEvent {
     /// Full snapshot of every planned row.
@@ -766,6 +773,7 @@ impl DeployOperation {
     pub fn machine_id(&self) -> MachineId {
         match self {
             Self::CreateVolume { machine_id, .. }
+            | Self::CreateProvisionedVolume { machine_id, .. }
             | Self::WaitHealthy { machine_id, .. }
             | Self::RunContainer { machine_id, .. }
             | Self::StopContainer { machine_id, .. }
@@ -785,6 +793,7 @@ impl DeployOperation {
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
             Self::CreateVolume { .. }
+            | Self::CreateProvisionedVolume { .. }
             | Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
@@ -801,6 +810,7 @@ impl DeployOperation {
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
             Self::CreateVolume { .. }
+            | Self::CreateProvisionedVolume { .. }
             | Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }

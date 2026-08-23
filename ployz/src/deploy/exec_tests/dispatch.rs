@@ -104,6 +104,47 @@ async fn dispatches_the_complete_algebra() {
 }
 
 #[tokio::test]
+async fn provisioned_volume_execution_fails_closed_without_machine_io() {
+    let machine_id = machine('1');
+    let ordinary = DeployOperation::CreateVolume {
+        machine_id,
+        volume: volume(),
+    };
+    let provisioned = DeployOperation::CreateProvisionedVolume {
+        machine_id,
+        volume: volume(),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1).unwrap()),
+    };
+    let client = Scripted::new(vec![]);
+
+    let outcome = execute_with(
+        &[ordinary.clone(), provisioned.clone()],
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert!(matches!(
+        outcome,
+        DeployOutcome::Failed {
+            completed,
+            failed: FailedOperation::Operation {
+                operation: failed,
+                error: ExecutionError::Machine {
+                    action: MachineAction::CreateVolume,
+                    error: RpcError {
+                        code: RpcErrorCode::Unsupported,
+                        ..
+                    },
+                },
+            },
+            unexecuted,
+        } if completed.is_empty() && failed == provisioned && unexecuted == vec![ordinary]
+    ));
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
     let machine = machine('1');
     let operations = ['a', 'b', 'c']

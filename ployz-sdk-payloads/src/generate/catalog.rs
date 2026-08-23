@@ -766,6 +766,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                     &[("machine_id", "MachineId"), ("volume", "ServiceVolume")],
                 ),
                 (
+                    "create_provisioned_volume",
+                    &[
+                        ("machine_id", "MachineId"),
+                        ("volume", "ServiceVolume"),
+                        ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
+                    ],
+                ),
+                (
                     "wait_healthy",
                     &[
                         ("machine_id", "MachineId"),

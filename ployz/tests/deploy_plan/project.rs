@@ -161,6 +161,7 @@ fn other_project_resources_are_left_alone() {
         }
         DeployOperation::RemoveVolume { id } => id.name.as_str() == "app_keep",
         other @ (DeployOperation::CreateVolume { .. }
+        | DeployOperation::CreateProvisionedVolume { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::StopContainer { .. }

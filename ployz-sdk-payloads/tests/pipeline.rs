@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
     ClusterTeardown, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOutcome, DeployPreview,
-    DockerVolume, ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname,
-    LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
+    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation, DeployOutcome,
+    DeployPreview, DockerVolume, ExecutionError, HealthObservation, HealthcheckSpec,
+    IngressHostname, LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
     RUNTIME_WATCH_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode,
     RuntimeWatchTransportFrame, ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeSource,
 };
@@ -202,6 +202,13 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert_eq!(provisioned.service.as_str(), "api");
     assert_eq!(provisioned.reference.as_str(), "data");
     assert_eq!(provisioned.maximum_bytes.get(), 1_073_741_824);
+    let operation: DeployOperation =
+        decode_fixture(fixture(&fixtures, "create_provisioned_volume_operation"));
+    assert!(matches!(
+        operation,
+        DeployOperation::CreateProvisionedVolume { maximum_bytes, .. }
+            if maximum_bytes.get() == 1_073_741_824
+    ));
     assert!(intent.options.selected.is_empty());
     assert_eq!(intent.options, PlanOptions::default());
     assert!(intent.dependencies().is_empty());
@@ -504,6 +511,9 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type DeployOperation ="));
     assert!(dts.contains("type: \"run_container\""));
     assert!(dts.contains("type: \"wait_healthy\""));
+    assert!(dts.contains(
+        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes"
+    ));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
     assert!(dts.contains("export type ExecutionError ="));

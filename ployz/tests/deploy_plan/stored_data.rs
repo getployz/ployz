@@ -7,6 +7,7 @@ fn destroys_stored_data(operation: &DeployOperation) -> bool {
     match operation {
         DeployOperation::RemoveVolume { .. } => true,
         DeployOperation::CreateVolume { .. }
+        | DeployOperation::CreateProvisionedVolume { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::StopContainer { .. }

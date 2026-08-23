@@ -258,6 +258,7 @@ fn assemble_plan(
                 Some(*machine_id)
             }
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
@@ -712,6 +713,7 @@ fn pre_deploy_operations(
             }) if hook_machine == Some(machine_id) => Some((machine_id, spec)),
             DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => None,
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }

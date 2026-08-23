@@ -80,9 +80,27 @@ impl VolumePins {
     }
 
     pub(super) fn into_creates(self) -> Vec<DeployOperation> {
+        let provisioned_bounds = self.provisioned_bounds;
         self.creates
             .into_iter()
-            .map(|(machine_id, volume)| DeployOperation::CreateVolume { machine_id, volume })
+            .map(|(machine_id, volume)| {
+                let maximum_bytes = named_volume_name(&volume).and_then(|name| {
+                    provisioned_bounds
+                        .get(&DockerVolumeId {
+                            machine_id,
+                            name: name.clone(),
+                        })
+                        .copied()
+                });
+                match maximum_bytes {
+                    Some(maximum_bytes) => DeployOperation::CreateProvisionedVolume {
+                        machine_id,
+                        volume,
+                        maximum_bytes,
+                    },
+                    None => DeployOperation::CreateVolume { machine_id, volume },
+                }
+            })
             .collect()
     }
 }

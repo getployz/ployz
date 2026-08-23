@@ -102,6 +102,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
                 Some(replacement.spec.container.image.as_str())
             }
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }

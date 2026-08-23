@@ -2,7 +2,7 @@ use super::support::*;
 use ployz_core::{
     PreservedVolume, ProvisionedVolume, ProvisionedVolumeMaximumBytes, ServiceAttempt, ServiceName,
 };
-use std::num::NonZeroU64;
+use std::{collections::BTreeMap, num::NonZeroU64};
 
 fn maximum_bytes(bytes: u64) -> ProvisionedVolumeMaximumBytes {
     ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(bytes).unwrap())
@@ -124,6 +124,80 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
         ),
         "unexpected result: {result:?}"
     );
+}
+
+#[test]
+fn profile_filtered_service_still_contributes_to_bound_conflicts() {
+    let first = global_service("first", "first");
+    let second = global_service("second", "first");
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&first, &second],
+        PlanOptions::default(),
+    )
+    .with_service_profiles(BTreeMap::from([(
+        second.name.clone(),
+        vec!["tools".into()],
+    )]));
+    intent.provisioned_volumes = vec![
+        provisioned("first", "data", 1_073_741_824),
+        provisioned("second", "data", 2_147_483_648),
+    ];
+
+    let result = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(PlanError::Service { source, .. })
+                if matches!(source.as_ref(), PlanError::ConflictingProvisionedVolumeBounds { .. })
+        ),
+        "unexpected result: {result:?}"
+    );
+}
+
+#[test]
+fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
+    let mut requested = requested(ServiceMode::Global);
+    add_named_volume(&mut requested, "data");
+    add_named_volume(&mut requested, "cache");
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&requested],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
+
+    let preview = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap();
+
+    let operations = operations(&preview);
+    assert!(operations.iter().any(|operation| matches!(
+        operation,
+        DeployOperation::CreateProvisionedVolume {
+            volume,
+            maximum_bytes: requested_maximum_bytes,
+            ..
+        } if volume.reference.as_str() == "data"
+            && *requested_maximum_bytes == maximum_bytes(1_073_741_824)
+    )));
+    assert!(operations.iter().any(|operation| matches!(
+        operation,
+        DeployOperation::CreateVolume { volume, .. } if volume.reference.as_str() == "cache"
+    )));
 }
 
 #[test]

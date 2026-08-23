@@ -121,6 +121,10 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("capabilities".into(), Value::Array(capability_wires()));
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert("provisioned_volume".into(), to_value(&provisioned_volume()));
+    fixtures.insert(
+        "create_provisioned_volume_operation".into(),
+        to_value(&create_provisioned_volume_operation()),
+    );
     fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
     fixtures.insert("requested_service_spec".into(), to_value(&requested_spec()));
     // serde emits null for Option::None; these leaves stay null-free so tsc can `satisfies`.
@@ -810,7 +814,15 @@ fn replacement_operation() -> ReplacementOperation {
     }
 }
 
-fn deploy_operations() -> [DeployOperation; 9] {
+fn create_provisioned_volume_operation() -> DeployOperation {
+    DeployOperation::CreateProvisionedVolume {
+        machine_id: machine_id(MACHINE_ID_HEX),
+        volume: service_volume(),
+        maximum_bytes: provisioned_volume().maximum_bytes,
+    }
+}
+
+fn deploy_operations() -> [DeployOperation; 10] {
     let machine_id = machine_id(MACHINE_ID_HEX);
     let container_id = container_id();
     [
@@ -818,6 +830,7 @@ fn deploy_operations() -> [DeployOperation; 9] {
             machine_id,
             volume: service_volume(),
         },
+        create_provisioned_volume_operation(),
         DeployOperation::WaitHealthy {
             machine_id,
             dependent: QualifiedService::parse("app/web").unwrap(),

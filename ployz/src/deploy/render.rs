@@ -119,7 +119,7 @@ pub fn confirm_removal_prompt(project: &ployz_core::ProjectName, context: &str) 
     format!("Proceed with removal of Project {project} from {context}? [y/N] ")
 }
 
-/// Completed-prefix / failed op / unexecuted rest, plus endpoints on success.
+/// Completed operations / failed op / unexecuted operations, plus endpoints on success.
 #[must_use]
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
     match outcome {
@@ -153,7 +153,9 @@ fn service_trees(preview: &DeployPreview) -> String {
     for row in &preview.operations {
         if matches!(
             row.operation,
-            DeployOperation::CreateVolume { .. } | DeployOperation::RemoveVolume { .. }
+            DeployOperation::CreateVolume { .. }
+                | DeployOperation::CreateProvisionedVolume { .. }
+                | DeployOperation::RemoveVolume { .. }
         ) {
             volumes.push(row);
             continue;
@@ -184,6 +186,14 @@ fn volume_line(row: &OperationRow) -> String {
         DeployOperation::CreateVolume { volume, .. } => {
             format!("+ create volume {} on {machine}", volume.reference)
         }
+        DeployOperation::CreateProvisionedVolume {
+            volume,
+            maximum_bytes,
+            ..
+        } => format!(
+            "+ create provisioned volume {} (maximum {maximum_bytes} bytes) on {machine}",
+            volume.reference
+        ),
         DeployOperation::RemoveVolume { id } => {
             format!("- remove volume {} on {machine}", id.name)
         }
@@ -249,6 +259,7 @@ fn spec_image(operation: &DeployOperation) -> Option<&str> {
             Some(replacement.spec.container.image.as_str())
         }
         DeployOperation::CreateVolume { .. }
+        | DeployOperation::CreateProvisionedVolume { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }
         | DeployOperation::RemoveContainer { .. }
@@ -291,7 +302,8 @@ fn child_line(row: &OperationRow) -> String {
         DeployOperation::RunHook { spec, .. } => {
             format!("+ run pre-deploy hook for {} on {machine}", spec.name)
         }
-        DeployOperation::CreateVolume { volume, .. } => {
+        DeployOperation::CreateVolume { volume, .. }
+        | DeployOperation::CreateProvisionedVolume { volume, .. } => {
             format!("+ create volume {} on {machine}", volume.reference)
         }
         DeployOperation::RemoveVolume { id } => {
@@ -309,7 +321,9 @@ fn plan_footer(preview: &DeployPreview) -> String {
     for row in &preview.operations {
         machines.insert(row.machine_id, ());
         match &row.operation {
-            DeployOperation::RunContainer { .. } | DeployOperation::CreateVolume { .. } => {
+            DeployOperation::RunContainer { .. }
+            | DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. } => {
                 creates += 1;
             }
             DeployOperation::ReplaceContainer(replacement) => {
@@ -372,7 +386,8 @@ fn container_label(row: &OperationRow) -> String {
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }
         | DeployOperation::StopHook { container_id, .. } => container_id.to_string(),
-        DeployOperation::CreateVolume { volume, .. } => volume.reference.to_string(),
+        DeployOperation::CreateVolume { volume, .. }
+        | DeployOperation::CreateProvisionedVolume { volume, .. } => volume.reference.to_string(),
         DeployOperation::RemoveVolume { id } => id.name.to_string(),
     }
 }
@@ -435,7 +450,9 @@ fn completed_label(operation: &DeployOperation) -> &'static str {
         | DeployOperation::StopContainer { .. }
         | DeployOperation::StopHook { .. }
         | DeployOperation::RemoveVolume { .. } => "Removed",
-        DeployOperation::CreateVolume { .. } => "Created",
+        DeployOperation::CreateVolume { .. } | DeployOperation::CreateProvisionedVolume { .. } => {
+            "Created"
+        }
         DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::ReplaceContainer(_)
@@ -454,6 +471,7 @@ fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
             DeployOperation::RunContainer { spec, .. } => spec,
             DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. }) => spec,
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
@@ -513,7 +531,10 @@ fn failed_summary(failed: &FailedOperation<ExecutionError>) -> String {
 
 fn operation_label(operation: &DeployOperation) -> String {
     match operation {
-        DeployOperation::CreateVolume { machine_id, volume } => {
+        DeployOperation::CreateVolume { machine_id, volume }
+        | DeployOperation::CreateProvisionedVolume {
+            machine_id, volume, ..
+        } => {
             format!("create volume {} on {machine_id}", volume.reference)
         }
         DeployOperation::WaitHealthy {
@@ -551,11 +572,14 @@ fn operation_label(operation: &DeployOperation) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
     use ployz_core::{
         ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, MachineId, MachineName,
-        OperationRow, OperationStatus, PreservedVolume, ProjectName, PruneRefusal,
-        QualifiedService, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
-        ServiceName, UpdateOrder,
+        OperationRow, OperationStatus, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes,
+        PruneRefusal, QualifiedService, ReplacementOperation, RequestedServiceSpec,
+        ResolvedServiceSpec, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateOrder,
+        VolumeSource,
     };
 
     use super::*;
@@ -619,6 +643,43 @@ mod tests {
         assert!(
             preserved.contains("would preserve volume shop_data on edge"),
             "{preserved}"
+        );
+    }
+
+    #[test]
+    fn plan_identifies_a_provisioned_volume_and_its_bound() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let row = OperationRow::pending(
+            0,
+            DeployOperation::CreateProvisionedVolume {
+                machine_id,
+                volume: ServiceVolume {
+                    reference: ServiceVolumeReference::parse("data").unwrap(),
+                    source: VolumeSource::Named {
+                        name: DockerVolumeName::parse("shop_data").unwrap(),
+                        external: false,
+                        driver: None,
+                        labels: Default::default(),
+                        no_copy: false,
+                        subpath: None,
+                    },
+                },
+                maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                    NonZeroU64::new(1_073_741_824).unwrap(),
+                ),
+            },
+            Some(MachineName::parse("edge").unwrap()),
+            None,
+            None,
+        );
+        let preview =
+            DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("shop").unwrap());
+
+        let text = plan_text(&preview, "default", None);
+
+        assert!(
+            text.contains("+ create provisioned volume data (maximum 1073741824 bytes) on edge"),
+            "{text}"
         );
     }
 

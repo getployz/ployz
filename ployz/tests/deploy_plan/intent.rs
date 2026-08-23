@@ -304,6 +304,7 @@ fn run_names(plan: &ployz::deploy::DeployPreview) -> Vec<&str> {
         .filter_map(|row| match &row.operation {
             DeployOperation::RunContainer { spec, .. } => Some(spec.name.as_str()),
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
@@ -322,6 +323,7 @@ fn targets_container(plan: &ployz::deploy::DeployPreview, id: &ContainerId) -> b
         | DeployOperation::StopHook { container_id, .. } => container_id == id,
         DeployOperation::ReplaceContainer(replacement) => &replacement.old_container_id == id,
         DeployOperation::CreateVolume { .. }
+        | DeployOperation::CreateProvisionedVolume { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::RunHook { .. }

@@ -459,6 +459,7 @@ fn preview_ports(preview: &DeployPreview) -> impl Iterator<Item = &PortPublicati
             }
             DeployOperation::ReplaceContainer(replacement) => replacement.spec.ports.as_slice(),
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }

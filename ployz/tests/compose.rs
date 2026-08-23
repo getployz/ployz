@@ -1232,7 +1232,8 @@ fn created_named_volume(
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
-            | DeployOperation::RemoveVolume { .. } => None,
+            | DeployOperation::RemoveVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. } => None,
         })
         .expect("plan creates a Docker Volume");
     let VolumeSource::Named { name, labels, .. } = &volume.source else {
@@ -1444,6 +1445,7 @@ volumes: {a: {}, b: {}}
             .iter()
             .all(|operation| match operation {
                 DeployOperation::CreateVolume { machine_id, .. }
+                | DeployOperation::CreateProvisionedVolume { machine_id, .. }
                 | DeployOperation::RunContainer { machine_id, .. } => machine_id == anchor,
                 other @ (DeployOperation::WaitHealthy { .. }
                 | DeployOperation::StopContainer { .. }
