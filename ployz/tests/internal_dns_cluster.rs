@@ -100,7 +100,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
     )
     .await;
     assert_protocol_contract_and_forwarding(&probe);
-    assert_membership_blind_projection(
+    assert_membership_filtered_projection(
         &probe,
         third_machine,
         third_container,
@@ -244,14 +244,14 @@ fn assert_protocol_contract_and_forwarding(probe: &DnsProbe<'_>) {
     );
 }
 
-async fn assert_membership_blind_projection(
+async fn assert_membership_filtered_projection(
     probe: &DnsProbe<'_>,
     third_machine: &Machine,
     third_container: &ContainerId,
     third_address: Ipv4Addr,
     expected: &[Ipv4Addr],
 ) {
-    // L3-073: a Down Membership Observation does not erase the last replicated healthy observation.
+    // A Down Membership Observation filters the peer while retaining its replicated observation.
     probe.cluster.stop(2).unwrap();
     wait_for_down_membership_observation(probe.cluster, third_machine).await;
     let encoded = probe
@@ -275,7 +275,14 @@ async fn assert_membership_blind_projection(
             health: HealthObservation::Healthy
         }
     ));
-    probe.wait_addresses("dns-api.app.internal", expected).await;
+    let without_third = expected
+        .iter()
+        .copied()
+        .filter(|address| *address != third_address)
+        .collect::<Vec<_>>();
+    probe
+        .wait_addresses("dns-api.app.internal", &without_third)
+        .await;
 }
 
 struct DnsProbe<'a> {

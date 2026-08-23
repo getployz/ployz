@@ -209,8 +209,8 @@ A Service Container that is healthy and has a Container Address. It is observer-
 _Avoid_: replica, endpoint, upstream
 
 **Internal DNS Answer**:
-An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations. It is not persisted and is not authoritative Cluster state even though the DNS response is authoritative for the `.internal` zone.
-_Avoid_: Service registry record, membership-filtered endpoint set
+An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.
+_Avoid_: Service registry record, Cluster-wide endpoint set
 
 **Caller Project**:
 The Project attributed to an Internal DNS query by matching its source Container Address to exactly one visible Service Container. It is observer-relative attribution, not authenticated identity; zero or several matches mean there is no Caller Project.

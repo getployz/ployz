@@ -1,4 +1,6 @@
-use std::{net::SocketAddr, path::PathBuf};
+//! Corrosion admin-socket protocol and membership decoding.
+
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -8,12 +10,24 @@ use tokio::net::UnixStream;
 use tokio_util::codec::LengthDelimitedCodec;
 
 use super::Error;
-use ployz_core::{MembershipObservation, RttObservation, rtt_statistics};
+use ployz_core::{ManagementAddress, MembershipObservation, RttObservation, rtt_statistics};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MembershipState {
     pub address: SocketAddr,
     pub membership: MembershipObservation,
+}
+
+pub(crate) fn membership_states_by_address(
+    states: impl IntoIterator<Item = MembershipState>,
+) -> BTreeMap<ManagementAddress, MembershipObservation> {
+    states
+        .into_iter()
+        .filter_map(|state| match state.address.ip() {
+            std::net::IpAddr::V6(address) => Some((ManagementAddress(address), state.membership)),
+            std::net::IpAddr::V4(_) => None,
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]

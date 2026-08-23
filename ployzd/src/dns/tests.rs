@@ -4,13 +4,66 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation,
-    MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName,
+    Machine, MachineId, MachineName, MachineRuntime, ManagementAddress, ProjectName,
+    ResolvedServiceSpec, ServiceId, ServiceName, WireGuardPublicKey,
 };
 use serde_json::json;
+use tokio::net::UnixListener;
 
 use super::*;
+use crate::corrosion::fake_cluster;
 
 const SUBNET: &str = "10.210.1.0/24";
+
+#[tokio::test]
+async fn run_reports_subscription_failure() {
+    let machine = Machine {
+        id: MachineId::random(),
+        name: MachineName::parse("node-a").unwrap(),
+        subnet: SUBNET.parse().unwrap(),
+        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: Vec::new(),
+        runtime: MachineRuntime::default(),
+    };
+    let (replicated, replicated_server) = fake_cluster::store().await;
+
+    let error = run(
+        machine,
+        replicated,
+        AdminClient::new("/no/such/admin.sock"),
+        None,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("HTTP 404 Not Found"));
+    replicated_server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn membership_sample_times_out() {
+    let root = std::env::temp_dir().join(format!("ployzd-dns-membership-{}", MachineId::random()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("admin.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let admin_server = tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let (replicated, replicated_server) = fake_cluster::store().await;
+
+    let error = load_down_machines(&replicated, &AdminClient::new(path), &MachineId::random())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, CorrosionError::Io(error) if error.kind() == io::ErrorKind::TimedOut));
+    admin_server.abort();
+    replicated_server.abort();
+    std::fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn projects_only_eligible_service_container_addresses() {
@@ -67,7 +120,7 @@ fn projects_only_eligible_service_container_addresses() {
 
     assert_eq!(
         addresses(plan(
-            &Projection::from_observations(&observations),
+            &unfiltered_projection(&observations),
             "api.app.internal.",
             RecordType::A,
         )),
@@ -82,7 +135,7 @@ fn resolves_every_canonical_lookup_and_rotates_ordinary_answers() {
     let first = ServiceId::parse("b".repeat(32)).unwrap();
     let second = ServiceId::parse("d".repeat(32)).unwrap();
     let name = ServiceName::parse("api").unwrap();
-    let projection = Projection::from_observations(&[
+    let projection = unfiltered_projection(&[
         observation(
             1,
             &remote,
@@ -174,7 +227,7 @@ fn cross_project_and_reserved_names_are_resolved_structurally() {
             word,
         ));
     }
-    let projection = Projection::from_observations(&observations);
+    let projection = unfiltered_projection(&observations);
 
     for (index, word) in words.into_iter().enumerate() {
         assert_eq!(
@@ -203,7 +256,7 @@ fn exact_selectors_do_not_fall_back_when_their_endpoint_is_ineligible() {
     let selected_id = ServiceId::parse("b".repeat(32)).unwrap();
     let colliding_id = ServiceId::parse("c".repeat(32)).unwrap();
     let colliding_name = ServiceName::parse(selected_id.to_string()).unwrap();
-    let projection = Projection::from_observations(&[
+    let projection = unfiltered_projection(&[
         observation(
             1,
             &machine,
@@ -246,7 +299,7 @@ fn exact_selectors_do_not_fall_back_when_their_endpoint_is_ineligible() {
 
 #[test]
 fn malformed_internal_and_non_a_queries_are_authoritative() {
-    let projection = Projection::from_observations(&[]);
+    let projection = unfiltered_projection(&[]);
 
     for name in [
         "internal.",
@@ -300,6 +353,85 @@ options ndots:1
             "198.51.100.53:53".parse().unwrap(),
         ]
     );
+}
+
+#[test]
+fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let suspect = MachineId::parse("b".repeat(32)).unwrap();
+    let down = MachineId::parse("c".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("api").unwrap();
+    let observations = [
+        observation(
+            1,
+            &local,
+            &service,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 2]),
+        ),
+        observation(
+            2,
+            &suspect,
+            &service,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 2, 2]),
+        ),
+        observation(
+            3,
+            &down,
+            &service,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 3, 2]),
+        ),
+    ];
+    let down_machines = HashSet::from([local, down]);
+    let mut inputs = ProjectionInputs {
+        local_id: local,
+        observations: observations.to_vec(),
+        down_machines: None,
+    };
+
+    assert!(!inputs.update_membership(Err(CorrosionError::Protocol("not loaded".into()))));
+    assert_eq!(inputs.down_machines, None);
+    assert!(inputs.update_membership(Ok(down_machines.clone())));
+    assert!(!inputs.update_membership(Err(CorrosionError::Protocol("unavailable".into()))));
+    assert_eq!(inputs.down_machines.as_ref(), Some(&down_machines));
+
+    assert_eq!(
+        addresses(plan(
+            &Projection::from_observations(&observations, &local, Some(&down_machines)),
+            "api.app.internal.",
+            RecordType::A,
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
+    );
+    assert_eq!(
+        addresses(plan(
+            &Projection::from_observations(&observations, &local, None),
+            "api.app.internal.",
+            RecordType::A,
+        )),
+        vec![
+            Ipv4Addr::new(10, 210, 1, 2),
+            Ipv4Addr::new(10, 210, 2, 2),
+            Ipv4Addr::new(10, 210, 3, 2),
+        ]
+    );
+}
+
+fn unfiltered_projection(observations: &[ContainerObservation]) -> Projection {
+    Projection::from_observations(
+        observations,
+        &MachineId::parse("0".repeat(32)).unwrap(),
+        None,
+    )
 }
 
 fn plan(projection: &Projection, name: &str, record_type: RecordType) -> ResponsePlan {

@@ -147,6 +147,7 @@ impl Daemon {
         };
         let corrosion = start_corrosion(&config, &store).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
+        let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let containers = match (containers, replicated_store.clone()) {
             (Some(runtime), Some(replicated)) => {
                 Some(runtime.replicating(replicated, Arc::clone(&store)))
@@ -260,9 +261,9 @@ impl Daemon {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                match (local_machine.clone(), replicated_store.clone()) {
-                    (Some(machine), Some(replicated)) => {
-                        dns::run(machine, replicated, dns_upstreams, shutdown.clone()).await
+                match (local_machine.clone(), replicated_store.clone(), admin) {
+                    (Some(machine), Some(replicated), Some(admin)) => {
+                        dns::run(machine, replicated, admin, dns_upstreams, shutdown.clone()).await
                     }
                     _ => {
                         shutdown.cancelled().await;

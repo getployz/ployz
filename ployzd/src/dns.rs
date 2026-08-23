@@ -1,5 +1,7 @@
+//! Observer-local Internal DNS serving and answer projection.
+
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
@@ -10,6 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use hickory_server::proto::{
     op::{Header, HeaderCounts, Message, Metadata, ResponseCode},
     rr::{Name, RData, Record, RecordType, rdata::A},
@@ -22,16 +25,20 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, QualifiedService, ServiceId, service_containers,
-    serving_replicas,
+    ContainerObservation, Machine, MachineId, MembershipObservation, QualifiedService, ServiceId,
+    service_containers, serving_replicas, synthesize_membership,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
 };
+use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::corrosion::{ReplicatedStore, Subscription};
+use crate::corrosion::{
+    AdminClient, Error as CorrosionError, ReplicatedStore, Subscription,
+    membership_states_by_address,
+};
 
 mod query;
 
@@ -39,6 +46,8 @@ use query::{InternalQuery, MachineServiceTarget, Query, parse};
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
+const MEMBERSHIP_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_RESPONSE_BUFFER: usize = 32;
 
@@ -55,6 +64,41 @@ struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
     identities: HashMap<QualifiedService, ServiceAddresses>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
+}
+
+struct ProjectionInputs {
+    local_id: MachineId,
+    observations: Vec<ContainerObservation>,
+    down_machines: Option<HashSet<MachineId>>,
+}
+
+impl ProjectionInputs {
+    fn build(&self) -> Projection {
+        Projection::from_observations(
+            &self.observations,
+            &self.local_id,
+            self.down_machines.as_ref(),
+        )
+    }
+
+    fn update_membership(&mut self, loaded: Result<HashSet<MachineId>, CorrosionError>) -> bool {
+        match loaded {
+            Ok(down) if self.down_machines.as_ref() == Some(&down) => false,
+            Ok(down) => {
+                self.down_machines = Some(down);
+                true
+            }
+            Err(error) => {
+                let fallback = if self.down_machines.is_some() {
+                    "keeping the last successful filter"
+                } else {
+                    "serving unfiltered answers"
+                };
+                eprintln!("failed to load Internal DNS membership; {fallback}: {error}");
+                false
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -75,15 +119,22 @@ impl ServiceAddresses {
 }
 
 impl Projection {
-    fn from_observations(observations: &[ContainerObservation]) -> Self {
-        // TODO(UT-117, UT-118): keep Membership Observations out of DNS projection until a
-        // product decision replaces the baseline's deliberately membership-blind behavior.
+    fn from_observations(
+        observations: &[ContainerObservation],
+        local_id: &MachineId,
+        down_machines: Option<&HashSet<MachineId>>,
+    ) -> Self {
         let containers = service_containers(observations.iter().cloned());
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
         for container in serving_replicas(&containers) {
             let observation = container.as_observation();
+            if observation.machine_id != *local_id
+                && down_machines.is_some_and(|down| down.contains(&observation.machine_id))
+            {
+                continue;
+            }
             let address = observation
                 .address
                 .expect("Serving Container has a Container Address");
@@ -284,9 +335,16 @@ impl Handler {
     }
 }
 
+/// Serve Internal DNS from this Machine's observer-local Container and membership views.
+///
+/// # Errors
+///
+/// Returns an I/O error when replicated observations cannot be read or watched, the UDP listener
+/// cannot bind, the DNS server fails, or the projection lock is poisoned.
 pub async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
+    admin: AdminClient,
     upstreams: Option<Vec<SocketAddr>>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
@@ -296,10 +354,14 @@ pub async fn run(
         .subscribe_container_changes()
         .await
         .map_err(io::Error::other)?;
+    let local_id = machine.id;
     let observations = replicated.containers().await.map_err(io::Error::other)?;
-    let projection = Arc::new(RwLock::new(Projection::from_observations(
-        &observations.observations,
-    )));
+    let inputs = ProjectionInputs {
+        local_id,
+        observations: observations.observations,
+        down_machines: None,
+    };
+    let projection = Arc::new(RwLock::new(inputs.build()));
     let handler = Handler {
         projection: Arc::clone(&projection),
         local_subnet: machine.subnet.into(),
@@ -319,7 +381,14 @@ pub async fn run(
         server.register_listener(tcp, TCP_REQUEST_TIMEOUT, TCP_RESPONSE_BUFFER);
     }
     let server = run_server(server, shutdown.clone());
-    let projection = watch_projection(replicated, projection, &mut changes, shutdown);
+    let projection = watch_projection(
+        replicated,
+        admin,
+        projection,
+        inputs,
+        &mut changes,
+        shutdown,
+    );
     tokio::try_join!(server, projection).map(|_| ())
 }
 
@@ -334,27 +403,72 @@ async fn run_server(mut server: Server<Handler>, shutdown: CancellationToken) ->
 
 async fn watch_projection(
     replicated: ReplicatedStore,
+    admin: AdminClient,
     projection: Arc<RwLock<Projection>>,
+    mut inputs: ProjectionInputs,
     changes: &mut Subscription,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
+    let local_id = inputs.local_id;
+    let mut interval =
+        tokio::time::interval_at(tokio::time::Instant::now(), MEMBERSHIP_SAMPLE_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // `Then` retains an in-flight membership read when another select branch wins, so slow
+    // membership I/O never delays Container-change withdrawal.
+    let membership =
+        IntervalStream::new(interval).then(|_| load_down_machines(&replicated, &admin, &local_id));
+    tokio::pin!(membership);
     loop {
-        tokio::select! {
+        let rebuild = tokio::select! {
             changed = changes.changed() => {
                 changed.map_err(io::Error::other)?;
                 match replicated.containers().await {
-                    Ok(observations) => {
-                        *projection
-                            .write()
-                            .map_err(|_| io::Error::other("DNS projection lock poisoned"))? =
-                            Projection::from_observations(&observations.observations);
+                    Ok(next) => {
+                        inputs.observations = next.observations;
+                        true
                     }
-                    Err(error) => eprintln!("failed to rebuild DNS projection: {error}"),
+                    Err(error) => {
+                        eprintln!("failed to rebuild DNS projection: {error}");
+                        false
+                    }
                 }
             }
+            Some(result) = membership.next() => inputs.update_membership(result),
             () = shutdown.cancelled() => return Ok(()),
+        };
+        if rebuild {
+            *projection
+                .write()
+                .map_err(|_| io::Error::other("DNS projection lock poisoned"))? = inputs.build();
         }
     }
+}
+
+async fn load_down_machines(
+    replicated: &ReplicatedStore,
+    admin: &AdminClient,
+    local_id: &MachineId,
+) -> Result<HashSet<MachineId>, CorrosionError> {
+    let (machines, states) = tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, async {
+        tokio::try_join!(replicated.machines(), admin.membership_states())
+    })
+    .await
+    .map_err(|_| {
+        CorrosionError::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Internal DNS membership sample timed out",
+        ))
+    })??;
+    let states = membership_states_by_address(states);
+    Ok(
+        synthesize_membership(machines.observations, local_id, &states)
+            .into_iter()
+            .filter_map(|observation| {
+                (observation.membership == MembershipObservation::Down)
+                    .then_some(observation.machine.id)
+            })
+            .collect(),
+    )
 }
 
 fn configured_upstreams(

@@ -21,7 +21,7 @@ use tokio::sync::watch;
 
 use super::{LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 use crate::{
-    corrosion::{AdminClient, MembershipState, ReplicatedStore},
+    corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
     network::{
         NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device,
@@ -675,18 +675,6 @@ fn rtts_by_machine(
                 .get(&observation.address.ip())
                 .copied()
                 .map(|id| (id, observation.statistics.clone()))
-        })
-        .collect()
-}
-
-fn membership_states_by_address(
-    states: impl IntoIterator<Item = MembershipState>,
-) -> BTreeMap<ManagementAddress, MembershipObservation> {
-    states
-        .into_iter()
-        .filter_map(|state| match state.address.ip() {
-            IpAddr::V6(address) => Some((ManagementAddress(address), state.membership)),
-            IpAddr::V4(_) => None,
         })
         .collect()
 }
