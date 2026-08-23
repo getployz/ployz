@@ -216,6 +216,10 @@ pub(crate) struct Subscription {
 }
 
 impl Subscription {
+    pub(crate) fn snapshot_in_progress(&self) -> bool {
+        self.snapshot_in_progress
+    }
+
     pub(crate) async fn changed(&mut self) -> Result<(), Error> {
         if self.snapshot_in_progress {
             return self.finish_snapshot().await;
