@@ -187,18 +187,45 @@ require_host_root_reserve() {
     fi
 }
 
+package_file_list_has_zfs_module() {
+    local kernel=$1
+    grep -F "/lib/modules/$kernel/" | grep -E '/zfs\.ko(\.[^/]*)?$' >/dev/null
+}
+
 ubuntu_zfs_module_package() {
-    local kernel=$1 package
+    local kernel=$1 package package_dir archive download_failure='' archive_failure=''
     for package in \
         "linux-main-modules-zfs-$kernel" \
         "linux-modules-zfs-$kernel" \
+        "linux-modules-$kernel" \
         "linux-modules-extra-$kernel"; do
-        if apt-cache show "$package" >/dev/null 2>&1; then
+        apt-cache show "$package" >/dev/null 2>&1 || continue
+        if dpkg-query -L "$package" 2>/dev/null | package_file_list_has_zfs_module "$kernel"; then
             printf '%s\n' "$package"
             return
         fi
+        package_dir=$(mktemp -d)
+        if (cd "$package_dir" && run_with_apt_lock_wait apt-get download "$package" >/dev/null); then
+            archive=$(find "$package_dir" -maxdepth 1 -type f -name '*.deb' -print -quit)
+            if [ -z "$archive" ] || ! dpkg-deb -c "$archive" > "$package_dir/files"; then
+                archive_failure=$package
+            elif package_file_list_has_zfs_module "$kernel" < "$package_dir/files"; then
+                rm -rf "$package_dir"
+                printf '%s\n' "$package"
+                return
+            fi
+        else
+            download_failure=$package
+        fi
+        rm -rf "$package_dir"
     done
-    return 1
+    if [ -n "$archive_failure" ]; then
+        error "Could not inspect downloaded running-kernel module package $archive_failure for ZFS support"
+    fi
+    if [ -n "$download_failure" ]; then
+        error "Could not download running-kernel module package $download_failure to inspect it for ZFS support"
+    fi
+    error "Ubuntu has no packaged ZFS module for the running kernel $kernel; install a supported Ubuntu kernel and retry"
 }
 
 install_zfs_packages_ubuntu() {
@@ -206,12 +233,13 @@ install_zfs_packages_ubuntu() {
     if ! run_with_apt_lock_wait apt-get update -qq >/dev/null; then
         error "Could not refresh Ubuntu packages needed for ZFS"
     fi
-    module_package=$(ubuntu_zfs_module_package "$kernel") || \
-        error "Ubuntu has no packaged ZFS module for the running kernel $kernel; install a supported Ubuntu kernel and retry"
+    if ! module_package=$(ubuntu_zfs_module_package "$kernel"); then
+        return 1
+    fi
     if ! run_with_apt_lock_wait env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends zfsutils-linux "$module_package"; then
         error "Could not install zfsutils-linux and running-kernel module package $module_package"
     fi
-    if ! dpkg-query -L "$module_package" | grep -F "/lib/modules/$kernel/" | grep -Eq '/zfs\.ko(\.[^/]*)?$'; then
+    if ! dpkg-query -L "$module_package" | package_file_list_has_zfs_module "$kernel"; then
         error "Installed package $module_package does not supply the ZFS module for running kernel $kernel"
     fi
 }

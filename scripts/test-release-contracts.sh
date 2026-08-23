@@ -372,20 +372,54 @@ assert_eq "$(zfs_arc_max_for_memory_kib 524288)" 268435456
 assert_eq "$(zfs_arc_max_for_memory_kib 2097152)" 536870912
 assert_eq "$(zfs_arc_max_for_memory_kib 8388608)" 1073741824
 
-zfs_package_log=$(mktemp)
-(
-    run_with_apt_lock_wait() { printf '%s\n' "$*" >> "$zfs_package_log"; }
-    function apt-cache {
-        [ "$1" = show ] && [ "$2" = linux-modules-extra-6.8.0-1008-azure ]
-    }
-    function dpkg-query {
-        printf '%s\n' /lib/modules/6.8.0-1008-azure/kernel/fs/zfs/zfs.ko.zst
-    }
-    install_zfs_packages_ubuntu 6.8.0-1008-azure
-)
-assert_contains "$zfs_package_log" "apt-get update -qq"
-assert_contains "$zfs_package_log" "zfsutils-linux linux-modules-extra-6.8.0-1008-azure"
-rm -f "$zfs_package_log"
+assert_zfs_module_package() {
+    local kernel=$1 owner=$2 available installed package_log
+    shift 2
+    available=$(printf '%s\n' "$@")
+    installed=$(mktemp)
+    rm -f "$installed"
+    package_log=$(mktemp)
+    (
+        run_with_apt_lock_wait() {
+            printf '%s\n' "$*" >> "$package_log"
+            case "$*" in
+                'apt-get download '*) : > "${!#}.deb" ;;
+                *'apt-get install '*) printf '%s\n' "${!#}" > "$installed" ;;
+            esac
+        }
+        function apt-cache {
+            [ "$1" = show ] && printf '%s\n' "$available" | grep -Fxq "$2"
+        }
+        function dpkg-deb {
+            [ "$1" = -c ] && [ "${2##*/}" = "$owner.deb" ] && \
+                printf '%s\n' "./lib/modules/$kernel/kernel/fs/zfs/zfs.ko.zst"
+        }
+        function dpkg-query {
+            [ "$1" = -L ] && [ -e "$installed" ] && [ "$2" = "$owner" ] && \
+                printf '%s\n' "/lib/modules/$kernel/kernel/fs/zfs/zfs.ko.zst"
+        }
+        install_zfs_packages_ubuntu "$kernel"
+    )
+    assert_contains "$package_log" "apt-get update -qq"
+    assert_contains "$package_log" "zfsutils-linux $owner"
+    assert_eq "$(grep -Fc 'apt-get install' "$package_log")" 1
+    rm -f "$installed" "$package_log"
+}
+
+assert_zfs_module_package 6.8.12-mainline \
+    linux-main-modules-zfs-6.8.12-mainline \
+    linux-main-modules-zfs-6.8.12-mainline
+assert_zfs_module_package 6.8.0-1008-azure \
+    linux-modules-zfs-6.8.0-1008-azure \
+    linux-modules-zfs-6.8.0-1008-azure
+assert_zfs_module_package 6.8.0-1008-aws \
+    linux-modules-extra-6.8.0-1008-aws \
+    linux-modules-extra-6.8.0-1008-aws
+assert_zfs_module_package 5.15.0-139-generic \
+    linux-modules-5.15.0-139-generic \
+    linux-main-modules-zfs-5.15.0-139-generic \
+    linux-modules-5.15.0-139-generic \
+    linux-modules-extra-5.15.0-139-generic
 
 if missing_kernel_error=$(
     (
@@ -399,6 +433,45 @@ if missing_kernel_error=$(
 fi
 printf '%s\n' "$missing_kernel_error" | grep -Fq \
     "no packaged ZFS module for the running kernel 6.8.0-unsupported"
+
+if module_download_error=$(
+    (
+        run_with_apt_lock_wait() {
+            [ "$1 $2" != 'apt-get download' ]
+        }
+        function apt-cache {
+            [ "$1" = show ] && [ "$2" = linux-modules-extra-6.8.0-download-failure ]
+        }
+        function dpkg-query { return 1; }
+        install_zfs_packages_ubuntu 6.8.0-download-failure
+    ) 2>&1
+); then
+    echo "installer hid a ZFS module package download failure" >&2
+    exit 1
+fi
+printf '%s\n' "$module_download_error" | grep -Fq \
+    "Could not download running-kernel module package linux-modules-extra-6.8.0-download-failure to inspect it for ZFS support"
+
+if module_archive_error=$(
+    (
+        run_with_apt_lock_wait() {
+            if [ "$1 $2" = 'apt-get download' ]; then
+                : > "$3.deb"
+            fi
+        }
+        function apt-cache {
+            [ "$1" = show ] && [ "$2" = linux-modules-extra-6.8.0-archive-failure ]
+        }
+        function dpkg-query { return 1; }
+        function dpkg-deb { return 2; }
+        install_zfs_packages_ubuntu 6.8.0-archive-failure
+    ) 2>&1
+); then
+    echo "installer hid a ZFS module package archive inspection failure" >&2
+    exit 1
+fi
+printf '%s\n' "$module_archive_error" | grep -Fq \
+    "Could not inspect downloaded running-kernel module package linux-modules-extra-6.8.0-archive-failure for ZFS support"
 
 assert_eq "$PLOYZ_STORAGE" none
 storage_selection_log=$(mktemp)
