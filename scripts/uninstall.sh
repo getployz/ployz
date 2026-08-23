@@ -39,14 +39,7 @@ main() {
         return
     fi
 
-    systemctl stop ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
-    systemctl disable ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
-    rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
-        "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
-        "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service"
-    systemctl daemon-reload
-
-    rm -f "$INSTALL_BIN_DIR/ployzd"
+    systemctl stop ployz.service 2>/dev/null || true
     if command -v docker >/dev/null 2>&1; then
         readarray -t containers < <(docker ps -aq --filter label=ployz.managed)
         if [ "${#containers[@]}" -gt 0 ]; then
@@ -61,6 +54,15 @@ main() {
             docker network rm "${network[@]}"
         fi
     fi
+
+    systemctl stop ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
+    systemctl disable ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
+    rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
+        "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
+        "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service"
+    systemctl daemon-reload
+    rm -f "$INSTALL_BIN_DIR/ployzd"
+
     if command -v ip >/dev/null 2>&1 && ip link show ployz >/dev/null 2>&1; then
         ip link delete ployz
     fi

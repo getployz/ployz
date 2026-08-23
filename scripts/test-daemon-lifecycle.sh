@@ -56,6 +56,12 @@ case "$*" in
     'ps -aq --filter label=ployz.managed') echo managed-container ;;
     'ps -aq --filter name=^/ployz-corrosion$') echo corrosion-container ;;
     'network ls -q --filter name=^ployz$') echo ployz-network ;;
+    'rm -f '*)
+        if grep -Eq '^systemctl stop .*ployz-volume-plugin\.(socket|service)' "$LOG" || [ ! -x "$INSTALL_BIN_DIR/ployzd" ]; then
+            echo "Docker could not unmount after volume plugin shutdown" >&2
+            exit 1
+        fi
+        ;;
 esac
 EOF
 cat > "$TMP/bin/systemctl" <<'EOF'
