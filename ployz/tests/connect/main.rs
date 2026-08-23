@@ -15,9 +15,10 @@ use ployz::{
     operator::open_machine_logs,
 };
 use ployz_core::{
-    CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId,
-    DockerVolumeName, LogsOptions, MachineId, MachineRpcServer, MembershipObservation,
-    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
+    CapabilityName, ContainerKind, ContainerRuntimeObservation, ContractDescription,
+    DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
+    LogsOptions, MachineId, MachineRpcServer, MembershipObservation, PROJECT_NAME_LABEL,
+    PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
 };
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, UnixListener};
@@ -285,11 +286,49 @@ async fn volume_listing_retains_successes_and_target_failures() {
 #[tokio::test]
 async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let mut service = DiscoveryService::new(test_description());
-    service
-        .listed_containers
-        .lock()
-        .unwrap()
-        .push(listing_container());
+    service.listed_containers.lock().unwrap().extend([
+        listing_container(
+            'c',
+            'c',
+            "api",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+        ),
+        listing_container(
+            'd',
+            'd',
+            "worker",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            },
+        ),
+        listing_container(
+            'e',
+            'd',
+            "worker",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Starting,
+            },
+        ),
+        listing_container(
+            'f',
+            'd',
+            "worker",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Exited { code: 1 },
+        ),
+        listing_container(
+            '0',
+            'd',
+            "worker",
+            ContainerKind::PreDeployHook,
+            ContainerRuntimeObservation::Exited { code: 0 },
+        ),
+    ]);
     service.listed_volumes.lock().unwrap().insert(
         machine_id('a'),
         vec![DockerVolume {
@@ -346,19 +385,21 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let service_id = "c".repeat(32);
     let container_id = "c".repeat(64);
     let machine_id = "a".repeat(32);
+    let services = format!(
+        "SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1/1\t0\n{}\tapp/worker\t2/3\t1\n",
+        "d".repeat(32)
+    );
     let human_cases = [
-        (
-            &["ls"][..],
-            format!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1\t0\n"),
-        ),
-        (
-            &["service", "ls"][..],
-            format!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1\t0\n"),
-        ),
+        (&["ls"][..], services.clone()),
+        (&["service", "ls"][..], services),
         (
             &["ps"][..],
             format!(
-                "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\tRunning {{ health: Healthy }}\n"
+                "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\tRunning {{ health: Healthy }}\n{}\tapp/worker\tPreDeployHook\t{machine_id}\tExited {{ code: 0 }}\n{}\tapp/worker\tServiceContainer\t{machine_id}\tRunning {{ health: Unhealthy }}\n{}\tapp/worker\tServiceContainer\t{machine_id}\tRunning {{ health: Starting }}\n{}\tapp/worker\tServiceContainer\t{machine_id}\tExited {{ code: 1 }}\n",
+                "0".repeat(64),
+                "d".repeat(64),
+                "e".repeat(64),
+                "f".repeat(64)
             ),
         ),
         (
@@ -367,7 +408,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         ),
         (
             &["project", "ls"][..],
-            "PROJECT\tSERVICES\tVOLUMES\napp\t1\t1\n".into(),
+            "PROJECT\tSERVICES\tVOLUMES\napp\t2\t1\n".into(),
         ),
     ];
     for (args, expected) in human_cases {
@@ -395,21 +436,25 @@ async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process
         .unwrap()
 }
 
-fn listing_container() -> ployz_core::ContainerObservation {
-    let service_id = ployz_core::ServiceId::parse("c".repeat(32)).unwrap();
-    let service_name = ployz_core::ServiceName::parse("api").unwrap();
+fn listing_container(
+    container_hex: char,
+    service_hex: char,
+    name: &str,
+    kind: ContainerKind,
+    runtime: ContainerRuntimeObservation,
+) -> ployz_core::ContainerObservation {
+    let service_id = ployz_core::ServiceId::parse(service_hex.to_string().repeat(32)).unwrap();
+    let service_name = ployz_core::ServiceName::parse(name).unwrap();
     ployz_core::ContainerObservation {
-        container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
-        display_name: "api-1".into(),
+        container_id: ployz_core::ContainerId::parse(container_hex.to_string().repeat(64)).unwrap(),
+        display_name: format!("{name}-{container_hex}"),
         created_at_unix_nanos: 1,
         machine_id: machine_id('a'),
         project_name: ployz_core::ProjectName::parse("app").unwrap(),
         service_id,
         service_name: service_name.clone(),
-        kind: ployz_core::ContainerKind::ServiceContainer,
-        runtime: ployz_core::ContainerRuntimeObservation::Running {
-            health: ployz_core::HealthObservation::Healthy,
-        },
+        kind,
+        runtime,
         effective_healthcheck: None,
         resolved_spec: serde_json::from_value(json!({
             "service_id": service_id,

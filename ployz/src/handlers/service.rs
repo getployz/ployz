@@ -29,9 +29,19 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
                 println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
                 for service in services {
                     println!(
-                        "{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}/{}\t{}",
                         service.service_id,
                         service.identity,
+                        service
+                            .containers
+                            .iter()
+                            .filter(|container| {
+                                matches!(
+                                    container.as_observation().runtime,
+                                    ContainerRuntimeObservation::Running { .. }
+                                )
+                            })
+                            .count(),
                         service.containers.len(),
                         service.hook_containers.len()
                     );
