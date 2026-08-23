@@ -211,7 +211,7 @@ pub enum MachineStorageObservation {
     Stateless,
     /// ZFS is usable and no Machine Pool is imported.
     Ready,
-    /// At least one Machine Pool is imported.
+    /// Exactly one writable `ONLINE` or `DEGRADED` Machine Pool is imported.
     Pool,
 }
 

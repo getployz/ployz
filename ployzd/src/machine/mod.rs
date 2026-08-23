@@ -20,6 +20,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::machine_pool;
 use crate::network::WireGuardPrivateKey;
 use crate::network::{allocate_machine_subnet, management_address};
 
@@ -599,14 +600,15 @@ pub fn local_runtime() -> MachineRuntime {
 async fn local_storage(program: &Path, timeout: Duration) -> Option<MachineStorageObservation> {
     let mut command = tokio::process::Command::new(program);
     command
-        .args(["list", "-H", "-o", "name"])
+        .args(["list", "-Hp", "-o", "name,health,readonly"])
         .kill_on_drop(true);
     match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) if output.status.success() => {
-            if output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()) {
-                Some(MachineStorageObservation::Pool)
-            } else {
-                Some(MachineStorageObservation::Ready)
+            let output = String::from_utf8(output.stdout).ok()?;
+            match machine_pool::one_usable(&output) {
+                Ok(Some(_)) => Some(MachineStorageObservation::Pool),
+                Ok(None) => Some(MachineStorageObservation::Ready),
+                Err(_) => None,
             }
         }
         Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => {
@@ -789,12 +791,18 @@ mod tests {
         for (script, expected) in [
             ("#!/bin/sh\nexit 1\n", None),
             (
-                "#!/bin/sh\nprintf 'ployz\\n'\n",
+                "#!/bin/sh\nprintf 'tank\\tONLINE\\toff\\n'\n",
                 Some(MachineStorageObservation::Pool),
             ),
             (
                 "#!/bin/sh\nexit 0\n",
                 Some(MachineStorageObservation::Ready),
+            ),
+            ("#!/bin/sh\nprintf 'tank\\tONLINE\\ton\\n'\n", None),
+            ("#!/bin/sh\nprintf 'tank\\tFAULTED\\toff\\n'\n", None),
+            (
+                "#!/bin/sh\nprintf 'alpha\\tONLINE\\toff\\nbeta\\tDEGRADED\\toff\\n'\n",
+                None,
             ),
         ] {
             fs::write(&program, script).unwrap();

@@ -14,6 +14,8 @@ pub mod filesystem;
 mod hosted_dns;
 pub mod logs;
 pub mod machine;
+#[doc(hidden)]
+pub mod machine_pool;
 pub mod metrics;
 pub mod network;
 pub mod proxy;

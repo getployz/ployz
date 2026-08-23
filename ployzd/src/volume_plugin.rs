@@ -6,6 +6,7 @@ use std::{
 };
 
 use axum::{Json, Router, extract::State, routing::post};
+use ployzd::machine_pool::{self, MachinePool};
 use serde::{Deserialize, Serialize};
 use tokio::{net::UnixListener, process::Command, sync::Mutex};
 
@@ -88,7 +89,7 @@ impl VolumeStorage {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
-        let root = format!("{}/{DATASET_ROOT}", pool.name);
+        let root = format!("{}/{DATASET_ROOT}", pool.name());
         let volume = format!("{root}/{name}");
 
         if let Some(dataset) = datasets.iter().find(|dataset| dataset.name == root) {
@@ -110,8 +111,13 @@ impl VolumeStorage {
 
         let available = datasets
             .iter()
-            .find(|dataset| dataset.name == pool.name)
-            .ok_or_else(|| format!("ZFS did not report the root dataset for Pool {}", pool.name))?
+            .find(|dataset| dataset.name == pool.name())
+            .ok_or_else(|| {
+                format!(
+                    "ZFS did not report the root dataset for Pool {}",
+                    pool.name()
+                )
+            })?
             .available;
         let outstanding = datasets
             .iter()
@@ -125,7 +131,7 @@ impl VolumeStorage {
         if requested > uncommitted {
             return Err(format!(
                 "Pool {} has {uncommitted} uncommitted bytes but Volume {name} requires {requested}; grow the Machine Pool before retrying (automatic growth is tracked by #548)",
-                pool.name
+                pool.name()
             )
             .into());
         }
@@ -149,7 +155,7 @@ impl VolumeStorage {
     async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
-        let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name);
+        let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name());
         let expected_mountpoint = name.mountpoint();
         let mut dataset = self
             .datasets(&pool)
@@ -174,34 +180,17 @@ impl VolumeStorage {
         Ok(dataset.mountpoint)
     }
 
-    async fn one_pool(&self) -> Result<Pool> {
+    async fn one_pool(&self) -> Result<MachinePool> {
         let output =
             checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
-        let mut pools = Vec::new();
-        for line in output.lines() {
-            if let Some(pool) = Pool::parse(line)? {
-                pools.push(pool);
-            }
-        }
-        match pools.as_slice() {
-            [pool] => Ok(pool.clone()),
-            [] => Err(
-                "no usable existing Machine Pool; automatic Pool creation is tracked by #541"
-                    .into(),
-            ),
-            _ => Err(format!(
-                "multiple usable Machine Pools ({}) are ambiguous; Ployz will not choose one",
-                pools
-                    .iter()
-                    .map(|pool| pool.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-            .into()),
-        }
+        machine_pool::one_usable(&output)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "no usable existing Machine Pool; automatic Pool creation is tracked by #541".into()
+            })
     }
 
-    async fn datasets(&self, pool: &Pool) -> Result<Vec<Dataset>> {
+    async fn datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
         let output = self
             .zfs(&[
                 "list",
@@ -209,48 +198,17 @@ impl VolumeStorage {
                 "-o",
                 "name,refquota,referenced,available,mountpoint,mounted",
                 "-r",
-                &pool.name,
+                pool.name(),
             ])
             .await?;
         output
             .lines()
-            .map(|line| Dataset::parse(line, &pool.name))
+            .map(|line| Dataset::parse(line, pool.name()))
             .collect()
     }
 
     async fn zfs(&self, args: &[&str]) -> Result<String> {
         checked_command(&self.zfs, args).await
-    }
-}
-
-#[derive(Clone)]
-struct Pool {
-    name: String,
-}
-
-impl Pool {
-    fn parse(line: &str) -> Result<Option<Self>> {
-        let mut fields = line.split('\t');
-        let invalid = || format!("invalid ZFS Pool output: {line}");
-        let (Some(name), Some(health), Some(readonly), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return Err(invalid().into());
-        };
-        if name.is_empty()
-            || !matches!(
-                health,
-                "ONLINE" | "DEGRADED" | "FAULTED" | "OFFLINE" | "REMOVED" | "UNAVAIL" | "SUSPENDED"
-            )
-            || !matches!(readonly, "on" | "off")
-        {
-            return Err(invalid().into());
-        }
-        Ok(
-            (matches!(health, "ONLINE" | "DEGRADED") && readonly == "off").then(|| Self {
-                name: name.to_owned(),
-            }),
-        )
     }
 }
 
@@ -779,23 +737,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_never_chooses_among_multiple_pools() {
-        let test = TestDir::new();
-        let (zpool, zfs) = fake_zfs(&test.0, "alpha\tONLINE\toff\nbeta\tDEGRADED\toff\n");
-        let socket = test.0.join("plugin.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+    async fn create_uses_the_same_pool_eligibility_cases_as_observation() {
+        for (pools, expected_error) in [
+            ("", Some("no usable existing Machine Pool")),
+            ("tank\tONLINE\toff\n", None),
+            (
+                "tank\tONLINE\ton\n",
+                Some("no usable existing Machine Pool"),
+            ),
+            (
+                "tank\tFAULTED\toff\n",
+                Some("no usable existing Machine Pool"),
+            ),
+            (
+                "alpha\tONLINE\toff\nbeta\tDEGRADED\toff\n",
+                Some("multiple usable Machine Pools"),
+            ),
+        ] {
+            let test = TestDir::new();
+            let (zpool, zfs) = fake_zfs(&test.0, pools);
+            let socket = test.0.join("plugin.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
 
-        let response = post(
-            &socket,
-            "/VolumeDriver.Create",
-            json!({"Name":"data","Opts":{"size":"1g"}}),
-        )
-        .await;
-        let message = error(&response);
-        assert!(message.contains("multiple usable Machine Pools"));
-        assert!(message.contains("alpha") && message.contains("beta"));
-        server.abort();
+            let response = post(
+                &socket,
+                "/VolumeDriver.Create",
+                json!({"Name":"data","Opts":{"size":"1g"}}),
+            )
+            .await;
+            match expected_error {
+                Some(expected) => assert!(error(&response).contains(expected)),
+                None => assert_eq!(error(&response), ""),
+            }
+            server.abort();
+        }
     }
 
     #[tokio::test]
