@@ -790,7 +790,7 @@ async fn join_places_observed_caddy_on_this_machine() {
 }
 
 #[tokio::test]
-async fn unreachable_peer_does_not_block_observed_caddy_catch_up() {
+async fn partial_peer_observation_is_silent_after_verified_caddy_catch_up() {
     let founder = founder_machine();
     let mut unreachable = founder.clone();
     unreachable.id = ployz_core::MachineId::parse("d".repeat(32)).unwrap();
@@ -833,7 +833,10 @@ async fn unreachable_peer_does_not_block_observed_caddy_catch_up() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("partial Service observations"));
+    assert!(
+        !String::from_utf8_lossy(&output.stderr)
+            .contains("Global catch-up used partial Service observations")
+    );
     assert_eq!(
         ensure_names(&daemon.ensure_requests()),
         [("ployz-system", "caddy")]
