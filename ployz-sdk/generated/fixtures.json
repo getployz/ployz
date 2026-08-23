@@ -519,7 +519,8 @@
       "hostname": "",
       "kernel_version": "",
       "os_pretty_name": ""
-    }
+    },
+    "storage": "zfs"
   },
   "registered": {
     "assigned_machine": {

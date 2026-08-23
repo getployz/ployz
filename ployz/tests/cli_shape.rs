@@ -111,6 +111,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "images-json-output".to_owned(),
             "local-machine-init-stub".to_owned(),
             "listing-json-output".to_owned(),
+            "machine-enrollment-storage".to_owned(),
             "machine-remove-named-data-loss".to_owned(),
             "machine-inspect-telemetry".to_owned(),
             "native-completion".to_owned(),
@@ -203,6 +204,20 @@ fn reference_shape(
     }
     if command_path == "ployz machine rm" && deviations.contains("machine-remove-named-data-loss") {
         flags.get_mut("yes").expect("machine rm has --yes").env = Some("PLOYZ_AUTO_CONFIRM".into());
+    }
+    if matches!(
+        command_path.as_str(),
+        "ployz machine add" | "ployz machine init"
+    ) && deviations.contains("machine-enrollment-storage")
+    {
+        flags.insert(
+            "storage".into(),
+            Flag {
+                short: None,
+                default: None,
+                env: None,
+            },
+        );
     }
     if matches!(command_path.as_str(), "ployz images" | "ployz image ls")
         && deviations.contains("images-json-output")

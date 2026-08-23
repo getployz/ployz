@@ -66,6 +66,8 @@ export type PidMode = string;
 
 export type PullPolicy = "always" | "missing" | "never";
 
+export type StorageChoice = "none" | "zfs";
+
 export type UpdateOrder = "start_first" | "stop_first";
 
 export type HttpProtocol = "http" | "https";
@@ -507,6 +509,7 @@ export type Machine = Additive<{
 
 export type RegisterRequest = Additive<{
   name: MachineName;
+  storage: StorageChoice;
   public_key: WireGuardPublicKey;
   public_ip?: string;
   advertised_endpoints: AdvertisedEndpoint[];

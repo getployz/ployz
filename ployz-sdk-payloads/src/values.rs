@@ -26,7 +26,7 @@ use ployz_core::{
     RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
     RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint, ServiceAttempt,
     ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StorageChoice,
     TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver,
     VolumeSource, WireGuardPublicKey,
 };
@@ -560,6 +560,13 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                 to_value(&PullPolicy::Always),
                 to_value(&PullPolicy::Missing),
                 to_value(&PullPolicy::Never),
+            ],
+        ),
+        (
+            "StorageChoice",
+            vec![
+                to_value(&StorageChoice::None),
+                to_value(&StorageChoice::Zfs),
             ],
         ),
         (
@@ -1201,6 +1208,7 @@ fn cluster_teardown() -> ClusterTeardown {
 fn register_request() -> RegisterRequest {
     RegisterRequest {
         name: MachineName::parse("joiner").expect("fixture Machine Name is valid"),
+        storage: StorageChoice::Zfs,
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(endpoint())],

@@ -55,6 +55,7 @@ async function expectRpc(fn, code) {
 function joinerIdentity() {
   return {
     name: "joiner",
+    storage: "zfs",
     public_key: Array(32).fill(1),
     advertised_endpoints: ["192.0.2.9:51820"],
   };
@@ -121,6 +122,14 @@ function joinerIdentity() {
   );
   await expectRpc(
     () => sdk.register(relayUrl, bearer, pairing, machineId, { not: "RegisterRequest" }),
+    "invalid_argument",
+  );
+  await expectRpc(
+    () =>
+      sdk.register(relayUrl, bearer, pairing, machineId, {
+        ...joinerIdentity(),
+        storage: "other",
+      }),
     "invalid_argument",
   );
 

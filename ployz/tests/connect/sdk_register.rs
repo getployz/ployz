@@ -5,7 +5,7 @@ use std::{path::PathBuf, process::Command, time::Duration};
 use ployz::sdk;
 use ployz_core::{
     AdvertisedEndpoint, MachineId, MachineName, RegisterRequest, RpcError, RpcErrorCode,
-    WireGuardPublicKey,
+    StorageChoice, WireGuardPublicKey,
 };
 use tokio::time::timeout;
 
@@ -257,6 +257,7 @@ async fn wait_held(url: &str, machine_id: MachineId) -> MachineId {
 fn joiner_identity() -> RegisterRequest {
     RegisterRequest {
         name: MachineName::parse("joiner").unwrap(),
+        storage: StorageChoice::Zfs,
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],

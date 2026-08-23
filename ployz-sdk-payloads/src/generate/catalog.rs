@@ -57,6 +57,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         "PullPolicy",
         Shape::ClosedString(&["always", "missing", "never"]),
     ),
+    ("StorageChoice", Shape::ClosedString(&["none", "zfs"])),
     (
         "UpdateOrder",
         Shape::ClosedString(&["start_first", "stop_first"]),
@@ -986,6 +987,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             params: "",
             fields: &[
                 ("name", "MachineName"),
+                ("storage", "StorageChoice"),
                 ("public_key", "WireGuardPublicKey"),
                 ("public_ip", "string?"),
                 ("advertised_endpoints", "AdvertisedEndpoint[]"),

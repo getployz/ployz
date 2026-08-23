@@ -56,6 +56,7 @@ impl Cluster {
                 .register(
                     op::Register::into_request(RegisterRequest {
                         name: MachineName::parse(name)?,
+                        storage: ployz_core::StorageChoice::None,
                         public_key: token.public_key,
                         public_ip: token.public_ip,
                         advertised_endpoints: token.advertised_endpoints,

@@ -874,6 +874,7 @@ fn unreachable_allocator(id: MachineId) -> Machine {
 fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
     RegisterRequest {
         name: MachineName::parse(name).unwrap(),
+        storage: ployz_core::StorageChoice::None,
         public_key,
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],

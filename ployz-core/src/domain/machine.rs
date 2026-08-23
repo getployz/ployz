@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     net::{IpAddr, SocketAddr},
+    str::FromStr,
 };
 
 use ipnet::IpNet;
@@ -55,6 +57,53 @@ pub struct MachineRuntime {
     pub architecture: String,
     pub os_pretty_name: String,
     pub kernel_version: String,
+}
+
+/// Storage preparation requested while enrolling one Machine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageChoice {
+    None,
+    Zfs,
+}
+
+impl StorageChoice {
+    /// Parse an installer storage choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] unless `value` is `none` or `zfs`.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        match value {
+            "none" => Ok(Self::None),
+            "zfs" => Ok(Self::Zfs),
+            _ => Err(ValueError::new("Storage Choice", value, "none or zfs")),
+        }
+    }
+
+    /// Installer environment spelling for this choice.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Zfs => "zfs",
+        }
+    }
+}
+
+impl fmt::Display for StorageChoice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for StorageChoice {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

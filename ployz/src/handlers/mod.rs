@@ -368,6 +368,42 @@ mod tests {
     }
 
     #[test]
+    fn machine_enrollment_accepts_only_supported_storage_choices() {
+        for command in ["add", "init"] {
+            for storage in ["none", "zfs"] {
+                let parsed = crate::cli::command()
+                    .try_get_matches_from([
+                        "ployz",
+                        "machine",
+                        command,
+                        "root@example.test",
+                        "--storage",
+                        storage,
+                    ])
+                    .unwrap();
+                assert_eq!(
+                    leaf_matches(&parsed)
+                        .get_one::<ployz_core::StorageChoice>("storage")
+                        .map(|choice| choice.as_str()),
+                    Some(storage),
+                );
+            }
+            assert!(
+                crate::cli::command()
+                    .try_get_matches_from([
+                        "ployz",
+                        "machine",
+                        command,
+                        "root@example.test",
+                        "--storage",
+                        "other",
+                    ])
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn cloud_enroll_takes_a_positional_token() {
         assert!(
             crate::cli::command()

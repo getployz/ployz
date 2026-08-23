@@ -1,7 +1,12 @@
-use std::{io, path::PathBuf, process::Command};
+use std::{
+    io::{self, IsTerminal, Write},
+    path::PathBuf,
+    process::Command,
+};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::ArgMatches;
+use ployz_core::StorageChoice;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -30,6 +35,52 @@ pub enum ProvisionError {
     InstallFailed { status: std::process::ExitStatus },
     #[error("run this command with sudo")]
     NotRoot,
+    #[error("read storage choice: {0}")]
+    StorageInput(#[source] io::Error),
+    #[error(transparent)]
+    StorageChoice(#[from] ployz_core::ValueError),
+    #[error("zfs storage preparation requires the installer; remove --no-install")]
+    ZfsWithoutInstaller,
+}
+
+/// Resolve Machine storage preparation once before provisioning or enrollment.
+pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, ProvisionError> {
+    let storage = match matches.get_one::<StorageChoice>("storage").copied() {
+        Some(storage) => storage,
+        None if matches.get_flag("yes")
+            || !io::stdin().is_terminal()
+            || !io::stdout().is_terminal() =>
+        {
+            StorageChoice::None
+        }
+        None => {
+            print!(
+                "Storage preparation [zfs/none] (none keeps this Machine currently stateless): "
+            );
+            io::stdout().flush().map_err(ProvisionError::StorageInput)?;
+            let mut answer = String::new();
+            io::stdin()
+                .read_line(&mut answer)
+                .map_err(ProvisionError::StorageInput)?;
+            let answer = answer.trim();
+            if answer.is_empty() {
+                StorageChoice::None
+            } else {
+                StorageChoice::parse(answer)?
+            }
+        }
+    };
+    if storage == StorageChoice::Zfs && matches.get_flag("no-install") {
+        return Err(ProvisionError::ZfsWithoutInstaller);
+    }
+    announce_storage(storage);
+    Ok(storage)
+}
+
+pub(crate) fn announce_storage(storage: StorageChoice) {
+    if storage == StorageChoice::None {
+        println!("Storage: none — this Machine currently supports stateless workloads only.");
+    }
 }
 
 fn shell_quote(value: &str) -> String {
@@ -49,6 +100,7 @@ fn install_command(
     version: &str,
     group_user: Option<&str>,
     via_sudo: bool,
+    storage: StorageChoice,
 ) -> String {
     let script = shell_quote(script);
     let version = shell_quote(version);
@@ -56,7 +108,10 @@ fn install_command(
         .map(|user| format!("PLOYZ_GROUP_ADD_USER={} ", shell_quote(user)))
         .unwrap_or_default();
     let sudo = if via_sudo { "sudo " } else { "" };
-    format!("printf '%s' {script} | base64 -d | {sudo}{group}PLOYZ_VERSION={version} bash")
+    format!(
+        "printf '%s' {script} | base64 -d | {sudo}{group}PLOYZ_STORAGE={} PLOYZ_VERSION={version} bash",
+        shell_quote(storage.as_str())
+    )
 }
 
 fn installer_status(result: io::Result<std::process::ExitStatus>) -> Result<(), ProvisionError> {
@@ -116,7 +171,7 @@ fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError
     Ok((command, destination))
 }
 
-pub fn provision(matches: &ArgMatches) -> Result<(), ProvisionError> {
+pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), ProvisionError> {
     let (mut whoami, destination) = ssh_command(matches)?;
     let output = whoami
         .arg(&destination)
@@ -160,6 +215,7 @@ pub fn provision(matches: &ArgMatches) -> Result<(), ProvisionError> {
             version,
             via_sudo.then_some(user),
             via_sudo,
+            storage,
         )))
     );
     let (mut install, destination) = ssh_command(matches)?;
@@ -173,7 +229,7 @@ pub fn provision(matches: &ArgMatches) -> Result<(), ProvisionError> {
 /// Returns [`ProvisionError::NotRoot`] when this process is not root.
 /// Returns [`ProvisionError::Install`] when the installer cannot be spawned,
 /// or [`ProvisionError::InstallFailed`] when it exits non-zero.
-pub fn provision_local() -> Result<(), ProvisionError> {
+pub fn provision_local(storage: StorageChoice) -> Result<(), ProvisionError> {
     if !process_is_root() {
         return Err(ProvisionError::NotRoot);
     }
@@ -188,6 +244,7 @@ pub fn provision_local() -> Result<(), ProvisionError> {
                 env!("CARGO_PKG_VERSION"),
                 group_user.as_deref(),
                 false,
+                storage,
             )))
             .status(),
     )
@@ -205,21 +262,75 @@ pub(crate) fn process_is_root() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::StorageChoice;
 
     #[test]
     fn embedded_installer_command_preserves_root_sudo_and_local_group() {
         assert_eq!(
-            install_command("SCRIPT", "latest", None, false),
-            "printf '%s' 'SCRIPT' | base64 -d | PLOYZ_VERSION='latest' bash"
+            install_command("SCRIPT", "latest", None, false, StorageChoice::None),
+            "printf '%s' 'SCRIPT' | base64 -d | PLOYZ_STORAGE='none' PLOYZ_VERSION='latest' bash"
         );
         assert_eq!(
-            install_command("SCRIPT", "1.2.3", Some("deploy"), true),
-            "printf '%s' 'SCRIPT' | base64 -d | sudo PLOYZ_GROUP_ADD_USER='deploy' PLOYZ_VERSION='1.2.3' bash"
+            install_command("SCRIPT", "1.2.3", Some("deploy"), true, StorageChoice::Zfs,),
+            "printf '%s' 'SCRIPT' | base64 -d | sudo PLOYZ_GROUP_ADD_USER='deploy' PLOYZ_STORAGE='zfs' PLOYZ_VERSION='1.2.3' bash"
         );
         assert_eq!(
-            install_command("SCRIPT", "1.2.3", Some("nick"), false),
-            "printf '%s' 'SCRIPT' | base64 -d | PLOYZ_GROUP_ADD_USER='nick' PLOYZ_VERSION='1.2.3' bash"
+            install_command("SCRIPT", "1.2.3", Some("nick"), false, StorageChoice::None,),
+            "printf '%s' 'SCRIPT' | base64 -d | PLOYZ_GROUP_ADD_USER='nick' PLOYZ_STORAGE='none' PLOYZ_VERSION='1.2.3' bash"
         );
+    }
+
+    #[test]
+    fn storage_resolution_honors_explicit_and_safe_noninteractive_choices() {
+        assert_eq!(
+            storage_matches(["ployz", "machine", "add", "root@host", "--storage", "zfs"]),
+            StorageChoice::Zfs
+        );
+        assert_eq!(
+            storage_matches(["ployz", "machine", "init", "root@host", "--storage", "none"]),
+            StorageChoice::None
+        );
+        assert_eq!(
+            storage_matches(["ployz", "machine", "add", "root@host", "--yes"]),
+            StorageChoice::None
+        );
+    }
+
+    #[test]
+    fn zfs_requires_the_installer() {
+        let matches = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "machine",
+                "add",
+                "root@host",
+                "--storage",
+                "zfs",
+                "--no-install",
+            ])
+            .unwrap();
+        assert_eq!(
+            resolve_storage(
+                matches
+                    .subcommand_matches("machine")
+                    .unwrap()
+                    .subcommand_matches("add")
+                    .unwrap(),
+            )
+            .unwrap_err()
+            .to_string(),
+            "zfs storage preparation requires the installer; remove --no-install"
+        );
+    }
+
+    fn storage_matches<const N: usize>(args: [&str; N]) -> StorageChoice {
+        let matches = crate::cli::command().try_get_matches_from(args).unwrap();
+        let (_, matches) = matches
+            .subcommand_matches("machine")
+            .unwrap()
+            .subcommand()
+            .unwrap();
+        resolve_storage(matches).unwrap()
     }
 
     #[test]
@@ -227,6 +338,9 @@ mod tests {
         if process_is_root() {
             return;
         }
-        assert!(matches!(provision_local(), Err(ProvisionError::NotRoot)));
+        assert!(matches!(
+            provision_local(StorageChoice::None),
+            Err(ProvisionError::NotRoot)
+        ));
     }
 }

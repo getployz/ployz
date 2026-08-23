@@ -14,7 +14,7 @@ use crate::{
     ContainerObservation, DockerVolume, InspectTelemetry, LocalMachinePhase, Machine, MachineId,
     MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineToken,
     MachineUpdate, ProjectName, PublicIpDiscovery, ResolvedServiceSpec, RttObservation,
-    TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
+    StorageChoice, TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -243,6 +243,7 @@ pub struct InitializeRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RegisterRequest {
     pub name: MachineName,
+    pub storage: StorageChoice,
     pub public_key: WireGuardPublicKey,
     #[serde(default)]
     pub public_ip: Option<IpAddr>,

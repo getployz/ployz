@@ -157,7 +157,7 @@ One named thing an operation will destroy, carrying the identity that makes it u
 _Avoid_: warning, plan, operation
 
 **Machine Pool**:
-A ZFS storage budget on one Machine, chosen when that Machine joins and not addable afterwards. Provisioned Volumes live on it. Docker's data-root, image layers, and build cache do not.
+A ZFS storage budget on one storage-ready Machine. Provisioned Volumes live on it. Docker's data-root, image layers, and build cache do not.
 _Avoid_: Cluster pool, auto-created pool, dedicated disk, Machine ZFS Pool, ZFS-enabled cluster
 
 **Provisioned Volume**:

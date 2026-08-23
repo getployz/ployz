@@ -9,7 +9,7 @@ use ployz_core::{
     DockerVolume, ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname,
     LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
     RUNTIME_WATCH_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    RuntimeWatchTransportFrame, ServiceAttempt, UnconfirmedDataLoss, VolumeSource,
+    RuntimeWatchTransportFrame, ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -147,6 +147,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     let identity: ployz_core::RegisterRequest =
         decode_fixture(fixture(&fixtures, "register_request"));
     assert_eq!(identity.name.as_str(), "joiner");
+    assert_eq!(identity.storage, StorageChoice::Zfs);
     assert_eq!(
         serde_json::to_value(&identity).unwrap(),
         *fixture(&fixtures, "register_request")
@@ -510,7 +511,9 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("incomplete_ids: RuntimeWatchIncompleteIds"));
     assert!(dts.contains("hosted_dns_hostname?: string"));
     assert!(dts.contains("export type Machine = Additive<{"));
+    assert!(dts.contains("export type StorageChoice = \"none\" | \"zfs\";"));
     assert!(dts.contains("export type RegisterRequest = Additive<{"));
+    assert!(dts.contains("storage: StorageChoice"));
     assert!(dts.contains("public_key: WireGuardPublicKey"));
     assert!(dts.contains("export type Registered = Additive<{"));
     assert!(dts.contains("assigned_machine: Machine"));

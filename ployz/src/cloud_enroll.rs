@@ -4,7 +4,7 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
-    Registered, WireGuardPublicKey,
+    Registered, StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
@@ -74,6 +74,7 @@ impl EnrollIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Join {
     pub pairing: CloudPairing,
+    pub storage: StorageChoice,
     pub registration: Registered,
 }
 
@@ -81,15 +82,23 @@ pub(crate) struct Join {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Outcome {
     Join(Box<Join>),
-    Initialize { pairing: CloudPairing },
+    Initialize {
+        pairing: CloudPairing,
+        storage: StorageChoice,
+    },
 }
 
 /// One enroll POST body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Response {
     Join(Box<Join>),
-    Initialize { pairing: CloudPairing },
-    NotYet { retry_after: Duration },
+    Initialize {
+        pairing: CloudPairing,
+        storage: StorageChoice,
+    },
+    NotYet {
+        retry_after: Duration,
+    },
 }
 
 /// Cloud deploys ahead of installed CLIs, so unknown fields are ignored. A
@@ -99,6 +108,7 @@ pub(crate) enum Response {
 enum EnrollWire {
     Join {
         pairing: CloudPairing,
+        storage: StorageChoice,
         registration: Box<Registered>,
         #[serde(default)]
         dial: Option<serde::de::IgnoredAny>,
@@ -109,6 +119,7 @@ enum EnrollWire {
     },
     Initialize {
         pairing: CloudPairing,
+        storage: StorageChoice,
         #[serde(default)]
         dial: Option<serde::de::IgnoredAny>,
     },
@@ -155,7 +166,9 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
         match post_json(&http, url, identity).await {
             Ok(bytes) => match parse_enroll(&bytes)? {
                 Response::Join(join) => return Ok(Outcome::Join(join)),
-                Response::Initialize { pairing } => return Ok(Outcome::Initialize { pairing }),
+                Response::Initialize { pairing, storage } => {
+                    return Ok(Outcome::Initialize { pairing, storage });
+                }
                 Response::NotYet { retry_after } => tokio::time::sleep(retry_after).await,
             },
             Err(error) if error.is_transport() => {
@@ -224,10 +237,12 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
         }
         EnrollWire::Join {
             pairing,
+            storage,
             registration,
             dial: None,
         } => Ok(Response::Join(Box::new(Join {
             pairing,
+            storage,
             registration: *registration,
         }))),
         EnrollWire::NotYet { retry_after } => Ok(Response::NotYet {
@@ -235,8 +250,9 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
         }),
         EnrollWire::Initialize {
             pairing,
+            storage,
             dial: None,
-        } => Ok(Response::Initialize { pairing }),
+        } => Ok(Response::Initialize { pairing, storage }),
     }
 }
 
@@ -295,6 +311,7 @@ mod tests {
     fn join_payload_is_pairing_plus_registration() {
         let value = serde_json::json!({
             "kind": "join",
+            "storage": "zfs",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
@@ -307,6 +324,7 @@ mod tests {
             panic!("expected join");
         };
         assert_eq!(join.pairing, pairing());
+        assert_eq!(join.storage, ployz_core::StorageChoice::Zfs);
         assert_eq!(join.registration, registration());
     }
 
@@ -314,6 +332,7 @@ mod tests {
     fn pairing_with_a_dial_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "join",
+            "storage": "none",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
@@ -329,6 +348,7 @@ mod tests {
     fn top_level_dial_is_rejected() {
         let value = serde_json::json!({
             "kind": "join",
+            "storage": "none",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
@@ -344,12 +364,13 @@ mod tests {
     fn initialize_payload_is_cloud_pairing() {
         let value = serde_json::json!({
             "kind": "initialize",
+            "storage": "none",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
         });
-        let Response::Initialize { pairing: got } =
+        let Response::Initialize { pairing: got, .. } =
             parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
         else {
             panic!("expected initialize");
@@ -361,6 +382,7 @@ mod tests {
     fn initialize_pairing_with_a_dial_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "initialize",
+            "storage": "none",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
@@ -369,6 +391,15 @@ mod tests {
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
         assert!(error.to_string().contains("Dial Credential"), "{error}");
+    }
+
+    #[test]
+    fn enrollment_requires_cloud_to_choose_storage() {
+        let error = parse_enroll(
+            br#"{"kind":"initialize","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("storage"), "{error}");
     }
 
     #[test]
@@ -403,8 +434,8 @@ mod tests {
 
     #[test]
     fn initialize_ignores_fields_the_cloud_adds_later() {
-        let Response::Initialize { pairing: parsed } = parse_enroll(
-            br#"{"kind":"initialize","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret","privateRelayUrl":"http://relay.internal"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#,
+        let Response::Initialize { pairing: parsed, .. } = parse_enroll(
+            br#"{"kind":"initialize","storage":"none","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret","privateRelayUrl":"http://relay.internal"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#,
         )
         .unwrap() else {
             panic!("expected initialize");
@@ -427,6 +458,7 @@ mod tests {
     fn join_body() -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "kind": "join",
+            "storage": "none",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",

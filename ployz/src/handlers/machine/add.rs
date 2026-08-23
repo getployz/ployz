@@ -26,8 +26,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let token_request = helpers::token_request(matches)?;
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
+    let storage = crate::provisioning::resolve_storage(matches)?;
     if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches)?;
+        crate::provisioning::provision(matches, storage)?;
     }
 
     let assigned = runtime()?.block_on(async {
@@ -64,6 +65,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             .call::<op::Register>(
                 RegisterRequest {
                     name,
+                    storage,
                     public_key: token.public_key,
                     public_ip: token.public_ip,
                     advertised_endpoints: token.advertised_endpoints,

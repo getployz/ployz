@@ -348,6 +348,11 @@ fn provisioning_flags(command: Command) -> Command {
         .arg(value("name", Some('n')))
         .arg(switch("no-caddy", None))
         .arg(switch("no-install", None))
+        .arg(
+            value("storage", None)
+                .value_parser(clap::value_parser!(ployz_core::StorageChoice))
+                .help("Prepare ZFS storage or keep this Machine currently stateless"),
+        )
         .arg(value("public-ip", None).default_value("auto"))
         .arg(
             value("ssh-key", Some('i'))

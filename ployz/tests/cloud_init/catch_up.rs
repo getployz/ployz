@@ -91,6 +91,7 @@ async fn cloud_join(target_failures: usize, ensure_failures: usize) -> (Output, 
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
+        "storage": "none",
         "pairing": pairing,
         "registration": registration,
     }))

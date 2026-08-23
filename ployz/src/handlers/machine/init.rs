@@ -52,8 +52,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .map_err(|error| Error::usage(format!("invalid Cluster network: {error}")))?;
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
+    let storage = crate::provisioning::resolve_storage(matches)?;
     if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches)?;
+        crate::provisioning::provision(matches, storage)?;
     }
 
     let (machine, connection) = runtime()?.block_on(async {
