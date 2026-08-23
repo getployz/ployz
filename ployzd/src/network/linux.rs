@@ -18,8 +18,8 @@ use defguard_wireguard_rs::{
 };
 use ipnet::IpNet;
 use ployz_core::{
-    LocalMachinePhase, Machine, MachineId, SelectedEndpoint, WireGuardDevice, WireGuardPeer,
-    WireGuardPublicKey,
+    DOCKER_NETWORK_CONFLICT_RECOVERY, LocalMachinePhase, Machine, MachineId, SelectedEndpoint,
+    WireGuardDevice, WireGuardPeer, WireGuardPublicKey,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -519,7 +519,7 @@ fn docker_network_conflict(
             "name={DOCKER_NETWORK_NAME}, driver=bridge, scope=local, label={DOCKER_NETWORK_MANAGED_LABEL}=\"\", subnet={subnet}, gateway={gateway}, options={required_options:?}"
         ),
         observed: format!("{network:?}"),
-        recovery: "run `systemctl stop ployz`; run `docker network inspect ployz` and identify the network owner from its labels and attached containers; safely remove or migrate every attached container through its owning deployment; after confirming the network is empty and no longer needed, run `docker network rm ployz`; run `systemctl start ployz`",
+        recovery: DOCKER_NETWORK_CONFLICT_RECOVERY,
     }
 }
 

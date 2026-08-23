@@ -5,7 +5,10 @@ use std::{
 };
 
 use clap::ArgMatches;
-use ployz_core::{MachineName, MachineToken, MachineTokenRequest, PublicIpDiscovery};
+use ployz_core::{
+    DOCKER_NETWORK_CONFLICT_RECOVERY, InspectRequest, LocalMachinePhase, MachineName, MachineToken,
+    MachineTokenRequest, PublicIpDiscovery, op,
+};
 
 use super::parse_endpoints;
 use crate::{
@@ -86,6 +89,36 @@ pub(super) async fn reconnect_direct(connection: &Connection) -> Result<Client, 
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     Err(last.unwrap_or_else(|| Error::usage("Machine did not become reachable after reset")))
+}
+
+pub(super) async fn wait_direct_participating(
+    connection: &Connection,
+    timeout_message: &str,
+) -> Result<Client, Error> {
+    match tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Ok(mut client) = connect_direct(connection).await
+                && client
+                    .call::<op::Inspect>(InspectRequest::default(), None)
+                    .await
+                    .is_ok_and(|details| details.phase == LocalMachinePhase::Participating)
+            {
+                return client;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    {
+        Ok(client) => Ok(client),
+        Err(_) => Err(Error::usage(readiness_timeout_message(timeout_message))),
+    }
+}
+
+pub(super) fn readiness_timeout_message(message: &str) -> String {
+    format!(
+        "{message}; if ployzd refused a Docker network, safe recovery: {DOCKER_NETWORK_CONFLICT_RECOVERY}"
+    )
 }
 
 pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {

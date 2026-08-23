@@ -10,10 +10,12 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
+use ployz_core::DOCKER_NETWORK_CONFLICT_EXIT_STATUS;
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
     machine::DEFAULT_DATA_DIR,
+    network::NetworkError,
 };
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 
@@ -58,8 +60,19 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
-            ExitCode::FAILURE
+            daemon_error_exit_code(&error)
         }
+    }
+}
+
+fn daemon_error_exit_code(error: &Error) -> ExitCode {
+    if matches!(
+        error,
+        Error::Network(NetworkError::DockerNetworkConflict { .. })
+    ) {
+        ExitCode::from(DOCKER_NETWORK_CONFLICT_EXIT_STATUS)
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -99,4 +112,28 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
         stdout().flush().await
     };
     tokio::try_join!(input, output).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docker_network_conflict_uses_the_dedicated_exit_status() {
+        let conflict = Error::Network(NetworkError::DockerNetworkConflict {
+            reason: "ownership is unproven".into(),
+            expected: "expected".into(),
+            observed: "observed".into(),
+            recovery: "recovery",
+        });
+
+        assert_eq!(
+            daemon_error_exit_code(&conflict),
+            ExitCode::from(DOCKER_NETWORK_CONFLICT_EXIT_STATUS)
+        );
+        assert_eq!(
+            daemon_error_exit_code(&Error::StorePoisoned),
+            ExitCode::FAILURE
+        );
+    }
 }

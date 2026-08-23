@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use clap::ArgMatches;
 use ployz_core::{
     InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, ReserveDomainRequest,
@@ -9,7 +7,6 @@ use ployz_core::{
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
 use crate::{
-    connect::Client,
     context::Context,
     handlers::{Error, leaf_matches},
 };
@@ -102,50 +99,45 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     config.save()?;
     let want_caddy = !matches.get_flag("no-caddy");
     let want_dns = !matches.get_flag("no-dns");
-    if want_caddy || want_dns {
-        runtime()?.block_on(async {
-            let mut ready = wait_direct_participating(&connection).await?;
+    runtime()?.block_on(async {
+        let mut ready =
+            helpers::wait_direct_participating(&connection, "initial Machine did not become ready")
+                .await?;
+        if want_dns {
+            let endpoint = matches
+                .get_one::<String>("dns-endpoint")
+                .cloned()
+                .ok_or_else(|| Error::usage("dns-endpoint is required"))?;
+            let domain = ready
+                .call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
+                .await?;
+            println!("Reserved Cluster domain: {}", domain.name);
+        }
+        if want_caddy {
+            let image = crate::caddy::latest_image().await?;
+            let requested = crate::caddy::service_spec(image, Vec::new(), None);
+            crate::deploy::apply_requested(&mut ready, &requested).await?;
             if want_dns {
-                let endpoint = matches
-                    .get_one::<String>("dns-endpoint")
-                    .cloned()
-                    .ok_or_else(|| Error::usage("dns-endpoint is required"))?;
-                let domain = ready
-                    .call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
-                    .await?;
-                println!("Reserved Cluster domain: {}", domain.name);
+                crate::dns::update_records_for_caddy(&mut ready).await?;
             }
-            if want_caddy {
-                let image = crate::caddy::latest_image().await?;
-                let requested = crate::caddy::service_spec(image, Vec::new(), None);
-                crate::deploy::apply_requested(&mut ready, &requested).await?;
-                if want_dns {
-                    crate::dns::update_records_for_caddy(&mut ready).await?;
-                }
-            }
-            Ok::<_, Error>(())
-        })?;
-    }
+        }
+        Ok::<_, Error>(())
+    })?;
     println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
 }
 
-async fn wait_direct_participating(
-    connection: &crate::context::Connection,
-) -> Result<Client, Error> {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if let Ok(mut client) = helpers::connect_direct(connection).await
-                && client
-                    .call::<op::Inspect>(InspectRequest::default(), None)
-                    .await
-                    .is_ok_and(|details| details.phase == LocalMachinePhase::Participating)
-            {
-                return client;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .map_err(|_| Error::usage("initial Machine did not become ready"))
+#[cfg(test)]
+mod tests {
+    use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
+
+    use super::*;
+
+    #[test]
+    fn init_timeout_surfaces_the_docker_network_recovery() {
+        let message = helpers::readiness_timeout_message("initial Machine did not become ready");
+
+        assert!(message.contains("initial Machine did not become ready"));
+        assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
+    }
 }

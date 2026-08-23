@@ -92,6 +92,7 @@ run_installer latest
 [ -x "$TMP/install/ployz-uninstall" ]
 [ -f "$TMP/state/preserved" ]
 grep -Fq 'EnvironmentFile=-/etc/default/ployz' "$TMP/systemd/ployz.service"
+grep -Fxq 'RestartPreventExitStatus=78' "$TMP/systemd/ployz.service"
 grep -Fq 'systemctl restart ployz.service' "$LOG"
 
 : > "$LOG"
@@ -111,6 +112,7 @@ grep -Fq 'systemctl restart ployz.service' "$LOG"
 set_installed_version 1.2.2
 run_installer latest
 grep -Fq 'systemctl restart ployz.service' "$LOG"
+grep -Fxq 'RestartPreventExitStatus=78' "$TMP/systemd/ployz.service"
 [ -f "$TMP/state/preserved" ]
 
 : > "$LOG"

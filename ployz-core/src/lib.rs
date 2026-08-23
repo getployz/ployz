@@ -24,3 +24,9 @@ pub use rpc::*;
 pub use service::*;
 pub use stream::*;
 pub use value::*;
+
+/// Daemon exit status for an operator-actionable Docker network refusal.
+pub const DOCKER_NETWORK_CONFLICT_EXIT_STATUS: u8 = 78;
+
+/// Safe operator recovery shared by daemon diagnostics and lifecycle commands.
+pub const DOCKER_NETWORK_CONFLICT_RECOVERY: &str = "run `systemctl stop ployz`; run `docker network inspect ployz` and identify the network owner from its labels and attached containers; safely remove or migrate every attached container through its owning deployment; after confirming the network is empty and no longer needed, run `docker network rm ployz`; run `systemctl start ployz`";

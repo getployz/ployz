@@ -219,6 +219,7 @@ ExecStart=$INSTALL_BIN_DIR/ployzd
 EnvironmentFile=-/etc/default/ployz
 TimeoutStartSec=20
 Restart=always
+RestartPreventExitStatus=78
 RestartSec=2
 NoNewPrivileges=true
 ProtectSystem=full

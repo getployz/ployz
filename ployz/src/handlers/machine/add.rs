@@ -93,9 +93,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         .get_mut(&context_name)
         .expect("active context was validated")
         .connections
-        .push(connection);
+        .push(connection.clone());
     config.save()?;
     println!("{}", added_machine_line(&assigned));
+
+    runtime()?.block_on(helpers::wait_direct_participating(
+        &connection,
+        "added Machine did not become ready",
+    ))?;
 
     let catch_up = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
@@ -144,12 +149,21 @@ fn added_machine_line(assigned: &Machine) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
     use ployz_core::{
         LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
         MembershipObservation, WireGuardPublicKey,
     };
 
     use super::*;
+
+    #[test]
+    fn add_timeout_surfaces_the_docker_network_recovery() {
+        let message = helpers::readiness_timeout_message("added Machine did not become ready");
+
+        assert!(message.contains("added Machine did not become ready"));
+        assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
+    }
 
     #[test]
     fn machine_add_reports_added_when_follow_on_caddy_deploy_fails() {
