@@ -1,6 +1,6 @@
 //! First-Pool creation behavior through the Docker plugin boundary.
 
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use super::super::pool::{POOL_BACKING_FILE, PoolStorage};
 use super::*;
@@ -162,10 +162,10 @@ case "$name" in
     ;;
   zfs)
     case "$*" in
-      'list -Hp -o name,refquota,referenced,available,mountpoint,mounted -r ployz')
+      'list -Hp -o name,refquota,referenced,available,mountpoint,mounted,readonly -r ployz')
         available=$(cat '{allocated}')
-        printf 'ployz\t0\t24576\t%s\t/ployz\tyes\n' "$available"
-        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t24576\t%s\t/var/lib/ployz-volumes\tno\n' "$available"
+        printf 'ployz\t0\t24576\t%s\t/ployz\tyes\toff\n' "$available"
+        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t24576\t%s\t/var/lib/ployz-volumes\tno\toff\n' "$available"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')

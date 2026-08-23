@@ -102,12 +102,9 @@ impl VolumeStorage {
         let root = format!("{}/{DATASET_ROOT}", pool.name());
         let volume = format!("{root}/{name}");
 
-        if let Some(dataset) = datasets.iter().find(|dataset| dataset.name == root) {
-            dataset.require_mountpoint(MOUNT_ROOT)?;
-        }
-
-        if let Some(existing) = datasets.iter().find(|dataset| dataset.name == volume) {
+        if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_mountpoint(&name.mountpoint())?;
+            existing.require_writable()?;
             return if existing.refquota == requested {
                 Ok(())
             } else {
@@ -165,24 +162,24 @@ impl VolumeStorage {
     async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
-        let expected_mountpoint = name.mountpoint();
-        let mut dataset = self
-            .dataset(&pool, name)
-            .await?
+        let datasets = self.datasets(&pool).await?;
+        let dataset = Self::dataset(&datasets, &pool, name)?
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
-        dataset.require_mountpoint(&expected_mountpoint)?;
-        if !dataset.mounted {
-            self.zfs(&["mount", &dataset.name]).await?;
-            dataset = self
-                .dataset(&pool, name)
-                .await?
-                .ok_or_else(|| format!("Provisioned Volume {name} disappeared while mounting"))?;
-            dataset.require_mountpoint(&expected_mountpoint)?;
+        dataset.require_provisioned(name)?;
+        dataset.require_writable()?;
+        if dataset.mounted {
+            return Ok(dataset.mountpoint.clone());
         }
+        self.zfs(&["mount", &dataset.name]).await?;
+        let datasets = self.datasets(&pool).await?;
+        let dataset = Self::dataset(&datasets, &pool, name)?
+            .ok_or_else(|| format!("Provisioned Volume {name} disappeared while mounting"))?;
+        dataset.require_provisioned(name)?;
+        dataset.require_writable()?;
         if !dataset.mounted {
             return Err(format!("Provisioned Volume {name} did not mount").into());
         }
-        Ok(dataset.mountpoint)
+        Ok(dataset.mountpoint.clone())
     }
 
     async fn one_pool(&self) -> Result<MachinePool> {
@@ -198,7 +195,7 @@ impl VolumeStorage {
                 "list",
                 "-Hp",
                 "-o",
-                "name,refquota,referenced,available,mountpoint,mounted",
+                "name,refquota,referenced,available,mountpoint,mounted,readonly",
                 "-r",
                 pool.name(),
             ])
@@ -209,25 +206,35 @@ impl VolumeStorage {
             .collect()
     }
 
-    async fn dataset(
-        &self,
+    fn dataset<'datasets>(
+        datasets: &'datasets [Dataset],
         pool: &MachinePool,
         name: &DockerVolumeName,
-    ) -> Result<Option<Dataset>> {
-        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
-        let datasets = self.datasets(pool).await?;
-        if !datasets.iter().any(|dataset| dataset.name == requested) {
-            return Ok(None);
+    ) -> Result<Option<&'datasets Dataset>> {
+        let root_name = format!("{}/{DATASET_ROOT}", pool.name());
+        let root = datasets.iter().find(|dataset| dataset.name == root_name);
+        if let Some(root) = root {
+            root.require_mountpoint(MOUNT_ROOT)?;
+            root.require_writable()?;
         }
-        let root = format!("{}/{DATASET_ROOT}", pool.name());
-        datasets
+
+        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
+        let descendant_prefix = format!("{requested}/");
+        if let Some(dataset) = datasets
             .iter()
-            .find(|dataset| dataset.name == root)
-            .ok_or_else(|| format!("ZFS did not report managed root dataset {root}"))?
-            .require_mountpoint(MOUNT_ROOT)?;
-        Ok(datasets
-            .into_iter()
-            .find(|dataset| dataset.name == requested))
+            .find(|dataset| dataset.name.starts_with(&descendant_prefix))
+        {
+            return Err(format!(
+                "ZFS dataset {} is a descendant of Provisioned Volume {name}; remove it before retrying",
+                dataset.name
+            )
+            .into());
+        }
+        let dataset = datasets.iter().find(|dataset| dataset.name == requested);
+        if dataset.is_some() && root.is_none() {
+            return Err(format!("ZFS did not report managed root dataset {root_name}").into());
+        }
+        Ok(dataset)
     }
 
     async fn zfs(&self, args: &[&str]) -> Result<String> {
@@ -242,6 +249,7 @@ struct Dataset {
     available: u64,
     mountpoint: String,
     mounted: bool,
+    readonly: bool,
 }
 
 impl Dataset {
@@ -255,8 +263,10 @@ impl Dataset {
             Some(available),
             Some(mountpoint),
             Some(mounted),
+            Some(readonly),
             None,
         ) = (
+            fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
@@ -275,6 +285,11 @@ impl Dataset {
             available: parse_zfs_bytes(available)?,
             mountpoint: mountpoint.to_owned(),
             mounted: mounted == "yes",
+            readonly: match readonly {
+                "off" => false,
+                "on" => true,
+                _ => return Err(invalid().into()),
+            },
         })
     }
 
@@ -285,6 +300,17 @@ impl Dataset {
         Err(format!(
             "ZFS dataset {} has incompatible mountpoint {}; set it to {expected} before retrying",
             self.name, self.mountpoint
+        )
+        .into())
+    }
+
+    fn require_writable(&self) -> Result<()> {
+        if !self.readonly {
+            return Ok(());
+        }
+        Err(format!(
+            "ZFS dataset {} is read-only; make it writable before retrying",
+            self.name
         )
         .into())
     }
@@ -507,7 +533,6 @@ async fn capabilities() -> Json<serde_json::Value> {
 mod tests {
     use std::{
         fs,
-        os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -546,6 +571,14 @@ mod tests {
 
     #[path = "first_pool_tests.rs"]
     mod first_pool_tests;
+
+    #[path = "fake_zfs.rs"]
+    mod fake_zfs;
+
+    #[path = "dataset_safety_tests.rs"]
+    mod dataset_safety_tests;
+
+    use fake_zfs::fake_zfs;
 
     #[tokio::test]
     async fn docker_can_create_and_mount_a_bounded_volume() {
@@ -920,72 +953,5 @@ mod tests {
 
     fn error(response: &Value) -> &str {
         response.get("Err").and_then(Value::as_str).unwrap()
-    }
-
-    fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
-        let script = directory.join("fake-zfs");
-        let commands = directory.join("commands");
-        let root = directory.join("root");
-        let incompatible_root = directory.join("incompatible-root");
-        let volume = directory.join("volume");
-        let incompatible_volume = directory.join("incompatible-volume");
-        let unbounded_volume = directory.join("unbounded-volume");
-        let sibling = directory.join("sibling");
-        let mounted = directory.join("mounted");
-        let destroy_fails = directory.join("destroy-fails");
-        let script_body = format!(
-            r#"#!/bin/sh
-set -eu
-name=${{0##*/}}
-printf '%s %s\n' "$name" "$*" >> '{commands}'
-if [ "$name" = zpool ]; then
-  printf '{pools}'
-  exit 0
-fi
-case "$*" in
-  'list -Hp -o name,refquota,referenced,available,mountpoint,mounted -r tank')
-    printf 'tank\t0\t24576\t2147459072\t/tank\tyes\n'
-    if [ -e '{root}' ]; then
-      if [ -e '{incompatible_root}' ]; then root_mountpoint=/tank/ployz; else root_mountpoint=/var/lib/ployz-volumes; fi
-      printf 'tank/ployz\t0\t24576\t2147459072\t%s\tno\n' "$root_mountpoint"
-    fi
-    if [ -e '{volume}' ]; then
-      if [ -e '{mounted}' ]; then state=yes; else state=no; fi
-      if [ -e '{incompatible_volume}' ]; then volume_mountpoint=/srv/data; else volume_mountpoint=/var/lib/ployz-volumes/data; fi
-      if [ -e '{unbounded_volume}' ]; then refquota=none; else refquota=1073741824; fi
-      printf 'tank/ployz/data\t%s\t24576\t1073717248\t%s\t%s\n' "$refquota" "$volume_mountpoint" "$state"
-    fi
-    if [ -e '{sibling}' ]; then
-      printf 'tank/ployz/sibling\t1073741824\t24576\t1073717248\t/var/lib/ployz-volumes/sibling\tno\n'
-    fi
-    ;;
-  'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
-  'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
-  'mount tank/ployz/data') touch '{mounted}' ;;
-  'destroy tank/ployz/data')
-    if [ -e '{destroy_fails}' ]; then echo 'dataset is busy' >&2; exit 1; fi
-    rm -f '{volume}' '{mounted}'
-    ;;
-  *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
-esac
-"#,
-            commands = commands.display(),
-            pools = pools.escape_default(),
-            root = root.display(),
-            incompatible_root = incompatible_root.display(),
-            volume = volume.display(),
-            incompatible_volume = incompatible_volume.display(),
-            unbounded_volume = unbounded_volume.display(),
-            sibling = sibling.display(),
-            mounted = mounted.display(),
-            destroy_fails = destroy_fails.display(),
-        );
-        fs::write(&script, script_body).unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        let zpool = directory.join("zpool");
-        let zfs = directory.join("zfs");
-        std::os::unix::fs::symlink(&script, &zpool).unwrap();
-        std::os::unix::fs::symlink(&script, &zfs).unwrap();
-        (zpool, zfs)
     }
 }
