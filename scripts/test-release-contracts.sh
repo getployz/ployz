@@ -597,6 +597,8 @@ assert_eq "$(uninstall_disposition docker)" "retain"
 assert_eq "$(uninstall_disposition docker-images)" "retain"
 assert_eq "$(uninstall_disposition docker-volumes)" "retain"
 assert_eq "$(uninstall_disposition ployz.service)" "remove"
+assert_eq "$(uninstall_disposition ployz-volume-plugin.socket)" "remove"
+assert_eq "$(uninstall_disposition ployz-volume-plugin.service)" "remove"
 assert_eq "$(uninstall_disposition ployzd)" "remove"
 assert_eq "$(uninstall_disposition ployz-state)" "remove"
 

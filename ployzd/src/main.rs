@@ -1,6 +1,8 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("ployzd supports Linux only");
 
+mod volume_plugin;
+
 use std::{
     io,
     net::SocketAddr,
@@ -52,11 +54,23 @@ enum Command {
     /// Bridge standard input/output to the local Machine API socket.
     #[command(hide = true)]
     DialStdio,
+    /// Serve the Docker Volume plugin on its systemd socket.
+    VolumePlugin,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
+fn main() -> ExitCode {
+    let args = Args::parse();
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(run(args)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -76,8 +90,7 @@ fn daemon_error_exit_code(error: &Error) -> ExitCode {
     }
 }
 
-async fn run() -> Result<(), Error> {
-    let args = Args::parse();
+async fn run(args: Args) -> Result<(), Error> {
     if matches!(args.command, Some(Command::Version)) {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -87,6 +100,10 @@ async fn run() -> Result<(), Error> {
     }
     diag::init(args.log_level.as_deref())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    if matches!(args.command, Some(Command::VolumePlugin)) {
+        let listener = volume_plugin::inherited_listener()?;
+        return volume_plugin::run(listener).await.map_err(Error::from);
+    }
     let daemon = Daemon::start(DaemonConfig {
         data_dir: args.data_dir,
         socket: args.socket,

@@ -84,6 +84,53 @@ fn version_notify_socket_modes_and_signal() {
 }
 
 #[test]
+fn volume_plugin_accepts_the_systemd_socket() {
+    let root = TestDir::new("ployzd-volume-plugin-process");
+    fs::create_dir_all(&root.0).unwrap();
+    let socket = root.0.join("ployz-volume.sock");
+    let _plugin = ChildGuard(
+        Command::new("systemd-socket-activate")
+            .arg(format!("--listen={}", socket.display()))
+            .args([env!("CARGO_BIN_EXE_ployzd"), "volume-plugin"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline, "systemd socket was not created");
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    stream
+        .write_all(
+            b"POST /Plugin.Activate HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.ends_with("{\"Implements\":[\"VolumeDriver\"]}"));
+}
+
+#[test]
+fn volume_plugin_requires_exactly_one_systemd_socket() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .arg("volume-plugin")
+        .env_remove("LISTEN_FDS")
+        .env_remove("LISTEN_PID")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires exactly one systemd socket, received 0")
+    );
+}
+
+#[test]
 fn join_leaves_a_journal_line_and_records_the_restart() {
     let root = TestDir::new("ployzd-process-join");
     fs::create_dir_all(&root.0).unwrap();

@@ -39,9 +39,11 @@ main() {
         return
     fi
 
-    systemctl stop ployz.service 2>/dev/null || true
-    systemctl disable ployz.service 2>/dev/null || true
-    rm -f "$INSTALL_SYSTEMD_DIR/ployz.service"
+    systemctl stop ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
+    systemctl disable ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
+    rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
+        "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
+        "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service"
     systemctl daemon-reload
 
     rm -f "$INSTALL_BIN_DIR/ployzd"

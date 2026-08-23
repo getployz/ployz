@@ -479,9 +479,43 @@ RestrictNamespaces=true
 [Install]
 WantedBy=multi-user.target
 EOF
+    cat > "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" <<EOF
+[Unit]
+Description=Ployz Docker Volume plugin socket
+Before=docker.service
+
+[Socket]
+ListenStream=/run/docker/plugins/ployz.sock
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+Service=ployz-volume-plugin.service
+
+[Install]
+WantedBy=sockets.target
+EOF
+    cat > "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service" <<EOF
+[Unit]
+Description=Ployz Docker Volume plugin
+Before=docker.service
+After=zfs-import.target zfs-mount.service ployz-volume-plugin.socket
+Requires=ployz-volume-plugin.socket docker.service
+
+[Service]
+Type=simple
+ExecStart=$INSTALL_BIN_DIR/ployzd volume-plugin
+Sockets=ployz-volume-plugin.socket
+EnvironmentFile=-/etc/default/ployz
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+EOF
     if [ "$INSTALL_ONLY" != true ]; then
         systemctl daemon-reload
         systemctl enable ployz.service
+        systemctl enable --now ployz-volume-plugin.socket
     fi
 }
 
@@ -495,18 +529,19 @@ main() {
     fi
     install_prerequisites
     prepare_storage
-    install_docker
-    if [ -n "$PLOYZ_APT_CONFIG" ]; then
-        rm -f "$PLOYZ_APT_CONFIG"
-        trap - EXIT
-    fi
     create_user_and_directories
     unit=$INSTALL_SYSTEMD_DIR/ployz.service
     [ -f "$unit" ] || DAEMON_REPLACED=true
     install_binaries
     install_systemd
+    install_docker
+    if [ -n "$PLOYZ_APT_CONFIG" ]; then
+        rm -f "$PLOYZ_APT_CONFIG"
+        trap - EXIT
+    fi
     if [ "$INSTALL_ONLY" != true ] && [ "$DAEMON_REPLACED" = true ]; then
         systemctl restart ployz.service
+        systemctl try-restart ployz-volume-plugin.service
     fi
     log "Ployz installed"
 }

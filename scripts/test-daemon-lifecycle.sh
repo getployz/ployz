@@ -93,7 +93,31 @@ run_installer latest
 [ -f "$TMP/state/preserved" ]
 grep -Fq 'EnvironmentFile=-/etc/default/ployz' "$TMP/systemd/ployz.service"
 grep -Fxq 'RestartPreventExitStatus=78' "$TMP/systemd/ployz.service"
+grep -Fxq 'Before=docker.service' "$TMP/systemd/ployz-volume-plugin.socket"
+grep -Fxq 'ListenStream=/run/docker/plugins/ployz.sock' "$TMP/systemd/ployz-volume-plugin.socket"
+grep -Fxq 'Accept=no' "$TMP/systemd/ployz-volume-plugin.socket"
+grep -Fxq 'Service=ployz-volume-plugin.service' "$TMP/systemd/ployz-volume-plugin.socket"
+grep -Fxq 'Sockets=ployz-volume-plugin.socket' "$TMP/systemd/ployz-volume-plugin.service"
+grep -Fq 'ExecStart='"$TMP/install"'/ployzd volume-plugin' "$TMP/systemd/ployz-volume-plugin.service"
+for directive in ProtectSystem=full ProtectControlGroups=true ProtectHome=read-only ProtectKernelTunables=true PrivateTmp=true; do
+    if grep -Fxq "$directive" "$TMP/systemd/ployz-volume-plugin.service"; then
+        echo "Volume plugin service isolates ZFS mounts with $directive" >&2
+        exit 1
+    fi
+done
+grep -Fq 'systemctl enable --now ployz-volume-plugin.socket' "$LOG"
+if grep -Fq 'systemctl enable --now ployz-volume-plugin.service' "$LOG"; then
+    echo "Volume plugin service was enabled instead of socket-activated" >&2
+    exit 1
+fi
 grep -Fq 'systemctl restart ployz.service' "$LOG"
+grep -Fq 'systemctl try-restart ployz-volume-plugin.service' "$LOG"
+socket_enable_line=$(grep -nF 'systemctl enable --now ployz-volume-plugin.socket' "$LOG" | head -n 1 | cut -d: -f1)
+docker_check_line=$(grep -nF 'docker info -f {{ .DriverStatus }}' "$LOG" | head -n 1 | cut -d: -f1)
+if [ "$socket_enable_line" -ge "$docker_check_line" ]; then
+    echo "Volume plugin socket was activated after Docker installation" >&2
+    exit 1
+fi
 
 : > "$LOG"
 run_installer latest

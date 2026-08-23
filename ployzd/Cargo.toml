@@ -7,7 +7,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait = "0.1.92"
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 bollard = { version = "0.21.0", features = ["json_data_content"] }
 bytes = "1.12.1"
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
@@ -23,6 +23,7 @@ http = "1.4.0"
 http-body = "1.1.0"
 http-body-util = "0.1.5"
 instant-acme = "0.8.5"
+listenfd = "1.0.2"
 nix = { version = "0.29.0", default-features = false, features = ["fs"] }
 ipnet = "2.12.1"
 ployz-core.workspace = true
