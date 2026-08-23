@@ -405,9 +405,9 @@ prepare_zfs() {
     command_exists apt-get || error "Ubuntu apt-get is required for ZFS storage preparation"
     kernel=$(uname -r)
     require_host_root_reserve "$(zfs_smoke_bytes)"
-    install_zfs_packages_ubuntu "$kernel"
     cap=$(zfs_arc_max)
     persist_zfs_arc_max "$cap"
+    install_zfs_packages_ubuntu "$kernel"
     modprobe zfs || error "modprobe zfs failed for running kernel $kernel; verify kernel module support and container privileges"
     set_and_verify_zfs_arc_max "$cap"
     validate_zfs
@@ -555,8 +555,8 @@ main() {
         configure_apt_lock_wait
         trap 'rm -f "$PLOYZ_APT_CONFIG"' EXIT
     fi
-    install_prerequisites
     prepare_storage
+    install_prerequisites
     create_user_and_directories
     unit=$INSTALL_SYSTEMD_DIR/ployz.service
     [ -f "$unit" ] || DAEMON_REPLACED=true

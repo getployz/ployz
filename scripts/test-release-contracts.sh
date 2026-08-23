@@ -488,6 +488,17 @@ printf '%s\n' "$invalid_storage_error" | grep -Fq \
     "Unsupported storage preparation 'other'; expected none or zfs"
 rm -f "$storage_selection_log"
 
+assert_eq "$({
+    for storage in zfs none; do (
+        error() { [ "$1" = "Run this installer with sudo or as root" ]; }
+        verify_system() { :; }
+        command_exists() { return 1; }
+        install_prerequisites() { echo prerequisites; exit; }
+        prepare_zfs() { echo zfs; }
+        PLOYZ_STORAGE=$storage main
+    ); done
+})" "$(printf '%s\n' zfs prerequisites prerequisites)"
+
 zfs_prepare_log=$(mktemp)
 (
     operating_system_id() { echo ubuntu; }
@@ -505,8 +516,8 @@ zfs_prepare_log=$(mktemp)
 )
 assert_eq "$(cat "$zfs_prepare_log")" "$(printf '%s\n' \
     'reserve 134217728' \
-    'packages 6.8.0-test-cloud' \
     'persist 536870912' \
+    'packages 6.8.0-test-cloud' \
     'modprobe zfs' \
     'verify 536870912' \
     smoke)"
