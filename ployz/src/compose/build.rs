@@ -164,7 +164,14 @@ fn include_service<'a>(
     }
     if deps {
         for dependency in project.dependencies.get(name).into_iter().flatten() {
-            include_service(project, dependency, true, visiting, seen, selected)?;
+            include_service(
+                project,
+                dependency.service.as_str(),
+                true,
+                visiting,
+                seen,
+                selected,
+            )?;
         }
     }
     visiting.remove(name);

@@ -1155,6 +1155,44 @@ secrets: {token: {x-command: "printf resolved"}}
 }
 
 #[test]
+fn depends_on_health_validation_rejects_unsupported_edges() {
+    for (yaml, expected) in [
+        (
+            "services: {db: {image: db}, web: {image: web, depends_on: {db: {condition: service_healthy}}}}",
+            "no configured healthcheck",
+        ),
+        (
+            "services: {db: {image: db, healthcheck: {disable: true}}, web: {image: web, depends_on: {db: {condition: service_healthy}}}}",
+            "no configured healthcheck",
+        ),
+        (
+            "services: {db: {image: db}, web: {image: web, depends_on: {db: {restart: true}}}}",
+            "unsupported 'restart'",
+        ),
+        (
+            "services: {db: {image: db}, web: {image: web, depends_on: {db: {required: false}}}}",
+            "unsupported 'required: false'",
+        ),
+        (
+            "services: {db: {image: db}, web: {image: web, depends_on: {db: {required: sometimes}}}}",
+            "must be true when present",
+        ),
+    ] {
+        let error = parse_normalized(yaml, ".").unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+
+    for yaml in [
+        "services: {db: {image: db}, web: {image: web, depends_on: [db]}}",
+        "services: {db: {image: db}, web: {image: web, depends_on: {db: {condition: service_started}}}}",
+        "services: {db: {image: db, healthcheck: {test: [CMD, true]}}, web: {image: web, depends_on: {db: {condition: service_healthy, required: true}}}}",
+        "services: {db: {image: db, healthcheck: {test: [CMD, true]}}, web: {image: web, depends_on: {db: {condition: service_healthy}}}}",
+    ] {
+        parse_normalized(yaml, ".").unwrap();
+    }
+}
+
+#[test]
 fn two_projects_with_the_same_logical_volume_get_distinct_physical_volumes() {
     let project = parse_normalized(
         r#"
@@ -1188,6 +1226,7 @@ fn created_named_volume(
         .find_map(|row| match &row.operation {
             DeployOperation::CreateVolume { volume, .. } => Some(volume),
             DeployOperation::RunContainer { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
@@ -1406,7 +1445,8 @@ volumes: {a: {}, b: {}}
             .all(|operation| match operation {
                 DeployOperation::CreateVolume { machine_id, .. }
                 | DeployOperation::RunContainer { machine_id, .. } => machine_id == anchor,
-                other @ (DeployOperation::StopContainer { .. }
+                other @ (DeployOperation::WaitHealthy { .. }
+                | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(..)
                 | DeployOperation::StopHook { .. }

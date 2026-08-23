@@ -364,7 +364,8 @@ export type DeployWarning =
   | Additive<{ ObservationFailed: { kind: ObservationKind; machine_id: MachineId; message: string } }>
   | Additive<{ ObservationOmitted: { kind: ObservationKind; machine_id: MachineId } }>
   | Additive<{ IngressHostname: string }>
-  | "ObserverRelativeHostnameConflict";
+  | "ObserverRelativeHostnameConflict"
+  | Additive<{ SkippedDependencyHealth: { dependent: QualifiedService; dependency: QualifiedService } }>;
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services" | "filtered_profiles" | "guessed_project_name";
 
@@ -427,6 +428,7 @@ export type ReplacementOperation = Additive<{
 
 export type DeployOperation =
   | Additive<{ type: "create_volume"; machine_id: MachineId; volume: ServiceVolume }>
+  | Additive<{ type: "wait_healthy"; machine_id: MachineId; dependent: QualifiedService; dependency: QualifiedService }>
   | Additive<{ type: "run_container"; machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
   | Additive<{ type: "stop_container"; machine_id: MachineId; container_id: ContainerId }>
   | Additive<{ type: "remove_container"; machine_id: MachineId; container_id: ContainerId }>
@@ -450,9 +452,17 @@ export type HookFailure =
   | Additive<{ type: "exit"; code: number }>
   | Additive<{ type?: string }>;
 
+export type DependencyHealthFailure =
+  | Additive<{ type: "cancelled" }>
+  | Additive<{ type: "no_containers" }>
+  | Additive<{ type: "observation"; error: RpcError }>
+  | Additive<{ type: "container"; container_id: ContainerId; failure: HealthFailure }>
+  | Additive<{ type?: string }>;
+
 export type ExecutionError =
   | Additive<{ type: "machine"; action: MachineAction; error: RpcError }>
   | Additive<{ type: "health"; container_id: ContainerId; failure: HealthFailure }>
+  | Additive<{ type: "dependency_health"; dependency: QualifiedService; failure: DependencyHealthFailure }>
   | Additive<{ type: "hook"; container_id: ContainerId; failure: HookFailure }>
   | Additive<{ type: "cancelled" }>
   | Additive<{ type?: string }>;

@@ -188,6 +188,7 @@ fn volume_line(row: &OperationRow) -> String {
             format!("- remove volume {} on {machine}", id.name)
         }
         DeployOperation::RunContainer { .. }
+        | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }
         | DeployOperation::RemoveContainer { .. }
         | DeployOperation::ReplaceContainer(_)
@@ -248,6 +249,7 @@ fn spec_image(operation: &DeployOperation) -> Option<&str> {
             Some(replacement.spec.container.image.as_str())
         }
         DeployOperation::CreateVolume { .. }
+        | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }
         | DeployOperation::RemoveContainer { .. }
         | DeployOperation::StopHook { .. }
@@ -258,6 +260,11 @@ fn spec_image(operation: &DeployOperation) -> Option<&str> {
 fn child_line(row: &OperationRow) -> String {
     let machine = machine_label(row);
     match &row.operation {
+        DeployOperation::WaitHealthy {
+            dependent,
+            dependency,
+            ..
+        } => format!("~ wait for {dependency} to be healthy before {dependent}"),
         DeployOperation::RunContainer { spec, .. } => {
             format!(
                 "+ create container {} on {machine}",
@@ -314,7 +321,9 @@ fn plan_footer(preview: &DeployPreview) -> String {
             | DeployOperation::RemoveVolume { .. } => {
                 removes += 1;
             }
-            DeployOperation::StopHook { .. } | DeployOperation::RunHook { .. } => {}
+            DeployOperation::WaitHealthy { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. } => {}
         }
     }
     let mut parts = Vec::new();
@@ -341,9 +350,12 @@ fn plan_footer(preview: &DeployPreview) -> String {
 }
 
 fn row_line(row: &OperationRow) -> String {
+    let (mark, status, elapsed) = status_columns(row);
+    if let DeployOperation::WaitHealthy { dependency, .. } = &row.operation {
+        return format!(" {mark} Dependency {dependency}  {status}{elapsed}\n");
+    }
     let name = container_label(row);
     let machine = machine_label(row);
-    let (mark, status, elapsed) = status_columns(row);
     format!(" {mark} Container {name} on {machine}  {status}{elapsed}\n")
 }
 
@@ -352,6 +364,7 @@ fn container_label(row: &OperationRow) -> String {
         return name.clone();
     }
     match &row.operation {
+        DeployOperation::WaitHealthy { dependency, .. } => dependency.to_string(),
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
             spec.name.to_string()
         }
@@ -423,7 +436,8 @@ fn completed_label(operation: &DeployOperation) -> &'static str {
         | DeployOperation::StopHook { .. }
         | DeployOperation::RemoveVolume { .. } => "Removed",
         DeployOperation::CreateVolume { .. } => "Created",
-        DeployOperation::RunContainer { .. }
+        DeployOperation::WaitHealthy { .. }
+        | DeployOperation::RunContainer { .. }
         | DeployOperation::ReplaceContainer(_)
         | DeployOperation::RunHook { .. } => "Healthy",
     }
@@ -440,6 +454,7 @@ fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
             DeployOperation::RunContainer { spec, .. } => spec,
             DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. }) => spec,
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
@@ -501,6 +516,11 @@ fn operation_label(operation: &DeployOperation) -> String {
         DeployOperation::CreateVolume { machine_id, volume } => {
             format!("create volume {} on {machine_id}", volume.reference)
         }
+        DeployOperation::WaitHealthy {
+            dependent,
+            dependency,
+            ..
+        } => format!("wait for {dependency} to be healthy before {dependent}"),
         DeployOperation::RunContainer {
             machine_id, spec, ..
         } => format!("run {} on {machine_id}", spec.name),
@@ -628,6 +648,28 @@ mod tests {
             text.contains("  ╰── +/- replace container excalidraw/fde7ac7f11ad on machine-dc3c\n")
         );
         assert!(text.contains("1 replace (start-first) · across 1 machine\n"));
+    }
+
+    #[test]
+    fn plan_shows_dependency_health_wait() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let row = OperationRow::pending(
+            0,
+            DeployOperation::WaitHealthy {
+                machine_id,
+                dependent: QualifiedService::parse("app/web").unwrap(),
+                dependency: QualifiedService::parse("app/db").unwrap(),
+            },
+            Some(MachineName::parse("edge").unwrap()),
+            None,
+            Some(ServiceName::parse("web").unwrap()),
+        );
+        let preview = DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("app").unwrap());
+
+        assert!(
+            plan_text(&preview, "default", None)
+                .contains("~ wait for app/db to be healthy before app/web")
+        );
     }
 
     #[test]

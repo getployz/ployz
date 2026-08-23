@@ -286,7 +286,8 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
             }
             DeployWarning::ObservationFailed { .. }
             | DeployWarning::ObservationOmitted { .. }
-            | DeployWarning::ObserverRelativeHostnameConflict => false,
+            | DeployWarning::ObserverRelativeHostnameConflict
+            | DeployWarning::SkippedDependencyHealth { .. } => false,
         }),
         "DNS warning must match the CLI body: {:?}",
         preview.warnings

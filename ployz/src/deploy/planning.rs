@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, DataLoss, HookContainer, IngressHost, MachineId, MachineObservation,
-    MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName, PruneRefusal,
-    QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
+    ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
+    MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
+    PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
     ServiceObservation, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
     machine_matches_target, same_service_mode_kind,
 };
@@ -207,7 +207,7 @@ fn assemble_plan(
     intent: &DeployIntent,
     bound: &BoundIntent,
     snapshot: &DeploySnapshot,
-    warnings: Vec<DeployWarning>,
+    mut warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let volume_uses = named_volume_uses(&bound.requested);
@@ -228,20 +228,52 @@ fn assemble_plan(
     let mut placement = PlacementState::new(capacity, reservations);
     let mut service_operations = Vec::new();
     for spec in &bound.requested {
-        service_operations.extend(
-            plan_one_service(
-                spec,
-                &intent.project_name,
-                snapshot,
-                &services,
-                &mut pins,
-                &mut placement,
-                &intent.options,
-            )
-            .map_err(|source| {
-                service_error(name_errors_with_service, spec.name.as_str(), source)
-            })?,
-        );
+        let operations = plan_one_service(
+            spec,
+            &intent.project_name,
+            snapshot,
+            &services,
+            &mut pins,
+            &mut placement,
+            &intent.options,
+        )
+        .map_err(|source| service_error(name_errors_with_service, spec.name.as_str(), source))?;
+        if let Some(machine_id) = operations.iter().find_map(|operation| match operation {
+            DeployOperation::RunContainer { machine_id, .. }
+            | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
+                Some(*machine_id)
+            }
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        }) {
+            for dependency in intent.dependencies().get(&spec.name).into_iter().flatten() {
+                if dependency.condition != DependencyCondition::ServiceHealthy {
+                    continue;
+                }
+                let dependent =
+                    QualifiedService::new(intent.project_name.clone(), spec.name.clone());
+                let dependency =
+                    QualifiedService::new(intent.project_name.clone(), dependency.service.clone());
+                if intent.options.skip_health_monitor {
+                    warnings.push(DeployWarning::SkippedDependencyHealth {
+                        dependent,
+                        dependency,
+                    });
+                } else {
+                    service_operations.push(DeployOperation::WaitHealthy {
+                        machine_id,
+                        dependent,
+                        dependency,
+                    });
+                }
+            }
+        }
+        service_operations.extend(operations);
     }
     let mut operations = pins.into_creates();
     operations.extend(service_operations);
@@ -361,6 +393,7 @@ fn expand_selected(intent: &DeployIntent) -> BTreeSet<&ServiceName> {
                     .get(name)
                     .into_iter()
                     .flatten()
+                    .map(|dependency| &dependency.service)
                     .filter(|dependency| present.contains(dependency)),
             );
         }
@@ -391,9 +424,15 @@ fn order_included<'intent>(
         }
         if let Some(dependencies) = intent.dependencies().get(name) {
             for dependency in dependencies {
-                if included.contains(&dependency) {
+                if included.contains(&&dependency.service) {
                     visit(
-                        dependency, intent, included, by_name, visiting, visited, ordered,
+                        &dependency.service,
+                        intent,
+                        included,
+                        by_name,
+                        visiting,
+                        visited,
+                        ordered,
                     )?;
                 }
             }
@@ -656,6 +695,7 @@ fn pre_deploy_operations(
             }) if hook_machine == Some(machine_id) => Some((machine_id, spec)),
             DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => None,
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }

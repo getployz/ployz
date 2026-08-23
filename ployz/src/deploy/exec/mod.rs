@@ -4,9 +4,10 @@ use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
     DockerVolumeId, ExecutionError, FailedOperation, HookFailure, InspectContainerRequest,
-    MachineAction, MachineId, MachineTarget, OperationPhase, OperationRow, ProjectName,
-    RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    ServiceVolume, StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
+    MachineAction, MachineId, MachineTarget, MembershipObservation, OperationPhase, OperationRow,
+    ProjectName, QualifiedService, RemoveContainerRequest, RemoveVolumeRequest,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume, StartContainerRequest,
+    StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -21,7 +22,7 @@ use super::{
 pub(super) use super::progress::Progress;
 
 mod health;
-use health::monitor_container;
+use health::{monitor_container, wait_healthy};
 
 const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -68,6 +69,10 @@ fn replacement_health_failure_outcome_from<E>(
 }
 
 pub(super) trait MachineOperations {
+    async fn service_containers(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError>;
     async fn create_volume(
         &self,
         machine_id: &MachineId,
@@ -105,6 +110,46 @@ pub(super) trait MachineOperations {
 }
 
 impl MachineOperations for Client {
+    async fn service_containers(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        let mut client = self.clone();
+        let machines = client.machines().await.map_err(RpcError::from)?;
+        let listed = client
+            .live_services_from(&machines)
+            .await
+            .map_err(RpcError::from)?
+            .containers;
+        if let Some(failure) = listed.failures.into_iter().next() {
+            return Err(failure.error);
+        }
+        if let Some(machine_id) = listed.omissions.into_iter().find(|machine_id| {
+            omission_requires_observation(
+                machines
+                    .iter()
+                    .find(|machine| machine.machine.id == *machine_id)
+                    .map(|machine| &machine.membership),
+            )
+        }) {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: format!("container observation omitted {machine_id}"),
+                details: serde_json::Value::Null,
+            });
+        }
+        Ok(listed
+            .successes
+            .into_iter()
+            .flat_map(|success| success.value)
+            .filter(|container| {
+                container.kind == ContainerKind::ServiceContainer
+                    && container.project_name == service.project
+                    && container.service_name == service.name
+            })
+            .collect())
+    }
+
     async fn create_volume(
         &self,
         machine_id: &MachineId,
@@ -249,6 +294,10 @@ impl MachineOperations for Client {
     }
 }
 
+fn omission_requires_observation(membership: Option<&MembershipObservation>) -> bool {
+    membership.is_none_or(MembershipObservation::invites_rpc)
+}
+
 enum OperationFailure {
     Ordinary(ExecutionError),
     ReplacementHealth {
@@ -278,6 +327,13 @@ struct RestartTolerant<'a, C> {
 }
 
 impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
+    async fn service_containers(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        wait_out_restart(self.cancellation, || self.inner.service_containers(service)).await
+    }
+
     async fn create_volume(
         &self,
         machine_id: &MachineId,
@@ -464,6 +520,11 @@ async fn execute_operation<C: MachineOperations>(
                 .create_volume(machine_id, volume)
                 .await
                 .map_err(|error| machine_error(MachineAction::CreateVolume, error).into())
+        }
+        DeployOperation::WaitHealthy { dependency, .. } => {
+            wait_healthy(client, index, progress, dependency, cancellation)
+                .await
+                .map_err(Into::into)
         }
         DeployOperation::RunContainer {
             machine_id,

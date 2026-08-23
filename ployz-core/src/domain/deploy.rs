@@ -53,7 +53,7 @@ pub struct DeployIntent {
     pub options: PlanOptions,
     // ponytail: planner graph, not wire. Split if Cloud ever sends depends_on.
     #[serde(default, skip)]
-    dependencies: BTreeMap<ServiceName, Vec<ServiceName>>,
+    dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
     #[serde(default, skip)]
     service_profiles: BTreeMap<ServiceName, Vec<String>>,
     #[serde(default, skip)]
@@ -113,7 +113,7 @@ impl DeployIntent {
     pub fn from_named_specs(
         project_name: ProjectName,
         services: &BTreeMap<String, RequestedServiceSpec>,
-        dependencies: &BTreeMap<String, Vec<String>>,
+        dependencies: &BTreeMap<String, Vec<ServiceDependency>>,
         options: PlanOptions,
     ) -> Self {
         let dependencies = dependencies
@@ -122,7 +122,8 @@ impl DeployIntent {
                 Some((
                     services.get(name)?.name.clone(),
                     deps.iter()
-                        .filter_map(|dep| services.get(dep).map(|spec| spec.name.clone()))
+                        .filter(|dependency| services.contains_key(dependency.service.as_str()))
+                        .cloned()
                         .collect(),
                 ))
             })
@@ -135,7 +136,7 @@ impl DeployIntent {
     #[must_use]
     pub fn with_dependencies(
         mut self,
-        dependencies: BTreeMap<ServiceName, Vec<ServiceName>>,
+        dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
     ) -> Self {
         self.dependencies = dependencies;
         self
@@ -167,7 +168,7 @@ impl DeployIntent {
 
     /// Planner `depends_on` edges used to expand and order `selected`.
     #[must_use]
-    pub fn dependencies(&self) -> &BTreeMap<ServiceName, Vec<ServiceName>> {
+    pub fn dependencies(&self) -> &BTreeMap<ServiceName, Vec<ServiceDependency>> {
         &self.dependencies
     }
 
@@ -194,6 +195,25 @@ impl DeployIntent {
             self.compose_refusal.map(PruneRefusal::from)
         }
     }
+}
+
+/// Compose condition on one Service dependency edge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyCondition {
+    /// Preserve dependency ordering only.
+    ServiceStarted,
+    /// Wait for every observed dependency Service Container to be healthy.
+    ServiceHealthy,
+}
+
+/// One parsed dependency edge used by Deploy planning.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceDependency {
+    /// Service that the dependent Service requires.
+    pub service: ServiceName,
+    /// Condition the dependency must satisfy before the dependent starts.
+    pub condition: DependencyCondition,
 }
 
 /// Unprofiled Services always start; otherwise any requested profile match starts them.
@@ -283,6 +303,12 @@ pub enum DeployOperation {
     CreateVolume {
         machine_id: MachineId,
         volume: ServiceVolume,
+    },
+    /// Wait for every observed Service Container of `dependency` before starting `dependent`.
+    WaitHealthy {
+        machine_id: MachineId,
+        dependent: QualifiedService,
+        dependency: QualifiedService,
     },
     /// Create and start a container from `spec`.
     RunContainer {
@@ -463,6 +489,11 @@ pub enum DeployWarning {
     IngressHostname(String),
     /// Conflict detection used this Machine's current view and does not claim uniqueness.
     ObserverRelativeHostnameConflict,
+    /// `--skip-health` weakened one `service_healthy` edge to ordering only.
+    SkippedDependencyHealth {
+        dependent: QualifiedService,
+        dependency: QualifiedService,
+    },
 }
 
 impl Display for DeployWarning {
@@ -479,6 +510,13 @@ impl Display for DeployWarning {
             Self::IngressHostname(message) => f.write_str(message),
             Self::ObserverRelativeHostnameConflict => f.write_str(
                 "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness.",
+            ),
+            Self::SkippedDependencyHealth {
+                dependent,
+                dependency,
+            } => write!(
+                f,
+                "--skip-health treats dependency {dependent} -> {dependency} as service_started"
             ),
         }
     }
@@ -507,6 +545,23 @@ pub enum HealthFailure {
     },
 }
 
+/// Why a `service_healthy` dependency gate failed.
+#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DependencyHealthFailure {
+    #[error("deploy cancelled")]
+    Cancelled,
+    #[error("no Service Containers were observed")]
+    NoContainers,
+    #[error("container observation failed: {}", error.message)]
+    Observation { error: RpcError },
+    #[error("container {container_id} failed health monitoring: {failure:?}")]
+    Container {
+        container_id: ContainerId,
+        failure: HealthFailure,
+    },
+}
+
 /// Why a pre-deploy hook container did not succeed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -529,6 +584,11 @@ pub enum ExecutionError {
     Health {
         container_id: ContainerId,
         failure: HealthFailure,
+    },
+    #[error("dependency {dependency} failed health gate: {failure}")]
+    DependencyHealth {
+        dependency: QualifiedService,
+        failure: DependencyHealthFailure,
     },
     #[error("hook container {container_id} failed: {failure:?}")]
     Hook {
@@ -646,6 +706,7 @@ impl DeployOperation {
     pub fn machine_id(&self) -> MachineId {
         match self {
             Self::CreateVolume { machine_id, .. }
+            | Self::WaitHealthy { machine_id, .. }
             | Self::RunContainer { machine_id, .. }
             | Self::StopContainer { machine_id, .. }
             | Self::RemoveContainer { machine_id, .. }
@@ -660,6 +721,7 @@ impl DeployOperation {
     #[must_use]
     pub fn service_name(&self) -> Option<&ServiceName> {
         match self {
+            Self::WaitHealthy { dependent, .. } => Some(&dependent.name),
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
             Self::CreateVolume { .. }
@@ -679,6 +741,7 @@ impl DeployOperation {
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
             Self::CreateVolume { .. }
+            | Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
             | Self::RemoveVolume { .. } => None,

@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use ployz_core::RequestedServiceSpec;
+use ployz_core::{RequestedServiceSpec, ServiceDependency};
 use serde::Deserialize;
 use serde_norway::Value;
 use thiserror::Error;
@@ -33,7 +33,7 @@ pub struct ComposeProject {
     pub context: Option<String>,
     pub services: BTreeMap<String, RequestedServiceSpec>,
     pub builds: BTreeMap<String, BuildSpec>,
-    pub dependencies: BTreeMap<String, Vec<String>>,
+    pub dependencies: BTreeMap<String, Vec<ServiceDependency>>,
     pub warnings: Vec<String>,
     pub service_profiles: BTreeMap<String, Vec<String>>,
     pub(super) volumes: BTreeMap<String, RawVolume>,
@@ -67,7 +67,13 @@ impl ComposeProject {
                 return Err(ComposeError::Invalid(format!("undefined service '{name}'")));
             }
             if included.insert(name.clone()) {
-                pending.extend(self.dependencies.get(&name).into_iter().flatten().cloned());
+                pending.extend(
+                    self.dependencies
+                        .get(&name)
+                        .into_iter()
+                        .flatten()
+                        .map(|dependency| dependency.service.to_string()),
+                );
             }
         }
         let mut project = self.clone();
@@ -80,7 +86,7 @@ impl ComposeProject {
             if !included.contains(name) {
                 return false;
             }
-            dependencies.retain(|dependency| included.contains(dependency));
+            dependencies.retain(|dependency| included.contains(dependency.service.as_str()));
             true
         });
         Ok(project)

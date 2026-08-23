@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    ComposePruneRefusal, ContainerKind, MachineFailure, PruneRefusal, QualifiedService, RpcError,
-    RpcErrorCode, ServiceName,
+    ComposePruneRefusal, ContainerKind, DependencyCondition, MachineFailure, PruneRefusal,
+    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
 };
 
 #[test]
@@ -182,7 +182,13 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
         [&db, &web],
         PlanOptions::default(),
     )
-    .with_dependencies(BTreeMap::from([(web.name.clone(), vec![db.name.clone()])]));
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceStarted,
+        }],
+    )]));
     let plan = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
     assert_eq!(
         plan.would_remove,

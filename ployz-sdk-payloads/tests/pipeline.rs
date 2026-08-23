@@ -208,7 +208,7 @@ fn json_fixtures_round_trip_through_rust_types() {
 
     let preview: DeployPreview = decode_fixture(fixture(&fixtures, "deploy_preview"));
     assert_eq!(preview.operations.len(), 1);
-    assert_eq!(preview.warnings.len(), 4);
+    assert_eq!(preview.warnings.len(), 5);
     assert!(matches!(
         preview.operations.first().map(|row| &row.status),
         Some(ployz_core::OperationStatus::Pending)
@@ -472,6 +472,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("readonly __brand: \"ServiceName\""));
     assert!(dts.contains("export type ObservationKind ="));
     assert!(dts.contains("export type DeployWarning ="));
+    assert!(dts.contains("SkippedDependencyHealth:"));
     assert!(dts.contains("export type DeployPreview = Additive<{"));
     assert!(dts.contains("operations: OperationRow[]"));
     assert!(dts.contains("export type OperationRow = Additive<{"));
@@ -489,11 +490,13 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("selected: ServiceAttempt[]"));
     assert!(dts.contains("export type DeployOperation ="));
     assert!(dts.contains("type: \"run_container\""));
+    assert!(dts.contains("type: \"wait_healthy\""));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
     assert!(dts.contains("export type ExecutionError ="));
     assert!(dts.contains("export type MachineAction ="));
     assert!(dts.contains("export type HealthFailure ="));
+    assert!(dts.contains("export type DependencyHealthFailure ="));
     assert!(dts.contains("export type HookFailure ="));
     assert!(dts.contains("type: \"success\""));
     assert!(dts.contains("type: \"failed\""));

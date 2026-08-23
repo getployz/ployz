@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use super::support::*;
 use ployz::deploy::{IngressContext, preview_deploy};
-use ployz_core::ServiceName;
+use ployz_core::{
+    ConfiguredHealthcheck, DependencyCondition, DeployWarning, HealthcheckCommand, HealthcheckSpec,
+    PreDeployHook, ServiceDependency, ServiceName,
+};
 
 #[test]
 fn empty_selected_plans_every_target_service_in_dependency_order() {
@@ -66,8 +69,20 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
     let db = spec("db");
     let web = spec("web");
     let dependencies = BTreeMap::from([
-        (web.name.clone(), vec![db.name.clone()]),
-        (db.name.clone(), vec![web.name.clone()]),
+        (
+            web.name.clone(),
+            vec![ServiceDependency {
+                service: db.name.clone(),
+                condition: DependencyCondition::ServiceStarted,
+            }],
+        ),
+        (
+            db.name.clone(),
+            vec![ServiceDependency {
+                service: web.name.clone(),
+                condition: DependencyCondition::ServiceStarted,
+            }],
+        ),
     ]);
     let intent = DeployIntent::new(
         ProjectName::parse("app").unwrap(),
@@ -108,16 +123,157 @@ fn skip_health_on_options_is_set_on_planned_operations() {
     ));
 }
 
+#[test]
+fn selected_service_healthy_wait_precedes_the_dependent_hook() {
+    let mut db = spec("db");
+    db.container.healthcheck = Some(configured_healthcheck());
+    let mut web = spec("web");
+    web.pre_deploy = Some(PreDeployHook {
+        command: vec!["migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let intent = DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
+        vec![db.clone(), web.clone()],
+        PlanOptions {
+            selected: vec![attempt("web")],
+            ..PlanOptions::default()
+        },
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let plan = preview_deploy(&intent, &snapshot(), IngressContext::default()).unwrap();
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::RunContainer { spec: db, .. },
+            DeployOperation::WaitHealthy {
+                dependent,
+                dependency,
+                ..
+            },
+            DeployOperation::RunHook { spec: hook, .. },
+            DeployOperation::RunContainer { spec: web, .. },
+        ] if db.name.as_str() == "db"
+            && dependent.to_string() == "app/web"
+            && dependency.to_string() == "app/db"
+            && hook.name.as_str() == "web"
+            && web.name.as_str() == "web"
+    ));
+}
+
+#[test]
+fn healthy_dependency_does_not_gate_scale_down() {
+    let mut db = spec("db");
+    db.container.healthcheck = Some(configured_healthcheck());
+    let web = spec("web");
+    let web_service_id = service_id('a');
+    let intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&db, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+    let plan = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![
+                container('b', '1', &web, &web_service_id),
+                container('c', '1', &web, &web_service_id),
+            ],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap();
+
+    assert!(
+        !operations(&plan)
+            .iter()
+            .any(|operation| matches!(operation, DeployOperation::WaitHealthy { .. }))
+    );
+    assert!(plan.warnings.is_empty());
+}
+
+#[test]
+fn skip_health_omits_wait_and_warns_for_each_weakened_edge() {
+    let mut db = spec("db");
+    db.container.healthcheck = Some(configured_healthcheck());
+    let web = spec("web");
+    let intent = DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
+        vec![db.clone(), web.clone()],
+        PlanOptions {
+            skip_health_monitor: true,
+            ..PlanOptions::default()
+        },
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name,
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let plan = preview_deploy(&intent, &snapshot(), IngressContext::default()).unwrap();
+    assert!(
+        !operations(&plan)
+            .iter()
+            .any(|operation| matches!(operation, DeployOperation::WaitHealthy { .. }))
+    );
+    assert!(matches!(
+        plan.warnings.as_slice(),
+        [DeployWarning::SkippedDependencyHealth {
+            dependent,
+            dependency,
+        }] if dependent.to_string() == "app/web" && dependency.to_string() == "app/db"
+    ));
+}
+
+fn configured_healthcheck() -> HealthcheckSpec {
+    HealthcheckSpec::Configured(ConfiguredHealthcheck {
+        test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+        interval_millis: Some(1_000),
+        timeout_millis: Some(1_000),
+        start_period_millis: None,
+        start_interval_millis: None,
+        retries: Some(1),
+    })
+}
+
 fn web_db_worker() -> (
     RequestedServiceSpec,
     RequestedServiceSpec,
     RequestedServiceSpec,
-    BTreeMap<ServiceName, Vec<ServiceName>>,
+    BTreeMap<ServiceName, Vec<ServiceDependency>>,
 ) {
     let db = spec("db");
     let web = spec("web");
     let worker = spec("worker");
-    let dependencies = BTreeMap::from([(web.name.clone(), vec![db.name.clone()])]);
+    let dependencies = BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceStarted,
+        }],
+    )]);
     (db, web, worker, dependencies)
 }
 
@@ -148,6 +304,7 @@ fn run_names(plan: &ployz::deploy::DeployPreview) -> Vec<&str> {
         .filter_map(|row| match &row.operation {
             DeployOperation::RunContainer { spec, .. } => Some(spec.name.as_str()),
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
@@ -165,6 +322,7 @@ fn targets_container(plan: &ployz::deploy::DeployPreview, id: &ContainerId) -> b
         | DeployOperation::StopHook { container_id, .. } => container_id == id,
         DeployOperation::ReplaceContainer(replacement) => &replacement.old_container_id == id,
         DeployOperation::CreateVolume { .. }
+        | DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::RunHook { .. }
         | DeployOperation::RemoveVolume { .. } => false,

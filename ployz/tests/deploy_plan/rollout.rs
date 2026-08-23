@@ -213,6 +213,7 @@ fn global_hook_uses_a_changed_machine_with_an_extra_slot() {
         .filter_map(|operation| match operation {
             DeployOperation::RunContainer { machine_id, .. } => Some(machine_id),
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)

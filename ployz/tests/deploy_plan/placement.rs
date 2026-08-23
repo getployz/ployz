@@ -97,6 +97,7 @@ fn new_named_volume_containers_default_to_stop_first_in_every_mode() {
             .filter_map(|operation| match operation {
                 DeployOperation::RunContainer { spec, .. } => Some(spec.update.order),
                 DeployOperation::CreateVolume { .. }
+                | DeployOperation::WaitHealthy { .. }
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(_)
@@ -374,6 +375,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
         .map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => *machine_id,
             other @ (DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
@@ -399,6 +401,7 @@ fn empty_placement_keeps_every_eligible_machine_and_all_is_a_name() {
             .map(|row| match &row.operation {
                 DeployOperation::RunContainer { machine_id, .. } => *machine_id,
                 other @ (DeployOperation::CreateVolume { .. }
+                | DeployOperation::WaitHealthy { .. }
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(..)
@@ -533,6 +536,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
             .find_map(|row| match &row.operation {
                 DeployOperation::ReplaceContainer(operation) => Some(operation.spec.update.order),
                 DeployOperation::CreateVolume { .. }
+                | DeployOperation::WaitHealthy { .. }
                 | DeployOperation::RunContainer { .. }
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
@@ -593,6 +597,7 @@ fn two_global_services_sharing_a_missing_volume_create_it_once_per_machine() {
         .filter_map(|row| match &row.operation {
             DeployOperation::CreateVolume { machine_id, .. } => Some(*machine_id),
             DeployOperation::RunContainer { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
@@ -908,6 +913,7 @@ fn run_machine_ids(plan: &DeployPreview) -> Vec<MachineId> {
         .filter_map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => Some(*machine_id),
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)

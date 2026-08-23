@@ -1,8 +1,9 @@
 use std::{collections::VecDeque, sync::Mutex};
 
 use ployz_core::{
-    ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName, HealthFailure,
-    HealthObservation, ProjectName, ServiceVolumeReference, VolumeSource,
+    ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
+    HealthFailure, HealthObservation, MembershipObservation, ProjectName, ServiceName,
+    ServiceVolumeReference, VolumeSource,
 };
 
 use crate::deploy::{DeployOutcome, DeploySnapshot, FailedOperation};
@@ -12,6 +13,17 @@ use super::*;
 
 fn test_project() -> ProjectName {
     ProjectName::parse("app").unwrap()
+}
+
+#[test]
+fn dependency_health_requires_only_rpc_eligible_observations() {
+    assert!(omission_requires_observation(None));
+    for membership in [MembershipObservation::Up, MembershipObservation::Suspect] {
+        assert!(omission_requires_observation(Some(&membership)));
+    }
+    for membership in [MembershipObservation::Down, MembershipObservation::Unknown] {
+        assert!(!omission_requires_observation(Some(&membership)));
+    }
 }
 
 async fn execute_with<C: MachineOperations>(
@@ -31,6 +43,7 @@ async fn execute_with<C: MachineOperations>(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Call {
+    List(QualifiedService),
     CreateVolume(MachineId),
     Create(MachineId, ContainerKind),
     Start(MachineId, ContainerId),
@@ -44,6 +57,7 @@ enum Call {
 #[derive(Clone)]
 enum Reply {
     Ok,
+    Listed(Vec<ContainerObservation>),
     Created(ContainerId),
     Observed(
         ContainerRuntimeObservation,
@@ -83,6 +97,19 @@ impl Scripted {
 }
 
 impl MachineOperations for Scripted {
+    async fn service_containers(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        match self.next(Call::List(service.clone())) {
+            Reply::Listed(containers) => Ok(containers),
+            Reply::Error(error) => Err(error),
+            Reply::Ok | Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
+                panic!("scripted list requires Listed or Error")
+            }
+        }
+    }
+
     async fn create_volume(
         &self,
         machine_id: &MachineId,
@@ -104,7 +131,7 @@ impl MachineOperations for Scripted {
                 container_id,
             }),
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Observed(_, _) | Reply::Pending => {
+            Reply::Ok | Reply::Listed(_) | Reply::Observed(_, _) | Reply::Pending => {
                 panic!("scripted create requires Created or Error")
             }
         }
@@ -131,7 +158,7 @@ impl MachineOperations for Scripted {
             }
             Reply::Pending => std::future::pending().await,
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Created(_) => {
+            Reply::Ok | Reply::Listed(_) | Reply::Created(_) => {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
@@ -167,7 +194,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
     match reply {
         Reply::Ok => Ok(()),
         Reply::Error(error) => Err(error),
-        Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
+        Reply::Listed(_) | Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
             panic!("scripted mutation requires Ok or Error")
         }
     }
@@ -374,6 +401,10 @@ fn observed_with_healthcheck(
     healthcheck: ployz_core::HealthcheckSpec,
 ) -> Step {
     Step(call, Reply::Observed(runtime, Some(healthcheck)))
+}
+
+fn listed(service: &QualifiedService, containers: Vec<ContainerObservation>) -> Step {
+    Step(Call::List(service.clone()), Reply::Listed(containers))
 }
 
 fn failed(call: Call, message: &str) -> Step {

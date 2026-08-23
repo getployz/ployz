@@ -107,6 +107,7 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
         .map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => *machine_id,
             other @ (DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)

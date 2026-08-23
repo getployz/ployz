@@ -6,11 +6,11 @@ use std::{
 
 use ployz_core::{
     ConfiguredHealthcheck, ContainerHostname, ContainerLabels, ContainerPath, ContainerResources,
-    DeviceMapping, DeviceReservation, DockerVolumeName, ExtraHost, HEALTHCHECK_DISABLE_SENTINEL,
-    HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath, MachineTarget, Placement,
-    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceConfigGraph,
-    ServiceContainerSpec, ServiceMode, ServiceName, ServiceVolumeGraph, Ulimit, UpdateConfig,
-    UpdateOrder,
+    DependencyCondition, DeviceMapping, DeviceReservation, DockerVolumeName, ExtraHost,
+    HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath,
+    MachineTarget, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
+    ServiceConfigGraph, ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceName,
+    ServiceVolumeGraph, Ulimit, UpdateConfig, UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -69,18 +69,14 @@ pub(super) fn convert_raw_project(
     let mut warnings = Vec::new();
     for (service_name, service) in &raw.services {
         warnings.extend(classify(service_name, service)?);
-        let service_dependencies = dependency_names(service);
+        let service_dependencies = service_dependencies(service_name, service)?;
         if let Some(missing) = service_dependencies
             .iter()
-            .find(|dependency| !raw.services.contains_key(*dependency))
+            .find(|dependency| !raw.services.contains_key(dependency.service.as_str()))
         {
             return Err(invalid(format!(
-                "service '{service_name}' depends on undefined service '{missing}'"
-            )));
-        }
-        if completed_dependency(service) {
-            return Err(invalid(format!(
-                "service '{service_name}': depends_on condition 'service_completed_successfully' is not supported; use x-pre_deploy"
+                "service '{service_name}' depends on undefined service '{}'",
+                missing.service
             )));
         }
         dependencies.insert(service_name.clone(), service_dependencies);
@@ -93,6 +89,23 @@ pub(super) fn convert_raw_project(
             builds.insert(service_name.clone(), build);
         }
         services.insert(service_name.clone(), spec);
+    }
+    for (dependent, service_dependencies) in &dependencies {
+        for dependency in service_dependencies {
+            if dependency.condition == DependencyCondition::ServiceHealthy
+                && !matches!(
+                    services
+                        .get(dependency.service.as_str())
+                        .and_then(|spec| spec.container.healthcheck.as_ref()),
+                    Some(HealthcheckSpec::Configured(_))
+                )
+            {
+                return Err(invalid(format!(
+                    "service '{dependent}': depends_on service '{}' uses condition 'service_healthy', but that service has no configured healthcheck",
+                    dependency.service
+                )));
+            }
+        }
     }
     Ok(ComposeProject {
         name,
@@ -125,7 +138,13 @@ impl ComposeProject {
                 return Err(invalid(format!("dependency cycle at service '{name}'")));
             }
             for dependency in project.dependencies.get(name).into_iter().flatten() {
-                visit(dependency, project, visiting, visited, ordered)?;
+                visit(
+                    dependency.service.as_str(),
+                    project,
+                    visiting,
+                    visited,
+                    ordered,
+                )?;
             }
             visiting.remove(name);
             visited.insert(name);
@@ -744,35 +763,80 @@ pub(super) fn string_list(value: &RawStringList) -> Result<Vec<String>, ComposeE
         .collect()
 }
 
-fn dependency_names(service: &RawService) -> Vec<String> {
+fn service_dependencies(
+    service_name: &str,
+    service: &RawService,
+) -> Result<Vec<ServiceDependency>, ComposeError> {
     match &service.depends_on {
         Value::Mapping(map) => map
-            .keys()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
+            .iter()
+            .map(|(name, value)| {
+                let name = name
+                    .as_str()
+                    .ok_or_else(|| invalid("depends_on service names must be strings"))?;
+                let condition = match value {
+                    Value::Mapping(options) => {
+                        if options.contains_key(Value::String("restart".into())) {
+                            return Err(invalid(format!(
+                                "service '{service_name}': depends_on service '{name}' uses unsupported 'restart'"
+                            )));
+                        }
+                        match options.get(Value::String("required".into())) {
+                            None | Some(Value::Bool(true)) => {}
+                            Some(Value::Bool(false)) => {
+                                return Err(invalid(format!(
+                                    "service '{service_name}': depends_on service '{name}' uses unsupported 'required: false'"
+                                )));
+                            }
+                            Some(_) => {
+                                return Err(invalid(format!(
+                                    "service '{service_name}': depends_on service '{name}' field 'required' must be true when present"
+                                )));
+                            }
+                        }
+                        match mapping_string(options, "condition").as_deref() {
+                            None | Some("service_started") => DependencyCondition::ServiceStarted,
+                            Some("service_healthy") => DependencyCondition::ServiceHealthy,
+                            Some("service_completed_successfully") => {
+                                return Err(invalid(format!(
+                                    "service '{service_name}': depends_on condition 'service_completed_successfully' is not supported; use x-pre_deploy"
+                                )));
+                            }
+                            Some(condition) => {
+                                return Err(invalid(format!(
+                                    "service '{service_name}': depends_on condition '{condition}' is not supported"
+                                )));
+                            }
+                        }
+                    }
+                    Value::Null => DependencyCondition::ServiceStarted,
+                    Value::Bool(_)
+                    | Value::Number(_)
+                    | Value::String(_)
+                    | Value::Sequence(_)
+                    | Value::Tagged(_) => {
+                        return Err(invalid(format!(
+                            "service '{service_name}': depends_on service '{name}' must be a mapping"
+                        )));
+                    }
+                };
+                Ok(ServiceDependency {
+                    service: ServiceName::parse(name).map_err(invalid)?,
+                    condition,
+                })
+            })
             .collect(),
-        Value::Sequence(values) => values
+        Value::Sequence(values) => Ok(values
             .iter()
             .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect(),
+            .map(|name| ServiceName::parse(name).map(|service| ServiceDependency {
+                service,
+                condition: DependencyCondition::ServiceStarted,
+            }).map_err(invalid))
+            .collect::<Result<_, _>>()?),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {
-            Vec::new()
+            Ok(Vec::new())
         }
-    }
-}
-
-fn completed_dependency(service: &RawService) -> bool {
-    match &service.depends_on {
-        Value::Mapping(map) => map.values().any(|value| {
-            matches!(value, Value::Mapping(dependency) if mapping_string(dependency, "condition").as_deref() == Some("service_completed_successfully"))
-        }),
-        Value::Null
-        | Value::Bool(_)
-        | Value::Number(_)
-        | Value::String(_)
-        | Value::Sequence(_)
-        | Value::Tagged(_) => false,
     }
 }
 

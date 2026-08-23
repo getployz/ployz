@@ -9,6 +9,132 @@ fn parse_monitor_period_accepts_zero_and_seconds() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn dependency_gate_waits_for_all_service_containers_before_the_dependent() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    let dependent = QualifiedService::parse("app/web").unwrap();
+    let first_id = container('a');
+    let second_id = container('b');
+    let mut first = observation(&machine('1'), &first_id, healthy());
+    first.resolved_spec.container.healthcheck = Some(healthcheck());
+    let mut second = observation(&machine('2'), &second_id, starting());
+    second.resolved_spec.container.healthcheck = Some(healthcheck());
+    let mut second_healthy = second.clone();
+    second_healthy.runtime = healthy();
+    let new = container('c');
+    let mut web = spec(Some(0), None, None);
+    web.name = ServiceName::parse("web").unwrap();
+    let plan = vec![
+        DeployOperation::WaitHealthy {
+            machine_id: machine('1'),
+            dependent,
+            dependency: dependency.clone(),
+        },
+        run(&machine('1'), web, true),
+    ];
+    let client = Scripted::new(vec![
+        listed(&dependency, vec![first.clone(), second]),
+        listed(&dependency, vec![first, second_healthy]),
+        created(
+            Call::Create(machine('1'), ContainerKind::ServiceContainer),
+            &new,
+        ),
+        ok(Call::Start(machine('1'), new)),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn dependency_gate_rejects_zero_service_containers_and_hooks() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    for containers in [Vec::new(), {
+        let id = container('a');
+        let mut hook = observation(&machine('1'), &id, healthy());
+        hook.kind = ContainerKind::PreDeployHook;
+        vec![hook]
+    }] {
+        let plan = vec![DeployOperation::WaitHealthy {
+            machine_id: machine('1'),
+            dependent: QualifiedService::parse("app/web").unwrap(),
+            dependency: dependency.clone(),
+        }];
+        let client = Scripted::new(vec![listed(&dependency, containers)]);
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(matches!(
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::DependencyHealth {
+                        failure: DependencyHealthFailure::NoContainers,
+                        ..
+                    },
+                    ..
+                },
+                ..
+            }
+        ));
+        client.assert_done();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    for (runtime, polls, expected) in [
+        (unhealthy(), 6, "runtime"),
+        (starting(), 8, "timed_out"),
+        (running(), 8, "timed_out"),
+        (ContainerRuntimeObservation::Restarting, 6, "runtime"),
+    ] {
+        let id = container('a');
+        let mut observed = observation(&machine('1'), &id, runtime);
+        observed.resolved_spec.container.healthcheck = Some(healthcheck());
+        let plan = vec![DeployOperation::WaitHealthy {
+            machine_id: machine('1'),
+            dependent: QualifiedService::parse("app/web").unwrap(),
+            dependency: dependency.clone(),
+        }];
+        let client = Scripted::new(
+            (0..polls)
+                .map(|_| listed(&dependency, vec![observed.clone()]))
+                .collect(),
+        );
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        let DeployOutcome::Failed {
+            failed:
+                FailedOperation::Operation {
+                    error:
+                        ExecutionError::DependencyHealth {
+                            failure: DependencyHealthFailure::Container { failure, .. },
+                            ..
+                        },
+                    ..
+                },
+            ..
+        } = outcome
+        else {
+            panic!("unexpected outcome: {outcome:?}");
+        };
+        assert_eq!(
+            match failure {
+                HealthFailure::TimedOut => "timed_out",
+                HealthFailure::Runtime { .. } => "runtime",
+                HealthFailure::Cancelled => "cancelled",
+            },
+            expected
+        );
+        client.assert_done();
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn health_monitor_accepts_running_no_check_inherited_starting_and_transient_unhealthy() {
     let machine = machine('1');
     let no_check = container('a');
