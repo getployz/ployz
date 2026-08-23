@@ -97,6 +97,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         },
     );
     config.save()?;
+    if let Some(current_context) = config.current_context() {
+        println!("Switched context to '{current_context}'");
+    }
     let want_caddy = !matches.get_flag("no-caddy");
     let want_dns = !matches.get_flag("no-dns");
     runtime()?.block_on(async {
