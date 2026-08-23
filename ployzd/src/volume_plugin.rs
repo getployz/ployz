@@ -5,10 +5,19 @@ use std::{
     str::FromStr, sync::Arc,
 };
 
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    extract::{Request, State},
+    http::{HeaderValue, header::CONTENT_TYPE},
+    middleware::{self, Next},
+    response::Response,
+    routing::post,
+};
 use ployzd::machine_pool::{self, MachinePool};
 use serde::{Deserialize, Serialize};
 use tokio::{net::UnixListener, process::Command, sync::Mutex};
+
+mod removal;
 
 const DATASET_ROOT: &str = "ployz";
 const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
@@ -155,22 +164,17 @@ impl VolumeStorage {
     async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
-        let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name());
         let expected_mountpoint = name.mountpoint();
         let mut dataset = self
-            .datasets(&pool)
+            .dataset(&pool, name)
             .await?
-            .into_iter()
-            .find(|dataset| dataset.name == volume)
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_mountpoint(&expected_mountpoint)?;
         if !dataset.mounted {
-            self.zfs(&["mount", &volume]).await?;
+            self.zfs(&["mount", &dataset.name]).await?;
             dataset = self
-                .datasets(&pool)
+                .dataset(&pool, name)
                 .await?
-                .into_iter()
-                .find(|dataset| dataset.name == volume)
                 .ok_or_else(|| format!("Provisioned Volume {name} disappeared while mounting"))?;
             dataset.require_mountpoint(&expected_mountpoint)?;
         }
@@ -181,13 +185,15 @@ impl VolumeStorage {
     }
 
     async fn one_pool(&self) -> Result<MachinePool> {
+        self.usable_pool().await?.ok_or_else(|| {
+            "no usable existing Machine Pool; automatic Pool creation is tracked by #541".into()
+        })
+    }
+
+    async fn usable_pool(&self) -> Result<Option<MachinePool>> {
         let output =
             checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
-        machine_pool::one_usable(&output)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| {
-                "no usable existing Machine Pool; automatic Pool creation is tracked by #541".into()
-            })
+        Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
     }
 
     async fn datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
@@ -205,6 +211,27 @@ impl VolumeStorage {
             .lines()
             .map(|line| Dataset::parse(line, pool.name()))
             .collect()
+    }
+
+    async fn dataset(
+        &self,
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Result<Option<Dataset>> {
+        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
+        let datasets = self.datasets(pool).await?;
+        if !datasets.iter().any(|dataset| dataset.name == requested) {
+            return Ok(None);
+        }
+        let root = format!("{}/{DATASET_ROOT}", pool.name());
+        datasets
+            .iter()
+            .find(|dataset| dataset.name == root)
+            .ok_or_else(|| format!("ZFS did not report managed root dataset {root}"))?
+            .require_mountpoint(MOUNT_ROOT)?;
+        Ok(datasets
+            .into_iter()
+            .find(|dataset| dataset.name == requested))
     }
 
     async fn zfs(&self, args: &[&str]) -> Result<String> {
@@ -264,6 +291,17 @@ impl Dataset {
             self.name, self.mountpoint
         )
         .into())
+    }
+
+    fn require_provisioned(&self, name: &DockerVolumeName) -> Result<()> {
+        if self.refquota == 0 {
+            return Err(format!(
+                "ZFS dataset {} has no Provisioned Volume bound; refusing to use it",
+                self.name
+            )
+            .into());
+        }
+        self.require_mountpoint(&name.mountpoint())
     }
 }
 
@@ -392,12 +430,23 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
     let router = Router::new()
         .route("/Plugin.Activate", post(activate))
         .route("/VolumeDriver.Create", post(create))
+        .route("/VolumeDriver.Remove", post(removal::remove))
+        .route("/VolumeDriver.Get", post(removal::get))
         .route("/VolumeDriver.Mount", post(mount))
         .route("/VolumeDriver.Unmount", post(unmount))
         .route("/VolumeDriver.Path", post(mount))
         .route("/VolumeDriver.Capabilities", post(capabilities))
+        .layer(middleware::from_fn(legacy_plugin_json))
         .with_state(storage);
     axum::serve(listener, router).await
+}
+
+async fn legacy_plugin_json(mut request: Request, next: Next) -> Response {
+    request
+        .headers_mut()
+        .entry(CONTENT_TYPE)
+        .or_insert(HeaderValue::from_static("application/json"));
+    next.run(request).await
 }
 
 async fn activate() -> Json<serde_json::Value> {
@@ -412,6 +461,10 @@ async fn create(
         Ok(name) => storage.create(&name, &request.options).await,
         Err(error) => Err(error),
     };
+    error_response(result)
+}
+
+fn error_response(result: Result<()>) -> Json<ErrorResponse> {
     Json(ErrorResponse {
         error: result
             .err()
@@ -492,6 +545,9 @@ mod tests {
         }
     }
 
+    #[path = "remove_tests.rs"]
+    mod remove_tests;
+
     #[tokio::test]
     async fn docker_can_create_and_mount_a_bounded_volume() {
         let test = TestDir::new();
@@ -559,7 +615,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_and_mount_reject_an_existing_child_outside_the_managed_root() {
+    async fn create_mount_and_remove_reject_a_child_outside_the_managed_root() {
         let test = TestDir::new();
         fs::write(test.0.join("root"), "").unwrap();
         fs::write(test.0.join("volume"), "").unwrap();
@@ -582,6 +638,7 @@ mod tests {
                 json!({"Name":"data","ID":"container"}),
             )
             .await,
+            post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await,
         ] {
             let message = error(&response);
             assert!(message.contains("tank/ployz/data"));
@@ -591,6 +648,7 @@ mod tests {
         let log = fs::read_to_string(test.0.join("commands")).unwrap();
         assert!(!log.contains("zfs create"));
         assert!(!log.contains("zfs mount"));
+        assert!(!log.contains("zfs destroy"));
         server.abort();
     }
 
@@ -844,7 +902,7 @@ mod tests {
         stream
             .write_all(
                 format!(
-                    "POST {route} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "POST {route} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 )
                 .as_bytes(),
@@ -873,7 +931,10 @@ mod tests {
         let incompatible_root = directory.join("incompatible-root");
         let volume = directory.join("volume");
         let incompatible_volume = directory.join("incompatible-volume");
+        let unbounded_volume = directory.join("unbounded-volume");
+        let sibling = directory.join("sibling");
         let mounted = directory.join("mounted");
+        let destroy_fails = directory.join("destroy-fails");
         let script_body = format!(
             r#"#!/bin/sh
 set -eu
@@ -893,12 +954,20 @@ case "$*" in
     if [ -e '{volume}' ]; then
       if [ -e '{mounted}' ]; then state=yes; else state=no; fi
       if [ -e '{incompatible_volume}' ]; then volume_mountpoint=/srv/data; else volume_mountpoint=/var/lib/ployz-volumes/data; fi
-      printf 'tank/ployz/data\t1073741824\t24576\t1073717248\t%s\t%s\n' "$volume_mountpoint" "$state"
+      if [ -e '{unbounded_volume}' ]; then refquota=none; else refquota=1073741824; fi
+      printf 'tank/ployz/data\t%s\t24576\t1073717248\t%s\t%s\n' "$refquota" "$volume_mountpoint" "$state"
+    fi
+    if [ -e '{sibling}' ]; then
+      printf 'tank/ployz/sibling\t1073741824\t24576\t1073717248\t/var/lib/ployz-volumes/sibling\tno\n'
     fi
     ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
+  'destroy tank/ployz/data')
+    if [ -e '{destroy_fails}' ]; then echo 'dataset is busy' >&2; exit 1; fi
+    rm -f '{volume}' '{mounted}'
+    ;;
   *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
 esac
 "#,
@@ -908,7 +977,10 @@ esac
             incompatible_root = incompatible_root.display(),
             volume = volume.display(),
             incompatible_volume = incompatible_volume.display(),
+            unbounded_volume = unbounded_volume.display(),
+            sibling = sibling.display(),
             mounted = mounted.display(),
+            destroy_fails = destroy_fails.display(),
         );
         fs::write(&script, script_body).unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
