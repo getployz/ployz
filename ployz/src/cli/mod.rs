@@ -94,6 +94,10 @@ fn value(name: &'static str, short: Option<char>) -> Arg {
     }
 }
 
+fn json_output() -> Arg {
+    value("output", Some('o')).value_parser(["json"])
+}
+
 fn many(name: &'static str, short: Option<char>) -> Arg {
     value(name, short)
         .action(ArgAction::Append)
@@ -221,7 +225,7 @@ fn image() -> Command {
             base("ls", "List images")
                 .visible_alias("list")
                 .arg(many("machine", Some('m')))
-                .arg(value("output", Some('o')).value_parser(["json"]))
+                .arg(json_output())
                 .arg(positional("image", false)),
         )
         .subcommand(
@@ -384,7 +388,11 @@ fn machine_init() -> Command {
 fn project() -> Command {
     base("project", "Manage projects")
         .arg_required_else_help(true)
-        .subcommand(base("ls", "List projects").visible_alias("list"))
+        .subcommand(
+            base("ls", "List projects")
+                .visible_alias("list")
+                .arg(json_output()),
+        )
         .subcommand(
             base("rm", "Remove a project")
                 .visible_aliases(["remove", "delete"])
@@ -409,15 +417,17 @@ fn proxy() -> Command {
 }
 
 fn ps() -> Command {
-    base("ps", "List service containers").arg(
-        value("sort", Some('s'))
-            .default_value("service")
-            .value_parser(["service", "machine", "health"]),
-    )
+    base("ps", "List service containers")
+        .arg(
+            value("sort", Some('s'))
+                .default_value("service")
+                .value_parser(["service", "machine", "health"]),
+        )
+        .arg(json_output())
 }
 
 fn service_ls(name: &'static str) -> Command {
-    base(name, "List services")
+    base(name, "List services").arg(json_output())
 }
 
 fn service_rm(name: &'static str) -> Command {
@@ -518,7 +528,8 @@ fn volume() -> Command {
             base("ls", "List volumes")
                 .visible_alias("list")
                 .arg(many("machine", Some('m')))
-                .arg(switch("quiet", Some('q'))),
+                .arg(switch("quiet", Some('q')))
+                .arg(json_output()),
         )
         .subcommand(
             base("rm", "Remove volumes")

@@ -17,9 +17,9 @@ use ployz::{
 use ployz_core::{
     CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId,
     DockerVolumeName, LogsOptions, MachineId, MachineRpcServer, MembershipObservation,
-    PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
+    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tokio_util::sync::CancellationToken;
@@ -280,6 +280,147 @@ async fn volume_listing_retains_successes_and_target_failures() {
     assert_eq!(failure.machine_id, machine_id('b'));
     assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
     server.abort();
+}
+
+#[tokio::test]
+async fn listing_commands_emit_full_json_and_preserve_human_output() {
+    let mut service = DiscoveryService::new(test_description());
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(listing_container());
+    service.listed_volumes.lock().unwrap().insert(
+        machine_id('a'),
+        vec![DockerVolume {
+            id: DockerVolumeId {
+                machine_id: machine_id('a'),
+                name: DockerVolumeName::parse("data").unwrap(),
+            },
+            driver: "local".into(),
+            options: BTreeMap::from([("type".into(), "none".into())]),
+            labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "app".into())]),
+        }],
+    );
+    let mut down = machine('b', "down");
+    down.membership = MembershipObservation::Down;
+    service.machines.push(down);
+    let (address, server) = serve_discovery(service).await;
+
+    let json_cases: &[(&[&str], &str, &str)] = &[
+        (&["ls", "--output", "json"], "/0/identity", "app/api"),
+        (
+            &["service", "ls", "-o", "json"],
+            "/0/containers/0/resolved_spec/container/image",
+            "alpine:3.23.3",
+        ),
+        (
+            &["ps", "--output", "json"],
+            "/0/resolved_spec/container/image",
+            "alpine:3.23.3",
+        ),
+        (
+            &["volume", "ls", "-q", "-o", "json"],
+            "/0/volume/options/type",
+            "none",
+        ),
+        (
+            &["project", "ls", "--output", "json"],
+            "/0/services/0",
+            "app/api",
+        ),
+    ];
+    for (args, pointer, expected) in json_cases {
+        let output = run_ployz(address, args).await;
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        let document: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| panic!("{args:?}: {error}: {output:?}"));
+        assert_eq!(
+            document.pointer(pointer).and_then(Value::as_str),
+            Some(*expected),
+            "{args:?}: {document}"
+        );
+        assert!(!output.stderr.is_empty(), "{args:?}: expected diagnostics");
+    }
+
+    let service_id = "c".repeat(32);
+    let container_id = "c".repeat(64);
+    let machine_id = "a".repeat(32);
+    let human_cases = [
+        (
+            &["ls"][..],
+            format!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1\t0\n"),
+        ),
+        (
+            &["service", "ls"][..],
+            format!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1\t0\n"),
+        ),
+        (
+            &["ps"][..],
+            format!(
+                "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\tRunning {{ health: Healthy }}\n"
+            ),
+        ),
+        (
+            &["volume", "ls"][..],
+            "MACHINE\tVOLUME\tDRIVER\none\tdata\tlocal\n".into(),
+        ),
+        (
+            &["project", "ls"][..],
+            "PROJECT\tSERVICES\tVOLUMES\napp\t1\t1\n".into(),
+        ),
+    ];
+    for (args, expected) in human_cases {
+        let output = run_ployz(address, args).await;
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{args:?}"
+        );
+    }
+    let quiet = run_ployz(address, &["volume", "ls", "-q"]).await;
+    assert!(quiet.status.success(), "{quiet:?}");
+    assert_eq!(quiet.stdout, b"data\n");
+    server.abort();
+}
+
+async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process::Output {
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--connect")
+        .arg(format!("tcp://{address}"))
+        .args(args)
+        .output()
+        .await
+        .unwrap()
+}
+
+fn listing_container() -> ployz_core::ContainerObservation {
+    let service_id = ployz_core::ServiceId::parse("c".repeat(32)).unwrap();
+    let service_name = ployz_core::ServiceName::parse("api").unwrap();
+    ployz_core::ContainerObservation {
+        container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+        display_name: "api-1".into(),
+        created_at_unix_nanos: 1,
+        machine_id: machine_id('a'),
+        project_name: ployz_core::ProjectName::parse("app").unwrap(),
+        service_id,
+        service_name: service_name.clone(),
+        kind: ployz_core::ContainerKind::ServiceContainer,
+        runtime: ployz_core::ContainerRuntimeObservation::Running {
+            health: ployz_core::HealthObservation::Healthy,
+        },
+        effective_healthcheck: None,
+        resolved_spec: serde_json::from_value(json!({
+            "service_id": service_id,
+            "name": service_name,
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
+        }))
+        .unwrap(),
+        address: None,
+        labels: BTreeMap::from([("detail".into(), "preserved".into())]),
+    }
 }
 
 #[tokio::test]

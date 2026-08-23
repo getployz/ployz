@@ -59,10 +59,13 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selectors = string_values(matches, "machine");
     let quiet = matches.get_flag("quiet");
+    let json = matches.get_one::<String>("output").map(String::as_str) == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let (volumes, result) = discover(client, &selectors).await?;
-            if quiet {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&volumes)?);
+            } else if quiet {
                 for volume in &volumes {
                     println!("{}", volume.volume.id.name);
                 }

@@ -63,6 +63,20 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
         actual.remove("ployz cloud enroll").unwrap();
     }
     if deviations.contains("project-list-and-remove") {
+        if deviations.contains("listing-json-output") {
+            assert_eq!(
+                actual
+                    .get("ployz project ls")
+                    .expect("project ls is present before its deviation is removed")
+                    .flags
+                    .get("output"),
+                Some(&Flag {
+                    short: Some('o'),
+                    default: None,
+                    env: None,
+                })
+            );
+        }
         actual.remove("ployz project").unwrap();
         actual.remove("ployz project ls").unwrap();
         actual.remove("ployz project rm").unwrap();
@@ -94,6 +108,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "fixed-wireguard-port".to_owned(),
             "images-json-output".to_owned(),
             "local-machine-init-stub".to_owned(),
+            "listing-json-output".to_owned(),
             "machine-remove-named-data-loss".to_owned(),
             "machine-inspect-telemetry".to_owned(),
             "native-completion".to_owned(),
@@ -180,6 +195,20 @@ fn reference_shape(
     }
     if matches!(command_path.as_str(), "ployz images" | "ployz image ls")
         && deviations.contains("images-json-output")
+    {
+        flags.insert(
+            "output".into(),
+            Flag {
+                short: Some('o'),
+                default: None,
+                env: None,
+            },
+        );
+    }
+    if matches!(
+        command_path.as_str(),
+        "ployz ls" | "ployz ps" | "ployz service ls" | "ployz volume ls"
+    ) && deviations.contains("listing-json-output")
     {
         flags.insert(
             "output".into(),
@@ -515,6 +544,44 @@ fn outer_brackets(token: &str) -> bool {
         }
     }
     false
+}
+
+#[test]
+fn listing_json_output_accepts_only_json_in_long_and_short_forms() {
+    let paths: &[&[&str]] = &[
+        &["ls"],
+        &["ps"],
+        &["service", "ls"],
+        &["volume", "ls"],
+        &["project", "ls"],
+    ];
+    for path in paths {
+        for flag in ["--output", "-o"] {
+            let mut args = vec!["ployz"];
+            args.extend_from_slice(path);
+            args.extend([flag, "json"]);
+            let matches = ployz::cli::command().try_get_matches_from(args).unwrap();
+            let mut leaf = &matches;
+            while let Some((_, child)) = leaf.subcommand() {
+                leaf = child;
+            }
+            assert_eq!(
+                leaf.get_one::<String>("output").map(String::as_str),
+                Some("json"),
+                "{} {flag}",
+                path.join(" ")
+            );
+        }
+
+        let mut args = vec!["ployz"];
+        args.extend_from_slice(path);
+        args.extend(["--output", "yaml"]);
+        assert!(
+            ployz::cli::command().try_get_matches_from(args).is_err(),
+            "{} accepted a non-JSON output format",
+            path.join(" ")
+        );
+    }
 }
 
 #[test]

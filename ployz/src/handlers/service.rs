@@ -8,52 +8,85 @@ use ployz_core::{
 
 use super::{Error, leaf_matches, with_client};
 
+/// List the observed Services.
+///
+/// # Errors
+///
+/// Returns a connection, RPC, or serialization error.
 pub fn list(root: &ArgMatches) -> Result<(), Error> {
+    let json = leaf_matches(root)
+        .get_one::<String>("output")
+        .map(String::as_str)
+        == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services().await?;
             print_observation_warning(&live);
-            println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
-            for service in live.services() {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    service.service_id,
-                    service.identity,
-                    service.containers.len(),
-                    service.hook_containers.len()
-                );
+            let services = live.services();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&services)?);
+            } else {
+                println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
+                for service in services {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        service.service_id,
+                        service.identity,
+                        service.containers.len(),
+                        service.hook_containers.len()
+                    );
+                }
             }
             Ok(())
         })
     })
 }
 
+/// List observed Service and hook Containers.
+///
+/// # Errors
+///
+/// Returns a connection, RPC, or serialization error.
 pub fn processes(root: &ArgMatches) -> Result<(), Error> {
-    let sort = leaf_matches(root)
+    let matches = leaf_matches(root);
+    let sort = matches
         .get_one::<String>("sort")
         .cloned()
         .ok_or_else(|| Error::usage("sort order is required"))?;
+    let json = matches.get_one::<String>("output").map(String::as_str) == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services().await?;
             print_observation_warning(&live);
-            println!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
             let services = live.services();
             let mut containers = services
                 .iter()
                 .flat_map(ployz_core::ServiceObservation::members)
                 .collect::<Vec<_>>();
             sort_processes(&mut containers, &sort);
-            for container in containers {
-                let observation = container.as_observation();
+            if json {
                 println!(
-                    "{}\t{}\t{}\t{}\t{:?}",
-                    observation.container_id,
-                    observation.identity(),
-                    process_kind(container),
-                    observation.machine_id,
-                    observation.runtime
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &containers
+                            .iter()
+                            .map(|container| container.as_observation())
+                            .collect::<Vec<_>>()
+                    )?
                 );
+            } else {
+                println!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
+                for container in containers {
+                    let observation = container.as_observation();
+                    println!(
+                        "{}\t{}\t{}\t{}\t{:?}",
+                        observation.container_id,
+                        observation.identity(),
+                        process_kind(container),
+                        observation.machine_id,
+                        observation.runtime
+                    );
+                }
             }
             Ok(())
         })

@@ -9,6 +9,10 @@ use crate::{
 use super::{Error, data_loss, leaf_matches, required, string_values, with_client};
 
 pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
+    let json = leaf_matches(root)
+        .get_one::<String>("output")
+        .map(String::as_str)
+        == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
@@ -16,20 +20,25 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
             for line in observer_listing_warnings(&snapshot) {
                 eprintln!("{line}");
             }
-            println!("PROJECT\tSERVICES\tVOLUMES");
-            for project in derive_projects(
+            let projects = derive_projects(
                 &snapshot.containers,
                 snapshot
                     .volumes
                     .iter()
                     .map(|volume| (&volume.id, &volume.labels)),
-            ) {
-                println!(
-                    "{}\t{}\t{}",
-                    project.name,
-                    project.services.len(),
-                    project.volumes.len()
-                );
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&projects)?);
+            } else {
+                println!("PROJECT\tSERVICES\tVOLUMES");
+                for project in projects {
+                    println!(
+                        "{}\t{}\t{}",
+                        project.name,
+                        project.services.len(),
+                        project.volumes.len()
+                    );
+                }
             }
             Ok(())
         })
