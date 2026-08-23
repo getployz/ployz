@@ -196,6 +196,12 @@ fn json_fixtures_round_trip_through_rust_types() {
     let intent: DeployIntent = decode_fixture(fixture(&fixtures, "deploy_intent"));
     assert_eq!(intent.project_name.as_str(), "app");
     assert!(intent.target.is_empty());
+    assert!(intent.provisioned_volumes.is_empty());
+    let provisioned: ployz_core::ProvisionedVolume =
+        decode_fixture(fixture(&fixtures, "provisioned_volume"));
+    assert_eq!(provisioned.service.as_str(), "api");
+    assert_eq!(provisioned.reference.as_str(), "data");
+    assert_eq!(provisioned.maximum_bytes.get(), 1_073_741_824);
     assert!(intent.options.selected.is_empty());
     assert_eq!(intent.options, PlanOptions::default());
     assert!(intent.dependencies().is_empty());
@@ -447,6 +453,12 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type DeployIntent = Additive<{"));
     assert!(dts.contains("project_name: ProjectName"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
+    assert!(dts.contains("export type ProvisionedVolume = Additive<{"));
+    assert!(dts.contains("service: ServiceName"));
+    assert!(dts.contains("reference: ServiceVolumeReference"));
+    assert!(dts.contains("export type ProvisionedVolumeMaximumBytes = string"));
+    assert!(dts.contains("maximum_bytes: ProvisionedVolumeMaximumBytes"));
+    assert!(dts.contains("provisioned_volumes: ProvisionedVolume[]"));
     assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ServiceVolume = Additive<{"));

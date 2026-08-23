@@ -167,6 +167,15 @@ if (typeof sdk.Client.prototype.register !== "undefined") {
 if (typeof sdk.applyAll !== "function" || typeof sdk.applyOne !== "function") {
   throw new Error("applyAll / applyOne must be exported");
 }
+const helperSpec = { name: "api" };
+for (const intent of [
+  sdk.applyAll("app", [helperSpec]),
+  sdk.applyOne("app", helperSpec),
+]) {
+  if (!Array.isArray(intent.provisioned_volumes) || intent.provisioned_volumes.length !== 0) {
+    throw new Error("plain Deploy Intent helpers must emit an empty provisioned_volumes list");
+  }
+}
 if (typeof sdk.Client.prototype.removeVolumes !== "function") {
   throw new Error("Client.removeVolumes must be a method");
 }

@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineObservation, MachineTarget, PreservedVolume, ProjectName,
+    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, MachineTarget,
+    PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
     RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation, ServiceVolume,
     ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
 };
@@ -19,13 +20,23 @@ use super::placement::{ReplicatedCapacityReservation, reserve_replicated_service
 /// Docker Volume (the chosen Machine is the only legal location). `creates` is
 /// the one CreateVolume list later specs consult; it is not a reconstructed
 /// observation list.
-#[derive(Default)]
 pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
     creates: Vec<(MachineId, ServiceVolume)>,
+    provisioned: ProvisionedVolumeBindings,
+    provisioned_bounds: BTreeMap<DockerVolumeId, ProvisionedVolumeMaximumBytes>,
 }
 
 impl VolumePins {
+    pub(super) fn new(provisioned: ProvisionedVolumeBindings) -> Self {
+        Self {
+            anchors: BTreeMap::new(),
+            creates: Vec::new(),
+            provisioned,
+            provisioned_bounds: BTreeMap::new(),
+        }
+    }
+
     fn constrain(&mut self, name: DockerVolumeName, machine_id: MachineId) {
         self.anchors.insert(name, machine_id);
     }
@@ -89,6 +100,123 @@ pub(super) fn scope_requested(
     spec.volume_graph = ServiceVolumeGraph::parse(volumes, mounts)
         .expect("scoping Docker Volume names does not change Service Volume References");
     spec
+}
+
+pub(super) struct ProvisionedVolumeBindings {
+    bounds: BTreeMap<ServiceName, BTreeMap<DockerVolumeName, ProvisionedVolumeMaximumBytes>>,
+}
+
+impl ProvisionedVolumeBindings {
+    pub(super) fn parse(
+        target: &[RequestedServiceSpec],
+        declarations: &[ProvisionedVolume],
+    ) -> Result<Self, PlanError> {
+        let mut bounds = BTreeMap::new();
+        for declaration in declarations {
+            let volume = target
+                .iter()
+                .find(|spec| spec.name == declaration.service)
+                .and_then(|spec| {
+                    spec.volume_graph
+                        .volumes()
+                        .iter()
+                        .find(|volume| volume.reference == declaration.reference)
+                })
+                .ok_or_else(|| PlanError::UnknownProvisionedVolumeReference {
+                    service: declaration.service.clone(),
+                    reference: declaration.reference.clone(),
+                })?;
+            let VolumeSource::Named { name, .. } = &volume.source else {
+                return Err(PlanError::ProvisionedVolumeReferenceNotNamed {
+                    service: declaration.service.clone(),
+                    reference: declaration.reference.clone(),
+                });
+            };
+            let service_bounds = bounds
+                .entry(declaration.service.clone())
+                .or_insert_with(BTreeMap::new);
+            if let Some(existing_maximum_bytes) =
+                service_bounds.insert(name.clone(), declaration.maximum_bytes)
+                && existing_maximum_bytes != declaration.maximum_bytes
+            {
+                return Err(PlanError::ConflictingProvisionedVolumeBounds {
+                    name: name.clone(),
+                    existing_maximum_bytes,
+                    conflicting_maximum_bytes: declaration.maximum_bytes,
+                });
+            }
+        }
+        Ok(Self { bounds })
+    }
+
+    fn bound_for(
+        &self,
+        service: &ServiceName,
+        name: &DockerVolumeName,
+    ) -> Option<ProvisionedVolumeMaximumBytes> {
+        self.bounds
+            .get(service)
+            .and_then(|bounds| bounds.get(name))
+            .copied()
+    }
+}
+
+impl VolumePins {
+    pub(super) fn validate_provisioned_volume_bounds(
+        &mut self,
+        target: &[RequestedServiceSpec],
+        snapshot: &DeploySnapshot,
+        options: &PlanOptions,
+    ) -> Result<(), PlanError> {
+        let name_errors_with_service = target.len() > 1;
+        for spec in target {
+            if !self.provisioned.bounds.contains_key(&spec.name) {
+                continue;
+            }
+            let result = (|| {
+                let mut machines = super::eligible_machines(spec, snapshot, options)?;
+                volume_constraints(spec, snapshot, self, &mut machines)?;
+                self.record_provisioned(spec, &machines)
+            })();
+            result.map_err(|source| {
+                super::service_error(name_errors_with_service, spec.name.as_str(), source)
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record_provisioned(
+        &mut self,
+        spec: &RequestedServiceSpec,
+        machines: &[&MachineObservation],
+    ) -> Result<(), PlanError> {
+        for mount in spec.volume_graph.mounts() {
+            let volume = spec.volume_graph.volume_for(mount);
+            let VolumeSource::Named { name, .. } = &volume.source else {
+                continue;
+            };
+            let Some(maximum_bytes) = self.provisioned.bound_for(&spec.name, name) else {
+                continue;
+            };
+            for machine in machines {
+                if let Some(existing_maximum_bytes) = self.provisioned_bounds.insert(
+                    DockerVolumeId {
+                        machine_id: machine.machine.id,
+                        name: name.clone(),
+                    },
+                    maximum_bytes,
+                ) && existing_maximum_bytes != maximum_bytes
+                {
+                    return Err(PlanError::ConflictingProvisionedVolumeBounds {
+                        name: name.clone(),
+                        existing_maximum_bytes,
+                        conflicting_maximum_bytes: maximum_bytes,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Owned Compose-declared Docker Volumes omitted from this Deploy's target.
@@ -444,6 +572,7 @@ pub(super) fn plan_volume_operations(
         }
         ServiceMode::Replicated { .. } => {}
     }
+    pins.record_provisioned(spec, machines)?;
     Ok(())
 }
 

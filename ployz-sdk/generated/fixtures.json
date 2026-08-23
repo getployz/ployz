@@ -213,6 +213,7 @@
       "skip_health_monitor": false
     },
     "project_name": "app",
+    "provisioned_volumes": [],
     "target": []
   },
   "deploy_outcome": {
@@ -472,6 +473,11 @@
         }
       }
     ]
+  },
+  "provisioned_volume": {
+    "maximum_bytes": "1073741824",
+    "reference": "data",
+    "service": "api"
   },
   "register_request": {
     "advertised_endpoints": [
