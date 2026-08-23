@@ -136,8 +136,8 @@ fn trailing(name: &'static str) -> Arg {
         .trailing_var_arg(true)
 }
 
-fn project_name() -> Arg {
-    value("project-name", None).env(env::COMPOSE_PROJECT_NAME)
+fn project_name(short: Option<char>) -> Arg {
+    value("project-name", short).env(env::COMPOSE_PROJECT_NAME)
 }
 
 fn build() -> Command {
@@ -162,8 +162,8 @@ fn deploy() -> Command {
         .arg(many("file", Some('f')).default_value("compose.yaml"))
         .arg(switch("no-build", None))
         .arg(switch("no-cache", None))
-        .arg(many("profile", Some('p')))
-        .arg(project_name())
+        .arg(many("profile", None))
+        .arg(project_name(Some('p')))
         .arg(switch("recreate", None))
         .arg(switch("skip-health", None))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
@@ -431,12 +431,14 @@ fn service_ls(name: &'static str) -> Command {
 }
 
 fn service_rm(name: &'static str) -> Command {
-    base(name, "Remove services").arg(project_name()).arg(
-        Arg::new("service")
-            .required(true)
-            .num_args(1..)
-            .action(ArgAction::Append),
-    )
+    base(name, "Remove services")
+        .arg(project_name(Some('p')))
+        .arg(
+            Arg::new("service")
+                .required(true)
+                .num_args(1..)
+                .action(ArgAction::Append),
+        )
 }
 
 fn run(name: &'static str) -> Command {
@@ -450,7 +452,7 @@ fn run(name: &'static str) -> Command {
         .arg(value("mode", None).default_value("replicated"))
         .arg(value("name", Some('n')))
         .arg(switch("privileged", None))
-        .arg(project_name())
+        .arg(project_name(None))
         .arg(many("publish", Some('p')))
         .arg(value("pull", None).default_value("missing"))
         .arg(value("replicas", None).default_value("1"))
@@ -466,7 +468,7 @@ fn run(name: &'static str) -> Command {
 
 fn scale(name: &'static str) -> Command {
     base(name, "Scale a service")
-        .arg(project_name())
+        .arg(project_name(Some('p')))
         .arg(switch("skip-health", None))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
         .arg(positional("service", true))
@@ -616,9 +618,9 @@ mod tests {
     }
 
     #[test]
-    fn project_name_is_long_only_because_p_is_already_bound() {
+    fn compose_short_flags_are_bound_per_command() {
         let deploy = super::command()
-            .try_get_matches_from(["ployz", "deploy", "--project-name", "shop", "-p", "prod"])
+            .try_get_matches_from(["ployz", "deploy", "-p", "shop", "--profile", "prod"])
             .unwrap();
         let deploy = deploy.subcommand().unwrap().1;
         assert_eq!(
@@ -633,6 +635,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["prod"]
         );
+
         let run = super::command()
             .try_get_matches_from(["ployz", "run", "-p", "8080/https", "alpine"])
             .unwrap();
@@ -644,11 +647,6 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             ["8080/https"]
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "deploy", "-P", "shop"])
-                .is_err()
         );
     }
 

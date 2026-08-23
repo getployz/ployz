@@ -100,6 +100,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
         deviations,
         BTreeSet::from([
             "cloud-enroll".to_owned(),
+            "compose-project-name-short-flag".to_owned(),
             "compose-diagnostics-source".to_owned(),
             "compose-plugin-scope".to_owned(),
             "compose-prerequisite-errors".to_owned(),
@@ -117,7 +118,6 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "plain-caddy-config".to_owned(),
             "product-identity".to_owned(),
             "project-list-and-remove".to_owned(),
-            "project-name-no-short-flag".to_owned(),
             "qualified-service-container-target".to_owned(),
             "root-version-flag".to_owned(),
             "scriptable-ctx-connection".to_owned(),
@@ -254,21 +254,25 @@ fn reference_shape(
             _ => {}
         }
     }
-    if deviations.contains("project-name-no-short-flag") {
-        let project_name = Flag {
-            short: None,
+    if deviations.contains("compose-project-name-short-flag") {
+        let project_name = |short| Flag {
+            short,
             default: None,
             env: Some("COMPOSE_PROJECT_NAME".into()),
         };
         match command_path.as_str() {
-            "ployz deploy"
-            | "ployz run"
-            | "ployz service run"
-            | "ployz scale"
-            | "ployz service scale"
-            | "ployz rm"
-            | "ployz service rm" => {
-                flags.insert("project-name".into(), project_name);
+            "ployz deploy" => {
+                flags
+                    .get_mut("profile")
+                    .expect("deploy has --profile")
+                    .short = None;
+                flags.insert("project-name".into(), project_name(Some('p')));
+            }
+            "ployz scale" | "ployz service scale" | "ployz rm" | "ployz service rm" => {
+                flags.insert("project-name".into(), project_name(Some('p')));
+            }
+            "ployz run" | "ployz service run" => {
+                flags.insert("project-name".into(), project_name(None));
             }
             _ => {}
         }
