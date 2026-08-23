@@ -103,6 +103,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "compose-diagnostics-source".to_owned(),
             "compose-plugin-scope".to_owned(),
             "compose-prerequisite-errors".to_owned(),
+            "daemon-version-matches-cli".to_owned(),
             "deploy-intent-flags".to_owned(),
             "direct-push-reference-boundary".to_owned(),
             "fixed-wireguard-port".to_owned(),
@@ -186,6 +187,16 @@ fn reference_shape(
     }
     if command_path == "ployz caddy config" && deviations.contains("plain-caddy-config") {
         flags.remove("no-color");
+    }
+    if matches!(
+        command_path.as_str(),
+        "ployz machine add" | "ployz machine init"
+    ) && deviations.contains("daemon-version-matches-cli")
+    {
+        flags
+            .get_mut("version")
+            .expect("Machine provisioning commands have a version flag")
+            .default = Some(env!("CARGO_PKG_VERSION").into());
     }
     if command_path == "ployz volume rm" && deviations.contains("volume-remove-auto-confirm-env") {
         flags.get_mut("yes").expect("volume rm has --yes").env = Some("PLOYZ_AUTO_CONFIRM".into());

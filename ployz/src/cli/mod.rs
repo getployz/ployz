@@ -357,7 +357,7 @@ fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("version", None)
                 .env(env::DAEMON_VERSION)
-                .default_value("latest")
+                .default_value(env!("CARGO_PKG_VERSION"))
                 .value_parser(daemon_version),
         )
         .arg(many("wg-endpoint", None))
@@ -566,6 +566,28 @@ mod tests {
                 .try_get_matches_from(["ployz", flag])
                 .unwrap();
             assert!(matches.get_flag("version"), "{flag}");
+        }
+    }
+
+    #[test]
+    fn machine_provisioning_defaults_to_cli_version_and_accepts_overrides() {
+        for command in ["add", "init"] {
+            for version in [None, Some("stable"), Some("beta"), Some("1.2.3")] {
+                let mut args = vec!["ployz", "machine", command, "root@example.com"];
+                if let Some(version) = version {
+                    args.extend(["--version", version]);
+                }
+                let matches = super::command().try_get_matches_from(args).unwrap();
+                let matches = matches
+                    .subcommand_matches("machine")
+                    .unwrap()
+                    .subcommand_matches(command)
+                    .unwrap();
+                assert_eq!(
+                    matches.get_one::<String>("version").map(String::as_str),
+                    Some(version.unwrap_or(env!("CARGO_PKG_VERSION")))
+                );
+            }
         }
     }
 
