@@ -175,6 +175,8 @@ pub struct JoinDaemon {
 
 struct JoinInner {
     registration: Registered,
+    daemon_version: Mutex<String>,
+    describe_calls: AtomicUsize,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
@@ -197,6 +199,8 @@ impl JoinDaemon {
         Self {
             inner: Arc::new(JoinInner {
                 registration,
+                daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
+                describe_calls: AtomicUsize::new(0),
                 joined: AtomicBool::new(false),
                 join_request: Mutex::new(None),
                 initialize_requests: Mutex::new(Vec::new()),
@@ -223,6 +227,19 @@ impl JoinDaemon {
             .unwrap()
             .clone()
             .expect("Join was called")
+    }
+
+    pub fn with_daemon_version(self, version: &str) -> Self {
+        self.set_daemon_version(version);
+        self
+    }
+
+    pub fn set_daemon_version(&self, version: &str) {
+        *self.inner.daemon_version.lock().unwrap() = version.into();
+    }
+
+    pub fn describe_count(&self) -> usize {
+        self.inner.describe_calls.load(Ordering::SeqCst)
     }
 
     pub fn initialize_request(&self) -> InitializeRequest {
@@ -321,10 +338,11 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.inner.describe_calls.fetch_add(1, Ordering::SeqCst);
         rpc_ok(ContractDescription {
             machine_id: self.inner.registration.assigned_machine.id,
             protocol_major: PROTOCOL_MAJOR,
-            daemon_version: "test".into(),
+            daemon_version: self.inner.daemon_version.lock().unwrap().clone(),
             capabilities: [
                 ployz_core::CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY)
                     .expect("catalogued capability names are valid"),

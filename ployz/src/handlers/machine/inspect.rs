@@ -24,6 +24,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let mut machines = machine_list(client).await?;
             client.observe_machine_storage(&mut machines).await;
+            let warning = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION"));
             if output.as_deref() == Some("json") {
                 let machines = machines
                     .iter()
@@ -33,6 +34,9 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                     })
                     .collect::<Vec<_>>();
                 println!("{}", serde_json::to_string_pretty(&machines)?);
+                if let Some(warning) = warning {
+                    eprintln!("{warning}");
+                }
                 return Ok(());
             }
             println!(
@@ -65,9 +69,29 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                     machine.runtime.architecture,
                 );
             }
+            if let Some(warning) = warning {
+                eprintln!("{warning}");
+            }
             Ok(())
         })
     })
+}
+
+#[must_use]
+fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Option<String> {
+    let count = machines
+        .iter()
+        .filter(|observed| observed.machine.runtime.daemon_version != cli_version)
+        .count();
+    match count {
+        0 => None,
+        1 => Some(format!(
+            "WARNING: 1 Machine runs a daemon version different from CLI {cli_version}."
+        )),
+        count => Some(format!(
+            "WARNING: {count} Machines run daemon versions different from CLI {cli_version}."
+        )),
+    }
 }
 
 #[must_use]

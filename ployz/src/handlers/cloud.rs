@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::{
-    CloudEnrollToken, InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase,
-    MachineName, MachineTokenRequest, ReserveDomainRequest, ResetRequest, RpcErrorCode,
-    SetCloudPairingRequest, StorageChoice, op,
+    CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
+    LocalMachinePhase, MachineName, MachineTokenRequest, ReserveDomainRequest, ResetRequest,
+    RpcErrorCode, SetCloudPairingRequest, StorageChoice, op,
 };
 
 use super::{Error, config_path, connect_client, leaf_matches, required, runtime};
@@ -14,7 +14,38 @@ use crate::cloud_enroll::{self, EnrollIdentity, Outcome};
 use crate::connect::{Client, ConnectError};
 use crate::context::{ContextError, Transport};
 
+/// Installs the local Machine daemon for Cloud enrollment.
+pub trait EnrollInstaller {
+    /// Install `version` without preparing more storage than `storage` requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns the installer failure reported to the CLI.
+    fn install(&self, version: &str, storage: StorageChoice) -> Result<(), Error>;
+}
+
+struct EmbeddedInstaller;
+
+impl EnrollInstaller for EmbeddedInstaller {
+    fn install(&self, version: &str, storage: StorageChoice) -> Result<(), Error> {
+        crate::provisioning::provision_local(version, storage).map_err(Into::into)
+    }
+}
+
 pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
+    enroll_with_installer(root, &EmbeddedInstaller)
+}
+
+/// Run Cloud enrollment with an injected local Machine installer.
+///
+/// # Errors
+///
+/// Returns the same CLI failure as [`enroll`].
+#[doc(hidden)]
+pub fn enroll_with_installer(
+    root: &ArgMatches,
+    installer: &impl EnrollInstaller,
+) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let token = CloudEnrollToken::parse(required(matches, "token")?)?;
     let cloud_url = matches
@@ -41,6 +72,7 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
 
     runtime()?.block_on(async {
         let mut client = connect_machine(matches).await?;
+        client = synchronize_daemon(matches, client, installer).await?;
         loop {
             client = ensure_uninitialized(matches, yes, reset, client).await?;
             let machine_token = client
@@ -66,7 +98,7 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                         client.connection()
                     )));
                 }
-                crate::provisioning::provision_local(storage)?;
+                crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), storage)?;
             }
             match outcome {
                 Outcome::Join(join) => {
@@ -168,13 +200,31 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+async fn synchronize_daemon(
+    matches: &ArgMatches,
+    mut client: Client,
+    installer: &impl EnrollInstaller,
+) -> Result<Client, Error> {
+    let daemon = client
+        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .await?;
+    if daemon.daemon_version == env!("CARGO_PKG_VERSION") {
+        return Ok(client);
+    }
+    installer.install(env!("CARGO_PKG_VERSION"), StorageChoice::None)?;
+    wait_client(matches).await
+}
+
 async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
     let config = config_path(matches)?;
     let connect = matches.get_one::<String>("connect").map(String::as_str);
     match crate::connect::connect(&config, connect, None).await {
         Ok(client) => Ok(client),
         Err(ConnectError::Context(ContextError::NoConfig)) => {
-            crate::provisioning::provision_local(ployz_core::StorageChoice::None)?;
+            crate::provisioning::provision_local(
+                env!("CARGO_PKG_VERSION"),
+                ployz_core::StorageChoice::None,
+            )?;
             wait_client(matches).await
         }
         Err(error) => Err(error.into()),

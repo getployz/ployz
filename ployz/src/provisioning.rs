@@ -229,7 +229,7 @@ pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), Pro
 /// Returns [`ProvisionError::NotRoot`] when this process is not root.
 /// Returns [`ProvisionError::Install`] when the installer cannot be spawned,
 /// or [`ProvisionError::InstallFailed`] when it exits non-zero.
-pub fn provision_local(storage: StorageChoice) -> Result<(), ProvisionError> {
+pub fn provision_local(version: &str, storage: StorageChoice) -> Result<(), ProvisionError> {
     if !process_is_root() {
         return Err(ProvisionError::NotRoot);
     }
@@ -241,7 +241,7 @@ pub fn provision_local(storage: StorageChoice) -> Result<(), ProvisionError> {
             .arg("-c")
             .arg(pipefail(&install_command(
                 &encoded_installer(),
-                env!("CARGO_PKG_VERSION"),
+                version,
                 group_user.as_deref(),
                 false,
                 storage,
@@ -339,7 +339,7 @@ mod tests {
             return;
         }
         assert!(matches!(
-            provision_local(StorageChoice::None),
+            provision_local(env!("CARGO_PKG_VERSION"), StorageChoice::None),
             Err(ProvisionError::NotRoot)
         ));
     }

@@ -3,15 +3,114 @@
 mod catch_up;
 mod harness;
 
+use std::sync::{Arc, Mutex};
+
 use harness::{
     CLUSTER_DOMAIN, EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, assert_not_held,
     caddy_on, founder_machine, registration, serve_machine, wait_for_held,
 };
 use ployz_core::{
     CloudPairing, InitializeRequest, InspectRequest, LocalMachinePhase, PairingCredential,
-    Registered, SetCloudPairingRequest, op,
+    Registered, SetCloudPairingRequest, StorageChoice, op,
 };
 use serde_json::json;
+
+#[derive(Clone)]
+struct RecordingInstaller {
+    daemon: JoinDaemon,
+    calls: Arc<Mutex<Vec<(String, StorageChoice)>>>,
+}
+
+impl RecordingInstaller {
+    fn new(daemon: JoinDaemon) -> Self {
+        Self {
+            daemon,
+            calls: Arc::default(),
+        }
+    }
+}
+
+impl ployz::handlers::EnrollInstaller for RecordingInstaller {
+    fn install(&self, version: &str, storage: StorageChoice) -> Result<(), ployz::handlers::Error> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((version.to_owned(), storage));
+        self.daemon.set_daemon_version(version);
+        Ok(())
+    }
+}
+
+async fn enroll_with_daemon_version(
+    daemon_version: &str,
+) -> (
+    Result<(), ployz::handlers::Error>,
+    RecordingInstaller,
+    JoinDaemon,
+) {
+    let registration = registration();
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration).with_daemon_version(daemon_version);
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let installer = RecordingInstaller::new(daemon.clone());
+    let invoked = installer.clone();
+    let matches = ployz::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--no-caddy",
+            "--no-dns",
+            "--yes",
+        ])
+        .unwrap();
+
+    let result = tokio::task::spawn_blocking(move || {
+        ployz::handlers::cloud_enroll_with_installer(&matches, &invoked)
+    })
+    .await
+    .unwrap();
+    (result, installer, daemon)
+}
+
+#[tokio::test]
+async fn cloud_enroll_does_not_install_when_daemon_matches_cli() {
+    let (result, installer, _) = enroll_with_daemon_version(env!("CARGO_PKG_VERSION")).await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(*installer.calls.lock().unwrap(), []);
+}
+
+#[tokio::test]
+async fn cloud_enroll_reinstalls_a_mismatched_daemon_without_preparing_storage() {
+    let (result, installer, daemon) = enroll_with_daemon_version("0.0.0-old").await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        *installer.calls.lock().unwrap(),
+        [(env!("CARGO_PKG_VERSION").into(), StorageChoice::None)]
+    );
+    assert!(
+        daemon.describe_count() >= 3,
+        "enrollment must reconnect after the installer restarts the daemon"
+    );
+}
 
 #[tokio::test]
 async fn cloud_init_join_participates_and_appears_on_list_held() {
