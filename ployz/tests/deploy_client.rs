@@ -3,14 +3,15 @@
 mod support;
 use support::*;
 
-use std::sync::atomic::Ordering;
+use std::{num::NonZeroU64, sync::atomic::Ordering};
 
 use ployz::deploy::{
     DeployError, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployWarning,
     ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal, VolumeFate,
 };
 use ployz_core::{
-    ContainerId, OperationPhase, ProjectName, QualifiedService, RequestedServiceSpec,
+    ContainerId, MachineStorageObservation, OperationPhase, ProjectName, ProvisionedVolume,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec, ServiceVolumeReference,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -65,6 +66,36 @@ async fn deploy_returns_success_for_a_completed_run() {
             skip_health_monitor: true,
         }) if *machine_id == machine.machine.id && spec.name.as_str() == "web"
     ));
+    server.abort();
+}
+
+#[tokio::test]
+async fn provisioned_volume_deploy_reaches_container_creation() {
+    let mut target = machine('a', "one");
+    target.storage = Some(MachineStorageObservation::Ready);
+    let service = DeployService::new(target);
+    let created = service.created_projects();
+    let (mut client, server) = connected(service).await;
+    let mut requested = spec("web");
+    add_named_volume(&mut requested, "data");
+    let mut intent =
+        DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
+    intent.provisioned_volumes = vec![ProvisionedVolume {
+        service: ployz_core::ServiceName::parse("web").unwrap(),
+        reference: ServiceVolumeReference::parse("data").unwrap(),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(157_286_400).unwrap()),
+    }];
+
+    let outcome = client
+        .run(intent, &CancellationToken::new(), None)
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    assert_eq!(
+        *created.lock().unwrap(),
+        [ProjectName::parse("app").unwrap()]
+    );
     server.abort();
 }
 

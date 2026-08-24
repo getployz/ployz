@@ -127,7 +127,7 @@ impl ContainerRuntime {
 // Bollard models Volume Status as key-only data, so valid plugin values use raw JSON recovery.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct RawVolume {
+pub(super) struct RawVolume {
     name: String,
     driver: String,
     #[serde(default)]
@@ -156,7 +156,9 @@ struct RawVolumeList {
     volumes: Option<Vec<RawVolume>>,
 }
 
-fn decode_volume(result: Result<Volume, bollard::errors::Error>) -> Result<RawVolume, Error> {
+pub(super) fn decode_volume(
+    result: Result<Volume, bollard::errors::Error>,
+) -> Result<RawVolume, Error> {
     match result {
         Ok(volume) => Ok(volume.into()),
         Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
@@ -242,6 +244,7 @@ mod tests {
         routing::any,
     };
     use bollard::Docker;
+    use ployz_core::{MachineGateway, ProjectName, ResolvedServiceSpec};
 
     use super::*;
     use crate::docker::{LocalDocker, MachineSpecStore};
@@ -292,6 +295,16 @@ mod tests {
                     "Status":{"bound_bytes":1073741824,"used_bytes":4096}
                 }),
             )
+        } else if method == Method::GET && path.ends_with("/volumes/cache") {
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "Name":"cache",
+                    "Driver":"ployz",
+                    "Mountpoint":"/var/lib/ployz-volumes/cache",
+                    "Status":{"bound_bytes":536870912,"used_bytes":2048}
+                }),
+            )
         } else if method == Method::GET && path.ends_with("/volumes/malformed") {
             (
                 StatusCode::OK,
@@ -334,6 +347,21 @@ mod tests {
                     "Mountpoint":"/var/lib/ployz-volumes/unavailable"
                 }),
             )
+        } else if method == Method::GET && path.ends_with("/networks/ployz") {
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "Name":"ployz",
+                    "IPAM":{"Config":[{"Subnet":"10.210.0.0/24","Gateway":"10.210.0.1"}]}
+                }),
+            )
+        } else if method == Method::GET && path.ends_with("/containers/json") {
+            (StatusCode::OK, serde_json::json!([]))
+        } else if method == Method::POST && path.ends_with("/containers/create") {
+            (
+                StatusCode::CREATED,
+                serde_json::json!({"Id":"1111111111111111111111111111111111111111111111111111111111111111","Warnings":[]}),
+            )
         } else {
             (
                 StatusCode::NOT_FOUND,
@@ -372,6 +400,84 @@ mod tests {
             ContainerRuntime::new(LocalDocker::from_client(docker), specs),
             fake,
         )
+    }
+
+    fn mounted_spec(names: &[&str]) -> ResolvedServiceSpec {
+        let volumes = names
+            .iter()
+            .map(|name| {
+                serde_json::json!({
+                    "reference": name,
+                    "source": {"kind":"named", "name":name, "external":true}
+                })
+            })
+            .collect::<Vec<_>>();
+        let mounts = names
+            .iter()
+            .map(|name| serde_json::json!({"volume":name, "target":format!("/{name}")}))
+            .collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({
+            "service_id":"11111111111111111111111111111111",
+            "name":"web",
+            "mode":{"mode":"replicated", "replicas":1},
+            "container":{"image":"unused", "pull_policy":"never"},
+            "volumes":volumes,
+            "mounts":mounts
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn container_creation_accepts_integer_status_for_multiple_named_volumes() {
+        let (runtime, fake) = fake_runtime().await;
+
+        runtime
+            .create(
+                &MachineId::random(),
+                MachineGateway(std::net::Ipv4Addr::new(10, 210, 0, 1)),
+                ployz_core::ContainerKind::ServiceContainer,
+                &ProjectName::parse("app").unwrap(),
+                &mounted_spec(&["healthy", "cache"]),
+            )
+            .await
+            .unwrap();
+
+        let requests = fake.requests.lock().unwrap();
+        for suffix in ["/volumes/healthy", "/volumes/cache", "/containers/create"] {
+            assert!(requests.iter().any(|(_, path)| path.ends_with(suffix)));
+        }
+    }
+
+    #[tokio::test]
+    async fn container_creation_rejects_a_missing_named_volume() {
+        let (runtime, fake) = fake_runtime().await;
+
+        let error = runtime
+            .create(
+                &MachineId::random(),
+                MachineGateway(std::net::Ipv4Addr::new(10, 210, 0, 1)),
+                ployz_core::ContainerKind::ServiceContainer,
+                &ProjectName::parse("app").unwrap(),
+                &mounted_spec(&["missing"]),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::Docker(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            })
+        ));
+        assert!(
+            !fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| path.ends_with("/containers/create"))
+        );
     }
 
     #[tokio::test]
