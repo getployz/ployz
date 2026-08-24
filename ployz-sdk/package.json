@@ -1,6 +1,6 @@
 {
   "name": "@ployz/sdk",
-  "version": "0.1.2-beta.18",
+  "version": "0.1.2-beta.19",
   "description": "Ployz Cloud SDK. Public payloads are generated from Rust.",
   "repository": {
     "type": "git",
