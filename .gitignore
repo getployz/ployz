@@ -5,6 +5,7 @@ node_modules/
 !/docs/RELEASE.md
 !/docs/adr/
 !/docs/adr/**
-/.claude/
+/.claude/*
+!/.claude/skills/
 /.scratch/
 ployz-testkit/prebuilt/
