@@ -15,7 +15,7 @@ async fn create_rejects_read_only_roots_and_volumes() {
         for marker in markers {
             fs::write(test.0.join(marker), "").unwrap();
         }
-        let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -45,7 +45,7 @@ async fn mount_and_path_reject_a_read_only_volume() {
     for marker in ["root", "volume", "readonly-volume"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -71,7 +71,7 @@ async fn mount_and_path_reject_a_volume_with_a_cleared_refquota() {
     for marker in ["root", "volume", "unbounded-volume"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -97,7 +97,7 @@ async fn create_rejects_a_volume_with_a_descendant_dataset() {
     for marker in ["root", "volume", "descendant"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));

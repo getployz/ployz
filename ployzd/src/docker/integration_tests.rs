@@ -542,7 +542,7 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
     runtime.remove_volume(&name, false).await.unwrap();
 
     assert_eq!(created.id, DockerVolumeId { machine_id, name });
-    assert_eq!(created.driver, "local");
+    assert_eq!(created.driver(), "local");
     assert_eq!(created.labels, labels);
     assert!(listed.contains(&created));
     assert_eq!(inspected, created);

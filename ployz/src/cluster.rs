@@ -29,7 +29,7 @@ use crate::{
         target_request,
     },
     context::{Connection, ConnectionSource, Transport},
-    deploy::{DeploySnapshot, ObservedDockerVolume},
+    deploy::DeploySnapshot,
     service::ContainerOperationFailure,
 };
 
@@ -669,12 +669,6 @@ pub(crate) fn snapshot_from_partial(
         volumes: volume_successes
             .into_iter()
             .flat_map(|success| success.value)
-            .map(|volume| ObservedDockerVolume {
-                id: volume.id,
-                driver: volume.driver,
-                options: volume.options,
-                labels: volume.labels,
-            })
             .collect(),
         container_failures,
         container_omissions,

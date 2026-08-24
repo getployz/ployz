@@ -1275,9 +1275,11 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
             machine_id: MachineId::parse(MACHINE_ID).unwrap(),
             name,
         },
-        driver: "local".into(),
         options: BTreeMap::from([("type".into(), "none".into())]),
         labels: BTreeMap::from([("purpose".into(), "database".into())]),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     };
     let volume_response = RpcResponse::from(volume.clone());
     assert_eq!(volume_response.kind(), ResponseKind::DockerVolume);

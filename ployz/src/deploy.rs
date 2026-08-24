@@ -4,7 +4,7 @@ use std::{
 };
 
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
+    BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName,
     MachineObservation, MachineTarget, ProjectName, ProvisionedVolumeMaximumBytes,
     QualifiedService, RpcError, ServiceName, ServiceObservation, ServiceVolumeReference,
@@ -56,7 +56,7 @@ fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
     pub containers: Vec<ContainerObservation>,
-    pub volumes: Vec<ObservedDockerVolume>,
+    pub volumes: Vec<DockerVolume>,
     /// Target-specific Container listing failures from this observer's fan-out.
     pub container_failures: Vec<MachineFailure<RpcError>>,
     /// Required Container queries that produced no terminal response.
@@ -111,14 +111,6 @@ fn affects_required(
         .iter()
         .any(|failure| required.contains(&failure.machine_id))
         || omissions.iter().any(|machine| required.contains(machine))
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ObservedDockerVolume {
-    pub id: DockerVolumeId,
-    pub driver: String,
-    pub options: std::collections::BTreeMap<String, String>,
-    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 /// Why [`PlanError::NoEligibleMachines`] found zero Machines.
@@ -292,6 +284,41 @@ pub enum PlanError {
         /// Service-local Volume Reference with a non-Volume source.
         reference: ServiceVolumeReference,
     },
+    /// The selected Machine has no usable ZFS storage preparation.
+    #[error(
+        "Machine '{machine}' requires storage preparation before deploying a Provisioned Volume; enroll it with --storage zfs"
+    )]
+    ProvisionedVolumeStorageRequired {
+        /// Explicitly selected stateless Machine.
+        machine: MachineName,
+    },
+    /// No observed automatically eligible Machine has usable ZFS storage preparation.
+    #[error(
+        "no observed eligible Machine is storage-ready or has a Machine Pool; enroll one with --storage zfs before deploying a Provisioned Volume"
+    )]
+    ProvisionedVolumeStorageUnavailable,
+    /// An ordinary Docker Volume already owns the requested machine-local name.
+    #[error(
+        "Plain Docker Volume {name} already exists on Machine '{machine}'; conversion to a Provisioned Volume is outside the Provisioned Volume MVP"
+    )]
+    ExistingPlainVolume {
+        /// Existing machine-local Docker Volume name.
+        name: DockerVolumeName,
+        /// Machine holding the existing Volume.
+        machine: MachineName,
+    },
+    /// A Ployz-driver Volume exists with a different bound or malformed options.
+    #[error(
+        "Provisioned Volume {name} on Machine '{machine}' does not have the requested {maximum_bytes}-byte bound and will not be resized or replaced"
+    )]
+    ExistingProvisionedVolumeMismatch {
+        /// Existing machine-local Docker Volume name.
+        name: DockerVolumeName,
+        /// Machine holding the existing Volume.
+        machine: MachineName,
+        /// Bound requested by this Deploy Intent.
+        maximum_bytes: ProvisionedVolumeMaximumBytes,
+    },
     #[error("plan service '{service}': {source}")]
     Service {
         service: String,
@@ -343,6 +370,22 @@ fn quoted_names(names: &[DockerVolumeName]) -> String {
     quoted
 }
 
+fn compose_deploy_intent(
+    project: &ComposeProject,
+    project_name: ProjectName,
+    options: PlanOptions,
+) -> DeployIntent {
+    let mut intent = DeployIntent::from_named_specs(
+        project_name,
+        &project.services,
+        &project.dependencies,
+        options,
+    )
+    .with_service_profiles(project.service_profiles());
+    intent.provisioned_volumes = project.provisioned_volume_declarations();
+    intent
+}
+
 /// Plan a Compose project: fail if any `external: true` volume is missing from
 /// the snapshot, then plan service operations.
 ///
@@ -357,17 +400,8 @@ pub fn plan_compose(
     project_name: ProjectName,
 ) -> Result<DeployPreview, PlanError> {
     reject_missing_external_volumes(project, snapshot)?;
-    preview_deploy(
-        &DeployIntent::from_named_specs(
-            project_name,
-            &project.services,
-            &project.dependencies,
-            PlanOptions::default(),
-        )
-        .with_service_profiles(project.service_profiles()),
-        snapshot,
-        IngressContext::default(),
-    )
+    let intent = compose_deploy_intent(project, project_name, PlanOptions::default());
+    preview_deploy(&intent, snapshot, IngressContext::default())
 }
 
 pub(crate) fn reject_missing_external_volumes(

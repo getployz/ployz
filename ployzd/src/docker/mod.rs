@@ -571,6 +571,8 @@ pub enum Error {
     },
     #[error("invalid container configuration: {0}")]
     InvalidContainerConfig(String),
+    #[error("invalid Docker Provisioned Volume observation: {0}")]
+    InvalidVolumeStatus(&'static str),
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -626,7 +628,8 @@ impl Error {
             | Self::EventStreamClosed
             | Self::LocalStorePoisoned
             | Self::Clock(_)
-            | Self::PeerPull(_) => RpcErrorCode::Internal,
+            | Self::PeerPull(_)
+            | Self::InvalidVolumeStatus(_) => RpcErrorCode::Internal,
         }
     }
 }

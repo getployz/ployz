@@ -42,7 +42,7 @@ exit 1
             .lines()
             .collect::<Vec<_>>(),
         [
-            "compose --all-resources config --format yaml",
+            "compose --all-resources config --no-consistency --no-normalize --no-path-resolution --format yaml",
             "compose version"
         ]
     );
@@ -71,7 +71,7 @@ exit 1
             .lines()
             .collect::<Vec<_>>(),
         [
-            "compose --all-resources config --format yaml",
+            "compose --all-resources config --no-consistency --no-normalize --no-path-resolution --format yaml",
             "compose version"
         ]
     );
@@ -328,6 +328,105 @@ secrets:
 }
 
 #[test]
+fn real_compose_loads_mount_declared_only_by_x_volumes() {
+    let Some((root, docker)) = real_docker_fixture("provisioned-volume") else {
+        return;
+    };
+    let compose = root.join("compose.yaml");
+    fs::write(
+        &compose,
+        r#"services:
+  app:
+    image: busybox
+    volumes: [data:/data]
+x-volumes:
+  data: 10G
+"#,
+    )
+    .unwrap();
+    let project = load_project(&LoadOptions {
+        command: "deploy".into(),
+        files: Vec::new(),
+        working_dir: Some(root.clone()),
+        docker: Some(docker),
+        ..Default::default()
+    })
+    .unwrap();
+
+    assert!(matches!(
+        &project
+            .services
+            .get("app")
+            .unwrap()
+            .volumes()
+            .first()
+            .unwrap()
+            .source,
+        VolumeSource::Named { name, external: false, .. } if name.as_str() == "data"
+    ));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn real_compose_x_volumes_preserve_other_consistency_checks() {
+    let Some((root, docker)) = real_docker_fixture("provisioned-volume-consistency") else {
+        return;
+    };
+    let compose = root.join("compose.yaml");
+    fs::write(
+        &compose,
+        r#"services:
+  app:
+    image: busybox
+    volumes: [data:/data]
+    secrets: [missing]
+x-volumes:
+  data: 10G
+"#,
+    )
+    .unwrap();
+    let error = match load_project(&LoadOptions {
+        command: "deploy".into(),
+        files: vec![compose],
+        working_dir: Some(root.clone()),
+        docker: Some(docker),
+        ..Default::default()
+    }) {
+        Err(error) => error,
+        Ok(_) => panic!("accepted a Service mount of an undeclared secret"),
+    };
+
+    assert!(matches!(error, ComposeError::Compose(_)));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn real_compose_still_rejects_undeclared_volume_mounts() {
+    let Some((root, docker)) = real_docker_fixture("undeclared-volume") else {
+        return;
+    };
+    let compose = root.join("compose.yaml");
+    fs::write(
+        &compose,
+        "services: {app: {image: busybox, volumes: [missing:/data]}}\n",
+    )
+    .unwrap();
+    let error = match load_project(&LoadOptions {
+        command: "deploy".into(),
+        files: vec![compose],
+        working_dir: Some(root.clone()),
+        docker: Some(docker),
+        ..Default::default()
+    }) {
+        Err(error) => error,
+        Ok(_) => panic!("accepted an undeclared Volume reference"),
+    };
+
+    assert!(matches!(error, ComposeError::Compose(_)));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn real_compose_recovers_command_secrets_selected_by_compose_file() {
     if !Path::new("/usr/bin/docker").is_file() {
         eprintln!("skipping: /usr/bin/docker is unavailable");
@@ -449,6 +548,20 @@ fn test_dir(label: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).unwrap();
     path
+}
+
+fn real_docker_fixture(label: &str) -> Option<(PathBuf, PathBuf)> {
+    if !Path::new("/usr/bin/docker").is_file() {
+        eprintln!("skipping: /usr/bin/docker is unavailable");
+        return None;
+    }
+    let root = test_dir(label);
+    let docker = executable(
+        &root,
+        "real-docker",
+        "#!/bin/sh\nexport DOCKER_HOST=tcp://127.0.0.1:1\nexec /usr/bin/docker \"$@\"\n",
+    );
+    Some((root, docker))
 }
 
 fn executable(root: &Path, name: &str, content: &str) -> PathBuf {

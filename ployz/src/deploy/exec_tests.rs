@@ -1,9 +1,14 @@
-use std::{collections::VecDeque, num::NonZeroU64, sync::Mutex};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    num::NonZeroU64,
+    sync::Mutex,
+};
 
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
     HealthFailure, HealthObservation, MembershipObservation, ProjectName,
-    ProvisionedVolumeMaximumBytes, RpcErrorCode, ServiceName, ServiceVolumeReference, VolumeSource,
+    ProvisionedVolumeMaximumBytes, RpcErrorCode, ServiceName, ServiceVolume,
+    ServiceVolumeReference, VolumeSource,
 };
 
 use crate::deploy::{DeployOutcome, DeploySnapshot, FailedOperation};
@@ -44,7 +49,7 @@ async fn execute_with<C: MachineOperations>(
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Call {
     List(QualifiedService),
-    CreateVolume(MachineId),
+    CreateVolume(MachineId, CreateVolumeRequest),
     Create(MachineId, ContainerKind),
     Start(MachineId, ContainerId),
     Inspect(MachineId, ContainerId),
@@ -57,6 +62,7 @@ enum Call {
 #[derive(Clone)]
 enum Reply {
     Ok,
+    Volume(DockerVolume),
     Listed(Vec<ContainerObservation>),
     Created(ContainerId),
     Observed(
@@ -104,7 +110,11 @@ impl MachineOperations for Scripted {
         match self.next(Call::List(service.clone())) {
             Reply::Listed(containers) => Ok(containers),
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
+            Reply::Ok
+            | Reply::Volume(_)
+            | Reply::Created(_)
+            | Reply::Observed(_, _)
+            | Reply::Pending => {
                 panic!("scripted list requires Listed or Error")
             }
         }
@@ -113,9 +123,26 @@ impl MachineOperations for Scripted {
     async fn create_volume(
         &self,
         machine_id: &MachineId,
-        _volume: &ServiceVolume,
-    ) -> Result<(), RpcError> {
-        unit(self.next(Call::CreateVolume(*machine_id)))
+        request: CreateVolumeRequest,
+    ) -> Result<DockerVolume, RpcError> {
+        match self.next(Call::CreateVolume(*machine_id, request.clone())) {
+            Reply::Ok => Ok(DockerVolume {
+                id: DockerVolumeId {
+                    machine_id: *machine_id,
+                    name: request.name,
+                },
+                options: request.options,
+                labels: request.labels,
+                storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                    driver: request.driver,
+                },
+            }),
+            Reply::Volume(volume) => Ok(volume),
+            Reply::Error(error) => Err(error),
+            Reply::Listed(_) | Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
+                panic!("scripted volume creation requires Ok or Error")
+            }
+        }
     }
 
     async fn create_container(
@@ -131,7 +158,11 @@ impl MachineOperations for Scripted {
                 container_id,
             }),
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Listed(_) | Reply::Observed(_, _) | Reply::Pending => {
+            Reply::Ok
+            | Reply::Volume(_)
+            | Reply::Listed(_)
+            | Reply::Observed(_, _)
+            | Reply::Pending => {
                 panic!("scripted create requires Created or Error")
             }
         }
@@ -158,7 +189,7 @@ impl MachineOperations for Scripted {
             }
             Reply::Pending => std::future::pending().await,
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Listed(_) | Reply::Created(_) => {
+            Reply::Ok | Reply::Volume(_) | Reply::Listed(_) | Reply::Created(_) => {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
@@ -194,7 +225,11 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
     match reply {
         Reply::Ok => Ok(()),
         Reply::Error(error) => Err(error),
-        Reply::Listed(_) | Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
+        Reply::Volume(_)
+        | Reply::Listed(_)
+        | Reply::Created(_)
+        | Reply::Observed(_, _)
+        | Reply::Pending => {
             panic!("scripted mutation requires Ok or Error")
         }
     }
@@ -310,6 +345,45 @@ fn volume() -> ServiceVolume {
             subpath: None,
         },
     }
+}
+
+fn create_volume_call(machine_id: MachineId, driver: &str, size: Option<&str>) -> Call {
+    Call::CreateVolume(
+        machine_id,
+        CreateVolumeRequest {
+            name: DockerVolumeName::parse("data").unwrap(),
+            driver: driver.into(),
+            options: size
+                .map(|size| BTreeMap::from([("size".into(), size.into())]))
+                .unwrap_or_default(),
+            labels: Default::default(),
+        },
+    )
+}
+
+fn volume_reply(machine_id: MachineId, driver: &str, size: Option<&str>) -> Reply {
+    Reply::Volume(DockerVolume {
+        id: DockerVolumeId {
+            machine_id,
+            name: DockerVolumeName::parse("data").unwrap(),
+        },
+        options: size
+            .map(|size| BTreeMap::from([("size".into(), size.into())]))
+            .unwrap_or_default(),
+        labels: Default::default(),
+        storage: if driver == "ployz" {
+            ployz_core::DockerVolumeStorageObservation::Provisioned {
+                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
+                bound_bytes: NonZeroU64::new(size.unwrap().trim_end_matches('b').parse().unwrap())
+                    .unwrap(),
+                used_bytes: 0,
+            }
+        } else {
+            ployz_core::DockerVolumeStorageObservation::Plain {
+                driver: driver.into(),
+            }
+        },
+    })
 }
 
 fn observation(

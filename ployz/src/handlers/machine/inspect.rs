@@ -71,12 +71,16 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
 }
 
 #[must_use]
-fn format_storage(storage: Option<MachineStorageObservation>) -> &'static str {
+fn format_storage(storage: Option<MachineStorageObservation>) -> String {
     match storage {
-        None => "-",
-        Some(MachineStorageObservation::Stateless) => "STATELESS",
-        Some(MachineStorageObservation::Ready) => "READY (NO POOL)",
-        Some(MachineStorageObservation::Pool) => "POOL",
+        None => "-".into(),
+        Some(MachineStorageObservation::Stateless) => "STATELESS".into(),
+        Some(MachineStorageObservation::Ready) => "READY (NO POOL)".into(),
+        Some(MachineStorageObservation::Pool {
+            size_bytes,
+            used_bytes,
+            free_bytes,
+        }) => format!("POOL ({size_bytes} BYTES, {used_bytes} USED, {free_bytes} FREE)"),
     }
 }
 
@@ -321,8 +325,12 @@ mod tests {
             "READY (NO POOL)"
         );
         assert_eq!(
-            format_storage(Some(MachineStorageObservation::Pool)),
-            "POOL"
+            format_storage(Some(MachineStorageObservation::Pool {
+                size_bytes: std::num::NonZeroU64::new(4_294_967_296).unwrap(),
+                used_bytes: 3_865_470_566,
+                free_bytes: 429_496_730,
+            })),
+            "POOL (4294967296 BYTES, 3865470566 USED, 429496730 FREE)"
         );
     }
 

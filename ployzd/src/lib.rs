@@ -1,5 +1,15 @@
 //! Linux daemon runtime for one Ployz Machine.
 
+/// Numeric status returned by the Ployz Docker Volume plugin.
+#[doc(hidden)]
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct VolumePluginStatus {
+    /// Current ZFS dataset byte bound.
+    pub bound_bytes: u64,
+    /// Current referenced ZFS dataset bytes.
+    pub used_bytes: u64,
+}
+
 mod docker_image;
 
 pub mod caddy;

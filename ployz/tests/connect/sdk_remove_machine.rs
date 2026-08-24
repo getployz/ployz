@@ -389,8 +389,10 @@ fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
             machine_id,
             name: DockerVolumeName::parse(name).unwrap(),
         },
-        driver: "local".into(),
         options: Default::default(),
         labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }

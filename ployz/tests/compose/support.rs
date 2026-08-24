@@ -2,12 +2,13 @@ use std::{collections::BTreeMap, net::Ipv6Addr};
 
 use ployz::{
     compose::ComposeProject,
-    deploy::{DeployPreview, DeploySnapshot, ObservedDockerVolume, PlanError},
+    deploy::{DeployPreview, DeploySnapshot, PlanError},
 };
 use ployz_core::{
-    AdvertisedEndpoint, DockerVolumeId, DockerVolumeName, MANAGED_LABEL, Machine, MachineId,
-    MachineName, MachineObservation, ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL,
-    ProjectName, WireGuardPublicKey,
+    AdvertisedEndpoint, DockerVolume, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, MANAGED_LABEL, Machine, MachineId, MachineName,
+    MachineObservation, ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, ProjectName,
+    WireGuardPublicKey,
 };
 
 pub(super) fn plan_compose(
@@ -45,42 +46,48 @@ pub(super) fn app_volume(logical: &str) -> DockerVolumeName {
         .volume_name(&DockerVolumeName::parse(logical).unwrap())
 }
 
-pub(super) fn snapshot_volume(machine_id: MachineId, name: &str) -> ObservedDockerVolume {
-    ObservedDockerVolume {
+pub(super) fn snapshot_volume(machine_id: MachineId, name: &str) -> DockerVolume {
+    DockerVolume {
         id: DockerVolumeId {
             machine_id,
             name: DockerVolumeName::parse(name).unwrap(),
         },
-        driver: "local".into(),
         options: BTreeMap::new(),
         labels: BTreeMap::new(),
+        storage: DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }
 
-pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> ObservedDockerVolume {
-    ObservedDockerVolume {
+pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
+    DockerVolume {
         id: DockerVolumeId {
             machine_id,
             name: app_volume(logical),
         },
-        driver: "local".into(),
         options: BTreeMap::new(),
         labels: BTreeMap::new(),
+        storage: DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }
 
-pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> ObservedDockerVolume {
-    ObservedDockerVolume {
+pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
+    DockerVolume {
         id: DockerVolumeId {
             machine_id,
             name: app_volume(logical),
         },
-        driver: "local".into(),
         options: BTreeMap::new(),
         labels: BTreeMap::from([
             (MANAGED_LABEL.to_owned(), String::new()),
             (PROJECT_NAME_LABEL.to_owned(), "app".to_owned()),
         ]),
+        storage: DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }
 

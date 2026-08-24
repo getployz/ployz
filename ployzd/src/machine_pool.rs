@@ -1,14 +1,39 @@
 //! Imported Machine Pool eligibility.
 
+use std::num::NonZeroU64;
+
 /// A writable imported Machine Pool with usable health.
 #[derive(Debug, Eq, PartialEq)]
-pub struct MachinePool(String);
+pub struct MachinePool {
+    name: String,
+    size_bytes: NonZeroU64,
+    used_bytes: u64,
+    free_bytes: u64,
+}
 
 impl MachinePool {
     /// The imported ZFS Pool name.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.0
+        &self.name
+    }
+
+    /// Current ZFS Pool size in bytes.
+    #[must_use]
+    pub fn size_bytes(&self) -> NonZeroU64 {
+        self.size_bytes
+    }
+
+    /// Current allocated ZFS Pool bytes.
+    #[must_use]
+    pub fn used_bytes(&self) -> u64 {
+        self.used_bytes
+    }
+
+    /// Current free ZFS Pool bytes.
+    #[must_use]
+    pub fn free_bytes(&self) -> u64 {
+        self.free_bytes
     }
 }
 
@@ -52,14 +77,56 @@ pub fn one_usable(output: &str) -> Result<Option<MachinePool>, Error> {
     }
 }
 
+/// Reads the Pool names from one successful `zpool import` label scan.
+///
+/// # Errors
+///
+/// Returns an error when non-empty output contains no complete Pool name.
+#[expect(
+    clippy::needless_lifetimes,
+    reason = "the repository standard requires naming the output borrow's source lifetime"
+)]
+pub fn importable_names<'output>(output: &'output str) -> Result<Vec<&'output str>, Error> {
+    let output = output.trim();
+    if output.is_empty() || output == "no pools available to import" {
+        return Ok(Vec::new());
+    }
+    let pools: Vec<_> = output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pool:").map(str::trim))
+        .collect();
+    if pools.is_empty() || pools.contains(&"") {
+        return Err(Error(format!("invalid ZFS Pool import output: {output}")));
+    }
+    Ok(pools)
+}
+
 fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
     let mut fields = line.split('\t');
     let invalid = || Error(format!("invalid ZFS Pool output: {line}"));
-    let (Some(name), Some(health), Some(readonly), None) =
-        (fields.next(), fields.next(), fields.next(), fields.next())
+    let (
+        Some(name),
+        Some(size_bytes),
+        Some(used_bytes),
+        Some(free_bytes),
+        Some(health),
+        Some(readonly),
+        None,
+    ) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    )
     else {
         return Err(invalid());
     };
+    let size_bytes = size_bytes.parse::<NonZeroU64>().map_err(|_| invalid())?;
+    let used_bytes = used_bytes.parse::<u64>().map_err(|_| invalid())?;
+    let free_bytes = free_bytes.parse::<u64>().map_err(|_| invalid())?;
     if name.is_empty()
         || !matches!(
             health,
@@ -70,8 +137,12 @@ fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
         return Err(invalid());
     }
     Ok(
-        (matches!(health, "ONLINE" | "DEGRADED") && readonly == "off")
-            .then(|| MachinePool(name.to_owned())),
+        (matches!(health, "ONLINE" | "DEGRADED") && readonly == "off").then(|| MachinePool {
+            name: name.to_owned(),
+            size_bytes,
+            used_bytes,
+            free_bytes,
+        }),
     )
 }
 
@@ -82,8 +153,24 @@ mod tests {
     #[test]
     fn malformed_output_is_an_error() {
         assert_eq!(
-            one_usable("broken\tONLINE").unwrap_err().to_string(),
-            "invalid ZFS Pool output: broken\tONLINE"
+            one_usable("broken\tnot-a-size\t1\t1\tONLINE\toff")
+                .unwrap_err()
+                .to_string(),
+            "invalid ZFS Pool output: broken\tnot-a-size\t1\t1\tONLINE\toff"
         );
+    }
+
+    #[test]
+    fn import_scan_extracts_names_and_distinguishes_no_pool() {
+        assert!(
+            importable_names("no pools available to import\n")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            importable_names("   pool: ployz\n     id: 1\n   pool: other\n").unwrap(),
+            ["ployz", "other"]
+        );
+        assert!(importable_names("unexpected").is_err());
     }
 }

@@ -403,7 +403,6 @@
     }
   },
   "docker_volume": {
-    "driver": "local",
     "id": {
       "machine_id": "0123456789abcdef0123456789abcdef",
       "name": "data"
@@ -412,11 +411,16 @@
       "ployz.managed": "false"
     },
     "options": {
-      "type": "none"
+      "size": "1g"
+    },
+    "storage": {
+      "bound_bytes": 1073741824,
+      "kind": "provisioned",
+      "mountpoint": "/var/lib/ployz-volumes/data",
+      "used_bytes": 966367642
     }
   },
   "docker_volume_unknown_fields": {
-    "driver": "local",
     "id": {
       "machine_id": "0123456789abcdef0123456789abcdef",
       "name": "data"
@@ -425,9 +429,15 @@
       "ployz.managed": "false"
     },
     "options": {
-      "type": "none"
+      "size": "1g"
     },
-    "quota_bytes": 1
+    "quota_bytes": 1,
+    "storage": {
+      "bound_bytes": 1073741824,
+      "kind": "provisioned",
+      "mountpoint": "/var/lib/ployz-volumes/data",
+      "used_bytes": 966367642
+    }
   },
   "health_observation_unknown": "degraded",
   "ingress_hostname_cluster_domain": {
@@ -476,7 +486,6 @@
       {
         "machine_id": "0123456789abcdef0123456789abcdef",
         "value": {
-          "driver": "local",
           "id": {
             "machine_id": "0123456789abcdef0123456789abcdef",
             "name": "data"
@@ -485,7 +494,13 @@
             "ployz.managed": "false"
           },
           "options": {
-            "type": "none"
+            "size": "1g"
+          },
+          "storage": {
+            "bound_bytes": 1073741824,
+            "kind": "provisioned",
+            "mountpoint": "/var/lib/ployz-volumes/data",
+            "used_bytes": 966367642
           }
         }
       }
@@ -1157,7 +1172,9 @@
           "population_stddev_ns": 250000
         },
         "selected_endpoint": "203.0.113.10:51820",
-        "storage": "ready"
+        "storage": {
+          "state": "ready"
+        }
       }
     ],
     "observed_at": "2024-01-01T00:00:00Z",
@@ -1230,7 +1247,6 @@
     ],
     "volumes": [
       {
-        "driver": "local",
         "id": {
           "machine_id": "0123456789abcdef0123456789abcdef",
           "name": "data"
@@ -1239,7 +1255,13 @@
           "ployz.managed": "false"
         },
         "options": {
-          "type": "none"
+          "size": "1g"
+        },
+        "storage": {
+          "bound_bytes": 1073741824,
+          "kind": "provisioned",
+          "mountpoint": "/var/lib/ployz-volumes/data",
+          "used_bytes": 966367642
         }
       }
     ]
@@ -1361,7 +1383,9 @@
           "population_stddev_ns": 250000
         },
         "selected_endpoint": "203.0.113.10:51820",
-        "storage": "ready"
+        "storage": {
+          "state": "ready"
+        }
       }
     ],
     "observed_at": "2024-01-01T00:00:00Z",
@@ -1434,7 +1458,6 @@
     ],
     "volumes": [
       {
-        "driver": "local",
         "id": {
           "machine_id": "0123456789abcdef0123456789abcdef",
           "name": "data"
@@ -1443,7 +1466,13 @@
           "ployz.managed": "false"
         },
         "options": {
-          "type": "none"
+          "size": "1g"
+        },
+        "storage": {
+          "bound_bytes": 1073741824,
+          "kind": "provisioned",
+          "mountpoint": "/var/lib/ployz-volumes/data",
+          "used_bytes": 966367642
         }
       }
     ]

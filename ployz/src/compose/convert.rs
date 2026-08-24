@@ -8,9 +8,10 @@ use ployz_core::{
     ConfiguredHealthcheck, ContainerHostname, ContainerLabels, ContainerPath, ContainerResources,
     DependencyCondition, DeviceMapping, DeviceReservation, DockerVolumeName, ExtraHost,
     HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath,
-    MachineTarget, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
-    ServiceConfigGraph, ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceName,
-    ServiceVolumeGraph, Ulimit, UpdateConfig, UpdateOrder,
+    MachineTarget, Placement, PortPublication, ProvisionedVolumeMaximumBytes, PullPolicy,
+    RequestedServiceSpec, RestartPolicy, ServiceConfigGraph, ServiceContainerSpec,
+    ServiceDependency, ServiceMode, ServiceName, ServiceVolumeGraph, ServiceVolumeReference,
+    Ulimit, UpdateConfig, UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -52,6 +53,19 @@ pub(super) fn convert_raw_project(
         }
     }
     validate_definitions(&raw)?;
+    let provisioned_volume_bounds = raw
+        .provisioned_volumes
+        .iter()
+        .map(|(name, raw)| {
+            let size =
+                crate::volume::ProvisionedVolumeSize::parse(&raw.size().to_ascii_lowercase())
+                    .map_err(|error| invalid(format!("x-volumes.{name}: {error}")))?;
+            Ok((
+                ServiceVolumeReference::parse(name.clone()).map_err(invalid)?,
+                ProvisionedVolumeMaximumBytes::new(size.bytes()),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, ComposeError>>()?;
     let secrets = convert_secrets(std::mem::take(&mut raw.secrets))?;
     let working_dir = working_dir.into();
     let name = raw.name.clone().unwrap_or_else(|| {
@@ -116,6 +130,7 @@ pub(super) fn convert_raw_project(
         dependencies,
         warnings,
         service_profiles,
+        provisioned_volume_bounds,
         volumes: raw.volumes,
         secrets,
         environment,
@@ -541,6 +556,11 @@ fn classify(name: &str, service: &RawService) -> Result<Vec<String>, ComposeErro
         "uts",
         "volumes_from",
     ];
+    if service.other.contains_key("x-volumes") {
+        return Err(invalid(format!(
+            "service '{name}': x-volumes is only supported at Compose top level"
+        )));
+    }
     if service.other.get("read_only") == Some(&Value::Bool(true)) {
         return Err(invalid(unsupported_feature(name, "read_only")));
     }
@@ -608,6 +628,15 @@ fn unsupported_feature(name: &str, feature: &str) -> String {
 }
 
 fn validate_definitions(project: &RawProject) -> Result<(), ComposeError> {
+    if let Some(name) = project
+        .volumes
+        .keys()
+        .find(|name| project.provisioned_volumes.contains_key(name.as_str()))
+    {
+        return Err(invalid(format!(
+            "volume '{name}' is declared in both volumes and x-volumes"
+        )));
+    }
     for (name, config) in &project.configs {
         // TODO(UT-002): external config objects remain unsupported.
         if is_external(&config.external) {

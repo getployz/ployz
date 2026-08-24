@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     convert::{bytes_u64, integer, invalid, is_external},
-    model::{ComposeError, RawProject, RawService, RawServiceVolume},
+    model::{ComposeError, RawProject, RawService, RawServiceVolume, RawVolume},
 };
 
 pub(super) fn volumes(
@@ -100,9 +100,18 @@ pub(super) fn volumes(
             },
             "volume" => {
                 let key = source.ok_or_else(|| invalid("named volume requires source"))?;
-                let declared = root.volumes.get(&key).ok_or_else(|| {
-                    invalid(format!("volume '{key}' not found in project volumes"))
-                })?;
+                let provisioned_defaults = RawVolume::default();
+                let declared = root
+                    .volumes
+                    .get(&key)
+                    .or_else(|| {
+                        root.provisioned_volumes
+                            .contains_key(&key)
+                            .then_some(&provisioned_defaults)
+                    })
+                    .ok_or_else(|| {
+                        invalid(format!("volume '{key}' not found in project volumes"))
+                    })?;
                 let external = is_external(&declared.external);
                 let docker_name = if external {
                     declared

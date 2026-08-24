@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     net::{IpAddr, SocketAddr},
+    num::NonZeroU64,
     str::FromStr,
 };
 
@@ -205,14 +206,21 @@ pub fn apply_machine_update(
 
 /// Current storage evidence observed from one Machine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum MachineStorageObservation {
     /// Usable ZFS support was not observed.
     Stateless,
     /// ZFS is usable and no Machine Pool is imported.
     Ready,
     /// Exactly one writable `ONLINE` or `DEGRADED` Machine Pool is imported.
-    Pool,
+    Pool {
+        /// Current ZFS Pool size in bytes.
+        size_bytes: NonZeroU64,
+        /// Current allocated ZFS Pool bytes.
+        used_bytes: u64,
+        /// Current free ZFS Pool bytes.
+        free_bytes: u64,
+    },
 }
 
 /// An observer-relative view layered over a Machine's advertised record.

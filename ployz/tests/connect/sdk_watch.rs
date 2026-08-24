@@ -511,9 +511,11 @@ fn frame_with_extra_volume(frame: &RuntimeWatchFrame) -> RuntimeWatchFrame {
             machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
             name: DockerVolumeName::parse("logs").unwrap(),
         },
-        driver: "local".into(),
         options: Default::default(),
         labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     });
     changed
 }

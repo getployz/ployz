@@ -447,9 +447,11 @@ mod tests {
                 machine_id,
                 name: DockerVolumeName::parse(name).unwrap(),
             },
-            driver: driver.into(),
             options: BTreeMap::new(),
             labels: BTreeMap::new(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                driver: driver.into(),
+            },
         };
         let stable = volume("a-stable", "local");
         let stale = volume("b-stale", "local");

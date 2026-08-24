@@ -6,10 +6,11 @@ use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
     ClusterTeardown, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
     DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation, DeployOutcome,
-    DeployPreview, DockerVolume, ExecutionError, HealthObservation, HealthcheckSpec,
-    IngressHostname, LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
-    RUNTIME_WATCH_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    RuntimeWatchTransportFrame, ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeSource,
+    DeployPreview, DockerVolume, DockerVolumeStorageObservation, ExecutionError, HealthObservation,
+    HealthcheckSpec, IngressHostname, LocalMachineRemoved, MembershipObservation, ObservedDataLoss,
+    PlanOptions, RUNTIME_WATCH_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, RuntimeWatchTransportFrame, ServiceAttempt, StorageChoice, UnconfirmedDataLoss,
+    VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -90,7 +91,15 @@ fn json_fixtures_round_trip_through_rust_types() {
     );
 
     let volume: DockerVolume = decode_fixture(fixture(&fixtures, "docker_volume"));
-    assert_eq!(volume.driver, "local");
+    assert_eq!(volume.driver(), "ployz");
+    assert!(matches!(
+        volume.storage,
+        DockerVolumeStorageObservation::Provisioned {
+            bound_bytes,
+            used_bytes: 966_367_642,
+            ..
+        } if bound_bytes.get() == 1_073_741_824
+    ));
     assert_eq!(
         serde_json::to_value(&volume).unwrap(),
         *fixture(&fixtures, "docker_volume")
@@ -184,7 +193,7 @@ fn json_fixtures_round_trip_through_rust_types() {
             .and_then(|row| row.get("value"))
             .expect("success value"),
     );
-    assert_eq!(volume.driver, "local");
+    assert_eq!(volume.driver(), "ployz");
     let error: RpcError = decode_fixture(
         failures
             .first()
@@ -440,6 +449,12 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type ContainerRuntimeObservation ="));
     assert!(dts.contains("state?: string"));
     assert!(dts.contains("export type DockerVolume = Additive<{"));
+    assert!(dts.contains("export type DockerVolumeStorageObservation ="));
+    assert!(dts.contains("kind: \"plain\"; driver: string"));
+    assert!(dts.contains(
+        "kind: \"provisioned\"; mountpoint: MachinePath; bound_bytes: number; used_bytes: number"
+    ));
+    assert!(dts.contains("storage: DockerVolumeStorageObservation"));
     assert!(dts.contains("export type DataLoss ="));
     assert!(dts.contains("DockerVolume: DockerVolumeId"));
     assert!(dts.contains("export type ObservedDataLoss = Additive<{"));
@@ -534,10 +549,9 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("hosted_dns_hostname?: string"));
     assert!(dts.contains("export type Machine = Additive<{"));
     assert!(dts.contains("export type StorageChoice = \"none\" | \"zfs\";"));
+    assert!(dts.contains("export type MachineStorageObservation ="));
     assert!(
-        dts.contains(
-            "export type MachineStorageObservation = \"stateless\" | \"ready\" | \"pool\";"
-        )
+        dts.contains("state: \"pool\"; size_bytes: number; used_bytes: number; free_bytes: number")
     );
     assert!(dts.contains("export type RegisterRequest = Additive<{"));
     assert!(dts.contains("storage: StorageChoice"));

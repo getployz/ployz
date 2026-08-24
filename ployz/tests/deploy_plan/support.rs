@@ -6,8 +6,8 @@ pub(super) use std::{
 
 pub(super) use ployz::deploy::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
-    EliminatingConstraints, IngressContext, ObservedDockerVolume, PlanError, PlanOptions,
-    ReplacementOperation, ServiceAttempt, compare_specs, preview_deploy,
+    EliminatingConstraints, IngressContext, PlanError, PlanOptions, ReplacementOperation,
+    ServiceAttempt, compare_specs, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -58,13 +58,14 @@ pub(super) fn assert_no_eligible(
 pub(super) use ployz_core::{
     AdvertisedEndpoint, BridgeEndpointCapacity, ContainerId, ContainerKind, ContainerObservation,
     ContainerPath, ContainerResources, ContainerRuntimeObservation, DeviceMapping,
-    DeviceReservation, DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver,
-    MANAGED_LABEL, Machine, MachineId, MachineName, MachineObservation, MachinePath, MachineTarget,
-    ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement,
-    PortPublication, PreDeployHook, ProjectName, PullPolicy, RequestedServiceSpec,
-    ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
-    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
-    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, HealthObservation, HostBind, LogDriver, MANAGED_LABEL, Machine,
+    MachineId, MachineName, MachineObservation, MachinePath, MachineTarget, ManagementAddress,
+    MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement, PortPublication, PreDeployHook,
+    ProjectName, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig, UpdateOrder,
+    VolumeSource, WireGuardPublicKey,
 };
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -178,30 +179,34 @@ pub(super) fn app_volume(logical: &str) -> DockerVolumeName {
         .volume_name(&DockerVolumeName::parse(logical).unwrap())
 }
 
-pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> ObservedDockerVolume {
-    ObservedDockerVolume {
+pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
+    DockerVolume {
         id: DockerVolumeId {
             machine_id,
             name: app_volume(logical),
         },
-        driver: "local".into(),
         options: Default::default(),
         labels: Default::default(),
+        storage: DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }
 
-pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> ObservedDockerVolume {
-    ObservedDockerVolume {
+pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
+    DockerVolume {
         id: DockerVolumeId {
             machine_id,
             name: app_volume(logical),
         },
-        driver: "local".into(),
         options: Default::default(),
         labels: BTreeMap::from([
             (MANAGED_LABEL.to_owned(), String::new()),
             (PROJECT_NAME_LABEL.to_owned(), "app".to_owned()),
         ]),
+        storage: DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }
 

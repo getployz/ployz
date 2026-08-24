@@ -397,9 +397,11 @@ fn expected_frame() -> RuntimeWatchFrame {
                 machine_id: MachineId::parse(MACHINE_ID).unwrap(),
                 name: DockerVolumeName::parse("data").unwrap(),
             },
-            driver: "local".into(),
             options: [("type".into(), "none".into())].into(),
             labels: [("purpose".into(), "database".into())].into(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                driver: "local".into(),
+            },
         }],
         certificates: vec![
             CertificateObservation {

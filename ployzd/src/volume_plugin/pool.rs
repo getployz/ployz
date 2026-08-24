@@ -11,7 +11,9 @@ use std::{
 use ployzd::machine::DEFAULT_DATA_DIR;
 use ployzd::machine_pool::{self, MachinePool};
 
-use super::{DockerVolumeName, Result, VolumeError, VolumeStorage, checked_command, parse_size};
+use super::{
+    DockerVolumeName, PoolOrigin, Result, VolumeError, VolumeStorage, checked_command, parse_size,
+};
 
 const GIBIBYTE: u64 = 1024_u64.pow(3);
 const POOL_BACKING_PATH: &str = "/var/lib/ployz-machine-pool";
@@ -63,18 +65,29 @@ impl VolumeStorage {
     ) -> Result<()> {
         let requested = parse_size(options)?;
         let _guard = self.mutation.lock().await;
-        match self.pool.one_usable().await? {
-            Some(pool) => self.create_volume(&pool, name, requested).await,
-            None => {
-                let pool = self.pool.create(requested).await?;
-                match self
-                    .create_volume(pool.machine_pool(), name, requested)
-                    .await
-                {
-                    Ok(()) => Ok(()),
-                    Err(error) => Err(pool.cleanup(error).await),
-                }
-            }
+        let _pool_guard = self.pool.lock_mutation().await?;
+        let existing = match self.pool.one_usable().await? {
+            Some(pool) => Some(pool),
+            None => self.pool.recover().await?,
+        };
+        if let Some(pool) = existing {
+            return self
+                .create_volume(&pool, name, requested, PoolOrigin::Existing)
+                .await;
+        }
+
+        let pool = self.pool.create(requested).await?;
+        match self
+            .create_volume(
+                pool.machine_pool(),
+                name,
+                requested,
+                PoolOrigin::CreatedForRequest,
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => Err(pool.cleanup(error).await),
         }
     }
 }
@@ -115,15 +128,130 @@ impl PoolStorage {
         }
     }
 
+    #[cfg(test)]
+    /// Replaces the production backing path for adapters at the test seam.
+    pub(super) fn with_backing(mut self, backing: PathBuf) -> Self {
+        self.backing = backing;
+        self
+    }
+
+    async fn lock_mutation(&self) -> Result<fs::File> {
+        let mut lock_path = self.backing.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = PathBuf::from(lock_path);
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "could not open Machine Pool mutation lock {}: {error}",
+                    lock_path.display()
+                )
+            })?;
+        tokio::task::spawn_blocking(move || fs2::FileExt::lock_exclusive(&lock).map(|()| lock))
+            .await
+            .map_err(|error| format!("could not wait for Machine Pool mutation lock: {error}"))?
+            .map_err(|error| {
+                format!(
+                    "could not lock Machine Pool mutations through {}: {error}",
+                    lock_path.display()
+                )
+                .into()
+            })
+    }
+
     /// Selects the sole usable imported Machine Pool, or `None` when none is imported.
     ///
     /// # Errors
     ///
     /// Returns an error when Pool inspection fails or imported Pool evidence is unusable.
     pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
-        let output =
-            checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
+        let output = checked_command(
+            &self.zpool,
+            &[
+                "list",
+                "-Hp",
+                "-o",
+                "name,size,allocated,free,health,readonly",
+            ],
+        )
+        .await?;
         Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
+    }
+
+    /// Imports this host's valid unimported backing Pool, or removes an unlabeled stale file.
+    async fn recover(&self) -> Result<Option<MachinePool>> {
+        match self.backing.try_exists() {
+            Ok(false) => return Ok(None),
+            Ok(true) => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect Machine Pool backing file {}: {error}",
+                    self.backing.display()
+                )
+                .into());
+            }
+        }
+        let backing = self.backing_text()?;
+        let output = checked_command(&self.zpool, &["import", "-d", backing]).await?;
+        let pools = machine_pool::importable_names(&output).map_err(|error| error.to_string())?;
+        if pools.is_empty() {
+            let output = checked_command(&self.zpool, &["import", "-D", "-d", backing]).await?;
+            if !machine_pool::importable_names(&output)
+                .map_err(|error| error.to_string())?
+                .is_empty()
+            {
+                return Err(format!(
+                    "Machine Pool backing file {} contains a destroyed Pool label; refusing to replace it",
+                    self.backing.display()
+                )
+                .into());
+            }
+            self.remove_backing().map_err(|error| {
+                format!(
+                    "could not remove unlabeled Machine Pool backing file {}: {error}",
+                    self.backing.display()
+                )
+            })?;
+            return Ok(None);
+        }
+        if pools.as_slice() != [POOL_NAME] {
+            return Err(format!(
+                "Machine Pool backing file {} has ambiguous Pool labels ({}); refusing to replace it",
+                self.backing.display(),
+                pools.join(", ")
+            )
+            .into());
+        }
+        checked_command(
+            &self.zpool,
+            &["import", "-d", backing, "-f", "-N", POOL_NAME],
+        )
+        .await?;
+        match self.one_usable().await? {
+            Some(pool) if pool.name() == POOL_NAME => Ok(Some(pool)),
+            Some(pool) => Err(format!(
+                "imported Machine Pool {POOL_NAME}, but ZFS selected {}",
+                pool.name()
+            )
+            .into()),
+            None => {
+                Err(format!("imported Machine Pool {POOL_NAME}, but ZFS did not report it").into())
+            }
+        }
+    }
+
+    fn backing_text(&self) -> Result<&str> {
+        self.backing.to_str().ok_or_else(|| {
+            format!(
+                "Machine Pool backing path is not valid UTF-8: {}",
+                self.backing.display()
+            )
+            .into()
+        })
     }
 
     /// Creates one root-backed Machine Pool sized for the requested Volume.
@@ -132,14 +260,10 @@ impl PoolStorage {
     ///
     /// Returns an error when reserve, allocation, Pool creation, or verification fails.
     pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
-        let capacity = initial_capacity(requested)?;
-        let ashift = self.check_host_root(capacity).await?;
-        let backing = self.backing.to_str().ok_or_else(|| {
-            VolumeError::from(format!(
-                "Machine Pool backing path is not valid UTF-8: {}",
-                self.backing.display()
-            ))
-        })?;
+        let capacity = capacity_with_headroom(requested)?;
+        let host = self.check_host_root(capacity).await?;
+        let ashift = self.host_root_ashift(&host)?;
+        let backing = self.backing_text()?;
         fs::OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -202,6 +326,75 @@ impl PoolStorage {
         }
     }
 
+    /// Makes the managed backing Pool large enough for all requested bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when reserve, backing allocation, Pool growth, or verification fails.
+    pub(super) async fn ensure_capacity(&self, pool: &MachinePool, commitment: u64) -> Result<()> {
+        let minimum = capacity_with_headroom(commitment)?;
+        if pool.size_bytes().get() >= minimum {
+            return Ok(());
+        }
+        if pool.name() != POOL_NAME {
+            return Err(format!(
+                "Machine Pool {} is not the managed root-backed Pool {POOL_NAME}; automatic growth cannot use {}",
+                pool.name(),
+                self.backing.display()
+            )
+            .into());
+        }
+
+        let backing = self.backing_text()?;
+        let (length, allocated) = self.backing_allocation(backing).await?;
+        let needs_allocation = length < minimum || allocated < length;
+        let target = if needs_allocation {
+            let extension = minimum
+                .saturating_sub(length)
+                .checked_next_multiple_of(GIBIBYTE)
+                .ok_or_else(|| {
+                    VolumeError::from("Machine Pool capacity rounding overflowed u64")
+                })?;
+            length
+                .checked_add(extension)
+                .ok_or_else(|| VolumeError::from("Machine Pool backing capacity overflowed u64"))?
+        } else {
+            length
+        };
+        if needs_allocation {
+            self.check_host_root(target.saturating_sub(allocated))
+                .await?;
+            let target_text = target.to_string();
+            checked_command(&self.fallocate, &["-l", &target_text, backing]).await?;
+            self.verify_preallocation(backing, target).await?;
+        }
+        checked_command(&self.zpool, &["online", "-e", pool.name(), backing]).await?;
+
+        let expanded = self.one_usable().await?.ok_or_else(|| {
+            VolumeError::from(format!(
+                "expanded Machine Pool {}, but ZFS did not report it",
+                pool.name()
+            ))
+        })?;
+        if expanded.name() != pool.name() {
+            return Err(format!(
+                "expanded Machine Pool {}, but ZFS selected {}",
+                pool.name(),
+                expanded.name()
+            )
+            .into());
+        }
+        if expanded.size_bytes().get() < minimum {
+            return Err(format!(
+                "Machine Pool {} has {} bytes after growth, below the required {minimum} bytes including headroom",
+                pool.name(),
+                expanded.size_bytes()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     async fn cleanup(&self, failure: VolumeError) -> VolumeError {
         let pools = match checked_command(&self.zpool, &["list", "-H", "-o", "name"]).await {
             Ok(pools) => pools,
@@ -225,7 +418,7 @@ impl PoolStorage {
         self.cleanup_backing(failure)
     }
 
-    async fn check_host_root(&self, allocation: u64) -> Result<u32> {
+    async fn check_host_root(&self, allocation: u64) -> Result<fs::Metadata> {
         let host = fs::metadata(&self.host_root).map_err(|error| {
             format!(
                 "could not inspect host root {}: {error}",
@@ -272,12 +465,17 @@ impl PoolStorage {
             .checked_add(allocation)
             .ok_or_else(|| VolumeError::from("host-root reserve calculation overflowed u64"))?;
         if available < required {
+            let shortfall = required - available;
             return Err(format!(
-                "Host root has {available} bytes available; Machine Pool needs {allocation} bytes while preserving the {reserve}-byte host-root reserve"
+                "Host root is {shortfall} bytes short: {available} bytes are available, Machine Pool growth needs {allocation} bytes, and the host-root reserve is {reserve} bytes"
             )
             .into());
         }
 
+        Ok(host)
+    }
+
+    fn host_root_ashift(&self, host: &fs::Metadata) -> Result<u32> {
         let device = format!(
             "{}:{}",
             nix::sys::stat::major(host.dev()),
@@ -314,13 +512,19 @@ impl PoolStorage {
         }
     }
 
-    async fn verify_preallocation(&self, backing: &str, expected: u64) -> Result<()> {
-        let output = checked_command(&self.stat, &["-c", "%b %B", backing]).await?;
+    async fn backing_allocation(&self, backing: &str) -> Result<(u64, u64)> {
+        let output = checked_command(&self.stat, &["-c", "%s %b %B", backing]).await?;
         let mut values = output.split_whitespace();
-        let (Some(blocks), Some(block_size), None) = (values.next(), values.next(), values.next())
+        let (Some(length), Some(blocks), Some(block_size), None) =
+            (values.next(), values.next(), values.next(), values.next())
         else {
             return Err(format!("invalid allocation evidence for {backing}: {output}").into());
         };
+        let length = length.parse::<u64>().map_err(|_| {
+            VolumeError::from(format!(
+                "invalid allocation evidence for {backing}: {output}"
+            ))
+        })?;
         let allocated = blocks
             .parse::<u64>()
             .ok()
@@ -335,6 +539,17 @@ impl PoolStorage {
                     "invalid allocation evidence for {backing}: {output}"
                 ))
             })?;
+        Ok((length, allocated))
+    }
+
+    async fn verify_preallocation(&self, backing: &str, expected: u64) -> Result<()> {
+        let (length, allocated) = self.backing_allocation(backing).await?;
+        if length < expected {
+            return Err(format!(
+                "Machine Pool backing file {backing} is only {length} of {expected} bytes long"
+            )
+            .into());
+        }
         if allocated < expected {
             return Err(format!(
                 "Machine Pool backing file {backing} is sparse: {allocated} of {expected} bytes are allocated"
@@ -345,9 +560,8 @@ impl PoolStorage {
     }
 
     fn cleanup_backing(&self, failure: VolumeError) -> VolumeError {
-        match fs::remove_file(&self.backing) {
+        match self.remove_backing() {
             Ok(()) => failure,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => failure,
             Err(error) => format!(
                 "{failure}; cleanup could not remove Machine Pool backing file {}: {error}",
                 self.backing.display()
@@ -355,12 +569,19 @@ impl PoolStorage {
             .into(),
         }
     }
+
+    fn remove_backing(&self) -> io::Result<()> {
+        match fs::remove_file(&self.backing) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
 }
 
-fn initial_capacity(requested: u64) -> Result<u64> {
-    requested
-        .checked_add((requested / 10).max(GIBIBYTE))
-        .ok_or_else(|| "initial Machine Pool capacity overflowed u64".into())
+fn capacity_with_headroom(commitment: u64) -> Result<u64> {
+    commitment
+        .checked_add((commitment / 10).max(GIBIBYTE))
+        .ok_or_else(|| "Machine Pool capacity calculation overflowed u64".into())
 }
 
 fn parse_host_root_space(output: &str) -> Result<(u64, u64)> {

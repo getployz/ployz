@@ -6,6 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// One ordinary writable Pool for plugin tests that do not exercise Pool growth.
+pub(super) const USABLE_POOL: &str = "tank\t4294967296\t0\t4294967296\tONLINE\toff\n";
+
 /// Creates fake `zpool` and `zfs` programs backed by marker files in `directory`.
 pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let script = directory.join("fake-zfs");
@@ -31,28 +34,29 @@ if [ "$name" = zpool ]; then
   exit 0
 fi
 case "$*" in
-  'list -Hp -o name,refquota,referenced,available,mountpoint,mounted,readonly -r tank')
-    printf 'tank\t0\t24576\t2147459072\t/tank\tyes\toff\n'
+  'list -Hp -o name,refquota,used,mountpoint,mounted,readonly -r tank')
+    printf 'tank\t0\t0\t/tank\tyes\toff\n'
     if [ -e '{root}' ]; then
       if [ -e '{incompatible_root}' ]; then root_mountpoint=/tank/ployz; else root_mountpoint=/var/lib/ployz-volumes; fi
       if [ -e '{readonly_root}' ]; then root_readonly=on; else root_readonly=off; fi
-      printf 'tank/ployz\t0\t24576\t2147459072\t%s\tno\t%s\n' "$root_mountpoint" "$root_readonly"
+      printf 'tank/ployz\t0\t0\t%s\tno\t%s\n' "$root_mountpoint" "$root_readonly"
     fi
     if [ -e '{volume}' ]; then
       if [ -e '{mounted}' ]; then state=yes; else state=no; fi
       if [ -e '{incompatible_volume}' ]; then volume_mountpoint=/srv/data; else volume_mountpoint=/var/lib/ployz-volumes/data; fi
       if [ -e '{unbounded_volume}' ]; then refquota=none; else refquota=1073741824; fi
       if [ -e '{readonly_volume}' ]; then volume_readonly=on; else volume_readonly=off; fi
-      printf 'tank/ployz/data\t%s\t24576\t1073717248\t%s\t%s\t%s\n' "$refquota" "$volume_mountpoint" "$state" "$volume_readonly"
+      printf 'tank/ployz/data\t%s\t966367642\t%s\t%s\t%s\n' "$refquota" "$volume_mountpoint" "$state" "$volume_readonly"
     fi
     if [ -e '{descendant}' ]; then
-      printf 'tank/ployz/data/child\t536870912\t24576\t536846336\t/var/lib/ployz-volumes/data/child\tno\toff\n'
+      printf 'tank/ployz/data/child\t536870912\t0\t/var/lib/ployz-volumes/data/child\tno\toff\n'
     fi
     if [ -e '{sibling}' ]; then
-      printf 'tank/ployz/sibling\t1073741824\t24576\t1073717248\t/var/lib/ployz-volumes/sibling\tno\toff\n'
+      printf 'tank/ployz/sibling\t1073741824\t0\t/var/lib/ployz-volumes/sibling\tno\toff\n'
     fi
     ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
+  'create -o refquota=1 tank/ployz/data') touch '{volume}' ;;
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
   'destroy tank/ployz/data')

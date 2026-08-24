@@ -84,9 +84,11 @@ fn volume(machine: char, machine_name: &str, name: &str) -> MachineVolume {
                 machine_id: machine_id(machine),
                 name: DockerVolumeName::parse(name).unwrap(),
             },
-            driver: "local".into(),
             options: BTreeMap::new(),
             labels: BTreeMap::new(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                driver: "local".into(),
+            },
         },
     }
 }

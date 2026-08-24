@@ -70,9 +70,9 @@
         "machine_id": "0123456789abcdef0123456789abcdef",
         "name": "data"
       },
-      "driver": "local",
       "options": { "type": "none" },
-      "labels": { "purpose": "database" }
+      "labels": { "purpose": "database" },
+      "storage": { "kind": "plain", "driver": "local" }
     }
   ],
   "certificates": [

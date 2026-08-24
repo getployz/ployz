@@ -14,7 +14,7 @@ use serde::Deserialize;
 use super::{
     configs::short_config,
     convert::convert_raw_project,
-    model::{ComposeError, ComposeProject, RawProject},
+    model::{ComposeError, ComposeProject, RawProject, RawProvisionedVolume},
     mounts::relative_bind_source,
 };
 
@@ -49,66 +49,78 @@ pub fn load_project(options: &LoadOptions) -> Result<ComposeProject, ComposeErro
         .docker
         .as_deref()
         .unwrap_or_else(|| Path::new("docker"));
-    let (raw, recovered_secrets) = normalized_project(docker, options)?;
-    let environment_override = (!recovered_secrets.is_empty())
-        .then(|| TemporaryComposeFile::new(&secret_overrides(&recovered_secrets)))
-        .transpose()?;
-    let environment = parse_environment(
-        &checked_config(
-            docker,
-            options,
-            environment_override.as_ref(),
-            &["--environment"],
-        )?
-        .stdout,
-    );
+    let normalized = normalized_project(docker, options)?;
     convert_raw_project(
-        raw,
+        normalized.project,
         project_working_dir(options)?,
-        environment,
-        &recovered_secrets,
+        normalized.environment,
+        &normalized.recovered_secrets,
     )
+}
+
+struct NormalizedCompose {
+    project: RawProject,
+    environment: BTreeMap<String, String>,
+    recovered_secrets: BTreeSet<String>,
 }
 
 fn normalized_project(
     docker: &Path,
     options: &LoadOptions,
-) -> Result<(RawProject, BTreeSet<String>), ComposeError> {
+) -> Result<NormalizedCompose, ComposeError> {
     let mut recovered = BTreeSet::new();
     loop {
-        let override_file = (!recovered.is_empty())
+        let secret_override = (!recovered.is_empty())
             .then(|| TemporaryComposeFile::new(&secret_overrides(&recovered)))
             .transpose()?;
-        let output = config_output(
+        let classifier = config_output(
+            docker,
+            options,
+            secret_override.as_ref(),
+            &[
+                "--no-consistency",
+                "--no-normalize",
+                "--no-path-resolution",
+                "--format",
+                "yaml",
+            ],
+        )?;
+        if !classifier.status.success() {
+            let diagnostic = String::from_utf8_lossy(&classifier.stderr).into_owned();
+            if let Some(name) = missing_source_secret(&diagnostic)
+                && recovered.insert(name)
+            {
+                continue;
+            }
+            return Err(classify_config_failure(docker, options, diagnostic));
+        }
+        let source = parse_project(&classifier)?;
+        validate_source_forms(&source)?;
+        let override_file = (!recovered.is_empty() || !source.provisioned_volumes.is_empty())
+            .then(|| {
+                TemporaryComposeFile::new(&compose_overrides(
+                    &recovered,
+                    &source.provisioned_volumes,
+                ))
+            })
+            .transpose()?;
+        let output = checked_config(
             docker,
             options,
             override_file.as_ref(),
             &["--format", "yaml"],
         )?;
-        if output.status.success() {
-            let raw = parse_project(&output)?;
-            let classifier = checked_config(
-                docker,
-                options,
-                override_file.as_ref(),
-                &[
-                    "--no-consistency",
-                    "--no-normalize",
-                    "--no-path-resolution",
-                    "--format",
-                    "yaml",
-                ],
-            )?;
-            validate_source_forms(&parse_project(&classifier)?)?;
-            return Ok((raw, recovered));
-        }
-        let diagnostic = String::from_utf8_lossy(&output.stderr).into_owned();
-        if let Some(name) = missing_source_secret(&diagnostic)
-            && recovered.insert(name)
-        {
-            continue;
-        }
-        return Err(classify_config_failure(docker, options, diagnostic));
+        let mut raw = parse_project(&output)?;
+        raw.volumes
+            .retain(|name, _| source.volumes.contains_key(name));
+        let environment = parse_environment(
+            &checked_config(docker, options, override_file.as_ref(), &["--environment"])?.stdout,
+        );
+        return Ok(NormalizedCompose {
+            project: raw,
+            environment,
+            recovered_secrets: recovered,
+        });
     }
 }
 
@@ -181,6 +193,24 @@ fn secret_overrides(names: &BTreeSet<String>) -> String {
     format!("secrets:\n{entries}")
 }
 
+fn compose_overrides(
+    secrets: &BTreeSet<String>,
+    volumes: &BTreeMap<String, RawProvisionedVolume>,
+) -> String {
+    let mut overrides = if secrets.is_empty() {
+        String::new()
+    } else {
+        secret_overrides(secrets)
+    };
+    if !volumes.is_empty() {
+        overrides.push_str("volumes:\n");
+        for name in volumes.keys() {
+            overrides.push_str(&format!("  {name:?}: {{}}\n"));
+        }
+    }
+    overrides
+}
+
 fn project_working_dir(options: &LoadOptions) -> Result<PathBuf, ComposeError> {
     let file = options
         .files
@@ -216,14 +246,17 @@ pub(super) fn compose_command(
     }
     if let Some(override_file) = override_file {
         if options.files.is_empty() {
-            let mut files = std::env::var_os("COMPOSE_FILE").ok_or_else(|| {
-                ComposeError::Invalid(
-                    "x-command secret loading with default Compose file discovery is unsupported; use --file or COMPOSE_FILE".into(),
-                )
-            })?;
-            files.push(compose_path_separator());
-            files.push(&override_file.path);
-            command.env("COMPOSE_FILE", files);
+            if let Some(mut files) = std::env::var_os("COMPOSE_FILE") {
+                files.push(compose_path_separator());
+                files.push(&override_file.path);
+                command.env("COMPOSE_FILE", files);
+            } else {
+                command
+                    .arg("--file")
+                    .arg(discover_default_compose_file(options)?)
+                    .arg("--file")
+                    .arg(&override_file.path);
+            }
         } else {
             command.arg("--file").arg(&override_file.path);
         }

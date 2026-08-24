@@ -166,8 +166,10 @@ fn fixture_volume(machine_id: &MachineId, prefix: &str) -> DockerVolume {
             machine_id: *machine_id,
             name: unique_volume(prefix),
         },
-        driver: "local".into(),
         options: BTreeMap::new(),
         labels: BTreeMap::new(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }

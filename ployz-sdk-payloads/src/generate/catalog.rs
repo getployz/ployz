@@ -61,7 +61,22 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ("StorageChoice", Shape::ClosedString(&["none", "zfs"])),
     (
         "MachineStorageObservation",
-        Shape::ClosedString(&["stateless", "ready", "pool"]),
+        Shape::InternallyTagged {
+            tag: "state",
+            params: "",
+            variants: &[
+                ("stateless", &[]),
+                ("ready", &[]),
+                (
+                    "pool",
+                    &[
+                        ("size_bytes", "number"),
+                        ("used_bytes", "number"),
+                        ("free_bytes", "number"),
+                    ],
+                ),
+            ],
+        },
     ),
     (
         "UpdateOrder",
@@ -442,14 +457,32 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "DockerVolumeStorageObservation",
+        Shape::InternallyTagged {
+            tag: "kind",
+            params: "",
+            variants: &[
+                ("plain", &[("driver", "string")]),
+                (
+                    "provisioned",
+                    &[
+                        ("mountpoint", "MachinePath"),
+                        ("bound_bytes", "number"),
+                        ("used_bytes", "number"),
+                    ],
+                ),
+            ],
+        },
+    ),
+    (
         "DockerVolume",
         Shape::Additive {
             params: "",
             fields: &[
                 ("id", "DockerVolumeId"),
-                ("driver", "string"),
                 ("options", "{ readonly [key: string]: string }"),
                 ("labels", "{ readonly [key: string]: string }"),
+                ("storage", "DockerVolumeStorageObservation"),
             ],
         },
     ),

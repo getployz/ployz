@@ -70,7 +70,11 @@ export type PullPolicy = "always" | "missing" | "never";
 
 export type StorageChoice = "none" | "zfs";
 
-export type MachineStorageObservation = "stateless" | "ready" | "pool";
+export type MachineStorageObservation =
+  | Additive<{ state: "stateless" }>
+  | Additive<{ state: "ready" }>
+  | Additive<{ state: "pool"; size_bytes: number; used_bytes: number; free_bytes: number }>
+  | Additive<{ state?: string }>;
 
 export type UpdateOrder = "start_first" | "stop_first";
 
@@ -275,11 +279,16 @@ export type DockerVolumeId = Additive<{
   name: DockerVolumeName;
 }>;
 
+export type DockerVolumeStorageObservation =
+  | Additive<{ kind: "plain"; driver: string }>
+  | Additive<{ kind: "provisioned"; mountpoint: MachinePath; bound_bytes: number; used_bytes: number }>
+  | Additive<{ kind?: string }>;
+
 export type DockerVolume = Additive<{
   id: DockerVolumeId;
-  driver: string;
   options: { readonly [key: string]: string };
   labels: { readonly [key: string]: string };
+  storage: DockerVolumeStorageObservation;
 }>;
 
 export type RemoveVolumesRequest = Additive<{

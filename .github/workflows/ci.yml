@@ -34,6 +34,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: scripts/check-evidence-inventories.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo build -p ployz-sdk --locked
       - run: cargo test --workspace --all-features --locked
       - run: bash scripts/check-sdk-package.sh
       - run: bash scripts/test-release-contracts.sh

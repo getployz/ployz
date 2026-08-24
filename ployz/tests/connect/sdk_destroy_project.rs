@@ -267,11 +267,13 @@ fn volume_id(machine_id: MachineId, name: &str) -> DockerVolumeId {
 fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
     DockerVolume {
         id: volume_id(machine_id, name),
-        driver: "local".into(),
         options: Default::default(),
         labels: BTreeMap::from([
             (MANAGED_LABEL.to_owned(), String::new()),
             (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
         ]),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }

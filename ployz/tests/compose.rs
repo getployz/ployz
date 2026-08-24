@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    num::NonZeroU64,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
@@ -8,11 +9,16 @@ use std::{
 
 use ployz::{
     compose::parse_normalized,
-    deploy::{DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError},
+    deploy::{
+        DeployIntent, DeployOperation, DeploySnapshot, EliminatingConstraint, IngressContext,
+        PlanError, PlanOptions, preview_deploy,
+    },
 };
 use ployz_core::{
-    HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL, PROJECT_NAME_LABEL, PortPublication,
-    RestartPolicy, ServiceMode, TransportProtocol, UpdateOrder, VolumeSource,
+    HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL, MachineStorageObservation,
+    PROJECT_NAME_LABEL, PortPublication, ProjectName, ProvisionedVolume,
+    ProvisionedVolumeMaximumBytes, RestartPolicy, ServiceMode, ServiceName, ServiceVolumeReference,
+    TransportProtocol, UpdateOrder, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -1152,6 +1158,242 @@ secrets: {token: {x-command: "printf resolved"}}
         Some("secret://token"),
         "planning must not mutate the unresolved project"
     );
+}
+
+#[test]
+fn compose_provisioned_volume_preview_matches_equivalent_sdk_intent() {
+    let project = parse_normalized(
+        r#"
+services:
+  app:
+    image: app
+    volumes:
+      - {type: volume, source: data, target: /data}
+      - {type: volume, source: cache, target: /cache}
+volumes: {cache: {}}
+x-volumes: {data: 10G}
+"#,
+        ".",
+    )
+    .unwrap();
+    let mut ready = machine('a', "one");
+    ready.storage = Some(MachineStorageObservation::Ready);
+    let snapshot = DeploySnapshot {
+        machines: vec![ready],
+        ..Default::default()
+    };
+
+    let mut compose_preview = plan_compose(&project, &snapshot).unwrap();
+    let mut sdk_intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        project.services.values(),
+        PlanOptions::default(),
+    );
+    sdk_intent.provisioned_volumes = vec![ProvisionedVolume {
+        service: ServiceName::parse("app").unwrap(),
+        reference: ServiceVolumeReference::parse("data").unwrap(),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+            NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+        ),
+    }];
+    let sdk_preview = preview_deploy(&sdk_intent, &snapshot, IngressContext::default()).unwrap();
+    let sdk_row = sdk_preview
+        .operations
+        .iter()
+        .find(|row| matches!(row.operation, DeployOperation::RunContainer { .. }))
+        .unwrap();
+    let DeployOperation::RunContainer { spec: sdk_spec, .. } = &sdk_row.operation else {
+        unreachable!("matched a RunContainer row")
+    };
+    let compose_row = compose_preview
+        .operations
+        .iter_mut()
+        .find(|row| matches!(row.operation, DeployOperation::RunContainer { .. }))
+        .unwrap();
+    let DeployOperation::RunContainer {
+        spec: compose_spec, ..
+    } = &mut compose_row.operation
+    else {
+        unreachable!("matched a RunContainer row")
+    };
+    compose_spec.service_id = sdk_spec.service_id;
+
+    assert_eq!(compose_preview, sdk_preview);
+    assert!(
+        operations(&compose_preview)
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                DeployOperation::CreateProvisionedVolume { volume, .. }
+                    if volume.reference.as_str() == "data"
+            ))
+    );
+    assert!(
+        operations(&compose_preview)
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                DeployOperation::CreateVolume { volume, .. } if volume.reference.as_str() == "cache"
+            ))
+    );
+}
+
+#[test]
+fn compose_x_volume_scalar_and_object_forms_are_equivalent() {
+    let yaml = |declaration: &str| {
+        format!(
+            "services: {{app: {{image: app, volumes: [data:/data]}}}}\nx-volumes: {{data: {declaration}}}\n"
+        )
+    };
+
+    let scalar = parse_normalized(&yaml("10G"), ".").unwrap();
+    let object = parse_normalized(&yaml("{size: 10G}"), ".").unwrap();
+
+    assert_eq!(scalar, object);
+}
+
+#[test]
+fn compose_x_volume_size_stays_out_of_resolved_service_spec() {
+    let load = |size: &str| {
+        parse_normalized(
+            &format!(
+                "services: {{app: {{image: app, volumes: [data:/data]}}}}\nx-volumes: {{data: {size}}}\n"
+            ),
+            ".",
+        )
+        .unwrap()
+    };
+    let ten_gib = load("10G");
+    let twenty_gib = load("20G");
+    assert_eq!(ten_gib.services, twenty_gib.services);
+
+    let mut ready = machine('a', "one");
+    ready.storage = Some(MachineStorageObservation::Ready);
+    let snapshot = DeploySnapshot {
+        machines: vec![ready],
+        ..Default::default()
+    };
+    let ten_preview = plan_compose(&ten_gib, &snapshot).unwrap();
+    let twenty_preview = plan_compose(&twenty_gib, &snapshot).unwrap();
+    let run_spec = |preview: &ployz::deploy::DeployPreview| {
+        let row = preview
+            .operations
+            .iter()
+            .find(|row| matches!(row.operation, DeployOperation::RunContainer { .. }))
+            .unwrap();
+        let DeployOperation::RunContainer { spec, .. } = &row.operation else {
+            unreachable!("matched a RunContainer row")
+        };
+        spec.clone()
+    };
+    let ten_spec = run_spec(&ten_preview);
+    let mut twenty_spec = run_spec(&twenty_preview);
+    twenty_spec.service_id = ten_spec.service_id;
+    assert_eq!(ten_spec, twenty_spec);
+
+    let bound = |preview: &ployz::deploy::DeployPreview| {
+        let row = preview
+            .operations
+            .iter()
+            .find(|row| {
+                matches!(
+                    row.operation,
+                    DeployOperation::CreateProvisionedVolume { .. }
+                )
+            })
+            .unwrap();
+        let DeployOperation::CreateProvisionedVolume { maximum_bytes, .. } = &row.operation else {
+            unreachable!("matched a CreateProvisionedVolume row")
+        };
+        maximum_bytes.get()
+    };
+    assert_eq!(bound(&ten_preview), 10 * 1024_u64.pow(3));
+    assert_eq!(bound(&twenty_preview), 20 * 1024_u64.pow(3));
+}
+
+#[test]
+fn compose_x_volume_declarations_only_attach_to_named_mounts() {
+    let project = parse_normalized(
+        r#"
+services:
+  app:
+    image: app
+    volumes: [{type: bind, source: /srv/data, target: /data}]
+x-volumes:
+  bind-bd47413b5c03dfc6e4b5b8143fe205eae10ecaf0c28b426be98d74cff48c7453: 10G
+"#,
+        ".",
+    )
+    .unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('a', "one")],
+        ..Default::default()
+    };
+
+    let preview = plan_compose(&project, &snapshot).unwrap();
+
+    assert!(
+        !operations(&preview)
+            .iter()
+            .any(|operation| matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
+    );
+}
+
+#[test]
+fn compose_provisioning_metadata_follows_the_current_services() {
+    let mut project = parse_normalized(
+        "services: {app: {image: app, volumes: [data:/data]}}\nx-volumes: {data: 10G}\n",
+        ".",
+    )
+    .unwrap();
+    project.services.clear();
+
+    let preview = plan_compose(&project, &DeploySnapshot::default()).unwrap();
+
+    assert!(preview.operations.is_empty());
+}
+
+#[test]
+fn compose_rejects_invalid_x_volume_declarations() {
+    for (case, declaration) in [
+        ("unknown key", "{size: 10G, typo: true}"),
+        ("external", "{size: 10G, external: true}"),
+        ("empty object", "{}"),
+        ("missing size", "{description: data}"),
+        ("bare number", "10"),
+        ("zero", "0G"),
+        ("overflow", "16777216T"),
+    ] {
+        let yaml =
+            format!("services: {{app: {{image: app}}}}\nx-volumes: {{data: {declaration}}}\n");
+        assert!(parse_normalized(&yaml, ".").is_err(), "accepted {case}");
+    }
+}
+
+#[test]
+fn compose_rejects_plain_and_provisioned_volume_name_collisions() {
+    let error = match parse_normalized(
+        "services: {app: {image: app, volumes: [data:/data]}}\nvolumes: {data: {}}\nx-volumes: {data: 10G}\n",
+        ".",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("accepted a Plain and Provisioned Volume name collision"),
+    };
+
+    assert!(error.to_string().contains("both volumes and x-volumes"));
+}
+
+#[test]
+fn compose_rejects_x_volumes_below_a_service() {
+    let error = match parse_normalized(
+        "services: {app: {image: app, x-volumes: {data: 10G}}}\n",
+        ".",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("accepted x-volumes below a Service"),
+    };
+
+    assert!(error.to_string().contains("Compose top level"));
 }
 
 #[test]

@@ -600,13 +600,22 @@ pub fn local_runtime() -> MachineRuntime {
 async fn local_storage(program: &Path, timeout: Duration) -> Option<MachineStorageObservation> {
     let mut command = tokio::process::Command::new(program);
     command
-        .args(["list", "-Hp", "-o", "name,health,readonly"])
+        .args([
+            "list",
+            "-Hp",
+            "-o",
+            "name,size,allocated,free,health,readonly",
+        ])
         .kill_on_drop(true);
     match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) if output.status.success() => {
             let output = String::from_utf8(output.stdout).ok()?;
             match machine_pool::one_usable(&output) {
-                Ok(Some(_)) => Some(MachineStorageObservation::Pool),
+                Ok(Some(pool)) => Some(MachineStorageObservation::Pool {
+                    size_bytes: pool.size_bytes(),
+                    used_bytes: pool.used_bytes(),
+                    free_bytes: pool.free_bytes(),
+                }),
                 Ok(None) => Some(MachineStorageObservation::Ready),
                 Err(_) => None,
             }
@@ -791,17 +800,35 @@ mod tests {
         for (script, expected) in [
             ("#!/bin/sh\nexit 1\n", None),
             (
-                "#!/bin/sh\nprintf 'tank\\tONLINE\\toff\\n'\n",
-                Some(MachineStorageObservation::Pool),
+                "#!/bin/sh\nprintf 'tank\\t2147483648\\t1932735283\\t214748365\\tONLINE\\toff\\n'\n",
+                Some(MachineStorageObservation::Pool {
+                    size_bytes: std::num::NonZeroU64::new(2_147_483_648).unwrap(),
+                    used_bytes: 1_932_735_283,
+                    free_bytes: 214_748_365,
+                }),
+            ),
+            (
+                "#!/bin/sh\nprintf 'tank\\t4294967296\\t3865470566\\t429496730\\tONLINE\\toff\\n'\n",
+                Some(MachineStorageObservation::Pool {
+                    size_bytes: std::num::NonZeroU64::new(4_294_967_296).unwrap(),
+                    used_bytes: 3_865_470_566,
+                    free_bytes: 429_496_730,
+                }),
             ),
             (
                 "#!/bin/sh\nexit 0\n",
                 Some(MachineStorageObservation::Ready),
             ),
-            ("#!/bin/sh\nprintf 'tank\\tONLINE\\ton\\n'\n", None),
-            ("#!/bin/sh\nprintf 'tank\\tFAULTED\\toff\\n'\n", None),
             (
-                "#!/bin/sh\nprintf 'alpha\\tONLINE\\toff\\nbeta\\tDEGRADED\\toff\\n'\n",
+                "#!/bin/sh\nprintf 'tank\\t2147483648\\t0\\t2147483648\\tONLINE\\ton\\n'\n",
+                None,
+            ),
+            (
+                "#!/bin/sh\nprintf 'tank\\t2147483648\\t0\\t2147483648\\tFAULTED\\toff\\n'\n",
+                None,
+            ),
+            (
+                "#!/bin/sh\nprintf 'alpha\\t2147483648\\t0\\t2147483648\\tONLINE\\toff\\nbeta\\t2147483648\\t0\\t2147483648\\tDEGRADED\\toff\\n'\n",
                 None,
             ),
         ] {

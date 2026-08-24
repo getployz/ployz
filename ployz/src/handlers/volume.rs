@@ -5,9 +5,9 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    CreateVolumeRequest, DockerVolumeName, FanoutSelector, InspectVolumeRequest,
-    ListMachinesRequest, MachineObservation, MachineTarget, NameMatches, PartialResult,
-    RemoveVolumeRequest, RpcError, op, resolve_machine_selectors,
+    CreateVolumeRequest, DockerVolumeName, DockerVolumeStorageObservation, FanoutSelector,
+    InspectVolumeRequest, ListMachinesRequest, MachineObservation, MachineTarget, NameMatches,
+    PartialResult, RemoveVolumeRequest, RpcError, op, resolve_machine_selectors,
 };
 
 use crate::{
@@ -87,11 +87,17 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                     println!("{}", volume.volume.id.name);
                 }
             } else {
-                println!("MACHINE\tVOLUME\tDRIVER");
+                println!("MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER");
                 for volume in &volumes {
+                    let (kind, bound, used) = format_storage(&volume.volume.storage);
                     println!(
-                        "{}\t{}\t{}",
-                        volume.machine_name, volume.volume.id.name, volume.volume.driver
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        volume.machine_name,
+                        volume.volume.id.name,
+                        kind,
+                        bound,
+                        used,
+                        volume.volume.driver()
                     );
                 }
             }
@@ -99,6 +105,21 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
             Ok(())
         })
     })
+}
+
+fn format_storage(storage: &DockerVolumeStorageObservation) -> (&'static str, String, String) {
+    match storage {
+        DockerVolumeStorageObservation::Plain { .. } => ("PLAIN", "-".into(), "-".into()),
+        DockerVolumeStorageObservation::Provisioned {
+            bound_bytes,
+            used_bytes,
+            ..
+        } => (
+            "PROVISIONED",
+            bound_bytes.to_string(),
+            used_bytes.to_string(),
+        ),
+    }
 }
 
 pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
@@ -345,8 +366,8 @@ fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
-        MembershipObservation, WireGuardPublicKey,
+        DockerVolumeStorageObservation, Machine, MachineId, MachineName, MachineObservation,
+        ManagementAddress, MembershipObservation, WireGuardPublicKey,
     };
 
     use super::*;
@@ -381,6 +402,24 @@ mod tests {
                 .name
                 .as_str(),
             "all"
+        );
+    }
+
+    #[test]
+    fn volume_columns_distinguish_plain_and_provisioned_usage() {
+        assert_eq!(
+            format_storage(&DockerVolumeStorageObservation::Plain {
+                driver: "local".into(),
+            }),
+            ("PLAIN", "-".into(), "-".into())
+        );
+        assert_eq!(
+            format_storage(&DockerVolumeStorageObservation::Provisioned {
+                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
+                bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
+                used_bytes: 966_367_642,
+            }),
+            ("PROVISIONED", "1073741824".into(), "966367642".into())
         );
     }
 

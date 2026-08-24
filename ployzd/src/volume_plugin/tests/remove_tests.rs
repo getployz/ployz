@@ -5,7 +5,7 @@ use super::*;
 #[tokio::test]
 async fn docker_can_remove_a_provisioned_volume() {
     let test = TestDir::new();
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -37,7 +37,7 @@ async fn removing_an_unknown_volume_is_idempotent_and_keeps_siblings() {
     let test = TestDir::new();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("sibling"), "").unwrap();
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -88,7 +88,7 @@ async fn removing_an_unknown_volume_ignores_an_unusable_managed_root() {
         let test = TestDir::new();
         fs::write(test.0.join("root"), "").unwrap();
         fs::write(test.0.join(root_state), "").unwrap();
-        let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -112,7 +112,7 @@ async fn docker_receives_dataset_destruction_failures() {
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
     fs::write(test.0.join("destroy-fails"), "").unwrap();
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -130,7 +130,7 @@ async fn remove_never_destroys_an_unbounded_dataset() {
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
     fs::write(test.0.join("unbounded-volume"), "").unwrap();
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -153,7 +153,7 @@ async fn remove_never_destroys_a_child_below_an_unmanaged_root() {
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("incompatible-root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -171,11 +171,11 @@ async fn remove_never_destroys_a_child_below_an_unmanaged_root() {
 }
 
 #[tokio::test]
-async fn get_returns_the_minimal_exact_volume_identity() {
+async fn get_returns_volume_identity_mountpoint_bound_and_usage() {
     let test = TestDir::new();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
@@ -183,7 +183,11 @@ async fn get_returns_the_minimal_exact_volume_identity() {
     assert_eq!(
         post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await,
         json!({
-            "Volume":{"Name":"data","Mountpoint":"/var/lib/ployz-volumes/data"},
+            "Volume":{
+                "Name":"data",
+                "Mountpoint":"/var/lib/ployz-volumes/data",
+                "Status":{"bound_bytes":1073741824,"used_bytes":966367642}
+            },
             "Err":""
         })
     );
@@ -202,7 +206,7 @@ async fn get_rejects_a_volume_with_a_descendant_dataset() {
     for marker in ["root", "volume", "descendant"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));

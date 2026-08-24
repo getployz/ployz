@@ -142,9 +142,11 @@ async fn volume_store_is_an_error_when_the_store_is_unreachable() {
     };
     let volume = DockerVolume {
         id: id.clone(),
-        driver: "local".into(),
         options: BTreeMap::new(),
         labels: BTreeMap::new(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     };
     assert!(store.publish_volume(&volume).await.is_err());
     assert!(store.volume(&id).await.is_err());

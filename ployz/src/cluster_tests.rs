@@ -3,8 +3,8 @@ use std::net::Ipv6Addr;
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    HealthObservation, Machine, ManagementAddress, MembershipObservation, ProjectName, ServiceId,
-    ServiceName, WireGuardPublicKey,
+    DockerVolumeStorageObservation, HealthObservation, Machine, MachinePath, ManagementAddress,
+    MembershipObservation, ProjectName, ServiceId, ServiceName, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -53,7 +53,12 @@ fn remove_tolerates_a_missing_preliminary_stop_target() {
 fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     let machines = vec![machine('a'), machine('b')];
     let container = observation('1', 'a');
-    let volume = docker_volume('a', "data");
+    let mut volume = docker_volume('a', "data");
+    volume.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
+        bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 42,
+    };
     let containers = PartialResult {
         successes: vec![MachineSuccess {
             machine_id: machine_id('a'),
@@ -84,15 +89,7 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
 
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
-    assert_eq!(
-        snapshot.volumes,
-        [ObservedDockerVolume {
-            id: volume.id,
-            driver: volume.driver,
-            options: volume.options,
-            labels: volume.labels,
-        }]
-    );
+    assert_eq!(snapshot.volumes, [volume]);
     assert_eq!(snapshot.container_failures, expected_container_failures);
     assert_eq!(snapshot.container_omissions, expected_container_omissions);
     assert_eq!(snapshot.volume_failures, expected_volume_failures);
@@ -159,9 +156,11 @@ fn docker_volume(machine: char, name: &str) -> DockerVolume {
             machine_id: machine_id(machine),
             name: DockerVolumeName::parse(name).unwrap(),
         },
-        driver: "local".into(),
         options: BTreeMap::from([("type".into(), "none".into())]),
         labels: BTreeMap::from([("keep".into(), "out".into())]),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
     }
 }
 

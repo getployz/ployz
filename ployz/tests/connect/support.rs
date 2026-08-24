@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     net::{Ipv6Addr, SocketAddr},
+    num::NonZeroU64,
     path::PathBuf,
     process::Command,
     sync::{
@@ -17,13 +18,14 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachinePhase,
-    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer, MachineStorageObservation,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RemoveMachineRequest, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
-    RuntimeWatchTransportFrame, VolumeList, VolumeRemoved, WireGuardPublicKey, op,
+    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, LocalMachinePhase, LocalMachineRemoved, Machine,
+    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
+    MachineRemoved, MachineRpc, MachineRpcServer, MachineStorageObservation, ManagementAddress,
+    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    Registered, RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RuntimeWatchFrame, RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeList, VolumeRemoved,
+    WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -144,6 +146,7 @@ pub(super) struct DiscoveryService {
     pub(super) watch_opens: Arc<AtomicUsize>,
     pub(super) list_rpc_calls: Arc<AtomicUsize>,
     pub(super) inspect_calls: Arc<AtomicUsize>,
+    pub(super) storage: MachineStorageObservation,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
@@ -171,6 +174,7 @@ impl DiscoveryService {
             watch_opens: Arc::new(AtomicUsize::new(0)),
             list_rpc_calls: Arc::new(AtomicUsize::new(0)),
             inspect_calls: Arc::new(AtomicUsize::new(0)),
+            storage: MachineStorageObservation::Ready,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
@@ -317,9 +321,7 @@ impl MachineRpc for DiscoveryService {
                 rtts: Vec::new(),
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
                 telemetry,
-                storage: inspect
-                    .include_storage
-                    .then_some(MachineStorageObservation::Ready),
+                storage: inspect.include_storage.then_some(self.storage),
             })
             .encode()
             .unwrap(),
@@ -471,15 +473,7 @@ impl MachineRpc for DiscoveryService {
         let volume = self
             .existing_created_volume
             .clone()
-            .unwrap_or_else(|| DockerVolume {
-                id: DockerVolumeId {
-                    machine_id,
-                    name: create.name,
-                },
-                driver: create.driver,
-                options: create.options,
-                labels: create.labels,
-            });
+            .unwrap_or_else(|| created_volume(machine_id, create));
         Ok(Response::new(RpcResponse::from(volume).encode().unwrap()))
     }
 
@@ -521,9 +515,11 @@ impl MachineRpc for DiscoveryService {
                         machine_id,
                         name: DockerVolumeName::parse("data").unwrap(),
                     },
-                    driver: "local".into(),
                     options: Default::default(),
                     labels: Default::default(),
+                    storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                        driver: "local".into(),
+                    },
                 }],
             })
         };
@@ -771,6 +767,40 @@ impl MachineRpc for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
+    }
+}
+
+fn created_volume(machine_id: MachineId, create: CreateVolumeRequest) -> DockerVolume {
+    let storage = if create.driver == "ployz" {
+        let size = create.options.get("size").unwrap();
+        let (amount, suffix) = size.split_at(size.len() - 1);
+        let multiplier = match suffix {
+            "b" => 1,
+            "k" => 1024_u64,
+            "m" => 1024_u64.pow(2),
+            "g" => 1024_u64.pow(3),
+            "t" => 1024_u64.pow(4),
+            _ => panic!("unexpected Provisioned Volume size {size}"),
+        };
+        DockerVolumeStorageObservation::Provisioned {
+            mountpoint: MachinePath::parse(format!("/var/lib/ployz-volumes/{}", create.name))
+                .unwrap(),
+            bound_bytes: NonZeroU64::new(amount.parse::<u64>().unwrap() * multiplier).unwrap(),
+            used_bytes: 0,
+        }
+    } else {
+        DockerVolumeStorageObservation::Plain {
+            driver: create.driver,
+        }
+    };
+    DockerVolume {
+        id: DockerVolumeId {
+            machine_id,
+            name: create.name,
+        },
+        options: create.options,
+        labels: create.labels,
+        storage,
     }
 }
 
