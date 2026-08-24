@@ -178,7 +178,6 @@ pub struct JoinDaemon {
 struct JoinInner {
     registration: Registered,
     daemon_version: Mutex<String>,
-    describe_calls: AtomicUsize,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
@@ -202,7 +201,6 @@ impl JoinDaemon {
             inner: Arc::new(JoinInner {
                 registration,
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
-                describe_calls: AtomicUsize::new(0),
                 joined: AtomicBool::new(false),
                 join_request: Mutex::new(None),
                 initialize_requests: Mutex::new(Vec::new()),
@@ -233,10 +231,6 @@ impl JoinDaemon {
 
     pub fn set_daemon_version(&self, version: &str) {
         *self.inner.daemon_version.lock().unwrap() = version.into();
-    }
-
-    pub fn describe_count(&self) -> usize {
-        self.inner.describe_calls.load(Ordering::SeqCst)
     }
 
     pub fn initialize_request(&self) -> InitializeRequest {
@@ -335,7 +329,6 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        self.inner.describe_calls.fetch_add(1, Ordering::SeqCst);
         rpc_ok(ContractDescription {
             machine_id: self.inner.registration.assigned_machine.id,
             protocol_major: PROTOCOL_MAJOR,
@@ -818,7 +811,9 @@ pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
     address
 }
 
-pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf) {
+pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf, Arc<AtomicUsize>) {
+    use futures_util::StreamExt as _;
+
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let socket = std::env::temp_dir().join(format!(
         "ployz-cloud-enroll-{}-{}.sock",
@@ -827,12 +822,19 @@ pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf) {
     ));
     let _ = std::fs::remove_file(&socket);
     let unix = UnixListener::bind(&socket).unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let accepted = Arc::clone(&connections);
+    let incoming = UnixListenerStream::new(unix).inspect(move |connection| {
+        if connection.is_ok() {
+            accepted.fetch_add(1, Ordering::SeqCst);
+        }
+    });
     tokio::spawn(
         Server::builder()
             .add_service(MachineRpcServer::new(daemon))
-            .serve_with_incoming(UnixListenerStream::new(unix)),
+            .serve_with_incoming(incoming),
     );
-    (format!("unix://{}", socket.display()), socket)
+    (format!("unix://{}", socket.display()), socket, connections)
 }
 
 async fn hold_register(

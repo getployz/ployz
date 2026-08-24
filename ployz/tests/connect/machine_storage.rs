@@ -14,21 +14,13 @@ use super::{
 };
 
 fn storage_capable_service() -> DiscoveryService {
-    let mut service = DiscoveryService::new(ContractDescription {
+    DiscoveryService::new(ContractDescription {
         machine_id: MachineId::random(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
         capabilities: [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()]
             .into(),
-    });
-    service
-        .machines
-        .first_mut()
-        .unwrap()
-        .machine
-        .runtime
-        .daemon_version = env!("CARGO_PKG_VERSION").into();
-    service
+    })
 }
 
 #[tokio::test]
@@ -97,7 +89,14 @@ async fn machine_ls_warns_without_failing_when_one_daemon_version_differs() {
 
 #[tokio::test]
 async fn machine_ls_does_not_warn_when_every_daemon_matches() {
-    let service = storage_capable_service();
+    let mut service = storage_capable_service();
+    service
+        .machines
+        .first_mut()
+        .unwrap()
+        .machine
+        .runtime
+        .daemon_version = env!("CARGO_PKG_VERSION").into();
     let (address, server) = serve_discovery(service).await;
 
     let output = run_ployz(address, &["machine", "ls"]).await;

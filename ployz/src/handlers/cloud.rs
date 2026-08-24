@@ -16,19 +16,19 @@ use crate::context::{ContextError, Transport};
 
 /// Installs the local Machine daemon for Cloud enrollment.
 pub trait EnrollInstaller {
-    /// Install `version` without preparing more storage than `storage` requests.
+    /// Install this CLI's daemon version without preparing storage.
     ///
     /// # Errors
     ///
     /// Returns the installer failure reported to the CLI.
-    fn install(&self, version: &str, storage: StorageChoice) -> Result<(), Error>;
+    fn install_cli_daemon_without_storage(&self) -> Result<(), Error>;
 }
 
 struct EmbeddedInstaller;
 
 impl EnrollInstaller for EmbeddedInstaller {
-    fn install(&self, version: &str, storage: StorageChoice) -> Result<(), Error> {
-        crate::provisioning::provision_local(version, storage).map_err(Into::into)
+    fn install_cli_daemon_without_storage(&self) -> Result<(), Error> {
+        crate::provisioning::provision_local(StorageChoice::None).map_err(Into::into)
     }
 }
 
@@ -98,7 +98,7 @@ pub fn enroll_with_installer(
                         client.connection()
                     )));
                 }
-                crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), storage)?;
+                crate::provisioning::provision_local(storage)?;
             }
             match outcome {
                 Outcome::Join(join) => {
@@ -217,7 +217,7 @@ async fn synchronize_daemon(
             client.connection()
         )));
     }
-    installer.install(env!("CARGO_PKG_VERSION"), StorageChoice::None)?;
+    installer.install_cli_daemon_without_storage()?;
     let mut client = wait_client(matches).await?;
     let daemon = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, None)
@@ -238,10 +238,7 @@ async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
     match crate::connect::connect(&config, connect, None).await {
         Ok(client) => Ok(client),
         Err(ConnectError::Context(ContextError::NoConfig)) => {
-            crate::provisioning::provision_local(
-                env!("CARGO_PKG_VERSION"),
-                ployz_core::StorageChoice::None,
-            )?;
+            crate::provisioning::provision_local(ployz_core::StorageChoice::None)?;
             wait_client(matches).await
         }
         Err(error) => Err(error.into()),

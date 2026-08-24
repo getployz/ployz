@@ -1,9 +1,12 @@
 //! Daemon version synchronization before the Cloud enrollment exchange.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use clap::ArgMatches;
-use ployz_core::{CloudPairing, PairingCredential, StorageChoice};
+use ployz_core::{CloudPairing, PairingCredential};
 use serde_json::json;
 
 use super::harness::{
@@ -22,7 +25,7 @@ enum InstallOutcome {
 struct RecordingInstaller {
     daemon: JoinDaemon,
     outcome: InstallOutcome,
-    calls: Arc<Mutex<Vec<(String, StorageChoice)>>>,
+    calls: Arc<AtomicUsize>,
 }
 
 impl RecordingInstaller {
@@ -36,14 +39,11 @@ impl RecordingInstaller {
 }
 
 impl ployz::handlers::EnrollInstaller for RecordingInstaller {
-    fn install(&self, version: &str, storage: StorageChoice) -> Result<(), ployz::handlers::Error> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((version.to_owned(), storage));
+    fn install_cli_daemon_without_storage(&self) -> Result<(), ployz::handlers::Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         match self.outcome {
             InstallOutcome::UpdateDaemon => {
-                self.daemon.set_daemon_version(version);
+                self.daemon.set_daemon_version(env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
             InstallOutcome::LeaveStale => Ok(()),
@@ -89,7 +89,7 @@ async fn enroll_locally(
 ) -> (
     Result<(), ployz::handlers::Error>,
     RecordingInstaller,
-    JoinDaemon,
+    Arc<AtomicUsize>,
 ) {
     let registration = registration();
     let relay = RelayListen::start().await;
@@ -104,11 +104,11 @@ async fn enroll_locally(
     .await;
     let daemon = JoinDaemon::new(registration);
     daemon.set_daemon_version(daemon_version);
-    let (connect, socket) = serve_local_machine(daemon.clone()).await;
+    let (connect, socket, connections) = serve_local_machine(daemon.clone()).await;
     let installer = RecordingInstaller::new(daemon.clone(), outcome);
     let result = run_enroll(enroll_matches(&connect, &enroll.url), installer.clone()).await;
     let _ = std::fs::remove_file(socket);
-    (result, installer, daemon)
+    (result, installer, connections)
 }
 
 #[tokio::test]
@@ -117,22 +117,19 @@ async fn matching_daemon_does_not_run_the_installer() {
         enroll_locally(env!("CARGO_PKG_VERSION"), InstallOutcome::UpdateDaemon).await;
 
     assert!(result.is_ok(), "{result:?}");
-    assert_eq!(*installer.calls.lock().unwrap(), []);
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
 async fn mismatched_daemon_is_reinstalled_without_preparing_storage() {
-    let (result, installer, daemon) =
+    let (result, installer, connections) =
         enroll_locally("0.0.0-old", InstallOutcome::UpdateDaemon).await;
 
     assert!(result.is_ok(), "{result:?}");
-    assert_eq!(
-        *installer.calls.lock().unwrap(),
-        [(env!("CARGO_PKG_VERSION").into(), StorageChoice::None)]
-    );
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 1);
     assert!(
-        daemon.describe_count() >= 4,
-        "enrollment must reconnect and verify the installed daemon"
+        connections.load(Ordering::SeqCst) >= 2,
+        "enrollment must reconnect after the installer restarts the daemon"
     );
 }
 
@@ -142,7 +139,7 @@ async fn installer_failure_is_returned_before_enrollment() {
         enroll_locally("0.0.0-old", InstallOutcome::Fail("installer failed")).await;
 
     assert_eq!(result.unwrap_err().to_string(), "installer failed");
-    assert_eq!(installer.calls.lock().unwrap().len(), 1);
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -178,5 +175,5 @@ async fn remote_mismatch_is_rejected_without_mutating_the_local_machine() {
             "daemon version synchronization requires running ployz cloud enroll on the Machine itself; connected through {connect}"
         )
     );
-    assert_eq!(*installer.calls.lock().unwrap(), []);
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 0);
 }
