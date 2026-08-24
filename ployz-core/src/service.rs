@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Container, ContainerObservation, ContainerRef, HookContainer, PartialResult, QualifiedService,
-    ServiceContainer, ServiceId, ServiceSelector,
+    Container, ContainerObservation, ContainerRef, ContainerRuntimeObservation, HookContainer,
+    Machine, PartialResult, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceId,
+    ServiceMode, ServiceSelector, machine_matches_placement,
 };
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
@@ -41,6 +42,18 @@ impl ServiceObservation {
             .chain(self.hook_containers.iter().map(ContainerRef::Hook))
     }
 
+    /// Newest regular Service Container, whose spec defines current placement intent.
+    #[must_use]
+    pub fn newest_service_container(&self) -> Option<&ServiceContainer> {
+        self.containers.iter().max_by_key(|container| {
+            let observation = container.as_observation();
+            (
+                observation.created_at_unix_nanos,
+                observation.container_id.as_str(),
+            )
+        })
+    }
+
     /// Service Containers for Start; both roles for Stop and Remove.
     pub fn containers_for(
         &self,
@@ -55,6 +68,65 @@ impl ServiceObservation {
             .map(ContainerRef::Service)
             .chain(hooks.iter().map(ContainerRef::Hook))
     }
+}
+
+/// One eligible Global Service slot on a Machine.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalServiceSlot {
+    /// Qualified identity of the Global Service.
+    pub identity: QualifiedService,
+    /// Current resolved spec to use when ensuring the slot.
+    pub spec: ResolvedServiceSpec,
+}
+
+impl GlobalServiceSlot {
+    /// True when this Machine already reports a running Container for this slot.
+    #[must_use]
+    pub fn is_running_on(&self, containers: &[ServiceContainer], machine: &Machine) -> bool {
+        containers.iter().any(|container| {
+            let observation = container.as_observation();
+            observation.machine_id == machine.id
+                && observation.service_id == self.spec.service_id
+                && matches!(
+                    observation.runtime,
+                    ContainerRuntimeObservation::Running { .. }
+                )
+        })
+    }
+}
+
+/// Current Global slot for `service` when `machine` is placement-eligible.
+#[must_use]
+pub fn eligible_global_slot(
+    service: &ServiceObservation,
+    machine: &Machine,
+) -> Option<GlobalServiceSlot> {
+    let spec = &service
+        .newest_service_container()?
+        .as_observation()
+        .resolved_spec;
+    if spec.mode != ServiceMode::Global || !machine_matches_placement(machine, &spec.placement) {
+        return None;
+    }
+    Some(GlobalServiceSlot {
+        identity: service.identity.clone(),
+        spec: spec.clone(),
+    })
+}
+
+/// Eligible Global slots that do not have a running Container on `machine`.
+#[must_use]
+pub fn missing_global_slots(
+    services: &[ServiceObservation],
+    machine: &Machine,
+) -> Vec<GlobalServiceSlot> {
+    services
+        .iter()
+        .filter_map(|service| {
+            let slot = eligible_global_slot(service, machine)?;
+            (!slot.is_running_on(&service.containers, machine)).then_some(slot)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

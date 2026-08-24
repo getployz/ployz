@@ -7,10 +7,11 @@ use std::{
 
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged,
-    ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason,
-    ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId, MachineLogService,
-    MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
+    ContainerCreated, ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords,
+    ImageIngestReason, ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, Machine, MachineId,
+    MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR,
+    QualifiedService, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -21,6 +22,7 @@ use tonic::{Request, Response, Status};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
+    global_reconcile::{GlobalReconcileObservations, global_reconcile_observations},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
     network::MACHINE_API_PORT,
@@ -40,6 +42,7 @@ pub struct MachineService {
     machine_api_port: u16,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
     slot_locks: Arc<Mutex<HashMap<QualifiedService, Arc<AsyncMutex<()>>>>>,
+    global_reconcile: GlobalReconcileObservations,
 }
 
 impl MachineService {
@@ -62,6 +65,7 @@ impl MachineService {
             machine_api_port: MACHINE_API_PORT,
             cloud_pairing: None,
             slot_locks: Arc::new(Mutex::new(HashMap::new())),
+            global_reconcile: global_reconcile_observations(),
         }
     }
 
@@ -92,6 +96,15 @@ impl MachineService {
     #[must_use]
     pub fn with_cloud_pairing(mut self, pairing: watch::Sender<Option<CloudPairing>>) -> Self {
         self.cloud_pairing = Some(pairing);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_global_reconcile_observations(
+        mut self,
+        observations: GlobalReconcileObservations,
+    ) -> Self {
+        self.global_reconcile = observations;
         self
     }
 
@@ -139,6 +152,45 @@ impl MachineService {
         self.local
             .containers()
             .ok_or_else(|| unavailable("Docker is not available"))
+    }
+
+    pub(crate) fn local_machine(&self) -> Result<Machine, RpcError> {
+        self.local_record()
+            .map_err(|error| RpcError {
+                code: RpcErrorCode::Internal,
+                message: error.message().into(),
+                details: Value::Null,
+            })?
+            .machine()
+            .cloned()
+            .ok_or_else(|| unavailable("Machine network is not configured"))
+    }
+
+    pub(crate) async fn ensure_local_global_slot(
+        &self,
+        identity: &QualifiedService,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerCreated, RpcError> {
+        let lock = self.slot_lock(identity);
+        let _guard = lock.lock().await;
+        let containers = self.containers()?;
+        let record = self.local_record().map_err(|error| RpcError {
+            code: RpcErrorCode::Internal,
+            message: error.message().into(),
+            details: Value::Null,
+        })?;
+        let machine = record
+            .machine()
+            .ok_or_else(|| unavailable("Machine network is not configured"))?;
+        containers
+            .ensure_global_slot(
+                &record.id(),
+                machine.subnet.gateway(),
+                &identity.project,
+                spec,
+            )
+            .await
+            .map_err(|error| RpcError::from(&error))
     }
 
     async fn forward_register(
@@ -404,28 +456,12 @@ impl MachineRpc for MachineService {
             request.project_name.clone(),
             request.resolved_spec.name.clone(),
         );
-        let lock = self.slot_lock(&identity);
-        let _guard = lock.lock().await;
-        let containers = match self.containers() {
-            Ok(containers) => containers,
-            Err(error) => return respond(error),
-        };
-        let record = self.local_record()?;
-        let machine = record
-            .machine()
-            .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
-        let gateway = machine.subnet.gateway();
-        match containers
-            .ensure_global_slot(
-                &record.id(),
-                gateway,
-                &request.project_name,
-                &request.resolved_spec,
-            )
+        match self
+            .ensure_local_global_slot(&identity, &request.resolved_spec)
             .await
         {
             Ok(created) => respond(created),
-            Err(error) => respond(RpcError::from(&error)),
+            Err(error) => respond(error),
         }
     }
 
@@ -629,9 +665,14 @@ impl MachineRpc for MachineService {
             .map_err(|error| Status::unavailable(error.message))?
             .clone();
         let entry_id = self.local_record()?.id();
-        let stream = serve_replicated_runtime_watch(store, self.local.clone(), entry_id)
-            .await
-            .map_err(|error| Status::unavailable(error.to_string()))?;
+        let stream = serve_replicated_runtime_watch(
+            store,
+            self.local.clone(),
+            entry_id,
+            self.global_reconcile.clone(),
+        )
+        .await
+        .map_err(|error| Status::unavailable(error.to_string()))?;
         Ok(Response::new(stream))
     }
 

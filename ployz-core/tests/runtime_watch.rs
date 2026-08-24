@@ -384,6 +384,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                 median_ns: 1_500_000,
                 population_stddev_ns: 250_000,
             }),
+            global_reconcile_failures: Vec::new(),
         }],
         containers: vec![container.clone()],
         services: vec![ServiceObservation {

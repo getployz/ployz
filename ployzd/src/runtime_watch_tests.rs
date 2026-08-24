@@ -10,12 +10,13 @@ use futures_util::StreamExt;
 use ployz_core::{
     AdvertisedEndpoint, CertificateAvailability, CertificateBackoff, CertificateFailureKind,
     CertificateObservation, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
-    HookContainer, IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName,
-    MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
-    ProjectName, ResolvedServiceSpec, RttObservation, RttStatistics, RuntimeWatchTransportFrame,
-    SelectedEndpoint, ServiceContainer, ServiceId, ServiceName, ServiceObservation,
-    WireGuardPublicKey,
+    ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
+    GlobalReconcileFailureObservation, HealthObservation, HookContainer, IngressHost,
+    IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName, MachineObservation,
+    MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload, ProjectName,
+    QualifiedService, ResolvedServiceSpec, RttObservation, RttStatistics,
+    RuntimeWatchTransportFrame, SelectedEndpoint, ServiceContainer, ServiceId, ServiceName,
+    ServiceObservation, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -26,6 +27,7 @@ use super::{
 use crate::corrosion::{
     CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
 };
+use crate::global_reconcile::global_reconcile_observations;
 use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -81,6 +83,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         },
         &entry.id,
         Some(&telemetry),
+        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -93,6 +96,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
                 storage: None,
                 selected_endpoint: Some(endpoint),
                 rtt: Some(rtt),
+                global_reconcile_failures: Vec::new(),
             },
             MachineObservation {
                 machine: peer,
@@ -100,6 +104,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
                 storage: None,
                 selected_endpoint: None,
                 rtt: None,
+                global_reconcile_failures: Vec::new(),
             },
         ]
     );
@@ -128,6 +133,32 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         Some("cluster.example.ts.net")
     );
     assert_eq!(frame.observed_at, OBSERVED_AT);
+}
+
+#[test]
+fn assembled_frame_attaches_reconcile_failures_only_to_the_entry_machine() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let peer = machine("peer", PEER_ID, 2);
+    let failure = GlobalReconcileFailureObservation {
+        service: QualifiedService::system_caddy(),
+        last_error: "image pull failed".into(),
+        observed_at: OBSERVED_AT.into(),
+    };
+
+    let frame = assemble_runtime_watch_frame(
+        snapshot(vec![entry.clone(), peer], Vec::new()),
+        &entry.id,
+        None,
+        vec![failure.clone()],
+        OBSERVED_AT.into(),
+    );
+
+    let failures = frame
+        .machines
+        .iter()
+        .map(|machine| machine.global_reconcile_failures.as_slice())
+        .collect::<Vec<_>>();
+    assert_eq!(failures, [std::slice::from_ref(&failure), &[]]);
 }
 
 #[test]
@@ -168,6 +199,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
         },
         &entry.id,
         None,
+        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -179,6 +211,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
             storage: None,
             selected_endpoint: None,
             rtt: None,
+            global_reconcile_failures: Vec::new(),
         }]
     );
     assert_eq!(frame.containers, vec![kept]);
@@ -231,6 +264,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
         },
         &entry.id,
         None,
+        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -310,6 +344,7 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
         },
         &entry.id,
         None,
+        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -322,6 +357,7 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
                 storage: None,
                 selected_endpoint: None,
                 rtt: None,
+                global_reconcile_failures: Vec::new(),
             },
             MachineObservation {
                 machine: peer,
@@ -329,6 +365,7 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
                 storage: None,
                 selected_endpoint: None,
                 rtt: None,
+                global_reconcile_failures: Vec::new(),
             },
         ]
     );
@@ -813,6 +850,7 @@ fn serve_sampled(
         },
         ReceiverStream::new(changes),
         ReceiverStream::new(ticks),
+        global_reconcile_observations(),
     )
 }
 

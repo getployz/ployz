@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use clap::ArgMatches;
 use ployz_core::{
     ContainerAction, ContainerRef, ContainerRuntimeObservation, HealthObservation, LiveServices,
-    RpcError, ServiceSelector, select_service,
+    MachineObservation, MembershipObservation, RpcError, ServiceMode, ServiceObservation,
+    ServiceSelector, machine_matches_placement, select_service,
 };
 
 use super::{Error, leaf_matches, with_client};
@@ -20,29 +21,22 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
         == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client.live_services().await?;
+            let machines = client.machines().await?;
+            let live = client.live_services_from(&machines).await?;
             print_observation_warning(&live);
             let services = live.services();
             if json {
                 println!("{}", serde_json::to_string_pretty(&services)?);
             } else {
                 println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
-                for service in services {
+                for service in &services {
+                    let (running, expected) = service_counts(service, &machines);
                     println!(
                         "{}\t{}\t{}/{}\t{}",
                         service.service_id,
                         service.identity,
-                        service
-                            .containers
-                            .iter()
-                            .filter(|container| {
-                                matches!(
-                                    container.as_observation().runtime,
-                                    ContainerRuntimeObservation::Running { .. }
-                                )
-                            })
-                            .count(),
-                        service.containers.len(),
+                        running,
+                        expected,
                         service.hook_containers.len()
                     );
                 }
@@ -50,6 +44,31 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
             Ok(())
         })
     })
+}
+
+fn service_counts(service: &ServiceObservation, machines: &[MachineObservation]) -> (usize, usize) {
+    let running = service
+        .containers
+        .iter()
+        .filter(|container| {
+            matches!(
+                container.as_observation().runtime,
+                ContainerRuntimeObservation::Running { .. }
+            )
+        })
+        .count();
+    let expected = service
+        .newest_service_container()
+        .map(|container| &container.as_observation().resolved_spec)
+        .filter(|spec| spec.mode == ServiceMode::Global)
+        .map_or(service.containers.len(), |spec| {
+            machines
+                .iter()
+                .filter(|machine| machine.membership == MembershipObservation::Up)
+                .filter(|machine| machine_matches_placement(&machine.machine, &spec.placement))
+                .count()
+        });
+    (running, expected)
 }
 
 /// List observed Service and hook Containers.
@@ -306,8 +325,10 @@ fn observation_warning_lines(live: &LiveServices<RpcError>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        HookContainer, MachineFailure, MachineId, PartialResult, RpcError, RpcErrorCode,
-        ServiceContainer, ServiceId, ServiceName, derive_live_services,
+        HookContainer, Machine, MachineFailure, MachineId, MachineName, MachineObservation,
+        MachineTarget, ManagementAddress, MembershipObservation, PartialResult, Placement,
+        RpcError, RpcErrorCode, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+        WireGuardPublicKey, derive_live_services,
     };
     use serde_json::json;
 
@@ -355,6 +376,31 @@ mod tests {
         assert_eq!(names(&containers), ["gamma", "beta", "alpha", "delta"]);
         sort_processes(&mut containers, "health");
         assert_eq!(names(&containers), ["alpha", "gamma", "beta", "delta"]);
+    }
+
+    #[test]
+    fn global_summary_counts_only_up_placement_eligible_machines() {
+        let mut service = service_named('a', "app", "api");
+        let mut observation = service.containers.pop().unwrap().into_observation();
+        observation.runtime = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        };
+        observation.resolved_spec.mode = ServiceMode::Global;
+        observation.resolved_spec.placement = Placement {
+            machines: ["edge-a", "edge-b", "edge-c"]
+                .into_iter()
+                .map(|name| MachineTarget::parse(name).unwrap())
+                .collect(),
+        };
+        service.containers = vec![ServiceContainer::try_from(observation).unwrap()];
+        let machines = [
+            machine('a', "edge-a", MembershipObservation::Up),
+            machine('b', "edge-b", MembershipObservation::Up),
+            machine('c', "edge-c", MembershipObservation::Down),
+            machine('d', "batch", MembershipObservation::Up),
+        ];
+
+        assert_eq!(service_counts(&service, &machines), (1, 2));
     }
 
     #[test]
@@ -456,6 +502,28 @@ mod tests {
             service_id: container.service_id,
             containers: vec![ServiceContainer::try_from(container).unwrap()],
             hook_containers: Vec::new(),
+        }
+    }
+
+    fn machine(id: char, name: &str, membership: MembershipObservation) -> MachineObservation {
+        MachineObservation {
+            machine: Machine {
+                id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
+                name: MachineName::parse(name).unwrap(),
+                subnet: format!("10.210.{}.0/24", id.to_digit(16).unwrap())
+                    .parse()
+                    .unwrap(),
+                management_address: ManagementAddress("::1".parse().unwrap()),
+                public_key: WireGuardPublicKey([id as u8; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+            },
+            membership,
+            storage: None,
+            selected_endpoint: None,
+            rtt: None,
+            global_reconcile_failures: Vec::new(),
         }
     }
 

@@ -1147,6 +1147,13 @@
     },
     "machines": [
       {
+        "global_reconcile_failures": [
+          {
+            "last_error": "image pull failed",
+            "observed_at": "2024-01-01T00:00:00Z",
+            "service": "ployz-system/caddy"
+          }
+        ],
         "machine": {
           "advertised_endpoints": [
             "203.0.113.10:51820"
@@ -1358,6 +1365,13 @@
     },
     "machines": [
       {
+        "global_reconcile_failures": [
+          {
+            "last_error": "image pull failed",
+            "observed_at": "2024-01-01T00:00:00Z",
+            "service": "ployz-system/caddy"
+          }
+        ],
         "machine": {
           "advertised_endpoints": [
             "203.0.113.10:51820"

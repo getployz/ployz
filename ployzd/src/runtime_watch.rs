@@ -20,6 +20,7 @@ use tonic::Status;
 
 use crate::{
     corrosion::{CertificateRow, Error, ReplicatedObservations, ReplicatedStore},
+    global_reconcile::GlobalReconcileObservations,
     hosted_dns::Reservation,
     logs::RpcStream,
     machine::{LocalMachine, RuntimeWatchTelemetry},
@@ -80,6 +81,7 @@ pub(crate) async fn serve_replicated_runtime_watch(
     store: ReplicatedStore,
     local: LocalMachine,
     entry_id: MachineId,
+    global_reconcile: GlobalReconcileObservations,
 ) -> Result<RpcStream, Error> {
     let changes = store.subscribe_runtime_watch_changes().await?;
     let mut interval = tokio::time::interval_at(
@@ -107,6 +109,7 @@ pub(crate) async fn serve_replicated_runtime_watch(
             interval.tick().await;
             Some(((), interval))
         }),
+        global_reconcile,
     ))
 }
 
@@ -124,6 +127,7 @@ fn serve_runtime_watch<L, Fut, S, SFut, C, T>(
     sample: S,
     changes: C,
     ticks: T,
+    global_reconcile: GlobalReconcileObservations,
 ) -> RpcStream
 where
     L: Fn() -> Fut + Send + 'static,
@@ -154,6 +158,7 @@ where
                 snapshot.clone(),
                 &entry_id,
                 latest.telemetry.as_ref(),
+                global_reconcile.borrow().clone(),
                 latest.observed_at.clone(),
             );
             if last
@@ -254,12 +259,19 @@ pub(crate) fn assemble_runtime_watch_frame(
     snapshot: RuntimeWatchSnapshot,
     entry_id: &MachineId,
     telemetry: Option<&RuntimeWatchTelemetry>,
+    global_reconcile_failures: Vec<ployz_core::GlobalReconcileFailureObservation>,
     observed_at: String,
 ) -> RuntimeWatchFrame {
-    let machines = match telemetry {
+    let mut machines = match telemetry {
         Some(telemetry) => telemetry.overlay(snapshot.machines.observations, entry_id),
         None => unavailable_machine_observations(snapshot.machines.observations, entry_id),
     };
+    if let Some(entry) = machines
+        .iter_mut()
+        .find(|observation| observation.machine.id == *entry_id)
+    {
+        entry.global_reconcile_failures = global_reconcile_failures;
+    }
     let mut containers = snapshot.containers.observations;
     containers.sort_by_key(|container| container.container_id);
     let services = derive_services(containers.iter().cloned());
@@ -301,6 +313,7 @@ fn unavailable_machine_observations(
             storage: None,
             selected_endpoint: None,
             rtt: None,
+            global_reconcile_failures: Vec::new(),
             machine,
         })
         .collect()

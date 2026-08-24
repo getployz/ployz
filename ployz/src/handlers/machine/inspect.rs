@@ -468,6 +468,7 @@ mod tests {
             storage: None,
             selected_endpoint: None,
             rtt: None,
+            global_reconcile_failures: Vec::new(),
         };
         let output = serde_json::to_value(MachineObservationOutput {
             gateway: observation.machine.subnet.gateway().0,

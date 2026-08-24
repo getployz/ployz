@@ -180,9 +180,14 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
         tokio::sync::watch::channel(false).0,
     );
     assert!(
-        crate::runtime_watch::serve_replicated_runtime_watch(store, local, MachineId::random())
-            .await
-            .is_err()
+        crate::runtime_watch::serve_replicated_runtime_watch(
+            store,
+            local,
+            MachineId::random(),
+            crate::global_reconcile::global_reconcile_observations(),
+        )
+        .await
+        .is_err()
     );
     let _ = std::fs::remove_dir_all(data_dir);
 }

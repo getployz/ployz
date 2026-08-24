@@ -210,6 +210,7 @@ mod tests {
             storage: None,
             selected_endpoint: None,
             rtt: None,
+            global_reconcile_failures: Vec::new(),
         }];
         assert_eq!(
             cluster_membership_conflict(

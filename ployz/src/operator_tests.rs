@@ -551,6 +551,7 @@ fn machine_observation(seed: u8, name: &str) -> MachineObservation {
         storage: None,
         selected_endpoint: None,
         rtt: None,
+        global_reconcile_failures: Vec::new(),
     }
 }
 

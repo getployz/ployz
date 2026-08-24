@@ -124,6 +124,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
         storage: None,
         selected_endpoint: None,
         rtt: None,
+        global_reconcile_failures: Vec::new(),
     }
 }
 

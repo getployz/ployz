@@ -514,6 +514,7 @@ impl MachineRpc for JoinDaemon {
             storage: None,
             selected_endpoint: None,
             rtt: None,
+            global_reconcile_failures: Vec::new(),
         };
         let mut machines = vec![assigned];
         machines.extend(
@@ -905,6 +906,7 @@ fn up_machine(machine: Machine) -> MachineObservation {
         storage: None,
         selected_endpoint: None,
         rtt: None,
+        global_reconcile_failures: Vec::new(),
     }
 }
 

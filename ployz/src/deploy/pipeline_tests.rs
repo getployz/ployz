@@ -336,6 +336,7 @@ fn machine() -> ployz_core::MachineObservation {
         storage: None,
         selected_endpoint: None,
         rtt: None,
+        global_reconcile_failures: Vec::new(),
     }
 }
 
