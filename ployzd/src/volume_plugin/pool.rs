@@ -304,10 +304,15 @@ impl PoolStorage {
             return Err(self.cleanup(error).await);
         }
         match self.one_usable().await {
-            Ok(Some(pool)) if pool.name() == POOL_NAME => Ok(CreatedPool {
-                pool,
-                storage: self,
-            }),
+            Ok(Some(pool)) if pool.name() == POOL_NAME => {
+                if let Err(error) = self.ensure_capacity(&pool, requested).await {
+                    return Err(self.cleanup(error).await);
+                }
+                Ok(CreatedPool {
+                    pool,
+                    storage: self,
+                })
+            }
             Ok(Some(pool)) => Err(self
                 .cleanup(
                     format!(
@@ -346,53 +351,56 @@ impl PoolStorage {
         }
 
         let backing = self.backing_text()?;
-        let (length, allocated) = self.backing_allocation(backing).await?;
-        let needs_allocation = length < minimum || allocated < length;
-        let target = if needs_allocation {
-            let extension = minimum
-                .saturating_sub(length)
-                .checked_next_multiple_of(GIBIBYTE)
-                .ok_or_else(|| {
-                    VolumeError::from("Machine Pool capacity rounding overflowed u64")
-                })?;
-            length
-                .checked_add(extension)
-                .ok_or_else(|| VolumeError::from("Machine Pool backing capacity overflowed u64"))?
-        } else {
-            length
-        };
-        if needs_allocation {
-            self.check_host_root(target.saturating_sub(allocated))
-                .await?;
-            let target_text = target.to_string();
-            checked_command(&self.fallocate, &["-l", &target_text, backing]).await?;
-            self.verify_preallocation(backing, target).await?;
+        let mut observed = pool.size_bytes().get();
+        let (length, _) = self.backing_allocation(backing).await?;
+        if length < minimum {
+            growth_target(length, observed, minimum)?;
         }
-        checked_command(&self.zpool, &["online", "-e", pool.name(), backing]).await?;
+        let mut retry_backing = length > observed;
+        loop {
+            let (length, allocated) = self.backing_allocation(backing).await?;
+            let newly_allocated = !retry_backing;
+            let target = if retry_backing {
+                length
+            } else {
+                growth_target(length, observed, minimum)?
+            };
+            if allocated < target {
+                self.check_host_root(target - allocated).await?;
+                let target_text = target.to_string();
+                checked_command(&self.fallocate, &["-l", &target_text, backing]).await?;
+                self.verify_preallocation(backing, target).await?;
+            }
+            checked_command(&self.zpool, &["online", "-e", pool.name(), backing]).await?;
 
-        let expanded = self.one_usable().await?.ok_or_else(|| {
-            VolumeError::from(format!(
-                "expanded Machine Pool {}, but ZFS did not report it",
-                pool.name()
-            ))
-        })?;
-        if expanded.name() != pool.name() {
-            return Err(format!(
-                "expanded Machine Pool {}, but ZFS selected {}",
-                pool.name(),
-                expanded.name()
-            )
-            .into());
+            let expanded = self.one_usable().await?.ok_or_else(|| {
+                VolumeError::from(format!(
+                    "expanded Machine Pool {}, but ZFS did not report it",
+                    pool.name()
+                ))
+            })?;
+            if expanded.name() != pool.name() {
+                return Err(format!(
+                    "expanded Machine Pool {}, but ZFS selected {}",
+                    pool.name(),
+                    expanded.name()
+                )
+                .into());
+            }
+            let expanded_size = expanded.size_bytes().get();
+            if expanded_size >= minimum {
+                return Ok(());
+            }
+            if expanded_size < observed || (expanded_size == observed && newly_allocated) {
+                return Err(format!(
+                    "Machine Pool {} made no usable-capacity progress after growth; ZFS still reports {expanded_size} bytes, below the required {minimum} bytes including headroom",
+                    pool.name()
+                )
+                .into());
+            }
+            retry_backing = expanded_size > observed;
+            observed = expanded_size;
         }
-        if expanded.size_bytes().get() < minimum {
-            return Err(format!(
-                "Machine Pool {} has {} bytes after growth, below the required {minimum} bytes including headroom",
-                pool.name(),
-                expanded.size_bytes()
-            )
-            .into());
-        }
-        Ok(())
     }
 
     async fn cleanup(&self, failure: VolumeError) -> VolumeError {
@@ -582,6 +590,15 @@ fn capacity_with_headroom(commitment: u64) -> Result<u64> {
     commitment
         .checked_add((commitment / 10).max(GIBIBYTE))
         .ok_or_else(|| "Machine Pool capacity calculation overflowed u64".into())
+}
+
+fn growth_target(length: u64, observed: u64, minimum: u64) -> Result<u64> {
+    let extension = (minimum - observed)
+        .checked_next_multiple_of(GIBIBYTE)
+        .ok_or_else(|| VolumeError::from("Machine Pool capacity rounding overflowed u64"))?;
+    length
+        .checked_add(extension)
+        .ok_or_else(|| VolumeError::from("Machine Pool backing capacity overflowed u64"))
 }
 
 fn parse_host_root_space(output: &str) -> Result<(u64, u64)> {

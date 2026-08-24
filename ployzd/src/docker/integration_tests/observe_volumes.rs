@@ -58,6 +58,8 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
             },
         )
         .await
+        .unwrap()
+        .into_observation()
         .unwrap();
     let managed = runtime
         .create_volume(
@@ -70,6 +72,8 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
             },
         )
         .await
+        .unwrap()
+        .into_observation()
         .unwrap();
     let stale_local = fixture_volume(&machine_id, "stale-local");
     let stale_foreign = fixture_volume(&foreign_machine_id, "stale-foreign");
@@ -97,8 +101,8 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
         Some(&stale_foreign)
     );
     let listed = runtime.list_volumes(&machine_id).await.unwrap();
-    assert!(listed.contains(&external));
-    assert!(listed.contains(&managed));
+    assert!(listed.volumes.contains(&external));
+    assert!(listed.volumes.contains(&managed));
 
     let created = runtime
         .create_volume(
@@ -111,6 +115,8 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
             },
         )
         .await
+        .unwrap()
+        .into_observation()
         .unwrap();
     wait_for(Duration::from_secs(2), || async {
         replicated.volume(&created.id).await.unwrap() == Some(created.clone())
@@ -120,7 +126,12 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
     replicated
         .machine_publication()
         .await
-        .apply_volume_rows(&machine_id, std::slice::from_ref(&managed.id.name), &[])
+        .apply_volume_rows(
+            &machine_id,
+            std::slice::from_ref(&managed.id.name),
+            &[],
+            &[],
+        )
         .await
         .unwrap();
     assert!(replicated.volume(&managed.id).await.unwrap().is_none());

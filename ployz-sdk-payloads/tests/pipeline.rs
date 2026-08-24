@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
     ClusterTeardown, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation, DeployOutcome,
-    DeployPreview, DockerVolume, DockerVolumeStorageObservation, ExecutionError, HealthObservation,
-    HealthcheckSpec, IngressHostname, LocalMachineRemoved, MembershipObservation, ObservedDataLoss,
-    PlanOptions, RUNTIME_WATCH_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, RuntimeWatchTransportFrame, ServiceAttempt, StorageChoice, UnconfirmedDataLoss,
-    VolumeSource,
+    CreateVolumeReport, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation,
+    DeployOutcome, DeployPreview, DockerVolume, DockerVolumeStorageObservation, ExecutionError,
+    HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
+    MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY,
+    RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode, RuntimeWatchTransportFrame,
+    ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeInventory, VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -104,6 +104,29 @@ fn json_fixtures_round_trip_through_rust_types() {
         serde_json::to_value(&volume).unwrap(),
         *fixture(&fixtures, "docker_volume")
     );
+
+    let inventory: VolumeInventory = decode_fixture(fixture(&fixtures, "volume_inventory"));
+    assert_eq!(inventory.volumes.len(), 1);
+    assert_eq!(inventory.failures.len(), 1);
+    assert_eq!(
+        inventory
+            .failures
+            .first()
+            .expect("fixture includes one failure")
+            .id
+            .name
+            .as_str(),
+        "unavailable"
+    );
+    let verified: CreateVolumeReport =
+        decode_fixture(fixture(&fixtures, "create_volume_report_verified"));
+    assert!(matches!(verified, CreateVolumeReport::Verified { .. }));
+    let unverified: CreateVolumeReport =
+        decode_fixture(fixture(&fixtures, "create_volume_report_unverified"));
+    assert!(matches!(
+        unverified,
+        CreateVolumeReport::Unverified { id, .. } if id.name.as_str() == "data"
+    ));
 
     let remove: ployz_core::RemoveVolumesRequest =
         decode_fixture(fixture(&fixtures, "remove_volumes_request"));

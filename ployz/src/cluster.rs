@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
     time::Duration,
 };
@@ -7,15 +7,16 @@ use std::{
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
     ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
-    DockerVolumeName, GetDomainRequest, InspectRequest, ListContainersRequest, ListImagesRequest,
-    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
-    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
-    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
-    MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest, RemoveLocalMachineRequest,
-    RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc,
-    RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
-    UnconfirmedDataLoss, derive_live_services, op,
+    DockerVolumeName, GetDomainRequest, InspectRequest, InspectVolumeRequest,
+    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
+    LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
+    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
+    MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss,
+    OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
+    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, VolumeInventory,
+    derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -29,7 +30,7 @@ use crate::{
         target_request,
     },
     context::{Connection, ConnectionSource, Transport},
-    deploy::DeploySnapshot,
+    deploy::{DeploySnapshot, VolumeSnapshot},
     service::ContainerOperationFailure,
 };
 
@@ -278,7 +279,7 @@ impl Client {
     pub async fn list_volumes(
         &mut self,
         machines: &[MachineObservation],
-    ) -> PartialResult<Vec<DockerVolume>, RpcError> {
+    ) -> PartialResult<VolumeInventory, RpcError> {
         let mut requests = JoinSet::new();
         let mut omissions = Vec::new();
         for (index, machine) in machines.iter().enumerate() {
@@ -305,6 +306,51 @@ impl Client {
             match outcome {
                 Ok(success) => result.successes.push(success),
                 Err(failure) => result.failures.push(failure),
+            }
+        }
+        result
+    }
+
+    /// Inspect one named Docker Volume on each Machine that invites an RPC.
+    pub async fn inspect_volumes(
+        &self,
+        machines: &[MachineObservation],
+        name: &DockerVolumeName,
+    ) -> PartialResult<DockerVolume, RpcError> {
+        let mut requests = JoinSet::new();
+        let mut omissions = Vec::new();
+        for (index, machine) in machines.iter().enumerate() {
+            if !machine.membership.invites_rpc() {
+                omissions.push(machine.machine.id);
+                continue;
+            }
+            let mut client = self.clone();
+            let machine_id = machine.machine.id;
+            let name = name.clone();
+            requests.spawn(async move {
+                let result = client
+                    .read::<op::InspectVolume>(
+                        InspectVolumeRequest { name },
+                        &MachineTarget::from(&machine_id),
+                    )
+                    .await;
+                (index, machine_id, result)
+            });
+        }
+        let mut outcomes = Vec::with_capacity(requests.len());
+        while let Some(outcome) = requests.join_next().await {
+            outcomes.push(outcome.expect("Volume inspection task does not panic"));
+        }
+        outcomes.sort_by_key(|(index, _, _)| *index);
+        let mut result = PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions,
+        };
+        for (_, machine_id, outcome) in outcomes {
+            match outcome {
+                Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
+                Err(error) => result.failures.push(MachineFailure { machine_id, error }),
             }
         }
         result
@@ -638,44 +684,32 @@ impl Client {
         let containers = self.live_services_from(&machines).await?.containers;
         let volumes = self.list_volumes(&machines).await;
         let capacity = capacity::observe(self, &machines).await;
-        Ok(snapshot_from_partial(
-            machines, containers, volumes, capacity,
-        ))
+        snapshot_from_partial(machines, containers, volumes, capacity).map_err(ConnectError::Remote)
     }
 }
 
 pub(crate) fn snapshot_from_partial(
     machines: Vec<MachineObservation>,
     containers: PartialResult<Vec<ContainerObservation>, RpcError>,
-    volumes: PartialResult<Vec<DockerVolume>, RpcError>,
+    volumes: PartialResult<VolumeInventory, RpcError>,
     capacity: BTreeMap<MachineId, BridgeEndpointCapacity>,
-) -> DeploySnapshot {
+) -> Result<DeploySnapshot, RpcError> {
     let PartialResult {
         successes: container_successes,
         failures: container_failures,
         omissions: container_omissions,
     } = containers;
-    let PartialResult {
-        successes: volume_successes,
-        failures: volume_failures,
-        omissions: volume_omissions,
-    } = volumes;
-    DeploySnapshot {
+    Ok(DeploySnapshot {
         machines,
         containers: container_successes
             .into_iter()
             .flat_map(|success| success.value)
             .collect(),
-        volumes: volume_successes
-            .into_iter()
-            .flat_map(|success| success.value)
-            .collect(),
+        volume_snapshot: VolumeSnapshot::from_partial(volumes)?,
         container_failures,
         container_omissions,
-        volume_failures,
-        volume_omissions,
         capacity: Some(capacity),
-    }
+    })
 }
 
 async fn remove_volumes_on(
@@ -866,8 +900,16 @@ async fn data_loss_on_machine(
     Ok(ObservedDataLoss {
         data_loss: volumes
             .value
+            .volumes
             .into_iter()
             .map(|volume| DataLoss::DockerVolume(volume.id))
+            .chain(
+                volumes
+                    .value
+                    .failures
+                    .into_iter()
+                    .map(|failure| DataLoss::DockerVolume(failure.id)),
+            )
             .collect(),
     })
 }
@@ -917,15 +959,51 @@ async fn observe_machine_storage(
 async fn list_volumes_on_machine(
     mut client: Client,
     machine_id: MachineId,
-) -> Result<MachineSuccess<Vec<DockerVolume>>, MachineFailure<RpcError>> {
+) -> Result<MachineSuccess<VolumeInventory>, MachineFailure<RpcError>> {
     client
         .read::<op::ListVolumes>(ListVolumesRequest {}, &MachineTarget::from(&machine_id))
         .await
+        .and_then(|inventory| validate_volume_inventory(machine_id, inventory))
         .map(|list| MachineSuccess {
             machine_id,
-            value: list.volumes,
+            value: list,
         })
         .map_err(|error| MachineFailure { machine_id, error })
+}
+
+fn validate_volume_inventory(
+    machine_id: MachineId,
+    inventory: VolumeInventory,
+) -> Result<VolumeInventory, RpcError> {
+    let mut names = BTreeSet::new();
+    for id in inventory
+        .volumes
+        .iter()
+        .map(|volume| &volume.id)
+        .chain(inventory.failures.iter().map(|failure| &failure.id))
+    {
+        if id.machine_id != machine_id {
+            return Err(RpcError {
+                code: RpcErrorCode::Internal,
+                message: format!(
+                    "targeted ListVolumes response from Machine {machine_id} contained Docker Volume '{}' for Machine {}",
+                    id.name, id.machine_id
+                ),
+                details: Value::Null,
+            });
+        }
+        if !names.insert(&id.name) {
+            return Err(RpcError {
+                code: RpcErrorCode::Internal,
+                message: format!(
+                    "targeted ListVolumes response from Machine {machine_id} repeated Docker Volume '{}'",
+                    id.name
+                ),
+                details: Value::Null,
+            });
+        }
+    }
+    Ok(inventory)
 }
 
 async fn list_on_machine(

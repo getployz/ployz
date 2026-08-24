@@ -12,10 +12,11 @@ fn project_removal_deletes_visible_services_and_preserves_volumes() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &spec, &service_id('a'))],
-        volumes: vec![
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![
             owned_volume(machine_id('1'), "data"),
             observed_volume(machine_id('1'), "orphan"),
-        ],
+        ])
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
@@ -50,10 +51,15 @@ fn project_removal_deletes_visible_services_and_preserves_volumes() {
 fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
     let spec = requested(ServiceMode::Global);
     let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
+        machines: vec![machine('1', "first"), machine('2', "second")],
         containers: vec![container('b', '1', &spec, &service_id('a'))],
-        volumes: vec![owned_volume(machine_id('1'), "data")],
-        volume_omissions: vec![machine_id('1')],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            vec![owned_volume(machine_id('1'), "data")],
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('2')],
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
@@ -70,7 +76,13 @@ fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
 fn incomplete_empty_view_still_refuses() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_omissions: vec![machine_id('1')],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
@@ -85,7 +97,8 @@ fn destroying_volumes_emits_remove_volume_only_when_complete() {
     let volume = owned_volume(machine_id('1'), "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![volume.clone()],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![volume.clone()])
+            .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
@@ -101,7 +114,11 @@ fn destroying_volumes_emits_remove_volume_only_when_complete() {
 fn unlabeled_volumes_are_never_assigned_or_removed() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![observed_volume(machine_id('1'), "orphan")],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+            machine_id('1'),
+            "orphan",
+        )])
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     for fate in [VolumeFate::Preserve, VolumeFate::Destroy] {
@@ -123,7 +140,11 @@ fn unlabeled_volumes_are_never_assigned_or_removed() {
 fn volume_only_project_still_plans_preservation() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![owned_volume(machine_id('1'), "data")],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
+            machine_id('1'),
+            "data",
+        )])
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
@@ -147,7 +168,11 @@ fn other_project_resources_are_left_alone() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &spec, &service_id('a')), other],
-        volumes: vec![owned_volume(machine_id('1'), "keep"), other_volume],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![
+            owned_volume(machine_id('1'), "keep"),
+            other_volume,
+        ])
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
@@ -193,7 +218,11 @@ fn planner_does_not_refuse_reserved_names() {
 fn preserving_volumes_is_empty_data_loss() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![owned_volume(machine_id('1'), "data")],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
+            machine_id('1'),
+            "data",
+        )])
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     assert_eq!(
@@ -209,10 +238,11 @@ fn preserving_volumes_is_empty_data_loss() {
 fn destroying_volumes_names_owned_docker_volumes_only() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![
             owned_volume(machine_id('1'), "data"),
             observed_volume(machine_id('1'), "orphan"),
-        ],
+        ])
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     assert_eq!(
@@ -233,7 +263,11 @@ fn plan_deploy_never_emits_remove_volume() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volumes: vec![owned_volume(machine_id('1'), "data")],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
+                machine_id('1'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),

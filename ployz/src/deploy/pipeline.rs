@@ -398,11 +398,7 @@ async fn gather_snapshot(
         &snapshot.container_failures,
         &snapshot.container_omissions,
     );
-    warnings.extend(observation_warnings(
-        ObservationKind::Volume,
-        &snapshot.volume_failures,
-        &snapshot.volume_omissions,
-    ));
+    warnings.extend(snapshot.volume_snapshot.deploy_warnings());
     Ok((snapshot, warnings))
 }
 

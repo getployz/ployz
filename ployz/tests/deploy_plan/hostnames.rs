@@ -47,7 +47,13 @@ fn complete_snapshot_rejects_another_qualified_service_already_publishing_the_ho
 fn visible_conflict_rejects_even_when_the_snapshot_is_incomplete() {
     let spec = custom_web();
     let snapshot = DeploySnapshot {
-        volume_omissions: vec![machine_id('1')],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..snapshot_with(vec![other_project_container(&spec, 1)])
     };
     assert!(!snapshot.is_observer_complete());
@@ -75,7 +81,13 @@ fn same_qualified_service_redeploy_keeps_the_hostname() {
 fn incomplete_snapshot_without_a_visible_publisher_warns_that_detection_is_observer_relative() {
     for spec in [custom_web(), assigned_web(), chosen_web("api")] {
         let snapshot = DeploySnapshot {
-            volume_omissions: vec![machine_id('1')],
+            volume_snapshot: VolumeSnapshot::try_from_parts(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![machine_id('1')],
+            )
+            .expect("valid Volume Snapshot fixture"),
             ..snapshot_with(Vec::new())
         };
         assert!(!snapshot.is_observer_complete());

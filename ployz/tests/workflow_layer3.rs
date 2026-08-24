@@ -183,7 +183,7 @@ volumes:
             .await
             .successes
             .iter()
-            .flat_map(|success| &success.value)
+            .flat_map(|success| &success.value.volumes)
             .all(|volume| volume.id.name.as_str() != "data")
     );
 
@@ -240,7 +240,7 @@ volumes:
         volumes
             .successes
             .iter()
-            .flat_map(|success| &success.value)
+            .flat_map(|success| &success.value.volumes)
             .any(|volume| volume.id.name.as_str() == "workflow_data"),
         "{volumes:?}"
     );

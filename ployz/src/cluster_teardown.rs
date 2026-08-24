@@ -64,7 +64,8 @@ impl Client {
         let projects = derive_projects(
             &snapshot.containers,
             snapshot
-                .volumes
+                .volume_snapshot
+                .observations()
                 .iter()
                 .map(|volume| (&volume.id, &volume.labels)),
         );
@@ -142,9 +143,51 @@ impl Client {
 fn cluster_volume_loss(snapshot: &DeploySnapshot) -> ObservedDataLoss {
     ObservedDataLoss {
         data_loss: snapshot
-            .volumes
-            .iter()
-            .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
+            .volume_snapshot
+            .known_ids()
+            .cloned()
+            .map(DataLoss::DockerVolume)
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::{
+        DockerVolumeId, DockerVolumeName, MachineId, RpcError, RpcErrorCode,
+        VolumeObservationFailure,
+    };
+
+    use super::*;
+    use crate::deploy::VolumeSnapshot;
+
+    #[test]
+    fn cluster_loss_includes_a_volume_whose_detail_observation_failed() {
+        let id = DockerVolumeId {
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            name: DockerVolumeName::parse("data").unwrap(),
+        };
+        let snapshot = DeploySnapshot {
+            volume_snapshot: VolumeSnapshot::try_from_parts(
+                Vec::new(),
+                vec![VolumeObservationFailure {
+                    id: id.clone(),
+                    error: RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "inspect failed".into(),
+                        details: serde_json::Value::Null,
+                    },
+                }],
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("valid Volume Snapshot fixture"),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            cluster_volume_loss(&snapshot).data_loss,
+            [DataLoss::DockerVolume(id)]
+        );
     }
 }

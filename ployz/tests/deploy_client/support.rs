@@ -16,13 +16,13 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerDetails, ContainerId, ContainerKind,
-    ContainerList, ContainerPath, ContainerRuntimeObservation, ContractDescription, DockerVolume,
-    DockerVolumeId, DockerVolumeName, Domain, HealthObservation, LocalMachinePhase, Machine,
-    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
-    MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation, OpaquePayload,
-    PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, ResolvedUpdateConfig, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeList, VolumeSource,
+    ContainerList, ContainerPath, ContainerRuntimeObservation, ContractDescription,
+    CreateVolumeReport, DockerVolume, DockerVolumeId, DockerVolumeName, Domain, HealthObservation,
+    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
+    MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
+    OpaquePayload, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, ResolvedUpdateConfig,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, VolumeSource,
     WireGuardPublicKey,
 };
 use serde_json::Value;
@@ -37,6 +37,7 @@ mod inspect_telemetry_fixture;
 pub(super) struct DeployService {
     machines: Vec<MachineObservation>,
     create_volume_error: Option<RpcError>,
+    create_volume_verification_error: Option<RpcError>,
     containers: Arc<AtomicUsize>,
     created_projects: Arc<Mutex<Vec<ProjectName>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
@@ -50,6 +51,7 @@ impl DeployService {
         Self {
             machines: vec![machine],
             create_volume_error: None,
+            create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
@@ -63,6 +65,7 @@ impl DeployService {
         Self {
             machines: Vec::new(),
             create_volume_error: None,
+            create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
@@ -74,6 +77,15 @@ impl DeployService {
 
     pub(super) fn fail_create_volume(mut self, message: &str) -> Self {
         self.create_volume_error = Some(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: message.into(),
+            details: Value::Null,
+        });
+        self
+    }
+
+    pub(super) fn fail_create_volume_verification(mut self, message: &str) -> Self {
+        self.create_volume_verification_error = Some(RpcError {
             code: RpcErrorCode::Unavailable,
             message: message.into(),
             details: Value::Null,
@@ -153,8 +165,9 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        encoded(RpcResponse::from(VolumeList {
+        encoded(RpcResponse::from(VolumeInventory {
             volumes: Vec::new(),
+            failures: Vec::new(),
         }))
     }
 
@@ -172,7 +185,7 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected create_volume"));
         };
-        encoded(RpcResponse::from(DockerVolume {
+        let volume = DockerVolume {
             id: DockerVolumeId {
                 machine_id,
                 name: create.name,
@@ -182,7 +195,17 @@ impl MachineRpc for DeployService {
             storage: ployz_core::DockerVolumeStorageObservation::Plain {
                 driver: create.driver,
             },
-        }))
+        };
+        let report = self.create_volume_verification_error.clone().map_or(
+            CreateVolumeReport::Verified {
+                volume: volume.clone(),
+            },
+            |error| CreateVolumeReport::Unverified {
+                id: volume.id,
+                error,
+            },
+        );
+        encoded(RpcResponse::from(report))
     }
 
     async fn create_container(

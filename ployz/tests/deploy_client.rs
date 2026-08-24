@@ -111,6 +111,54 @@ async fn deploy_returns_the_completed_prefix_failed_op_and_unexecuted_suffix() {
 }
 
 #[tokio::test]
+async fn created_but_unverified_volume_stops_before_the_dependent_container() {
+    let machine = machine('a', "one");
+    let (mut client, server) = connected(
+        DeployService::new(machine)
+            .fail_create_volume_verification("Docker inspect response was malformed"),
+    )
+    .await;
+    let mut spec = spec("web");
+    add_named_volume(&mut spec, "data");
+
+    let outcome = client
+        .run(
+            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let DeployOutcome::Failed {
+        completed,
+        failed,
+        unexecuted,
+    } = outcome
+    else {
+        panic!("expected partial failure: {outcome:?}");
+    };
+    assert!(completed.is_empty());
+    let FailedOperation::Operation {
+        operation: DeployOperation::CreateVolume { .. },
+        error: ExecutionError::Machine { error, .. },
+    } = &failed
+    else {
+        panic!("unexpected failed operation: {failed:?}");
+    };
+    assert!(
+        error.message.contains("was created") && error.message.contains("could not be verified"),
+        "{}",
+        error.message
+    );
+    assert!(matches!(
+        unexecuted.as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    server.abort();
+}
+
+#[tokio::test]
 async fn deploy_surfaces_a_planning_error_instead_of_an_outcome() {
     let (mut client, server) = connected(DeployService::empty()).await;
 

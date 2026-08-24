@@ -10,7 +10,7 @@ use ployz_core::{
     ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason,
     ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId, MachineLogService,
     MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
+    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -20,7 +20,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
-    docker::{ContainerRuntime, Error as DockerError, ImageIngest},
+    docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
     network::MACHINE_API_PORT,
@@ -341,7 +341,7 @@ impl MachineRpc for MachineService {
             Ok(observations) => respond(ContainerList {
                 containers: observations,
             }),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -362,7 +362,7 @@ impl MachineRpc for MachineService {
             Ok(observation) => respond(ContainerDetails {
                 container: observation,
             }),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -391,7 +391,7 @@ impl MachineRpc for MachineService {
             .await
         {
             Ok(created) => respond(created),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -425,7 +425,7 @@ impl MachineRpc for MachineService {
             .await
         {
             Ok(created) => respond(created),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -442,7 +442,7 @@ impl MachineRpc for MachineService {
             Ok(()) => respond(ContainerChanged {
                 container_id: request.container_id,
             }),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -466,7 +466,7 @@ impl MachineRpc for MachineService {
             Ok(()) => respond(ContainerChanged {
                 container_id: request.container_id,
             }),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -486,7 +486,7 @@ impl MachineRpc for MachineService {
             Ok(()) => respond(ContainerChanged {
                 container_id: request.container_id,
             }),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -502,7 +502,7 @@ impl MachineRpc for MachineService {
         };
         match containers.create_volume(&machine_id, request).await {
             Ok(volume) => respond(volume),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -517,8 +517,8 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match containers.list_volumes(&machine_id).await {
-            Ok(volumes) => respond(VolumeList { volumes }),
-            Err(error) => respond(docker_rpc_error(error)),
+            Ok(inventory) => respond(inventory),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -534,7 +534,7 @@ impl MachineRpc for MachineService {
         };
         match containers.inspect_volume(&machine_id, &request.name).await {
             Ok(volume) => respond(volume),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -549,7 +549,7 @@ impl MachineRpc for MachineService {
         };
         match containers.remove_volume(&request.name, request.force).await {
             Ok(()) => respond(VolumeRemoved {}),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -729,7 +729,7 @@ impl MachineRpc for MachineService {
         }
         match crate::docker::pull_from_ingest(&request.image, request.source).await {
             Ok(()) => respond(ImagePulled {}),
-            Err(error) => respond(docker_rpc_error(error)),
+            Err(error) => respond(RpcError::from(&error)),
         }
     }
 
@@ -866,7 +866,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         }
         LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Network(error) => Err(Status::internal(error.to_string())),
-        LocalMachineError::Docker(error) => respond(docker_rpc_error(error)),
+        LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
         LocalMachineError::Cleanup(message) => respond(RpcError {
             code: RpcErrorCode::Internal,
             message,
@@ -945,14 +945,6 @@ fn store_error(error: StoreError) -> RpcError {
     };
     RpcError {
         code,
-        message: error.to_string(),
-        details: Value::Null,
-    }
-}
-
-fn docker_rpc_error(error: DockerError) -> RpcError {
-    RpcError {
-        code: error.rpc_code(),
         message: error.to_string(),
         details: Value::Null,
     }

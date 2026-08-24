@@ -4,7 +4,7 @@ use ployz_core::{
     CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, MachineFailure, MachineId, MachineName, MachineObservation,
     MachineSuccess, PartialResult, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode,
-    ServiceVolume, VolumeSource,
+    ServiceVolume, VolumeInventory, VolumeSource,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -143,7 +143,7 @@ pub fn filter_volumes(volumes: &[MachineVolume], names: &[DockerVolumeName]) -> 
 #[must_use]
 pub fn machine_volumes(
     machines: &[MachineObservation],
-    result: &PartialResult<Vec<DockerVolume>, RpcError>,
+    result: &PartialResult<VolumeInventory, RpcError>,
 ) -> Vec<MachineVolume> {
     let names = machines
         .iter()
@@ -159,6 +159,7 @@ pub fn machine_volumes(
                 .expect("Volume result target came from the Machine snapshot");
             success
                 .value
+                .volumes
                 .iter()
                 .cloned()
                 .map(move |volume| MachineVolume {

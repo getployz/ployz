@@ -11,14 +11,14 @@ use ployz_core::{
     CertificateBackoff, CertificateFailureKind, CertificateObservation, ClusterTeardown,
     ConfigMount, ConfigSpec, ConfiguredHealthcheck, ContainerId, ContainerKind,
     ContainerObservation, ContainerPath, ContainerResources, ContainerRuntimeObservation,
-    ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DependencyHealthFailure,
-    DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
-    DeviceMapping, DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, ExecutionError, FailedOperation, HealthFailure,
-    HealthObservation, HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind,
-    HttpProtocol, IngressHost, IngressHostname, LocalMachineRemoved, LogDriver, Machine,
-    MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachinePath,
-    MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
+    ContractDescription, CreateVolumeReport, DESCRIBE_CONTRACT_CAPABILITY, DataLoss,
+    DependencyHealthFailure, DeployEvent, DeployIntent, DeployOperation, DeployOutcome,
+    DeployPreview, DeployWarning, DeviceMapping, DeviceReservation, DockerVolume, DockerVolumeId,
+    DockerVolumeName, DockerVolumeStorageObservation, ExecutionError, FailedOperation,
+    HealthFailure, HealthObservation, HealthcheckCommand, HealthcheckSpec, HookContainer,
+    HookFailure, HostBind, HttpProtocol, IngressHost, IngressHostname, LocalMachineRemoved,
+    LogDriver, Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
+    MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
     MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
     OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
     PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
@@ -29,7 +29,7 @@ use ployz_core::{
     ServiceAttempt, ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
     ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
     StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder,
-    VolumeDriver, VolumeSource, WireGuardPublicKey,
+    VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -58,6 +58,20 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert("rpc_error".into(), to_value(&rpc_error()));
     fixtures.insert("docker_volume".into(), to_value(&docker_volume()));
+    fixtures.insert("volume_inventory".into(), to_value(&volume_inventory()));
+    fixtures.insert(
+        "create_volume_report_verified".into(),
+        to_value(&CreateVolumeReport::Verified {
+            volume: docker_volume(),
+        }),
+    );
+    fixtures.insert(
+        "create_volume_report_unverified".into(),
+        to_value(&CreateVolumeReport::Unverified {
+            id: docker_volume().id,
+            error: rpc_error(),
+        }),
+    );
     fixtures.insert("data_loss".into(), to_value(&data_loss()));
     fixtures.insert("observed_data_loss".into(), to_value(&observed_data_loss()));
     fixtures.insert(
@@ -218,6 +232,16 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("ContractDescription", to_value(&contract_description())),
         ("DockerVolume", to_value(&docker_volume())),
         ("DockerVolumeId", to_value(&docker_volume().id)),
+        (
+            "VolumeObservationFailure",
+            to_value(
+                volume_inventory()
+                    .failures
+                    .first()
+                    .expect("Volume Inventory fixture includes a failure"),
+            ),
+        ),
+        ("VolumeInventory", to_value(&volume_inventory())),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
         ("ObservedDataLoss", to_value(&observed_data_loss())),
         ("UnconfirmedDataLoss", to_value(&unconfirmed_data_loss())),
@@ -329,6 +353,18 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
     };
     BTreeMap::from([
         ("DataLoss", vec![to_value(&data_loss())]),
+        (
+            "CreateVolumeReport",
+            vec![
+                to_value(&CreateVolumeReport::Verified {
+                    volume: docker_volume(),
+                }),
+                to_value(&CreateVolumeReport::Unverified {
+                    id: docker_volume().id,
+                    error: rpc_error(),
+                }),
+            ],
+        ),
         (
             "DeployOutcome",
             vec![
@@ -692,6 +728,21 @@ fn docker_volume() -> DockerVolume {
                 .expect("fixture Provisioned Volume bound is positive"),
             used_bytes: 966_367_642,
         },
+    }
+}
+
+fn volume_inventory() -> VolumeInventory {
+    let volume = docker_volume();
+    let machine_id = volume.id.machine_id;
+    VolumeInventory {
+        volumes: vec![volume],
+        failures: vec![VolumeObservationFailure {
+            id: DockerVolumeId {
+                machine_id,
+                name: DockerVolumeName::parse("unavailable").expect("fixture volume name is valid"),
+            },
+            error: rpc_error(),
+        }],
     }
 }
 

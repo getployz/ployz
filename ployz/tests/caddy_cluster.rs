@@ -562,7 +562,6 @@ async fn deploy(
             .into_iter()
             .flat_map(|success| success.value)
             .collect(),
-        volumes: Vec::new(),
         ..Default::default()
     };
     let plan = preview_deploy(

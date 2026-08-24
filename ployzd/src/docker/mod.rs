@@ -21,10 +21,10 @@ use bollard::{
 };
 use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL,
-    HealthObservation, HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages,
-    MachineTelemetry, ProjectName, QualifiedService, RpcErrorCode, ServiceId, ServiceName,
-    ValueError,
+    ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
+    HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
+    ImageSummary, MachineId, MachineImages, MachineTelemetry, ProjectName, QualifiedService,
+    RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -573,6 +573,11 @@ pub enum Error {
     InvalidContainerConfig(String),
     #[error("invalid Docker Provisioned Volume observation: {0}")]
     InvalidVolumeStatus(&'static str),
+    #[error("Docker returned Volume '{actual}' when Volume '{requested}' was inspected")]
+    UnexpectedVolumeName {
+        requested: DockerVolumeName,
+        actual: String,
+    },
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -629,7 +634,18 @@ impl Error {
             | Self::LocalStorePoisoned
             | Self::Clock(_)
             | Self::PeerPull(_)
-            | Self::InvalidVolumeStatus(_) => RpcErrorCode::Internal,
+            | Self::InvalidVolumeStatus(_)
+            | Self::UnexpectedVolumeName { .. } => RpcErrorCode::Internal,
+        }
+    }
+}
+
+impl From<&Error> for RpcError {
+    fn from(error: &Error) -> Self {
+        Self {
+            code: error.rpc_code(),
+            message: error.to_string(),
+            details: serde_json::Value::Null,
         }
     }
 }

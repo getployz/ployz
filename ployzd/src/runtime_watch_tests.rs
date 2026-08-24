@@ -502,6 +502,33 @@ async fn store_notification_yields_when_the_assembled_observation_changes() {
 }
 
 #[tokio::test]
+async fn unavailable_volume_is_incomplete_until_a_healthy_observation_recovers() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let volume = volume_on(ENTRY_ID, "data");
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], vec![volume.clone()]));
+    let (wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+    assert_eq!(next_frame(&mut stream).await.volumes, vec![volume.clone()]);
+
+    let mut unavailable = snapshot(vec![entry.clone()], Vec::new());
+    unavailable.volumes.incomplete_ids = vec![volume.id.clone()];
+    fixture.set(unavailable);
+    wake.send(Ok(())).await.unwrap();
+
+    let incomplete = next_frame(&mut stream).await;
+    assert!(incomplete.volumes.is_empty());
+    assert_eq!(incomplete.incomplete_ids.volumes, vec![volume.id.clone()]);
+
+    fixture.set(snapshot(vec![entry], vec![volume.clone()]));
+    wake.send(Ok(())).await.unwrap();
+
+    let recovered = next_frame(&mut stream).await;
+    assert_eq!(recovered.volumes, vec![volume]);
+    assert!(recovered.incomplete_ids.volumes.is_empty());
+}
+
+#[tokio::test]
 async fn unchanged_assembled_observation_does_not_yield() {
     let entry = machine("edge", ENTRY_ID, 1);
     let volume = volume_on(ENTRY_ID, "data");

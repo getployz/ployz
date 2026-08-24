@@ -18,14 +18,14 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
+    CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, LocalMachinePhase, LocalMachineRemoved, Machine,
     MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
     MachineRemoved, MachineRpc, MachineRpcServer, MachineStorageObservation, ManagementAddress,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     Registered, RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeList, VolumeRemoved,
-    WireGuardPublicKey, op,
+    RuntimeWatchFrame, RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeInventory,
+    VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -145,6 +145,7 @@ pub(super) struct DiscoveryService {
     pub(super) stream_opens: Arc<AtomicUsize>,
     pub(super) watch_opens: Arc<AtomicUsize>,
     pub(super) list_rpc_calls: Arc<AtomicUsize>,
+    pub(super) volume_list_calls: Arc<AtomicUsize>,
     pub(super) inspect_calls: Arc<AtomicUsize>,
     pub(super) storage: MachineStorageObservation,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
@@ -153,9 +154,12 @@ pub(super) struct DiscoveryService {
     watch: Arc<WatchHub>,
     pub(super) machines: Vec<MachineObservation>,
     pub(super) listed_volumes: Arc<Mutex<BTreeMap<MachineId, Vec<DockerVolume>>>>,
+    pub(super) volume_observation_failures:
+        Arc<Mutex<BTreeMap<MachineId, Vec<VolumeObservationFailure>>>>,
     pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     pub(super) accept_volume_creates: bool,
     pub(super) existing_created_volume: Option<DockerVolume>,
+    pub(super) created_volume_verification_error: Option<RpcError>,
     pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
@@ -173,6 +177,7 @@ impl DiscoveryService {
             stream_opens: Arc::new(AtomicUsize::new(0)),
             watch_opens: Arc::new(AtomicUsize::new(0)),
             list_rpc_calls: Arc::new(AtomicUsize::new(0)),
+            volume_list_calls: Arc::new(AtomicUsize::new(0)),
             inspect_calls: Arc::new(AtomicUsize::new(0)),
             storage: MachineStorageObservation::Ready,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
@@ -181,9 +186,11 @@ impl DiscoveryService {
             watch: Arc::new(WatchHub::new()),
             machines: vec![machine('a', "one")],
             listed_volumes: Arc::new(Mutex::new(BTreeMap::new())),
+            volume_observation_failures: Arc::new(Mutex::new(BTreeMap::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             accept_volume_creates: false,
             existing_created_volume: None,
+            created_volume_verification_error: None,
             created_volumes: Arc::new(Mutex::new(Vec::new())),
             removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
@@ -474,7 +481,14 @@ impl MachineRpc for DiscoveryService {
             .existing_created_volume
             .clone()
             .unwrap_or_else(|| created_volume(machine_id, create));
-        Ok(Response::new(RpcResponse::from(volume).encode().unwrap()))
+        let report = match self.created_volume_verification_error.clone() {
+            Some(error) => CreateVolumeReport::Unverified {
+                id: volume.id,
+                error,
+            },
+            None => CreateVolumeReport::Verified { volume },
+        };
+        Ok(Response::new(RpcResponse::from(report).encode().unwrap()))
     }
 
     async fn inspect_container(
@@ -489,14 +503,22 @@ impl MachineRpc for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
+        self.volume_list_calls.fetch_add(1, Ordering::SeqCst);
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
         assert!(matches!(request.body, RpcRequestBody::ListVolumes(_)));
         if let Some(volumes) = self.listed_volumes.lock().unwrap().get(&machine_id) {
             return Ok(Response::new(
-                RpcResponse::from(VolumeList {
+                RpcResponse::from(VolumeInventory {
                     volumes: volumes.clone(),
+                    failures: self
+                        .volume_observation_failures
+                        .lock()
+                        .unwrap()
+                        .get(&machine_id)
+                        .cloned()
+                        .unwrap_or_default(),
                 })
                 .encode()
                 .unwrap(),
@@ -509,7 +531,7 @@ impl MachineRpc for DiscoveryService {
                 details: Value::Null,
             })
         } else {
-            RpcResponse::from(VolumeList {
+            RpcResponse::from(VolumeInventory {
                 volumes: vec![DockerVolume {
                     id: DockerVolumeId {
                         machine_id,
@@ -521,6 +543,7 @@ impl MachineRpc for DiscoveryService {
                         driver: "local".into(),
                     },
                 }],
+                failures: Vec::new(),
             })
         };
         Ok(Response::new(response.encode().unwrap()))
@@ -528,9 +551,33 @@ impl MachineRpc for DiscoveryService {
 
     async fn inspect_volume(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        self.inspect_calls.fetch_add(1, Ordering::SeqCst);
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::InspectVolume(inspect) = request.body else {
+            return Err(Status::invalid_argument("expected inspect_volume"));
+        };
+        let response = self
+            .listed_volumes
+            .lock()
+            .unwrap()
+            .get(&machine_id)
+            .and_then(|volumes| volumes.iter().find(|volume| volume.id.name == inspect.name))
+            .cloned()
+            .map_or_else(
+                || {
+                    RpcResponse::from(RpcError {
+                        code: RpcErrorCode::NotFound,
+                        message: format!("Docker Volume {:?} was not found", inspect.name),
+                        details: Value::Null,
+                    })
+                },
+                RpcResponse::from,
+            );
+        Ok(Response::new(response.encode().unwrap()))
     }
 
     async fn create_container(

@@ -3,15 +3,22 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    ComposePruneRefusal, ContainerKind, DependencyCondition, MachineFailure, PruneRefusal,
-    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
+    ComposePruneRefusal, ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure,
+    PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
+    VolumeObservationFailure,
 };
 
 #[test]
 fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
     let (web, snapshot) = shop_with_obsolete_debug();
     let snapshot = DeploySnapshot {
-        volume_omissions: vec![machine_id('1')],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..snapshot
     };
     let plan = preview_deploy(
@@ -115,13 +122,46 @@ fn required_container_failure_makes_the_snapshot_incomplete() {
 }
 
 #[test]
+fn required_named_volume_failure_makes_the_snapshot_incomplete() {
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            vec![VolumeObservationFailure {
+                id: DockerVolumeId {
+                    machine_id: machine_id('1'),
+                    name: app_volume("data"),
+                },
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "detail failed".into(),
+                    details: Default::default(),
+                },
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("valid Volume Snapshot fixture"),
+        ..Default::default()
+    };
+
+    assert!(!snapshot.is_observer_complete());
+}
+
+#[test]
 fn down_machine_omissions_do_not_make_the_snapshot_incomplete() {
     let mut down = machine('2', "second");
     down.membership = MembershipObservation::Down;
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), down],
         container_omissions: vec![machine_id('2')],
-        volume_omissions: vec![machine_id('2')],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('2')],
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     assert!(snapshot.is_observer_complete());

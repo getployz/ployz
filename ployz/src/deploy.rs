@@ -5,9 +5,10 @@ use std::{
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
-    DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName,
-    MachineObservation, MachineTarget, ProjectName, ProvisionedVolumeMaximumBytes,
-    QualifiedService, RpcError, ServiceName, ServiceObservation, ServiceVolumeReference,
+    DockerVolumeId, DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId,
+    MachineName, MachineObservation, MachineTarget, PartialResult, ProjectName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
+    ServiceObservation, ServiceVolumeReference, VolumeInventory, VolumeObservationFailure,
     derive_services,
 };
 use thiserror::Error;
@@ -52,19 +53,271 @@ fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     )
 }
 
+/// Flat Docker Volume evidence consumed by Deploy planning.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VolumeSnapshot {
+    observations: Vec<DockerVolume>,
+    named_failures: Vec<VolumeObservationFailure>,
+    machine_failures: Vec<MachineFailure<RpcError>>,
+    omissions: Vec<MachineId>,
+}
+
+impl VolumeSnapshot {
+    pub(crate) fn from_partial(
+        partial: PartialResult<VolumeInventory, RpcError>,
+    ) -> Result<Self, RpcError> {
+        let PartialResult {
+            successes,
+            failures: machine_failures,
+            omissions,
+        } = partial;
+        let mut observations = Vec::new();
+        let mut named_failures = Vec::new();
+        for success in successes {
+            observations.extend(success.value.volumes);
+            named_failures.extend(success.value.failures);
+        }
+        Self::try_from_parts(observations, named_failures, machine_failures, omissions).map_err(
+            |error| RpcError {
+                code: RpcErrorCode::Internal,
+                message: format!("invalid Docker Volume snapshot: {}", error.message),
+                details: error.details,
+            },
+        )
+    }
+
+    /// Build a validated complete snapshot containing only successful observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcErrorCode::InvalidArgument`] when an observation is duplicated.
+    pub fn try_from_observations(
+        observations: impl IntoIterator<Item = DockerVolume>,
+    ) -> Result<Self, RpcError> {
+        Self::try_from_parts(
+            observations.into_iter().collect(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// Build a validated snapshot from successful, failed, and omitted observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcErrorCode::InvalidArgument`] when evidence is duplicated or contradictory.
+    pub fn try_from_parts(
+        observations: Vec<DockerVolume>,
+        named_failures: Vec<VolumeObservationFailure>,
+        machine_failures: Vec<MachineFailure<RpcError>>,
+        omissions: Vec<MachineId>,
+    ) -> Result<Self, RpcError> {
+        let snapshot = Self {
+            observations,
+            named_failures,
+            machine_failures,
+            omissions,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    fn validate(&self) -> Result<(), RpcError> {
+        let invalid = |message| RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message,
+            details: serde_json::Value::Null,
+        };
+        let mut ids = BTreeSet::new();
+        for volume in &self.observations {
+            if !ids.insert(&volume.id) {
+                return Err(invalid(format!(
+                    "Docker Volume observation {:?} is repeated",
+                    volume.id
+                )));
+            }
+        }
+        for failure in &self.named_failures {
+            if !ids.insert(&failure.id) {
+                return Err(invalid(format!(
+                    "Docker Volume evidence {:?} is repeated or contradictory",
+                    failure.id
+                )));
+            }
+        }
+
+        let mut machine_gaps = BTreeSet::new();
+        for failure in &self.machine_failures {
+            if !machine_gaps.insert(failure.machine_id) {
+                return Err(invalid(format!(
+                    "Docker Volume inventory failure for Machine {} is repeated",
+                    failure.machine_id
+                )));
+            }
+        }
+        for machine_id in &self.omissions {
+            if !machine_gaps.insert(*machine_id) {
+                return Err(invalid(format!(
+                    "Docker Volume inventory gap for Machine {machine_id} is repeated or contradictory"
+                )));
+            }
+        }
+        if let Some(id) = ids
+            .into_iter()
+            .find(|id| machine_gaps.contains(&id.machine_id))
+        {
+            return Err(invalid(format!(
+                "Docker Volume evidence {id:?} contradicts its Machine inventory gap"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Successful Docker Volume observations.
+    #[must_use]
+    pub fn observations(&self) -> &[DockerVolume] {
+        &self.observations
+    }
+
+    pub(crate) fn known_ids(&self) -> impl Iterator<Item = &DockerVolumeId> {
+        self.observations
+            .iter()
+            .map(|volume| &volume.id)
+            .chain(self.named_failures.iter().map(|failure| &failure.id))
+    }
+
+    fn affects_required(&self, required: &BTreeSet<MachineId>) -> bool {
+        affects_required(&self.machine_failures, &self.omissions, required)
+            || self
+                .named_failures
+                .iter()
+                .any(|failure| required.contains(&failure.id.machine_id))
+    }
+
+    pub(crate) fn machine_gap(&self, machine_id: MachineId) -> Option<String> {
+        self.machine_failures
+            .iter()
+            .find(|failure| failure.machine_id == machine_id)
+            .map(|failure| format!("Docker Volume inventory failed: {}", failure.error.message))
+            .or_else(|| {
+                self.omissions
+                    .contains(&machine_id)
+                    .then(|| "Docker Volume inventory produced no terminal response".into())
+            })
+    }
+
+    pub(crate) fn named_gap(
+        &self,
+        mut relevant: impl FnMut(&DockerVolumeId) -> bool,
+    ) -> Option<(DockerVolumeId, String)> {
+        self.named_failures
+            .iter()
+            .find(|failure| relevant(&failure.id))
+            .map(|failure| (failure.id.clone(), failure.error.message.clone()))
+    }
+
+    fn external_gap(
+        &self,
+        names: &[DockerVolumeName],
+        machine_name: impl Fn(MachineId) -> String,
+    ) -> Option<(DockerVolumeId, String)> {
+        if let Some(failure) = self
+            .named_failures
+            .iter()
+            .find(|failure| names.contains(&failure.id.name))
+        {
+            return Some((failure.id.clone(), failure.error.message.clone()));
+        }
+        let name = names.first()?;
+        if let Some(failure) = self.machine_failures.first() {
+            return Some((
+                DockerVolumeId {
+                    machine_id: failure.machine_id,
+                    name: name.clone(),
+                },
+                format!(
+                    "Machine '{}' Docker Volume inventory failed: {}",
+                    machine_name(failure.machine_id),
+                    failure.error.message
+                ),
+            ));
+        }
+        self.omissions.first().map(|machine_id| {
+            (
+                DockerVolumeId {
+                    machine_id: *machine_id,
+                    name: name.clone(),
+                },
+                format!(
+                    "Machine '{}' Docker Volume inventory produced no terminal response",
+                    machine_name(*machine_id)
+                ),
+            )
+        })
+    }
+
+    pub(crate) fn deploy_warnings(&self) -> impl Iterator<Item = DeployWarning> + '_ {
+        self.machine_failures
+            .iter()
+            .map(|failure| DeployWarning::ObservationFailed {
+                kind: ObservationKind::Volume,
+                machine_id: failure.machine_id,
+                message: failure.error.message.clone(),
+            })
+            .chain(
+                self.omissions
+                    .iter()
+                    .map(|machine_id| DeployWarning::ObservationOmitted {
+                        kind: ObservationKind::Volume,
+                        machine_id: *machine_id,
+                    }),
+            )
+            .chain(
+                self.named_failures
+                    .iter()
+                    .map(|failure| DeployWarning::ObservationFailed {
+                        kind: ObservationKind::Volume,
+                        machine_id: failure.id.machine_id,
+                        message: format!(
+                            "Docker Volume {}: {}",
+                            failure.id.name, failure.error.message
+                        ),
+                    }),
+            )
+    }
+
+    pub(crate) fn listing_warnings(&self) -> impl Iterator<Item = String> + '_ {
+        self.machine_failures
+            .iter()
+            .map(|failure| {
+                format!(
+                    "WARNING: Machine {} failed listing volumes: {}",
+                    failure.machine_id, failure.error.message
+                )
+            })
+            .chain(self.omissions.iter().map(|machine_id| {
+                format!("WARNING: Machine {machine_id} was omitted listing volumes")
+            }))
+            .chain(self.named_failures.iter().map(|failure| {
+                format!(
+                    "WARNING: Machine {} Docker Volume {}: {}",
+                    failure.id.machine_id, failure.id.name, failure.error.message
+                )
+            }))
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
     pub containers: Vec<ContainerObservation>,
-    pub volumes: Vec<DockerVolume>,
+    /// Successful, failed, and omitted Docker Volume observations by Machine.
+    pub volume_snapshot: VolumeSnapshot,
     /// Target-specific Container listing failures from this observer's fan-out.
     pub container_failures: Vec<MachineFailure<RpcError>>,
     /// Required Container queries that produced no terminal response.
     pub container_omissions: Vec<MachineId>,
-    /// Target-specific Docker Volume listing failures from this observer's fan-out.
-    pub volume_failures: Vec<MachineFailure<RpcError>>,
-    /// Required Docker Volume queries that produced no terminal response.
-    pub volume_omissions: Vec<MachineId>,
     /// Fresh targeted bridge observations used only for capacity admission.
     /// Fresh telemetry by Machine, or `None` for snapshot paths that cannot create endpoints.
     pub capacity: Option<BTreeMap<MachineId, BridgeEndpointCapacity>>,
@@ -98,7 +351,7 @@ impl DeploySnapshot {
             &self.container_failures,
             &self.container_omissions,
             &required,
-        ) && !affects_required(&self.volume_failures, &self.volume_omissions, &required)
+        ) && !self.volume_snapshot.affects_required(&required)
     }
 }
 
@@ -335,6 +588,8 @@ pub enum PlanError {
     },
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
+    #[error("Docker Volume {id:?} is unavailable: {message}")]
+    DockerVolumeUnavailable { id: DockerVolumeId, message: String },
     #[error("external volumes not found: {}", quoted_names(.names))]
     ExternalVolumesNotFound { names: Vec<DockerVolumeName> },
     #[error("hostname {hostname} is already published by {owner}")]
@@ -409,7 +664,8 @@ pub(crate) fn reject_missing_external_volumes(
     snapshot: &DeploySnapshot,
 ) -> Result<(), PlanError> {
     let present = snapshot
-        .volumes
+        .volume_snapshot
+        .observations()
         .iter()
         .map(|volume| &volume.id.name)
         .collect::<BTreeSet<_>>();
@@ -417,6 +673,18 @@ pub(crate) fn reject_missing_external_volumes(
         .external_volume_names()
         .filter(|name| !present.contains(name))
         .collect::<Vec<_>>();
+    if let Some((id, message)) = snapshot.volume_snapshot.external_gap(&names, |machine_id| {
+        snapshot
+            .machines
+            .iter()
+            .find(|machine| machine.machine.id == machine_id)
+            .map_or_else(
+                || machine_id.to_string(),
+                |machine| machine.machine.name.to_string(),
+            )
+    }) {
+        return Err(PlanError::DockerVolumeUnavailable { id, message });
+    }
     if names.is_empty() {
         Ok(())
     } else {

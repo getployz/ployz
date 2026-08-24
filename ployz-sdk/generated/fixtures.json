@@ -194,6 +194,38 @@
       }
     }
   },
+  "create_volume_report_unverified": {
+    "error": {
+      "code": "unsupported",
+      "message": "watch is not advertised"
+    },
+    "id": {
+      "machine_id": "0123456789abcdef0123456789abcdef",
+      "name": "data"
+    },
+    "verification": "unverified"
+  },
+  "create_volume_report_verified": {
+    "verification": "verified",
+    "volume": {
+      "id": {
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "name": "data"
+      },
+      "labels": {
+        "ployz.managed": "false"
+      },
+      "options": {
+        "size": "1g"
+      },
+      "storage": {
+        "bound_bytes": 1073741824,
+        "kind": "provisioned",
+        "mountpoint": "/var/lib/ployz-volumes/data",
+        "used_bytes": 966367642
+      }
+    }
+  },
   "data_loss": {
     "DockerVolume": {
       "machine_id": "0123456789abcdef0123456789abcdef",
@@ -1486,6 +1518,40 @@
         "DockerVolume": {
           "machine_id": "0123456789abcdef0123456789abcdef",
           "name": "data"
+        }
+      }
+    ]
+  },
+  "volume_inventory": {
+    "failures": [
+      {
+        "error": {
+          "code": "unsupported",
+          "message": "watch is not advertised"
+        },
+        "id": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "unavailable"
+        }
+      }
+    ],
+    "volumes": [
+      {
+        "id": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "data"
+        },
+        "labels": {
+          "ployz.managed": "false"
+        },
+        "options": {
+          "size": "1g"
+        },
+        "storage": {
+          "bound_bytes": 1073741824,
+          "kind": "provisioned",
+          "mountpoint": "/var/lib/ployz-volumes/data",
+          "used_bytes": 966367642
         }
       }
     ]

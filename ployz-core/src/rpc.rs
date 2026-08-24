@@ -787,7 +787,8 @@ define_responses! {
     ContainerCreated(ContainerCreated) => "container_created";
     ContainerChanged(ContainerChanged) => "container_changed";
     DockerVolume(DockerVolume) => "docker_volume";
-    VolumeList(VolumeList) => "volume_list";
+    CreateVolumeReport(CreateVolumeReport) => "create_volume_report";
+    VolumeInventory(VolumeInventory) => "volume_inventory";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";

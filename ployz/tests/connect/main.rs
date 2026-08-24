@@ -272,7 +272,7 @@ async fn volume_listing_retains_successes_and_target_failures() {
     let [success] = result.successes.as_slice() else {
         panic!("expected one success: {result:?}")
     };
-    let [volume] = success.value.as_slice() else {
+    let [volume] = success.value.volumes.as_slice() else {
         panic!("expected one Volume: {success:?}")
     };
     assert_eq!(volume.id.machine_id, machine_id('a'));
@@ -374,7 +374,11 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     ];
     for (args, pointer, expected) in json_cases {
         let output = run_ployz(address, args).await;
-        assert!(output.status.success(), "{args:?}: {output:?}");
+        if args.first() == Some(&"volume") {
+            assert!(!output.status.success(), "{args:?}: {output:?}");
+        } else {
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        }
         let document: Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|error| panic!("{args:?}: {error}: {output:?}"));
         assert_eq!(
@@ -416,7 +420,11 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     ];
     for (args, expected) in human_cases {
         let output = run_ployz(address, args).await;
-        assert!(output.status.success(), "{args:?}: {output:?}");
+        if args.first() == Some(&"volume") {
+            assert!(!output.status.success(), "{args:?}: {output:?}");
+        } else {
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        }
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
             expected,
@@ -424,8 +432,110 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         );
     }
     let quiet = run_ployz(address, &["volume", "ls", "-q"]).await;
-    assert!(quiet.status.success(), "{quiet:?}");
+    assert!(!quiet.status.success(), "{quiet:?}");
     assert_eq!(quiet.stdout, b"data\n");
+    server.abort();
+}
+
+#[tokio::test]
+async fn volume_list_prints_healthy_and_unavailable_rows_then_fails() {
+    let service = DiscoveryService::new(test_description());
+    service.listed_volumes.lock().unwrap().insert(
+        machine_id('a'),
+        vec![DockerVolume {
+            id: DockerVolumeId {
+                machine_id: machine_id('a'),
+                name: DockerVolumeName::parse("healthy").unwrap(),
+            },
+            options: Default::default(),
+            labels: Default::default(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                driver: "local".into(),
+            },
+        }],
+    );
+    service.volume_observation_failures.lock().unwrap().insert(
+        machine_id('a'),
+        vec![ployz_core::VolumeObservationFailure {
+            id: DockerVolumeId {
+                machine_id: machine_id('a'),
+                name: DockerVolumeName::parse("unavailable").unwrap(),
+            },
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "inspect payload was malformed".into(),
+                details: Value::Null,
+            },
+        }],
+    );
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["volume", "ls"]).await;
+
+    assert!(!output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("healthy\tPLAIN"), "{stdout}");
+    assert!(stdout.contains("unavailable\tUNAVAILABLE"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unavailable"), "{stderr}");
+    assert!(stderr.contains("inspect payload was malformed"), "{stderr}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn volume_inspect_uses_direct_lookup_without_enumeration() {
+    let service = DiscoveryService::new(test_description());
+    service.listed_volumes.lock().unwrap().insert(
+        machine_id('a'),
+        vec![DockerVolume {
+            id: DockerVolumeId {
+                machine_id: machine_id('a'),
+                name: DockerVolumeName::parse("data").unwrap(),
+            },
+            options: Default::default(),
+            labels: Default::default(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                driver: "local".into(),
+            },
+        }],
+    );
+    let list_calls = Arc::clone(&service.volume_list_calls);
+    let inspect_calls = Arc::clone(&service.inspect_calls);
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["volume", "inspect", "data"]).await;
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(list_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(inspect_calls.load(Ordering::SeqCst), 1);
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        document.pointer("/volume/id/name").and_then(Value::as_str),
+        Some("data")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn volume_create_reports_created_but_unverified_as_failure() {
+    let mut service = DiscoveryService::new(test_description());
+    service.accept_volume_creates = true;
+    service.created_volume_verification_error = Some(RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "inspect payload was malformed".into(),
+        details: Value::Null,
+    });
+    let created = Arc::clone(&service.created_volumes);
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["volume", "create", "data", "--driver", "local"]).await;
+
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(created.lock().unwrap().len(), 1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("was created"), "{stderr}");
+    assert!(stderr.contains("could not be verified"), "{stderr}");
+    assert!(stderr.contains("inspect payload was malformed"), "{stderr}");
     server.abort();
 }
 

@@ -1,7 +1,8 @@
 use super::support::*;
 use ployz_core::{
-    DockerVolume, DockerVolumeStorageObservation, MachineStorageObservation, PreservedVolume,
-    ProvisionedVolume, ProvisionedVolumeMaximumBytes, ServiceAttempt, ServiceName,
+    DockerVolume, DockerVolumeStorageObservation, MachineFailure, MachineStorageObservation,
+    PreservedVolume, ProvisionedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError,
+    RpcErrorCode, ServiceAttempt, ServiceName, VolumeObservationFailure,
 };
 use std::{collections::BTreeMap, num::NonZeroU64};
 
@@ -29,6 +30,129 @@ fn automatic_provisioned_intent() -> DeployIntent {
     );
     intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
     intent
+}
+
+#[test]
+fn unavailable_named_volume_blocks_only_a_dependent_service() {
+    let mut dependent = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut dependent, "data");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            vec![VolumeObservationFailure {
+                id: DockerVolumeId {
+                    machine_id: machine_id('1'),
+                    name: app_volume("data"),
+                },
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "volume detail failed".into(),
+                    details: Default::default(),
+                },
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("valid Volume Snapshot fixture"),
+        ..Default::default()
+    };
+
+    let error = plan_deploy([&dependent], &snapshot, PlanOptions::default()).unwrap_err();
+    assert!(error.to_string().contains("app_data"), "{error}");
+    assert!(
+        error.to_string().contains("volume detail failed"),
+        "{error}"
+    );
+
+    let unrelated = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let preview = plan_deploy([&unrelated], &snapshot, PlanOptions::default()).unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert_eq!(
+        preview.prune_refusal,
+        Some(PruneRefusal::IncompleteSnapshot)
+    );
+}
+
+#[test]
+fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
+    let mut service = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut service, "data");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "incomplete"), machine('2', "healthy")],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![MachineFailure {
+                machine_id: machine_id('1'),
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "Docker did not answer".into(),
+                    details: Default::default(),
+                },
+            }],
+            Vec::new(),
+        )
+        .expect("valid Volume Snapshot fixture"),
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::CreateVolume {
+                machine_id: create,
+                ..
+            },
+            DeployOperation::RunContainer {
+                machine_id: run,
+                ..
+            },
+        ] if *create == machine_id('2') && *run == machine_id('2')
+    ));
+}
+
+#[test]
+fn named_volume_planning_rejects_an_only_incomplete_candidate() {
+    let mut dependent = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut dependent, "data");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "incomplete")],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        )
+        .expect("valid Volume Snapshot fixture"),
+        ..Default::default()
+    };
+
+    let error = plan_deploy([&dependent], &snapshot, PlanOptions::default()).unwrap_err();
+    assert!(error.to_string().contains("app_data"), "{error}");
+    assert!(
+        error.to_string().contains("no terminal response"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("incomplete"), "{error}");
+
+    let unrelated = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    assert!(plan_deploy([&unrelated], &snapshot, PlanOptions::default()).is_ok());
 }
 
 fn explicitly_targeted_provisioned_deploy(
@@ -60,7 +184,8 @@ fn explicitly_targeted_provisioned_deploy(
         &intent,
         &DeploySnapshot {
             machines: vec![target],
-            volumes,
+            volume_snapshot: VolumeSnapshot::try_from_observations(volumes)
+                .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),
@@ -248,7 +373,11 @@ fn automatic_provisioned_volume_does_not_move_an_existing_plain_volume() {
         &intent,
         &DeploySnapshot {
             machines: vec![pinned, other],
-            volumes: vec![observed_volume(machine_id('1'), "data")],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+                machine_id('1'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),
@@ -284,7 +413,8 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
             &intent,
             &DeploySnapshot {
                 machines: vec![pinned, other],
-                volumes: vec![existing],
+                volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing])
+                    .expect("valid Volume Snapshot fixture"),
                 ..Default::default()
             },
             IngressContext::default(),
@@ -585,7 +715,11 @@ fn already_owned_volume_names_are_not_prefixed_again() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volumes: vec![owned_volume(machine_id('1'), "data")],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
+                machine_id('1'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -626,10 +760,11 @@ fn sibling_target_volume_is_not_listed_as_preserved_on_a_partial_deploy() {
         ),
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volumes: vec![
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![
                 owned_volume(machine_id('1'), "web-data"),
                 owned_volume(machine_id('1'), "worker-data"),
-            ],
+            ])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),
@@ -649,10 +784,11 @@ fn omitted_owned_volume_is_preserved_in_plan_order() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volumes: vec![
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![
                 owned_volume(machine_id('1'), "keep-b"),
                 owned_volume(machine_id('1'), "keep-a"),
-            ],
+            ])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),

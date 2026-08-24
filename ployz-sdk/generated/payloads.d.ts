@@ -291,6 +291,21 @@ export type DockerVolume = Additive<{
   storage: DockerVolumeStorageObservation;
 }>;
 
+export type VolumeObservationFailure = Additive<{
+  id: DockerVolumeId;
+  error: RpcError;
+}>;
+
+export type VolumeInventory = Additive<{
+  volumes: DockerVolume[];
+  failures: VolumeObservationFailure[];
+}>;
+
+export type CreateVolumeReport =
+  | Additive<{ verification: "verified"; volume: DockerVolume }>
+  | Additive<{ verification: "unverified"; id: DockerVolumeId; error: RpcError }>
+  | Additive<{ verification?: string }>;
+
 export type RemoveVolumesRequest = Additive<{
   volumes: DockerVolumeId[];
   force?: boolean;

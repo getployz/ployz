@@ -536,6 +536,8 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
             },
         )
         .await
+        .unwrap()
+        .into_observation()
         .unwrap();
     let listed = runtime.list_volumes(&machine_id).await.unwrap();
     let inspected = runtime.inspect_volume(&machine_id, &name).await.unwrap();
@@ -544,7 +546,7 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
     assert_eq!(created.id, DockerVolumeId { machine_id, name });
     assert_eq!(created.driver(), "local");
     assert_eq!(created.labels, labels);
-    assert!(listed.contains(&created));
+    assert!(listed.volumes.contains(&created));
     assert_eq!(inspected, created);
 }
 
@@ -592,6 +594,8 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
             },
         )
         .await
+        .unwrap()
+        .into_observation()
         .unwrap();
     let spec: ResolvedServiceSpec = serde_json::from_value(json!({
         "service_id": ServiceId::random(),

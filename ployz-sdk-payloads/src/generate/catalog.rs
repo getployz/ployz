@@ -487,6 +487,37 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "VolumeObservationFailure",
+        Shape::Additive {
+            params: "",
+            fields: &[("id", "DockerVolumeId"), ("error", "RpcError")],
+        },
+    ),
+    (
+        "VolumeInventory",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("volumes", "DockerVolume[]"),
+                ("failures", "VolumeObservationFailure[]"),
+            ],
+        },
+    ),
+    (
+        "CreateVolumeReport",
+        Shape::InternallyTagged {
+            tag: "verification",
+            params: "",
+            variants: &[
+                ("verified", &[("volume", "DockerVolume")]),
+                (
+                    "unverified",
+                    &[("id", "DockerVolumeId"), ("error", "RpcError")],
+                ),
+            ],
+        },
+    ),
+    (
         "RemoveVolumesRequest",
         Shape::Additive {
             params: "",

@@ -355,13 +355,15 @@ async fn replicated_volumes_round_trip_incomplete_additive_and_machine_removal()
         machine_id: gone.id,
         name: DockerVolumeName::parse("incomplete").unwrap(),
     };
-    running
-        .store()
-        .api()
-        .execute([Statement::new(
-            "INSERT INTO volumes (machine_id, name) VALUES (?, ?)",
-            [json!(&incomplete_id.machine_id), json!(&incomplete_id.name)],
-        )])
+    store
+        .machine_publication()
+        .await
+        .apply_volume_rows(
+            &incomplete_id.machine_id,
+            &[],
+            &[],
+            std::slice::from_ref(&incomplete_id.name),
+        )
         .await
         .unwrap();
 

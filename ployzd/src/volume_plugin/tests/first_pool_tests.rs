@@ -36,6 +36,22 @@ async fn first_create_builds_the_pool_and_bounded_volume_in_one_request() {
 }
 
 #[tokio::test]
+async fn first_create_converges_on_usable_pool_capacity() {
+    let test = TestDir::new();
+    fs::write(test.0.join("pool-overhead"), "268435456\n").unwrap();
+
+    assert_eq!(
+        create_first_volume(&test, 4096, "1g").await,
+        json!({"Err":""})
+    );
+
+    assert_eq!(
+        fs::read_to_string(test.0.join("allocated")).unwrap(),
+        "3221225472\n"
+    );
+}
+
+#[tokio::test]
 async fn additional_create_grows_the_pool_before_committing_its_bound() {
     let test = TestDir::new();
     let (socket, server) = start_pool_with_data(&test).await;
@@ -70,7 +86,7 @@ async fn additional_create_grows_the_pool_before_committing_its_bound() {
 }
 
 #[tokio::test]
-async fn growth_requires_zfs_to_report_commitment_plus_headroom() {
+async fn growth_retries_after_an_undersized_usable_capacity_observation() {
     let test = TestDir::new();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("underclaim-growth"), "").unwrap();
@@ -83,9 +99,128 @@ async fn growth_requires_zfs_to_report_commitment_plus_headroom() {
     .await;
     server.abort();
 
-    let message = error(&response);
-    assert!(message.contains("4294967296"), "{message}");
+    assert_eq!(response, json!({"Err":""}));
+    assert!(test.0.join("other").exists());
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(log.matches("zpool online -e ployz ").count(), 2);
+}
+
+#[tokio::test]
+async fn growth_converges_across_multiple_usable_capacity_increases() {
+    let test = TestDir::new();
+    let (socket, server) = start_pool_with_data(&test).await;
+    fs::write(test.0.join("slow-growth"), "").unwrap();
+
+    assert_eq!(
+        post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"other","Opts":{"size":"3g"}}),
+        )
+        .await,
+        json!({"Err":""})
+    );
+    server.abort();
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(log.matches("zpool online -e ployz ").count(), 3);
+    assert_eq!(
+        fs::read_to_string(test.0.join("allocated")).unwrap(),
+        "5368709120\n"
+    );
+    assert!(test.0.join("other").exists());
+}
+
+#[tokio::test]
+async fn growth_stops_when_usable_capacity_does_not_increase() {
+    let test = TestDir::new();
+    let (socket, server) = start_pool_with_data(&test).await;
+    fs::write(test.0.join("no-growth"), "").unwrap();
+
+    let response = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"other","Opts":{"size":"2g"}}),
+    )
+    .await;
+    server.abort();
+
+    assert!(error(&response).contains("made no usable-capacity progress"));
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(log.matches("zpool online -e ployz ").count(), 1);
     assert!(!test.0.join("other").exists());
+}
+
+#[tokio::test]
+async fn growth_overflow_is_refused_before_mutation() {
+    let test = TestDir::new();
+    let (socket, server) = start_pool_with_data(&test).await;
+    fs::write(test.0.join("pool-overhead"), "1\n").unwrap();
+    let commands_before = fs::read_to_string(test.0.join("commands")).unwrap();
+
+    let response = post(
+        &socket,
+        "/VolumeDriver.Create",
+        // The largest request whose existing 1 GiB commitment plus headroom fits in u64.
+        json!({"Name":"other","Opts":{"size":"16769767338662214190b"}}),
+    )
+    .await;
+    server.abort();
+
+    assert!(error(&response).contains("backing capacity overflowed u64"));
+    assert_eq!(
+        fs::read_to_string(test.0.join("allocated")).unwrap(),
+        "2147483648\n"
+    );
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(
+        log.matches("fallocate -l ").count(),
+        commands_before.matches("fallocate -l ").count()
+    );
+    assert_eq!(
+        log.matches("zpool online -e").count(),
+        commands_before.matches("zpool online -e").count()
+    );
+    assert!(!test.0.join("other").exists());
+}
+
+#[tokio::test]
+async fn four_gib_backing_with_three_and_three_quarter_gib_usable_converges() {
+    let test = TestDir::new();
+    let socket = test.0.join("plugin.sock");
+    let server = tokio::spawn(serve(
+        UnixListener::bind(&socket).unwrap(),
+        fake_first_pool(&test.0, 4096),
+    ));
+    assert_eq!(
+        post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"2g"}}),
+        )
+        .await,
+        json!({"Err":""})
+    );
+    fs::write(test.0.join("allocated"), "4294967296\n").unwrap();
+    fs::write(test.0.join("claimed"), "4294967296\n").unwrap();
+    fs::write(test.0.join("pool-overhead"), "268435456\n").unwrap();
+
+    assert_eq!(
+        post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"other","Opts":{"size":"1g"}}),
+        )
+        .await,
+        json!({"Err":""})
+    );
+    server.abort();
+
+    assert_eq!(
+        fs::read_to_string(test.0.join("allocated")).unwrap(),
+        "5368709120\n"
+    );
+    assert!(test.0.join("other").exists());
 }
 
 #[tokio::test]
@@ -635,6 +770,9 @@ fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage 
     let fail_pool = directory.join("fail-pool");
     let fail_online_once = directory.join("fail-online-once");
     let underclaim_growth = directory.join("underclaim-growth");
+    let slow_growth = directory.join("slow-growth");
+    let no_growth = directory.join("no-growth");
+    let pool_overhead = directory.join("pool-overhead");
     let fail_volume = directory.join("fail-volume");
     let importable = directory.join("importable");
     let fail_import = directory.join("fail-import");
@@ -687,7 +825,9 @@ case "$name" in
           if [ -e '{pool}' ]; then
             capacity='{allocated}'
             [ ! -e '{claimed}' ] || capacity='{claimed}'
-            printf 'ployz\t%s\t0\t%s\tONLINE\toff\n' "$(cat "$capacity")" "$(cat "$capacity")"
+            capacity=$(cat "$capacity")
+            [ ! -e '{pool_overhead}' ] || capacity=$((capacity - $(cat '{pool_overhead}')))
+            printf 'ployz\t%s\t0\t%s\tONLINE\toff\n' "$capacity" "$capacity"
           fi
         fi
         ;;
@@ -699,7 +839,16 @@ case "$name" in
           echo 'online interrupted' >&2
           exit 2
         fi
-        if [ -e '{underclaim_growth}' ]; then
+        if [ -e '{no_growth}' ]; then
+          :
+        elif [ -e '{slow_growth}' ]; then
+          current=$(cat '{claimed}')
+          limit=$(cat '{allocated}')
+          next=$((current + 1073741824))
+          [ "$next" -le "$limit" ] || next=$limit
+          printf '%s\n' "$next" > '{claimed}'
+        elif [ -e '{underclaim_growth}' ]; then
+          rm '{underclaim_growth}'
           printf '3221225472\n' > '{claimed}'
         else
           cp '{allocated}' '{claimed}'
@@ -751,6 +900,9 @@ esac
         fail_pool = fail_pool.display(),
         fail_online_once = fail_online_once.display(),
         underclaim_growth = underclaim_growth.display(),
+        slow_growth = slow_growth.display(),
+        no_growth = no_growth.display(),
+        pool_overhead = pool_overhead.display(),
         fail_volume = fail_volume.display(),
         importable = importable.display(),
         fail_import = fail_import.display(),

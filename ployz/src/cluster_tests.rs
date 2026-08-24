@@ -73,7 +73,16 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     let volumes = PartialResult {
         successes: vec![MachineSuccess {
             machine_id: machine_id('a'),
-            value: vec![volume.clone()],
+            value: VolumeInventory {
+                volumes: vec![volume.clone()],
+                failures: vec![ployz_core::VolumeObservationFailure {
+                    id: ployz_core::DockerVolumeId {
+                        machine_id: machine_id('a'),
+                        name: DockerVolumeName::parse("unavailable").unwrap(),
+                    },
+                    error: unavailable("volume detail failed"),
+                }],
+            },
         }],
         failures: vec![MachineFailure {
             machine_id: machine_id('b'),
@@ -83,18 +92,154 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     };
     let expected_container_failures = containers.failures.clone();
     let expected_container_omissions = containers.omissions.clone();
-    let expected_volume_failures = volumes.failures.clone();
-    let expected_volume_omissions = volumes.omissions.clone();
-    let snapshot = snapshot_from_partial(machines.clone(), containers, volumes, BTreeMap::new());
+    let snapshot =
+        snapshot_from_partial(machines.clone(), containers, volumes, BTreeMap::new()).unwrap();
 
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
-    assert_eq!(snapshot.volumes, [volume]);
+    assert_eq!(snapshot.volume_snapshot.observations(), [volume]);
+    assert!(snapshot.volume_snapshot.listing_warnings().any(|message| {
+        message.contains(&machine_id('a').to_string())
+            && message.contains("Docker Volume unavailable")
+    }));
     assert_eq!(snapshot.container_failures, expected_container_failures);
     assert_eq!(snapshot.container_omissions, expected_container_omissions);
-    assert_eq!(snapshot.volume_failures, expected_volume_failures);
-    assert_eq!(snapshot.volume_omissions, expected_volume_omissions);
+    assert_eq!(
+        snapshot
+            .volume_snapshot
+            .machine_gap(machine_id('b'))
+            .as_deref(),
+        Some("Docker Volume inventory failed: volume listing failed")
+    );
     assert!(!snapshot.is_observer_complete());
+}
+
+#[test]
+fn targeted_volume_inventory_rejects_unsafe_routing_evidence() {
+    let target = machine_id('a');
+    let failure = |machine, name: &str| ployz_core::VolumeObservationFailure {
+        id: DockerVolumeId {
+            machine_id: machine_id(machine),
+            name: DockerVolumeName::parse(name).unwrap(),
+        },
+        error: unavailable("inspect failed"),
+    };
+
+    for inventory in [
+        VolumeInventory {
+            volumes: vec![docker_volume('b', "wrong-machine")],
+            failures: Vec::new(),
+        },
+        VolumeInventory {
+            volumes: Vec::new(),
+            failures: vec![failure('b', "wrong-machine")],
+        },
+        VolumeInventory {
+            volumes: vec![
+                docker_volume('a', "duplicate"),
+                docker_volume('a', "duplicate"),
+            ],
+            failures: Vec::new(),
+        },
+        VolumeInventory {
+            volumes: vec![docker_volume('a', "contradiction")],
+            failures: vec![failure('a', "contradiction")],
+        },
+    ] {
+        assert_eq!(
+            validate_volume_inventory(target, inventory)
+                .expect_err("unsafe inventory is rejected before MachineSuccess")
+                .code,
+            RpcErrorCode::Internal
+        );
+    }
+
+    assert!(
+        validate_volume_inventory(
+            target,
+            VolumeInventory {
+                volumes: vec![docker_volume('a', "observed")],
+                failures: vec![failure('a', "unavailable")],
+            },
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn volume_snapshot_rejects_duplicate_and_contradictory_evidence() {
+    let volume = docker_volume('a', "data");
+    let named_failure = || ployz_core::VolumeObservationFailure {
+        id: volume.id.clone(),
+        error: unavailable("inspect failed"),
+    };
+    let machine_failure = || MachineFailure {
+        machine_id: machine_id('a'),
+        error: unavailable("list failed"),
+    };
+
+    for result in [
+        VolumeSnapshot::try_from_observations(vec![volume.clone(), volume.clone()]),
+        VolumeSnapshot::try_from_parts(
+            vec![volume.clone()],
+            vec![named_failure()],
+            Vec::new(),
+            Vec::new(),
+        ),
+        VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            vec![named_failure(), named_failure()],
+            Vec::new(),
+            Vec::new(),
+        ),
+        VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![machine_failure(), machine_failure()],
+            Vec::new(),
+        ),
+        VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![machine_failure()],
+            vec![machine_id('a')],
+        ),
+        VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('a'), machine_id('a')],
+        ),
+        VolumeSnapshot::try_from_parts(
+            vec![volume.clone()],
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('a')],
+        ),
+    ] {
+        assert_eq!(
+            result
+                .expect_err("invalid Volume Snapshot evidence is rejected")
+                .code,
+            RpcErrorCode::InvalidArgument
+        );
+    }
+
+    let partial = PartialResult {
+        successes: vec![MachineSuccess {
+            machine_id: machine_id('a'),
+            value: VolumeInventory {
+                volumes: vec![volume],
+                failures: Vec::new(),
+            },
+        }],
+        failures: vec![machine_failure()],
+        omissions: Vec::new(),
+    };
+    assert_eq!(
+        VolumeSnapshot::from_partial(partial).unwrap_err().code,
+        RpcErrorCode::Internal
+    );
 }
 
 fn machine(hex: char) -> MachineObservation {

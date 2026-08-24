@@ -116,7 +116,9 @@ async fn volume_publication_waits_for_removal() {
     let second = tokio::spawn(async move {
         started.send(()).unwrap();
         let publication = clone.machine_publication().await;
-        publication.apply_volume_rows(&machine_id, &[], &[]).await
+        publication
+            .apply_volume_rows(&machine_id, &[], &[], &[])
+            .await
     });
     waiting.await.unwrap();
     tokio::task::yield_now().await;

@@ -4,9 +4,10 @@ use bollard::{
     models::{Volume, VolumeCreateRequest},
     query_parameters::RemoveVolumeOptionsBuilder,
 };
+use futures_util::{StreamExt, stream};
 use ployz_core::{
-    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, MachineId,
+    CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, MachineId, VolumeInventory, VolumeObservationFailure,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -14,17 +15,30 @@ use serde_json::Value;
 use super::{ContainerRuntime, Error, some_map};
 use crate::VolumePluginStatus;
 
+const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
+
 impl ContainerRuntime {
+    /// Create a Docker Volume and verify its observable state when possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Docker rejects the create request. A successful create whose
+    /// verification fails is returned as [`CreateVolumeReport::Unverified`].
     pub async fn create_volume(
         &self,
         machine_id: &MachineId,
         request: CreateVolumeRequest,
-    ) -> Result<DockerVolume, Error> {
-        let volume = decode_volume(
+    ) -> Result<CreateVolumeReport, Error> {
+        let docker_name = request.name.to_string();
+        let id = DockerVolumeId {
+            machine_id: *machine_id,
+            name: request.name,
+        };
+        decode_volume(
             self.docker
                 .client
                 .create_volume(VolumeCreateRequest {
-                    name: Some(request.name.to_string()),
+                    name: Some(docker_name),
                     driver: Some(request.driver),
                     driver_opts: some_map(request.options),
                     labels: some_map(request.labels),
@@ -32,43 +46,69 @@ impl ContainerRuntime {
                 })
                 .await,
         )?;
-        docker_volume(machine_id, volume)
+        Ok(match self.inspect_volume(machine_id, &id.name).await {
+            Ok(volume) => CreateVolumeReport::Verified { volume },
+            Err(error) => CreateVolumeReport::Unverified {
+                id,
+                error: (&error).into(),
+            },
+        })
     }
 
-    pub async fn list_volumes(&self, machine_id: &MachineId) -> Result<Vec<DockerVolume>, Error> {
-        decode_volume_list(
+    /// List Docker Volumes, retaining individual detail failures alongside healthy observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Docker rejects the collection request or listed inventory is invalid.
+    pub async fn list_volumes(&self, machine_id: &MachineId) -> Result<VolumeInventory, Error> {
+        let listed = decode_volume_list(
             self.docker
                 .client
                 .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
                 .await,
-        )?
-        .into_iter()
-        .map(|volume| docker_volume(machine_id, volume))
-        .collect()
+        )?;
+        let mut inventory = VolumeInventory::default();
+        let mut observations = stream::iter(listed.into_iter().map(|volume| async move {
+            let id = docker_volume_id(machine_id, &volume.name)?;
+            let observation = if volume.driver == "ployz" {
+                self.inspect_volume(machine_id, &id.name).await
+            } else {
+                docker_volume(machine_id, volume)
+            };
+            Ok::<_, Error>((id, observation))
+        }))
+        .buffered(VOLUME_INSPECTION_CONCURRENCY);
+        while let Some(observation) = observations.next().await {
+            let (id, observation) = observation?;
+            match observation {
+                Ok(volume) => inventory.volumes.push(volume),
+                Err(error) => inventory.failures.push(VolumeObservationFailure {
+                    id,
+                    error: (&error).into(),
+                }),
+            }
+        }
+        Ok(inventory)
     }
 
-    pub(super) async fn named_volumes(
-        &self,
-        machine_id: &MachineId,
-    ) -> Result<Vec<DockerVolume>, Error> {
-        decode_volume_list(
-            self.docker
-                .client
-                .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
-                .await,
-        )?
-        .into_iter()
-        .filter(|volume| !volume.name.is_empty())
-        .map(|volume| docker_volume(machine_id, volume))
-        .collect()
-    }
-
+    /// Observe one named Docker Volume directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Docker inspection or decoding fails, or when Docker
+    /// returns a different Volume name than requested.
     pub async fn inspect_volume(
         &self,
         machine_id: &MachineId,
         name: &DockerVolumeName,
     ) -> Result<DockerVolume, Error> {
         let volume = decode_volume(self.docker.client.inspect_volume(name.as_str()).await)?;
+        if volume.name != name.as_str() {
+            return Err(Error::UnexpectedVolumeName {
+                requested: name.clone(),
+                actual: volume.name,
+            });
+        }
         docker_volume(machine_id, volume)
     }
 
@@ -169,22 +209,328 @@ fn docker_volume(machine_id: &MachineId, volume: RawVolume) -> Result<DockerVolu
         }
     };
     Ok(DockerVolume {
-        id: DockerVolumeId {
-            machine_id: *machine_id,
-            name: DockerVolumeName::parse(volume.name).map_err(|source| Error::InvalidValue {
-                field: "Docker Volume name",
-                source,
-            })?,
-        },
+        id: docker_volume_id(machine_id, &volume.name)?,
         options: volume.options.unwrap_or_default().into_iter().collect(),
         labels: volume.labels.unwrap_or_default().into_iter().collect(),
         storage,
     })
 }
 
+fn docker_volume_id(machine_id: &MachineId, name: &str) -> Result<DockerVolumeId, Error> {
+    Ok(DockerVolumeId {
+        machine_id: *machine_id,
+        name: DockerVolumeName::parse(name).map_err(|source| Error::InvalidValue {
+            field: "Docker Volume name",
+            source,
+        })?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use axum::{
+        Json, Router,
+        body::Bytes,
+        extract::State,
+        http::{Method, StatusCode, Uri},
+        response::{IntoResponse, Response},
+        routing::any,
+    };
+    use bollard::Docker;
+
     use super::*;
+    use crate::docker::{LocalDocker, MachineSpecStore};
+
+    #[derive(Clone, Default)]
+    struct FakeDocker {
+        requests: Arc<Mutex<Vec<(Method, String)>>>,
+        reject_list: Arc<AtomicBool>,
+    }
+
+    async fn fake_docker(
+        State(fake): State<FakeDocker>,
+        method: Method,
+        uri: Uri,
+        body: Bytes,
+    ) -> Response {
+        let path = uri.path().to_owned();
+        fake.requests
+            .lock()
+            .unwrap()
+            .push((method.clone(), path.clone()));
+        let response = if method == Method::GET
+            && path.ends_with("/volumes")
+            && fake.reject_list.load(Ordering::Relaxed)
+        {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"message":"collection unavailable"}),
+            )
+        } else if method == Method::GET && path.ends_with("/volumes") {
+            (
+                StatusCode::OK,
+                serde_json::json!({"Volumes":[
+                    {"Name":"plain","Driver":"local","Mountpoint":"/var/lib/docker/volumes/plain/_data"},
+                    {"Name":"healthy","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/healthy"},
+                    {"Name":"malformed","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/malformed"},
+                    {"Name":"unavailable","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/unavailable"},
+                    {"Name":"mismatched","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/mismatched"}
+                ]}),
+            )
+        } else if method == Method::GET && path.ends_with("/volumes/healthy") {
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "Name":"healthy",
+                    "Driver":"ployz",
+                    "Mountpoint":"/var/lib/ployz-volumes/healthy",
+                    "Status":{"bound_bytes":1073741824,"used_bytes":4096}
+                }),
+            )
+        } else if method == Method::GET && path.ends_with("/volumes/malformed") {
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "Name":"malformed",
+                    "Driver":"ployz",
+                    "Mountpoint":"/var/lib/ployz-volumes/malformed",
+                    "Status":{"bound_bytes":"not-a-number","used_bytes":4096}
+                }),
+            )
+        } else if method == Method::GET && path.ends_with("/volumes/unavailable") {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"message":"detail unavailable"}),
+            )
+        } else if method == Method::GET && path.ends_with("/volumes/mismatched") {
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "Name":"other",
+                    "Driver":"ployz",
+                    "Mountpoint":"/var/lib/ployz-volumes/other",
+                    "Status":{"bound_bytes":1073741824,"used_bytes":4096}
+                }),
+            )
+        } else if method == Method::POST
+            && path.ends_with("/volumes/create")
+            && String::from_utf8_lossy(&body).contains("rejected")
+        {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"message":"create rejected"}),
+            )
+        } else if method == Method::POST && path.ends_with("/volumes/create") {
+            (
+                StatusCode::CREATED,
+                serde_json::json!({
+                    "Name":"unavailable",
+                    "Driver":"ployz",
+                    "Mountpoint":"/var/lib/ployz-volumes/unavailable"
+                }),
+            )
+        } else {
+            (
+                StatusCode::NOT_FOUND,
+                serde_json::json!({"message":format!("unhandled {method} {path}")}),
+            )
+        };
+        (response.0, Json(response.1)).into_response()
+    }
+
+    async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let fake = FakeDocker::default();
+        tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/{*path}", any(fake_docker))
+                    .with_state(fake.clone()),
+            )
+            .into_future(),
+        );
+        let docker = Docker::connect_with_http(
+            &format!("http://{address}"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .unwrap();
+        let specs = MachineSpecStore::open(std::env::temp_dir().join(format!(
+            "ployzd-volume-observation-{}.db",
+            MachineId::random()
+        )))
+        .await
+        .unwrap();
+        (
+            ContainerRuntime::new(LocalDocker::from_client(docker), specs),
+            fake,
+        )
+    }
+
+    #[tokio::test]
+    async fn inventory_reads_provisioned_details_and_keeps_healthy_siblings() {
+        let (runtime, fake) = fake_runtime().await;
+        let machine_id = MachineId::random();
+
+        let inventory = runtime.list_volumes(&machine_id).await.unwrap();
+
+        assert_eq!(
+            inventory
+                .volumes
+                .iter()
+                .map(|volume| volume.id.name.as_str())
+                .collect::<Vec<_>>(),
+            ["plain", "healthy"]
+        );
+        assert_eq!(
+            inventory
+                .failures
+                .iter()
+                .map(|failure| failure.id.name.as_str())
+                .collect::<Vec<_>>(),
+            ["malformed", "unavailable", "mismatched"]
+        );
+        let requests = fake.requests.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|(method, path)| method == Method::GET && path.ends_with("/volumes/healthy"))
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|(method, path)| method == Method::GET && path.ends_with("/volumes/plain"))
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_lookup_does_not_enumerate_unrelated_volumes() {
+        let (runtime, fake) = fake_runtime().await;
+        let machine_id = MachineId::random();
+
+        let volume = runtime
+            .inspect_volume(&machine_id, &DockerVolumeName::parse("healthy").unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(volume.id.name.as_str(), "healthy");
+        let requests = fake.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests.first().is_some_and(
+            |(method, path)| method == Method::GET && path.ends_with("/volumes/healthy")
+        ));
+    }
+
+    #[tokio::test]
+    async fn inspect_rejects_a_mismatched_volume_identity() {
+        let (runtime, _) = fake_runtime().await;
+        let machine_id = MachineId::random();
+
+        let error = runtime
+            .inspect_volume(&machine_id, &DockerVolumeName::parse("mismatched").unwrap())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::UnexpectedVolumeName { requested, actual }
+                if requested.as_str() == "mismatched" && actual == "other"
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_reports_a_mismatched_detail_under_the_requested_name() {
+        let (runtime, _) = fake_runtime().await;
+        let machine_id = MachineId::random();
+
+        let inventory = runtime.list_volumes(&machine_id).await.unwrap();
+
+        let failure = inventory
+            .failures
+            .iter()
+            .find(|failure| failure.id.name.as_str() == "mismatched")
+            .expect("mismatched detail is retained as a named failure");
+        assert_eq!(failure.id.machine_id, machine_id);
+        assert!(failure.error.message.contains("returned Volume 'other'"));
+    }
+
+    #[tokio::test]
+    async fn list_returns_a_top_level_collection_error() {
+        let (runtime, fake) = fake_runtime().await;
+        fake.reject_list.store(true, Ordering::Relaxed);
+
+        let error = runtime
+            .list_volumes(&MachineId::random())
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("collection unavailable"));
+    }
+
+    #[tokio::test]
+    async fn create_reports_mutation_success_separately_from_failed_verification() {
+        let (runtime, fake) = fake_runtime().await;
+        let machine_id = MachineId::random();
+
+        let report = runtime
+            .create_volume(
+                &machine_id,
+                CreateVolumeRequest {
+                    name: DockerVolumeName::parse("unavailable").unwrap(),
+                    driver: "ployz".into(),
+                    options: Default::default(),
+                    labels: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let CreateVolumeReport::Unverified { id, error } = report else {
+            panic!("expected created-but-unverified report")
+        };
+        assert_eq!(id.machine_id, machine_id);
+        assert_eq!(id.name.as_str(), "unavailable");
+        assert!(error.message.contains("detail unavailable"), "{error}");
+        let requests = fake.requests.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|(method, path)| method == Method::POST && path.ends_with("/volumes/create"))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|(method, path)| method == Method::GET
+                    && path.ends_with("/volumes/unavailable"))
+        );
+    }
+
+    #[tokio::test]
+    async fn create_returns_docker_rejection_as_an_error() {
+        let (runtime, _) = fake_runtime().await;
+
+        let error = runtime
+            .create_volume(
+                &MachineId::random(),
+                CreateVolumeRequest {
+                    name: DockerVolumeName::parse("rejected").unwrap(),
+                    driver: "ployz".into(),
+                    options: Default::default(),
+                    labels: Default::default(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("create rejected"));
+    }
 
     #[test]
     fn docker_volume_preserves_provisioned_usage_at_alert_threshold() {

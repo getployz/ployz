@@ -202,6 +202,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     assert!(
         !first_success
             .value
+            .volumes
             .iter()
             .any(|volume| volume.id.name == missing)
     );
@@ -254,6 +255,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     assert!(
         success
             .value
+            .volumes
             .iter()
             .any(|volume| volume.id.name.as_str() == "reachable")
     );
@@ -285,6 +287,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     assert!(
         !success
             .value
+            .volumes
             .iter()
             .any(|volume| volume.id.name.as_str() == "reachable")
     );

@@ -427,7 +427,11 @@ fn incompatible_volume_excludes_only_its_machine() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
-            volumes: vec![observed_volume(machine_id('1'), "data")],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+                machine_id('1'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -464,7 +468,11 @@ fn multi_replica_named_volume_replacement_never_overlaps_requested_replicas() {
                 container('c', '1', &current, &current_service_id),
                 container('d', '1', &current, &current_service_id),
             ],
-            volumes: vec![observed_volume(machine_id('1'), "data")],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+                machine_id('1'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),

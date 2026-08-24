@@ -26,7 +26,7 @@ use ployz_core::{
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
     ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -81,7 +81,8 @@ fn response_kinds_match_the_frozen_wire_contract() {
         (ResponseKind::ContainerCreated, "container_created"),
         (ResponseKind::ContainerChanged, "container_changed"),
         (ResponseKind::DockerVolume, "docker_volume"),
-        (ResponseKind::VolumeList, "volume_list"),
+        (ResponseKind::CreateVolumeReport, "create_volume_report"),
+        (ResponseKind::VolumeInventory, "volume_inventory"),
         (ResponseKind::VolumeRemoved, "volume_removed"),
         (ResponseKind::MachineImages, "machine_images"),
         (ResponseKind::ImageIngestOpened, "image_ingest_opened"),
@@ -1215,8 +1216,8 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     use std::collections::BTreeMap;
 
     use ployz_core::{
-        CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName, InspectVolumeRequest,
-        ListVolumesRequest, RemoveVolumeRequest,
+        CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
+        InspectVolumeRequest, ListVolumesRequest, RemoveVolumeRequest, VolumeInventory,
     };
 
     assert!(DockerVolumeName::parse("").is_err());
@@ -1281,11 +1282,15 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
             driver: "local".into(),
         },
     };
-    let volume_response = RpcResponse::from(volume.clone());
-    assert_eq!(volume_response.kind(), ResponseKind::DockerVolume);
+    let volume_response = RpcResponse::from(CreateVolumeReport::Verified {
+        volume: volume.clone(),
+    });
+    assert_eq!(volume_response.kind(), ResponseKind::CreateVolumeReport);
     assert_eq!(
         volume_response.decode::<op::CreateVolume>().unwrap(),
-        volume
+        CreateVolumeReport::Verified {
+            volume: volume.clone()
+        }
     );
     assert_eq!(
         RpcResponse::from(volume.clone())
@@ -1294,8 +1299,9 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         volume
     );
     assert_eq!(
-        RpcResponse::from(VolumeList {
-            volumes: vec![volume.clone()]
+        RpcResponse::from(VolumeInventory {
+            volumes: vec![volume.clone()],
+            failures: Vec::new(),
         })
         .decode::<op::ListVolumes>()
         .unwrap()

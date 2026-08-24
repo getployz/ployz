@@ -7,7 +7,7 @@ pub(super) use std::{
 pub(super) use ployz::deploy::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
     EliminatingConstraints, IngressContext, PlanError, PlanOptions, ReplacementOperation,
-    ServiceAttempt, compare_specs, preview_deploy,
+    ServiceAttempt, VolumeSnapshot, compare_specs, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(

@@ -35,6 +35,7 @@ pub(crate) const STEAL_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updat
 pub(crate) const AGE_ALLOCATOR: &str =
     "UPDATE cluster SET updated_at = datetime('now', '-5 seconds') WHERE key = 'allocator'";
 pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
+const INCOMPLETE_JSON_DOCUMENT: &str = "{}";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AllocatorRow {
@@ -140,6 +141,7 @@ impl MachinePublicationGuard<'_> {
         machine_id: &MachineId,
         deletions: &[DockerVolumeName],
         upserts: &[DockerVolume],
+        incomplete: &[DockerVolumeName],
     ) -> Result<(), Error> {
         if upserts
             .iter()
@@ -158,6 +160,9 @@ impl MachinePublicationGuard<'_> {
                 )
             })
             .collect::<Vec<_>>();
+        for name in incomplete {
+            statements.push(volume_incomplete(machine_id, name));
+        }
         for volume in upserts {
             statements.push(volume_upsert(volume)?);
         }
@@ -502,14 +507,19 @@ impl ReplicatedStore {
                 [json!(machine_id)],
             ))
             .await?;
-        let mut snapshot = LocalVolumeSnapshot::default();
+        let mut names = Vec::new();
+        let mut observations = Vec::new();
         for [name, encoded] in query.rows(["name", "volume"])? {
             let name = DockerVolumeName::parse(text(&name, "Docker Volume name")?)?;
             let observation = decode_json_document(text(&encoded, "replicated volume JSON")?)?;
-            snapshot.inventory.insert(name.clone());
+            names.push(name);
             if let Some(observation) = observation {
-                snapshot.observations.insert(name, observation);
+                observations.push(observation);
             }
+        }
+        let mut snapshot = LocalVolumeSnapshot::from_inventory(names);
+        for observation in observations {
+            snapshot.observed(observation);
         }
         Ok(snapshot)
     }
@@ -798,14 +808,28 @@ impl LocalContainerSnapshot {
 
 #[derive(Default)]
 pub(crate) struct LocalVolumeSnapshot {
-    pub(crate) inventory: BTreeSet<DockerVolumeName>,
-    pub(crate) observations: BTreeMap<DockerVolumeName, DockerVolume>,
+    volumes: BTreeMap<DockerVolumeName, Option<DockerVolume>>,
 }
 
 impl LocalVolumeSnapshot {
+    pub(crate) fn from_inventory(names: impl IntoIterator<Item = DockerVolumeName>) -> Self {
+        Self {
+            volumes: names.into_iter().map(|name| (name, None)).collect(),
+        }
+    }
+
     pub(crate) fn observed(&mut self, volume: DockerVolume) {
-        self.inventory.insert(volume.id.name.clone());
-        self.observations.insert(volume.id.name.clone(), volume);
+        self.volumes.insert(volume.id.name.clone(), Some(volume));
+    }
+
+    pub(crate) fn get(&self, name: &DockerVolumeName) -> Option<Option<&DockerVolume>> {
+        self.volumes.get(name).map(Option::as_ref)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&DockerVolumeName, Option<&DockerVolume>)> {
+        self.volumes
+            .iter()
+            .map(|(name, volume)| (name, volume.as_ref()))
     }
 }
 
@@ -829,6 +853,17 @@ fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
             json!(serde_json::to_string(volume)?),
         ],
     ))
+}
+
+fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Statement {
+    Statement::new(
+        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
+        [
+            json!(machine_id),
+            json!(name),
+            json!(INCOMPLETE_JSON_DOCUMENT),
+        ],
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -859,7 +894,7 @@ impl RuntimeWatchChanges {
 }
 
 fn is_incomplete_document(encoded: &str) -> bool {
-    encoded.is_empty() || encoded == "{}"
+    encoded == INCOMPLETE_JSON_DOCUMENT
 }
 
 fn decode_json_document<T: DeserializeOwned>(encoded: &str) -> Result<Option<T>, Error> {
