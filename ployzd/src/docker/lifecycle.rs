@@ -437,7 +437,7 @@ async fn preflight_named_volumes(docker: &Docker, mounts: &[Mount]) -> Result<()
         let name = mount.source.as_deref().ok_or_else(|| {
             Error::InvalidContainerConfig("named Volume source is missing".into())
         })?;
-        super::volume::ensure_volume_exists(docker.inspect_volume(name).await)?;
+        super::volume::ensure_volume_exists(docker, name).await?;
         // TODO(UT-128): existence is the only mount-time check; do not recheck driver/options.
     }
     Ok(())
@@ -520,85 +520,7 @@ fn volume_conflict(error: &Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        Json, Router,
-        http::{StatusCode, Uri},
-        routing::get,
-    };
-
     use super::*;
-
-    async fn fake_volume_docker() -> Docker {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(
-            axum::serve(
-                listener,
-                Router::new().route(
-                    "/{*path}",
-                    get(|uri: Uri| async move {
-                        let name = uri.path().rsplit('/').next().unwrap();
-                        match name {
-                            "data" | "cache" => (
-                                StatusCode::OK,
-                                Json(serde_json::json!({
-                                    "Name":name,
-                                    "Driver":"ployz",
-                                    "Mountpoint":format!("/var/lib/ployz-volumes/{name}"),
-                                    "Status":{"bound_bytes":1073741824,"used_bytes":4096}
-                                })),
-                            ),
-                            _ => (
-                                StatusCode::NOT_FOUND,
-                                Json(serde_json::json!({"message":"no such volume"})),
-                            ),
-                        }
-                    }),
-                ),
-            )
-            .into_future(),
-        );
-        Docker::connect_with_http(
-            &format!("http://{address}"),
-            5,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .unwrap()
-    }
-
-    fn named_mount(name: &str) -> Mount {
-        Mount {
-            typ: Some(MountType::VOLUME),
-            source: Some(name.into()),
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn named_volume_preflight_accepts_integer_status_for_multiple_volumes() {
-        let docker = fake_volume_docker().await;
-
-        preflight_named_volumes(&docker, &[named_mount("data"), named_mount("cache")])
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn named_volume_preflight_rejects_a_missing_volume() {
-        let docker = fake_volume_docker().await;
-
-        let error = preflight_named_volumes(&docker, &[named_mount("missing")])
-            .await
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            Error::Docker(DockerError::DockerResponseServerError {
-                status_code: 404,
-                ..
-            })
-        ));
-    }
 
     #[test]
     fn name_conflicts_retry_with_a_fresh_four_character_suffix() {

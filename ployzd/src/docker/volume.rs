@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bollard::{
+    Docker,
     models::{Volume, VolumeCreateRequest},
     query_parameters::RemoveVolumeOptionsBuilder,
 };
@@ -166,15 +167,13 @@ fn decode_volume(result: Result<Volume, bollard::errors::Error>) -> Result<RawVo
     }
 }
 
-/// Confirm that a Docker Volume inspection returned a decodable Volume.
+/// Confirm that a named Docker Volume exists and is decodable.
 ///
 /// # Errors
 ///
 /// Returns an error when Docker rejects the inspection or its response cannot be decoded.
-pub(super) fn ensure_volume_exists(
-    result: Result<Volume, bollard::errors::Error>,
-) -> Result<(), Error> {
-    decode_volume(result).map(drop)
+pub(super) async fn ensure_volume_exists(docker: &Docker, name: &str) -> Result<(), Error> {
+    decode_volume(docker.inspect_volume(name).await).map(drop)
 }
 
 fn decode_volume_list(
@@ -293,13 +292,18 @@ mod tests {
                     {"Name":"mismatched","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/mismatched"}
                 ]}),
             )
-        } else if method == Method::GET && path.ends_with("/volumes/healthy") {
+        } else if method == Method::GET
+            && ["healthy", "data", "cache"]
+                .iter()
+                .any(|name| path.ends_with(&format!("/volumes/{name}")))
+        {
+            let name = path.rsplit('/').next().unwrap();
             (
                 StatusCode::OK,
                 serde_json::json!({
-                    "Name":"healthy",
+                    "Name":name,
                     "Driver":"ployz",
-                    "Mountpoint":"/var/lib/ployz-volumes/healthy",
+                    "Mountpoint":format!("/var/lib/ployz-volumes/{name}"),
                     "Status":{"bound_bytes":1073741824,"used_bytes":4096}
                 }),
             )
@@ -436,6 +440,35 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert!(requests.first().is_some_and(
             |(method, path)| method == Method::GET && path.ends_with("/volumes/healthy")
+        ));
+    }
+
+    #[tokio::test]
+    async fn existence_accepts_integer_status_for_multiple_volumes() {
+        let (runtime, _) = fake_runtime().await;
+
+        ensure_volume_exists(&runtime.docker.client, "data")
+            .await
+            .unwrap();
+        ensure_volume_exists(&runtime.docker.client, "cache")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn existence_rejects_a_missing_volume() {
+        let (runtime, _) = fake_runtime().await;
+
+        let error = ensure_volume_exists(&runtime.docker.client, "missing")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::Docker(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            })
         ));
     }
 
