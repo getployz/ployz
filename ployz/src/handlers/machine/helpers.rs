@@ -193,6 +193,9 @@ mod tests {
                 hostname: hostname.into(),
                 ..Default::default()
             },
+            memory_total_bytes: None,
+            disk_total_bytes: None,
+            disk_available_bytes: None,
         }
     }
 }

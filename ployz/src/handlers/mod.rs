@@ -459,6 +459,8 @@ mod tests {
                 "edge",
                 "--network",
                 "10.220.0.0/16",
+                "--storage",
+                "zfs",
                 "--no-caddy",
                 "--no-dns",
                 "--reset",
@@ -478,6 +480,10 @@ mod tests {
         assert_eq!(
             enroll.get_one::<String>("network").unwrap(),
             "10.220.0.0/16"
+        );
+        assert_eq!(
+            enroll.get_one::<ployz_core::StorageChoice>("storage"),
+            Some(&ployz_core::StorageChoice::Zfs)
         );
         assert!(enroll.get_flag("no-caddy"));
         assert!(enroll.get_flag("reset"));

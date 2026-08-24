@@ -260,6 +260,11 @@ fn cloud_enroll() -> Command {
         .arg(positional("token", true))
         .arg(value("name", Some('n')))
         .arg(value("network", None).default_value("10.210.0.0/16"))
+        .arg(
+            value("storage", None)
+                .default_value("none")
+                .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
+        )
         .arg(switch("no-caddy", None))
         .arg(switch("no-dns", None))
         .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))

@@ -401,6 +401,9 @@ impl MachineRpc for JoinDaemon {
                 .advertised_endpoints
                 .clone(),
             runtime: Default::default(),
+            memory_total_bytes: None,
+            disk_total_bytes: None,
+            disk_available_bytes: None,
         })
     }
 

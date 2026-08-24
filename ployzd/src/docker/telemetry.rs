@@ -11,6 +11,7 @@ use ipnet::IpNet;
 use ployz_core::{BridgeEndpointCapacity, ByteCapacity, MachineTelemetry};
 
 use super::{Error, LocalDocker};
+use crate::host_capacity::{filesystem_space, memory_capacity};
 
 impl LocalDocker {
     pub(super) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
@@ -51,7 +52,7 @@ impl LocalDocker {
             .docker_root_dir
             .ok_or(Error::MissingField("Docker root directory"))?;
         let (docker_root_total_bytes, docker_root_free_bytes) = filesystem_space(&docker_root)?;
-        let (memory_total_bytes, memory_available_bytes) = memory()?;
+        let (memory_total_bytes, memory_available_bytes) = memory_capacity()?;
         let memory = ByteCapacity::parse(memory_total_bytes, memory_available_bytes)
             .map_err(|_| Error::MissingField("consistent host memory capacity"))?;
         let docker_root = ByteCapacity::parse(docker_root_total_bytes, docker_root_free_bytes)
@@ -156,29 +157,6 @@ fn address_count(pool: IpNet) -> Option<u128> {
         IpNet::V4(pool) => Some(1_u128 << (32 - pool.prefix_len())),
         IpNet::V6(pool) => 1_u128.checked_shl((128 - pool.prefix_len()).into()),
     }
-}
-
-fn filesystem_space(path: &str) -> Result<(u64, u64), Error> {
-    let stat = nix::sys::statvfs::statvfs(path).map_err(std::io::Error::other)?;
-    Ok((
-        stat.blocks().saturating_mul(stat.fragment_size()),
-        stat.blocks_available().saturating_mul(stat.fragment_size()),
-    ))
-}
-
-fn memory() -> Result<(u64, u64), Error> {
-    let memory = std::fs::read_to_string("/proc/meminfo")?;
-    let value = |key| {
-        memory
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix(key)
-                    .and_then(|line| line.split_whitespace().next()?.parse::<u64>().ok())
-            })
-            .map(|kib| kib * 1024)
-            .ok_or(Error::MissingField(key))
-    };
-    Ok((value("MemTotal:")?, value("MemAvailable:")?))
 }
 
 fn load_average_milli() -> Result<u64, Error> {

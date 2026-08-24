@@ -61,9 +61,10 @@ pub struct MachineRuntime {
 }
 
 /// Storage preparation requested while enrolling one Machine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageChoice {
+    #[default]
     None,
     Zfs,
 }
@@ -124,6 +125,51 @@ pub struct MachineToken {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
+    // This token crosses independently upgraded CLI/daemon processes. Current
+    // daemons always serialize these keys; None means the daemon could not
+    // observe that capacity. Keep defaults on every additive observation so a
+    // newer CLI can still enroll through an older remote daemon. Removing one
+    // turns a harmless missing fact into a hard --connect wire break.
+    #[serde(default)]
+    pub memory_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_available_bytes: Option<u64>,
+}
+
+#[cfg(test)]
+mod machine_token_tests {
+    use super::*;
+
+    #[test]
+    fn capacity_is_nullable_and_missing_fields_decode_for_older_daemons() {
+        let token = MachineToken {
+            public_key: WireGuardPublicKey([0; 32]),
+            public_ip: None,
+            advertised_endpoints: Vec::new(),
+            runtime: MachineRuntime::default(),
+            memory_total_bytes: None,
+            disk_total_bytes: None,
+            disk_available_bytes: None,
+        };
+        let mut wire = serde_json::to_value(&token).unwrap();
+        assert_eq!(
+            wire.get("memory_total_bytes"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(wire.get("disk_total_bytes"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            wire.get("disk_available_bytes"),
+            Some(&serde_json::Value::Null)
+        );
+
+        let object = wire.as_object_mut().unwrap();
+        object.remove("memory_total_bytes");
+        object.remove("disk_total_bytes");
+        object.remove("disk_available_bytes");
+        assert_eq!(serde_json::from_value::<MachineToken>(wire).unwrap(), token);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

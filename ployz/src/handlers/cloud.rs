@@ -35,6 +35,9 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     let reset = matches.get_flag("reset");
     let no_caddy = matches.get_flag("no-caddy");
     let no_dns = matches.get_flag("no-dns");
+    let requested_storage = *matches
+        .get_one::<StorageChoice>("storage")
+        .expect("storage has a default");
 
     runtime()?.block_on(async {
         let mut client = connect_machine(matches).await?;
@@ -45,7 +48,11 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
             let name =
                 crate::handlers::machine::machine_name(requested_name.clone(), &machine_token)?;
-            let identity = EnrollIdentity::from_machine_token(name.clone(), &machine_token);
+            let identity = EnrollIdentity::from_machine_token(
+                name.clone(),
+                &machine_token,
+                requested_storage,
+            );
             let outcome = cloud_enroll::enroll(&url, &identity).await?;
             let storage = match &outcome {
                 Outcome::Join(join) => join.storage,

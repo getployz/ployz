@@ -26,6 +26,7 @@ use super::{
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
+    host_capacity,
     network::{
         NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device,
         management_address,
@@ -266,6 +267,7 @@ impl LocalMachine {
         let record = self.record()?;
         let private_key = record.wireguard_private_key;
         let discovered = discover_network(request.wireguard_port, request.public_ip).await?;
+        let capacity = host_capacity::observe();
         Ok(MachineToken {
             public_key: private_key.public_key(),
             public_ip: discovered.public_ip,
@@ -275,6 +277,9 @@ impl LocalMachine {
                 request.advertised_endpoints
             },
             runtime: local_runtime(),
+            memory_total_bytes: capacity.memory_total_bytes,
+            disk_total_bytes: capacity.disk_total_bytes,
+            disk_available_bytes: capacity.disk_available_bytes,
         })
     }
 

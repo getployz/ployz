@@ -47,6 +47,10 @@ pub(crate) struct EnrollIdentity {
     public_key: WireGuardPublicKey,
     advertised_endpoints: Vec<AdvertisedEndpoint>,
     public_ip: Option<IpAddr>,
+    requested_storage: StorageChoice,
+    memory_total_bytes: Option<u64>,
+    disk_total_bytes: Option<u64>,
+    disk_available_bytes: Option<u64>,
 }
 
 fn serialize_as_wireguard_base64<S>(
@@ -60,12 +64,20 @@ where
 }
 
 impl EnrollIdentity {
-    pub(crate) fn from_machine_token(name: MachineName, token: &MachineToken) -> Self {
+    pub(crate) fn from_machine_token(
+        name: MachineName,
+        token: &MachineToken,
+        requested_storage: StorageChoice,
+    ) -> Self {
         Self {
             name,
             public_key: token.public_key,
             advertised_endpoints: token.advertised_endpoints.clone(),
             public_ip: token.public_ip,
+            requested_storage,
+            memory_total_bytes: token.memory_total_bytes,
+            disk_total_bytes: token.disk_total_bytes,
+            disk_available_bytes: token.disk_available_bytes,
         }
     }
 }
@@ -101,13 +113,19 @@ pub(crate) enum Response {
     },
 }
 
-/// Cloud deploys ahead of installed CLIs, so unknown fields are ignored. A
-/// `dial` field is still refused by name: a Machine never holds Dial.
+/// Cloud enrollment is a rolling-compatibility boundary: official Cloud and
+/// self-hosted Cloud can be older or newer than the CLI. Keep unknown response
+/// fields ignored, and give every additive field a safe default when one exists.
+/// Making a response field required can make the founder exit before callback
+/// and leave every other Machine polling an enrollment that can never finish.
+/// Fields without a safe default require a future enrollment protocol version.
+/// `dial` remains the deliberate exception: a Machine must never hold Dial.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum EnrollWire {
     Join {
         pairing: CloudPairing,
+        #[serde(default)]
         storage: StorageChoice,
         registration: Box<Registered>,
         #[serde(default)]
@@ -119,6 +137,7 @@ enum EnrollWire {
     },
     Initialize {
         pairing: CloudPairing,
+        #[serde(default)]
         storage: StorageChoice,
         #[serde(default)]
         dial: Option<serde::de::IgnoredAny>,
@@ -394,12 +413,14 @@ mod tests {
     }
 
     #[test]
-    fn enrollment_requires_cloud_to_choose_storage() {
-        let error = parse_enroll(
+    fn enrollment_defaults_missing_storage_to_none() {
+        let Response::Initialize { storage, .. } = parse_enroll(
             br#"{"kind":"initialize","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
         )
-        .unwrap_err();
-        assert!(error.to_string().contains("storage"), "{error}");
+        .unwrap() else {
+            panic!("expected initialize");
+        };
+        assert_eq!(storage, StorageChoice::None);
     }
 
     #[test]
@@ -451,7 +472,11 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                memory_total_bytes: None,
+                disk_total_bytes: None,
+                disk_available_bytes: None,
             },
+            StorageChoice::None,
         )
     }
 
@@ -573,7 +598,11 @@ mod tests {
                     "207.246.89.244:51820".parse().unwrap(),
                 )],
                 runtime: Default::default(),
+                memory_total_bytes: Some(8_589_934_592),
+                disk_total_bytes: Some(107_374_182_400),
+                disk_available_bytes: Some(85_899_345_920),
             },
+            StorageChoice::Zfs,
         );
         let json = serde_json::to_value(&identity).unwrap();
         assert_eq!(
@@ -581,6 +610,22 @@ mod tests {
             Some(&serde_json::json!(
                 "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0="
             ))
+        );
+        assert_eq!(
+            json.get("requestedStorage"),
+            Some(&serde_json::json!("zfs"))
+        );
+        assert_eq!(
+            json.get("memoryTotalBytes"),
+            Some(&serde_json::json!(8_589_934_592_u64))
+        );
+        assert_eq!(
+            json.get("diskTotalBytes"),
+            Some(&serde_json::json!(107_374_182_400_u64))
+        );
+        assert_eq!(
+            json.get("diskAvailableBytes"),
+            Some(&serde_json::json!(85_899_345_920_u64))
         );
     }
 }
