@@ -127,7 +127,7 @@ impl ContainerRuntime {
 // Bollard models Volume Status as key-only data, so valid plugin values use raw JSON recovery.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub(super) struct RawVolume {
+struct RawVolume {
     name: String,
     driver: String,
     #[serde(default)]
@@ -156,9 +156,7 @@ struct RawVolumeList {
     volumes: Option<Vec<RawVolume>>,
 }
 
-pub(super) fn decode_volume(
-    result: Result<Volume, bollard::errors::Error>,
-) -> Result<RawVolume, Error> {
+fn decode_volume(result: Result<Volume, bollard::errors::Error>) -> Result<RawVolume, Error> {
     match result {
         Ok(volume) => Ok(volume.into()),
         Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
@@ -166,6 +164,17 @@ pub(super) fn decode_volume(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Confirm that a Docker Volume inspection returned a decodable Volume.
+///
+/// # Errors
+///
+/// Returns an error when Docker rejects the inspection or its response cannot be decoded.
+pub(super) fn ensure_volume_exists(
+    result: Result<Volume, bollard::errors::Error>,
+) -> Result<(), Error> {
+    decode_volume(result).map(drop)
 }
 
 fn decode_volume_list(

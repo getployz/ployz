@@ -437,7 +437,7 @@ async fn preflight_named_volumes(docker: &Docker, mounts: &[Mount]) -> Result<()
         let name = mount.source.as_deref().ok_or_else(|| {
             Error::InvalidContainerConfig("named Volume source is missing".into())
         })?;
-        super::volume::decode_volume(docker.inspect_volume(name).await)?;
+        super::volume::ensure_volume_exists(docker.inspect_volume(name).await)?;
         // TODO(UT-128): existence is the only mount-time check; do not recheck driver/options.
     }
     Ok(())
