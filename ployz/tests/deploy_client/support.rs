@@ -645,8 +645,8 @@ pub(super) fn skip_health() -> PlanOptions {
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
-    MachineObservation {
-        machine: Machine {
+    MachineObservation::new(
+        Machine {
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
@@ -658,10 +658,6 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
         },
-        membership: MembershipObservation::Up,
-        storage: None,
-        selected_endpoint: None,
-        rtt: None,
-        global_reconcile_failures: Vec::new(),
-    }
+        MembershipObservation::Up,
+    )
 }

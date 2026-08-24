@@ -124,6 +124,10 @@ _Avoid_: scheduler, Cluster-wide Deploy
 Machine-local maintenance that restores this participating Machine's missing eligible Global slots from its observations. It is add-only and never schedules replicated Services or removes stale slots.
 _Avoid_: Cluster-wide reconciler, scheduler, stale-slot pruning
 
+**Observed Global Slot Spec**:
+The Resolved Service Spec carried by the newest observer-visible Service Container and used for Global catch-up or slot convergence. It retains that Container's provenance and is not canonical Service intent.
+_Avoid_: Current service spec, canonical service spec, desired Global state
+
 **Deploy Intent**:
 The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target, including removal of observer-visible Services the target no longer declares. Services in the target that are not applied are unchanged.
 _Avoid_: leftover filtered Compose project, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy

@@ -3,16 +3,13 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, GlobalServiceSlot,
-    InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
+    BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, InspectRequest,
+    ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, ObservedGlobalSlotSpec,
     QualifiedService, RpcError, ServiceObservation, eligible_global_slot, missing_global_slots, op,
     service_containers,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
-
-/// One Global slot this Machine still needs.
-pub type GlobalCatchUpSlot = GlobalServiceSlot;
 
 /// Catch-up failed after membership committed.
 #[derive(Debug)]
@@ -116,10 +113,10 @@ pub fn plan_global_catch_up(
     services: &[ServiceObservation],
     this_machine: &Machine,
     skip_caddy: bool,
-) -> Vec<GlobalCatchUpSlot> {
+) -> Vec<ObservedGlobalSlotSpec> {
     missing_global_slots(services, this_machine)
         .into_iter()
-        .filter(|slot| !skip_caddy || slot.identity != QualifiedService::system_caddy())
+        .filter(|slot| !skip_caddy || slot.identity() != &QualifiedService::system_caddy())
         .collect()
 }
 
@@ -142,14 +139,14 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let initially_eligible = services
         .iter()
         .filter_map(|service| eligible_global_slot(service, this_machine))
-        .filter(|slot| !skip_caddy || slot.identity != QualifiedService::system_caddy())
-        .map(|slot| (slot.identity.clone(), slot))
+        .filter(|slot| !skip_caddy || slot.identity() != &QualifiedService::system_caddy())
+        .map(|slot| (slot.identity().clone(), slot))
         .collect::<BTreeMap<_, _>>();
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
-    let initially_missing: Vec<_> = slots.iter().map(|slot| slot.identity.clone()).collect();
+    let initially_missing: Vec<_> = slots.iter().map(|slot| slot.identity().clone()).collect();
     let endpoint_creates = slots
         .iter()
-        .filter(|slot| !service_has_slot(&services, this_machine, &slot.spec.service_id))
+        .filter(|slot| !service_has_slot(&services, this_machine, &slot.resolved_spec().service_id))
         .count();
     // This targeted read is both the readiness gate and the capacity lookup
     // used by catch-up. Membership visibility alone does not prove this path.
@@ -170,18 +167,19 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     }
     let mut failures = Vec::new();
     for slot in slots {
-        let identity = slot.identity.clone();
+        let (identity, resolved_spec) = slot.into_parts();
+        let failure_identity = identity.clone();
         if let Err(error) = client
             .ensure_global_slot(
                 &this_machine.id,
                 EnsureGlobalSlotRequest {
-                    project_name: slot.identity.project,
-                    resolved_spec: slot.spec,
+                    project_name: identity.project,
+                    resolved_spec,
                 },
             )
             .await
         {
-            failures.push((identity, error));
+            failures.push((failure_identity, error));
         }
     }
     let missing_if_unverified = initially_eligible.keys().cloned().collect();
@@ -464,7 +462,7 @@ mod tests {
             first_slots
                 .iter()
                 .chain(second_slots.iter())
-                .all(|slot| slot.spec.service_id.as_str() == service_id('c').as_str())
+                .all(|slot| slot.resolved_spec().service_id.as_str() == service_id('c').as_str())
         );
     }
 
@@ -550,7 +548,7 @@ mod tests {
         let spec = &slots
             .first()
             .expect("eligible Global must produce a slot")
-            .spec;
+            .resolved_spec();
         let encoded = serde_json::to_string(spec).unwrap();
         assert!(
             !encoded.contains(founder.id.as_str()),
@@ -626,8 +624,11 @@ mod tests {
         assert!(plan_global_catch_up(&services, &joiner, false).is_empty());
     }
 
-    fn identities(slots: &[GlobalCatchUpSlot]) -> Vec<String> {
-        slots.iter().map(|slot| slot.identity.to_string()).collect()
+    fn identities(slots: &[ObservedGlobalSlotSpec]) -> Vec<String> {
+        slots
+            .iter()
+            .map(|slot| slot.identity().to_string())
+            .collect()
     }
 
     fn machine(hex: char, name: &str) -> Machine {

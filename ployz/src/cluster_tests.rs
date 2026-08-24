@@ -243,8 +243,8 @@ fn volume_snapshot_rejects_duplicate_and_contradictory_evidence() {
 }
 
 fn machine(hex: char) -> MachineObservation {
-    MachineObservation {
-        machine: Machine {
+    MachineObservation::new(
+        Machine {
             id: machine_id(hex),
             name: MachineName::parse(format!("machine-{hex}")).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
@@ -256,12 +256,8 @@ fn machine(hex: char) -> MachineObservation {
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
         },
-        membership: MembershipObservation::Up,
-        storage: None,
-        selected_endpoint: None,
-        rtt: None,
-        global_reconcile_failures: Vec::new(),
-    }
+        MembershipObservation::Up,
+    )
 }
 
 fn machine_id(hex: char) -> MachineId {

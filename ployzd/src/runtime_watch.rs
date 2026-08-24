@@ -68,8 +68,9 @@ impl RuntimeWatchSnapshot {
 /// Serve complete Runtime Watch frames from the replicated store.
 ///
 /// Subscribes first, then yields one complete frame immediately. Later frames
-/// are assembled on store wakeups or once-per-second membership/RTT samples
-/// from the same local admin source as ListMachines and inspect RTT. The
+/// are assembled on store wakeups, Global reconcile observation changes, or
+/// once-per-second membership/RTT samples from the same local admin source as
+/// ListMachines and inspect RTT. The
 /// notification payload is not the observation. Unchanged observations do not
 /// yield, including when only `observed_at` advances. Store failure ends the
 /// stream. Admin telemetry failure keeps replicated rows.
@@ -116,7 +117,8 @@ pub(crate) async fn serve_replicated_runtime_watch(
 /// Serve complete Runtime Watch frames from replicated store reads.
 ///
 /// Yields one complete frame immediately, then another when a store
-/// notification or a telemetry sample wakes assembly and the assembled
+/// notification, Global reconcile observation, or telemetry sample wakes
+/// assembly and the assembled
 /// observation changed. Ticks resample membership/RTT only. Store wakes
 /// reload the snapshot only. `observed_at` is the time of the latest
 /// membership/RTT sample and is ignored when deciding whether the
@@ -127,7 +129,7 @@ fn serve_runtime_watch<L, Fut, S, SFut, C, T>(
     sample: S,
     changes: C,
     ticks: T,
-    global_reconcile: GlobalReconcileObservations,
+    mut global_reconcile: GlobalReconcileObservations,
 ) -> RpcStream
 where
     L: Fn() -> Fut + Send + 'static,
@@ -141,6 +143,7 @@ where
     tokio::spawn(async move {
         let mut changes = std::pin::pin!(changes);
         let mut ticks = std::pin::pin!(ticks);
+        let mut global_reconcile_open = true;
         let mut last = None;
         let (loaded, mut latest) = tokio::join!(load(), sample());
         let mut snapshot = match loaded {
@@ -182,6 +185,11 @@ where
             tokio::select! {
                 biased;
                 () = sender.closed() => return,
+                changed = global_reconcile.changed(), if global_reconcile_open => {
+                    if changed.is_err() {
+                        global_reconcile_open = false;
+                    }
+                }
                 Some(()) = ticks.next() => {
                     latest = sample().await;
                 }
@@ -304,17 +312,13 @@ fn unavailable_machine_observations(
 ) -> Vec<MachineObservation> {
     machines
         .into_iter()
-        .map(|machine| MachineObservation {
-            membership: if &machine.id == entry_id {
+        .map(|machine| {
+            let membership = if &machine.id == entry_id {
                 MembershipObservation::Up
             } else {
                 MembershipObservation::Unknown
-            },
-            storage: None,
-            selected_endpoint: None,
-            rtt: None,
-            global_reconcile_failures: Vec::new(),
-            machine,
+            };
+            MachineObservation::new(machine, membership)
         })
         .collect()
 }

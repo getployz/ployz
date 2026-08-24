@@ -1,45 +1,76 @@
 //! Machine-local, add-only convergence for Global Service slots.
 
-use std::{io, time::Duration};
+use std::{fmt::Display, time::Duration};
 
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    ContainerObservation, GlobalReconcileFailureObservation, GlobalServiceSlot, Machine, RpcError,
+    ContainerObservation, GlobalReconcileFailureObservation, Machine, ObservedGlobalSlotSpec,
     derive_services, missing_global_slots,
 };
+use thiserror::Error;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::{corrosion::ReplicatedStore, rpc::MachineService};
+use crate::{
+    corrosion::ReplicatedStore,
+    machine::{LocalMachine, LocalMachineError},
+};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
-pub(crate) type GlobalReconcileObservations = watch::Sender<Vec<GlobalReconcileFailureObservation>>;
+/// Publishes the latest Machine-local Global reconcile failures.
+pub(crate) type GlobalReconcilePublisher = watch::Sender<Vec<GlobalReconcileFailureObservation>>;
 
+/// Receives the latest Machine-local Global reconcile failures.
+pub(crate) type GlobalReconcileObservations =
+    watch::Receiver<Vec<GlobalReconcileFailureObservation>>;
+
+/// Create the daemon's single latest-value Global reconcile observation channel.
 #[must_use]
-pub(crate) fn global_reconcile_observations() -> GlobalReconcileObservations {
-    watch::channel(Vec::new()).0
+pub(crate) fn global_reconcile_observation_channel()
+-> (GlobalReconcilePublisher, GlobalReconcileObservations) {
+    watch::channel(Vec::new())
 }
 
 trait GlobalSlotEnsurer {
-    async fn ensure_global_slot(&self, slot: &GlobalServiceSlot) -> Result<(), RpcError>;
+    type Error: Display;
+
+    async fn ensure_global_slot(&self, slot: &ObservedGlobalSlotSpec) -> Result<(), Self::Error>;
 }
 
-impl GlobalSlotEnsurer for MachineService {
-    async fn ensure_global_slot(&self, slot: &GlobalServiceSlot) -> Result<(), RpcError> {
-        self.ensure_local_global_slot(&slot.identity, &slot.spec)
+impl GlobalSlotEnsurer for LocalMachine {
+    type Error = LocalMachineError;
+
+    async fn ensure_global_slot(&self, slot: &ObservedGlobalSlotSpec) -> Result<(), Self::Error> {
+        LocalMachine::ensure_global_slot(self, &slot.identity().project, slot.resolved_spec())
             .await
             .map(|_| ())
     }
 }
 
+/// Failure while driving the Machine-local Global reconcile loop.
+#[derive(Debug, Error)]
+pub(crate) enum RunError {
+    /// The daemon's participation signal ended before shutdown.
+    #[error("participation signal closed")]
+    ParticipationSignalClosed(#[source] watch::error::RecvError),
+}
+
+/// Converge this participating Machine's missing eligible Global slots.
+///
+/// Runs after participation changes and on a slow periodic tick until shutdown.
+///
+/// # Errors
+///
+/// Returns [`RunError::ParticipationSignalClosed`] if the participation signal
+/// closes before shutdown.
 pub(crate) async fn run(
     store: ReplicatedStore,
-    ensurer: MachineService,
-    observations: GlobalReconcileObservations,
+    ensurer: LocalMachine,
+    observations: GlobalReconcilePublisher,
     mut participating: watch::Receiver<bool>,
     shutdown: CancellationToken,
-) -> io::Result<()> {
+) -> Result<(), RunError> {
     let mut interval = tokio::time::interval(RECONCILE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -49,7 +80,7 @@ pub(crate) async fn run(
             changed = participating.changed() => match changed {
                 Ok(()) => *participating.borrow(),
                 Err(_) if shutdown.is_cancelled() => return Ok(()),
-                Err(error) => return Err(io::Error::other(error)),
+                Err(error) => return Err(RunError::ParticipationSignalClosed(error)),
             },
             _ = interval.tick() => *participating.borrow(),
         };
@@ -61,26 +92,33 @@ pub(crate) async fn run(
 
 async fn reconcile_store(
     store: &ReplicatedStore,
-    ensurer: &MachineService,
-    observations: &GlobalReconcileObservations,
+    ensurer: &LocalMachine,
+    observations: &GlobalReconcilePublisher,
 ) {
-    let machine = match ensurer.local_machine() {
-        Ok(machine) => machine,
+    let record = match ensurer.record() {
+        Ok(record) => record,
         Err(error) => {
             eprintln!("failed to read local Machine for Global reconciliation: {error}");
             return;
         }
     };
+    let Some(machine) = record.machine().cloned() else {
+        eprintln!(
+            "failed to read local Machine for Global reconciliation: Machine is not participating"
+        );
+        return;
+    };
     match store.containers().await {
         Ok(snapshot) => {
-            reconcile_and_publish(
-                &snapshot.observations,
-                &machine,
-                ensurer,
-                observations,
-                &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-            )
-            .await;
+            observations.send_replace(
+                ensure_missing_global_slots(
+                    &snapshot.observations,
+                    &machine,
+                    ensurer,
+                    &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+                )
+                .await,
+            );
         }
         Err(error) => eprintln!("failed to read Globals for local reconciliation: {error}"),
     }
@@ -97,7 +135,7 @@ async fn ensure_missing_global_slots<E: GlobalSlotEnsurer>(
     for slot in missing_global_slots(&services, machine) {
         if let Err(last_error) = ensurer.ensure_global_slot(&slot).await {
             failures.push(GlobalReconcileFailureObservation {
-                service: slot.identity,
+                service: slot.identity().clone(),
                 last_error: last_error.to_string(),
                 observed_at: observed_at.into(),
             });
@@ -106,29 +144,52 @@ async fn ensure_missing_global_slots<E: GlobalSlotEnsurer>(
     failures
 }
 
-async fn reconcile_and_publish<E: GlobalSlotEnsurer>(
-    containers: &[ContainerObservation],
-    machine: &Machine,
-    ensurer: &E,
-    observations: &GlobalReconcileObservations,
-    observed_at: &str,
-) {
-    observations
-        .send_replace(ensure_missing_global_slots(containers, machine, ensurer, observed_at).await);
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv6Addr, sync::Mutex};
+    use std::{
+        net::Ipv6Addr,
+        sync::{Arc, Mutex},
+    };
 
     use ployz_core::{
         ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation, MachineId,
         MachineName, ManagementAddress, Placement, ProjectName, QualifiedService,
-        ResolvedServiceSpec, RpcErrorCode, ServiceId, ServiceMode, ServiceName, WireGuardPublicKey,
+        ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceName,
+        WireGuardPublicKey,
     };
     use serde_json::json;
+    use tokio::sync::watch;
 
     use super::*;
+
+    #[tokio::test]
+    async fn run_reports_a_closed_participation_signal() {
+        let (store, server) = crate::corrosion::fake_cluster::store().await;
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-global-reconcile-{}", MachineId::random()));
+        let local = Arc::new(Mutex::new(
+            crate::machine::LocalMachineStore::open(&data_dir).unwrap(),
+        ));
+        let (restart, _) = watch::channel(false);
+        let ensurer = LocalMachine::new(local, restart);
+        let (participating, participating_rx) = watch::channel(false);
+        let (observations, _) = global_reconcile_observation_channel();
+        drop(participating);
+
+        let error = run(
+            store,
+            ensurer,
+            observations,
+            participating_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, RunError::ParticipationSignalClosed(_)));
+        server.abort();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
 
     #[tokio::test]
     async fn effect_ensures_each_selected_slot_and_reports_only_failures() {
@@ -174,54 +235,19 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn successful_pass_clears_the_previous_failure_observation() {
-        let local = machine('1', "local");
-        let peer = machine('2', "peer");
-        let containers = [observation(
-            &peer,
-            'a',
-            "app",
-            "api",
-            ServiceMode::Global,
-            Placement::default(),
-        )];
-        let ensurer = FakeEnsurer {
-            calls: Mutex::new(Vec::new()),
-            failing: Mutex::new(Some("app/api")),
-        };
-        let observations = global_reconcile_observations();
-
-        reconcile_and_publish(
-            &containers,
-            &local,
-            &ensurer,
-            &observations,
-            "2026-08-24T20:00:00Z",
-        )
-        .await;
-        assert_eq!(observations.borrow().len(), 1);
-
-        *ensurer.failing.lock().unwrap() = None;
-        reconcile_and_publish(
-            &containers,
-            &local,
-            &ensurer,
-            &observations,
-            "2026-08-24T20:05:00Z",
-        )
-        .await;
-        assert!(observations.borrow().is_empty());
-    }
-
     struct FakeEnsurer {
         calls: Mutex<Vec<String>>,
         failing: Mutex<Option<&'static str>>,
     }
 
     impl GlobalSlotEnsurer for FakeEnsurer {
-        async fn ensure_global_slot(&self, slot: &GlobalServiceSlot) -> Result<(), RpcError> {
-            let identity = slot.identity.to_string();
+        type Error = RpcError;
+
+        async fn ensure_global_slot(
+            &self,
+            slot: &ObservedGlobalSlotSpec,
+        ) -> Result<(), Self::Error> {
+            let identity = slot.identity().to_string();
             self.calls.lock().unwrap().push(identity.clone());
             if self.failing.lock().unwrap().as_ref() == Some(&identity.as_str()) {
                 Err(RpcError {

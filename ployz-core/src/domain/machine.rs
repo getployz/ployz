@@ -298,6 +298,21 @@ pub struct MachineObservation {
     pub global_reconcile_failures: Vec<GlobalReconcileFailureObservation>,
 }
 
+impl MachineObservation {
+    /// Start an observer-relative Machine view with optional observations absent.
+    #[must_use]
+    pub fn new(machine: Machine, membership: MembershipObservation) -> Self {
+        Self {
+            machine,
+            membership,
+            storage: None,
+            selected_endpoint: None,
+            rtt: None,
+            global_reconcile_failures: Vec::new(),
+        }
+    }
+}
+
 /// Match a Machine by exact ID or observer-relative Name. `all` is identity text.
 #[must_use]
 pub fn machine_matches_target(machine: &Machine, target: &MachineTarget) -> bool {
@@ -393,20 +408,16 @@ pub fn synthesize_membership(
 ) -> Vec<MachineObservation> {
     machines
         .into_iter()
-        .map(|machine| MachineObservation {
-            membership: if &machine.id == responder_id {
+        .map(|machine| {
+            let membership = if &machine.id == responder_id {
                 MembershipObservation::Up
             } else {
                 states
                     .get(&machine.management_address)
                     .cloned()
                     .unwrap_or(MembershipObservation::Down)
-            },
-            storage: None,
-            selected_endpoint: None,
-            rtt: None,
-            global_reconcile_failures: Vec::new(),
-            machine,
+            };
+            MachineObservation::new(machine, membership)
         })
         .collect()
 }

@@ -27,7 +27,7 @@ use super::{
 use crate::corrosion::{
     CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
 };
-use crate::global_reconcile::global_reconcile_observations;
+use crate::global_reconcile::global_reconcile_observation_channel;
 use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -91,21 +91,11 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         frame.machines,
         vec![
             MachineObservation {
-                machine: entry,
-                membership: MembershipObservation::Up,
-                storage: None,
                 selected_endpoint: Some(endpoint),
                 rtt: Some(rtt),
-                global_reconcile_failures: Vec::new(),
+                ..MachineObservation::new(entry, MembershipObservation::Up)
             },
-            MachineObservation {
-                machine: peer,
-                membership: MembershipObservation::Suspect,
-                storage: None,
-                selected_endpoint: None,
-                rtt: None,
-                global_reconcile_failures: Vec::new(),
-            },
+            MachineObservation::new(peer, MembershipObservation::Suspect),
         ]
     );
     assert_eq!(frame.containers, vec![service.clone(), hook.clone()]);
@@ -205,14 +195,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
 
     assert_eq!(
         frame.machines,
-        vec![MachineObservation {
-            machine: entry,
-            membership: MembershipObservation::Up,
-            storage: None,
-            selected_endpoint: None,
-            rtt: None,
-            global_reconcile_failures: Vec::new(),
-        }]
+        vec![MachineObservation::new(entry, MembershipObservation::Up)]
     );
     assert_eq!(frame.containers, vec![kept]);
     assert_eq!(frame.volumes, vec![kept_volume]);
@@ -351,22 +334,8 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
     assert_eq!(
         frame.machines,
         vec![
-            MachineObservation {
-                machine: entry,
-                membership: MembershipObservation::Up,
-                storage: None,
-                selected_endpoint: None,
-                rtt: None,
-                global_reconcile_failures: Vec::new(),
-            },
-            MachineObservation {
-                machine: peer,
-                membership: MembershipObservation::Unknown,
-                storage: None,
-                selected_endpoint: None,
-                rtt: None,
-                global_reconcile_failures: Vec::new(),
-            },
+            MachineObservation::new(entry, MembershipObservation::Up),
+            MachineObservation::new(peer, MembershipObservation::Unknown),
         ]
     );
     assert_eq!(frame.hosted_dns_hostname, None);
@@ -580,6 +549,35 @@ async fn unchanged_assembled_observation_does_not_yield() {
             .await
             .is_err(),
         "a store wake whose reassembled observation is unchanged must not yield"
+    );
+}
+
+#[tokio::test]
+async fn reconcile_observation_change_yields_without_another_wakeup() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+    let (_wake, changes) = mpsc::channel(1);
+    let (publisher, observations) = global_reconcile_observation_channel();
+    let mut stream = serve_sampled_with_observations(
+        entry.id,
+        &fixture,
+        changes,
+        mpsc::channel(1).1,
+        observations,
+    );
+    let _first = next_frame(&mut stream).await;
+    let failure = GlobalReconcileFailureObservation {
+        service: QualifiedService::system_caddy(),
+        last_error: "image pull failed".into(),
+        observed_at: OBSERVED_AT.into(),
+    };
+
+    publisher.send_replace(vec![failure.clone()]);
+
+    let frame = next_frame(&mut stream).await;
+    assert_eq!(
+        frame.machines.first().unwrap().global_reconcile_failures,
+        [failure]
     );
 }
 
@@ -836,6 +834,17 @@ fn serve_sampled(
     changes: mpsc::Receiver<Result<(), Error>>,
     ticks: mpsc::Receiver<()>,
 ) -> crate::logs::RpcStream {
+    let (_, observations) = global_reconcile_observation_channel();
+    serve_sampled_with_observations(entry_id, fixture, changes, ticks, observations)
+}
+
+fn serve_sampled_with_observations(
+    entry_id: MachineId,
+    fixture: &WatchFixture,
+    changes: mpsc::Receiver<Result<(), Error>>,
+    ticks: mpsc::Receiver<()>,
+    observations: crate::global_reconcile::GlobalReconcileObservations,
+) -> crate::logs::RpcStream {
     let load_fixture = fixture.clone();
     let sample_fixture = fixture.clone();
     serve_runtime_watch(
@@ -850,7 +859,7 @@ fn serve_sampled(
         },
         ReceiverStream::new(changes),
         ReceiverStream::new(ticks),
-        global_reconcile_observations(),
+        observations,
     )
 }
 

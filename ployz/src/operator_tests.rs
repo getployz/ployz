@@ -536,8 +536,8 @@ fn container_selector(value: &str) -> ContainerSelector {
 }
 
 fn machine_observation(seed: u8, name: &str) -> MachineObservation {
-    MachineObservation {
-        machine: ployz_core::Machine {
+    MachineObservation::new(
+        ployz_core::Machine {
             id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
@@ -547,12 +547,8 @@ fn machine_observation(seed: u8, name: &str) -> MachineObservation {
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
         },
-        membership: MembershipObservation::Up,
-        storage: None,
-        selected_endpoint: None,
-        rtt: None,
-        global_reconcile_failures: Vec::new(),
-    }
+        MembershipObservation::Up,
+    )
 }
 
 fn observed_service() -> ServiceObservation {

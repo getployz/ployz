@@ -42,16 +42,25 @@ impl ServiceObservation {
             .chain(self.hook_containers.iter().map(ContainerRef::Hook))
     }
 
-    /// Newest regular Service Container, whose spec defines current placement intent.
+    /// Resolved Service Spec carried by the newest observed Container when it is Global.
+    ///
+    /// The spec retains that Container's provenance; selecting it does not
+    /// create canonical Service intent.
     #[must_use]
-    pub fn newest_service_container(&self) -> Option<&ServiceContainer> {
-        self.containers.iter().max_by_key(|container| {
-            let observation = container.as_observation();
-            (
-                observation.created_at_unix_nanos,
-                observation.container_id.as_str(),
-            )
-        })
+    pub fn observed_global_slot_spec(&self) -> Option<&ResolvedServiceSpec> {
+        let spec = &self
+            .containers
+            .iter()
+            .max_by_key(|container| {
+                let observation = container.as_observation();
+                (
+                    observation.created_at_unix_nanos,
+                    observation.container_id.as_str(),
+                )
+            })?
+            .as_observation()
+            .resolved_spec;
+        (spec.mode == ServiceMode::Global).then_some(spec)
     }
 
     /// Service Containers for Start; both roles for Stop and Remove.
@@ -70,23 +79,39 @@ impl ServiceObservation {
     }
 }
 
-/// One eligible Global Service slot on a Machine.
+/// Observer-derived identity and Global spec that cannot be desynchronized.
 #[derive(Clone, Debug, PartialEq)]
-pub struct GlobalServiceSlot {
-    /// Qualified identity of the Global Service.
-    pub identity: QualifiedService,
-    /// Current resolved spec to use when ensuring the slot.
-    pub spec: ResolvedServiceSpec,
+pub struct ObservedGlobalSlotSpec {
+    identity: QualifiedService,
+    resolved_spec: ResolvedServiceSpec,
 }
 
-impl GlobalServiceSlot {
+impl ObservedGlobalSlotSpec {
+    /// Qualified identity of the observed Global Service.
+    #[must_use]
+    pub fn identity(&self) -> &QualifiedService {
+        &self.identity
+    }
+
+    /// Resolved spec carried by the newest observer-visible Service Container.
+    #[must_use]
+    pub fn resolved_spec(&self) -> &ResolvedServiceSpec {
+        &self.resolved_spec
+    }
+
+    /// Split this observed slot into its still-matched identity and spec.
+    #[must_use]
+    pub fn into_parts(self) -> (QualifiedService, ResolvedServiceSpec) {
+        (self.identity, self.resolved_spec)
+    }
+
     /// True when this Machine already reports a running Container for this slot.
     #[must_use]
     pub fn is_running_on(&self, containers: &[ServiceContainer], machine: &Machine) -> bool {
         containers.iter().any(|container| {
             let observation = container.as_observation();
             observation.machine_id == machine.id
-                && observation.service_id == self.spec.service_id
+                && observation.service_id == self.resolved_spec.service_id
                 && matches!(
                     observation.runtime,
                     ContainerRuntimeObservation::Running { .. }
@@ -95,22 +120,18 @@ impl GlobalServiceSlot {
     }
 }
 
-/// Current Global slot for `service` when `machine` is placement-eligible.
+/// Global slot inferred from `service` when `machine` is placement-eligible.
 #[must_use]
 pub fn eligible_global_slot(
     service: &ServiceObservation,
     machine: &Machine,
-) -> Option<GlobalServiceSlot> {
-    let spec = &service
-        .newest_service_container()?
-        .as_observation()
-        .resolved_spec;
-    if spec.mode != ServiceMode::Global || !machine_matches_placement(machine, &spec.placement) {
-        return None;
-    }
-    Some(GlobalServiceSlot {
-        identity: service.identity.clone(),
-        spec: spec.clone(),
+) -> Option<ObservedGlobalSlotSpec> {
+    let spec = service
+        .observed_global_slot_spec()
+        .filter(|spec| machine_matches_placement(machine, &spec.placement))?;
+    Some(ObservedGlobalSlotSpec {
+        identity: QualifiedService::new(service.identity.project.clone(), spec.name.clone()),
+        resolved_spec: spec.clone(),
     })
 }
 
@@ -119,7 +140,7 @@ pub fn eligible_global_slot(
 pub fn missing_global_slots(
     services: &[ServiceObservation],
     machine: &Machine,
-) -> Vec<GlobalServiceSlot> {
+) -> Vec<ObservedGlobalSlotSpec> {
     services
         .iter()
         .filter_map(|service| {

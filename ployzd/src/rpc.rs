@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -7,14 +7,13 @@ use std::{
 
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged,
-    ContainerCreated, ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords,
-    ImageIngestReason, ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, Machine, MachineId,
-    MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR,
-    QualifiedService, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, VolumeRemoved, op,
+    ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason,
+    ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId, MachineLogService,
+    MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, VolumeRemoved, op,
 };
 use serde_json::Value;
-use tokio::sync::{Mutex as AsyncMutex, watch};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
@@ -22,7 +21,7 @@ use tonic::{Request, Response, Status};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
-    global_reconcile::{GlobalReconcileObservations, global_reconcile_observations},
+    global_reconcile::{GlobalReconcileObservations, global_reconcile_observation_channel},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
     network::MACHINE_API_PORT,
@@ -41,7 +40,6 @@ pub struct MachineService {
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
-    slot_locks: Arc<Mutex<HashMap<QualifiedService, Arc<AsyncMutex<()>>>>>,
     global_reconcile: GlobalReconcileObservations,
 }
 
@@ -64,8 +62,7 @@ impl MachineService {
             ingest: ImageIngest::new(None, CancellationToken::new(), None),
             machine_api_port: MACHINE_API_PORT,
             cloud_pairing: None,
-            slot_locks: Arc::new(Mutex::new(HashMap::new())),
-            global_reconcile: global_reconcile_observations(),
+            global_reconcile: global_reconcile_observation_channel().1,
         }
     }
 
@@ -108,12 +105,10 @@ impl MachineService {
         self
     }
 
-    fn slot_lock(&self, identity: &QualifiedService) -> Arc<AsyncMutex<()>> {
-        let mut locks = self.slot_locks.lock().expect("slot lock map");
-        locks
-            .entry(identity.clone())
-            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-            .clone()
+    /// Local Machine operations shared with daemon-owned maintenance loops.
+    #[must_use]
+    pub(crate) fn local(&self) -> LocalMachine {
+        self.local.clone()
     }
 
     #[cfg(test)]
@@ -152,45 +147,6 @@ impl MachineService {
         self.local
             .containers()
             .ok_or_else(|| unavailable("Docker is not available"))
-    }
-
-    pub(crate) fn local_machine(&self) -> Result<Machine, RpcError> {
-        self.local_record()
-            .map_err(|error| RpcError {
-                code: RpcErrorCode::Internal,
-                message: error.message().into(),
-                details: Value::Null,
-            })?
-            .machine()
-            .cloned()
-            .ok_or_else(|| unavailable("Machine network is not configured"))
-    }
-
-    pub(crate) async fn ensure_local_global_slot(
-        &self,
-        identity: &QualifiedService,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<ContainerCreated, RpcError> {
-        let lock = self.slot_lock(identity);
-        let _guard = lock.lock().await;
-        let containers = self.containers()?;
-        let record = self.local_record().map_err(|error| RpcError {
-            code: RpcErrorCode::Internal,
-            message: error.message().into(),
-            details: Value::Null,
-        })?;
-        let machine = record
-            .machine()
-            .ok_or_else(|| unavailable("Machine network is not configured"))?;
-        containers
-            .ensure_global_slot(
-                &record.id(),
-                machine.subnet.gateway(),
-                &identity.project,
-                spec,
-            )
-            .await
-            .map_err(|error| RpcError::from(&error))
     }
 
     async fn forward_register(
@@ -452,17 +408,11 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::EnsureGlobalSlot>(request)?;
-        let identity = QualifiedService::new(
-            request.project_name.clone(),
-            request.resolved_spec.name.clone(),
-        );
-        match self
-            .ensure_local_global_slot(&identity, &request.resolved_spec)
-            .await
-        {
-            Ok(created) => respond(created),
-            Err(error) => respond(error),
-        }
+        finish(
+            self.local
+                .ensure_global_slot(&request.project_name, &request.resolved_spec)
+                .await,
+        )
     }
 
     async fn start_container(
@@ -1024,10 +974,7 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 mod tests {
     use super::{MachineService, local_error, store_error};
     use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
-    use ployz_core::{
-        MachineRpc, ProjectName, QualifiedService, RpcErrorCode, RpcResponseBody,
-        RuntimeWatchRequest, ServiceName, op,
-    };
+    use ployz_core::{MachineRpc, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, op};
     use std::sync::{Arc, Mutex};
     use tokio::sync::watch;
     use tonic::{Code, Request};
@@ -1088,28 +1035,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), Code::Unavailable);
-        let _ = std::fs::remove_dir_all(data_dir);
-    }
-
-    #[test]
-    fn global_slot_lock_is_per_qualified_service() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "ployzd-slot-lock-{}",
-            ployz_core::MachineId::random()
-        ));
-        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-        let (restart, _) = watch::channel(false);
-        let service = MachineService::new(store, restart);
-        let caddy = QualifiedService::system_caddy();
-        let other = QualifiedService::new(
-            ProjectName::parse("app").unwrap(),
-            ServiceName::parse("api").unwrap(),
-        );
-        let first = service.slot_lock(&caddy);
-        let again = service.slot_lock(&caddy);
-        let different = service.slot_lock(&other);
-        assert!(Arc::ptr_eq(&first, &again));
-        assert!(!Arc::ptr_eq(&first, &different));
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }

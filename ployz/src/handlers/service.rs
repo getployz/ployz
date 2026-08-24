@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use clap::ArgMatches;
 use ployz_core::{
     ContainerAction, ContainerRef, ContainerRuntimeObservation, HealthObservation, LiveServices,
-    MachineObservation, MembershipObservation, RpcError, ServiceMode, ServiceObservation,
-    ServiceSelector, machine_matches_placement, select_service,
+    MachineObservation, MembershipObservation, RpcError, ServiceObservation, ServiceSelector,
+    machine_matches_placement, select_service,
 };
 
 use super::{Error, leaf_matches, with_client};
@@ -58,9 +58,7 @@ fn service_counts(service: &ServiceObservation, machines: &[MachineObservation])
         })
         .count();
     let expected = service
-        .newest_service_container()
-        .map(|container| &container.as_observation().resolved_spec)
-        .filter(|spec| spec.mode == ServiceMode::Global)
+        .observed_global_slot_spec()
         .map_or(service.containers.len(), |spec| {
             machines
                 .iter()
@@ -506,8 +504,8 @@ mod tests {
     }
 
     fn machine(id: char, name: &str, membership: MembershipObservation) -> MachineObservation {
-        MachineObservation {
-            machine: Machine {
+        MachineObservation::new(
+            Machine {
                 id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
                 name: MachineName::parse(name).unwrap(),
                 subnet: format!("10.210.{}.0/24", id.to_digit(16).unwrap())
@@ -520,11 +518,7 @@ mod tests {
                 runtime: Default::default(),
             },
             membership,
-            storage: None,
-            selected_endpoint: None,
-            rtt: None,
-            global_reconcile_failures: Vec::new(),
-        }
+        )
     }
 
     fn names<'a>(containers: &'a [ContainerRef<'a>]) -> Vec<&'a str> {
