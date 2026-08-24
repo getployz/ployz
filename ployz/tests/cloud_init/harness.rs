@@ -3,6 +3,7 @@
 use std::{
     collections::VecDeque,
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
@@ -24,9 +25,10 @@ use ployz_core::{
 use ployz_relay::{ClientError, DialCredential, Open, RegisterRequest, Relay, RelayClient};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, UnixListener},
     task::JoinHandle,
 };
+use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status, Streaming, transport::Server};
 
 #[path = "../support/inspect_telemetry.rs"]
@@ -227,11 +229,6 @@ impl JoinDaemon {
             .unwrap()
             .clone()
             .expect("Join was called")
-    }
-
-    pub fn with_daemon_version(self, version: &str) -> Self {
-        self.set_daemon_version(version);
-        self
     }
 
     pub fn set_daemon_version(&self, version: &str) {
@@ -819,6 +816,23 @@ pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(tcp)),
     );
     address
+}
+
+pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf) {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let socket = std::env::temp_dir().join(format!(
+        "ployz-cloud-enroll-{}-{}.sock",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&socket);
+    let unix = UnixListener::bind(&socket).unwrap();
+    tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(daemon))
+            .serve_with_incoming(UnixListenerStream::new(unix)),
+    );
+    (format!("unix://{}", socket.display()), socket)
 }
 
 async fn hold_register(

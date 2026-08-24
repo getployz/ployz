@@ -211,8 +211,25 @@ async fn synchronize_daemon(
     if daemon.daemon_version == env!("CARGO_PKG_VERSION") {
         return Ok(client);
     }
+    if !matches!(client.connection().transport(), Transport::Unix(_)) {
+        return Err(Error::usage(format!(
+            "daemon version synchronization requires running ployz cloud enroll on the Machine itself; connected through {}",
+            client.connection()
+        )));
+    }
     installer.install(env!("CARGO_PKG_VERSION"), StorageChoice::None)?;
-    wait_client(matches).await
+    let mut client = wait_client(matches).await?;
+    let daemon = client
+        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .await?;
+    if daemon.daemon_version != env!("CARGO_PKG_VERSION") {
+        return Err(Error::usage(format!(
+            "daemon version remained {} after installing CLI version {}",
+            daemon.daemon_version,
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
+    Ok(client)
 }
 
 async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
