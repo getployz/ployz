@@ -96,6 +96,7 @@ impl MachineService {
         self
     }
 
+    /// Install the receiver for Machine-local Global reconcile observations.
     #[must_use]
     pub(crate) fn with_global_reconcile_observations(
         mut self,
