@@ -3,6 +3,7 @@ mod cluster_dns;
 mod data_loss;
 mod deploy;
 mod hostname;
+mod ingress;
 mod issuance;
 mod machine;
 mod observation;
@@ -16,6 +17,7 @@ pub use cluster_dns::*;
 pub use data_loss::*;
 pub use deploy::*;
 pub use hostname::*;
+pub use ingress::*;
 pub use issuance::*;
 pub use machine::*;
 pub use observation::*;
@@ -28,7 +30,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::MachineId;
 
-pub const CADDY_VERIFY_PATH: &str = "/.ployz-verify";
+/// HTTP path served by the Ingress Proxy to prove Machine reachability.
+pub const INGRESS_VERIFY_PATH: &str = "/.ployz-verify";
 
 /// A name lookup result. Duplicate names are a normal observable state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

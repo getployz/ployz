@@ -91,13 +91,10 @@ pub struct NetworkPlane {
 
 impl NetworkPlane {
     pub async fn start(record: &LocalMachineRecord) -> Result<Option<Self>, NetworkError> {
-        let (machine, bootstrap) = match &record.body {
-            LocalMachineBody::Joining {
-                machine, bootstrap, ..
-            }
-            | LocalMachineBody::Participating {
-                machine, bootstrap, ..
-            } => (machine.clone(), bootstrap.as_slice()),
+        let bootstrap = record.bootstrap();
+        let machine = match &record.body {
+            LocalMachineBody::Joining { machine, .. }
+            | LocalMachineBody::Participating { machine, .. } => machine.clone(),
             LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
                 return Ok(None);
             }

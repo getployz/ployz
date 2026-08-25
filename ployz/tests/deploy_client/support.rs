@@ -21,8 +21,8 @@ use ployz_core::{
     LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
     ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, ProjectName,
-    RequestedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
     ServiceVolumeReference, UpdateOrder, VolumeInventory, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::Value;
@@ -40,10 +40,12 @@ pub(super) struct DeployService {
     create_volume_verification_error: Option<RpcError>,
     containers: Arc<AtomicUsize>,
     created_projects: Arc<Mutex<Vec<ProjectName>>>,
+    created_specs: Arc<Mutex<Vec<ResolvedServiceSpec>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     mutating_rpcs: Arc<AtomicUsize>,
     domain: Option<String>,
     hold_health: bool,
+    ingress_backend: Option<ployz_core::IngressProxyBackend>,
 }
 
 impl DeployService {
@@ -54,10 +56,12 @@ impl DeployService {
             create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
+            created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
             hold_health: false,
+            ingress_backend: Some(ployz_core::IngressProxyBackend::Caddy),
         }
     }
 
@@ -68,10 +72,12 @@ impl DeployService {
             create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
+            created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
             hold_health: false,
+            ingress_backend: Some(ployz_core::IngressProxyBackend::Caddy),
         }
     }
 
@@ -103,6 +109,14 @@ impl DeployService {
         self
     }
 
+    pub(super) fn with_ingress_backend(
+        mut self,
+        backend: Option<ployz_core::IngressProxyBackend>,
+    ) -> Self {
+        self.ingress_backend = backend;
+        self
+    }
+
     pub(super) fn mutating_rpcs(&self) -> Arc<AtomicUsize> {
         self.mutating_rpcs.clone()
     }
@@ -113,6 +127,10 @@ impl DeployService {
 
     pub(super) fn created_projects(&self) -> Arc<Mutex<Vec<ProjectName>>> {
         self.created_projects.clone()
+    }
+
+    pub(super) fn created_specs(&self) -> Arc<Mutex<Vec<ResolvedServiceSpec>>> {
+        self.created_specs.clone()
     }
 
     fn record_mutation(&self) {
@@ -243,6 +261,10 @@ impl MachineRpc for DeployService {
             .lock()
             .unwrap()
             .push(create.project_name);
+        self.created_specs
+            .lock()
+            .unwrap()
+            .push(create.resolved_spec.clone());
         let n = self.containers.fetch_add(1, Ordering::SeqCst) + 1;
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         encoded(RpcResponse::from(ContainerCreated {
@@ -277,7 +299,14 @@ impl MachineRpc for DeployService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machine_id = machine_from_metadata(&request)?;
+        let machine_id = if request.metadata().contains_key("machine") {
+            machine_from_metadata(&request)?
+        } else {
+            self.machines
+                .first()
+                .map(|machine| machine.machine.id)
+                .ok_or_else(|| Status::unavailable("no entry Machine"))?
+        };
         let request = request
             .into_inner()
             .decode_request()
@@ -297,6 +326,7 @@ impl MachineRpc for DeployService {
             cloud_paired: false,
             telemetry,
             storage: self.machines.first().and_then(|machine| machine.storage),
+            ingress_proxy_backend: self.ingress_backend,
         }))
     }
     async fn machine_token(
@@ -458,7 +488,7 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn get_caddy_config(
+    async fn get_ingress_proxy_config(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -563,13 +593,7 @@ pub(super) async fn connected(
     Client,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 ) {
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = tcp.local_addr().unwrap();
-    let server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(service))
-            .serve_with_incoming(TcpListenerStream::new(tcp)),
-    );
+    let (address, server) = listening(service).await;
     let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
@@ -580,6 +604,22 @@ pub(super) async fn connected(
     .await
     .unwrap();
     (client, server)
+}
+
+pub(super) async fn listening(
+    service: DeployService,
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(service))
+            .serve_with_incoming(TcpListenerStream::new(tcp)),
+    );
+    (address, server)
 }
 
 pub(super) fn health_spec(name: &str) -> RequestedServiceSpec {

@@ -322,7 +322,7 @@ fn requested_with_graphs(
         volume_graph: ServiceVolumeGraph::parse(volumes, mounts).unwrap(),
         config_graph: ServiceConfigGraph::parse(configs, config_mounts).unwrap(),
         pre_deploy: None,
-        caddy_config: None,
+        ingress_proxy_fragment: None,
         update: Default::default(),
     }
 }

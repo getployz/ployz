@@ -525,12 +525,12 @@ impl QualifiedService {
         Ok(Self { project, name })
     }
 
-    /// Infrastructure Caddy in the reserved Project.
+    /// Infrastructure Ingress Proxy in the reserved Project.
     #[must_use]
-    pub fn system_caddy() -> Self {
+    pub fn system_ingress() -> Self {
         Self::new(
             ProjectName::system(),
-            ServiceName::parse("caddy").expect("caddy is a DNS-label Service Name"),
+            ServiceName::parse("ingress").expect("ingress is a DNS-label Service Name"),
         )
     }
 }

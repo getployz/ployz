@@ -110,6 +110,7 @@ fn usable_endpoints(config: &IpamConfig) -> Result<(IpAddr, u64), Error> {
     let pool = config
         .ip_range
         .as_deref()
+        .filter(|range| !range.is_empty())
         .unwrap_or(subnet_text)
         .parse::<IpNet>()
         .map_err(|_| invalid())?;
@@ -211,7 +212,7 @@ mod tests {
     fn bridge_capacity_comes_from_live_subnets_and_attachments() {
         let attachments = ["endpoint-a", "endpoint-b"];
         let usable = usable_endpoint_count(&[
-            ipam("10.0.0.0/29", None, "10.0.0.1", &[]),
+            ipam("10.0.0.0/29", Some(""), "10.0.0.1", &[]),
             ipam("10.0.1.0/30", None, "10.0.1.1", &[]),
         ])
         .unwrap();

@@ -40,7 +40,7 @@ pub fn command() -> Command {
     base("ployz", "Manage Ployz machines, services, and volumes")
         .arg(switch("version", Some('V')).help("Print version"))
         .subcommand(build())
-        .subcommand(caddy())
+        .subcommand(ingress())
         .subcommand(ctx())
         .subcommand(deploy())
         .subcommand(dns())
@@ -170,19 +170,21 @@ fn deploy() -> Command {
         .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
 }
 
-fn caddy() -> Command {
-    base("caddy", "Manage Caddy")
+fn ingress() -> Command {
+    base("ingress", "Manage the Ingress Proxy")
         .arg_required_else_help(true)
-        .subcommand(base("config", "Print Caddy configuration").arg(value("machine", Some('m'))))
         .subcommand(
-            base("deploy", "Deploy Caddy")
+            base("config", "Print Ingress Proxy configuration").arg(value("machine", Some('m'))),
+        )
+        .subcommand(
+            base("deploy", "Deploy the Ingress Proxy")
                 .arg(value("caddyfile", None).value_hint(ValueHint::FilePath))
                 .arg(value("image", None))
                 .arg(many("machine", Some('m')))
                 .arg(switch("recreate", None))
                 .arg(switch("skip-health", None)),
         )
-        .subcommand(log_flags(base("logs", "Show Caddy logs"), false).visible_alias("log"))
+        .subcommand(log_flags(base("logs", "Show Ingress Proxy logs"), false).visible_alias("log"))
 }
 
 fn ctx() -> Command {
@@ -246,6 +248,7 @@ fn images() -> Command {
 fn cloud() -> Command {
     Command::new("cloud")
         .about("Manage Cloud")
+        .subcommand_required(true)
         .arg_required_else_help(true)
         .arg(
             value("cloud-url", None)
@@ -265,7 +268,8 @@ fn cloud_enroll() -> Command {
                 .default_value("none")
                 .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
         )
-        .arg(switch("no-caddy", None))
+        .arg(switch("no-ingress", None))
+        .arg(ingress_backend())
         .arg(switch("no-dns", None))
         .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))
         .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
@@ -351,7 +355,7 @@ fn machine() -> Command {
 fn provisioning_flags(command: Command) -> Command {
     command
         .arg(value("name", Some('n')))
-        .arg(switch("no-caddy", None))
+        .arg(switch("no-ingress", None))
         .arg(switch("no-install", None))
         .arg(
             value("storage", None)
@@ -380,6 +384,13 @@ fn provisioning_flags(command: Command) -> Command {
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
+fn ingress_backend() -> Arg {
+    value("ingress-backend", None)
+        .default_value("zentinel")
+        .value_parser(clap::value_parser!(ployz_core::IngressProxyBackend))
+        .help("Select the founding-time Ingress Proxy Backend")
+}
+
 fn machine_add() -> Command {
     provisioning_flags(base("add", "Add a remote machine")).arg(positional("destination", true))
 }
@@ -392,7 +403,9 @@ fn machine_init() -> Command {
         .arg(value("dns-endpoint", None).default_value(crate::dns::HOSTED_DNS_ENDPOINT))
         .arg(value("network", None).default_value("10.210.0.0/16"))
         .arg(switch("no-dns", None));
-    provisioning_flags(command).arg(positional("destination", false))
+    provisioning_flags(command)
+        .arg(ingress_backend())
+        .arg(positional("destination", false))
 }
 
 fn project() -> Command {

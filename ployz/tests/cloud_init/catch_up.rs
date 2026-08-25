@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, fs, process::Output};
 
 use super::harness::{
-    EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, caddy_on, founder_machine, registration,
-    serve_machine,
+    EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, founder_machine, ingress_on,
+    registration, serve_machine,
 };
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{
@@ -186,7 +186,7 @@ fn assert_joined_with_incomplete_catch_up(output: &Output) {
         stderr.contains("remains a Cluster member"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("ployz caddy deploy"), "stderr: {stderr}");
+    assert!(stderr.contains("ployz ingress deploy"), "stderr: {stderr}");
     assert!(stderr.contains("shop/worker"), "stderr: {stderr}");
     assert!(
         stderr.contains("redeploy Project Service `shop/worker`"),
@@ -195,8 +195,8 @@ fn assert_joined_with_incomplete_catch_up(output: &Output) {
 }
 
 fn globals_on(machine: &ployz_core::Machine) -> Vec<ContainerObservation> {
-    let caddy = caddy_on(machine);
-    let mut worker = caddy.clone();
+    let ingress = ingress_on(machine);
+    let mut worker = ingress.clone();
     worker.container_id = ContainerId::parse("d".repeat(64)).unwrap();
     worker.display_name = "worker-a".into();
     worker.project_name = ProjectName::parse("shop").unwrap();
@@ -204,5 +204,5 @@ fn globals_on(machine: &ployz_core::Machine) -> Vec<ContainerObservation> {
     worker.service_name = ServiceName::parse("worker").unwrap();
     worker.resolved_spec.service_id = worker.service_id;
     worker.resolved_spec.name = worker.service_name.clone();
-    vec![caddy, worker]
+    vec![ingress, worker]
 }

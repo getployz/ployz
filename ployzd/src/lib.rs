@@ -12,7 +12,6 @@ pub struct VolumePluginStatus {
 
 mod docker_image;
 
-pub mod caddy;
 pub(crate) mod certificates;
 pub mod corrosion;
 pub mod daemon;
@@ -24,6 +23,7 @@ pub mod filesystem;
 mod global_reconcile;
 mod host_capacity;
 mod hosted_dns;
+pub(crate) mod ingress;
 pub mod logs;
 pub mod machine;
 #[doc(hidden)]

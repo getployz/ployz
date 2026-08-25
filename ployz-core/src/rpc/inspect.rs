@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, net::IpAddr};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AdvertisedEndpoint, InspectTelemetry, LocalMachinePhase, Machine, MachineId,
-    MachineStorageObservation, RttObservation, TelemetryObservation, WireGuardPublicKey,
+    AdvertisedEndpoint, IngressProxyBackend, InspectTelemetry, LocalMachinePhase, Machine,
+    MachineId, MachineStorageObservation, RttObservation, TelemetryObservation, WireGuardPublicKey,
 };
 
 use super::default_wireguard_port;
@@ -62,4 +62,7 @@ pub struct MachineDetails {
     /// Current local storage evidence when the daemon advertises support.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<MachineStorageObservation>,
+    /// Founder-selected backend when Cluster authority is available and valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_proxy_backend: Option<IngressProxyBackend>,
 }

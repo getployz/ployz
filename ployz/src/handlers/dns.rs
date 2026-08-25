@@ -11,7 +11,7 @@ pub(super) fn reserve(root: &ArgMatches) -> Result<(), Error> {
             .call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
             .await?;
         println!("Reserved Cluster domain: {}", domain.name);
-        crate::dns::update_records_for_caddy(&mut client).await?;
+        crate::dns::update_records_for_ingress(&mut client).await?;
         Ok(())
     })
 }

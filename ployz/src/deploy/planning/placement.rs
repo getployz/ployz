@@ -3,10 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
-    MachineObservation, PortPublication, RequestedServiceSpec, ResolvedServiceSpec,
-    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource, compare_specs,
+    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressProxyNetworkMode,
+    MachineId, MachineObservation, PortPublication, QualifiedService, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
+    ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource,
+    compare_specs, requested_ingress_proxy_backend,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -52,15 +53,38 @@ impl PlacementState {
     }
 }
 
+pub(super) struct GlobalPlacement<'placement> {
+    pub(super) identity: &'placement QualifiedService,
+    pub(super) service_id: &'placement ServiceId,
+    pub(super) current: &'placement [ServiceContainer],
+    pub(super) hooks: &'placement [HookContainer],
+    pub(super) machines: Vec<&'placement MachineObservation>,
+}
+
 pub(super) fn plan_global(
     requested: &RequestedServiceSpec,
-    service_id: &ServiceId,
-    current: &[ServiceContainer],
-    hooks: &[HookContainer],
-    machines: Vec<&MachineObservation>,
+    target: GlobalPlacement<'_>,
     placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
+    let GlobalPlacement {
+        identity,
+        service_id,
+        current,
+        hooks,
+        machines,
+    } = target;
+    let uses_bridge_endpoint = identity != &QualifiedService::system_ingress()
+        || requested_ingress_proxy_backend(requested).map_or(true, |backend| {
+            matches!(backend.network_mode(), IngressProxyNetworkMode::Bridge)
+        });
+    let endpoint_demand = |operation, hook_pending| {
+        if uses_bridge_endpoint {
+            EndpointDemand::for_operation(operation, hook_pending)
+        } else {
+            EndpointDemand::for_host_network(operation, hook_pending)
+        }
+    };
     let has_changes = machines.iter().any(|machine| {
         !matches!(
             global_endpoint_operation(current, machine.machine.id, requested, options),
@@ -86,10 +110,9 @@ pub(super) fn plan_global(
             let operation =
                 global_endpoint_operation(current, machine.machine.id, requested, options);
             (!matches!(operation, EndpointOperation::Unchanged)
-                && placement.capacity.fits_demand(
-                    &machine.machine.id,
-                    EndpointDemand::for_operation(operation, true),
-                ))
+                && placement
+                    .capacity
+                    .fits_demand(&machine.machine.id, endpoint_demand(operation, true)))
             .then_some(machine.machine.id)
         })
     });
@@ -111,10 +134,8 @@ pub(super) fn plan_global(
             .find(|container| super::super::is_active_runtime(&container.as_observation().runtime))
         {
             let observation = container.as_observation();
-            let demand = EndpointDemand::for_operation(
-                EndpointOperation::Replace,
-                hook_machine == Some(machine_id),
-            );
+            let demand =
+                endpoint_demand(EndpointOperation::Replace, hook_machine == Some(machine_id));
             if !placement.capacity.reserve(&machine_id, demand) {
                 return Err(capacity_error.clone());
             }
@@ -144,10 +165,8 @@ pub(super) fn plan_global(
                 skip_health_monitor: options.skip_health_monitor,
             }));
         } else {
-            let demand = EndpointDemand::for_operation(
-                EndpointOperation::Create,
-                hook_machine == Some(machine_id),
-            );
+            let demand =
+                endpoint_demand(EndpointOperation::Create, hook_machine == Some(machine_id));
             if !placement.capacity.reserve(&machine_id, demand) {
                 return Err(capacity_error.clone());
             }

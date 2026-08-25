@@ -45,7 +45,7 @@ impl FakeHostedService {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
-async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster_boundaries() {
+async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_cluster_boundaries() {
     let plan = ClusterPlan::new(&format!("l3-hosted-dns-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_two().await.unwrap();
@@ -80,9 +80,9 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         .await
         .unwrap();
 
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_exact_caddy(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
-    wait_exact_caddy(mapped_second, machines[1].id.as_str().as_bytes()).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_exact_ingress(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
+    wait_exact_ingress(mapped_second, machines[1].id.as_str().as_bytes()).await;
 
     let (port, hosted) = fake_hosted_service().await;
     let gateway = cluster
@@ -155,7 +155,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         )
         .await
         .unwrap();
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
     let partial = hosted.requests();
     assert_eq!(record_requests(&partial).len(), 3);
     assert_record(record_request(&partial, 2), "A", &[first_ip.to_string()]);
@@ -172,7 +172,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         .await
         .unwrap();
     let before_empty = hosted.requests().len();
-    let empty = run_cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    let empty = run_cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
     assert!(!empty.status.success());
     assert!(String::from_utf8_lossy(&empty.stderr).contains("no publicly reachable"));
     assert_eq!(hosted.requests().len(), before_empty);
@@ -283,10 +283,10 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
             .unwrap();
     }
 
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_exact_caddy(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
-    wait_exact_caddy(IpAddr::V4(second_ip), machines[1].id.as_str().as_bytes()).await;
-    wait_exact_caddy(IpAddr::V4(third_ip), machines[2].id.as_str().as_bytes()).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_exact_ingress(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
+    wait_exact_ingress(IpAddr::V4(second_ip), machines[1].id.as_str().as_bytes()).await;
+    wait_exact_ingress(IpAddr::V4(third_ip), machines[2].id.as_str().as_bytes()).await;
 
     let (port, hosted) = fake_hosted_service().await;
     let gateway = cluster
@@ -314,7 +314,7 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
     .await
     .unwrap();
     // Same refresh `machine add` runs after membership is saved, including when
-    // the add-time Caddy Deploy failed or was skipped.
+    // the add-time Ingress Proxy Deploy failed or was skipped.
     let before_add_refresh = record_requests(&hosted.requests()).len();
     ployz::dns::update_records_if_reserved(&mut client)
         .await
@@ -331,7 +331,7 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
             second_ip.to_string(),
             third_ip.to_string()
         ],
-        "last published * A at the authority must include a Machine that passes the Caddy probe"
+        "last published * A at the authority must include a Machine that passes the Ingress Proxy probe"
     );
 
     let before_remove = record_requests(&after_add_refresh).len();
@@ -366,7 +366,7 @@ fn outer_ipv4(cluster: &Cluster, index: usize) -> std::net::Ipv4Addr {
         .unwrap()
 }
 
-async fn wait_exact_caddy(address: IpAddr, expected: &[u8]) {
+async fn wait_exact_ingress(address: IpAddr, expected: &[u8]) {
     let http = HttpClient::builder()
         .no_proxy()
         .redirect(Policy::none())
@@ -379,7 +379,7 @@ async fn wait_exact_caddy(address: IpAddr, expected: &[u8]) {
                 .get(format!(
                     "http://{}{}",
                     std::net::SocketAddr::new(address, 80),
-                    ployz_core::CADDY_VERIFY_PATH
+                    ployz_core::INGRESS_VERIFY_PATH
                 ))
                 .send()
                 .await
@@ -392,7 +392,7 @@ async fn wait_exact_caddy(address: IpAddr, expected: &[u8]) {
         }
     })
     .await
-    .expect("Caddy verification endpoint did not become reachable");
+    .expect("Ingress Proxy verification endpoint did not become reachable");
 }
 
 fn cli(direct: &str, args: &[&str]) -> String {

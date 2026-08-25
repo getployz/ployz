@@ -109,6 +109,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "direct-push-reference-boundary".to_owned(),
             "fixed-wireguard-port".to_owned(),
             "images-json-output".to_owned(),
+            "ingress-proxy-vocabulary".to_owned(),
             "local-machine-init-stub".to_owned(),
             "listing-json-output".to_owned(),
             "machine-enrollment-storage".to_owned(),
@@ -116,7 +117,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "machine-inspect-telemetry".to_owned(),
             "native-completion".to_owned(),
             "no-nightly-daemon-channel".to_owned(),
-            "plain-caddy-config".to_owned(),
+            "plain-ingress-config".to_owned(),
             "product-identity".to_owned(),
             "project-list-and-remove".to_owned(),
             "provisioned-volume-size".to_owned(),
@@ -149,7 +150,10 @@ fn reference_shape(
         .lines()
         .find_map(|line| line.strip_prefix("# uc"))
         .expect("command reference heading");
-    let command_path = format!("ployz{heading}");
+    let mut command_path = format!("ployz{heading}");
+    if deviations.contains("ingress-proxy-vocabulary") {
+        command_path = command_path.replacen("ployz caddy", "ployz ingress", 1);
+    }
     let mut flags = BTreeMap::new();
     let mut in_options = false;
     let mut current: Option<(String, Option<char>, String)> = None;
@@ -187,8 +191,28 @@ fn reference_shape(
             },
         );
     }
-    if command_path == "ployz caddy config" && deviations.contains("plain-caddy-config") {
+    if command_path == "ployz ingress config" && deviations.contains("plain-ingress-config") {
         flags.remove("no-color");
+    }
+    if matches!(
+        command_path.as_str(),
+        "ployz machine add" | "ployz machine init"
+    ) && deviations.contains("ingress-proxy-vocabulary")
+    {
+        let flag = flags
+            .remove("no-caddy")
+            .expect("Machine provisioning commands have --no-caddy upstream");
+        flags.insert("no-ingress".into(), flag);
+    }
+    if command_path == "ployz machine init" && deviations.contains("ingress-proxy-vocabulary") {
+        flags.insert(
+            "ingress-backend".into(),
+            Flag {
+                short: None,
+                default: Some("zentinel".into()),
+                env: None,
+            },
+        );
     }
     if matches!(
         command_path.as_str(),
@@ -263,7 +287,7 @@ fn reference_shape(
             env: None,
         };
         match command_path.as_str() {
-            "ployz run" | "ployz service run" | "ployz caddy deploy" => {
+            "ployz run" | "ployz service run" | "ployz ingress deploy" => {
                 flags.insert("skip-health".into(), skip_health);
                 flags.insert(
                     "recreate".into(),
@@ -448,7 +472,7 @@ fn collect_clap_shapes(command: &Command, parent: &str, shapes: &mut BTreeMap<St
 
 fn reference_aliases(path: &str) -> BTreeSet<String> {
     let aliases: &[&str] = match path {
-        "ployz caddy logs" | "ployz machine logs" | "ployz service logs" => &["log"],
+        "ployz ingress logs" | "ployz machine logs" | "ployz service logs" => &["log"],
         "ployz ctx" => &["context"],
         "ployz ctx connection" => &["conn"],
         "ployz ctx ls" | "ployz image ls" | "ployz machine ls" | "ployz service ls"

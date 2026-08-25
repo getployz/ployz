@@ -6,7 +6,7 @@ use std::{
 };
 
 use ployz::compose::{ComposeError, LoadOptions, load_project};
-use ployz_core::VolumeSource;
+use ployz_core::{IngressProxyFragment, VolumeSource};
 
 #[test]
 fn compose_failures_probe_the_plugin_once_and_preserve_project_diagnostics() {
@@ -254,7 +254,9 @@ secrets:
     );
     let api = project.services.get("api").unwrap();
     assert_eq!(
-        api.caddy_config.as_deref(),
+        api.ingress_proxy_fragment
+            .as_ref()
+            .and_then(IngressProxyFragment::as_caddy),
         Some("api.example.test { reverse_proxy api:80 }")
     );
     assert_eq!(api.configs().first().unwrap().content, b"setting=true\n");

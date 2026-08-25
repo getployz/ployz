@@ -8,9 +8,9 @@ use std::{
 };
 
 use ployz_core::{
-    CloudPairing, ContainerCreated, InitializeRequest, Initialized, InspectRequest, JoinAccepted,
-    JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId,
-    MachineIdentity, MachineList, MachineObservation, MachineRemoved, MachineToken,
+    CloudPairing, ContainerCreated, ContainerKind, InitializeRequest, Initialized, InspectRequest,
+    JoinAccepted, JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails,
+    MachineId, MachineIdentity, MachineList, MachineObservation, MachineRemoved, MachineToken,
     MachineTokenRequest, MachineUpdated, ManagementAddress, MembershipObservation, ProjectName,
     PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
     RemoveMachineRequest, ResetAccepted, ResolvedServiceSpec, RttObservation, RttStatistics,
@@ -21,8 +21,8 @@ use thiserror::Error;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
-    LocalMachineRecord, LocalMachineStore, STORAGE_OBSERVATION_TIMEOUT, StoreError, local_runtime,
-    local_storage,
+    FoundingCluster, LocalMachineRecord, LocalMachineStore, STORAGE_OBSERVATION_TIMEOUT,
+    StoreError, local_runtime, local_storage,
 };
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
@@ -42,6 +42,8 @@ pub struct LocalMachine {
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     global_slot_lock: Arc<AsyncMutex<()>>,
+    /// Serializes first-process Ingress Proxy filesystem preparation.
+    pub(super) ingress_runtime_lock: Arc<AsyncMutex<()>>,
 }
 
 #[derive(Clone)]
@@ -102,6 +104,14 @@ pub enum Error {
     LockPoisoned,
     #[error(transparent)]
     Cluster(#[from] crate::corrosion::Error),
+    /// The immutable Cluster Ingress Proxy Backend is unavailable or inconsistent.
+    #[error("{0}")]
+    IngressProxyBackend(#[source] crate::corrosion::Error),
+    #[error(transparent)]
+    IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
+    /// Backend runtime preparation failed before container creation.
+    #[error(transparent)]
+    IngressRuntime(#[from] super::ingress::IngressRuntimeError),
     #[error(transparent)]
     Network(#[from] NetworkError),
     #[error(transparent)]
@@ -126,6 +136,7 @@ impl LocalMachine {
             cluster: None,
             containers: None,
             global_slot_lock: Arc::new(AsyncMutex::new(())),
+            ingress_runtime_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -161,11 +172,20 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
         let _guard = self.global_slot_lock.lock().await;
+        let network = self
+            .prepare_service_runtime(ContainerKind::ServiceContainer, project, spec)
+            .await?;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record()?;
         let machine = record.machine().ok_or(Error::NotParticipating)?;
         Ok(containers
-            .ensure_global_slot(&record.id(), machine.subnet.gateway(), project, spec)
+            .ensure_global_slot(
+                &record.id(),
+                machine.subnet.gateway(),
+                project,
+                spec,
+                network,
+            )
             .await?)
     }
 
@@ -178,7 +198,7 @@ impl LocalMachine {
         Ok(self.lock_store()?.record().clone())
     }
 
-    fn lock_store(&self) -> Result<MutexGuard<'_, LocalMachineStore>, Error> {
+    pub(super) fn lock_store(&self) -> Result<MutexGuard<'_, LocalMachineStore>, Error> {
         self.store.lock().map_err(|_| Error::LockPoisoned)
     }
 
@@ -266,6 +286,10 @@ impl LocalMachine {
         } else {
             None
         };
+        let ingress_proxy_backend = match &self.cluster {
+            Some(cluster) => cluster.replicated.ingress_proxy_backend().await.ok(),
+            None => None,
+        };
         Ok(MachineDetails {
             id: record.id(),
             phase: record.phase(),
@@ -277,6 +301,7 @@ impl LocalMachine {
             cloud_paired: record.cloud_pairing.is_some(),
             telemetry,
             storage,
+            ingress_proxy_backend,
         })
     }
 
@@ -352,7 +377,10 @@ impl LocalMachine {
     pub fn initialize(&self, request: InitializeRequest) -> Result<Initialized, Error> {
         let machine = self.lock_store()?.initialize(
             request.name,
-            request.cluster_network,
+            FoundingCluster {
+                network: request.cluster_network,
+                ingress_proxy_backend: request.ingress_proxy_backend,
+            },
             request.public_ip,
             request.advertised_endpoints,
             request.wireguard_mtu,

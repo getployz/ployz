@@ -329,6 +329,7 @@ impl MachineRpc for DiscoveryService {
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
                 telemetry,
                 storage: inspect.include_storage.then_some(self.storage),
+                ingress_proxy_backend: Some(ployz_core::IngressProxyBackend::Caddy),
             })
             .encode()
             .unwrap(),
@@ -724,7 +725,7 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
-    async fn get_caddy_config(
+    async fn get_ingress_proxy_config(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

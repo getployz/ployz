@@ -14,8 +14,8 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
-    contacts_authority, directory_from_env, issuance_action, machine_jitter, machine_rank,
+    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, contacts_authority,
+    directory_from_env, ingress_challenge_ips, issuance_action, machine_jitter, machine_rank,
     material_validity, order_certificate, poll_wait, renewal_window, wait_for_http01,
     wanted_certificate_hosts,
 };
@@ -354,39 +354,39 @@ fn poll_wait_follows_each_certificate_lifetime() {
 }
 
 #[test]
-fn probe_addresses_are_the_caddy_intersection() {
-    let caddy_ips = BTreeSet::from([ip("192.0.2.1"), ip("192.0.2.2")]);
+fn probe_addresses_are_the_ingress_intersection() {
+    let ingress_ips = BTreeSet::from([ip("192.0.2.1"), ip("192.0.2.2")]);
     assert_eq!(
-        challenge_probe_addresses(&[ip("192.0.2.2"), ip("198.51.100.10")], &caddy_ips),
+        challenge_probe_addresses(&[ip("192.0.2.2"), ip("198.51.100.10")], &ingress_ips),
         vec![socket("192.0.2.2")]
     );
     assert_eq!(
-        challenge_probe_addresses(&[ip("198.51.100.10")], &caddy_ips),
+        challenge_probe_addresses(&[ip("198.51.100.10")], &ingress_ips),
         Vec::<SocketAddr>::new()
     );
     assert_eq!(
-        challenge_probe_addresses(&[], &caddy_ips),
+        challenge_probe_addresses(&[], &ingress_ips),
         Vec::<SocketAddr>::new()
     );
 }
 
 #[test]
-fn caddy_challenge_ips_come_from_running_caddy_machines() {
+fn ingress_challenge_ips_come_from_running_ingress_machines() {
     let local = machine_with_endpoint("a", "192.0.2.1");
     let remote = machine_with_endpoint("b", "192.0.2.2");
-    let mut caddy = observation(1, "caddy", Vec::new());
-    caddy.machine_id = local.id;
-    caddy.service_name = ServiceName::parse("caddy").unwrap();
-    caddy.project_name = ProjectName::system();
-    let mut down = observation(2, "caddy", Vec::new());
+    let mut ingress = observation(1, "ingress", Vec::new());
+    ingress.machine_id = local.id;
+    ingress.service_name = ServiceName::parse("ingress").unwrap();
+    ingress.project_name = ProjectName::system();
+    let mut down = observation(2, "ingress", Vec::new());
     down.machine_id = remote.id;
-    down.service_name = ServiceName::parse("caddy").unwrap();
+    down.service_name = ServiceName::parse("ingress").unwrap();
     down.project_name = ProjectName::system();
     down.runtime = ContainerRuntimeObservation::Exited { code: 1 };
     let mut user = observation(3, "caddy", Vec::new());
     user.machine_id = remote.id;
     assert_eq!(
-        caddy_challenge_ips(&[local, remote], &[caddy, down, user]),
+        ingress_challenge_ips(&[local, remote], &[ingress, down, user]),
         BTreeSet::from([ip("192.0.2.1")])
     );
 }

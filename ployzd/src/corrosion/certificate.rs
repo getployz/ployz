@@ -39,7 +39,7 @@ impl CertificateMaterial {
 }
 
 /// HTTP-01 token and key authorization held in cluster state for one Ingress Hostname.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CertificateChallenge {
     token: String,
     response: String,

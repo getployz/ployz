@@ -19,8 +19,8 @@ mod volumes;
 
 use capacity::CapacityBudget;
 use placement::{
-    CapacityAdmission, PlacementState, ReplicatedPlacement, is_up_to_date, plan_global,
-    plan_replicated,
+    CapacityAdmission, GlobalPlacement, PlacementState, ReplicatedPlacement, is_up_to_date,
+    plan_global, plan_replicated,
 };
 use volumes::{
     ProvisionedVolumeBindings, VolumePins, constrain_volume_candidates, named_volume_uses,
@@ -179,7 +179,7 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
             .iter()
             .find(|candidate| candidate.name == spec.name)
             .expect("apply-set names are drawn from the Intent target");
-        let mut planned = normalize(scoped);
+        let mut planned = scoped.clone();
         crate::dns::expand_ingress_ports(
             &mut planned,
             &intent.project_name,
@@ -569,10 +569,13 @@ fn plan_one_service(
         )?,
         ServiceMode::Global => plan_global(
             requested,
-            &service_id,
-            current,
-            hooks,
-            machines,
+            GlobalPlacement {
+                identity: &identity,
+                service_id: &service_id,
+                current,
+                hooks,
+                machines,
+            },
             placement,
             options,
         )?,
@@ -658,16 +661,6 @@ fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> Pl
         constraints.push(EliminatingConstraint::MachineDown { names: down });
     }
     PlanError::no_eligible_machines(constraints)
-}
-
-fn normalize(requested: &RequestedServiceSpec) -> RequestedServiceSpec {
-    let mut requested = requested.clone();
-    requested.caddy_config = requested
-        .caddy_config
-        .take()
-        .map(|config| config.trim().to_owned())
-        .filter(|config| !config.is_empty());
-    requested
 }
 
 fn placement_state(seed: u64, name: &ServiceName) -> u64 {

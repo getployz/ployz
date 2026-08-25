@@ -41,6 +41,69 @@ pub enum TransportProtocol {
     Udp,
 }
 
+/// Opaque Ingress Proxy configuration tagged with the backend that understands it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(
+    rename_all = "snake_case",
+    tag = "backend",
+    try_from = "IngressProxyFragmentWire"
+)]
+pub enum IngressProxyFragment {
+    /// Raw Caddy configuration evaluated only by the Caddy backend.
+    #[non_exhaustive]
+    Caddy {
+        /// Non-empty Caddy configuration.
+        config: String,
+    },
+}
+
+impl IngressProxyFragment {
+    /// Parse a non-empty raw Caddy fragment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `config` is empty after trimming.
+    pub fn parse_caddy(config: impl Into<String>) -> Result<Self, ValueError> {
+        let config = config.into();
+        let trimmed = config.trim();
+        if trimmed.is_empty() {
+            return Err(ValueError::new(
+                "Caddy Ingress Proxy Fragment",
+                config,
+                "non-empty configuration",
+            ));
+        }
+        Ok(Self::Caddy {
+            config: trimmed.to_owned(),
+        })
+    }
+
+    /// Borrow the raw fragment when it is for Caddy.
+    #[must_use]
+    pub fn as_caddy(&self) -> Option<&str> {
+        match self {
+            Self::Caddy { config } => Some(config),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "backend")]
+enum IngressProxyFragmentWire {
+    Caddy { config: String },
+}
+
+impl TryFrom<IngressProxyFragmentWire> for IngressProxyFragment {
+    type Error = ValueError;
+
+    fn try_from(fragment: IngressProxyFragmentWire) -> Result<Self, Self::Error> {
+        match fragment {
+            IngressProxyFragmentWire::Caddy { config } => Self::parse_caddy(config),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum HostBind {
@@ -550,7 +613,8 @@ pub struct RequestedServiceSpec {
     pub volume_graph: ServiceVolumeGraph,
     pub config_graph: ServiceConfigGraph,
     pub pre_deploy: Option<PreDeployHook>,
-    pub caddy_config: Option<String>,
+    /// Backend-tagged custom configuration for this Service.
+    pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: UpdateConfig,
 }
 
@@ -567,7 +631,8 @@ pub struct ResolvedServiceSpec {
     pub volume_graph: ServiceVolumeGraph,
     pub config_graph: ServiceConfigGraph,
     pub pre_deploy: Option<PreDeployHook>,
-    pub caddy_config: Option<String>,
+    /// Backend-tagged custom configuration for this Service.
+    pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: ResolvedUpdateConfig,
 }
 
@@ -597,7 +662,7 @@ struct RequestedServiceSpecWire {
     #[serde(default)]
     pre_deploy: Option<PreDeployHook>,
     #[serde(default)]
-    caddy_config: Option<String>,
+    ingress_proxy_fragment: Option<IngressProxyFragment>,
     #[serde(default)]
     update: UpdateConfig,
 }
@@ -621,7 +686,7 @@ struct ResolvedServiceSpecWire {
     #[serde(default)]
     pre_deploy: Option<PreDeployHook>,
     #[serde(default)]
-    caddy_config: Option<String>,
+    ingress_proxy_fragment: Option<IngressProxyFragment>,
     #[serde(default)]
     update: ResolvedUpdateConfig,
 }
@@ -639,7 +704,7 @@ impl TryFrom<RequestedServiceSpecWire> for RequestedServiceSpec {
             volume_graph: ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
             config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
             pre_deploy: wire.pre_deploy,
-            caddy_config: wire.caddy_config,
+            ingress_proxy_fragment: wire.ingress_proxy_fragment,
             update: wire.update,
         })
     }
@@ -662,7 +727,7 @@ impl From<RequestedServiceSpec> for RequestedServiceSpecWire {
             mounts,
             configs,
             pre_deploy: spec.pre_deploy,
-            caddy_config: spec.caddy_config,
+            ingress_proxy_fragment: spec.ingress_proxy_fragment,
             update: spec.update,
         }
     }
@@ -682,7 +747,7 @@ impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
             volume_graph: ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
             config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
             pre_deploy: wire.pre_deploy,
-            caddy_config: wire.caddy_config,
+            ingress_proxy_fragment: wire.ingress_proxy_fragment,
             update: wire.update,
         })
     }
@@ -706,7 +771,7 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
             mounts,
             configs,
             pre_deploy: spec.pre_deploy,
-            caddy_config: spec.caddy_config,
+            ingress_proxy_fragment: spec.ingress_proxy_fragment,
             update: spec.update,
         }
     }
@@ -754,7 +819,7 @@ impl RequestedServiceSpec {
             volume_graph: self.volume_graph.clone(),
             config_graph: self.config_graph.clone(),
             pre_deploy: self.pre_deploy.clone(),
-            caddy_config: self.caddy_config.clone(),
+            ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update,
         }
     }
@@ -797,7 +862,7 @@ impl ResolvedServiceSpec {
             volume_graph: self.volume_graph.clone(),
             config_graph: self.config_graph.clone(),
             pre_deploy: self.pre_deploy.clone(),
-            caddy_config: self.caddy_config.clone(),
+            ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update: UpdateConfig {
                 order: Some(self.update.order),
                 monitor_millis: self.update.monitor_millis,
@@ -837,7 +902,7 @@ fn immutable_service_fields_changed(
         volume_graph: current_volumes,
         config_graph: current_configs,
         pre_deploy: _,
-        caddy_config: current_caddy_config,
+        ingress_proxy_fragment: current_ingress_proxy_fragment,
         update: _,
     } = current;
     let RequestedServiceSpec {
@@ -849,7 +914,7 @@ fn immutable_service_fields_changed(
         volume_graph: requested_volumes,
         config_graph: requested_configs,
         pre_deploy: _,
-        caddy_config: requested_caddy_config,
+        ingress_proxy_fragment: requested_ingress_proxy_fragment,
         update: _,
     } = requested;
 
@@ -862,8 +927,7 @@ fn immutable_service_fields_changed(
         || !same_multiset(current_volumes.mounts(), requested_volumes.mounts())
         || !same_multiset(current_configs.configs(), requested_configs.configs())
         || !same_multiset(current_configs.mounts(), requested_configs.mounts())
-        || current_caddy_config.as_deref().map(str::trim)
-            != requested_caddy_config.as_deref().map(str::trim)
+        || current_ingress_proxy_fragment != requested_ingress_proxy_fragment
 }
 
 fn immutable_container_fields_changed(

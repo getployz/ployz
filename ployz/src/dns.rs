@@ -6,8 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
-    HttpProtocol, IngressHost, IngressHostname, IngressLabelTooLong, Machine, MachineId,
+    ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, HttpProtocol,
+    INGRESS_VERIFY_PATH, IngressHost, IngressHostname, IngressLabelTooLong, Machine, MachineId,
     MachineObservation, PortPublication, ProjectName, QualifiedService, RequestedServiceSpec,
     cluster_dns_verdict, op,
 };
@@ -32,7 +32,7 @@ pub enum Error {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("no publicly reachable Caddy Machines found")]
+#[error("no publicly reachable Ingress Proxy Machines found")]
 pub struct NoReachableMachines;
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -61,14 +61,14 @@ fn protocol_label(protocol: &HttpProtocol) -> &'static str {
     }
 }
 
-/// Publish Caddy wildcard records when a Cluster domain is reserved.
+/// Publish Ingress Proxy wildcard records when a Cluster domain is reserved.
 ///
 /// # Errors
 ///
-/// Returns a connection, hosted-DNS, or reachability error from the Caddy refresh.
+/// Returns a connection, hosted-DNS, or reachability error from the Ingress Proxy refresh.
 pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error> {
     match client.domain_if_reserved().await? {
-        Some(_) => update_records_for_caddy(client).await,
+        Some(_) => update_records_for_ingress(client).await,
         None => Ok(()),
     }
 }
@@ -76,7 +76,7 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
 /// Publish remaining member public IPs after a Machine leaves.
 ///
 /// Uses the pre-removal membership snapshot so refresh does not Inspect over a
-/// reconverging mesh. Caddy filtering would need that mesh, so this path keeps
+/// reconverging mesh. Ingress Proxy filtering would need that mesh, so this path keeps
 /// every remaining public IP.
 ///
 /// # Errors
@@ -100,22 +100,22 @@ pub(crate) async fn update_records_after_removal(
     publish_records(client, records_from_machines(&remaining)?).await
 }
 
-/// Publish wildcard records for reachable Caddy Machines.
+/// Publish wildcard records for reachable Ingress Proxy Machines.
 ///
 /// # Errors
 ///
 /// Returns a connection, hosted-DNS, or [`NoReachableMachines`] error.
-pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> {
+pub async fn update_records_for_ingress(client: &mut Client) -> Result<(), Error> {
     let observations = client.machines().await?;
     let live = client.live_services_from(&observations).await?;
     let services = live.services();
-    let caddy_machines = services
+    let ingress_machines = services
         .iter()
         .flat_map(|service| &service.containers)
-        .filter(|container| crate::caddy::is_system_caddy(container.as_observation()))
+        .filter(|container| crate::ingress::is_system_ingress(container.as_observation()))
         .map(|container| container.as_observation().machine_id)
         .collect::<BTreeSet<_>>();
-    if caddy_machines.is_empty() {
+    if ingress_machines.is_empty() {
         return Ok(());
     }
 
@@ -123,7 +123,7 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     let machines = observations
         .into_iter()
         .map(|observation| observation.machine)
-        .filter(|machine| caddy_machines.contains(&machine.id) && machine.public_ip.is_some())
+        .filter(|machine| ingress_machines.contains(&machine.id) && machine.public_ip.is_some())
         .collect::<Vec<_>>();
     let records = records_from_machines(&probe_machines(machines).await?)?;
     publish_records(client, records).await
@@ -162,7 +162,7 @@ async fn probe_machine(http: &HttpClient, machine: &Machine) -> bool {
     };
     let address = SocketAddr::new(public_ip, 80);
     let Ok(response) = http
-        .get(format!("http://{address}{CADDY_VERIFY_PATH}"))
+        .get(format!("http://{address}{INGRESS_VERIFY_PATH}"))
         .send()
         .await
     else {

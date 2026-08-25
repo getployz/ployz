@@ -15,11 +15,11 @@ use ployz::{
     },
 };
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL,
-    MachineFailure, MachineStorageObservation, PROJECT_NAME_LABEL, PortPublication, ProjectName,
-    ProvisionedVolume, ProvisionedVolumeMaximumBytes, RestartPolicy, RpcError, RpcErrorCode,
-    ServiceMode, ServiceName, ServiceVolumeReference, TransportProtocol, UpdateOrder,
-    VolumeObservationFailure, VolumeSource,
+    DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname,
+    IngressProxyFragment, MANAGED_LABEL, MachineFailure, MachineStorageObservation,
+    PROJECT_NAME_LABEL, PortPublication, ProjectName, ProvisionedVolume,
+    ProvisionedVolumeMaximumBytes, RestartPolicy, RpcError, RpcErrorCode, ServiceMode, ServiceName,
+    ServiceVolumeReference, TransportProtocol, UpdateOrder, VolumeObservationFailure, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -255,7 +255,10 @@ configs:
         Some("Dockerfile.release")
     );
     assert_eq!(
-        service(&project, "caddy").caddy_config.as_deref(),
+        service(&project, "caddy")
+            .ingress_proxy_fragment
+            .as_ref()
+            .and_then(IngressProxyFragment::as_caddy),
         Some("app.example { reverse_proxy :80 }")
     );
 }
@@ -312,7 +315,7 @@ services:
     assert!(matches!(app.mode, ServiceMode::Replicated { replicas } if replicas.get() == 2));
     assert_eq!(app.placement, Default::default());
     assert!(app.ports.is_empty());
-    assert!(app.caddy_config.is_none());
+    assert!(app.ingress_proxy_fragment.is_none());
     assert_eq!(
         app.container.hostname.as_ref().unwrap().as_str(),
         "Shared.Host"
@@ -556,7 +559,11 @@ services:
         ".",
     )
     .unwrap();
-    assert_eq!(service(&empty_caddy, "app").caddy_config.as_deref(), None);
+    assert!(
+        service(&empty_caddy, "app")
+            .ingress_proxy_fragment
+            .is_none()
+    );
     assert!(
         parse_normalized(
             "services: {app: {image: app, x-caddy: {config: inline, unknown: bad}}}",

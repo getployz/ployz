@@ -6,9 +6,11 @@ Run every code change through this lens: ployz updates are cheap; ployzd daemon 
 
 Issue #607 is a narrow daemon-policy exception: ployzd owns periodic, Machine-local Global slot convergence because a Global is standing user intent. It may only add missing eligible slots from local Replicated Observations; it never removes or moves slots and never schedules replicated Services. Newer ployz must remain usable against a lagged ployzd that neither converges nor emits Global reconcile observations, so those additive observation fields deserialize absent as empty. This exception does not authorize other daemon-side orchestration.
 
+Issue #616 is a narrow greenfield contract exception: the pre-release Caddy-only daemon and RPC names are replaced in lockstep by the immutable Ingress Proxy Backend contract. Clusters and daemons from before #616 are not migrated or supported through compatibility aliases. This exception does not relax lagged-daemon compatibility for later changes to the new contract.
+
 ## Names
 
-Accessors omit `get_`: `name()`, `as_str()`. Wire RPC method names that already exist on the contract (`get_caddy_config`) stay as they are.
+Accessors omit `get_`: `name()`, `as_str()`. Wire RPC method names that already exist on the contract (`get_ingress_proxy_config`) stay as they are.
 
 Conversion prefixes:
 

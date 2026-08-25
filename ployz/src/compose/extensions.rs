@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use ployz_core::PreDeployHook;
+use ployz_core::{IngressProxyFragment, PreDeployHook};
 
 use super::{
     convert::{duration_millis, environment, invalid, shell},
@@ -11,7 +11,7 @@ pub(super) fn caddy(
     value: Option<&RawCaddy>,
     directory: &Path,
     service: &str,
-) -> Result<Option<String>, ComposeError> {
+) -> Result<Option<IngressProxyFragment>, ComposeError> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -34,7 +34,10 @@ pub(super) fn caddy(
         })?
     };
     let config = config.trim();
-    Ok((!config.is_empty()).then(|| config.to_owned()))
+    (!config.is_empty())
+        .then(|| IngressProxyFragment::parse_caddy(config))
+        .transpose()
+        .map_err(invalid)
 }
 
 pub(super) fn pre_deploy(

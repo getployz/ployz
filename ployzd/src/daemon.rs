@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::{service::Routes, transport::Server};
 
 use crate::{
-    caddy, certificates,
+    certificates,
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         RunningCorrosion, run_machine_publisher,
@@ -34,6 +34,7 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
     global_reconcile::{self, global_reconcile_observation_channel},
+    ingress,
     machine::{LocalMachineBody, LocalMachineStore, StoreError},
     metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
@@ -147,6 +148,15 @@ impl Daemon {
             }
         };
         let corrosion = start_corrosion(&config, &store).await?;
+        if let (Some(corrosion), Some(backend)) = (
+            corrosion.as_ref(),
+            local_record.founding_ingress_proxy_backend(),
+        ) {
+            corrosion
+                .store()
+                .publish_founding_ingress_proxy_backend(backend)
+                .await?;
+        }
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let containers = match (containers, replicated_store.clone()) {
@@ -169,12 +179,12 @@ impl Daemon {
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
-        let caddyfile = caddy::caddyfile_path(&config.data_dir);
-        let caddy_admin_socket = config
+        let ingress_data_dir = config.data_dir.clone();
+        let ingress_runtime_dir = config
             .socket
             .parent()
             .unwrap_or_else(|| Path::new("/run/ployz"))
-            .join("caddy/admin.sock");
+            .join("ingress");
         let service = MachineService::with_cluster(
             Arc::clone(&store),
             reset.clone(),
@@ -183,7 +193,7 @@ impl Daemon {
                 .map(|running| (running.store().clone(), running.admin_client())),
         )
         .with_optional_containers(containers.clone())
-        .with_caddyfile(caddyfile.clone())
+        .with_ingress_data_dir(config.data_dir.clone())
         .with_image_ingest(Arc::clone(&ingest))
         .with_cloud_pairing(cloud_pairing_tx)
         .with_global_reconcile_observations(global_reconcile_observations);
@@ -218,6 +228,7 @@ impl Daemon {
                 (Some(management), Some(gateway))
             });
         let socket = config.socket.clone();
+        let ingress_docker = containers.as_ref().map(ContainerRuntime::local_docker);
         let store_for_servers = Arc::clone(&store);
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -275,17 +286,18 @@ impl Daemon {
                     }
                 }
             };
-            let caddy = async {
+            let ingress = async {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
                 match (local_machine.clone(), replicated_store.clone()) {
                     (Some(machine), Some(replicated)) => {
-                        caddy::run(
+                        ingress::run(
                             machine,
                             replicated,
-                            caddyfile,
-                            caddy_admin_socket,
+                            ingress_data_dir,
+                            ingress_runtime_dir,
+                            ingress_docker,
                             shutdown.clone(),
                         )
                         .await
@@ -349,7 +361,7 @@ impl Daemon {
                 network_runner,
                 observer,
                 dns,
-                caddy,
+                ingress,
                 certificates,
                 global_reconcile,
                 relay_register,
@@ -559,13 +571,9 @@ async fn start_corrosion(
         .map_err(|_| Error::StorePoisoned)?
         .record()
         .clone();
-    let (machine, bootstrap) = match record.body {
-        LocalMachineBody::Joining {
-            machine, bootstrap, ..
-        }
-        | LocalMachineBody::Participating {
-            machine, bootstrap, ..
-        } => (machine, bootstrap),
+    let machine = match &record.body {
+        LocalMachineBody::Joining { machine, .. }
+        | LocalMachineBody::Participating { machine, .. } => machine,
         LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
             return Ok(None);
         }
@@ -575,7 +583,7 @@ async fn start_corrosion(
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
         .join("corrosion");
-    let bootstrap = bootstrap.iter().map(|machine| {
+    let bootstrap = record.bootstrap().iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address.0),
             CORROSION_GOSSIP_PORT,

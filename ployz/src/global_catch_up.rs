@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, InspectRequest,
-    ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, ObservedGlobalSlotSpec,
-    QualifiedService, RpcError, ServiceObservation, eligible_global_slot, missing_global_slots, op,
-    service_containers,
+    BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, IngressProxyNetworkMode,
+    InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
+    ObservedGlobalSlotSpec, QualifiedService, RpcError, ServiceObservation, eligible_global_slot,
+    ingress_proxy_backend, missing_global_slots, op, service_containers,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -95,8 +95,8 @@ pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
     if !error.missing.is_empty() {
         message.push_str("\nMissing eligible Globals:");
         for identity in error.missing {
-            if identity == QualifiedService::system_caddy() {
-                message.push_str("\n- ployz-system/caddy: run `ployz caddy deploy`.");
+            if identity == QualifiedService::system_ingress() {
+                message.push_str("\n- ployz-system/ingress: run `ployz ingress deploy`.");
             } else {
                 message.push_str(&format!(
                     "\n- {identity}: redeploy Project Service `{identity}`."
@@ -112,11 +112,11 @@ pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
 pub fn plan_global_catch_up(
     services: &[ServiceObservation],
     this_machine: &Machine,
-    skip_caddy: bool,
+    skip_ingress: bool,
 ) -> Vec<ObservedGlobalSlotSpec> {
     missing_global_slots(services, this_machine)
         .into_iter()
-        .filter(|slot| !skip_caddy || slot.identity() != &QualifiedService::system_caddy())
+        .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .collect()
 }
 
@@ -129,7 +129,7 @@ pub fn plan_global_catch_up(
 pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,
-    skip_caddy: bool,
+    skip_ingress: bool,
 ) -> Result<(), CatchUpError> {
     let live = client
         .live_services()
@@ -139,28 +139,33 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let initially_eligible = services
         .iter()
         .filter_map(|service| eligible_global_slot(service, this_machine))
-        .filter(|slot| !skip_caddy || slot.identity() != &QualifiedService::system_caddy())
+        .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .map(|slot| (slot.identity().clone(), slot))
         .collect::<BTreeMap<_, _>>();
-    let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
+    let slots = plan_global_catch_up(&services, this_machine, skip_ingress);
     let initially_missing: Vec<_> = slots.iter().map(|slot| slot.identity().clone()).collect();
     let endpoint_creates = slots
         .iter()
-        .filter(|slot| !service_has_slot(&services, this_machine, &slot.resolved_spec().service_id))
+        .filter(|slot| {
+            let uses_bridge_endpoint = slot.identity() != &QualifiedService::system_ingress()
+                || ingress_proxy_backend(slot.resolved_spec()).map_or(true, |backend| {
+                    matches!(backend.network_mode(), IngressProxyNetworkMode::Bridge)
+                });
+            uses_bridge_endpoint
+                && !service_has_slot(&services, this_machine, &slot.resolved_spec().service_id)
+        })
         .count();
-    // This targeted read is both the readiness gate and the capacity lookup
-    // used by catch-up. Membership visibility alone does not prove this path.
-    let capacity = client
-        .bridge_capacity(&this_machine.id)
-        .await
-        .map_err(|error| CatchUpError::new(error, initially_missing.clone()))?;
-    if endpoint_creates > 0
-        && let Some(error) = endpoint_capacity_error(endpoint_creates, capacity.as_ref())
-    {
-        return Err(CatchUpError::new(
-            Failure::usage(error.to_string()),
-            initially_missing,
-        ));
+    if endpoint_creates > 0 {
+        let capacity = client
+            .bridge_capacity(&this_machine.id)
+            .await
+            .map_err(|error| CatchUpError::new(error, initially_missing.clone()))?;
+        if let Some(error) = endpoint_capacity_error(endpoint_creates, capacity.as_ref()) {
+            return Err(CatchUpError::new(
+                Failure::usage(error.to_string()),
+                initially_missing,
+            ));
+        }
     }
     if !slots.is_empty() {
         eprintln!("Placing Global Services on this Machine.");
@@ -265,6 +270,35 @@ mod tests {
 
         assert!(catch_up_globals(&mut client, &joiner, true).await.is_err());
         assert_eq!(client.ensure_calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn zentinel_catch_up_does_not_require_a_bridge_endpoint() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let identity = QualifiedService::system_ingress();
+        let requested = ployz_core::IngressProxyBackend::Zentinel
+            .requested_service_spec("zentinel:test".into(), Vec::new(), None)
+            .unwrap();
+        let spec = requested.to_resolved(
+            service_id('c'),
+            ResolvedUpdateConfig {
+                order: ployz_core::UpdateOrder::StopFirst,
+                monitor_millis: None,
+            },
+        );
+        let current = grouped(identity.clone(), spec.clone(), running_on(&founder, 'a'));
+        let target = grouped(identity, spec, running_on(&joiner, 'b'));
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![current],
+            target_services: Some(vec![target]),
+            capacity: Some(BridgeEndpointCapacity::new(0, 0)),
+            ensure_calls: Cell::new(0),
+        };
+
+        catch_up_globals(&mut client, &joiner, false).await.unwrap();
+        assert_eq!(client.ensure_calls.get(), 1);
     }
 
     #[tokio::test]
@@ -446,18 +480,18 @@ mod tests {
         let founder = machine('f', "founder");
         let first = machine('1', "first");
         let second = machine('2', "second");
-        let caddy = global_service(
-            QualifiedService::system_caddy(),
+        let ingress = global_service(
+            QualifiedService::system_ingress(),
             'c',
             Placement::default(),
             running_on(&founder, 'a'),
         );
 
-        let first_slots = plan_global_catch_up(std::slice::from_ref(&caddy), &first, false);
-        let second_slots = plan_global_catch_up(std::slice::from_ref(&caddy), &second, false);
+        let first_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &first, false);
+        let second_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &second, false);
 
-        assert_eq!(identities(&first_slots), ["ployz-system/caddy"]);
-        assert_eq!(identities(&second_slots), ["ployz-system/caddy"]);
+        assert_eq!(identities(&first_slots), ["ployz-system/ingress"]);
+        assert_eq!(identities(&second_slots), ["ployz-system/ingress"]);
         assert!(
             first_slots
                 .iter()
@@ -467,12 +501,59 @@ mod tests {
     }
 
     #[test]
-    fn skip_caddy_omits_system_caddy_and_keeps_other_globals() {
+    fn add_machine_inherits_each_observed_ingress_backend_spec() {
+        let founder = machine('f', "founder");
+        let joiner = machine('1', "joiner");
+        for (command, capabilities) in [
+            (
+                vec!["caddy", "run", "-c", "/config/caddy/Caddyfile"],
+                Vec::<&str>::new(),
+            ),
+            (vec!["-c", "/config/zentinel.kdl"], vec!["NET_BIND_SERVICE"]),
+        ] {
+            let identity = QualifiedService::system_ingress();
+            let mut spec = requested(ServiceMode::Global);
+            spec.name = identity.name.clone();
+            spec.container.command = command.iter().map(|value| (*value).into()).collect();
+            spec.container.cap_add = capabilities.iter().map(|value| (*value).into()).collect();
+            if command == ["-c", "/config/zentinel.kdl"] {
+                spec.container.cap_drop = vec!["ALL".into()];
+            }
+            let service = grouped(
+                identity,
+                spec.to_resolved(service_id('c'), ResolvedUpdateConfig::default()),
+                running_on(&founder, 'a'),
+            );
+
+            let slots = plan_global_catch_up(&[service], &joiner, false);
+            assert_eq!(slots.len(), 1);
+            let inherited = slots.first().unwrap().resolved_spec();
+            assert!(
+                inherited
+                    .container
+                    .command
+                    .iter()
+                    .map(String::as_str)
+                    .eq(command.iter().copied())
+            );
+            assert!(
+                inherited
+                    .container
+                    .cap_add
+                    .iter()
+                    .map(String::as_str)
+                    .eq(capabilities.iter().copied())
+            );
+        }
+    }
+
+    #[test]
+    fn skip_ingress_omits_system_ingress_and_keeps_other_globals() {
         let joiner = machine('1', "joiner");
         let founder = machine('f', "founder");
         let services = [
             global_service(
-                QualifiedService::system_caddy(),
+                QualifiedService::system_ingress(),
                 'c',
                 Placement::default(),
                 running_on(&founder, 'a'),
@@ -491,7 +572,7 @@ mod tests {
         );
         assert_eq!(
             identities(&plan_global_catch_up(&services, &joiner, false)),
-            ["ployz-system/caddy", "app/api"]
+            ["ployz-system/ingress", "app/api"]
         );
     }
 
@@ -558,12 +639,12 @@ mod tests {
     }
 
     #[test]
-    fn machine_add_places_user_globals_not_only_caddy() {
+    fn machine_add_places_user_globals_not_only_ingress() {
         let added = machine('2', "edge");
         let founder = machine('f', "founder");
         let services = [
             global_service(
-                QualifiedService::system_caddy(),
+                QualifiedService::system_ingress(),
                 'c',
                 Placement::default(),
                 running_on(&founder, 'a'),
@@ -577,7 +658,7 @@ mod tests {
         ];
         assert_eq!(
             identities(&plan_global_catch_up(&services, &added, false)),
-            ["ployz-system/caddy", "shop/worker"]
+            ["ployz-system/ingress", "shop/worker"]
         );
     }
 
@@ -695,7 +776,7 @@ mod tests {
             volume_graph: Default::default(),
             config_graph: Default::default(),
             pre_deploy: None,
-            caddy_config: None,
+            ingress_proxy_fragment: None,
             update: UpdateConfig::default(),
         }
     }

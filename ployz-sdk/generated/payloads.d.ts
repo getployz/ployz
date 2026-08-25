@@ -87,6 +87,15 @@ export type ServiceMode =
   | Additive<{ mode: "global" }>
   | Additive<{ mode?: string }>;
 
+export type IngressProxyFragment =
+  | Additive<{ backend: "caddy"; config: string }>
+  | Additive<{ backend?: string }>;
+
+export type IngressProxyConfig =
+  | Additive<{ backend: "caddy"; config: string }>
+  | Additive<{ backend: "zentinel"; config: string }>
+  | Additive<{ backend?: string }>;
+
 export type IngressHostname =
   | Additive<{ kind: "cluster_domain"; label?: string }>
   | Additive<{ kind: "explicit"; hostname: IngressHost }>
@@ -243,7 +252,7 @@ export type RequestedServiceSpec = Additive<{
   mounts?: ServiceMount[];
   configs?: ConfigSpec[];
   pre_deploy?: PreDeployHook;
-  caddy_config?: string;
+  ingress_proxy_fragment?: IngressProxyFragment;
   update?: UpdateConfig;
 }>;
 
@@ -258,7 +267,7 @@ export type ResolvedServiceSpec = Additive<{
   mounts?: ServiceMount[];
   configs?: ConfigSpec[];
   pre_deploy?: PreDeployHook;
-  caddy_config?: string;
+  ingress_proxy_fragment?: IngressProxyFragment;
   update?: ResolvedUpdateConfig;
 }>;
 
@@ -637,7 +646,6 @@ export type RuntimeWatchFrame = Additive<{
   observed_at: string;
 }>;
 
-export const GET_CADDY_CONFIG_CAPABILITY: CapabilityName = "ployz.caddy.config.v1";
 export const CERTIFICATE_POLICY_CAPABILITY: CapabilityName = "ployz.certificates.policy.v1";
 export const CREATE_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.create.v1";
 export const ENSURE_GLOBAL_SLOT_CAPABILITY: CapabilityName = "ployz.container.ensure-global-slot.v1";
@@ -655,6 +663,7 @@ export const GET_DOMAIN_CAPABILITY: CapabilityName = "ployz.dns.show.v1";
 export const ENSURE_IMAGE_INGEST_CAPABILITY: CapabilityName = "ployz.image.ingest.ensure.v1";
 export const LIST_IMAGES_CAPABILITY: CapabilityName = "ployz.image.list.v1";
 export const PULL_IMAGE_FROM_MACHINE_CAPABILITY: CapabilityName = "ployz.image.pull-from-machine.v1";
+export const GET_INGRESS_PROXY_CONFIG_CAPABILITY: CapabilityName = "ployz.ingress.config.v1";
 export const INITIALIZE_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.initialize.v1";
 export const INSPECT_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.inspect.v1";
 export const JOIN_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.join.v1";
@@ -677,7 +686,6 @@ export const REMOVE_VOLUME_CAPABILITY: CapabilityName = "ployz.volume.remove.v1"
 export const INSPECT_WIREGUARD_CAPABILITY: CapabilityName = "ployz.wireguard.inspect.v1";
 
 export const CATALOGUED_CAPABILITIES = [
-  "ployz.caddy.config.v1",
   "ployz.certificates.policy.v1",
   "ployz.container.create.v1",
   "ployz.container.ensure-global-slot.v1",
@@ -695,6 +703,7 @@ export const CATALOGUED_CAPABILITIES = [
   "ployz.image.ingest.ensure.v1",
   "ployz.image.list.v1",
   "ployz.image.pull-from-machine.v1",
+  "ployz.ingress.config.v1",
   "ployz.machine.initialize.v1",
   "ployz.machine.inspect.v1",
   "ployz.machine.join.v1",

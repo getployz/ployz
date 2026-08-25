@@ -51,6 +51,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .parse()
         .map_err(|error| Error::usage(format!("invalid Cluster network: {error}")))?;
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
+    let ingress_proxy_backend = *matches
+        .get_one::<ployz_core::IngressProxyBackend>("ingress-backend")
+        .expect("founding Ingress Proxy Backend has a default");
     let yes = matches.get_flag("yes");
     let storage = crate::provisioning::resolve_storage(matches)?;
     if !matches.get_flag("no-install") {
@@ -77,6 +80,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 InitializeRequest {
                     name,
                     cluster_network,
+                    ingress_proxy_backend,
                     public_ip: token.public_ip,
                     advertised_endpoints: token.advertised_endpoints,
                     wireguard_mtu,
@@ -101,7 +105,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     if let Some(current_context) = config.current_context() {
         println!("Switched context to '{current_context}'");
     }
-    let want_caddy = !matches.get_flag("no-caddy");
+    let want_ingress = !matches.get_flag("no-ingress");
     let want_dns = !matches.get_flag("no-dns");
     runtime()?.block_on(async {
         let mut ready =
@@ -117,12 +121,17 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
             println!("Reserved Cluster domain: {}", domain.name);
         }
-        if want_caddy {
-            let image = crate::caddy::latest_image().await?;
-            let requested = crate::caddy::service_spec(image, Vec::new(), None);
+        if want_ingress {
+            let requested = crate::ingress::service_spec_for_backend(
+                ingress_proxy_backend,
+                None,
+                Vec::new(),
+                None,
+            )
+            .await?;
             crate::deploy::apply_requested(&mut ready, &requested).await?;
             if want_dns {
-                crate::dns::update_records_for_caddy(&mut ready).await?;
+                crate::dns::update_records_for_ingress(&mut ready).await?;
             }
         }
         Ok::<_, Error>(())

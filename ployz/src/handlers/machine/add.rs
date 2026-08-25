@@ -10,7 +10,7 @@ use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let deploy_caddy = !matches.get_flag("no-caddy");
+    let deploy_ingress = !matches.get_flag("no-ingress");
     let options = ConnectionOptions::from_matches(root)?;
     let (mut config, context_name) = options.active_config()?;
     let destination = target(matches, "destination")?;
@@ -107,7 +107,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let catch_up = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
         Ok::<_, Error>(
-            crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_caddy).await,
+            crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_ingress).await,
         )
     })?;
     if let Err(error) = catch_up {
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_add_reports_added_when_follow_on_caddy_deploy_fails() {
+    fn machine_add_reports_added_when_follow_on_ingress_deploy_fails() {
         let assigned = assigned_machine("edge", 'a');
         assert_eq!(
             added_machine_line(&assigned),
@@ -181,14 +181,14 @@ mod tests {
         let error = crate::global_catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
                 crate::failure::Failure::usage("deploy timed out".to_owned()),
-                vec![ployz_core::QualifiedService::system_caddy()],
+                vec![ployz_core::QualifiedService::system_ingress()],
             ),
         );
         assert!(error.contains("Machine joined"));
         assert!(error.contains("remains a Cluster member"));
         assert!(
-            error.contains("`ployz caddy deploy`"),
-            "failure must tell the operator to run `caddy deploy`, got {error:?}"
+            error.contains("`ployz ingress deploy`"),
+            "failure must tell the operator to run `ingress deploy`, got {error:?}"
         );
         assert!(
             error.contains("deploy timed out"),

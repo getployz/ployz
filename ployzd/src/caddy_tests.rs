@@ -1,11 +1,18 @@
-use super::{CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile, generate_caddyfile, reconcile};
-use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
+use super::{
+    CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile as render_automatic_caddyfile,
+    generate_caddyfile as render_caddyfile,
+};
+use crate::{
+    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow},
+    ingress::{IngressProjection, apply_caddy, tests::renderer_projection},
+};
 use ployz_core::{
-    AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
-    IngressHost, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
-    PortPublication, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
-    WireGuardPublicKey, service_containers,
+    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol, INGRESS_VERIFY_PATH,
+    IngressHost, IngressHostname, IngressProxyFragment, Machine, MachineId, MachineName,
+    ManagementAddress, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
+    ServiceContainer, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
+    service_containers,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -15,6 +22,75 @@ use std::sync::Mutex;
 
 #[path = "caddy_tests/watcher.rs"]
 mod watcher;
+
+fn projection(
+    local_machine: &MachineId,
+    machine_name: &str,
+    containers: &[ServiceContainer],
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
+) -> IngressProjection {
+    let machine = Machine {
+        id: *local_machine,
+        name: MachineName::parse(machine_name).unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: Vec::new(),
+        runtime: Default::default(),
+    };
+    IngressProjection::derive(
+        &machine,
+        &containers
+            .iter()
+            .cloned()
+            .map(ServiceContainer::into_observation)
+            .collect::<Vec<_>>(),
+        certificates,
+    )
+}
+
+fn automatic_caddyfile(
+    local_machine: &MachineId,
+    machine_name: &str,
+    containers: &[ServiceContainer],
+    timestamp: &str,
+    global_config: Option<&str>,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
+) -> String {
+    render_automatic_caddyfile(
+        &projection(local_machine, machine_name, containers, certificates),
+        timestamp,
+        global_config,
+    )
+}
+
+async fn generate_caddyfile<A: CaddyAdmin>(
+    local_machine: &MachineId,
+    machine_name: &str,
+    containers: &[ServiceContainer],
+    timestamp: &str,
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    admin: Option<&A>,
+) -> String {
+    render_caddyfile(
+        &projection(local_machine, machine_name, containers, certificates),
+        timestamp,
+        admin,
+    )
+    .await
+}
+
+async fn reconcile<A: CaddyAdmin>(
+    machine: &Machine,
+    observations: &[ContainerObservation],
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    config_file: &Path,
+    admin: Option<&A>,
+) -> Result<(), Error> {
+    let projection = IngressProjection::derive(machine, observations, certificates);
+    apply_caddy(&projection, config_file, admin).await
+}
 
 #[test]
 fn automatic_sites_match_the_frozen_caddyfile_contract() {
@@ -60,7 +136,7 @@ fn automatic_sites_match_the_frozen_caddyfile_contract() {
 \n\
 # Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
-\thandle {CADDY_VERIFY_PATH} {{\n\
+\thandle {INGRESS_VERIFY_PATH} {{\n\
 \t\trespond \"{local}\" 200\n\
 \t}}\n\
 \trespond \"Not Found\" 404\n\
@@ -83,6 +159,108 @@ http://example.com {{\n\
 \tlog\n\
 }}\n"
         )
+    );
+}
+
+#[test]
+fn shared_renderer_projection_drives_caddy() {
+    let caddyfile = render_automatic_caddyfile(&renderer_projection(), "TIMESTAMP", None);
+
+    assert!(caddyfile.contains("http://empty.example.com {\n\trespond \"Bad Gateway\" 502"));
+    assert!(
+        caddyfile.contains("reverse_proxy 10.210.1.2:8080 10.210.2.2:8080"),
+        "{caddyfile}"
+    );
+    assert!(
+        caddyfile.contains(
+            "tls /config/caddy/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.crt /config/caddy/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.key"
+        ),
+        "{caddyfile}"
+    );
+}
+
+#[test]
+fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let remote = MachineId::parse("b".repeat(32)).unwrap();
+    let mut local_container = observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("example.com", 8080, HttpProtocol::Http)],
+    );
+    local_container.created_at_unix_nanos = 1;
+    local_container.resolved_spec.ingress_proxy_fragment =
+        Some(IngressProxyFragment::parse_caddy("# old").unwrap());
+    let mut remote_container = observation(
+        2,
+        &remote,
+        "api",
+        Some([10, 210, 2, 2]),
+        vec![ingress("example.com", 8080, HttpProtocol::Http)],
+    );
+    remote_container.created_at_unix_nanos = 2;
+    let fragment = IngressProxyFragment::parse_caddy("# selected").unwrap();
+    remote_container.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
+    let material = CertificateMaterial::new("CERT", "KEY").unwrap();
+    let challenge = CertificateChallenge::new("token", "response").unwrap();
+    let certificates = BTreeMap::from([(
+        IngressHost::parse("example.com").unwrap(),
+        CertificateRow::from_parts(Some(material.clone()), Some(challenge.clone())),
+    )]);
+
+    let projection = projection(
+        &local,
+        "node-a",
+        &service_containers([remote_container, local_container]),
+        &certificates,
+    );
+
+    let site = projection.sites.first().unwrap();
+    let publication = site.publication.as_ref().unwrap();
+    assert_eq!(site.hostname.as_str(), "example.com");
+    assert_eq!(publication.owner.to_string(), "app/api");
+    assert!(publication.https.is_none());
+    assert_eq!(
+        publication
+            .http
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|endpoint| (endpoint.address.0, endpoint.port.get()))
+            .collect::<Vec<_>>(),
+        [
+            ("10.210.1.2".parse().unwrap(), 8080),
+            ("10.210.2.2".parse().unwrap(), 8080)
+        ]
+    );
+    assert_eq!(
+        projection
+            .service_fragments
+            .get(&QualifiedService::parse("app/api").unwrap()),
+        Some(&fragment)
+    );
+    let certificate = site.certificate.as_ref().unwrap();
+    assert_eq!(certificate.challenge.as_ref(), Some(&challenge));
+    assert_eq!(certificate.material.as_ref(), Some(&material));
+}
+
+#[test]
+fn unrelated_unfragmented_service_does_not_change_the_ingress_projection() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let empty = projection(&local, "node-a", &[], &BTreeMap::new());
+    let unrelated = service_containers([observation(
+        1,
+        &local,
+        "worker",
+        Some([10, 210, 1, 2]),
+        Vec::new(),
+    )]);
+
+    assert_eq!(
+        projection(&local, "node-a", &unrelated, &BTreeMap::new()),
+        empty
     );
 }
 
@@ -217,7 +395,7 @@ fn https_site_with_material_pins_tls_paths() {
 
     let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
     assert!(
-        pin.contains("tls /config/certs/secure.example.com-")
+        pin.contains("tls /config/caddy/certs/secure.example.com-")
             && pin.contains(".crt")
             && pin.contains(".key"),
         "{pin}"
@@ -239,7 +417,7 @@ fn https_site_with_material_pins_tls_paths() {
 \tlog\n\
 }\n"
     ));
-    assert!(!caddyfile.contains("tls /config/certs/example.com"));
+    assert!(!caddyfile.contains("tls /config/caddy/certs/example.com"));
 }
 
 #[test]
@@ -515,7 +693,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
         None,
         &BTreeMap::new(),
     );
-    assert!(caddyfile.contains(CADDY_VERIFY_PATH));
+    assert!(caddyfile.contains(INGRESS_VERIFY_PATH));
     assert!(caddyfile.contains(
         "http://missing.example {\n\
 \trespond \"Bad Gateway\" 502\n\
@@ -650,7 +828,7 @@ async fn user_project_caddy_does_not_supply_global_config() {
         reserved(observation(
             1,
             &local,
-            "caddy",
+            "ingress",
             Some([10, 210, 1, 1]),
             Vec::new(),
         )),
@@ -688,7 +866,7 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
             1,
             1,
             &local,
-            "caddy",
+            "ingress",
             "{\n\tadmin unix/{{upstreams \"app/api\"}}\n}",
             [10, 210, 1, 1],
         )),
@@ -751,7 +929,7 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
 # Automatically updated on Service or health status changes.\n\
 # Docs: https://github.com/getployz/ployz2\n\
 \n\
-# User-defined global config from Service 'ployz-system/caddy'.\n\
+# User-defined global config from Service 'ployz-system/ingress'.\n\
 {\n\tauto_https off\n\tadmin unix/10.210.1.2 10.210.2.2\n}\n\n"
     ));
     assert!(caddyfile.contains(
@@ -819,7 +997,7 @@ async fn custom_upstream_short_names_do_not_cross_projects() {
             1,
             1,
             &local,
-            "caddy",
+            "ingress",
             "{\n\tadmin unix/{{upstreams \"api\"}}\n}",
             [10, 210, 1, 1],
         )),
@@ -840,7 +1018,7 @@ async fn custom_upstream_short_names_do_not_cross_projects() {
     )
     .await;
 
-    assert!(caddyfile.contains("Service 'ployz-system/caddy': rendering failed:"));
+    assert!(caddyfile.contains("Service 'ployz-system/ingress': rendering failed:"));
     assert!(caddyfile.contains("Service 'shop-staging/web': rendering failed:"));
     assert!(caddyfile.contains(
         "# User-defined config for Service 'shop-prod/web'.\n\
@@ -886,7 +1064,7 @@ async fn broken_global_template_does_not_hide_valid_service_configs() {
             1,
             1,
             &local,
-            "caddy",
+            "ingress",
             "{{unknown\ninjected.example { respond owned }\n}}",
             [10, 210, 1, 1],
         )),
@@ -909,7 +1087,7 @@ async fn broken_global_template_does_not_hide_valid_service_configs() {
         Some(&FakeAdmin::default()),
     )
     .await;
-    assert!(caddyfile.contains("Service 'ployz-system/caddy': rendering failed"));
+    assert!(caddyfile.contains("Service 'ployz-system/ingress': rendering failed"));
     assert!(caddyfile.contains("#   injected.example { respond owned }"));
     assert!(
         !caddyfile
@@ -1006,13 +1184,13 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     assert!(
         adapted
             .last()
-            .is_some_and(|config| config.contains(&format!("tls /config/certs/{cert_name}")))
+            .is_some_and(|config| config.contains(&format!("tls /config/caddy/certs/{cert_name}")))
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 fn pinned_tls_line<'a>(caddyfile: &'a str, hostname: &str) -> Option<&'a str> {
-    let needle = format!("tls /config/certs/{hostname}-");
+    let needle = format!("tls /config/caddy/certs/{hostname}-");
     caddyfile.lines().find(|line| line.contains(&needle))
 }
 
@@ -1121,6 +1299,7 @@ fn custom_observation(
 ) -> ContainerObservation {
     let mut observation = observation(suffix, machine_id, service_name, Some(address), Vec::new());
     observation.created_at_unix_nanos = created_at_unix_nanos;
-    observation.resolved_spec.caddy_config = Some(caddy_config.into());
+    observation.resolved_spec.ingress_proxy_fragment =
+        Some(IngressProxyFragment::parse_caddy(caddy_config).expect("fixture is non-empty"));
     observation
 }

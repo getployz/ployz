@@ -157,8 +157,8 @@ mod tests {
 
     #[test]
     fn reserved_project_still_lists() {
-        let caddy = observation("ployz-system", "caddy");
-        let projects = derive_projects([&caddy], std::iter::empty());
+        let ingress = observation("ployz-system", "ingress");
+        let projects = derive_projects([&ingress], std::iter::empty());
         assert_eq!(names(&projects), ["ployz-system"]);
     }
 

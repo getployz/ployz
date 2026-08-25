@@ -1,4 +1,3 @@
-pub mod caddy;
 pub mod cli;
 mod cloud_enroll;
 mod cluster;
@@ -12,6 +11,7 @@ pub mod failure;
 mod global_catch_up;
 pub mod handlers;
 pub mod image;
+pub mod ingress;
 pub mod operator;
 pub mod project;
 mod provisioning;

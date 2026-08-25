@@ -64,8 +64,11 @@ pub fn enroll_with_installer(
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     let reset = matches.get_flag("reset");
-    let no_caddy = matches.get_flag("no-caddy");
+    let no_ingress = matches.get_flag("no-ingress");
     let no_dns = matches.get_flag("no-dns");
+    let ingress_proxy_backend = *matches
+        .get_one::<ployz_core::IngressProxyBackend>("ingress-backend")
+        .expect("founding Ingress Proxy Backend has a default");
     let requested_storage = *matches
         .get_one::<StorageChoice>("storage")
         .expect("storage has a default");
@@ -120,7 +123,7 @@ pub fn enroll_with_installer(
                     )
                     .await?;
                     if let Err(error) =
-                        crate::global_catch_up::catch_up_globals(&mut ready, &assigned, no_caddy)
+                        crate::global_catch_up::catch_up_globals(&mut ready, &assigned, no_ingress)
                             .await
                     {
                         return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
@@ -136,10 +139,11 @@ pub fn enroll_with_installer(
                             InitializeRequest {
                                 name,
                                 cluster_network,
+                                ingress_proxy_backend,
                                 public_ip: machine_token.public_ip,
                                 advertised_endpoints: machine_token.advertised_endpoints,
                                 wireguard_mtu,
-                                cloud_pairing: no_caddy.then(|| pairing.clone()),
+                                cloud_pairing: no_ingress.then(|| pairing.clone()),
                             },
                             None,
                         )
@@ -176,12 +180,17 @@ pub fn enroll_with_installer(
                             .await?;
                         println!("Reserved Cluster domain: {}", domain.name);
                     }
-                    if !no_caddy {
-                        let image = crate::caddy::latest_image().await?;
-                        let requested = crate::caddy::service_spec(image, Vec::new(), None);
+                    if !no_ingress {
+                        let requested = crate::ingress::service_spec_for_backend(
+                            ingress_proxy_backend,
+                            None,
+                            Vec::new(),
+                            None,
+                        )
+                        .await?;
                         crate::deploy::apply_requested(&mut ready, &requested).await?;
                         if !no_dns {
-                            crate::dns::update_records_for_caddy(&mut ready).await?;
+                            crate::dns::update_records_for_ingress(&mut ready).await?;
                         }
                         ready
                             .call::<op::SetCloudPairing>(
@@ -351,15 +360,15 @@ mod tests {
     }
 
     #[test]
-    fn post_join_caddy_error_names_membership_and_recovery() {
+    fn post_join_ingress_error_names_membership_and_recovery() {
         let message = crate::global_catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
                 crate::failure::Failure::usage("not running".to_owned()),
-                vec![ployz_core::QualifiedService::system_caddy()],
+                vec![ployz_core::QualifiedService::system_ingress()],
             ),
         );
         assert!(message.contains("Machine joined"));
-        assert!(message.contains("ployz caddy deploy"));
+        assert!(message.contains("ployz ingress deploy"));
     }
 
     #[test]

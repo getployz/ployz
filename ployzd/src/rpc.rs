@@ -6,11 +6,11 @@ use std::{
 };
 
 use ployz_core::{
-    CaddyConfig, CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged,
-    ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason,
-    ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId, MachineLogService,
-    MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, VolumeRemoved, op,
+    CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged, ContainerDetails,
+    ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled,
+    IngressProxyBackend, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin, MachineId,
+    MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -36,7 +36,7 @@ pub(crate) const REGISTER_FORWARDED_METADATA: &str = "x-ployz-register-forwarded
 pub struct MachineService {
     local: LocalMachine,
     hosted_dns: crate::hosted_dns::HostedDns,
-    caddyfile: Option<PathBuf>,
+    ingress_data_dir: Option<PathBuf>,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
@@ -58,7 +58,7 @@ impl MachineService {
         Self {
             local: LocalMachine::new(store, restart).with_cluster(cluster),
             hosted_dns: crate::hosted_dns::HostedDns::new(),
-            caddyfile: None,
+            ingress_data_dir: None,
             ingest: ImageIngest::new(None, CancellationToken::new(), None),
             machine_api_port: MACHINE_API_PORT,
             cloud_pairing: None,
@@ -78,8 +78,9 @@ impl MachineService {
     }
 
     #[must_use]
-    pub fn with_caddyfile(mut self, path: PathBuf) -> Self {
-        self.caddyfile = Some(path);
+    /// Make exact Ingress Proxy configuration available through the Machine RPC.
+    pub fn with_ingress_data_dir(mut self, path: PathBuf) -> Self {
+        self.ingress_data_dir = Some(path);
         self
     }
 
@@ -246,8 +247,8 @@ impl MachineRpc for MachineService {
         if self.local.containers().is_some() {
             capabilities.extend(CapabilityAdvertisement::Container.capabilities());
         }
-        if self.caddyfile.is_some() {
-            capabilities.extend(CapabilityAdvertisement::Caddy.capabilities());
+        if self.ingress_data_dir.is_some() {
+            capabilities.extend(CapabilityAdvertisement::Ingress.capabilities());
         }
         if self.local.has_cluster() {
             capabilities.extend(CapabilityAdvertisement::Cluster.capabilities());
@@ -380,6 +381,14 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::CreateContainer>(request)?;
+        let network = match self
+            .local
+            .prepare_service_runtime(request.kind, &request.project_name, &request.resolved_spec)
+            .await
+        {
+            Ok(backend) => backend,
+            Err(error) => return local_error(error),
+        };
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -390,12 +399,13 @@ impl MachineRpc for MachineService {
             .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
         let gateway = machine.subnet.gateway();
         match containers
-            .create(
+            .create_with_network(
                 &record.id(),
                 gateway,
                 request.kind,
                 &request.project_name,
                 &request.resolved_spec,
+                network,
             )
             .await
         {
@@ -725,23 +735,44 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn get_caddy_config(
+    async fn get_ingress_proxy_config(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::GetCaddyConfig>(request)?;
-        let Some(path) = &self.caddyfile else {
-            return respond(unavailable("Caddy configuration is not available"));
+        expect::<op::GetIngressProxyConfig>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
         };
-        match std::fs::read_to_string(path) {
-            Ok(caddyfile) => respond(CaddyConfig { caddyfile }),
+        let backend = match replicated.ingress_proxy_backend().await {
+            Ok(backend) => backend,
+            Err(error) => {
+                return respond(RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: error.to_string(),
+                    details: Value::Null,
+                });
+            }
+        };
+        let Some(data_dir) = &self.ingress_data_dir else {
+            return respond(unavailable("Ingress Proxy configuration is not available"));
+        };
+        let path = match backend {
+            IngressProxyBackend::Caddy => crate::ingress::caddy::config_path(data_dir),
+            IngressProxyBackend::Zentinel => crate::ingress::zentinel::config_path(data_dir),
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(config) => respond(IngressProxyConfig::for_backend(backend, config)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => respond(RpcError {
                 code: RpcErrorCode::NotFound,
-                message: format!("Caddyfile {} does not exist", path.display()),
+                message: format!(
+                    "Ingress Proxy configuration {} does not exist",
+                    path.display()
+                ),
                 details: Value::Null,
             }),
             Err(error) => Err(Status::internal(format!(
-                "read Caddyfile {}: {error}",
+                "read Ingress Proxy configuration {}: {error}",
                 path.display()
             ))),
         }
@@ -857,6 +888,17 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::internal("local Machine record lock poisoned"))
         }
         LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
+        LocalMachineError::IngressProxyBackend(error) => respond(RpcError {
+            code: RpcErrorCode::Conflict,
+            message: error.to_string(),
+            details: Value::Null,
+        }),
+        LocalMachineError::IngressProxyServiceSpec(error) => respond(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: error.to_string(),
+            details: Value::Null,
+        }),
+        LocalMachineError::IngressRuntime(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Network(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
         LocalMachineError::Cleanup(message) => respond(RpcError {
@@ -972,70 +1014,5 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{MachineService, local_error, store_error};
-    use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
-    use ployz_core::{MachineRpc, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, op};
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::watch;
-    use tonic::{Code, Request};
-
-    #[test]
-    fn non_participating_update_is_a_typed_conflict() {
-        assert_eq!(
-            store_error(StoreError::NotParticipating).code,
-            RpcErrorCode::Conflict
-        );
-    }
-
-    #[test]
-    fn allocator_not_quiet_is_retryable_unavailable() {
-        let RpcResponseBody::Error(error) = local_error(LocalMachineError::AllocatorNotQuiet)
-            .unwrap()
-            .into_inner()
-            .decode_response()
-            .unwrap()
-            .body
-        else {
-            panic!("expected error payload");
-        };
-        assert_eq!(error.code, RpcErrorCode::Unavailable);
-        assert_eq!(error.message, "Allocator is not quiet");
-    }
-
-    #[test]
-    fn not_allocator_does_not_allocate() {
-        let RpcResponseBody::Error(error) = local_error(LocalMachineError::NotAllocator)
-            .unwrap()
-            .into_inner()
-            .decode_response()
-            .unwrap()
-            .body
-        else {
-            panic!("expected error payload");
-        };
-        assert_eq!(error.code, RpcErrorCode::Unavailable);
-        assert_eq!(error.message, "this Machine is not the Allocator");
-    }
-
-    #[tokio::test]
-    async fn runtime_watch_without_a_cluster_store_is_unavailable() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "ployzd-runtime-watch-{}",
-            ployz_core::MachineId::random()
-        ));
-        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-        let (restart, _) = watch::channel(false);
-        let service = MachineService::new(store, restart);
-        let error = service
-            .runtime_watch(Request::new(
-                op::RuntimeWatch::into_request(RuntimeWatchRequest {})
-                    .encode()
-                    .unwrap(),
-            ))
-            .await
-            .unwrap_err();
-        assert_eq!(error.code(), Code::Unavailable);
-        let _ = std::fs::remove_dir_all(data_dir);
-    }
-}
+#[path = "rpc_tests.rs"]
+mod tests;

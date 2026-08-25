@@ -346,9 +346,9 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
 #[test]
 fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned() {
     let web = spec("web");
-    let mut system_caddy = spec("caddy");
-    system_caddy.mode = ServiceMode::Global;
-    let mut leftover = container('c', '1', &system_caddy, &service_id('a'));
+    let mut system_ingress = spec("ingress");
+    system_ingress.mode = ServiceMode::Global;
+    let mut leftover = container('c', '1', &system_ingress, &service_id('a'));
     leftover.project_name = ProjectName::system();
     let shop = preview_deploy(
         &DeployIntent::apply_all(
@@ -374,7 +374,7 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
     let system = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::system(),
-            [&system_caddy],
+            [&system_ingress],
             PlanOptions::default(),
         ),
         &DeploySnapshot {

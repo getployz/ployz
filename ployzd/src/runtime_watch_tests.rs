@@ -130,7 +130,7 @@ fn assembled_frame_attaches_reconcile_failures_only_to_the_entry_machine() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
     let failure = GlobalReconcileFailureObservation {
-        service: QualifiedService::system_caddy(),
+        service: QualifiedService::system_ingress(),
         last_error: "image pull failed".into(),
         observed_at: OBSERVED_AT.into(),
     };
@@ -567,7 +567,7 @@ async fn reconcile_observation_change_yields_without_another_wakeup() {
     );
     let _first = next_frame(&mut stream).await;
     let failure = GlobalReconcileFailureObservation {
-        service: QualifiedService::system_caddy(),
+        service: QualifiedService::system_ingress(),
         last_error: "image pull failed".into(),
         observed_at: OBSERVED_AT.into(),
     };

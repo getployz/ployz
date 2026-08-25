@@ -15,7 +15,7 @@ retry_once cargo test --locked \
     --test build_layer3 \
     --test service_cluster \
     --test internal_dns_cluster \
-    --test caddy_cluster \
+    --test ingress_cluster \
     --test deploy_cluster \
     --test operator_cluster \
     --test volume_layer3 \

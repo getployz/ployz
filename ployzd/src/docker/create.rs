@@ -20,12 +20,19 @@ use super::{
     LABEL_SERVICE_NAME,
 };
 
+#[derive(Clone, Copy)]
+pub(crate) enum NetworkAttachment {
+    Bridge,
+    Host,
+}
+
 pub(super) fn container_create_body(
     machine_id: &MachineId,
     gateway: MachineGateway,
     kind: ContainerKind,
     project_name: &ProjectName,
     spec: &ResolvedServiceSpec,
+    network: NetworkAttachment,
 ) -> Result<ContainerCreateBody, Error> {
     let hook = match kind {
         ContainerKind::ServiceContainer => None,
@@ -73,12 +80,17 @@ pub(super) fn container_create_body(
         (None, None)
     };
     let resources = &container.resources;
+    let host_network = matches!(network, NetworkAttachment::Host);
     let host_config = HostConfig {
-        dns: Some(vec![gateway.0.to_string()]),
-        dns_search: Some(vec![format!("{project_name}.internal")]),
-        dns_options: Some(vec!["ndots:1".into()]),
+        dns: (!host_network).then(|| vec![gateway.0.to_string()]),
+        dns_search: (!host_network).then(|| vec![format!("{project_name}.internal")]),
+        dns_options: (!host_network).then(|| vec!["ndots:1".into()]),
         init: container.init,
-        network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),
+        network_mode: Some(if host_network {
+            "host".into()
+        } else {
+            crate::network::DOCKER_NETWORK_NAME.into()
+        }),
         log_config: container
             .log_driver
             .as_ref()

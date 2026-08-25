@@ -65,7 +65,7 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
             cloud_url,
             "--name",
             "joiner",
-            "--no-caddy",
+            "--no-ingress",
             "--no-dns",
             "--yes",
         ])

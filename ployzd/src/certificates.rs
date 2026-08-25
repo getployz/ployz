@@ -204,30 +204,30 @@ fn poll_wait(
 #[must_use]
 pub(crate) fn challenge_probe_addresses(
     resolved: &[IpAddr],
-    caddy_ips: &BTreeSet<IpAddr>,
+    ingress_ips: &BTreeSet<IpAddr>,
 ) -> Vec<SocketAddr> {
     resolved
         .iter()
         .copied()
-        .filter(|address| caddy_ips.contains(address))
+        .filter(|address| ingress_ips.contains(address))
         .map(|address| SocketAddr::new(address, 80))
         .collect()
 }
 
-fn caddy_challenge_ips(
+fn ingress_challenge_ips(
     machines: &[Machine],
     observations: &[ContainerObservation],
 ) -> BTreeSet<IpAddr> {
-    let caddy: BTreeSet<_> = observations
+    let ingress: BTreeSet<_> = observations
         .iter()
         .filter(|observation| {
-            crate::caddy::is_system_caddy(observation) && observation.runtime.is_healthy()
+            crate::ingress::is_system_ingress(observation) && observation.runtime.is_healthy()
         })
         .map(|observation| observation.machine_id)
         .collect();
     machines
         .iter()
-        .filter(|machine| caddy.contains(&machine.id))
+        .filter(|machine| ingress.contains(&machine.id))
         .flat_map(machine_challenge_ips)
         .collect()
 }
@@ -544,8 +544,9 @@ async fn obtain(
             let resolved = resolve_host(&hostname).await;
             let machines = store.machines().await?;
             let containers = store.containers().await?;
-            let caddy_ips = caddy_challenge_ips(&machines.observations, &containers.observations);
-            let addresses = challenge_probe_addresses(&resolved, &caddy_ips);
+            let ingress_ips =
+                ingress_challenge_ips(&machines.observations, &containers.observations);
+            let addresses = challenge_probe_addresses(&resolved, &ingress_ips);
             wait_for_http01(&hostname, &challenge, &addresses, probe_timeout).await
         }
     })

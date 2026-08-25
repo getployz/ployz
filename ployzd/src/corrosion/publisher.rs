@@ -81,6 +81,10 @@ pub async fn run_machine_publisher(
                     return Ok(());
                 }
             }
+            replicated
+                .ingress_proxy_backend()
+                .await
+                .map_err(io::Error::other)?;
             let publication = replicated.machine_publication().await;
             let completed = {
                 let mut local = local
@@ -92,8 +96,8 @@ pub async fn run_machine_publisher(
             };
             if completed {
                 // Join already restarted into Joining. Flip Participating
-                // in-process so DNS/Caddy start; another process restart
-                // kills an in-flight Caddy Deploy against this Machine.
+                // in-process so DNS/ingress start; another process restart
+                // kills an in-flight Ingress Proxy Deploy against this Machine.
                 tracing::info!("catch-up complete");
                 participating.send_replace(true);
             }

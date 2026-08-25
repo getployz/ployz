@@ -19,7 +19,9 @@ use super::{
     ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
     run_machine_publisher, wait_for_catch_up,
 };
-use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
+use crate::machine::{
+    LocalMachineBody, LocalMachineRecord, LocalMachineStore, ParticipationOrigin,
+};
 use crate::network::WireGuardPrivateKey;
 
 #[tokio::test]
@@ -429,8 +431,12 @@ async fn founder_publisher_backdates_allocator() {
         &LocalMachineRecord {
             body: LocalMachineBody::Participating {
                 machine: published.clone(),
-                cluster_network: Some("10.210.0.0/16".parse().unwrap()),
-                bootstrap: Vec::new(),
+                origin: ParticipationOrigin::Founder {
+                    cluster: crate::machine::FoundingCluster {
+                        network: "10.210.0.0/16".parse().unwrap(),
+                        ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+                    },
+                },
             },
             wireguard_private_key: WireGuardPrivateKey::generate(),
             wireguard_mtu: None,

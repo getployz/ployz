@@ -229,10 +229,8 @@ fn convert_service(
         Some(mode) => return Err(invalid(format!("unsupported deploy mode: '{mode}'"))),
     };
     let ports = ports(name, raw)?;
-    let caddy_config = caddy(raw.caddy.as_ref(), directory, name)?;
-    if caddy_config
-        .as_ref()
-        .is_some_and(|config| !config.is_empty())
+    let ingress_proxy_fragment = caddy(raw.caddy.as_ref(), directory, name)?;
+    if ingress_proxy_fragment.is_some()
         && ports
             .iter()
             .any(|port| matches!(port, PortPublication::Ingress { .. }))
@@ -333,7 +331,7 @@ fn convert_service(
             volume_graph,
             config_graph,
             pre_deploy: pre_deploy(raw.pre_deploy.as_ref())?,
-            caddy_config,
+            ingress_proxy_fragment,
             update: update(raw.deploy.as_ref())?,
         },
         build,

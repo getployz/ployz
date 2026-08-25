@@ -208,14 +208,14 @@ mod tests {
                 &peer,
                 'c',
                 "ployz-system",
-                "caddy",
+                "ingress",
                 ServiceMode::Global,
                 Placement::default(),
             ),
         ];
         let ensurer = FakeEnsurer {
             calls: Mutex::new(Vec::new()),
-            failing: Mutex::new(Some("ployz-system/caddy")),
+            failing: Mutex::new(Some("ployz-system/ingress")),
         };
 
         let failures =
@@ -224,11 +224,11 @@ mod tests {
 
         let mut calls = ensurer.calls.lock().unwrap().clone();
         calls.sort();
-        assert_eq!(calls, ["app/api", "ployz-system/caddy"]);
+        assert_eq!(calls, ["app/api", "ployz-system/ingress"]);
         assert_eq!(
             failures,
             [ployz_core::GlobalReconcileFailureObservation {
-                service: QualifiedService::system_caddy(),
+                service: QualifiedService::system_ingress(),
                 last_error: "pull failed".into(),
                 observed_at: "2026-08-24T20:00:00Z".into(),
             }]

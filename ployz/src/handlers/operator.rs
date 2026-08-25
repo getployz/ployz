@@ -97,8 +97,8 @@ pub fn service_logs(root: &ArgMatches) -> Result<(), Error> {
     service_logs_with(root, explicit)
 }
 
-pub(super) fn caddy_logs(root: &ArgMatches) -> Result<(), Error> {
-    service_logs_with(root, vec![QualifiedService::system_caddy().to_string()])
+pub(super) fn ingress_logs(root: &ArgMatches) -> Result<(), Error> {
+    service_logs_with(root, vec![QualifiedService::system_ingress().to_string()])
 }
 
 fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {

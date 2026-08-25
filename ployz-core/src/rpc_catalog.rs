@@ -19,7 +19,7 @@
 /// one envelope.
 ///
 /// `CAPABILITY` is the stable advertised name for that RPC. `Advertisement` is
-/// `Always`, `Container`, `Caddy`, or `Cluster` — the group `describe_contract`
+/// `Always`, `Container`, `Ingress`, or `Cluster` — the group `describe_contract`
 /// includes the name in.
 ///
 /// `package` is the gRPC service package. It is stated here rather than at each consumer
@@ -61,7 +61,7 @@ macro_rules! rpc_catalog {
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container),
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),
                 PullImageFromMachine: (pull_image_from_machine, "PullImageFromMachine", PullImageFromMachineRequest, "pull_image_from_machine", ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container),
-                GetCaddyConfig: (get_caddy_config, "GetCaddyConfig", GetCaddyConfigRequest, "get_caddy_config", CaddyConfig, GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1", Caddy),
+                GetIngressProxyConfig: (get_ingress_proxy_config, "GetIngressProxyConfig", GetIngressProxyConfigRequest, "get_ingress_proxy_config", IngressProxyConfig, GET_INGRESS_PROXY_CONFIG_CAPABILITY, "ployz.ingress.config.v1", Ingress),
                 ReserveDomain: (reserve_domain, "ReserveDomain", ReserveDomainRequest, "reserve_domain", Domain, RESERVE_DOMAIN_CAPABILITY, "ployz.dns.reserve.v1", Cluster),
                 GetDomain: (get_domain, "GetDomain", GetDomainRequest, "get_domain", Domain, GET_DOMAIN_CAPABILITY, "ployz.dns.show.v1", Cluster),
                 ReleaseDomain: (release_domain, "ReleaseDomain", ReleaseDomainRequest, "release_domain", Domain, RELEASE_DOMAIN_CAPABILITY, "ployz.dns.release.v1", Cluster),

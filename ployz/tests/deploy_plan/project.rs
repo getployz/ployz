@@ -199,12 +199,12 @@ fn other_project_resources_are_left_alone() {
 #[test]
 fn planner_does_not_refuse_reserved_names() {
     let spec = requested(ServiceMode::Global);
-    let mut caddy = container('b', '1', &spec, &service_id('a'));
-    caddy.project_name = ProjectName::system();
-    caddy.service_name = ServiceName::parse("caddy").unwrap();
+    let mut ingress = container('b', '1', &spec, &service_id('a'));
+    ingress.project_name = ProjectName::system();
+    ingress.service_name = ServiceName::parse("ingress").unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        containers: vec![caddy],
+        containers: vec![ingress],
         ..Default::default()
     };
     let plan =

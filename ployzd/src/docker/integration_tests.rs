@@ -791,7 +791,10 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let machine_id = local
         .initialize(
             MachineName::parse("observer").unwrap(),
-            "10.210.0.0/16".parse().unwrap(),
+            crate::machine::FoundingCluster {
+                network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+            },
             None,
             vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
             None,

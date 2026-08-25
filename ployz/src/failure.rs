@@ -7,7 +7,6 @@ use ployz_core::{
 };
 
 use crate::{
-    caddy::CaddyImageError,
     cloud_enroll,
     compose::ComposeError,
     connect::{ConnectError, TransportError},
@@ -15,6 +14,7 @@ use crate::{
     deploy::{DeployError, PlanError},
     dns::{DomainRequired, Error as DnsError, NoReachableMachines},
     image::PushError,
+    ingress::{DeploymentError, IngressImageError},
     operator::OperatorError,
     project::ProjectError,
     provisioning::ProvisionError,
@@ -168,7 +168,8 @@ from_error!(
     CodecError,
     AssignmentError,
     ProvisionError,
-    CaddyImageError,
+    IngressImageError,
+    DeploymentError,
     RpcError,
     ProjectError,
     AmbiguousDataLossName,
@@ -364,8 +365,7 @@ mod tests {
 
     #[test]
     fn warned_follow_on_is_one_line_and_fails() {
-        let cause =
-            "inspect Caddy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out";
+        let cause = "inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out";
         let add = Failure::warned("hosted DNS refresh failed after adding the Machine", cause);
         let remove = Failure::warned(
             "hosted DNS refresh failed after removing the Machine",
@@ -373,11 +373,11 @@ mod tests {
         );
         assert_eq!(
             add.to_string(),
-            "WARNING: hosted DNS refresh failed after adding the Machine: inspect Caddy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
+            "WARNING: hosted DNS refresh failed after adding the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
         );
         assert_eq!(
             remove.to_string(),
-            "WARNING: hosted DNS refresh failed after removing the Machine: inspect Caddy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
+            "WARNING: hosted DNS refresh failed after removing the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
         );
         assert_eq!(add.to_string().matches(cause).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);

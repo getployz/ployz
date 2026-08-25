@@ -15,7 +15,7 @@ use ployz_core::{
 };
 use ployzd::machine::{
     LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
-    LocalMachineStore, StoreError,
+    LocalMachineStore, ParticipationOrigin, StoreError,
 };
 use ployzd::network::WireGuardPrivateKey;
 
@@ -55,7 +55,10 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     let initialized = first
         .initialize(
             MachineName::parse("first").unwrap(),
-            "10.210.0.0/16".parse().unwrap(),
+            ployzd::machine::FoundingCluster {
+                network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+            },
             Some("203.0.113.1".parse().unwrap()),
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             Some(1400),
@@ -69,12 +72,26 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         first.record().cluster_network().unwrap().to_string(),
         "10.210.0.0/16"
     );
+    let LocalMachineBody::Participating {
+        origin: ParticipationOrigin::Founder { cluster: founding },
+        ..
+    } = &first.record().body
+    else {
+        panic!("initialized Machine must retain its founding Cluster seed");
+    };
+    assert_eq!(
+        founding.ingress_proxy_backend,
+        ployz_core::IngressProxyBackend::Caddy
+    );
     assert_eq!(first.record().cloud_pairing, None);
     assert!(
         first
             .initialize(
                 MachineName::parse("again").unwrap(),
-                "10.210.0.0/16".parse().unwrap(),
+                ployzd::machine::FoundingCluster {
+                    network: "10.210.0.0/16".parse().unwrap(),
+                    ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+                },
                 None,
                 vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
                 None,
@@ -132,6 +149,7 @@ fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
         .initialize(ployz_core::InitializeRequest {
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
+            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
@@ -173,6 +191,7 @@ fn set_cloud_pairing_after_initialize_persists() {
         .initialize(ployz_core::InitializeRequest {
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
+            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
@@ -201,6 +220,7 @@ fn set_cloud_pairing_none_clears_persisted_pairing() {
         .initialize(ployz_core::InitializeRequest {
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
+            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
@@ -233,7 +253,10 @@ fn join_with_cloud_pairing_stores_the_same_two_fields() {
     let initialized = first
         .initialize(
             MachineName::parse("first").unwrap(),
-            "10.210.0.0/16".parse().unwrap(),
+            ployzd::machine::FoundingCluster {
+                network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+            },
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             None,
@@ -287,7 +310,10 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
     store
         .initialize(
             MachineName::parse("machine").unwrap(),
-            "10.210.0.0/16".parse().unwrap(),
+            ployzd::machine::FoundingCluster {
+                network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+            },
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             None,
@@ -325,7 +351,10 @@ fn machine_update_is_atomic_and_durable() {
     let original = store
         .initialize(
             MachineName::parse("before").unwrap(),
-            "10.210.0.0/16".parse().unwrap(),
+            ployzd::machine::FoundingCluster {
+                network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+            },
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             None,
@@ -422,6 +451,7 @@ async fn inspect_reports_stored_cloud_pairing_without_the_secret() {
         .initialize(ployz_core::InitializeRequest {
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
+            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
@@ -665,8 +695,12 @@ fn legal_bodies_round_trip() {
         LocalMachineRecord {
             body: LocalMachineBody::Participating {
                 machine: machine.clone(),
-                cluster_network: Some("10.210.0.0/16".parse().unwrap()),
-                bootstrap: Vec::new(),
+                origin: ParticipationOrigin::Founder {
+                    cluster: ployzd::machine::FoundingCluster {
+                        network: "10.210.0.0/16".parse().unwrap(),
+                        ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+                    },
+                },
             },
             wireguard_private_key: key.clone(),
             wireguard_mtu: Some(1400),
@@ -676,8 +710,9 @@ fn legal_bodies_round_trip() {
         LocalMachineRecord {
             body: LocalMachineBody::Participating {
                 machine: machine.clone(),
-                cluster_network: None,
-                bootstrap: vec![peer],
+                origin: ParticipationOrigin::Join {
+                    bootstrap: vec![peer],
+                },
             },
             wireguard_private_key: key.clone(),
             wireguard_mtu: None,
@@ -688,8 +723,9 @@ fn legal_bodies_round_trip() {
             body: LocalMachineBody::Resetting {
                 prior: Box::new(LocalMachinePrior::Participating {
                     machine,
-                    cluster_network: None,
-                    bootstrap: Vec::new(),
+                    origin: ParticipationOrigin::Join {
+                        bootstrap: Vec::new(),
+                    },
                 }),
             },
             wireguard_private_key: key,
@@ -698,11 +734,49 @@ fn legal_bodies_round_trip() {
             selected_endpoints: BTreeMap::new(),
         },
     ];
+    let founder = serde_json::to_value(&records[2]).unwrap();
+    let founder = founder.get("body").unwrap().as_object().unwrap();
+    assert_eq!(
+        founder.get("origin").and_then(serde_json::Value::as_str),
+        Some("founder")
+    );
+    assert!(founder.get("bootstrap").is_none());
+    let join = serde_json::to_value(&records[3]).unwrap();
+    let join = join.get("body").unwrap().as_object().unwrap();
+    assert_eq!(
+        join.get("origin").and_then(serde_json::Value::as_str),
+        Some("join")
+    );
+    assert!(join.get("cluster").is_none());
     for record in records {
         let loaded: LocalMachineRecord =
             serde_json::from_slice(&serde_json::to_vec(&record).unwrap()).unwrap();
         assert_eq!(loaded, record);
     }
+}
+
+#[test]
+fn pre_616_participating_authority_shape_is_not_migrated() {
+    let key = WireGuardPrivateKey::generate();
+    let machine = sample_machine(MachineId::random(), key.public_key());
+    let record = LocalMachineRecord {
+        body: LocalMachineBody::Participating {
+            machine,
+            origin: ParticipationOrigin::Join {
+                bootstrap: Vec::new(),
+            },
+        },
+        wireguard_private_key: key,
+        wireguard_mtu: None,
+        cloud_pairing: None,
+        selected_endpoints: BTreeMap::new(),
+    };
+    let mut legacy = serde_json::to_value(record).unwrap();
+    let body = legacy.get_mut("body").unwrap().as_object_mut().unwrap();
+    body.remove("origin");
+    body.insert("founding_cluster".into(), serde_json::Value::Null);
+
+    assert!(serde_json::from_value::<LocalMachineRecord>(legacy).is_err());
 }
 
 fn sample_machine(id: MachineId, public_key: ployz_core::WireGuardPublicKey) -> Machine {

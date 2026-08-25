@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 
 use clap::ArgMatches;
 use ployz_core::{
-    ContainerPath, ContainerResources, DockerVolumeName, MachineTarget, Placement, PortPublication,
-    PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
-    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, Ulimit,
-    UpdateConfig, VolumeSource,
+    ContainerPath, ContainerResources, DockerVolumeName, IngressProxyFragment, MachineTarget,
+    Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, Ulimit, UpdateConfig, VolumeSource,
 };
 
 use crate::{
@@ -120,7 +120,10 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         volume_graph,
         config_graph: Default::default(),
         pre_deploy: None,
-        caddy_config,
+        ingress_proxy_fragment: caddy_config
+            .filter(|config| !config.trim().is_empty())
+            .map(IngressProxyFragment::parse_caddy)
+            .transpose()?,
         update: UpdateConfig::default(),
     })
 }

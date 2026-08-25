@@ -776,7 +776,7 @@ async fn replace_container<C: MachineOperations>(
     }
 
     if !stop_first {
-        // TODO(UT-074): Caddy learns about the new container asynchronously, so stopping the old
+        // TODO(UT-074): the Ingress Proxy learns about the new container asynchronously, so stopping the old
         // single replica here can still cause a brief interruption.
         progress.set_running(index, OperationPhase::StoppingContainer);
         ignore_not_found(

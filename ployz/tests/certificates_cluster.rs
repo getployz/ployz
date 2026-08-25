@@ -5,8 +5,8 @@ use std::{
 };
 
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerKind, GetCaddyConfigRequest, Machine, MachineTarget,
-    MachineUpdate, ProjectName, PublicIpUpdate, ResolvedServiceSpec, ServiceId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerKind, GetIngressProxyConfigRequest, Machine,
+    MachineTarget, MachineUpdate, ProjectName, PublicIpUpdate, ResolvedServiceSpec, ServiceId,
     StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
@@ -28,8 +28,8 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_service(&mut client, "caddy", 1).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 1).await;
 
     let http_id = ServiceId::random();
     create_and_start(
@@ -56,7 +56,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     .await;
     wait_running(&mut client, &custom_id, 1).await;
     wait_config(&mut client, &first, |config| {
-        config.contains("tls /config/certs/app.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
@@ -111,8 +111,8 @@ async fn several_machines_order_once_and_every_machine_answers() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_service(&mut client, "caddy", 2).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 2).await;
 
     let app_id = ServiceId::random();
     let web_id = ServiceId::random();
@@ -140,13 +140,13 @@ async fn several_machines_order_once_and_every_machine_answers() {
     wait_running(&mut client, &broken_id, 1).await;
 
     wait_config(&mut client, &first, |config| {
-        config.contains("tls /config/certs/app.example.com-")
-            && config.contains("tls /config/certs/web.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
+            && config.contains("tls /config/caddy/certs/web.example.com-")
     })
     .await;
     wait_config(&mut client, &second, |config| {
-        config.contains("tls /config/certs/app.example.com-")
-            && config.contains("tls /config/certs/web.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
+            && config.contains("tls /config/caddy/certs/web.example.com-")
     })
     .await;
 
@@ -190,7 +190,7 @@ async fn down_machine_does_not_block_ordering() {
     cli(
         &direct,
         &[
-            "caddy",
+            "ingress",
             "deploy",
             "--image",
             "caddy:2.10.2",
@@ -198,7 +198,7 @@ async fn down_machine_does_not_block_ordering() {
             living.id.as_str(),
         ],
     );
-    wait_service(&mut client, "caddy", 1).await;
+    wait_service(&mut client, "ingress", 1).await;
 
     let app_id = ServiceId::random();
     create_and_start(
@@ -209,7 +209,7 @@ async fn down_machine_does_not_block_ordering() {
     .await;
     wait_running(&mut client, &app_id, 1).await;
     wait_config(&mut client, living, |config| {
-        config.contains("tls /config/certs/app.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
@@ -235,8 +235,8 @@ async fn certificate_renews_before_expiry_without_restart() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_service(&mut client, "caddy", 1).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 1).await;
     let app_id = ServiceId::random();
     create_and_start(
         &mut client,
@@ -246,7 +246,7 @@ async fn certificate_renews_before_expiry_without_restart() {
     .await;
     wait_running(&mut client, &app_id, 1).await;
     wait_config(&mut client, &first, |config| {
-        config.contains("tls /config/certs/app.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
@@ -284,8 +284,8 @@ async fn machines_holding_the_same_certificate_renew_once() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_service(&mut client, "caddy", 2).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 2).await;
     let app_id = ServiceId::random();
     create_and_start(
         &mut client,
@@ -295,11 +295,11 @@ async fn machines_holding_the_same_certificate_renew_once() {
     .await;
     wait_running(&mut client, &app_id, 1).await;
     wait_config(&mut client, &first, |config| {
-        config.contains("tls /config/certs/app.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
     wait_config(&mut client, &second, |config| {
-        config.contains("tls /config/certs/app.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
     assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 1);
@@ -337,8 +337,8 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_service(&mut client, "caddy", 1).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 1).await;
     let app_id = ServiceId::random();
     create_and_start(
         &mut client,
@@ -348,7 +348,7 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
     .await;
     wait_running(&mut client, &app_id, 1).await;
     wait_config(&mut client, &first, |config| {
-        config.contains("tls /config/certs/app.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
     wait_https(&cluster, 0, "app.example.com").await;
@@ -384,8 +384,8 @@ async fn joining_machine_serves_existing_certificate() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_service(&mut client, "caddy", 1).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 1).await;
     let app_id = ServiceId::random();
     create_and_start(
         &mut client,
@@ -395,7 +395,7 @@ async fn joining_machine_serves_existing_certificate() {
     .await;
     wait_running(&mut client, &app_id, 1).await;
     wait_config(&mut client, &first, |config| {
-        config.contains("tls /config/certs/app.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
@@ -404,7 +404,7 @@ async fn joining_machine_serves_existing_certificate() {
     cli(
         &direct,
         &[
-            "caddy",
+            "ingress",
             "deploy",
             "--image",
             "caddy:2.10.2",
@@ -413,7 +413,7 @@ async fn joining_machine_serves_existing_certificate() {
         ],
     );
     wait_config(&mut client, &second, |config| {
-        config.contains("tls /config/certs/app.example.com-")
+        config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
     wait_https(&cluster, 1, "app.example.com").await;
@@ -477,8 +477,8 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_service(&mut client, "caddy", 1).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 1).await;
 
     point_dns(
         &cluster,
@@ -510,7 +510,7 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
 
     point_dns(&cluster, "outside.example.com", ip);
     wait_config(&mut client, &first, |config| {
-        config.contains("tls /config/certs/outside.example.com-")
+        config.contains("tls /config/caddy/certs/outside.example.com-")
     })
     .await;
     assert_eq!(ca.ordered(), vec!["outside.example.com".to_owned()]);
@@ -704,15 +704,15 @@ async fn wait_config(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     loop {
         match client
-            .call::<op::GetCaddyConfig>(
-                GetCaddyConfigRequest {},
+            .call::<op::GetIngressProxyConfig>(
+                GetIngressProxyConfigRequest {},
                 Some(&MachineTarget::from(&machine.id)),
             )
             .await
         {
-            Ok(config) if expected(&config.caddyfile) => return config.caddyfile,
+            Ok(config) if expected(config.config()) => return config.config().to_owned(),
             Ok(config) if tokio::time::Instant::now() >= deadline => {
-                panic!("Caddyfile did not converge:\n{}", config.caddyfile)
+                panic!("Caddyfile did not converge:\n{}", config.config())
             }
             Err(error) if tokio::time::Instant::now() >= deadline => {
                 panic!("Caddyfile was unavailable: {error}")
@@ -784,7 +784,7 @@ fn curl_https(cluster: &Cluster, index: usize, hostname: &str) -> String {
         .machine_shell(
             index,
             &format!(
-                r#"cert=$(ls /var/lib/ployz/caddy/certs/{hostname}-*.crt | head -n1); curl -fsS --cacert "$cert" --resolve {hostname}:443:127.0.0.1 https://{hostname} || true"#
+                r#"cert=$(ls /var/lib/ployz/ingress/caddy/certs/{hostname}-*.crt | head -n1); curl -fsS --cacert "$cert" --resolve {hostname}:443:127.0.0.1 https://{hostname} || true"#
             ),
         )
         .unwrap_or_default()

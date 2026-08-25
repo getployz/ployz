@@ -762,7 +762,10 @@ fn open_store(prefix: &str) -> (std::path::PathBuf, Arc<Mutex<LocalMachineStore>
     let founder = store
         .initialize(
             MachineName::parse("edge").unwrap(),
-            "10.210.0.0/16".parse().unwrap(),
+            super::FoundingCluster {
+                network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+            },
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             None,
