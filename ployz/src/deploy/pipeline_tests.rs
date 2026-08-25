@@ -321,8 +321,8 @@ fn observation_warnings_keep_failures_and_omissions_distinct() {
 }
 
 fn machine() -> ployz_core::MachineObservation {
-    ployz_core::MachineObservation {
-        machine: Machine {
+    ployz_core::MachineObservation::new(
+        Machine {
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("machine-1").unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),
@@ -332,11 +332,8 @@ fn machine() -> ployz_core::MachineObservation {
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
         },
-        membership: MembershipObservation::Up,
-        storage: None,
-        selected_endpoint: None,
-        rtt: None,
-    }
+        MembershipObservation::Up,
+    )
 }
 
 fn observation(

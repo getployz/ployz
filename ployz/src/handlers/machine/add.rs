@@ -204,13 +204,10 @@ mod tests {
     #[test]
     fn re_adding_a_joined_machine_reports_it_already_belongs_to_the_cluster() {
         let assigned = assigned_machine("edge", 'a');
-        let visible = [MachineObservation {
-            machine: assigned.clone(),
-            membership: MembershipObservation::Up,
-            storage: None,
-            selected_endpoint: None,
-            rtt: None,
-        }];
+        let visible = [MachineObservation::new(
+            assigned.clone(),
+            MembershipObservation::Up,
+        )];
         assert_eq!(
             cluster_membership_conflict(
                 &LocalMachinePhase::Participating,

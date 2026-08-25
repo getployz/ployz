@@ -508,8 +508,8 @@ mod tests {
     }
 
     fn machine(seed: u8, name: &str) -> MachineObservation {
-        MachineObservation {
-            machine: Machine {
+        MachineObservation::new(
+            Machine {
                 id: MachineId::parse(format!("{seed:032x}")).unwrap(),
                 name: MachineName::parse(name).unwrap(),
                 subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
@@ -519,10 +519,7 @@ mod tests {
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
             },
-            membership: MembershipObservation::Up,
-            storage: None,
-            selected_endpoint: None,
-            rtt: None,
-        }
+            MembershipObservation::Up,
+        )
     }
 }

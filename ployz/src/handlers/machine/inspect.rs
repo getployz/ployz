@@ -474,8 +474,8 @@ mod tests {
 
     #[test]
     fn machine_json_projection_includes_the_derived_gateway() {
-        let observation = MachineObservation {
-            machine: ployz_core::Machine {
+        let observation = MachineObservation::new(
+            ployz_core::Machine {
                 id: "0".repeat(32).parse().unwrap(),
                 name: "node-a".parse().unwrap(),
                 subnet: "10.210.7.0/24".parse().unwrap(),
@@ -485,11 +485,8 @@ mod tests {
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
             },
-            membership: ployz_core::MembershipObservation::Up,
-            storage: None,
-            selected_endpoint: None,
-            rtt: None,
-        };
+            ployz_core::MembershipObservation::Up,
+        );
         let output = serde_json::to_value(MachineObservationOutput {
             gateway: observation.machine.subnet.gateway().0,
             observation: &observation,

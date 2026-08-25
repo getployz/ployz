@@ -117,8 +117,16 @@ A bounded command attempt that calculates and executes work against an observer-
 _Avoid_: Deployment resource, reconciliation loop
 
 **Global catch-up**:
-A bounded CLI operation that ensures this Machine holds a running Service Container for every observed eligible Global. Initiated by a membership command. Not a daemon loop and not a Cluster-wide Deploy.
-_Avoid_: reconciler, desired Service, scheduler
+A bounded membership-command operation that establishes this Machine's running Service Container for every observed eligible Global before the command completes. It is distinct from ongoing Global slot convergence and is not a Cluster-wide Deploy.
+_Avoid_: scheduler, Cluster-wide Deploy
+
+**Global slot convergence**:
+Machine-local maintenance that restores this participating Machine's missing eligible Global slots from its observations. It is add-only and never schedules replicated Services or removes stale slots.
+_Avoid_: Cluster-wide reconciler, scheduler, stale-slot pruning
+
+**Observed Global Slot Spec**:
+The Resolved Service Spec carried by the newest observer-visible Service Container and used for Global catch-up or slot convergence. It retains that Container's provenance and is not canonical Service intent.
+_Avoid_: Current service spec, canonical service spec, desired Global state
 
 **Deploy Intent**:
 The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target, including removal of observer-visible Services the target no longer declares. Services in the target that are not applied are unchanged.

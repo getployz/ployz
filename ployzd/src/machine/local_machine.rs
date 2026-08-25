@@ -8,16 +8,17 @@ use std::{
 };
 
 use ployz_core::{
-    CloudPairing, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
-    LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
-    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
-    MachineUpdated, ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest,
-    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
-    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
-    associate_wireguard_peers, synthesize_membership,
+    CloudPairing, ContainerCreated, InitializeRequest, Initialized, InspectRequest, JoinAccepted,
+    JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId,
+    MachineIdentity, MachineList, MachineObservation, MachineRemoved, MachineToken,
+    MachineTokenRequest, MachineUpdated, ManagementAddress, MembershipObservation, ProjectName,
+    PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
+    RemoveMachineRequest, ResetAccepted, ResolvedServiceSpec, RttObservation, RttStatistics,
+    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
+    synthesize_membership,
 };
 use thiserror::Error;
-use tokio::sync::watch;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
     LocalMachineRecord, LocalMachineStore, STORAGE_OBSERVATION_TIMEOUT, StoreError, local_runtime,
@@ -40,6 +41,7 @@ pub struct LocalMachine {
     restart: watch::Sender<bool>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
+    global_slot_lock: Arc<AsyncMutex<()>>,
 }
 
 #[derive(Clone)]
@@ -123,6 +125,7 @@ impl LocalMachine {
             restart,
             cluster: None,
             containers: None,
+            global_slot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -144,6 +147,26 @@ impl LocalMachine {
 
     pub(crate) fn containers(&self) -> Option<&ContainerRuntime> {
         self.containers.as_ref()
+    }
+
+    /// Ensure this Machine's Global slot through the shared idempotent Docker path.
+    ///
+    /// # Errors
+    ///
+    /// Returns when local state is unavailable, Docker is unavailable, this Machine
+    /// is not participating, or Docker cannot ensure the slot.
+    pub(crate) async fn ensure_global_slot(
+        &self,
+        project: &ProjectName,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerCreated, Error> {
+        let _guard = self.global_slot_lock.lock().await;
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let record = self.record()?;
+        let machine = record.machine().ok_or(Error::NotParticipating)?;
+        Ok(containers
+            .ensure_global_slot(&record.id(), machine.subnet.gateway(), project, spec)
+            .await?)
     }
 
     /// The persisted Local Machine record.
@@ -733,21 +756,51 @@ fn local_removal_response(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
 
     use super::{
-        RuntimeWatchTelemetry, isolation_lock, local_removal_response, read_admin,
-        unique_identities,
+        Error, LocalMachine, RuntimeWatchTelemetry, isolation_lock, local_removal_response,
+        read_admin, unique_identities,
     };
     use crate::corrosion::AdminClient;
+    use crate::machine::LocalMachineStore;
     use ployz_core::{
         AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
-        ManagementAddress, MembershipObservation, RttObservation, RttStatistics, SelectedEndpoint,
-        WireGuardPublicKey,
+        ManagementAddress, MembershipObservation, ProjectName, ResolvedServiceSpec, RttObservation,
+        RttStatistics, SelectedEndpoint, ServiceId, ServiceMode, ServiceName, WireGuardPublicKey,
     };
+    use serde_json::json;
 
     const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
     const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
+
+    #[tokio::test]
+    async fn ensure_global_slot_reports_missing_docker_at_local_machine_seam() {
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-local-global-slot-{}", MachineId::random()));
+        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+        let (restart, _) = tokio::sync::watch::channel(false);
+        let local = LocalMachine::new(store, restart);
+        let service_id = ServiceId::random();
+        let service_name = ServiceName::parse("api").unwrap();
+        let mode = serde_json::to_value(ServiceMode::Global).unwrap();
+        let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+            "service_id": service_id,
+            "name": service_name,
+            "mode": mode,
+            "container": { "image": "example.test/api", "pull_policy": "missing" }
+        }))
+        .unwrap();
+        let project = ProjectName::parse("app").unwrap();
+
+        let error = local.ensure_global_slot(&project, &spec).await.unwrap_err();
+
+        assert!(matches!(error, Error::DockerUnavailable));
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 
     #[test]
     fn failed_local_removal_keeps_the_daemon_available_for_entry_fallback() {

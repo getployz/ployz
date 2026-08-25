@@ -856,8 +856,8 @@ fn created_container_id() -> ContainerId {
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
-    MachineObservation {
-        machine: Machine {
+    MachineObservation::new(
+        Machine {
             id: machine_id(hex),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
@@ -869,11 +869,8 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
         },
-        membership: MembershipObservation::Up,
-        storage: None,
-        selected_endpoint: None,
-        rtt: None,
-    }
+        MembershipObservation::Up,
+    )
 }
 
 pub(super) fn machine_id(hex: char) -> MachineId {

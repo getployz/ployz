@@ -516,13 +516,10 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let assigned = MachineObservation {
-            machine: self.inner.registration.assigned_machine.clone(),
-            membership: self.inner.assigned_membership.lock().unwrap().clone(),
-            storage: None,
-            selected_endpoint: None,
-            rtt: None,
-        };
+        let assigned = MachineObservation::new(
+            self.inner.registration.assigned_machine.clone(),
+            self.inner.assigned_membership.lock().unwrap().clone(),
+        );
         let mut machines = vec![assigned];
         machines.extend(
             self.inner
@@ -933,13 +930,7 @@ pub fn caddy_on(machine: &Machine) -> ContainerObservation {
 }
 
 fn up_machine(machine: Machine) -> MachineObservation {
-    MachineObservation {
-        machine,
-        membership: MembershipObservation::Up,
-        storage: None,
-        selected_endpoint: None,
-        rtt: None,
-    }
+    MachineObservation::new(machine, MembershipObservation::Up)
 }
 
 fn joiner_machine() -> Machine {

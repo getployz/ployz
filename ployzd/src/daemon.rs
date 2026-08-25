@@ -33,6 +33,7 @@ use crate::{
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
+    global_reconcile::{self, global_reconcile_observation_channel},
     machine::{LocalMachineBody, LocalMachineStore, StoreError},
     metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
@@ -162,6 +163,8 @@ impl Daemon {
         );
         let (participating, participating_rx) =
             watch::channel(local_phase == LocalMachinePhase::Participating);
+        let (global_reconcile_publisher, global_reconcile_observations) =
+            global_reconcile_observation_channel();
         let (cloud_pairing_tx, cloud_pairing_rx) = watch::channel(local_record.cloud_pairing);
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
@@ -182,7 +185,8 @@ impl Daemon {
         .with_optional_containers(containers.clone())
         .with_caddyfile(caddyfile.clone())
         .with_image_ingest(Arc::clone(&ingest))
-        .with_cloud_pairing(cloud_pairing_tx);
+        .with_cloud_pairing(cloud_pairing_tx)
+        .with_global_reconcile_observations(global_reconcile_observations);
         let proxy = MachineProxy::new(
             Routes::new(
                 MachineRpcServer::new(service.clone())
@@ -313,6 +317,24 @@ impl Daemon {
                     }
                 }
             };
+            let global_reconcile_local = service.local();
+            let global_reconcile = async {
+                match replicated_store.clone() {
+                    Some(replicated) => global_reconcile::run(
+                        replicated,
+                        global_reconcile_local,
+                        global_reconcile_publisher,
+                        participating_rx.clone(),
+                        shutdown.clone(),
+                    )
+                    .await
+                    .map_err(io::Error::other),
+                    None => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
             let relay_register = async {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
@@ -329,6 +351,7 @@ impl Daemon {
                 dns,
                 caddy,
                 certificates,
+                global_reconcile,
                 relay_register,
             )
             .map(|_| ())

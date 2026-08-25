@@ -4,6 +4,8 @@ Apply to new and touched code. rustfmt and the workspace Clippy lints in `Cargo.
 
 Run every code change through this lens: ployz updates are cheap; ployzd daemon updates are not. A cluster that opts out of updates can leave ployzd unchanged for years, and every RPC on it is maintenance for as long as it does. Put new behavior in ployz. Latest ployz must still speak to that lagged ployzd — versions eventually drop; that is not the baseline.
 
+Issue #607 is a narrow daemon-policy exception: ployzd owns periodic, Machine-local Global slot convergence because a Global is standing user intent. It may only add missing eligible slots from local Replicated Observations; it never removes or moves slots and never schedules replicated Services. Newer ployz must remain usable against a lagged ployzd that neither converges nor emits Global reconcile observations, so those additive observation fields deserialize absent as empty. This exception does not authorize other daemon-side orchestration.
+
 ## Names
 
 Accessors omit `get_`: `name()`, `as_str()`. Wire RPC method names that already exist on the contract (`get_caddy_config`) stay as they are.

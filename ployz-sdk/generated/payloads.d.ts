@@ -563,12 +563,19 @@ export type RttStatistics = Additive<{
   population_stddev_ns: number;
 }>;
 
+export type GlobalReconcileFailureObservation = Additive<{
+  service: QualifiedService;
+  last_error: string;
+  observed_at: string;
+}>;
+
 export type MachineObservation = Additive<{
   machine: Machine;
   membership: MembershipObservation;
   storage?: MachineStorageObservation;
   selected_endpoint: SelectedEndpoint | null;
   rtt?: RttStatistics;
+  global_reconcile_failures?: GlobalReconcileFailureObservation[];
 }>;
 
 export type ContainerObservation = Additive<{

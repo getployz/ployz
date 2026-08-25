@@ -360,7 +360,13 @@ fn expected_frame() -> RuntimeWatchFrame {
     let container = container_observation();
     RuntimeWatchFrame {
         machines: vec![MachineObservation {
-            machine: Machine {
+            selected_endpoint: Some(SelectedEndpoint("203.0.113.10:51820".parse().unwrap())),
+            rtt: Some(RttStatistics {
+                median_ns: 1_500_000,
+                population_stddev_ns: 250_000,
+            }),
+            ..MachineObservation::new(
+                Machine {
                 id: MachineId::parse(MACHINE_ID).unwrap(),
                 name: MachineName::parse("edge").unwrap(),
                 subnet: "10.210.1.0/24".parse().unwrap(),
@@ -376,14 +382,9 @@ fn expected_frame() -> RuntimeWatchFrame {
                     os_pretty_name: "Debian".into(),
                     kernel_version: "6.1.0".into(),
                 },
-            },
-            membership: MembershipObservation::Up,
-            storage: None,
-            selected_endpoint: Some(SelectedEndpoint("203.0.113.10:51820".parse().unwrap())),
-            rtt: Some(RttStatistics {
-                median_ns: 1_500_000,
-                population_stddev_ns: 250_000,
-            }),
+                },
+                MembershipObservation::Up,
+            )
         }],
         containers: vec![container.clone()],
         services: vec![ServiceObservation {
