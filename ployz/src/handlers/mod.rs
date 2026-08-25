@@ -24,6 +24,9 @@ mod project;
 mod service;
 mod volume;
 
+#[doc(hidden)]
+pub use cloud::{EnrollInstaller, enroll_with_installer as cloud_enroll_with_installer};
+
 pub type Error = Failure;
 
 pub fn run() -> Result<(), Error> {

@@ -1,6 +1,7 @@
 //! `ployz cloud enroll` join and initialize paths against fake enroll HTTP.
 
 mod catch_up;
+mod daemon_sync;
 mod harness;
 
 use harness::{

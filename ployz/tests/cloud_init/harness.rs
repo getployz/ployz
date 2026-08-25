@@ -3,6 +3,7 @@
 use std::{
     collections::VecDeque,
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
@@ -24,9 +25,10 @@ use ployz_core::{
 use ployz_relay::{ClientError, DialCredential, Open, RegisterRequest, Relay, RelayClient};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, UnixListener},
     task::JoinHandle,
 };
+use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status, Streaming, transport::Server};
 
 #[path = "../support/inspect_telemetry.rs"]
@@ -175,6 +177,7 @@ pub struct JoinDaemon {
 
 struct JoinInner {
     registration: Registered,
+    daemon_version: Mutex<String>,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
@@ -197,6 +200,7 @@ impl JoinDaemon {
         Self {
             inner: Arc::new(JoinInner {
                 registration,
+                daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
                 join_request: Mutex::new(None),
                 initialize_requests: Mutex::new(Vec::new()),
@@ -223,6 +227,10 @@ impl JoinDaemon {
             .unwrap()
             .clone()
             .expect("Join was called")
+    }
+
+    pub fn set_daemon_version(&self, version: &str) {
+        *self.inner.daemon_version.lock().unwrap() = version.into();
     }
 
     pub fn initialize_request(&self) -> InitializeRequest {
@@ -324,7 +332,7 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(ContractDescription {
             machine_id: self.inner.registration.assigned_machine.id,
             protocol_major: PROTOCOL_MAJOR,
-            daemon_version: "test".into(),
+            daemon_version: self.inner.daemon_version.lock().unwrap().clone(),
             capabilities: [
                 ployz_core::CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY)
                     .expect("catalogued capability names are valid"),
@@ -801,6 +809,32 @@ pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(tcp)),
     );
     address
+}
+
+pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf, Arc<AtomicUsize>) {
+    use futures_util::StreamExt as _;
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let socket = std::env::temp_dir().join(format!(
+        "ployz-cloud-enroll-{}-{}.sock",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&socket);
+    let unix = UnixListener::bind(&socket).unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let accepted = Arc::clone(&connections);
+    let incoming = UnixListenerStream::new(unix).inspect(move |connection| {
+        if connection.is_ok() {
+            accepted.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(daemon))
+            .serve_with_incoming(incoming),
+    );
+    (format!("unix://{}", socket.display()), socket, connections)
 }
 
 async fn hold_register(

@@ -63,6 +63,50 @@ async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
 }
 
 #[tokio::test]
+async fn machine_ls_warns_without_failing_when_one_daemon_version_differs() {
+    let mut service = storage_capable_service();
+    service
+        .machines
+        .first_mut()
+        .unwrap()
+        .machine
+        .runtime
+        .daemon_version = "0.0.0-old".into();
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["machine", "ls"]).await;
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "WARNING: 1 Machine runs a daemon version different from CLI {}.\n",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn machine_ls_does_not_warn_when_every_daemon_matches() {
+    let mut service = storage_capable_service();
+    service
+        .machines
+        .first_mut()
+        .unwrap()
+        .machine
+        .runtime
+        .daemon_version = env!("CARGO_PKG_VERSION").into();
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["machine", "ls"]).await;
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stderr, b"");
+    server.abort();
+}
+
+#[tokio::test]
 async fn deploy_preview_observes_storage_before_refusing_a_stateless_explicit_target() {
     let mut service = storage_capable_service();
     service.storage = ployz_core::MachineStorageObservation::Stateless;

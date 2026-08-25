@@ -24,6 +24,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let mut machines = machine_list(client).await?;
             client.observe_machine_storage(&mut machines).await;
+            let warning = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION"));
             if output.as_deref() == Some("json") {
                 let machines = machines
                     .iter()
@@ -33,41 +34,61 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                     })
                     .collect::<Vec<_>>();
                 println!("{}", serde_json::to_string_pretty(&machines)?);
-                return Ok(());
-            }
-            println!(
-                "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
-            );
-            for observed in machines {
-                let machine = observed.machine;
+            } else {
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    machine.id,
-                    machine.name,
-                    observed.membership.as_str(),
-                    format_storage(observed.storage),
-                    machine.subnet,
-                    machine.subnet.gateway().0,
-                    machine
-                        .public_ip
-                        .map_or_else(|| "-".into(), |ip| ip.to_string()),
-                    machine
-                        .advertised_endpoints
-                        .iter()
-                        .map(|endpoint| endpoint.0.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    machine.runtime.hostname,
-                    machine.runtime.daemon_version,
-                    machine.runtime.docker_version,
-                    machine.runtime.os_pretty_name,
-                    machine.runtime.kernel_version,
-                    machine.runtime.architecture,
+                    "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
                 );
+                for observed in &machines {
+                    let machine = &observed.machine;
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        machine.id,
+                        machine.name,
+                        observed.membership.as_str(),
+                        format_storage(observed.storage),
+                        machine.subnet,
+                        machine.subnet.gateway().0,
+                        machine
+                            .public_ip
+                            .map_or_else(|| "-".into(), |ip| ip.to_string()),
+                        machine
+                            .advertised_endpoints
+                            .iter()
+                            .map(|endpoint| endpoint.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        machine.runtime.hostname,
+                        machine.runtime.daemon_version,
+                        machine.runtime.docker_version,
+                        machine.runtime.os_pretty_name,
+                        machine.runtime.kernel_version,
+                        machine.runtime.architecture,
+                    );
+                }
+            }
+            if let Some(warning) = warning {
+                eprintln!("{warning}");
             }
             Ok(())
         })
     })
+}
+
+#[must_use]
+fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Option<String> {
+    let count = machines
+        .iter()
+        .filter(|observed| observed.machine.runtime.daemon_version != cli_version)
+        .count();
+    match count {
+        0 => None,
+        1 => Some(format!(
+            "WARNING: 1 Machine runs a daemon version different from CLI {cli_version}."
+        )),
+        count => Some(format!(
+            "WARNING: {count} Machines run daemon versions different from CLI {cli_version}."
+        )),
+    }
 }
 
 #[must_use]
