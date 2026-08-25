@@ -573,11 +573,14 @@ mod tests {
             tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
                 .await
                 .unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let response = http_response(200, "OK", &join_body());
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                .await
+                .unwrap();
         });
-        let error = tokio::time::timeout(Duration::from_millis(500), enroll(&url, &identity()))
-            .await
-            .expect("HTTP status must not retry like transport")
-            .unwrap_err();
+        let error = enroll(&url, &identity()).await.unwrap_err();
         assert!(
             matches!(error, Error::Status { status: 503, .. }),
             "{error}"
