@@ -16,7 +16,7 @@ use crate::connect::{
 };
 use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
-    ClusterTeardown, ContractDescription, DataLoss, DeployEvent, DeployOutcome,
+    ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
     DescribeContractRequest, DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId,
     MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
     RUNTIME_WATCH_CAPABILITY, RegisterRequest, Registered, RemoveVolumesRequest, RpcError,
@@ -333,11 +333,10 @@ impl Session {
         client.data_loss_if_machine_removed(&target).await
     }
 
-    /// Remove `machine` after a named Data Loss confirmation.
+    /// Remove `machine` after an exact Data Loss confirmation.
     ///
-    /// `confirm_data_loss` is the identities the caller showed a human. It is
-    /// not a boolean, auto-confirm flag, or echo of an [`ObservedDataLoss`]
-    /// read. Re-reads Data Loss at execute time.
+    /// `confirm_data_loss` is derived from the Live Observation the caller
+    /// showed a human. Re-reads Data Loss at execute time.
     ///
     /// # Errors
     ///
@@ -351,7 +350,7 @@ impl Session {
     pub async fn remove_machine(
         &self,
         machine: &str,
-        confirm_data_loss: &[DataLoss],
+        confirm_data_loss: &DataLossConfirmation,
     ) -> Result<LocalMachineRemoved, RpcError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
@@ -381,12 +380,12 @@ impl Session {
             .await
     }
 
-    /// Destroy `project` after a named Data Loss confirmation.
+    /// Destroy `project` after an exact Data Loss confirmation.
     ///
-    /// `confirm_data_loss` is the identities the caller showed a human. Extra
-    /// names are ignored, so one confirmation can cover several Projects.
-    /// Re-reads Data Loss at execute time. [`VolumeFate::Preserve`] is the
-    /// non-destructive default.
+    /// `confirm_data_loss` is derived from the Live Observation the caller
+    /// showed a human. Confirmed identities that disappeared are ignored, so
+    /// one confirmation can cover several Projects. Re-reads Data Loss at
+    /// execute time. [`VolumeFate::Preserve`] is the non-destructive default.
     ///
     /// # Errors
     ///
@@ -398,7 +397,7 @@ impl Session {
     pub async fn destroy_project(
         &self,
         project: &str,
-        confirm_data_loss: &[DataLoss],
+        confirm_data_loss: &DataLossConfirmation,
         volumes: VolumeFate,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let project_name =
@@ -429,11 +428,11 @@ impl Session {
         client.data_loss_if_cluster_destroyed().await
     }
 
-    /// Destroy this Cluster after a named Data Loss confirmation.
+    /// Destroy this Cluster after an exact Data Loss confirmation.
     ///
-    /// `confirm_data_loss` is the identities the caller showed a human. It is
-    /// not a boolean, auto-confirm flag, or echo of an [`ObservedDataLoss`]
-    /// read. Re-reads Data Loss at execute time. Extra names are ignored.
+    /// `confirm_data_loss` is derived from the Live Observation the caller
+    /// showed a human. Re-reads Data Loss at execute time. Confirmed identities
+    /// that disappeared are ignored.
     ///
     /// # Errors
     ///
@@ -443,7 +442,7 @@ impl Session {
     /// returned [`ClusterTeardown`].
     pub async fn destroy_cluster(
         &self,
-        confirm_data_loss: &[DataLoss],
+        confirm_data_loss: &DataLossConfirmation,
     ) -> Result<ClusterTeardown, RpcError> {
         let mut client = self.client().await?;
         client

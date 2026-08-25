@@ -11,7 +11,7 @@ use ployz_core::{
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{DiscoveryService, machine, native_addon};
+use super::support::{DiscoveryService, confirmation, machine, native_addon};
 
 struct ClusterLoss {
     shop_data: DockerVolumeId,
@@ -39,8 +39,9 @@ async fn data_loss_if_cluster_destroyed_unions_project_and_machine_volumes() {
 #[tokio::test]
 async fn destroy_cluster_refuses_unconfirmed_data_loss_and_names_what_was_missing() {
     let (client, loss, _worker, _down, service, session, _machine) = cluster_session().await;
+    let confirmation = confirmation(Vec::<DataLoss>::new());
 
-    let error = client.destroy_cluster(&[]).await.unwrap_err();
+    let error = client.destroy_cluster(&confirmation).await.unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     let missing: UnconfirmedDataLoss = serde_json::from_value(error.details).unwrap();
     assert_eq!(missing.missing, loss.all());
@@ -54,8 +55,9 @@ async fn destroy_cluster_refuses_unconfirmed_data_loss_and_names_what_was_missin
 #[tokio::test]
 async fn destroy_cluster_resets_machines_destroys_projects_and_revokes_pairing() {
     let (client, loss, worker, down, service, session, _machine) = cluster_session().await;
+    let confirmation = confirmation(loss.all());
 
-    let teardown = client.destroy_cluster(&loss.all()).await.unwrap();
+    let teardown = client.destroy_cluster(&confirmation).await.unwrap();
     assert_eq!(
         teardown.destroyed_projects,
         [ployz_core::ProjectName::parse("shop").unwrap()]
@@ -102,7 +104,7 @@ async fn destroy_cluster_resets_machines_destroys_projects_and_revokes_pairing()
         .expect_err("revoked pairing must not Register");
     assert_eq!(error.status(), Some(http::StatusCode::UNAUTHORIZED));
 
-    let again = client.destroy_cluster(&loss.all()).await.unwrap();
+    let again = client.destroy_cluster(&confirmation).await.unwrap();
     assert!(again.pairing_revoked, "{again:?}");
 }
 

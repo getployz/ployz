@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::PartialResult;
-use crate::{
-    DockerVolumeId, LocalMachineRemoved, NameMatches, ProjectName, RpcError, RpcErrorCode,
-};
+use crate::{DockerVolumeId, LocalMachineRemoved, ProjectName, RpcError, RpcErrorCode};
 
 /// One named thing an operation will destroy.
 ///
@@ -40,69 +38,71 @@ impl fmt::Display for DataLoss {
     }
 }
 
-/// A typed display name matched more than one listed Data Loss entry.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error("Data Loss name {name:?} matches more than one listed entry")]
-pub struct AmbiguousDataLossName {
-    pub name: String,
-}
-
 /// Live Observation of Data Loss. Not a complete Cluster view.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ObservedDataLoss {
     pub data_loss: Vec<DataLoss>,
 }
 
-impl ObservedDataLoss {
-    /// Data Loss in this observation that `confirmation` does not name.
-    ///
-    /// Extra names in `confirmation` are ignored: data that already went away
-    /// is not a surprise.
-    #[must_use]
-    pub fn uncovered_by(&self, confirmation: &[DataLoss]) -> Vec<DataLoss> {
-        self.data_loss
-            .iter()
-            .filter(|loss| !confirmation.contains(loss))
-            .cloned()
-            .collect()
-    }
+/// Exact Data Loss identities approved from one Live Observation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DataLossConfirmation {
+    confirmed: Vec<DataLoss>,
+}
 
-    /// Resolve operator-typed display names against this observation.
+impl ObservedDataLoss {
+    /// Confirm every observed Data Loss whose display name was supplied.
     ///
-    /// Extra names that match nothing are ignored. A name that matches more
-    /// than one listed entry is refused rather than guessed.
+    /// Names are intentionally set-valued: one Docker Volume name confirms
+    /// every observed Machine-local Volume with that name. Extra names are
+    /// ignored so a retry can include Data Loss that has already disappeared.
     ///
     /// # Errors
     ///
-    /// Returns [`AmbiguousDataLossName`] when a typed name matches more than
-    /// one listed entry.
-    pub fn named<'name>(
+    /// Returns [`UnconfirmedDataLoss`] when the names do not cover every
+    /// identity in this observation.
+    pub fn confirm_names<'name>(
         &self,
         names: impl IntoIterator<Item = &'name str>,
-    ) -> Result<Vec<DataLoss>, AmbiguousDataLossName> {
+    ) -> Result<DataLossConfirmation, UnconfirmedDataLoss> {
+        let names: Vec<_> = names.into_iter().collect();
         let mut confirmed = Vec::new();
-        for name in names {
-            match NameMatches::from_matches(
-                self.data_loss
-                    .iter()
-                    .filter(|loss| loss.name() == name)
-                    .collect(),
-            ) {
-                NameMatches::None => {}
-                NameMatches::One(loss) => confirmed.push(loss.clone()),
-                NameMatches::Ambiguous(_) => {
-                    return Err(AmbiguousDataLossName {
-                        name: name.to_owned(),
-                    });
-                }
+        for loss in &self.data_loss {
+            if names.contains(&loss.name()) && !confirmed.contains(loss) {
+                confirmed.push(loss.clone());
             }
         }
-        Ok(confirmed)
+        let confirmation = DataLossConfirmation { confirmed };
+        self.require(&confirmation)?;
+        Ok(confirmation)
+    }
+
+    /// Require this observation to be covered by exact confirmed identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnconfirmedDataLoss`] with identities that were not confirmed.
+    pub fn require(&self, confirmation: &DataLossConfirmation) -> Result<(), UnconfirmedDataLoss> {
+        let missing: Vec<_> = self
+            .data_loss
+            .iter()
+            .filter(|loss| !confirmation.confirmed.contains(loss))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(UnconfirmedDataLoss { missing })
+        }
     }
 }
 
 /// Data Loss a confirmation did not name. The execute-time refusal payload.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Error, PartialEq, Serialize, Deserialize)]
+#[error(
+    "Data Loss is not covered by the confirmation: {missing}",
+    missing = .missing.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+)]
 pub struct UnconfirmedDataLoss {
     pub missing: Vec<DataLoss>,
 }
@@ -113,14 +113,7 @@ impl UnconfirmedDataLoss {
     pub fn into_rpc_error(self) -> RpcError {
         RpcError {
             code: RpcErrorCode::InvalidArgument,
-            message: format!(
-                "Data Loss is not covered by the confirmation: {}",
-                self.missing
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            message: self.to_string(),
             details: serde_json::to_value(&self).expect("UnconfirmedDataLoss is JSON"),
         }
     }

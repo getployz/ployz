@@ -327,6 +327,10 @@ export type ObservedDataLoss = Additive<{
   data_loss: DataLoss[];
 }>;
 
+export type DataLossConfirmation = Additive<{
+  confirmed: DataLoss[];
+}>;
+
 export type UnconfirmedDataLoss = Additive<{
   missing: DataLoss[];
 }>;

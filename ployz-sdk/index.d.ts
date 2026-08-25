@@ -10,7 +10,7 @@ import type {
   MachineTarget,
   ObservedDataLoss,
   LocalMachineRemoved,
-  DataLoss,
+  DataLossConfirmation,
   ClusterTeardown,
   PartialResult,
   PlanOptions,
@@ -105,7 +105,7 @@ export declare class Client {
   dataLossIfMachineRemoved(machine: MachineTarget): Promise<ObservedDataLoss>;
   removeMachine(
     machine: MachineTarget,
-    confirmDataLoss: DataLoss[],
+    confirmDataLoss: DataLossConfirmation,
   ): Promise<LocalMachineRemoved>;
   dataLossIfProjectDestroyed(
     project_name: ProjectName,
@@ -113,10 +113,10 @@ export declare class Client {
   ): Promise<ObservedDataLoss>;
   destroyProject(
     project_name: ProjectName,
-    confirmDataLoss: DataLoss[],
+    confirmDataLoss: DataLossConfirmation,
     destroy_volumes?: boolean,
   ): Promise<DeployOutcome<ExecutionError>>;
   dataLossIfClusterDestroyed(): Promise<ObservedDataLoss>;
-  destroyCluster(confirmDataLoss: DataLoss[]): Promise<ClusterTeardown>;
+  destroyCluster(confirmDataLoss: DataLossConfirmation): Promise<ClusterTeardown>;
   close(): Promise<void>;
 };

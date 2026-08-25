@@ -1,9 +1,9 @@
 use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
-    AmbiguousDataLossName, CodecError, ContainerSelectorError, DataLoss, IngressLabelTooLong,
-    MachineSelectorError, MachineUpdateError, PartialResult, RpcError, ServiceSelectorError,
-    StreamProtocolError, UnconfirmedDataLoss, ValueError,
+    CodecError, ContainerSelectorError, DataLoss, IngressLabelTooLong, MachineSelectorError,
+    MachineUpdateError, PartialResult, RpcError, ServiceSelectorError, StreamProtocolError,
+    UnconfirmedDataLoss, ValueError,
 };
 
 use crate::{
@@ -85,13 +85,15 @@ pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) ->
 }
 
 pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
+    let mut names = Vec::new();
+    for loss in missing {
+        if !names.contains(&loss.name()) {
+            names.push(loss.name());
+        }
+    }
     format!(
         "Data Loss is not covered by the confirmation; pass the names as arguments: {}",
-        missing
-            .iter()
-            .map(DataLoss::name)
-            .collect::<Vec<_>>()
-            .join(" ")
+        names.join(" ")
     )
 }
 
@@ -172,7 +174,6 @@ from_error!(
     DeploymentError,
     RpcError,
     ProjectError,
-    AmbiguousDataLossName,
     cloud_enroll::Error,
 );
 

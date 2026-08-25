@@ -2,7 +2,7 @@
 
 use std::io::{self, IsTerminal, Write};
 
-use ployz_core::{DataLoss, ObservedDataLoss};
+use ployz_core::{DataLossConfirmation, ObservedDataLoss};
 
 use crate::failure::pass_data_loss_names_message;
 
@@ -11,11 +11,11 @@ use super::Error;
 pub(super) fn collect_data_loss_confirmation(
     observed: &ObservedDataLoss,
     named: &[String],
-) -> Result<Vec<DataLoss>, Error> {
+) -> Result<DataLossConfirmation, Error> {
     if !observed.data_loss.is_empty() {
         eprintln!("Data Loss:");
         for loss in &observed.data_loss {
-            eprintln!("  {}", loss.name());
+            eprintln!("  {loss}");
         }
     }
     let prompted;
@@ -25,13 +25,9 @@ pub(super) fn collect_data_loss_confirmation(
     } else {
         named
     };
-    let confirmation = observed.named(names.iter().map(String::as_str))?;
-    let missing = observed.uncovered_by(&confirmation);
-    if missing.is_empty() {
-        Ok(confirmation)
-    } else {
-        Err(Error::usage(pass_data_loss_names_message(&missing)))
-    }
+    observed
+        .confirm_names(names.iter().map(String::as_str))
+        .map_err(|unconfirmed| Error::usage(pass_data_loss_names_message(&unconfirmed.missing)))
 }
 
 fn read_data_loss_names(observed: &ObservedDataLoss) -> Result<Vec<String>, Error> {
@@ -69,14 +65,26 @@ mod tests {
     }
 
     #[test]
-    fn typed_names_that_match_more_than_one_listed_entry_are_refused() {
+    fn one_typed_name_confirms_every_observed_volume_with_that_name() {
         let observed = ObservedDataLoss {
             data_loss: vec![loss('a', "data"), loss('b', "data")],
         };
-        let error = collect_data_loss_confirmation(&observed, &["data".into()]).unwrap_err();
+        let confirmation = collect_data_loss_confirmation(&observed, &["data".into()]).unwrap();
+
+        assert!(observed.require(&confirmation).is_ok());
+    }
+
+    #[test]
+    fn refusing_duplicate_names_suggests_each_name_once() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "data"), loss('b', "data")],
+        };
+
+        let error = collect_data_loss_confirmation(&observed, &["gone".into()]).unwrap_err();
+
         assert_eq!(
             error.to_string(),
-            "Data Loss name \"data\" matches more than one listed entry"
+            "Data Loss is not covered by the confirmation; pass the names as arguments: data"
         );
     }
 
@@ -86,8 +94,8 @@ mod tests {
             data_loss: Vec::new(),
         };
         assert_eq!(
-            collect_data_loss_confirmation(&observed, &[]).unwrap(),
-            Vec::<DataLoss>::new()
+            observed.require(&collect_data_loss_confirmation(&observed, &[]).unwrap()),
+            Ok(())
         );
     }
 

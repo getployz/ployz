@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
     ClusterTeardown, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
-    CreateVolumeReport, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation,
-    DeployOutcome, DeployPreview, DockerVolume, DockerVolumeStorageObservation, ExecutionError,
-    HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
+    CreateVolumeReport, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DataLossConfirmation, DeployIntent,
+    DeployOperation, DeployOutcome, DeployPreview, DockerVolume, DockerVolumeStorageObservation,
+    ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
     MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY,
     RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode, RuntimeWatchTransportFrame,
     ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeInventory, VolumeSource,
@@ -152,6 +152,13 @@ fn json_fixtures_round_trip_through_rust_types() {
     );
     let empty: ObservedDataLoss = decode_fixture(fixture(&fixtures, "observed_data_loss_empty"));
     assert!(empty.data_loss.is_empty());
+
+    let confirmation: DataLossConfirmation =
+        decode_fixture(fixture(&fixtures, "data_loss_confirmation"));
+    assert_eq!(
+        serde_json::to_value(&confirmation).unwrap(),
+        *fixture(&fixtures, "data_loss_confirmation")
+    );
 
     let unconfirmed: UnconfirmedDataLoss =
         decode_fixture(fixture(&fixtures, "unconfirmed_data_loss"));
@@ -482,6 +489,8 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("DockerVolume: DockerVolumeId"));
     assert!(dts.contains("export type ObservedDataLoss = Additive<{"));
     assert!(dts.contains("data_loss: DataLoss[]"));
+    assert!(dts.contains("export type DataLossConfirmation = Additive<{"));
+    assert!(dts.contains("confirmed: DataLoss[]"));
     assert!(dts.contains("export type UnconfirmedDataLoss = Additive<{"));
     assert!(dts.contains("missing: DataLoss[]"));
     assert!(dts.contains("export type LocalMachineRemoved = Additive<{"));
@@ -679,7 +688,7 @@ fn handwritten_facade_types_use_generated_payloads() {
         dts.contains("dataLossIfMachineRemoved(machine: MachineTarget): Promise<ObservedDataLoss>")
     );
     assert!(dts.contains("removeMachine("));
-    assert!(dts.contains("confirmDataLoss: DataLoss[]"));
+    assert!(dts.contains("confirmDataLoss: DataLossConfirmation"));
     assert!(dts.contains("Promise<LocalMachineRemoved>"));
     assert!(
         dts.contains(
@@ -690,7 +699,9 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("Promise<DeployOutcome<ExecutionError>>"));
     assert!(!dts.contains("destroyProject(\n    project_name: ProjectName,\n  )"));
     assert!(dts.contains("dataLossIfClusterDestroyed(): Promise<ObservedDataLoss>"));
-    assert!(dts.contains("destroyCluster(confirmDataLoss: DataLoss[]): Promise<ClusterTeardown>"));
+    assert!(dts.contains(
+        "destroyCluster(confirmDataLoss: DataLossConfirmation): Promise<ClusterTeardown>"
+    ));
     assert!(!dts.contains("confirmAll"));
     assert!(!dts.contains("removeMachine(machine: MachineTarget):"));
     assert!(dts.contains("close(): Promise<void>"));

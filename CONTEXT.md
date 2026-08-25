@@ -164,6 +164,10 @@ _Avoid_: Cluster volume, replicated volume, CSI volume
 One named thing an operation will destroy, carrying the identity that makes it unique. A Data Loss list is Live Observation from one observer, not a complete Cluster view, and it is not a warning, a plan, or an operation.
 _Avoid_: warning, plan, operation
 
+**Data Loss Confirmation**:
+The exact Data Loss identities an operator accepted from one Live Observation. One name may confirm several observed identities, but Data Loss that appears later remains unconfirmed.
+_Avoid_: confirmation flag, confirmation names, Observed Data Loss
+
 **Machine Pool**:
 A ZFS storage budget on one storage-ready Machine. Provisioned Volumes live on it. Docker's data-root, image layers, and build cache do not.
 _Avoid_: Cluster pool, auto-created pool, dedicated disk, Machine ZFS Pool, ZFS-enabled cluster

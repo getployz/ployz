@@ -11,7 +11,7 @@ use ployz_core::{
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{DiscoveryService, machine, native_addon};
+use super::support::{DiscoveryService, confirmation, machine, native_addon};
 
 struct ProjectVolumes {
     shop_data: DockerVolumeId,
@@ -56,9 +56,10 @@ async fn data_loss_if_project_destroyed_is_empty_when_volumes_are_preserved() {
 #[tokio::test]
 async fn destroy_project_refuses_unconfirmed_data_loss_and_names_what_was_missing() {
     let (client, volumes, service, _session, _machine) = project_session().await;
+    let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .destroy_project("shop", &[], VolumeFate::Destroy)
+        .destroy_project("shop", &confirmation, VolumeFate::Destroy)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -70,9 +71,10 @@ async fn destroy_project_refuses_unconfirmed_data_loss_and_names_what_was_missin
 #[tokio::test]
 async fn destroy_project_destroys_named_volumes_after_confirmation() {
     let (client, volumes, service, _session, _machine) = project_session().await;
+    let confirmation = confirmation(volumes.shop_loss());
 
     let outcome = client
-        .destroy_project("shop", &volumes.shop_loss(), VolumeFate::Destroy)
+        .destroy_project("shop", &confirmation, VolumeFate::Destroy)
         .await
         .unwrap();
     assert!(
@@ -94,7 +96,7 @@ async fn destroy_project_destroys_named_volumes_after_confirmation() {
 #[tokio::test]
 async fn one_confirmation_covers_several_projects() {
     let (client, volumes, service, _session, _machine) = project_session().await;
-    let union = volumes.union_loss();
+    let union = confirmation(volumes.union_loss());
 
     client
         .destroy_project("shop", &union, VolumeFate::Destroy)
@@ -115,8 +117,9 @@ async fn one_confirmation_covers_several_projects() {
 #[tokio::test]
 async fn destroy_project_preserves_volumes_with_an_empty_confirmation() {
     let (client, volumes, service, _session, _machine) = project_session().await;
+    let confirmation = confirmation(Vec::<DataLoss>::new());
     client
-        .destroy_project("shop", &[], VolumeFate::Preserve)
+        .destroy_project("shop", &confirmation, VolumeFate::Preserve)
         .await
         .unwrap();
     assert!(service.removed_volumes.lock().unwrap().is_empty());
@@ -154,8 +157,9 @@ async fn data_loss_if_project_destroyed_rejects_an_invalid_project_name() {
 #[tokio::test]
 async fn destroy_project_refuses_the_reserved_project() {
     let (client, _volumes, _service, _session, _machine) = project_session().await;
+    let confirmation = confirmation(Vec::<DataLoss>::new());
     let error = client
-        .destroy_project("ployz-system", &[], VolumeFate::Preserve)
+        .destroy_project("ployz-system", &confirmation, VolumeFate::Preserve)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);

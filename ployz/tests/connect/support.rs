@@ -18,14 +18,15 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, LocalMachinePhase, LocalMachineRemoved, Machine,
-    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
-    MachineRemoved, MachineRpc, MachineRpcServer, MachineStorageObservation, ManagementAddress,
-    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    Registered, RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeInventory,
-    VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey, op,
+    CreateVolumeReport, CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume,
+    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
+    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineList, MachineName,
+    MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
+    MachineStorageObservation, ManagementAddress, MembershipObservation, ObservedDataLoss,
+    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeInventory, VolumeObservationFailure,
+    VolumeRemoved, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -876,6 +877,15 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
 
 pub(super) fn machine_id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
+}
+
+pub(super) fn confirmation(data_loss: impl IntoIterator<Item = DataLoss>) -> DataLossConfirmation {
+    let observed = ObservedDataLoss {
+        data_loss: data_loss.into_iter().collect(),
+    };
+    observed
+        .confirm_names(observed.data_loss.iter().map(DataLoss::name))
+        .expect("all observed Data Loss is named")
 }
 
 pub(super) fn test_description() -> ContractDescription {

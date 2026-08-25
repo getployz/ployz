@@ -65,7 +65,7 @@ function dockerVolume(loss) {
   }
 
   try {
-    await client.removeMachine(workerMachine, []);
+    await client.removeMachine(workerMachine, { confirmed: [] });
     throw new Error("unconfirmed removal must fail");
   } catch (error) {
     if (error.message === "unconfirmed removal must fail") {
@@ -100,12 +100,14 @@ function dockerVolume(loss) {
     }
   }
 
-  const removed = await client.removeMachine(workerMachine, observed.data_loss);
+  const removed = await client.removeMachine(workerMachine, {
+    confirmed: observed.data_loss,
+  });
   if (removed.reset_warning != null) {
     throw new Error(`unexpected reset warning: ${JSON.stringify(removed)}`);
   }
 
-  const empty = await client.removeMachine(emptyMachine, []);
+  const empty = await client.removeMachine(emptyMachine, { confirmed: [] });
   if (empty.reset_warning != null) {
     throw new Error(`empty Machine removal must succeed: ${JSON.stringify(empty)}`);
   }

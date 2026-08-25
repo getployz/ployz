@@ -1,7 +1,7 @@
 use ployz_core::{
-    ClusterTeardown, DataLoss, DescribeContractRequest, MachineFailure, MachineSuccess,
-    ObservedDataLoss, PartialResult, RemoveMachineRequest, RpcError, UnconfirmedDataLoss,
-    derive_projects, op,
+    ClusterTeardown, DataLoss, DataLossConfirmation, DescribeContractRequest, MachineFailure,
+    MachineSuccess, ObservedDataLoss, PartialResult, RemoveMachineRequest, RpcError,
+    UnconfirmedDataLoss, derive_projects, op,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -30,9 +30,10 @@ impl Client {
         Ok(cluster_volume_loss(&snapshot))
     }
 
-    /// Destroy this Cluster after a named Data Loss confirmation.
+    /// Destroy this Cluster after an exact Data Loss confirmation.
     ///
-    /// Re-reads Data Loss at execute time. Extra confirmed names are ignored.
+    /// Re-reads Data Loss at execute time. Confirmed identities that
+    /// disappeared are ignored.
     /// User Projects are destroyed with [`VolumeFate::Destroy`]. Every Machine
     /// is reset. The Cloud Pairing is revoked when this Client is on Relay.
     /// Unreachable Machines are reported. A repeated call can finish leftover work.
@@ -44,7 +45,7 @@ impl Client {
     /// details. Execution is otherwise a [`ClusterTeardown`] Partial Result.
     pub async fn destroy_cluster(
         &mut self,
-        confirm_data_loss: &[DataLoss],
+        confirm_data_loss: &DataLossConfirmation,
         cancellation: &CancellationToken,
     ) -> Result<ClusterTeardown, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
@@ -52,10 +53,9 @@ impl Client {
             .deploy_snapshot(machines)
             .await
             .map_err(RpcError::from)?;
-        let missing = cluster_volume_loss(&snapshot).uncovered_by(confirm_data_loss);
-        if !missing.is_empty() {
-            return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
-        }
+        cluster_volume_loss(&snapshot)
+            .require(confirm_data_loss)
+            .map_err(UnconfirmedDataLoss::into_rpc_error)?;
         let current = self
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await

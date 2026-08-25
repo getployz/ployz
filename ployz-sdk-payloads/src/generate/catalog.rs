@@ -558,6 +558,13 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "DataLossConfirmation",
+        Shape::Additive {
+            params: "",
+            fields: &[("confirmed", "DataLoss[]")],
+        },
+    ),
+    (
         "UnconfirmedDataLoss",
         Shape::Additive {
             params: "",

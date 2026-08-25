@@ -12,7 +12,7 @@ use ployz_core::{
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{DiscoveryService, connected_client, machine, native_addon};
+use super::support::{DiscoveryService, confirmation, connected_client, machine, native_addon};
 
 #[tokio::test]
 async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
@@ -22,9 +22,10 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
         .await
         .unwrap();
     assert_eq!(observed.data_loss.len(), 2);
+    let reviewed_confirmation = confirmation(observed.data_loss);
 
     let removed = client
-        .remove_machine(worker.name.as_str(), &observed.data_loss)
+        .remove_machine(worker.name.as_str(), &reviewed_confirmation)
         .await
         .unwrap();
     assert!(removed.reset_warning.is_none());
@@ -37,8 +38,9 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
         &[worker.id]
     );
 
+    let empty_confirmation = confirmation(Vec::<DataLoss>::new());
     let none = client
-        .remove_machine(empty.name.as_str(), &[])
+        .remove_machine(empty.name.as_str(), &empty_confirmation)
         .await
         .unwrap();
     assert!(none.reset_warning.is_none());
@@ -47,9 +49,10 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
 #[tokio::test]
 async fn remove_machine_fails_when_fresh_data_loss_is_unconfirmed() {
     let (client, worker, _empty, service, _session, _machine) = removal_session().await;
+    let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .remove_machine(worker.name.as_str(), &[])
+        .remove_machine(worker.name.as_str(), &confirmation)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -67,11 +70,11 @@ async fn remove_machine_fails_when_fresh_data_loss_is_unconfirmed() {
 #[tokio::test]
 async fn remove_machine_ignores_confirmed_names_that_no_longer_exist() {
     let (client, worker, _empty, service, _session, _machine) = removal_session().await;
-    let confirmation = [
+    let confirmation = confirmation([
         volume(worker.id, "data"),
         volume(worker.id, "logs"),
         volume(worker.id, "gone"),
-    ];
+    ]);
 
     client
         .remove_machine(worker.id.as_str(), &confirmation)
@@ -87,9 +90,10 @@ async fn remove_machine_ignores_confirmed_names_that_no_longer_exist() {
 async fn remove_machine_refuses_the_current_entry_while_another_is_visible() {
     let (client, _worker, _empty, service, _session, _machine) = removal_session().await;
     let entry = client.about().await.unwrap().machine_id;
+    let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .remove_machine(entry.as_str(), &[])
+        .remove_machine(entry.as_str(), &confirmation)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -122,15 +126,13 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
     .await
     .expect("connect must not hang")
     .unwrap();
+    let confirmation = confirmation([
+        volume(worker.machine.id, "data"),
+        volume(worker.machine.id, "logs"),
+    ]);
 
     let removed = client
-        .remove_machine(
-            worker.machine.name.as_str(),
-            &[
-                volume(worker.machine.id, "data"),
-                volume(worker.machine.id, "logs"),
-            ],
-        )
+        .remove_machine(worker.machine.name.as_str(), &confirmation)
         .await
         .unwrap();
     assert_eq!(
@@ -163,9 +165,10 @@ async fn remove_machine_refuses_the_last_cloud_paired_machine_before_mutation() 
     .await
     .expect("connect must not hang")
     .unwrap();
+    let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .remove_machine(entry.machine.name.as_str(), &[])
+        .remove_machine(entry.machine.name.as_str(), &confirmation)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -184,9 +187,13 @@ async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
     let (_description, entry, service) = last_machine_cluster();
     service.cloud_paired.store(true, Ordering::SeqCst);
     let (mut client, server, _) = connected_client(service.clone()).await;
+    let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .remove_machine(&ployz_core::MachineTarget::from(&entry.machine.id), &[])
+        .remove_machine(
+            &ployz_core::MachineTarget::from(&entry.machine.id),
+            &confirmation,
+        )
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -242,9 +249,13 @@ async fn remove_machine_membership_removes_the_final_unpaired_machine() {
 async fn remove_machine_removes_the_final_unpaired_machine() {
     let (_description, entry, service) = last_machine_cluster();
     let (mut client, server, _) = connected_client(service.clone()).await;
+    let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let removed = client
-        .remove_machine(&ployz_core::MachineTarget::from(&entry.machine.id), &[])
+        .remove_machine(
+            &ployz_core::MachineTarget::from(&entry.machine.id),
+            &confirmation,
+        )
         .await
         .unwrap();
     assert!(removed.reset_warning.is_none());

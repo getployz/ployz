@@ -6,13 +6,13 @@ use std::{
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
-    ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
-    DockerVolumeName, GetDomainRequest, InspectRequest, InspectVolumeRequest,
-    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
-    LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
-    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
-    MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss,
-    OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    ContainerObservation, CreateContainerRequest, DataLoss, DataLossConfirmation,
+    DescribeContractRequest, DockerVolume, DockerVolumeName, GetDomainRequest, InspectRequest,
+    InspectVolumeRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
+    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
+    MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
+    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
     RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
     StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, VolumeInventory,
@@ -396,10 +396,11 @@ impl Client {
         data_loss_on_machine(self, observation).await
     }
 
-    /// Remove `machine` after a named Data Loss confirmation.
+    /// Remove `machine` after an exact Data Loss confirmation.
     ///
-    /// Re-reads Data Loss at execute time. Fresh names the confirmation does
-    /// not cover refuse the removal. Extra confirmed names are ignored.
+    /// Re-reads Data Loss at execute time. Fresh Data Loss the confirmation does
+    /// not cover refuse the removal. Confirmed identities that disappeared
+    /// are ignored.
     /// Resets the Machine. A reset warning is returned, not swallowed.
     /// The last Cloud-paired Machine is refused before reset or membership
     /// mutation; tear down that Cluster from Cloud.
@@ -414,7 +415,7 @@ impl Client {
     pub async fn remove_machine(
         &mut self,
         machine: &MachineTarget,
-        confirm_data_loss: &[DataLoss],
+        confirm_data_loss: &DataLossConfirmation,
     ) -> Result<LocalMachineRemoved, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
@@ -840,16 +841,14 @@ fn visible_machine<'list>(
 pub(crate) async fn evict_machine(
     client: &mut Client,
     observation: &MachineObservation,
-    confirm_data_loss: &[DataLoss],
+    confirm_data_loss: &DataLossConfirmation,
     current: MachineId,
 ) -> Result<LocalMachineRemoved, RpcError> {
     let selected = observation.machine.id;
-    let missing = data_loss_on_machine(client, observation)
+    data_loss_on_machine(client, observation)
         .await?
-        .uncovered_by(confirm_data_loss);
-    if !missing.is_empty() {
-        return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
-    }
+        .require(confirm_data_loss)
+        .map_err(UnconfirmedDataLoss::into_rpc_error)?;
     let selected_target = MachineTarget::from(&selected);
     let reset_warning = match client
         .call::<op::RemoveLocalMachine>(

@@ -1,8 +1,8 @@
 //! Data Loss identity.
 
 use ployz_core::{
-    AmbiguousDataLossName, DataLoss, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss,
-    RpcError, RpcErrorCode, UnconfirmedDataLoss,
+    DataLoss, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss, RpcError,
+    RpcErrorCode, UnconfirmedDataLoss,
 };
 use serde_json::json;
 
@@ -42,44 +42,60 @@ fn a_kind_cannot_carry_an_identity_that_does_not_belong_to_it() {
 }
 
 #[test]
-fn uncovered_by_is_empty_when_confirmation_names_every_observed_loss() {
+fn confirmation_serializes_as_a_distinct_exact_identity_set() {
     let observed = ObservedDataLoss {
-        data_loss: vec![volume('a', "data"), volume('a', "logs")],
+        data_loss: vec![
+            volume('a', "data"),
+            volume('a', "data"),
+            volume('a', "logs"),
+        ],
     };
+    let confirmation = observed.confirm_names(["logs", "data"]).unwrap();
+
     assert_eq!(
-        observed.uncovered_by(&[volume('a', "logs"), volume('a', "data")]),
-        Vec::<DataLoss>::new()
+        serde_json::to_value(confirmation).unwrap(),
+        json!({ "confirmed": [volume('a', "data"), volume('a', "logs")] })
     );
 }
 
 #[test]
-fn uncovered_by_names_fresh_loss_the_confirmation_omitted() {
-    let observed = ObservedDataLoss {
-        data_loss: vec![volume('a', "data"), volume('a', "logs")],
-    };
-    assert_eq!(
-        observed.uncovered_by(&[volume('a', "data")]),
-        vec![volume('a', "logs")]
-    );
-}
-
-#[test]
-fn uncovered_by_ignores_confirmed_names_that_are_no_longer_observed() {
-    let observed = ObservedDataLoss {
+fn require_names_fresh_loss_the_confirmation_omitted() {
+    let reviewed = ObservedDataLoss {
         data_loss: vec![volume('a', "data")],
     };
+    let confirmation = reviewed.confirm_names(["data"]).unwrap();
+    let fresh = ObservedDataLoss {
+        data_loss: vec![volume('a', "data"), volume('a', "logs")],
+    };
+
     assert_eq!(
-        observed.uncovered_by(&[volume('a', "data"), volume('a', "gone")]),
-        Vec::<DataLoss>::new()
+        fresh.require(&confirmation).unwrap_err(),
+        UnconfirmedDataLoss {
+            missing: vec![volume('a', "logs")]
+        }
     );
 }
 
 #[test]
-fn uncovered_by_allows_an_empty_confirmation_when_there_is_no_data_loss() {
+fn require_ignores_confirmed_loss_that_is_no_longer_observed() {
+    let reviewed = ObservedDataLoss {
+        data_loss: vec![volume('a', "data"), volume('a', "gone")],
+    };
+    let confirmation = reviewed.confirm_names(["data", "gone"]).unwrap();
+    let fresh = ObservedDataLoss {
+        data_loss: vec![volume('a', "data")],
+    };
+
+    assert!(fresh.require(&confirmation).is_ok());
+}
+
+#[test]
+fn an_empty_observation_accepts_an_empty_confirmation() {
     let observed = ObservedDataLoss {
         data_loss: Vec::new(),
     };
-    assert_eq!(observed.uncovered_by(&[]), Vec::<DataLoss>::new());
+
+    assert!(observed.confirm_names([] as [&str; 0]).is_ok());
 }
 
 #[test]
@@ -139,49 +155,49 @@ fn docker_volume_data_loss_name_is_the_volume_name() {
 }
 
 #[test]
-fn named_resolves_unique_display_names_to_listed_identities() {
+fn confirm_names_resolves_unique_display_names_to_listed_identities() {
     let observed = ObservedDataLoss {
         data_loss: vec![volume('a', "data"), volume('a', "logs")],
     };
     assert_eq!(
-        observed.named(["logs", "data"]).unwrap(),
-        vec![volume('a', "logs"), volume('a', "data")]
+        serde_json::to_value(observed.confirm_names(["logs", "data"]).unwrap()).unwrap(),
+        json!({ "confirmed": [volume('a', "data"), volume('a', "logs")] })
     );
 }
 
 #[test]
-fn named_ignores_display_names_that_match_no_listed_entry() {
+fn confirm_names_ignores_display_names_that_match_no_listed_entry() {
     let observed = ObservedDataLoss {
         data_loss: vec![volume('a', "data")],
     };
     assert_eq!(
-        observed.named(["data", "gone"]).unwrap(),
-        vec![volume('a', "data")]
+        serde_json::to_value(observed.confirm_names(["data", "gone"]).unwrap()).unwrap(),
+        json!({ "confirmed": [volume('a', "data")] })
     );
 }
 
 #[test]
-fn named_refuses_a_display_name_that_matches_more_than_one_listed_entry() {
+fn confirm_names_returns_every_observed_identity_the_names_omit() {
     let observed = ObservedDataLoss {
-        data_loss: vec![volume('a', "data"), volume('b', "data")],
+        data_loss: vec![volume('a', "data"), volume('a', "logs")],
     };
+
     assert_eq!(
-        observed.named(["data"]).unwrap_err(),
-        AmbiguousDataLossName {
-            name: "data".into()
+        observed.confirm_names(["data"]).unwrap_err(),
+        UnconfirmedDataLoss {
+            missing: vec![volume('a', "logs")]
         }
     );
 }
 
 #[test]
-fn named_allows_an_empty_list_when_there_is_no_data_loss() {
+fn one_name_confirms_every_observed_volume_with_that_name() {
     let observed = ObservedDataLoss {
-        data_loss: Vec::new(),
+        data_loss: vec![volume('a', "data"), volume('b', "data")],
     };
-    assert_eq!(
-        observed.named([] as [&str; 0]).unwrap(),
-        Vec::<DataLoss>::new()
-    );
+    let confirmation = observed.confirm_names(["data"]).unwrap();
+
+    assert!(observed.require(&confirmation).is_ok());
 }
 
 fn volume(machine: char, name: &str) -> DataLoss {

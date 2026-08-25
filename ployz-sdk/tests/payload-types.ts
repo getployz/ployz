@@ -2,6 +2,7 @@ import type {
   ConfigMount,
   ConfigSpec,
   ContainerObservation,
+  DataLossConfirmation,
   DeviceMapping,
   DeviceReservation,
   HealthcheckSpec,
@@ -49,3 +50,5 @@ const invalidConfigs: RequestedServiceSpec["configs"] = 1;
 // @ts-expect-error effective_healthcheck is HealthcheckSpec | null, not a string
 const invalidEffective: ContainerObservation["effective_healthcheck"] =
   "disabled";
+// @ts-expect-error DataLossConfirmation is an object, not a bare Data Loss list
+const invalidConfirmation: DataLossConfirmation = [];

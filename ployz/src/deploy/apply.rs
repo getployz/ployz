@@ -4,8 +4,8 @@ use std::{
 };
 
 use ployz_core::{
-    DataLoss, DeployEvent, DeployIntent, PlanOptions, ProjectName, RequestedServiceSpec,
-    ServiceSelector,
+    DataLossConfirmation, DeployEvent, DeployIntent, PlanOptions, ProjectName,
+    RequestedServiceSpec, ServiceSelector,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -169,7 +169,7 @@ pub(crate) async fn remove_project(
     volumes: VolumeFate,
     auto_confirm: bool,
     context: &str,
-    confirm_data_loss: &[DataLoss],
+    confirm_data_loss: &DataLossConfirmation,
 ) -> Result<(), Failure> {
     let preview = client
         .prepare_project_destroy(name, confirm_data_loss, volumes)

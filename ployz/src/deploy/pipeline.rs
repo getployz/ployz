@@ -10,9 +10,9 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLoss, DeployOperation, MachineFailure, MachineId, MachineObservation, ObservedDataLoss,
-    PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode,
-    ServiceSelector, UnconfirmedDataLoss, select_service,
+    DataLossConfirmation, DeployOperation, MachineFailure, MachineId, MachineObservation,
+    ObservedDataLoss, PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode,
+    ServiceMode, ServiceSelector, UnconfirmedDataLoss, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -107,9 +107,9 @@ impl Client {
 
     /// Re-read Data Loss, refuse when uncovered, then plan and execute removal.
     ///
-    /// Confirmation is [`ObservedDataLoss::uncovered_by`]. Extra names are
-    /// ignored. Executes the execute-time plan; it does not replay an earlier
-    /// preview.
+    /// Confirmation is checked with [`ObservedDataLoss::require`]. Confirmed
+    /// identities that disappeared are ignored. Executes the execute-time
+    /// plan; it does not replay an earlier preview.
     ///
     /// # Errors
     ///
@@ -119,7 +119,7 @@ impl Client {
     pub async fn destroy_project(
         &mut self,
         project: &ProjectName,
-        confirm_data_loss: &[DataLoss],
+        confirm_data_loss: &DataLossConfirmation,
         volumes: super::VolumeFate,
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
@@ -140,14 +140,13 @@ impl Client {
     pub(crate) async fn prepare_project_destroy(
         &mut self,
         project: &ProjectName,
-        confirm_data_loss: &[DataLoss],
+        confirm_data_loss: &DataLossConfirmation,
         volumes: super::VolumeFate,
     ) -> Result<DeployPreview, RpcError> {
         let preview = self.preview_project_removal(project, volumes).await?;
-        let missing = observed_destroy_loss(&preview, volumes)?.uncovered_by(confirm_data_loss);
-        if !missing.is_empty() {
-            return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
-        }
+        observed_destroy_loss(&preview, volumes)?
+            .require(confirm_data_loss)
+            .map_err(UnconfirmedDataLoss::into_rpc_error)?;
         if let Some(reason) = preview.prune_refusal {
             return Err(invalid_argument(reason.to_string()));
         }

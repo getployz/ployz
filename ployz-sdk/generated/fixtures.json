@@ -232,6 +232,16 @@
       "name": "data"
     }
   },
+  "data_loss_confirmation": {
+    "confirmed": [
+      {
+        "DockerVolume": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "data"
+        }
+      }
+    ]
+  },
   "deploy_event_progress": {
     "completed": 0,
     "rows": [

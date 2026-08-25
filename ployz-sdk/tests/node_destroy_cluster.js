@@ -84,7 +84,7 @@ function dockerVolume(loss) {
   }
 
   try {
-    await client.destroyCluster([]);
+    await client.destroyCluster({ confirmed: [] });
     throw new Error("unconfirmed teardown must fail");
   } catch (error) {
     if (error.message === "unconfirmed teardown must fail") {
@@ -116,7 +116,7 @@ function dockerVolume(loss) {
     }
   }
 
-  const teardown = await client.destroyCluster(observed.data_loss);
+  const teardown = await client.destroyCluster({ confirmed: observed.data_loss });
   if (!teardown || teardown.pairing_revoked !== true) {
     throw new Error(`expected pairing revoked, got ${JSON.stringify(teardown)}`);
   }

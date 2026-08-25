@@ -12,13 +12,13 @@ use ployz_core::{
     ConfigMount, ConfigSpec, ConfiguredHealthcheck, ContainerId, ContainerKind,
     ContainerObservation, ContainerPath, ContainerResources, ContainerRuntimeObservation,
     ContractDescription, CreateVolumeReport, DESCRIBE_CONTRACT_CAPABILITY, DataLoss,
-    DependencyHealthFailure, DeployEvent, DeployIntent, DeployOperation, DeployOutcome,
-    DeployPreview, DeployWarning, DeviceMapping, DeviceReservation, DockerVolume, DockerVolumeId,
-    DockerVolumeName, DockerVolumeStorageObservation, ExecutionError, FailedOperation,
-    GlobalReconcileFailureObservation, HealthFailure, HealthObservation, HealthcheckCommand,
-    HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol, IngressHost,
-    IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved, LogDriver,
-    Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
+    DataLossConfirmation, DependencyHealthFailure, DeployEvent, DeployIntent, DeployOperation,
+    DeployOutcome, DeployPreview, DeployWarning, DeviceMapping, DeviceReservation, DockerVolume,
+    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, ExecutionError,
+    FailedOperation, GlobalReconcileFailureObservation, HealthFailure, HealthObservation,
+    HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol,
+    IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved,
+    LogDriver, Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
     MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
     MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
     OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
@@ -75,6 +75,10 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert("data_loss".into(), to_value(&data_loss()));
     fixtures.insert("observed_data_loss".into(), to_value(&observed_data_loss()));
+    fixtures.insert(
+        "data_loss_confirmation".into(),
+        to_value(&data_loss_confirmation()),
+    );
     fixtures.insert(
         "observed_data_loss_empty".into(),
         to_value(&ObservedDataLoss {
@@ -245,6 +249,7 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("VolumeInventory", to_value(&volume_inventory())),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
         ("ObservedDataLoss", to_value(&observed_data_loss())),
+        ("DataLossConfirmation", to_value(&data_loss_confirmation())),
         ("UnconfirmedDataLoss", to_value(&unconfirmed_data_loss())),
         (
             "LocalMachineRemoved",
@@ -785,6 +790,13 @@ fn observed_data_loss() -> ObservedDataLoss {
     ObservedDataLoss {
         data_loss: vec![data_loss()],
     }
+}
+
+fn data_loss_confirmation() -> DataLossConfirmation {
+    let observed = observed_data_loss();
+    observed
+        .confirm_names(["data"])
+        .expect("fixture Data Loss is named")
 }
 
 fn unconfirmed_data_loss() -> UnconfirmedDataLoss {

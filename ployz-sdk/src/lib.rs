@@ -10,8 +10,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
 use ployz_core::{
-    DataLoss, DeployIntent, ProjectName, RegisterRequest, RemoveVolumesRequest, RpcError,
-    RpcErrorCode,
+    DataLossConfirmation, DeployIntent, ProjectName, RegisterRequest, RemoveVolumesRequest,
+    RpcError, RpcErrorCode,
 };
 
 /// npm package name.
@@ -175,24 +175,25 @@ impl Client {
         serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
     }
 
-    /// Remove `machine` after a named Data Loss confirmation.
+    /// Remove `machine` after an exact Data Loss confirmation.
     ///
-    /// `confirm_data_loss` must name Data Loss identities, not a boolean and
-    /// not an ObservedDataLoss read.
+    /// `confirm_data_loss` must be a DataLossConfirmation object, not a bare
+    /// Data Loss list or an ObservedDataLoss read.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
-    /// is not a Data Loss list, the session is closed, the Machine cannot be
-    /// removed, or the confirmation does not cover the fresh Data Loss.
+    /// is not a DataLossConfirmation object, the session is closed, the
+    /// Machine cannot be removed, or the confirmation does not cover the fresh
+    /// Data Loss.
     #[napi]
     pub async fn remove_machine(
         &self,
         machine: String,
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let confirm_data_loss: Vec<DataLoss> =
-            serde_json::from_value(confirm_data_loss).map_err(|error| {
+        let confirm_data_loss: DataLossConfirmation = serde_json::from_value(confirm_data_loss)
+            .map_err(|error| {
                 rpc_to_napi(RpcError {
                     code: RpcErrorCode::InvalidArgument,
                     message: error.to_string(),
@@ -231,16 +232,18 @@ impl Client {
         serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
     }
 
-    /// Destroy `project_name` after a named Data Loss confirmation.
+    /// Destroy `project_name` after an exact Data Loss confirmation.
     ///
-    /// `confirm_data_loss` must name Data Loss identities, not a boolean and
-    /// not an ObservedDataLoss read. Extra names are ignored.
+    /// `confirm_data_loss` must be a DataLossConfirmation object, not a bare
+    /// Data Loss list or an ObservedDataLoss read. Confirmed identities that
+    /// disappeared are ignored.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
-    /// is not a Data Loss list, the session is closed, the Project cannot be
-    /// destroyed, or the confirmation does not cover the fresh Data Loss.
+    /// is not a DataLossConfirmation object, the session is closed, the
+    /// Project cannot be destroyed, or the confirmation does not cover the
+    /// fresh Data Loss.
     #[napi]
     pub async fn destroy_project(
         &self,
@@ -248,8 +251,8 @@ impl Client {
         confirm_data_loss: serde_json::Value,
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
-        let confirm_data_loss: Vec<DataLoss> =
-            serde_json::from_value(confirm_data_loss).map_err(|error| {
+        let confirm_data_loss: DataLossConfirmation = serde_json::from_value(confirm_data_loss)
+            .map_err(|error| {
                 rpc_to_napi(RpcError {
                     code: RpcErrorCode::InvalidArgument,
                     message: error.to_string(),
@@ -286,23 +289,24 @@ impl Client {
         serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
     }
 
-    /// Destroy this Cluster after a named Data Loss confirmation.
+    /// Destroy this Cluster after an exact Data Loss confirmation.
     ///
-    /// `confirm_data_loss` must name Data Loss identities, not a boolean and
-    /// not an ObservedDataLoss read. Extra names are ignored.
+    /// `confirm_data_loss` must be a DataLossConfirmation object, not a bare
+    /// Data Loss list or an ObservedDataLoss read. Confirmed identities that
+    /// disappeared are ignored.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
-    /// is not a Data Loss list, the session is closed, or the confirmation
-    /// does not cover the fresh Data Loss.
+    /// is not a DataLossConfirmation object, the session is closed, or the
+    /// confirmation does not cover the fresh Data Loss.
     #[napi]
     pub async fn destroy_cluster(
         &self,
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let confirm_data_loss: Vec<DataLoss> =
-            serde_json::from_value(confirm_data_loss).map_err(|error| {
+        let confirm_data_loss: DataLossConfirmation = serde_json::from_value(confirm_data_loss)
+            .map_err(|error| {
                 rpc_to_napi(RpcError {
                     code: RpcErrorCode::InvalidArgument,
                     message: error.to_string(),

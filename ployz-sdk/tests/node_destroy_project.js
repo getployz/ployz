@@ -73,7 +73,7 @@ function dockerVolume(loss) {
   }
 
   try {
-    await client.destroyProject("shop", [], true);
+    await client.destroyProject("shop", { confirmed: [] }, true);
     throw new Error("unconfirmed destroy must fail");
   } catch (error) {
     if (error.message === "unconfirmed destroy must fail") {
@@ -115,12 +115,14 @@ function dockerVolume(loss) {
     throw new Error(`reserved Project must be refused, got ${JSON.stringify(reserved)}`);
   }
 
-  const union = [
-    ...observed.data_loss,
-    {
-      DockerVolume: { machine_id: volumeMachineId, name: "staging_data" },
-    },
-  ];
+  const union = {
+    confirmed: [
+      ...observed.data_loss,
+      {
+        DockerVolume: { machine_id: volumeMachineId, name: "staging_data" },
+      },
+    ],
+  };
   const destroyed = await client.destroyProject("shop", union, true);
   if (!destroyed || destroyed.type !== "success") {
     throw new Error(`expected successful destroy, got ${JSON.stringify(destroyed)}`);
