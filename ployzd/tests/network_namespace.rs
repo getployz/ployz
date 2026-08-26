@@ -4,15 +4,48 @@ use std::{
     process::{Child, ChildStdout, Command, Stdio},
 };
 
-use ployzd::network::apply_firewall_rules;
+use ployz_core::ManagementAddress;
+use ployzd::network::{NetworkError, apply_firewall_rules};
 
-const TEST_NAME: &str = "mesh_routing_preserves_container_source_and_internet_nat";
+const TEST_NAME: &str =
+    "mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_machines";
+const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
+const ERROR_TEST_CHILD: &str = "PLOYZ_FIREWALL_ERROR_TEST_CHILD";
+
+#[test]
+fn firewall_surfaces_command_start_errors() {
+    if env::var_os(ERROR_TEST_CHILD).is_some() {
+        let error = apply_firewall_rules(
+            "10.210.2.0/24".parse().unwrap(),
+            ManagementAddress("fdcc::2".parse().unwrap()),
+        )
+        .unwrap_err();
+        assert!(matches!(error, NetworkError::Io(_)));
+        return;
+    }
+
+    let status = Command::new(env::current_exe().unwrap())
+        .env(ERROR_TEST_CHILD, "1")
+        .env("PATH", "/path/that/does/not/exist")
+        .args(["--exact", ERROR_TEST_NAME])
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
-fn mesh_routing_preserves_container_source_and_internet_nat() {
+fn mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_machines() {
     if let Ok(subnet) = env::var("PLOYZ_FIREWALL_SUBNET") {
-        apply_firewall_rules(subnet.parse().unwrap()).unwrap();
+        let management_address = env::var("PLOYZ_FIREWALL_MANAGEMENT_ADDRESS")
+            .unwrap()
+            .parse()
+            .unwrap();
+        apply_firewall_rules(
+            subnet.parse().unwrap(),
+            ManagementAddress(management_address),
+        )
+        .unwrap();
         return;
     }
 
@@ -93,6 +126,32 @@ fn mesh_routing_preserves_container_source_and_internet_nat() {
     configure_link(&target, "ployz", "10.210.2.1/24");
     ns(&target, "ip", &["link", "set", "target-ctr", "up"]);
     configure_link(&container, "container-if", "10.210.2.2/24");
+    ns(
+        &target,
+        "ip",
+        &[
+            "-6",
+            "address",
+            "add",
+            "fd00::1/64",
+            "dev",
+            "ployz",
+            "nodad",
+        ],
+    );
+    ns(
+        &container,
+        "ip",
+        &[
+            "-6",
+            "address",
+            "add",
+            "fd00::2/64",
+            "dev",
+            "container-if",
+            "nodad",
+        ],
+    );
     configure_link(&source, "source-net", "198.51.100.1/30");
     configure_link(&internet, "internet-if", "198.51.100.2/30");
     ns(
@@ -114,6 +173,11 @@ fn mesh_routing_preserves_container_source_and_internet_nat() {
         &container,
         "ip",
         &["route", "add", "default", "via", "10.210.2.1"],
+    );
+    ns(
+        &container,
+        "ip",
+        &["-6", "route", "add", "fdcc::2/128", "via", "fd00::1"],
     );
     ns(
         &source,
@@ -204,8 +268,8 @@ fn mesh_routing_preserves_container_source_and_internet_nat() {
         ],
     );
 
-    apply_in_namespace(&source, "10.210.1.0/24");
-    apply_in_namespace(&target, "10.210.2.0/24");
+    apply_in_namespace(&source, "10.210.1.0/24", "fdcc::1");
+    apply_in_namespace(&target, "10.210.2.0/24", "fdcc::2");
 
     let mut dns_udp = datagram_server(&target, "10.210.2.1", 53);
     send_datagram(&container, "10.210.2.2", "10.210.2.1", 53);
@@ -230,13 +294,32 @@ fn mesh_routing_preserves_container_source_and_internet_nat() {
     let mut management_api = stream_server(&target, "fdcc::2", 51000);
     connect(&source, "fdcc::1", "fdcc::2", 51000);
     assert_eq!(management_api.peer(), "fdcc::1");
+
+    let mut local_ingest = stream_server(&target, "fdcc::2", 51500);
+    connect(&target, "fdcc::2", "fdcc::2", 51500);
+    assert_eq!(local_ingest.peer(), "fdcc::2");
+
+    let mut remote_ingest = stream_server(&target, "fdcc::2", 51500);
+    connect(&source, "fdcc::1", "fdcc::2", 51500);
+    assert_eq!(remote_ingest.peer(), "fdcc::1");
+
+    ns(&target, "ip6tables", &["-P", "INPUT", "ACCEPT"]);
+    let mut unrestricted = stream_server(&target, "fdcc::2", 51501);
+    connect(&container, "fd00::2", "fdcc::2", 51501);
+    assert_eq!(unrestricted.peer(), "fd00::2");
+
+    let _ingest = stream_server(&target, "fdcc::2", 51500);
+    assert_connection_denied(&container, "fd00::2", "fdcc::2", 51500);
 }
 
-fn apply_in_namespace(namespace: &str, subnet: &str) {
+fn apply_in_namespace(namespace: &str, subnet: &str, management_address: &str) {
     let executable = env::current_exe().unwrap();
     let status = Command::new("sudo")
         .args(["-n", "ip", "netns", "exec", namespace, "env"])
         .arg(format!("PLOYZ_FIREWALL_SUBNET={subnet}"))
+        .arg(format!(
+            "PLOYZ_FIREWALL_MANAGEMENT_ADDRESS={management_address}"
+        ))
         .arg(executable)
         .args(["--ignored", "--exact", TEST_NAME])
         .status()
@@ -267,6 +350,27 @@ fn connect(namespace: &str, source: &str, target: &str, port: u16) {
         "import socket,sys; a,b,p=sys.argv[1:]; f=socket.AF_INET6 if ':' in a else socket.AF_INET; s=socket.socket(f); s.bind((a,0)); s.settimeout(3); s.connect((b,int(p)))",
         &[source, target, &port.to_string()],
     );
+}
+
+fn assert_connection_denied(namespace: &str, source: &str, target: &str, port: u16) {
+    let status = Command::new("sudo")
+        .args([
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            namespace,
+            "python3",
+            "-c",
+            "import socket,sys; a,b,p=sys.argv[1:]; s=socket.socket(socket.AF_INET6); s.bind((a,0)); s.settimeout(1); s.connect((b,int(p)))",
+            source,
+            target,
+        ])
+        .arg(port.to_string())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success(), "connection unexpectedly succeeded");
 }
 
 fn datagram_server(namespace: &str, address: &str, port: u16) -> Server {
@@ -352,7 +456,8 @@ fn python(namespace: &str, script: &str, args: &[&str]) {
         "-n", "ip", "netns", "exec", namespace, "python3", "-c", script,
     ]);
     command.args(args);
-    assert!(command.status().unwrap().success());
+    let success = command.status().unwrap().success();
+    assert!(success, "python failed in {namespace} with {args:?}");
 }
 
 fn ns(namespace: &str, program: &str, args: &[&str]) {

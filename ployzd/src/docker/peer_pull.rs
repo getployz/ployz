@@ -30,7 +30,7 @@ pub(crate) async fn pull_from_ingest(
         .local_addr()
         .map_err(|error| Error::PeerPull(error.to_string()))?
         .port();
-    let source_addr = SocketAddr::from((source.gateway.0, source.port));
+    let source_addr = SocketAddr::from((source.management_address.0, source.port));
     let proxy = tokio::spawn(proxy_to_source(listener, source_addr));
     let pulled = localhost_registry_reference(port, image);
     let result = async {

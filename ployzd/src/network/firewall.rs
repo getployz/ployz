@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use ployz_core::MachineSubnet;
+use ployz_core::{MachineSubnet, ManagementAddress};
 
 use crate::dns;
 
@@ -11,7 +11,17 @@ use super::{
 
 const INPUT_CHAIN: &str = "PLOYZ-INPUT";
 
-pub fn apply_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
+/// Apply the Machine's ingress and forwarding policy, including the private
+/// Direct Image Transfer endpoint on `management_address`.
+///
+/// # Errors
+///
+/// Returns an error when an iptables command cannot be executed or rejects a
+/// required rule.
+pub fn apply_firewall_rules(
+    subnet: MachineSubnet,
+    management_address: ManagementAddress,
+) -> Result<(), NetworkError> {
     for program in ["iptables", "ip6tables"] {
         ensure_chain(program, INPUT_CHAIN)?;
         replace_first_rule(program, "filter", "INPUT", &["-j", INPUT_CHAIN])?;
@@ -29,26 +39,23 @@ pub fn apply_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
             ],
         )?;
     }
-    // TODO(UT-105): allow access only from the machine IPs (10.210.N.1) but not the containers running on them. Use ipset?
-    for port in [UNREGISTRY_PORT, MACHINE_API_PORT] {
-        ensure_rule(
-            "iptables",
-            "filter",
-            INPUT_CHAIN,
-            &[
-                "-i",
-                WIREGUARD_INTERFACE_NAME,
-                "-d",
-                &subnet.gateway().0.to_string(),
-                "-p",
-                "tcp",
-                "--dport",
-                &port.to_string(),
-                "-j",
-                "ACCEPT",
-            ],
-        )?;
-    }
+    ensure_rule(
+        "iptables",
+        "filter",
+        INPUT_CHAIN,
+        &[
+            "-i",
+            WIREGUARD_INTERFACE_NAME,
+            "-d",
+            &subnet.gateway().0.to_string(),
+            "-p",
+            "tcp",
+            "--dport",
+            &MACHINE_API_PORT.to_string(),
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
     for protocol in ["udp", "tcp"] {
         ensure_rule(
             "iptables",
@@ -87,6 +94,78 @@ pub fn apply_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
             ],
         )?;
     }
+    let management_destination = format!("{}/128", management_address.0);
+    let ingest_port = UNREGISTRY_PORT.to_string();
+    ensure_rule(
+        "ip6tables",
+        "filter",
+        INPUT_CHAIN,
+        &[
+            "-d",
+            &management_destination,
+            "-p",
+            "tcp",
+            "--dport",
+            &ingest_port,
+            "-j",
+            "DROP",
+        ],
+    )?;
+    ensure_rule(
+        "ip6tables",
+        "filter",
+        INPUT_CHAIN,
+        &[
+            "-i",
+            WIREGUARD_INTERFACE_NAME,
+            "-s",
+            "fdcc::/16",
+            "-d",
+            &management_destination,
+            "-p",
+            "tcp",
+            "--dport",
+            &ingest_port,
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
+    ensure_rule(
+        "ip6tables",
+        "filter",
+        INPUT_CHAIN,
+        &[
+            "-i",
+            "lo",
+            "-s",
+            &management_destination,
+            "-d",
+            &management_destination,
+            "-p",
+            "tcp",
+            "--sport",
+            &ingest_port,
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
+    ensure_rule(
+        "ip6tables",
+        "filter",
+        INPUT_CHAIN,
+        &[
+            "-i",
+            "lo",
+            "-d",
+            &management_destination,
+            "-p",
+            "tcp",
+            "--dport",
+            &ingest_port,
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
     ensure_rule(
         "iptables",
         "filter",

@@ -383,10 +383,12 @@ impl ImageIngestReason {
     }
 }
 
-/// Machine Gateway TCP bind that accepts `docker push` and peer `docker pull`.
+/// Management-plane TCP bind that accepts `docker push` and peer `docker pull`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImageIngestDestination {
-    pub gateway: crate::MachineGateway,
+    /// Machine management-plane address that owns the ingest endpoint.
+    pub management_address: crate::ManagementAddress,
+    /// Plain-HTTP OCI Distribution port on the management plane.
     pub port: u16,
 }
 

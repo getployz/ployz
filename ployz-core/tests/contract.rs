@@ -18,15 +18,16 @@ use ployz_core::{
     InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
     MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
     MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
-    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
-    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication,
-    PreDeployHook, ProjectName, ProvisionedVolume, PublicIpDiscovery, PublicIpUpdate,
-    PullImageFromMachineRequest, PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
-    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
-    UpdateMachineRequest, UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    MachineTokenRequest, MachineUpdate, ManagementAddress, NameMatches, OpaquePayload,
+    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult,
+    Placement, PortPublication, PreDeployHook, ProjectName, ProvisionedVolume, PublicIpDiscovery,
+    PublicIpUpdate, PullImageFromMachineRequest, PullPolicy, QualifiedService,
+    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
+    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
+    VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -762,13 +763,13 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
 }
 
 #[test]
-fn image_ingest_contract_returns_the_machine_gateway_destination() {
+fn image_ingest_contract_returns_the_management_address_destination() {
     let request = op::EnsureImageIngest::into_request(EnsureImageIngestRequest {});
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 
     let opened = ImageIngestOpened {
         destination: ImageIngestDestination {
-            gateway: MachineGateway(Ipv4Addr::new(10, 210, 7, 1)),
+            management_address: ManagementAddress("fdcc::7".parse().unwrap()),
             port: 51500,
         },
     };
@@ -824,9 +825,9 @@ fn image_ingest_contract_returns_the_machine_gateway_destination() {
 }
 
 #[test]
-fn peer_image_pull_contract_names_the_source_gateway_destination() {
+fn peer_image_pull_contract_names_the_source_management_destination() {
     let source = ImageIngestDestination {
-        gateway: MachineGateway(Ipv4Addr::new(10, 210, 7, 1)),
+        management_address: ManagementAddress("fdcc::7".parse().unwrap()),
         port: 51500,
     };
     let request = op::PullImageFromMachine::into_request(PullImageFromMachineRequest {

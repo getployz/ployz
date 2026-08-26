@@ -1,18 +1,19 @@
-use std::{collections::BTreeSet, fmt::Display, process, time::Duration};
+use std::{collections::BTreeSet, process, time::Duration};
 
 use ployz_core::{
     CloudPairing, LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation,
-    MachineUpdate, MembershipObservation, PairingCredential, PublicIpUpdate, UNREGISTRY_PORT,
-    WireGuardPublicKey,
+    MachineUpdate, ManagementAddress, MembershipObservation, PairingCredential, PublicIpUpdate,
+    UNREGISTRY_PORT, WireGuardPublicKey,
 };
 use ployz_testkit::{Cluster, ClusterPlan, join_request};
 
-fn image_ingest_catalog(cluster: &Cluster, index: usize, gateway: impl Display) -> bool {
+fn image_ingest_catalog(cluster: &Cluster, index: usize, address: ManagementAddress) -> bool {
     cluster
         .shell(
             index,
             &format!(
-                "curl --fail --silent --connect-timeout 1 http://{gateway}:{UNREGISTRY_PORT}/v2/"
+                "curl --fail --silent --connect-timeout 1 http://[{}]:{UNREGISTRY_PORT}/v2/",
+                address.0
             ),
         )
         .is_ok()
@@ -607,7 +608,7 @@ async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
 
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
-async fn image_ingest_opens_on_push_and_stays_reachable_from_containers() {
+async fn direct_image_transfer_reconciles_and_stays_machine_only() {
     let mut plan = ClusterPlan::new(&format!("l3-ingest-{}", process::id()), 2).unwrap();
     for machine in &mut plan.machines {
         machine
@@ -621,76 +622,158 @@ async fn image_ingest_opens_on_push_and_stays_reachable_from_containers() {
             .unwrap();
     }
     let machines = cluster.initialize_two().await.unwrap();
-    let gateway = machines.first().unwrap().subnet.gateway().0;
-    assert!(
-        !image_ingest_catalog(&cluster, 0, gateway),
-        "ingest must not listen until image ingest is opened"
-    );
-    cluster.docker(0, &["pull", "alpine:3.23.3"]).unwrap();
+    let addresses = [
+        machines[0].management_address,
+        machines[1].management_address,
+    ];
+    for (index, address) in addresses.into_iter().enumerate() {
+        assert!(
+            !image_ingest_catalog(&cluster, index, address),
+            "ingest must not listen until Direct Image Transfer needs it"
+        );
+    }
     cluster
         .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
         .unwrap();
     cluster
-        .shell(
-            0,
-            "ployz image push --machine machine-1 --platform linux/amd64 busybox:1.37.0",
-        )
+        .shell(0, "ployz image push --platform linux/amd64 busybox:1.37.0")
         .unwrap();
-    assert!(
-        image_ingest_catalog(&cluster, 0, gateway),
-        "push opens ingest on the Machine Gateway"
+
+    let open = addresses.map(|address| image_ingest_catalog(&cluster, 0, address));
+    assert_eq!(
+        open.into_iter().filter(|open| *open).count(),
+        1,
+        "only the first push target opens ingest; the other pulls from it"
     );
-    cluster
-        .docker(
-            0,
-            &[
-                "run",
-                "--rm",
-                "--network",
-                "ployz",
-                "alpine:3.23.3",
-                "wget",
-                "-qO-",
-                &format!("http://{gateway}:{UNREGISTRY_PORT}/v2/"),
-            ],
-        )
-        .unwrap();
-    let pushed = format!("l3.invalid/container-push-{}:v1", process::id());
-    cluster
-        .docker(
-            0,
-            &[
-                "run",
-                "--rm",
-                "--network",
-                "ployz",
-                "--volume",
-                "/opt/ployz/images/alpine.tar:/alpine.tar:ro",
-                "quay.io/skopeo/stable:v1.20.0",
-                "copy",
-                "--dest-tls-verify=false",
-                "docker-archive:/alpine.tar",
-                &format!("docker://{gateway}:{UNREGISTRY_PORT}/{pushed}"),
-            ],
-        )
-        .unwrap();
-    assert!(
-        cluster
-            .images(0, Some(pushed.clone()))
+    let source = open.into_iter().position(|open| open).unwrap();
+    let source_machine = machines.get(source).expect("source is one of two Machines");
+    let source_address = *addresses
+        .get(source)
+        .expect("source address is one of two Machines");
+    for index in 0..2 {
+        let images = cluster
+            .images(index, Some("busybox:1.37.0".into()))
             .await
-            .unwrap()
+            .unwrap();
+        let image = images
             .images
             .iter()
-            .any(|image| image.repo_tags.contains(&pushed))
+            .find(|image| {
+                image
+                    .repo_tags
+                    .iter()
+                    .any(|tag| tag.contains("busybox:1.37.0"))
+            })
+            .unwrap_or_else(|| {
+                panic!("machine {index} must receive the image through push-once fanout")
+            });
+        assert!(
+            image
+                .platforms
+                .iter()
+                .any(|platform| platform.starts_with("linux/amd64")),
+            "machine {index} retained platforms: {:?}",
+            image.platforms
+        );
+    }
+    assert!(
+        cluster
+            .docker(
+                source,
+                &[
+                    "run",
+                    "--rm",
+                    "--network",
+                    "ployz",
+                    "busybox:1.37.0",
+                    "wget",
+                    "-T",
+                    "1",
+                    "-qO-",
+                    &format!("http://[{}]:{UNREGISTRY_PORT}/v2/", source_address.0),
+                ],
+            )
+            .is_err(),
+        "a Service Container must not reach or publish through Direct Image Transfer"
     );
+
     cluster
-        .shell(0, "ln -s /bin/true /usr/local/bin/resolvconf")
+        .docker(source, &["rm", "--force", "ployz-unregistry"])
         .unwrap();
-    cluster.reset(0).await.unwrap();
+    assert!(!image_ingest_catalog(&cluster, source, source_address));
+    let repaired = format!("l3.invalid/repaired-{}:v1", process::id());
+    cluster
+        .docker(0, &["tag", "busybox:1.37.0", &repaired])
+        .unwrap();
+    cluster
+        .shell(
+            0,
+            &format!(
+                "ployz image push --machine {} --platform linux/amd64 {repaired}",
+                source_machine.name
+            ),
+        )
+        .unwrap();
+    assert!(image_ingest_catalog(&cluster, source, source_address));
+
+    let helper = cluster
+        .machine_shell(source, "docker inspect --format '{{.Id}}' ployz-unregistry")
+        .unwrap();
+    cluster
+        .machine_shell(
+            source,
+            r#"
+socket=$(docker inspect --format '{{ index .Config.Labels "ployz.unregistry.socket" }}' ployz-unregistry)
+before=$(stat -Lc '%d:%i' "$socket")
+containerd_pid=
+for path in /proc/[0-9]*; do
+    [ "$(cat "$path/comm" 2>/dev/null)" = containerd ] || continue
+    containerd_pid=${path##*/}
+    break
+done
+[ -n "$containerd_pid" ]
+kill "$containerd_pid"
+timeout 60 sh -c '
+    while :; do
+        current=$(stat -Lc "%d:%i" "$1" 2>/dev/null || true)
+        if [ -n "$current" ] && [ "$current" != "$2" ] && docker image inspect busybox:1.37.0 >/dev/null 2>&1; then
+            exit 0
+        fi
+        sleep .1
+    done
+' sh "$socket" "$before"
+"#,
+        )
+        .unwrap();
+    assert_eq!(
+        cluster
+            .machine_shell(source, "docker inspect --format '{{.Id}}' ployz-unregistry",)
+            .unwrap(),
+        helper,
+        "socket recreation must not replace the helper"
+    );
+    let reconnected = format!("l3.invalid/reconnected-{}:v1", process::id());
+    cluster
+        .docker(0, &["tag", "busybox:1.37.0", &reconnected])
+        .unwrap();
+    cluster
+        .shell(
+            0,
+            &format!(
+                "ployz image push --machine {} --platform linux/amd64 {reconnected}",
+                source_machine.name
+            ),
+        )
+        .unwrap();
+
+    cluster
+        .shell(source, "ln -s /bin/true /usr/local/bin/resolvconf")
+        .unwrap();
+    cluster.reset(source).await.unwrap();
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if cluster
-                .inspect(0)
+                .inspect(source)
                 .await
                 .is_ok_and(|details| details.phase == LocalMachinePhase::Uninitialized)
             {
@@ -700,68 +783,17 @@ async fn image_ingest_opens_on_push_and_stays_reachable_from_containers() {
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("reset did not complete:\n{}", cluster.logs(0).unwrap()));
+    .unwrap_or_else(|_| panic!("reset did not complete:\n{}", cluster.logs(source).unwrap()));
     assert!(
-        !image_ingest_catalog(&cluster, 0, gateway),
-        "reset must stop ingest on the Machine Gateway"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
-async fn image_push_pulls_from_the_source_machine_without_opening_dest_ingest() {
-    let mut plan = ClusterPlan::new(&format!("l3-peer-pull-{}", process::id()), 2).unwrap();
-    for machine in &mut plan.machines {
-        machine
-            .daemon_args
-            .extend(["--data-dir".into(), "/var/lib/ployz/data".into()]);
-    }
-    let cluster = Cluster::create(plan).unwrap();
-    for index in 0..2 {
         cluster
-            .shell(index, "ln -s data/corrosion /var/lib/ployz/corrosion")
-            .unwrap();
-    }
-    let machines = cluster.initialize_two().await.unwrap();
-    let gateways = [
-        machines[0].subnet.gateway().0,
-        machines[1].subnet.gateway().0,
-    ];
-    for (index, gateway) in gateways.into_iter().enumerate() {
-        assert!(
-            !image_ingest_catalog(&cluster, index, gateway),
-            "ingest must not listen until a Machine is the push source"
-        );
-    }
-    cluster
-        .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
-        .unwrap();
-    cluster
-        .shell(0, "ployz image push --platform linux/amd64 busybox:1.37.0")
-        .unwrap();
-    let ingest = [
-        image_ingest_catalog(&cluster, 0, gateways[0]),
-        image_ingest_catalog(&cluster, 1, gateways[1]),
-    ];
-    assert_ne!(
-        ingest[0], ingest[1],
-        "only the push source opens ingest; the destination pulls"
+            .docker(source, &["inspect", "ployz-unregistry"])
+            .is_err(),
+        "reset must remove the disposable helper"
     );
-    for index in 0..2 {
-        assert!(
-            cluster
-                .images(index, Some("busybox:1.37.0".into()))
-                .await
-                .unwrap()
-                .images
-                .iter()
-                .any(|image| image
-                    .repo_tags
-                    .iter()
-                    .any(|tag| tag.contains("busybox:1.37.0"))),
-            "machine {index} must have the image after push-once peer pull"
-        );
-    }
+    assert!(
+        !image_ingest_catalog(&cluster, source, source_address),
+        "reset must close Direct Image Transfer on the Management Address"
+    );
 }
 
 #[tokio::test]
@@ -831,14 +863,12 @@ async fn daemon_stays_ready_when_image_ingest_cannot_open() {
     }
     let disabled = Cluster::create(disabled).unwrap();
     let disabled_machines = disabled.initialize_two().await.unwrap();
-    let disabled_gateway = disabled_machines
+    let disabled_address = disabled_machines
         .first()
         .expect("initialized two machines")
-        .subnet
-        .gateway()
-        .0;
+        .management_address;
     assert!(!disabled.images(0, None).await.unwrap().containerd_store);
-    assert!(!image_ingest_catalog(&disabled, 0, disabled_gateway));
+    assert!(!image_ingest_catalog(&disabled, 0, disabled_address));
     disabled
         .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
         .unwrap();
@@ -859,14 +889,12 @@ async fn daemon_stays_ready_when_image_ingest_cannot_open() {
     }
     let missing = Cluster::create(missing).unwrap();
     let missing_machines = missing.initialize_two().await.unwrap();
-    let missing_gateway = missing_machines
+    let missing_address = missing_machines
         .first()
         .expect("initialized two machines")
-        .subnet
-        .gateway()
-        .0;
+        .management_address;
     assert!(missing.images(0, None).await.unwrap().containerd_store);
-    assert!(!image_ingest_catalog(&missing, 0, missing_gateway));
+    assert!(!image_ingest_catalog(&missing, 0, missing_address));
     missing
         .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
         .unwrap();

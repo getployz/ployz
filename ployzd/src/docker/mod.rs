@@ -12,7 +12,13 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use bollard::{
     Docker,
@@ -605,6 +611,14 @@ pub enum Error {
     Clock(String),
     #[error("peer image pull failed: {0}")]
     PeerPull(String),
+    /// The disposable image-ingest helper did not become reachable in time.
+    #[error("Unregistry did not accept TCP at {address} within {timeout:?}")]
+    UnregistryNotReady {
+        /// Management-plane endpoint that failed readiness.
+        address: SocketAddr,
+        /// Maximum time allowed for the helper to accept TCP.
+        timeout: Duration,
+    },
 }
 
 impl Error {
@@ -641,6 +655,7 @@ impl Error {
             | Self::LocalStorePoisoned
             | Self::Clock(_)
             | Self::PeerPull(_)
+            | Self::UnregistryNotReady { .. }
             | Self::InvalidVolumeStatus(_)
             | Self::UnexpectedVolumeName { .. } => RpcErrorCode::Internal,
         }

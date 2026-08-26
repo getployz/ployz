@@ -14,7 +14,6 @@ use ployz_core::{
 };
 use serde_json::Value;
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
 
@@ -59,7 +58,7 @@ impl MachineService {
             local: LocalMachine::new(store, restart).with_cluster(cluster),
             hosted_dns: crate::hosted_dns::HostedDns::new(),
             ingress_data_dir: None,
-            ingest: ImageIngest::new(None, CancellationToken::new(), None),
+            ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             cloud_pairing: None,
             global_reconcile: global_reconcile_observation_channel().1,
@@ -708,7 +707,7 @@ impl MachineRpc for MachineService {
                 ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
             );
         };
-        match self.ingest.open(machine.subnet.gateway()).await {
+        match self.ingest.open(machine.management_address).await {
             Ok(opened) => respond(opened),
             Err(error) => respond(error),
         }

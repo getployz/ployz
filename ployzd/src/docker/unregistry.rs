@@ -1,32 +1,30 @@
 use std::{
     collections::HashMap,
-    net::Ipv4Addr,
-    os::unix::fs::{FileTypeExt, MetadataExt},
+    net::{Ipv6Addr, SocketAddr},
+    os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
 use bollard::models::{
-    ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, PortBinding,
-    RestartPolicy, RestartPolicyNameEnum,
+    ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, RestartPolicyNameEnum,
 };
 use ployz_core::{
-    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, MachineGateway, RpcError,
+    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ManagementAddress, RpcError,
 };
-use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
+use tokio::{net::TcpStream, sync::Mutex};
 
-use crate::network::{DOCKER_NETWORK_NAME, UNREGISTRY_PORT};
+use crate::network::UNREGISTRY_PORT;
 
 use super::{Error, LocalDocker, ManagedService};
 
 pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
-const CONTAINER_SOCKET: &str = "/run/containerd/containerd.sock";
-const CONFIG_VERSION: &str = "1";
-const SOCKET_INODE_LABEL: &str = "ployz.unregistry.socket-inode";
-const SOCKET_REFRESH: Duration = Duration::from_secs(2);
+const CONTAINER_SOCKET_PARENT: &str = "/run/ployz-containerd";
+const CONFIG_VERSION: &str = "2";
+const READY_RETRY: Duration = Duration::from_millis(10);
+const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKETS: &[&str] = &[
     "/run/containerd/containerd.sock",
     "/run/docker/containerd/containerd.sock",
@@ -53,45 +51,37 @@ impl ImageIngestPrerequisite {
     }
 }
 
-/// Image ingest for one Machine: first `open` starts the helper; later opens reuse it.
+/// Disposable Direct Image Transfer helper for one Machine.
 pub struct ImageIngest {
-    slot: Mutex<Option<StartedIngest>>,
     configured_socket: Option<PathBuf>,
-    refresh_shutdown: CancellationToken,
     docker: Option<LocalDocker>,
-}
-
-struct StartedIngest {
-    running: Arc<RunningUnregistry>,
-    refresh: tokio::task::JoinHandle<()>,
+    reconciliation: Mutex<()>,
 }
 
 impl ImageIngest {
-    /// Empty ingest that starts the helper on first `open`.
+    /// Image ingest that reconciles the helper on every `open`.
     #[must_use]
-    pub fn new(
-        configured_socket: Option<PathBuf>,
-        refresh_shutdown: CancellationToken,
-        docker: Option<LocalDocker>,
-    ) -> Arc<Self> {
+    pub fn new(configured_socket: Option<PathBuf>, docker: Option<LocalDocker>) -> Arc<Self> {
         Arc::new(Self {
-            slot: Mutex::new(None),
             configured_socket,
-            refresh_shutdown,
             docker,
+            reconciliation: Mutex::new(()),
         })
     }
 
-    /// Start the helper if needed and return the Machine Gateway TCP destination.
+    /// Start the helper if needed and return the Management Address TCP destination.
     ///
     /// # Errors
     ///
     /// Returns a named ingest RPC error when the Machine cannot ingest, or when
     /// the helper fails to start.
-    pub async fn open(&self, gateway: MachineGateway) -> Result<ImageIngestOpened, RpcError> {
+    pub async fn open(
+        &self,
+        management_address: ManagementAddress,
+    ) -> Result<ImageIngestOpened, RpcError> {
         let opened = ImageIngestOpened {
             destination: ImageIngestDestination {
-                gateway,
+                management_address,
                 port: UNREGISTRY_PORT,
             },
         };
@@ -107,57 +97,48 @@ impl ImageIngest {
                 return Err(ImageIngestReason::DockerUnavailable.rpc_error(error.to_string()));
             }
         };
-        let mut slot = self.slot.lock().await;
-        if slot.is_some() {
-            return Ok(opened);
-        }
-        let running = docker
-            .start_unregistry(gateway.0, socket)
+        let _reconciliation = self.reconciliation.lock().await;
+        docker
+            .reconcile_unregistry(management_address.0, &socket)
             .await
             .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
-        let running = Arc::new(running);
-        let refresh = {
-            let running = Arc::clone(&running);
-            let shutdown = self.refresh_shutdown.clone();
-            tokio::spawn(async move {
-                let _ = running.keep_socket_current(shutdown).await;
-            })
-        };
-        *slot = Some(StartedIngest { running, refresh });
+        wait_for_unregistry(SocketAddr::from((management_address.0, UNREGISTRY_PORT)))
+            .await
+            .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
         Ok(opened)
     }
 
-    /// Stop the helper if this process started it.
-    ///
-    /// # Errors
-    ///
-    /// Returns when Docker cannot stop the helper.
-    pub async fn stop(&self) -> Result<(), Error> {
-        let Some(started) = self.slot.lock().await.take() else {
-            return Ok(());
-        };
-        started.refresh.abort();
-        started.running.stop().await
-    }
-
-    /// Remove the helper, including a leftover from a previous process.
+    /// Remove the disposable helper, including one left by a previous process.
     ///
     /// # Errors
     ///
     /// Returns when Docker cannot remove the helper.
-    pub async fn cleanup(&self) -> Result<(), Error> {
-        if let Some(started) = self.slot.lock().await.take() {
-            started.refresh.abort();
-            return started.running.cleanup().await;
-        }
+    pub async fn shutdown(&self) -> Result<(), Error> {
         let Some(docker) = &self.docker else {
             return Ok(());
         };
+        let _reconciliation = self.reconciliation.lock().await;
         ManagedService::endpoint(docker.clone(), NAME, IMAGE)
             .remove()
             .await
             .map_err(Into::into)
     }
+}
+
+async fn wait_for_unregistry(address: SocketAddr) -> Result<(), Error> {
+    tokio::time::timeout(READY_TIMEOUT, async {
+        loop {
+            if TcpStream::connect(address).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(READY_RETRY).await;
+        }
+    })
+    .await
+    .map_err(|_| Error::UnregistryNotReady {
+        address,
+        timeout: READY_TIMEOUT,
+    })
 }
 
 impl LocalDocker {
@@ -179,190 +160,160 @@ impl LocalDocker {
         })
     }
 
-    /// Start the image-ingest helper on this socket.
+    /// Reconcile the image-ingest helper against observed Docker state.
     ///
     /// # Errors
     ///
     /// Returns when the helper cannot be created or started.
-    pub(crate) async fn start_unregistry(
+    pub(crate) async fn reconcile_unregistry(
         &self,
-        gateway: Ipv4Addr,
-        socket: PathBuf,
-    ) -> Result<RunningUnregistry, Error> {
-        let service = RunningUnregistry {
-            service: ManagedService::endpoint(self.clone(), NAME, IMAGE),
-            socket,
-            gateway,
-        };
-        service.start().await?;
-        Ok(service)
-    }
-}
-
-pub(crate) struct RunningUnregistry {
-    service: ManagedService,
-    socket: PathBuf,
-    gateway: Ipv4Addr,
-}
-
-impl RunningUnregistry {
-    async fn start(&self) -> Result<(), Error> {
-        self.service
-            .ensure_endpoint(self.config(), |container| {
-                unregistry_matches(container, &self.socket, self.gateway)
+        management_address: Ipv6Addr,
+        socket: &Path,
+    ) -> Result<(), Error> {
+        ManagedService::endpoint(self.clone(), NAME, IMAGE)
+            .ensure_endpoint(unregistry_config(socket, management_address), |container| {
+                unregistry_matches(container, socket, management_address)
             })
             .await
     }
+}
 
-    fn config(&self) -> ContainerCreateBody {
-        let port_bindings = HashMap::from([(
-            "5000/tcp".into(),
-            Some(vec![PortBinding {
-                host_ip: Some(self.gateway.to_string()),
-                host_port: Some(UNREGISTRY_PORT.to_string()),
+fn unregistry_config(socket: &Path, management_address: Ipv6Addr) -> ContainerCreateBody {
+    let parent = socket_parent(socket).expect("validated containerd socket parent");
+    let socket_name = socket
+        .file_name()
+        .expect("validated containerd socket filename")
+        .to_string_lossy();
+    let container_socket = format!("{CONTAINER_SOCKET_PARENT}/{socket_name}");
+    ContainerCreateBody {
+        image: Some(IMAGE.into()),
+        env: Some(vec![
+            format!("UNREGISTRY_ADDR=[{management_address}]:{UNREGISTRY_PORT}"),
+            "UNREGISTRY_CONTAINERD_NAMESPACE=moby".into(),
+            format!("UNREGISTRY_CONTAINERD_SOCK={container_socket}"),
+        ]),
+        labels: Some(HashMap::from([
+            ("ployz.managed".into(), String::new()),
+            (
+                "ployz.unregistry.socket".into(),
+                socket.to_string_lossy().into_owned(),
+            ),
+            (
+                "ployz.unregistry.management-address".into(),
+                management_address.to_string(),
+            ),
+            (
+                "ployz.unregistry.config-version".into(),
+                CONFIG_VERSION.into(),
+            ),
+        ])),
+        host_config: Some(HostConfig {
+            mounts: Some(vec![Mount {
+                typ: Some(MountType::BIND),
+                source: Some(parent.to_string_lossy().into_owned()),
+                target: Some(CONTAINER_SOCKET_PARENT.into()),
+                read_only: Some(true),
+                ..Default::default()
             }]),
-        )]);
-        ContainerCreateBody {
-            image: Some(IMAGE.into()),
-            env: Some(vec![
-                "UNREGISTRY_ADDR=:5000".into(),
-                "UNREGISTRY_CONTAINERD_NAMESPACE=moby".into(),
-                format!("UNREGISTRY_CONTAINERD_SOCK={CONTAINER_SOCKET}"),
-            ]),
-            exposed_ports: Some(vec!["5000/tcp".into()]),
-            labels: Some(HashMap::from([
-                ("ployz.managed".into(), String::new()),
-                (
-                    "ployz.unregistry.socket".into(),
-                    self.socket.to_string_lossy().into_owned(),
-                ),
-                ("ployz.unregistry.gateway".into(), self.gateway.to_string()),
-                (
-                    "ployz.unregistry.config-version".into(),
-                    CONFIG_VERSION.into(),
-                ),
-                (
-                    SOCKET_INODE_LABEL.into(),
-                    socket_inode_label(&self.socket).unwrap_or_default(),
-                ),
-            ])),
-            host_config: Some(HostConfig {
-                mounts: Some(vec![Mount {
-                    typ: Some(MountType::BIND),
-                    source: Some(self.socket.to_string_lossy().into_owned()),
-                    target: Some(CONTAINER_SOCKET.into()),
-                    read_only: Some(false),
-                    ..Default::default()
-                }]),
-                port_bindings: Some(port_bindings),
-                network_mode: Some(DOCKER_NETWORK_NAME.into()),
-                restart_policy: Some(RestartPolicy {
-                    name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
-                    ..Default::default()
-                }),
-                log_config: Some(HostConfigLogConfig {
-                    typ: Some("local".into()),
-                    ..Default::default()
-                }),
+            network_mode: Some("host".into()),
+            log_config: Some(HostConfigLogConfig {
+                typ: Some("local".into()),
                 ..Default::default()
             }),
             ..Default::default()
-        }
-    }
-
-    pub async fn keep_socket_current(&self, shutdown: CancellationToken) -> Result<(), Error> {
-        let mut ticks = tokio::time::interval(SOCKET_REFRESH);
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        ticks.tick().await;
-        loop {
-            tokio::select! {
-                _ = ticks.tick() => {
-                    if let Err(error) = self.start().await {
-                        eprintln!("WARNING: unregistry socket refresh failed: {error}");
-                    }
-                }
-                () = shutdown.cancelled() => return Ok(()),
-            }
-        }
-    }
-
-    pub async fn stop(&self) -> Result<(), Error> {
-        self.service.stop().await.map_err(Into::into)
-    }
-
-    pub async fn cleanup(&self) -> Result<(), Error> {
-        self.service.remove().await.map_err(Into::into)
+        }),
+        ..Default::default()
     }
 }
 
-/// Whether a running unregistry still matches this Machine's socket, gateway, and live socket inode.
+/// Whether an observed helper exactly matches this Machine's ingest configuration.
 #[must_use]
 pub fn unregistry_matches(
     container: &bollard::models::ContainerInspectResponse,
     socket: &Path,
-    gateway: Ipv4Addr,
+    management_address: Ipv6Addr,
 ) -> bool {
-    let socket_name = socket.to_string_lossy();
-    let gateway = gateway.to_string();
-    let labels = container
-        .config
+    let socket_path = socket.to_string_lossy();
+    let Some(config) = container.config.as_ref() else {
+        return false;
+    };
+    let Some(labels) = config.labels.as_ref() else {
+        return false;
+    };
+    let expected_env = unregistry_config(socket, management_address)
+        .env
+        .expect("unregistry environment");
+    let management_address = management_address.to_string();
+    let Some(host) = container.host_config.as_ref() else {
+        return false;
+    };
+    let Some(mounts) = host.mounts.as_deref() else {
+        return false;
+    };
+    let [mount] = mounts else {
+        return false;
+    };
+    let Some(parent) = socket_parent(socket) else {
+        return false;
+    };
+    let no_restart = host
+        .restart_policy
         .as_ref()
-        .and_then(|config| config.labels.as_ref());
-    container
-        .config
-        .as_ref()
-        .and_then(|config| config.image.as_deref())
-        == Some(IMAGE)
+        .and_then(|policy| policy.name.as_ref())
+        .is_none_or(|name| {
+            matches!(
+                name,
+                RestartPolicyNameEnum::EMPTY | RestartPolicyNameEnum::NO
+            )
+        });
+
+    let Some(env) = config.env.as_ref() else {
+        return false;
+    };
+
+    config.image.as_deref() == Some(IMAGE)
+        && expected_env.iter().all(|expected| env.contains(expected))
+        && env
+            .iter()
+            .filter(|value| value.starts_with("UNREGISTRY_"))
+            .count()
+            == expected_env.len()
+        && labels.get("ployz.unregistry.socket").map(String::as_str) == Some(socket_path.as_ref())
         && labels
-            .and_then(|labels| labels.get("ployz.unregistry.socket"))
+            .get("ployz.unregistry.management-address")
             .map(String::as_str)
-            == Some(socket_name.as_ref())
+            == Some(management_address.as_str())
         && labels
-            .and_then(|labels| labels.get("ployz.unregistry.gateway"))
-            .map(String::as_str)
-            == Some(gateway.as_str())
-        && labels
-            .and_then(|labels| labels.get("ployz.unregistry.config-version"))
+            .get("ployz.unregistry.config-version")
             .map(String::as_str)
             == Some(CONFIG_VERSION)
-        && bound_to_current_socket_inode(labels, socket)
-}
-
-fn bound_to_current_socket_inode(labels: Option<&HashMap<String, String>>, socket: &Path) -> bool {
-    match socket_inode_label(socket) {
-        None => true,
-        Some(current) => {
-            labels
-                .and_then(|labels| labels.get(SOCKET_INODE_LABEL))
-                .map(String::as_str)
-                == Some(current.as_str())
-        }
-    }
-}
-
-fn socket_inode_label(path: &Path) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
-    metadata.file_type().is_socket().then(|| {
-        // ctime distinguishes a replacement file when the filesystem reuses the inode number.
-        format!(
-            "{}:{}:{}:{}",
-            metadata.dev(),
-            metadata.ino(),
-            metadata.ctime(),
-            metadata.ctime_nsec()
-        )
-    })
+        && labels.contains_key("ployz.managed")
+        && mount.typ == Some(MountType::BIND)
+        && mount.source.as_deref() == Some(parent.to_string_lossy().as_ref())
+        && mount.target.as_deref() == Some(CONTAINER_SOCKET_PARENT)
+        && mount.read_only == Some(true)
+        && host.network_mode.as_deref() == Some("host")
+        && host.port_bindings.as_ref().is_none_or(HashMap::is_empty)
+        && no_restart
 }
 
 fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = configured {
-        return is_socket(path).then(|| path.to_owned());
+        return path
+            .canonicalize()
+            .ok()
+            .filter(|path| is_socket(path) && socket_parent(path).is_some());
     }
-    SOCKETS
-        .iter()
-        .map(Path::new)
-        .find(|path| is_socket(path))
-        .map(Path::to_path_buf)
+    SOCKETS.iter().map(Path::new).find_map(|path| {
+        path.canonicalize()
+            .ok()
+            .filter(|path| is_socket(path) && socket_parent(path).is_some())
+    })
+}
+
+fn socket_parent(socket: &Path) -> Option<&Path> {
+    socket.file_name()?;
+    socket.parent().filter(|parent| *parent != Path::new("/"))
 }
 
 fn is_socket(path: &Path) -> bool {
@@ -377,14 +328,14 @@ mod tests {
         WireGuardPublicKey,
     };
 
-    /// Gateway unregistry would bind when this Machine already has a subnet.
-    fn unregistry_gateway(
+    /// Management address unregistry would bind when this Machine is active.
+    fn unregistry_management_address(
         phase: &LocalMachinePhase,
         machine: Option<&Machine>,
-    ) -> Option<Ipv4Addr> {
+    ) -> Option<Ipv6Addr> {
         match phase {
             LocalMachinePhase::Joining | LocalMachinePhase::Participating => {
-                machine.map(|machine| machine.subnet.gateway().0)
+                machine.map(|machine| machine.management_address.0)
             }
             LocalMachinePhase::Uninitialized
             | LocalMachinePhase::Resetting
@@ -406,25 +357,28 @@ mod tests {
     }
 
     #[test]
-    fn joining_machine_exposes_an_unregistry_gateway() {
+    fn joining_machine_exposes_an_unregistry_management_address() {
         let machine = machine();
         assert_eq!(
-            unregistry_gateway(&LocalMachinePhase::Joining, Some(&machine)),
-            Some(Ipv4Addr::new(10, 210, 2, 1))
+            unregistry_management_address(&LocalMachinePhase::Joining, Some(&machine)),
+            Some("fdcc::2".parse().unwrap())
         );
         assert_eq!(
-            unregistry_gateway(&LocalMachinePhase::Participating, Some(&machine)),
-            Some(Ipv4Addr::new(10, 210, 2, 1))
+            unregistry_management_address(&LocalMachinePhase::Participating, Some(&machine)),
+            Some("fdcc::2".parse().unwrap())
         );
         assert_eq!(
-            unregistry_gateway(&LocalMachinePhase::Uninitialized, Some(&machine)),
+            unregistry_management_address(&LocalMachinePhase::Uninitialized, Some(&machine)),
             None
         );
         assert_eq!(
-            unregistry_gateway(&LocalMachinePhase::Resetting, Some(&machine)),
+            unregistry_management_address(&LocalMachinePhase::Resetting, Some(&machine)),
             None
         );
-        assert_eq!(unregistry_gateway(&LocalMachinePhase::Joining, None), None);
+        assert_eq!(
+            unregistry_management_address(&LocalMachinePhase::Joining, None),
+            None
+        );
     }
 
     #[test]
@@ -461,82 +415,86 @@ mod tests {
         let socket = root.join("containerd.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         assert_eq!(detect_socket(Some(&socket)), Some(socket.clone()));
+        let alias = root.join("configured.sock");
+        std::os::unix::fs::symlink(&socket, &alias).unwrap();
+        assert_eq!(detect_socket(Some(&alias)), Some(socket.clone()));
         drop(listener);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn running_unregistry_is_replaced_when_containerd_recreates_the_socket_inode() {
+    fn socket_mount_rejects_a_root_parent_and_requires_a_filename() {
+        assert_eq!(socket_parent(Path::new("/containerd.sock")), None);
+        assert_eq!(socket_parent(Path::new("/")), None);
+        assert_eq!(
+            socket_parent(Path::new("/run/containerd/containerd.sock")),
+            Some(Path::new("/run/containerd"))
+        );
+    }
+
+    #[test]
+    fn unregistry_uses_host_network_and_a_read_only_socket_parent_mount() {
+        let root = temp_root("config");
+        let socket = root.join("containerd.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let config = unregistry_config(&socket, "fdcc::2".parse().unwrap());
+
+        assert_eq!(config.image.as_deref(), Some(IMAGE));
+        assert_eq!(
+            config.env,
+            Some(vec![
+                "UNREGISTRY_ADDR=[fdcc::2]:51500".into(),
+                "UNREGISTRY_CONTAINERD_NAMESPACE=moby".into(),
+                format!("UNREGISTRY_CONTAINERD_SOCK={CONTAINER_SOCKET_PARENT}/containerd.sock"),
+            ])
+        );
+        assert_eq!(config.exposed_ports, None);
+        let host = config.host_config.unwrap();
+        assert_eq!(host.network_mode.as_deref(), Some("host"));
+        assert_eq!(host.port_bindings, None);
+        assert_eq!(host.restart_policy, None);
+        assert_eq!(
+            host.mounts,
+            Some(vec![Mount {
+                typ: Some(MountType::BIND),
+                source: Some(root.to_string_lossy().into_owned()),
+                target: Some(CONTAINER_SOCKET_PARENT.into()),
+                read_only: Some(true),
+                ..Default::default()
+            }])
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn socket_recreation_keeps_the_parent_mounted_unregistry_current() {
         let root = temp_root("inode");
         let socket = root.join("containerd.sock");
-        let gateway = Ipv4Addr::new(10, 210, 0, 1);
+        let management_address = Ipv6Addr::LOCALHOST;
         let first = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let bound = inspect_bound_to(&socket, gateway);
-        assert!(unregistry_matches(&bound, &socket, gateway));
-        let original = socket_inode_label(&socket).unwrap();
+        let bound = inspect_bound_to(&socket, management_address);
+        assert!(unregistry_matches(&bound, &socket, management_address));
 
         drop(first);
         std::fs::remove_file(&socket).unwrap();
-        let started = std::time::Instant::now();
-        let _recreated = loop {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-            if socket_inode_label(&socket).as_ref() != Some(&original) {
-                break listener;
-            }
-            drop(listener);
-            std::fs::remove_file(&socket).unwrap();
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(2),
-                "recreated socket kept the original identity {original}"
-            );
-        };
-        assert!(!unregistry_matches(&bound, &socket, gateway));
-
+        let _recreated = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(unregistry_matches(&bound, &socket, management_address));
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn running_unregistry_is_replaced_when_recorded_socket_inode_does_not_match() {
-        let root = temp_root("stale-label");
-        let socket = root.join("containerd.sock");
-        let gateway = Ipv4Addr::new(10, 210, 0, 1);
-        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let stale = inspect_bound_to_inode(&socket, gateway, "0:0:0:0".into());
-        assert!(!unregistry_matches(&stale, &socket, gateway));
-        std::fs::remove_dir_all(root).unwrap();
-    }
+    #[tokio::test(start_paused = true)]
+    async fn readiness_waits_until_the_endpoint_accepts_tcp() {
+        let reservation = std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
 
-    #[test]
-    fn unregistry_without_inode_label_is_replaced_when_the_socket_exists() {
-        let root = temp_root("missing-inode");
-        let socket = root.join("containerd.sock");
-        let gateway = Ipv4Addr::new(10, 210, 0, 1);
-        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let mut bound = inspect_bound_to(&socket, gateway);
-        bound
-            .config
-            .as_mut()
-            .unwrap()
-            .labels
-            .as_mut()
-            .unwrap()
-            .remove(SOCKET_INODE_LABEL);
-        assert!(!unregistry_matches(&bound, &socket, gateway));
-        std::fs::remove_dir_all(root).unwrap();
-    }
+        let waiting = tokio::spawn(wait_for_unregistry(address));
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
 
-    #[test]
-    fn missing_containerd_socket_does_not_force_unregistry_replacement() {
-        let root = temp_root("missing-sock");
-        let socket = root.join("containerd.sock");
-        let gateway = Ipv4Addr::new(10, 210, 0, 1);
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let bound = inspect_bound_to(&socket, gateway);
-        drop(listener);
-        std::fs::remove_file(&socket).unwrap();
-        assert!(unregistry_matches(&bound, &socket, gateway));
-        std::fs::remove_dir_all(root).unwrap();
+        let _listener = tokio::net::TcpListener::bind(address).await.unwrap();
+        tokio::time::advance(std::time::Duration::from_millis(10)).await;
+        assert!(waiting.await.unwrap().is_ok());
     }
 
     fn temp_root(name: &str) -> PathBuf {
@@ -554,37 +512,18 @@ mod tests {
 
     fn inspect_bound_to(
         socket: &Path,
-        gateway: Ipv4Addr,
+        management_address: Ipv6Addr,
     ) -> bollard::models::ContainerInspectResponse {
-        inspect_bound_to_inode(
-            socket,
-            gateway,
-            socket_inode_label(socket).expect("test socket"),
-        )
-    }
-
-    fn inspect_bound_to_inode(
-        socket: &Path,
-        gateway: Ipv4Addr,
-        inode: String,
-    ) -> bollard::models::ContainerInspectResponse {
+        let config = unregistry_config(socket, management_address);
         bollard::models::ContainerInspectResponse {
             config: Some(bollard::models::ContainerConfig {
-                image: Some(IMAGE.into()),
-                labels: Some(HashMap::from([
-                    (
-                        "ployz.unregistry.socket".into(),
-                        socket.to_string_lossy().into_owned(),
-                    ),
-                    ("ployz.unregistry.gateway".into(), gateway.to_string()),
-                    (
-                        "ployz.unregistry.config-version".into(),
-                        CONFIG_VERSION.into(),
-                    ),
-                    (SOCKET_INODE_LABEL.into(), inode),
-                ])),
+                image: config.image,
+                env: config.env,
+                exposed_ports: config.exposed_ports,
+                labels: config.labels,
                 ..Default::default()
             }),
+            host_config: config.host_config,
             ..Default::default()
         }
     }

@@ -168,7 +168,6 @@ impl Daemon {
         let shutdown = CancellationToken::new();
         let ingest = ImageIngest::new(
             config.containerd_socket.clone(),
-            shutdown.child_token(),
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
         let (participating, participating_rx) =
@@ -468,12 +467,7 @@ impl Daemon {
                 errors.push(error.to_string());
             }
         }
-        let ingest_result = if resetting {
-            self.ingest.cleanup().await
-        } else {
-            self.ingest.stop().await
-        };
-        if let Err(error) = ingest_result {
+        if let Err(error) = self.ingest.shutdown().await {
             errors.push(error.to_string());
         }
         if resetting {

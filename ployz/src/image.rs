@@ -272,8 +272,8 @@ async fn push_to_machine(
         .await?
         .map_err(ingest_error)?;
     let remote = format!(
-        "{}:{}",
-        opened.destination.gateway.0, opened.destination.port
+        "[{}]:{}",
+        opened.destination.management_address.0, opened.destination.port
     );
     cancellation
         .race(client.dial_proxy("tcp", &remote))

@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     future::Future,
-    net::TcpListener,
+    net::{Ipv6Addr, TcpListener},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -23,18 +23,61 @@ use bollard::{
 use futures_util::TryStreamExt;
 use ployz_core::{
     AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, MachineGateway, MachineName,
-    ProjectName, PullPolicy, ResolvedServiceSpec,
+    ManagementAddress, ProjectName, PullPolicy, ResolvedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
 
 use super::*;
 
-// ponytail: serialize tests sharing the fixed Ployz network; use unique networks if parallelism matters.
+// ponytail: serialize tests sharing fixed Docker resources; use unique names if parallelism matters.
 static DOCKER_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const TEST_GATEWAY: MachineGateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
 
 mod observe_volumes;
 mod stream;
+
+#[tokio::test]
+#[ignore = "requires Docker with the containerd image store and unregistry:0.4.1"]
+async fn image_ingest_reconciles_observed_docker_state_on_every_open() {
+    let _lock = DOCKER_NETWORK_LOCK.lock().await;
+    let docker = LocalDocker::connect().unwrap();
+    let ingest = ImageIngest::new(None, Some(docker.clone()));
+    let management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
+    ingest.shutdown().await.unwrap();
+
+    let opened = ingest.open(management_address).await.unwrap();
+    assert_eq!(opened.destination.management_address, management_address);
+    let first = docker
+        .client
+        .inspect_container("ployz-unregistry", None)
+        .await
+        .unwrap();
+    let socket = PathBuf::from(
+        first
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .and_then(|labels| labels.get("ployz.unregistry.socket"))
+            .unwrap(),
+    );
+    assert!(unregistry_matches(&first, &socket, management_address.0));
+
+    docker
+        .client
+        .stop_container("ployz-unregistry", None)
+        .await
+        .unwrap();
+    ingest.open(management_address).await.unwrap();
+    let repaired = docker
+        .client
+        .inspect_container("ployz-unregistry", None)
+        .await
+        .unwrap();
+    assert_eq!(repaired.id, first.id);
+    assert!(repaired.state.unwrap().running.unwrap_or(false));
+
+    ingest.shutdown().await.unwrap();
+}
 
 #[tokio::test]
 #[ignore = "requires Docker and alpine:3.23.3"]
