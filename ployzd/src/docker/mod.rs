@@ -11,6 +11,8 @@ mod volume;
 
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod test_support;
 
 use std::{
     collections::HashMap,
@@ -40,7 +42,7 @@ use tokio::sync::Mutex;
 use observe::ObservationSink;
 
 pub(crate) use create::NetworkAttachment;
-pub(crate) use lifecycle::ContainerRequest;
+pub(crate) use lifecycle::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest};
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -601,9 +603,6 @@ pub enum Error {
         name: DockerVolumeName,
         reason: String,
     },
-    /// Two mounted declarations resolve to incompatible shapes for one Docker name.
-    #[error("mounted declarations for Docker Volume '{0}' have conflicting sources")]
-    ConflictingMountedVolumeSources(DockerVolumeName),
     /// Docker created a Volume but its resulting state could not be observed.
     #[error("Docker Volume creation succeeded but verification failed for {id:?}: {error}")]
     VolumeCreatedButUnverified {
@@ -616,6 +615,9 @@ pub enum Error {
     /// The target Machine has no storage capable of hosting a Provisioned Volume.
     #[error("this Machine cannot host a mounted Provisioned Volume")]
     ProvisionedStorageUnsupported,
+    /// The complete Resolved Service Spec does not permit this target Machine.
+    #[error("this Machine does not satisfy the resolved Service placement")]
+    ServicePlacementMismatch,
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -661,12 +663,13 @@ impl Error {
                 status_code: 409,
                 ..
             })
-            | Self::VolumeShapeMismatch { .. }
-            | Self::ConflictingMountedVolumeSources(_) => RpcErrorCode::Conflict,
+            | Self::VolumeShapeMismatch { .. } => RpcErrorCode::Conflict,
             Self::VolumeCreatedButUnverified { .. } | Self::StorageUnobservable => {
                 RpcErrorCode::Unavailable
             }
-            Self::ProvisionedStorageUnsupported => RpcErrorCode::Conflict,
+            Self::ProvisionedStorageUnsupported | Self::ServicePlacementMismatch => {
+                RpcErrorCode::Conflict
+            }
             Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
@@ -1040,7 +1043,7 @@ mod tests {
             "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
             "volumes": [
                 {"reference":"host","source":{"kind":"bind","machine_path":"/srv/api"}},
-                {"reference":"alias","source":{"kind":"named","name":"database","driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
+                {"reference":"alias","source":{"kind":"ordinary","name":"database","driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
                 {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
             ],
             "mounts": [
@@ -1203,7 +1206,7 @@ mod tests {
                 "name": "api",
                 "mode": { "mode": "replicated", "replicas": 1 },
                 "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
-                "volumes": [{"reference":"data","source":{"kind":"named","name":"missing"}}],
+                "volumes": [{"reference":"data","source":{"kind":"ordinary","name":"missing","driver":{"name":"local","options":{}}}}],
                 "mounts": [{"volume":"data","target":"/data"}]
             }))
             .unwrap();
@@ -1220,11 +1223,8 @@ mod tests {
             "mode": { "mode": "replicated", "replicas": 1 },
             "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
             "volumes": [{"reference":"data","source":{
-                "kind":"named",
-                "name":"external-data",
-                "external":true,
-                "driver":{"name":"foreign","options":{"mode":"owned-elsewhere"}},
-                "labels":{"owner":"foreign"}
+                "kind":"external",
+                "name":"external-data"
             }}],
             "mounts": [{
                 "volume":"data",

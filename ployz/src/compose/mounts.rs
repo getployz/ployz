@@ -137,19 +137,17 @@ pub(super) fn volumes(
                         maximum_bytes: *maximum_bytes,
                         labels: BTreeMap::new(),
                     }
+                } else if external {
+                    VolumeSource::External { name }
                 } else {
-                    VolumeSource::Named {
+                    VolumeSource::Ordinary {
                         name,
-                        external,
-                        driver: (!external && declared.driver.is_some()).then(|| VolumeDriver {
-                            name: declared.driver.clone().expect("driver presence checked"),
-                            options: declared.driver_opts.clone(),
-                        }),
-                        labels: if external {
-                            BTreeMap::new()
-                        } else {
-                            declared.labels.clone()
-                        },
+                        driver: VolumeDriver::parse(
+                            declared.driver.as_deref().unwrap_or("local"),
+                            declared.driver_opts.clone(),
+                        )
+                        .map_err(invalid)?,
+                        labels: declared.labels.clone(),
                     }
                 }
             }

@@ -62,6 +62,41 @@ fn provisioned_volume_sources_carry_required_positive_byte_counts() {
     }
 }
 
+#[test]
+fn service_volume_source_wire_forms_are_exact() {
+    assert!(ployz_core::VolumeDriver::parse("ployz", BTreeMap::new()).is_err());
+
+    for valid in [
+        json!({"kind": "external", "name": "shared"}),
+        json!({
+            "kind": "ordinary",
+            "name": "data",
+            "driver": {"name": "local", "options": {}},
+            "labels": {"backup": "daily"}
+        }),
+        json!({
+            "kind": "provisioned",
+            "name": "bounded",
+            "maximum_bytes": "1073741824",
+            "labels": {}
+        }),
+    ] {
+        let source: VolumeSource = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(serde_json::to_value(source).unwrap(), valid);
+    }
+
+    for invalid in [
+        json!({"kind": "named", "name": "data"}),
+        json!({
+            "kind": "ordinary",
+            "name": "data",
+            "driver": {"name": "ployz", "options": {}}
+        }),
+    ] {
+        assert!(serde_json::from_value::<VolumeSource>(invalid).is_err());
+    }
+}
+
 /// The response catalog generates `ResponseKind` from one table, so a typo in a row
 /// would round-trip through both sides symmetrically and break only across versions.
 /// This restates the wire strings independently.
@@ -313,18 +348,17 @@ fn project_volume_name_includes_the_project_and_differs_across_projects() {
 }
 
 #[test]
-fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
+fn managed_volume_scope_to_project_is_idempotent_and_skips_external() {
     let project = ProjectName::parse("shop").unwrap();
-    let mut named = VolumeSource::Named {
+    let mut named = VolumeSource::Ordinary {
         name: DockerVolumeName::parse("data").unwrap(),
-        external: false,
-        driver: None,
+        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
         labels: Default::default(),
     };
     named.scope_to_project(&project);
     named.scope_to_project(&project);
     match &named {
-        VolumeSource::Named { name, labels, .. } => {
+        VolumeSource::Ordinary { name, labels, .. } => {
             assert_eq!(name.as_str(), "shop_data");
             assert_eq!(labels.get(MANAGED_LABEL), Some(&String::new()));
             assert_eq!(
@@ -332,48 +366,46 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
                 Some("shop")
             );
         }
-        VolumeSource::Provisioned { .. }
+        VolumeSource::External { .. }
+        | VolumeSource::Provisioned { .. }
         | VolumeSource::Bind { .. }
         | VolumeSource::Tmpfs { .. } => {
             panic!("expected a named volume")
         }
     }
 
-    let mut external = VolumeSource::Named {
+    let mut external = VolumeSource::External {
         name: DockerVolumeName::parse("shared").unwrap(),
-        external: true,
-        driver: None,
-        labels: Default::default(),
     };
     external.scope_to_project(&project);
     match &external {
-        VolumeSource::Named { name, labels, .. } => {
+        VolumeSource::External { name } => {
             assert_eq!(name.as_str(), "shared");
-            assert!(labels.is_empty());
         }
-        VolumeSource::Provisioned { .. }
+        VolumeSource::Ordinary { .. }
+        | VolumeSource::Provisioned { .. }
         | VolumeSource::Bind { .. }
         | VolumeSource::Tmpfs { .. } => {
             panic!("expected a named volume")
         }
     }
 
-    let mut foreign = VolumeSource::Named {
+    let mut foreign = VolumeSource::Ordinary {
         name: DockerVolumeName::parse("blog_data").unwrap(),
-        external: false,
-        driver: None,
+        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
         labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "blog".into())]),
     };
     foreign.scope_to_project(&project);
     match &foreign {
-        VolumeSource::Named { name, labels, .. } => {
+        VolumeSource::Ordinary { name, labels, .. } => {
             assert_eq!(name.as_str(), "blog_data");
             assert_eq!(
                 labels.get(PROJECT_NAME_LABEL).map(String::as_str),
                 Some("blog")
             );
         }
-        VolumeSource::Provisioned { .. }
+        VolumeSource::External { .. }
+        | VolumeSource::Provisioned { .. }
         | VolumeSource::Bind { .. }
         | VolumeSource::Tmpfs { .. } => {
             panic!("expected a named volume")

@@ -11,7 +11,9 @@ use crate::{
 
 mod eligibility;
 
-pub use eligibility::{ServicePlacementEligibility, service_placement_eligibility};
+pub use eligibility::{
+    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
+};
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

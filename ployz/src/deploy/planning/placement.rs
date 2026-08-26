@@ -531,7 +531,9 @@ fn determine_update_order(
     if requested.volume_graph.mounted_volumes().any(|volume| {
         matches!(
             volume.source,
-            VolumeSource::Named { .. } | VolumeSource::Provisioned { .. }
+            VolumeSource::External { .. }
+                | VolumeSource::Ordinary { .. }
+                | VolumeSource::Provisioned { .. }
         )
     }) {
         return UpdateOrder::StopFirst;

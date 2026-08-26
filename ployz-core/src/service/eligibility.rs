@@ -1,7 +1,8 @@
 //! Shared placement and storage eligibility policy for Services on Machines.
 
 use crate::{
-    Machine, MachineStorageObservation, Placement, ServiceVolumeGraph, machine_matches_placement,
+    Machine, MachineStorageObservation, Placement, RequestedServiceSpec, ResolvedServiceSpec,
+    ServiceVolumeGraph, machine_matches_placement,
 };
 
 /// Whether one Machine can host a Service under current placement and storage evidence.
@@ -9,10 +10,56 @@ use crate::{
 pub enum ServicePlacementEligibility {
     /// Placement matches and every mounted storage requirement is known to be supported.
     Eligible,
-    /// Placement does not match, or storage is known not to support the Service.
-    Ineligible,
+    /// The Machine is known not to satisfy one Service requirement.
+    Ineligible(ServicePlacementIneligibleReason),
     /// Placement matches, but required storage capability could not be observed.
-    Unknown,
+    Unknown(ServicePlacementUnknownReason),
+}
+
+/// Why a Machine is known not to be eligible for a Service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServicePlacementIneligibleReason {
+    /// The Machine does not match the Service's placement selectors.
+    PlacementMismatch,
+    /// The Machine is known not to support mounted Provisioned Volumes.
+    ProvisionedStorageUnsupported,
+}
+
+/// Why a Machine's eligibility for a Service cannot be determined.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServicePlacementUnknownReason {
+    /// Mounted Provisioned Volumes require storage evidence that is unavailable.
+    MissingStorageEvidence,
+}
+
+impl RequestedServiceSpec {
+    /// Assess this complete Service specification against one Machine.
+    ///
+    /// Membership Observation is intentionally a consumer concern. Provisioned
+    /// maxima are enforced ceilings and are not compared with current free bytes.
+    #[must_use]
+    pub fn placement_eligibility(
+        &self,
+        machine: &Machine,
+        storage: Option<&MachineStorageObservation>,
+    ) -> ServicePlacementEligibility {
+        placement_eligibility(&self.placement, &self.volume_graph, machine, storage)
+    }
+}
+
+impl ResolvedServiceSpec {
+    /// Assess this complete Service specification against one Machine.
+    ///
+    /// Membership Observation is intentionally a consumer concern. Provisioned
+    /// maxima are enforced ceilings and are not compared with current free bytes.
+    #[must_use]
+    pub fn placement_eligibility(
+        &self,
+        machine: &Machine,
+        storage: Option<&MachineStorageObservation>,
+    ) -> ServicePlacementEligibility {
+        placement_eligibility(&self.placement, &self.volume_graph, machine, storage)
+    }
 }
 
 /// Evaluate placement constraints and mounted Provisioned Volume capability.
@@ -20,14 +67,16 @@ pub enum ServicePlacementEligibility {
 /// Membership Observation is intentionally a consumer concern. Provisioned
 /// maxima are enforced ceilings and are not compared with current free bytes.
 #[must_use]
-pub fn service_placement_eligibility(
+fn placement_eligibility(
     placement: &Placement,
     volumes: &ServiceVolumeGraph,
     machine: &Machine,
     storage: Option<&MachineStorageObservation>,
 ) -> ServicePlacementEligibility {
     if !machine_matches_placement(machine, placement) {
-        return ServicePlacementEligibility::Ineligible;
+        return ServicePlacementEligibility::Ineligible(
+            ServicePlacementIneligibleReason::PlacementMismatch,
+        );
     }
     if !volumes.has_mounted_provisioned_volume() {
         return ServicePlacementEligibility::Eligible;
@@ -36,8 +85,12 @@ pub fn service_placement_eligibility(
         Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. }) => {
             ServicePlacementEligibility::Eligible
         }
-        Some(MachineStorageObservation::Stateless) => ServicePlacementEligibility::Ineligible,
-        None => ServicePlacementEligibility::Unknown,
+        Some(MachineStorageObservation::Stateless) => ServicePlacementEligibility::Ineligible(
+            ServicePlacementIneligibleReason::ProvisionedStorageUnsupported,
+        ),
+        None => ServicePlacementEligibility::Unknown(
+            ServicePlacementUnknownReason::MissingStorageEvidence,
+        ),
     }
 }
 
@@ -45,17 +98,23 @@ pub fn service_placement_eligibility(
 mod tests {
     use std::{collections::BTreeMap, net::Ipv6Addr, num::NonZeroU64};
 
+    use serde_json::json;
+
     use crate::{
         ContainerPath, DockerVolumeName, Machine, MachineId, MachineName,
         MachineStorageObservation, ManagementAddress, Placement, ProvisionedVolumeMaximumBytes,
-        ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
+        RequestedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceMount,
+        ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
         WireGuardPublicKey,
     };
 
-    use super::{ServicePlacementEligibility, service_placement_eligibility};
+    use super::{
+        ServicePlacementEligibility, ServicePlacementIneligibleReason,
+        ServicePlacementUnknownReason,
+    };
 
     #[test]
-    fn uses_only_mounted_provisioned_storage_capability() {
+    fn whole_specs_assess_placement_and_only_mounted_provisioned_storage() {
         let machine = machine("storage");
         let other = Placement {
             machines: vec![crate::MachineTarget::parse("other").unwrap()],
@@ -77,11 +136,8 @@ mod tests {
             false,
         );
         let external = volume_graph(
-            VolumeSource::Named {
+            VolumeSource::External {
                 name: DockerVolumeName::parse("external").unwrap(),
-                external: true,
-                driver: None,
-                labels: BTreeMap::new(),
             },
             true,
         );
@@ -90,59 +146,67 @@ mod tests {
             used_bytes: 9,
             free_bytes: 1,
         };
+        let cases = [
+            (
+                requested(other, provisioned.clone()),
+                Some(MachineStorageObservation::Ready),
+                ServicePlacementEligibility::Ineligible(
+                    ServicePlacementIneligibleReason::PlacementMismatch,
+                ),
+            ),
+            (
+                requested(Placement::default(), ServiceVolumeGraph::default()),
+                None,
+                ServicePlacementEligibility::Eligible,
+            ),
+            (
+                requested(Placement::default(), provisioned.clone()),
+                Some(MachineStorageObservation::Ready),
+                ServicePlacementEligibility::Eligible,
+            ),
+            (
+                requested(Placement::default(), provisioned.clone()),
+                Some(pool),
+                ServicePlacementEligibility::Eligible,
+            ),
+            (
+                requested(Placement::default(), provisioned.clone()),
+                Some(MachineStorageObservation::Stateless),
+                ServicePlacementEligibility::Ineligible(
+                    ServicePlacementIneligibleReason::ProvisionedStorageUnsupported,
+                ),
+            ),
+            (
+                requested(Placement::default(), provisioned),
+                None,
+                ServicePlacementEligibility::Unknown(
+                    ServicePlacementUnknownReason::MissingStorageEvidence,
+                ),
+            ),
+            (
+                requested(Placement::default(), unused_provisioned),
+                None,
+                ServicePlacementEligibility::Eligible,
+            ),
+            (
+                requested(Placement::default(), external),
+                None,
+                ServicePlacementEligibility::Eligible,
+            ),
+        ];
 
-        assert_eq!(
-            [
-                service_placement_eligibility(
-                    &other,
-                    &provisioned,
-                    &machine,
-                    Some(&MachineStorageObservation::Ready),
-                ),
-                service_placement_eligibility(
-                    &Placement::default(),
-                    &ServiceVolumeGraph::default(),
-                    &machine,
-                    None,
-                ),
-                service_placement_eligibility(
-                    &Placement::default(),
-                    &provisioned,
-                    &machine,
-                    Some(&MachineStorageObservation::Ready),
-                ),
-                service_placement_eligibility(
-                    &Placement::default(),
-                    &provisioned,
-                    &machine,
-                    Some(&pool),
-                ),
-                service_placement_eligibility(
-                    &Placement::default(),
-                    &provisioned,
-                    &machine,
-                    Some(&MachineStorageObservation::Stateless),
-                ),
-                service_placement_eligibility(&Placement::default(), &provisioned, &machine, None,),
-                service_placement_eligibility(
-                    &Placement::default(),
-                    &unused_provisioned,
-                    &machine,
-                    None,
-                ),
-                service_placement_eligibility(&Placement::default(), &external, &machine, None,),
-            ],
-            [
-                ServicePlacementEligibility::Ineligible,
-                ServicePlacementEligibility::Eligible,
-                ServicePlacementEligibility::Eligible,
-                ServicePlacementEligibility::Eligible,
-                ServicePlacementEligibility::Ineligible,
-                ServicePlacementEligibility::Unknown,
-                ServicePlacementEligibility::Eligible,
-                ServicePlacementEligibility::Eligible,
-            ]
-        );
+        for (requested, storage, expected) in cases {
+            assert_eq!(
+                requested.placement_eligibility(&machine, storage.as_ref()),
+                expected
+            );
+            assert_eq!(
+                requested
+                    .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+                    .placement_eligibility(&machine, storage.as_ref()),
+                expected
+            );
+        }
     }
 
     fn machine(name: &str) -> Machine {
@@ -177,5 +241,18 @@ mod tests {
                 .collect(),
         )
         .unwrap()
+    }
+
+    fn requested(placement: Placement, volume_graph: ServiceVolumeGraph) -> RequestedServiceSpec {
+        let mode = serde_json::to_value(ServiceMode::Global).unwrap();
+        let mut spec: RequestedServiceSpec = serde_json::from_value(json!({
+            "name": "api",
+            "mode": mode,
+            "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
+        }))
+        .unwrap();
+        spec.placement = placement;
+        spec.volume_graph = volume_graph;
+        spec
     }
 }

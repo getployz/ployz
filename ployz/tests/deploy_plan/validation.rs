@@ -179,10 +179,9 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
     let mounts = requested.volume_graph.mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: ServiceVolumeReference::parse("logs").unwrap(),
-        source: VolumeSource::Named {
+        source: VolumeSource::Ordinary {
             name: DockerVolumeName::parse("logs").unwrap(),
-            external: false,
-            driver: None,
+            driver: ployz_core::VolumeDriver::parse("local", Default::default()).unwrap(),
             labels: Default::default(),
         },
     });
@@ -192,6 +191,11 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
+                machine_id('1'),
+                "logs",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -211,40 +215,26 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
             .as_str(),
         "app_data"
     );
+    assert_eq!(
+        plan.preserved_volumes,
+        vec![ployz_core::PreservedVolume {
+            id: owned_volume(machine_id('1'), "logs").id,
+            machine_name: Some(MachineName::parse("first").unwrap()),
+        }]
+    );
 }
 
 #[test]
-fn empty_spec_iterator_returns_an_empty_plan() {
-    let plan = plan_deploy([], &DeploySnapshot::default(), PlanOptions::default()).unwrap();
-
-    assert!(plan.operations.is_empty());
-}
-
-#[test]
-fn conflicting_named_volume_aliases_are_rejected() {
+fn project_scoping_rejects_incompatible_physical_volume_aliases() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
-    let alias = ServiceVolumeReference::parse("data-alias").unwrap();
     let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mut mounts = requested.volume_graph.mounts().to_vec();
+    let mounts = requested.volume_graph.mounts().to_vec();
     volumes.push(ServiceVolume {
-        reference: alias.clone(),
-        source: VolumeSource::Named {
-            name: DockerVolumeName::parse("data").unwrap(),
-            external: false,
-            driver: Some(ployz_core::VolumeDriver {
-                name: "nfs".into(),
-                options: Default::default(),
-            }),
-            labels: Default::default(),
+        reference: ServiceVolumeReference::parse("external").unwrap(),
+        source: VolumeSource::External {
+            name: DockerVolumeName::parse("app_data").unwrap(),
         },
-    });
-    mounts.push(ServiceMount {
-        volume: alias,
-        target: ContainerPath::parse("/alias").unwrap(),
-        read_only: false,
-        no_copy: false,
-        subpath: None,
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
@@ -258,7 +248,14 @@ fn conflicting_named_volume_aliases_are_rejected() {
             PlanOptions::default(),
         ),
         Err(PlanError::ConflictingDockerVolumeDefinitions {
-            name: app_volume("data"),
+            name: DockerVolumeName::parse("app_data").unwrap(),
         })
     );
+}
+
+#[test]
+fn empty_spec_iterator_returns_an_empty_plan() {
+    let plan = plan_deploy([], &DeploySnapshot::default(), PlanOptions::default()).unwrap();
+
+    assert!(plan.operations.is_empty());
 }

@@ -626,7 +626,11 @@ fn spec_with_volume(name: &str, volume: &str) -> RequestedServiceSpec {
         "container": { "image": "nginx", "pull_policy": "always" },
         "volumes": [{
             "reference": volume,
-            "source": { "kind": "named", "name": volume }
+            "source": {
+                "kind": "ordinary",
+                "name": volume,
+                "driver": {"name": "local", "options": {}}
+            }
         }],
         "mounts": [{ "volume": volume, "target": format!("/{volume}") }]
     }))

@@ -539,8 +539,8 @@ volumes:
     );
     assert_eq!(service.container.command, ["echo", "a$b"]);
     assert_eq!(service.container.entrypoint, ["/bin/sh", "-c", "echo a$b"]);
-    let VolumeSource::Named { labels, .. } = &service.volumes().first().unwrap().source else {
-        panic!("expected a named volume");
+    let VolumeSource::Ordinary { labels, .. } = &service.volumes().first().unwrap().source else {
+        panic!("expected an ordinary volume");
     };
     assert_eq!(labels.get("tier").map(String::as_str), Some("a$b"));
     fs::remove_dir_all(root).unwrap();

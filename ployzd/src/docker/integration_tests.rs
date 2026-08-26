@@ -661,7 +661,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         }],
         "volumes": [
             {"reference":"host","source":{"kind":"bind","machine_path":root.0.join("bind")}},
-            {"reference":"data","source":{"kind":"named","name":name}},
+            {"reference":"data","source":{"kind":"ordinary","name":name,"driver":{"name":"local","options":{}}}},
             {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
         ],
         "mounts": [

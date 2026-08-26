@@ -437,10 +437,9 @@ fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPreview {
 fn named_volume(reference: &str, name: &str) -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse(reference).unwrap(),
-        source: VolumeSource::Named {
+        source: VolumeSource::Ordinary {
             name: DockerVolumeName::parse(name).unwrap(),
-            external: false,
-            driver: None,
+            driver: ployz_core::VolumeDriver::parse("local", Default::default()).unwrap(),
             labels: Default::default(),
         },
     }

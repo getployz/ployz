@@ -18,9 +18,8 @@ use axum::{
 };
 use bollard::Docker;
 
-use super::super::*;
-use crate::docker::{LocalDocker, MachineSpecStore};
-use ployz_core::VolumeSource;
+use super::*;
+use ployz_core::{Machine, MachineGateway, MachineId, ResolvedServiceSpec, VolumeSource};
 
 #[derive(Clone, Default)]
 pub(super) struct FakeDocker {
@@ -201,7 +200,10 @@ async fn fake_docker(
             }
             (StatusCode::CREATED, observed)
         }
-    } else if method == Method::POST && path.ends_with("/start") {
+    } else if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
+        (StatusCode::NO_CONTENT, serde_json::Value::Null)
+    } else if method == Method::DELETE && path.contains("/containers/") {
+        fake.existing_container.lock().unwrap().take();
         (StatusCode::NO_CONTENT, serde_json::Value::Null)
     } else {
         (
@@ -243,6 +245,41 @@ pub(super) async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
     )
 }
 
+pub(super) fn machine() -> Machine {
+    crate::docker::lifecycle::test_machine(
+        MachineId::random(),
+        MachineGateway("10.210.0.1".parse().unwrap()),
+    )
+}
+
+pub(super) fn container_request<'spec, Storage>(
+    kind: ContainerKind,
+    project_name: &'spec ProjectName,
+    spec: &'spec ResolvedServiceSpec,
+    storage: Storage,
+) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<NetworkAttachment, Error>>> {
+    ContainerRequest {
+        kind,
+        project_name,
+        spec,
+        network: std::future::ready(Ok(NetworkAttachment::Host)),
+        storage,
+    }
+}
+
+pub(super) fn global_slot_request<'spec, Storage>(
+    project_name: &'spec ProjectName,
+    spec: &'spec ResolvedServiceSpec,
+    storage: Storage,
+) -> GlobalSlotRequest<'spec, Storage, std::future::Ready<Result<NetworkAttachment, Error>>> {
+    GlobalSlotRequest {
+        project_name,
+        spec,
+        network: std::future::ready(Ok(NetworkAttachment::Host)),
+        storage,
+    }
+}
+
 pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource {
     VolumeSource::Provisioned {
         name: DockerVolumeName::parse(name).unwrap(),
@@ -254,13 +291,13 @@ pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource
 }
 
 pub(super) fn ordinary_source(name: &str) -> VolumeSource {
-    VolumeSource::Named {
+    VolumeSource::Ordinary {
         name: DockerVolumeName::parse(name).unwrap(),
-        external: false,
-        driver: Some(ployz_core::VolumeDriver {
-            name: "example-driver".into(),
-            options: BTreeMap::from([("mode".into(), "safe".into())]),
-        }),
+        driver: ployz_core::VolumeDriver::parse(
+            "example-driver",
+            BTreeMap::from([("mode".into(), "safe".into())]),
+        )
+        .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
 }

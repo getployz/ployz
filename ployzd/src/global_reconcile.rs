@@ -4,9 +4,8 @@ use std::{fmt::Display, time::Duration};
 
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    ContainerId, ContainerObservation, GlobalReconcileFailureObservation, Machine,
-    MachineStorageObservation, ObservedGlobalSlotSpec, ServicePlacementEligibility,
-    derive_services, service_placement_eligibility,
+    ContainerObservation, GlobalReconcileFailureObservation, Machine, MachineStorageObservation,
+    ObservedGlobalSlotSpec, ServicePlacementEligibility, derive_services,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -36,21 +35,16 @@ pub(crate) fn global_reconcile_observation_channel()
 trait GlobalSlotReconciler {
     type Error: Display;
 
-    async fn ensure_global_slot(&self, slot: &ObservedGlobalSlotSpec) -> Result<(), Self::Error>;
-    async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Self::Error>;
+    async fn converge_global_slot(&self, slot: &ObservedGlobalSlotSpec) -> Result<(), Self::Error>;
 }
 
 impl GlobalSlotReconciler for LocalMachine {
     type Error = LocalMachineError;
 
-    async fn ensure_global_slot(&self, slot: &ObservedGlobalSlotSpec) -> Result<(), Self::Error> {
-        LocalMachine::ensure_global_slot(self, &slot.identity().project, slot.resolved_spec())
+    async fn converge_global_slot(&self, slot: &ObservedGlobalSlotSpec) -> Result<(), Self::Error> {
+        LocalMachine::converge_global_slot(self, &slot.identity().project, slot.resolved_spec())
             .await
             .map(|_| ())
-    }
-
-    async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Self::Error> {
-        LocalMachine::retire_global_slot(self, container_id).await
     }
 }
 
@@ -145,33 +139,13 @@ async fn reconcile_global_slots<R: GlobalSlotReconciler>(
         let Some(slot) = service.observed_global_slot() else {
             continue;
         };
-        let eligibility = service_placement_eligibility(
-            &slot.resolved_spec().placement,
-            &slot.resolved_spec().volume_graph,
-            machine,
-            storage,
-        );
-        match eligibility {
-            ServicePlacementEligibility::Eligible => {
-                if let Err(error) = reconciler.ensure_global_slot(&slot).await {
+        match slot.resolved_spec().placement_eligibility(machine, storage) {
+            ServicePlacementEligibility::Eligible | ServicePlacementEligibility::Ineligible(_) => {
+                if let Err(error) = reconciler.converge_global_slot(&slot).await {
                     failures.push(reconcile_failure(&slot, error, observed_at));
                 }
             }
-            ServicePlacementEligibility::Ineligible => {
-                for container in service
-                    .containers
-                    .iter()
-                    .filter(|container| container.as_observation().machine_id == machine.id)
-                {
-                    if let Err(error) = reconciler
-                        .retire_global_slot(&container.as_observation().container_id)
-                        .await
-                    {
-                        failures.push(reconcile_failure(&slot, error, observed_at));
-                    }
-                }
-            }
-            ServicePlacementEligibility::Unknown => {}
+            ServicePlacementEligibility::Unknown(_) => {}
         }
     }
     failures
@@ -237,7 +211,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn effect_ensures_eligible_retires_ineligible_and_retries_unknown() {
+    async fn effect_sends_known_states_to_target_and_retries_unknown() {
         let local = machine('1', "local");
         let mut slot = observation(
             &local,
@@ -248,11 +222,7 @@ mod tests {
             Placement::default(),
         );
         add_provisioned_mount(&mut slot.resolved_spec);
-        let reconciler = FakeReconciler {
-            calls: Mutex::new(Vec::new()),
-            retired: Mutex::new(Vec::new()),
-            failing: Mutex::new(None),
-        };
+        let reconciler = FakeReconciler::default();
 
         let unknown = reconcile_global_slots(
             std::slice::from_ref(&slot),
@@ -264,7 +234,6 @@ mod tests {
         .await;
         assert!(unknown.is_empty());
         assert!(reconciler.calls.lock().unwrap().is_empty());
-        assert!(reconciler.retired.lock().unwrap().is_empty());
 
         let ready = reconcile_global_slots(
             std::slice::from_ref(&slot),
@@ -287,15 +256,11 @@ mod tests {
         )
         .await;
         assert!(stateless.is_empty());
-        assert!(reconciler.calls.lock().unwrap().is_empty());
-        assert_eq!(
-            reconciler.retired.lock().unwrap().as_slice(),
-            [slot.container_id]
-        );
+        assert_eq!(reconciler.calls.lock().unwrap().as_slice(), ["app/api"]);
     }
 
     #[tokio::test]
-    async fn effect_reports_ensure_failures() {
+    async fn effect_reports_target_failures() {
         let local = machine('1', "local");
         let peer = machine('2', "peer");
         let containers = [observation(
@@ -307,9 +272,8 @@ mod tests {
             Placement::default(),
         )];
         let reconciler = FakeReconciler {
-            calls: Mutex::new(Vec::new()),
-            retired: Mutex::new(Vec::new()),
             failing: Mutex::new(Some("ployz-system/ingress")),
+            ..Default::default()
         };
 
         let failures = reconcile_global_slots(
@@ -333,38 +297,6 @@ mod tests {
                 observed_at: "2026-08-24T20:00:00Z".into(),
             }]
         );
-    }
-
-    struct FakeReconciler {
-        calls: Mutex<Vec<String>>,
-        retired: Mutex<Vec<ContainerId>>,
-        failing: Mutex<Option<&'static str>>,
-    }
-
-    impl GlobalSlotReconciler for FakeReconciler {
-        type Error = RpcError;
-
-        async fn ensure_global_slot(
-            &self,
-            slot: &ObservedGlobalSlotSpec,
-        ) -> Result<(), Self::Error> {
-            let identity = slot.identity().to_string();
-            self.calls.lock().unwrap().push(identity.clone());
-            if self.failing.lock().unwrap().as_ref() == Some(&identity.as_str()) {
-                Err(RpcError {
-                    code: RpcErrorCode::Internal,
-                    message: "pull failed".into(),
-                    details: serde_json::Value::Null,
-                })
-            } else {
-                Ok(())
-            }
-        }
-
-        async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Self::Error> {
-            self.retired.lock().unwrap().push(*container_id);
-            Ok(())
-        }
     }
 
     fn add_provisioned_mount(spec: &mut ResolvedServiceSpec) {
@@ -396,6 +328,33 @@ mod tests {
             }],
         )
         .unwrap();
+    }
+
+    #[derive(Default)]
+    struct FakeReconciler {
+        calls: Mutex<Vec<String>>,
+        failing: Mutex<Option<&'static str>>,
+    }
+
+    impl GlobalSlotReconciler for FakeReconciler {
+        type Error = RpcError;
+
+        async fn converge_global_slot(
+            &self,
+            slot: &ObservedGlobalSlotSpec,
+        ) -> Result<(), Self::Error> {
+            let identity = slot.identity().to_string();
+            self.calls.lock().unwrap().push(identity.clone());
+            if self.failing.lock().unwrap().as_ref() == Some(&identity.as_str()) {
+                Err(RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "pull failed".into(),
+                    details: serde_json::Value::Null,
+                })
+            } else {
+                Ok(())
+            }
+        }
     }
 
     fn machine(id: char, name: &str) -> Machine {

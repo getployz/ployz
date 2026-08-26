@@ -648,25 +648,13 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
         no_copy: false,
         subpath: None,
     });
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-    let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
-        [&requested],
-        PlanOptions::default(),
-    );
-
     assert_eq!(
-        preview_deploy(
-            &intent,
-            &DeploySnapshot {
-                machines: vec![machine('1', "first")],
-                ..Default::default()
-            },
-            IngressContext::default(),
-        ),
-        Err(PlanError::ConflictingDockerVolumeDefinitions {
-            name: app_volume("data")
-        })
+        ployz_core::ServiceVolumeGraph::parse(volumes, mounts),
+        Err(
+            ployz_core::ServiceVolumeGraphError::IncompatibleVolumeAliases {
+                name: DockerVolumeName::parse("data").unwrap(),
+            }
+        )
     );
 }
 

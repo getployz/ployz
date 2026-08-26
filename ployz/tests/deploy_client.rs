@@ -170,8 +170,9 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         .expect("fixture mounts one volume")
         .source;
     let (name, labels) = match source {
-        VolumeSource::Named { name, labels, .. } => (name.clone(), labels.clone()),
-        VolumeSource::Bind { .. }
+        VolumeSource::Ordinary { name, labels, .. } => (name.clone(), labels.clone()),
+        VolumeSource::External { .. }
+        | VolumeSource::Bind { .. }
         | VolumeSource::Provisioned { .. }
         | VolumeSource::Tmpfs { .. } => unreachable!("fixture starts ordinary"),
     };

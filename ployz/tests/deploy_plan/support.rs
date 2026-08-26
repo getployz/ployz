@@ -153,10 +153,9 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
     let mut mounts = requested.volume_graph.mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: reference.clone(),
-        source: VolumeSource::Named {
+        source: VolumeSource::Ordinary {
             name: DockerVolumeName::parse(name).unwrap(),
-            external: false,
-            driver: None,
+            driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: Default::default(),
         },
     });
@@ -177,7 +176,7 @@ pub(super) fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str,
         .iter_mut()
         .find(|volume| volume.reference.as_str() == reference)
         .expect("fixture volume exists");
-    let VolumeSource::Named { name, labels, .. } = &volume.source else {
+    let VolumeSource::Ordinary { name, labels, .. } = &volume.source else {
         panic!("fixture volume starts ordinary")
     };
     volume.source = VolumeSource::Provisioned {

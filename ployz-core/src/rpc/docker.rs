@@ -20,24 +20,19 @@ pub struct CreateVolumeRequest {
 impl VolumeSource {
     /// Build the exact Docker creation request for a managed Volume source.
     ///
-    /// External named Volumes, Bind Mounts, and Tmpfs Mounts have no creation
+    /// External Volumes, Bind Mounts, and Tmpfs Mounts have no creation
     /// request because Ployz does not create them as Docker Volumes.
     #[must_use]
     pub fn to_create_volume_request(&self) -> Option<CreateVolumeRequest> {
         match self {
-            Self::Named {
+            Self::Ordinary {
                 name,
-                external: false,
                 driver,
                 labels,
             } => Some(CreateVolumeRequest {
                 name: name.clone(),
-                driver: driver
-                    .as_ref()
-                    .map_or_else(|| "local".into(), |driver| driver.name.clone()),
-                options: driver
-                    .as_ref()
-                    .map_or_else(BTreeMap::new, |driver| driver.options.clone()),
+                driver: driver.name().into(),
+                options: driver.options().clone(),
                 labels: labels.clone(),
             }),
             Self::Provisioned {
@@ -50,7 +45,7 @@ impl VolumeSource {
                 options: BTreeMap::from([("size".into(), format!("{}b", maximum_bytes.get()))]),
                 labels: labels.clone(),
             }),
-            Self::Named { external: true, .. } | Self::Bind { .. } | Self::Tmpfs { .. } => None,
+            Self::External { .. } | Self::Bind { .. } | Self::Tmpfs { .. } => None,
         }
     }
 }

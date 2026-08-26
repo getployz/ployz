@@ -211,10 +211,9 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
                 recursive: None,
             }
         } else {
-            VolumeSource::Named {
+            VolumeSource::Ordinary {
                 name: DockerVolumeName::parse(source)?,
-                external: false,
-                driver: None,
+                driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new())?,
                 labels: BTreeMap::new(),
             }
         };

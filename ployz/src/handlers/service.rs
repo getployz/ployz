@@ -4,7 +4,7 @@ use clap::ArgMatches;
 use ployz_core::{
     ContainerAction, ContainerRef, ContainerRuntimeObservation, HealthObservation, LiveServices,
     MachineObservation, MembershipObservation, RpcError, ServiceObservation,
-    ServicePlacementEligibility, ServiceSelector, select_service, service_placement_eligibility,
+    ServicePlacementEligibility, ServiceSelector, select_service,
 };
 
 use super::{Error, leaf_matches, with_client};
@@ -76,15 +76,10 @@ fn service_counts(service: &ServiceObservation, machines: &[MachineObservation])
         .iter()
         .filter(|machine| machine.membership == MembershipObservation::Up)
     {
-        match service_placement_eligibility(
-            &spec.placement,
-            &spec.volume_graph,
-            &machine.machine,
-            machine.storage.as_ref(),
-        ) {
+        match spec.placement_eligibility(&machine.machine, machine.storage.as_ref()) {
             ServicePlacementEligibility::Eligible => eligible += 1,
-            ServicePlacementEligibility::Unknown => unknown += 1,
-            ServicePlacementEligibility::Ineligible => {}
+            ServicePlacementEligibility::Unknown(_) => unknown += 1,
+            ServicePlacementEligibility::Ineligible(_) => {}
         }
     }
     ServiceCounts {

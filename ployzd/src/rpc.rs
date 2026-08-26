@@ -392,11 +392,12 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::EnsureGlobalSlot>(request)?;
-        finish(
-            self.local
-                .ensure_global_slot(&request.project_name, &request.resolved_spec)
-                .await,
-        )
+        let result = self
+            .local
+            .converge_global_slot(&request.project_name, &request.resolved_spec)
+            .await
+            .and_then(|outcome| outcome.into_container().map_err(Into::into));
+        finish(result)
     }
 
     async fn start_container(

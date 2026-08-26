@@ -691,10 +691,9 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
     requested.volume_graph = ServiceVolumeGraph::parse(
         vec![ServiceVolume {
             reference: reference.clone(),
-            source: VolumeSource::Named {
+            source: VolumeSource::Ordinary {
                 name: DockerVolumeName::parse(name).unwrap(),
-                external: false,
-                driver: None,
+                driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
                 labels: Default::default(),
             },
         }],

@@ -349,34 +349,20 @@ pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Er
                         read_only_force_recursive,
                     });
                 }
-                VolumeSource::Named {
-                    name,
-                    external,
-                    driver,
-                    labels,
-                } => {
+                VolumeSource::External { name } => {
                     translated.typ = Some(MountType::VOLUME);
                     translated.source = Some(name.to_string());
                     translated.volume_options = Some(MountVolumeOptions {
                         no_copy: Some(mount.no_copy),
-                        labels: (!external).then(|| labels.clone().into_iter().collect()),
-                        driver_config: if *external {
-                            None
-                        } else {
-                            driver
-                                .as_ref()
-                                .map(|driver| MountVolumeOptionsDriverConfig {
-                                    name: Some(driver.name.clone()),
-                                    options: Some(driver.options.clone().into_iter().collect()),
-                                })
-                        },
+                        labels: None,
+                        driver_config: None,
                         subpath: mount.subpath.clone(),
                     });
                 }
-                source @ VolumeSource::Provisioned { .. } => {
+                source @ (VolumeSource::Ordinary { .. } | VolumeSource::Provisioned { .. }) => {
                     let request = source
                         .to_create_volume_request()
-                        .expect("Provisioned Volumes are managed Docker Volumes");
+                        .expect("managed Docker Volumes have creation requests");
                     translated.typ = Some(MountType::VOLUME);
                     translated.source = Some(request.name.to_string());
                     translated.volume_options = Some(MountVolumeOptions {

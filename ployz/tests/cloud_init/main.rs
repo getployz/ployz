@@ -906,7 +906,8 @@ async fn join_places_observed_envoy_ingress_on_this_machine() {
             .iter()
             .filter_map(|volume| match &volume.source {
                 VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                VolumeSource::Named { .. }
+                VolumeSource::External { .. }
+                | VolumeSource::Ordinary { .. }
                 | VolumeSource::Provisioned { .. }
                 | VolumeSource::Tmpfs { .. } => None,
             })

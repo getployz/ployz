@@ -321,7 +321,7 @@ pub fn machine_matches_target(machine: &Machine, target: &MachineTarget) -> bool
 
 /// Empty Placement is every Machine; otherwise any Machine Target matches.
 #[must_use]
-pub fn machine_matches_placement(machine: &Machine, placement: &Placement) -> bool {
+pub(crate) fn machine_matches_placement(machine: &Machine, placement: &Placement) -> bool {
     placement.machines.is_empty()
         || placement
             .machines

@@ -535,6 +535,10 @@
       "used_bytes": 966367642
     }
   },
+  "external_volume_source": {
+    "kind": "external",
+    "name": "shared"
+  },
   "health_observation_unknown": "degraded",
   "ingress_hostname_cluster_domain": {
     "kind": "cluster_domain"
@@ -564,6 +568,15 @@
   },
   "observed_data_loss_empty": {
     "data_loss": []
+  },
+  "ordinary_volume_source": {
+    "driver": {
+      "name": "local",
+      "options": {}
+    },
+    "kind": "ordinary",
+    "labels": {},
+    "name": "data"
   },
   "partial_result": {
     "failures": [
@@ -986,8 +999,7 @@
               "share": "app"
             }
           },
-          "external": false,
-          "kind": "named",
+          "kind": "ordinary",
           "labels": {
             "keep": "1"
           },
@@ -1149,8 +1161,7 @@
               "share": "app"
             }
           },
-          "external": false,
-          "kind": "named",
+          "kind": "ordinary",
           "labels": {
             "keep": "1"
           },

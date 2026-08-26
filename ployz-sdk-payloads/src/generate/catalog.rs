@@ -187,12 +187,12 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                         ("recursive", "string?"),
                     ],
                 ),
+                ("external", &[("name", "DockerVolumeName")]),
                 (
-                    "named",
+                    "ordinary",
                     &[
                         ("name", "DockerVolumeName"),
-                        ("external", "boolean?"),
-                        ("driver", "VolumeDriver?"),
+                        ("driver", "VolumeDriver"),
                         ("labels", "{ readonly [key: string]: string }?"),
                     ],
                 ),

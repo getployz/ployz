@@ -120,7 +120,8 @@ export type VolumeDriver = Additive<{
 
 export type VolumeSource =
   | Additive<{ kind: "bind"; machine_path: MachinePath; create_machine_path?: boolean; propagation?: string; recursive?: string }>
-  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: VolumeDriver; labels?: { readonly [key: string]: string } }>
+  | Additive<{ kind: "external"; name: DockerVolumeName }>
+  | Additive<{ kind: "ordinary"; name: DockerVolumeName; driver: VolumeDriver; labels?: { readonly [key: string]: string } }>
   | Additive<{ kind: "provisioned"; name: DockerVolumeName; maximum_bytes: ProvisionedVolumeMaximumBytes; labels?: { readonly [key: string]: string } }>
   | Additive<{ kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] }>
   | Additive<{ kind?: string }>;

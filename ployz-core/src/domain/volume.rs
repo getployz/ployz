@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
 use crate::{
     BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MANAGED_LABEL,
-    MachinePath, PROJECT_NAME_LABEL, ProjectName, ServiceVolumeReference,
+    MachinePath, PROJECT_NAME_LABEL, ProjectName, ServiceVolumeReference, ValueError,
 };
 
 /// A storage source declared under a service-local reference.
@@ -50,12 +50,12 @@ pub enum VolumeSource {
         #[serde(default)]
         recursive: Option<BindRecursive>,
     },
-    Named {
+    /// A Docker Volume managed outside Ployz.
+    External { name: DockerVolumeName },
+    /// An ordinary Docker Volume managed by Ployz.
+    Ordinary {
         name: DockerVolumeName,
-        #[serde(default)]
-        external: bool,
-        #[serde(default)]
-        driver: Option<VolumeDriver>,
+        driver: VolumeDriver,
         #[serde(default)]
         labels: BTreeMap<String, String>,
     },
@@ -80,17 +80,26 @@ pub enum VolumeSource {
 }
 
 impl VolumeSource {
-    /// Bind a non-external named volume to `project`: physical Docker name and ownership labels.
+    /// Borrow the machine-local Docker Volume name for a named source.
+    ///
+    /// Bind Mounts and Tmpfs Mounts do not address Docker Volumes and return `None`.
+    #[must_use]
+    pub fn docker_volume_name(&self) -> Option<&DockerVolumeName> {
+        match self {
+            Self::External { name }
+            | Self::Ordinary { name, .. }
+            | Self::Provisioned { name, .. } => Some(name),
+            Self::Bind { .. } | Self::Tmpfs { .. } => None,
+        }
+    }
+
+    /// Bind an ordinary or Provisioned Volume to `project`: physical name and ownership labels.
     pub fn scope_to_project(&mut self, project: &ProjectName) {
         let (name, labels) = match self {
-            Self::Named {
-                external: false,
-                name,
-                labels,
-                ..
+            Self::Ordinary { name, labels, .. } | Self::Provisioned { name, labels, .. } => {
+                (name, labels)
             }
-            | Self::Provisioned { name, labels, .. } => (name, labels),
-            Self::Named { external: true, .. } | Self::Bind { .. } | Self::Tmpfs { .. } => return,
+            Self::External { .. } | Self::Bind { .. } | Self::Tmpfs { .. } => return,
         };
         if labels.contains_key(PROJECT_NAME_LABEL) {
             // Already bound: scale from a Resolved Service Spec, or a volume that
@@ -119,7 +128,7 @@ impl VolumeSource {
                 .iter()
                 .all(|(key, value)| observed.labels.get(key) == Some(value))
             && match (self, &observed.storage) {
-                (Self::Named { .. }, DockerVolumeStorageObservation::Plain { .. }) => true,
+                (Self::Ordinary { .. }, DockerVolumeStorageObservation::Plain { .. }) => true,
                 (
                     Self::Provisioned { maximum_bytes, .. },
                     DockerVolumeStorageObservation::Provisioned { bound_bytes, .. },
@@ -177,11 +186,63 @@ impl<'de> Deserialize<'de> for ProvisionedVolumeMaximumBytes {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// A Docker Volume driver that cannot name Ployz's reserved Provisioned Volume driver.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct VolumeDriver {
-    pub name: String,
+    name: String,
     #[serde(default)]
-    pub options: BTreeMap<String, String>,
+    options: BTreeMap<String, String>,
+}
+
+impl VolumeDriver {
+    /// Parse an ordinary Docker Volume driver and its options.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `name` is reserved for Provisioned Volumes.
+    pub fn parse(
+        name: impl Into<String>,
+        options: BTreeMap<String, String>,
+    ) -> Result<Self, ValueError> {
+        let name = name.into();
+        if name == PROVISIONED_VOLUME_DRIVER {
+            return Err(ValueError::new(
+                "ordinary Docker Volume driver",
+                name,
+                "a driver other than the reserved 'ployz' driver",
+            ));
+        }
+        Ok(Self { name, options })
+    }
+
+    /// Borrow the Docker driver name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Borrow the Docker driver options.
+    #[must_use]
+    pub fn options(&self) -> &BTreeMap<String, String> {
+        &self.options
+    }
+}
+
+impl<'de> Deserialize<'de> for VolumeDriver {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Data {
+            name: String,
+            #[serde(default)]
+            options: BTreeMap<String, String>,
+        }
+
+        let driver = Data::deserialize(deserializer)?;
+        Self::parse(driver.name, driver.options).map_err(D::Error::custom)
+    }
 }
 
 /// Current storage evidence for one observed Docker Volume.

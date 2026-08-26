@@ -127,7 +127,8 @@ mod tests {
                 .iter()
                 .filter_map(|volume| match &volume.source {
                     VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::Named { .. }
+                    VolumeSource::External { .. }
+                    | VolumeSource::Ordinary { .. }
                     | VolumeSource::Provisioned { .. }
                     | VolumeSource::Tmpfs { .. } => None,
                 })
@@ -171,7 +172,8 @@ mod tests {
                 .iter()
                 .filter_map(|volume| match &volume.source {
                     VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::Named { .. }
+                    VolumeSource::External { .. }
+                    | VolumeSource::Ordinary { .. }
                     | VolumeSource::Provisioned { .. }
                     | VolumeSource::Tmpfs { .. } => None,
                 })

@@ -415,13 +415,10 @@ fn incompatible_volume_excludes_only_its_machine() {
     add_named_volume(&mut requested, "data");
     let mut volumes = requested.volume_graph.volumes().to_vec();
     let mounts = requested.volume_graph.mounts().to_vec();
-    let VolumeSource::Named { driver, .. } = &mut volumes.first_mut().unwrap().source else {
+    let VolumeSource::Ordinary { driver, .. } = &mut volumes.first_mut().unwrap().source else {
         unreachable!();
     };
-    *driver = Some(ployz_core::VolumeDriver {
-        name: "nfs".into(),
-        options: Default::default(),
-    });
+    *driver = ployz_core::VolumeDriver::parse("nfs", Default::default()).unwrap();
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
     let plan = plan_deploy(

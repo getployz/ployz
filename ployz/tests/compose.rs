@@ -235,7 +235,7 @@ configs:
     )));
     assert!(api.volumes().iter().any(|volume| matches!(
         &volume.source,
-        VolumeSource::Named { name, .. } if name.as_str() == "data"
+        VolumeSource::Ordinary { name, .. } if name.as_str() == "data"
     )));
     assert!(api.container.image.starts_with("registry.example/api:"));
     assert_eq!(
@@ -565,6 +565,10 @@ secrets:
             "services: {app: {image: app, volumes: [data:/data]}}\nvolumes: {data: {driver_opts: {type: tmpfs}}}",
             "driver_opts requires driver",
         ),
+        (
+            "services: {app: {image: app, volumes: [data:/data]}}\nvolumes: {data: {driver: ployz}}",
+            "reserved 'ployz' driver",
+        ),
     ];
     for (yaml, expected) in cases {
         let error = parse_normalized(yaml, ".").unwrap_err().to_string();
@@ -618,6 +622,21 @@ services:
         service(&ipv6, "app").ports.first().unwrap(),
         PortPublication::Host { bind: HostBind::Prefix { prefix }, .. }
             if prefix.to_string() == "2001:db8::/64"
+    ));
+}
+
+#[test]
+fn compose_normalizes_an_omitted_ordinary_volume_driver_to_local() {
+    let project = parse_normalized(
+        "services: {app: {image: app, volumes: [data:/data]}}\nvolumes: {data: {}}",
+        ".",
+    )
+    .unwrap();
+    let source = &service(&project, "app").volumes().first().unwrap().source;
+    assert!(matches!(
+        source,
+        VolumeSource::Ordinary { driver, .. }
+            if driver.name() == "local" && driver.options().is_empty()
     ));
 }
 
@@ -719,11 +738,7 @@ volumes:
             .first()
             .unwrap()
             .source,
-        VolumeSource::Named {
-            external: true,
-            driver: None,
-            ..
-        }
+        VolumeSource::External { .. }
     ));
     let existing = machine('a', "one");
     let plan = plan_compose(
@@ -1320,11 +1335,11 @@ secrets: {token: {x-command: "printf resolved"}}
         .iter()
         .filter_map(DeployOperation::spec)
         .flat_map(|spec| spec.volume_graph.volumes())
-        .find(|volume| matches!(&volume.source, VolumeSource::Named { .. }))
+        .find(|volume| matches!(&volume.source, VolumeSource::Ordinary { .. }))
         .expect("run operation carries the managed Volume");
     assert!(matches!(
         &volume.source,
-        VolumeSource::Named { name, external: false, labels, .. }
+        VolumeSource::Ordinary { name, labels, .. }
             if name.as_str() == "app_data"
                 && labels.get(MANAGED_LABEL) == Some(&String::new())
                 && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
@@ -1691,10 +1706,13 @@ fn created_named_volume(
         .iter()
         .filter_map(DeployOperation::spec)
         .flat_map(|spec| spec.volume_graph.volumes())
-        .find(|volume| matches!(&volume.source, VolumeSource::Named { name, .. } if name == &previewed.name))
+        .find(|volume| matches!(&volume.source, VolumeSource::Ordinary { name, .. } if name == &previewed.name))
         .expect("container operation carries the previewed Volume");
-    let VolumeSource::Named { name, labels, .. } = &volume.source else {
-        panic!("expected a named Docker Volume, got {:?}", volume.source);
+    let VolumeSource::Ordinary { name, labels, .. } = &volume.source else {
+        panic!(
+            "expected an ordinary Docker Volume, got {:?}",
+            volume.source
+        );
     };
     assert_eq!(labels.get(MANAGED_LABEL), Some(&String::new()));
     assert_eq!(

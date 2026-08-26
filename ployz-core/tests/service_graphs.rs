@@ -35,22 +35,21 @@ fn volume_graph_rejects_duplicate_references_and_dangling_mounts() {
 }
 
 #[test]
-fn volume_graph_rejects_the_reserved_driver_for_an_ordinary_volume() {
-    let mut volume = named_volume("data", "data");
-    let VolumeSource::Named { driver, .. } = &mut volume.source else {
-        unreachable!("helper returns a named volume")
+fn volume_graph_rejects_incompatible_docker_volume_aliases() {
+    let ordinary = named_volume("data", "shared");
+    let external = ServiceVolume {
+        reference: reference("data-alias"),
+        source: VolumeSource::External {
+            name: DockerVolumeName::parse("shared").unwrap(),
+        },
     };
-    *driver = Some(VolumeDriver {
-        name: "ployz".into(),
-        options: BTreeMap::new(),
-    });
-
-    let error = ServiceVolumeGraph::parse(vec![volume], vec![mount("data", "/data")])
-        .expect_err("ordinary volume accepted the reserved driver");
-
+    let error = ServiceVolumeGraph::parse(vec![ordinary, external], vec![])
+        .expect_err("incompatible aliases used one Docker Volume");
     assert_eq!(
-        error.to_string(),
-        "ordinary Service Volume data cannot use reserved Docker driver 'ployz'"
+        error,
+        ServiceVolumeGraphError::IncompatibleVolumeAliases {
+            name: DockerVolumeName::parse("shared").unwrap(),
+        }
     );
 }
 
@@ -350,10 +349,9 @@ fn requested_with_graphs(
 fn named_volume(volume: &str, name: &str) -> ServiceVolume {
     ServiceVolume {
         reference: reference(volume),
-        source: VolumeSource::Named {
+        source: VolumeSource::Ordinary {
             name: DockerVolumeName::parse(name).unwrap(),
-            external: false,
-            driver: None,
+            driver: VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
         },
     }

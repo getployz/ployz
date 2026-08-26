@@ -3,20 +3,15 @@
 use super::support::*;
 
 #[test]
-fn external_named_volume_keeps_its_identity_without_a_create_preview() {
+fn external_volume_keeps_its_identity_without_a_create_preview() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "shared");
     let mut volumes = requested.volume_graph.volumes().to_vec();
     let mounts = requested.volume_graph.mounts().to_vec();
     let volume = volumes.first_mut().expect("named volume was added");
-    let VolumeSource::Named {
-        external, labels, ..
-    } = &mut volume.source
-    else {
-        panic!("named volume");
+    volume.source = VolumeSource::External {
+        name: DockerVolumeName::parse("shared").unwrap(),
     };
-    *external = true;
-    labels.insert("keep".into(), "me".into());
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
     let plan = plan_deploy(
         [&requested],
@@ -38,11 +33,7 @@ fn external_named_volume_keeps_its_identity_without_a_create_preview() {
         .expect("run operation mounts the external Volume");
     assert!(matches!(
         &operation_volume.source,
-        VolumeSource::Named { name, external: true, labels, .. }
-            if name.as_str() == "shared"
-                && !labels.contains_key(MANAGED_LABEL)
-                && !labels.contains_key(PROJECT_NAME_LABEL)
-                && labels.get("keep").map(String::as_str) == Some("me")
+        VolumeSource::External { name } if name.as_str() == "shared"
     ));
     assert!(plan.volumes_to_create.is_empty());
 }
@@ -56,7 +47,7 @@ fn foreign_project_volume_label_is_not_rewritten() {
     let mut volumes = requested.volume_graph.volumes().to_vec();
     let mounts = requested.volume_graph.mounts().to_vec();
     let volume = volumes.first_mut().expect("named volume was added");
-    let VolumeSource::Named { name, labels, .. } = &mut volume.source else {
+    let VolumeSource::Ordinary { name, labels, .. } = &mut volume.source else {
         panic!("named volume");
     };
     *name = DockerVolumeName::parse("blog_data").unwrap();
@@ -80,14 +71,14 @@ fn foreign_project_volume_label_is_not_rewritten() {
         .iter()
         .filter_map(DeployOperation::spec)
         .flat_map(|spec| spec.volume_graph.volumes())
-        .find(|volume| matches!(&volume.source, VolumeSource::Named { .. }))
+        .find(|volume| matches!(&volume.source, VolumeSource::Ordinary { .. }))
         .expect("run operation carries the managed Volume");
     assert!(matches!(
         operations(&plan).as_slice(),
         [DeployOperation::RunContainer { .. }]
             if matches!(
                 &volume.source,
-                VolumeSource::Named { name, labels, .. }
+                VolumeSource::Ordinary { name, labels, .. }
                     if name.as_str() == "blog_data"
                         && labels.get(PROJECT_NAME_LABEL).map(String::as_str) == Some("blog")
             )

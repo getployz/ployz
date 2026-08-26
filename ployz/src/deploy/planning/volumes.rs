@@ -5,7 +5,6 @@ use ployz_core::{
     MachineObservation, MachineTarget, PreservedVolume, ProjectName, RequestedServiceSpec,
     ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, ServiceVolume,
     ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
-    service_placement_eligibility,
 };
 
 use crate::deploy::{
@@ -44,7 +43,7 @@ impl VolumePins {
         // Docker Volume identity on a Machine is the name; driver mismatch is a
         // conflict, not a second create.
         if self.creates.iter().any(|(id, existing)| {
-            *id == machine_id && named_volume_name(existing) == named_volume_name(volume)
+            *id == machine_id && managed_volume_name(existing) == managed_volume_name(volume)
         }) {
             return;
         }
@@ -52,7 +51,7 @@ impl VolumePins {
     }
 
     fn anchor_for(&self, volume: &ServiceVolume) -> Option<MachineId> {
-        named_volume_name(volume).and_then(|name| self.anchors.get(name).copied())
+        managed_volume_name(volume).and_then(|name| self.anchors.get(name).copied())
     }
 
     fn observations<'pins>(
@@ -86,8 +85,8 @@ impl VolumePins {
                     operation.machine_id() == *machine_id
                         && operation.spec().is_some_and(|spec| {
                             spec.volume_graph.mounts().iter().any(|mount| {
-                                named_volume_name(spec.volume_graph.volume_for(mount))
-                                    == named_volume_name(volume)
+                                managed_volume_name(spec.volume_graph.volume_for(mount))
+                                    == managed_volume_name(volume)
                             })
                         })
                 })
@@ -97,18 +96,28 @@ impl VolumePins {
 }
 
 /// Bind non-external named volumes to `project`: physical Docker name and ownership labels.
+///
+/// # Errors
+///
+/// Returns [`PlanError::ConflictingDockerVolumeDefinitions`] when Project scoping makes two
+/// Service Volume aliases describe incompatible sources for one Docker Volume.
 pub(super) fn scope_requested(
     mut spec: RequestedServiceSpec,
     project: &ProjectName,
-) -> RequestedServiceSpec {
+) -> Result<RequestedServiceSpec, PlanError> {
     let mut volumes = spec.volume_graph.volumes().to_vec();
     let mounts = spec.volume_graph.mounts().to_vec();
     for volume in &mut volumes {
         volume.source.scope_to_project(project);
     }
-    spec.volume_graph = ServiceVolumeGraph::parse(volumes, mounts)
-        .expect("scoping Docker Volume names does not change Service Volume References");
-    spec
+    spec.volume_graph = match ServiceVolumeGraph::parse(volumes, mounts) {
+        Ok(graph) => graph,
+        Err(ployz_core::ServiceVolumeGraphError::IncompatibleVolumeAliases { name }) => {
+            return Err(PlanError::ConflictingDockerVolumeDefinitions { name });
+        }
+        Err(error) => unreachable!("scoping preserves Service Volume graph references: {error}"),
+    };
+    Ok(spec)
 }
 
 impl VolumePins {
@@ -128,12 +137,8 @@ impl VolumePins {
                 let mut machines = candidates
                     .into_iter()
                     .filter(|machine| {
-                        service_placement_eligibility(
-                            &spec.placement,
-                            &spec.volume_graph,
-                            &machine.machine,
-                            machine.storage.as_ref(),
-                        ) == ServicePlacementEligibility::Eligible
+                        spec.placement_eligibility(&machine.machine, machine.storage.as_ref())
+                            == ServicePlacementEligibility::Eligible
                     })
                     .collect::<Vec<_>>();
                 if machines.is_empty() {
@@ -264,15 +269,12 @@ pub(super) fn preserved_owned_volumes(
 fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVolumeName> {
     target
         .iter()
-        .flat_map(|spec| spec.volume_graph.volumes())
+        .flat_map(|spec| spec.volume_graph.mounted_volumes())
         .filter_map(|volume| match &volume.source {
-            VolumeSource::Named {
-                name,
-                external: false,
-                ..
+            VolumeSource::Ordinary { name, .. } | VolumeSource::Provisioned { name, .. } => {
+                Some(name.clone())
             }
-            | VolumeSource::Provisioned { name, .. } => Some(name.clone()),
-            VolumeSource::Named { external: true, .. }
+            VolumeSource::External { .. }
             | VolumeSource::Bind { .. }
             | VolumeSource::Tmpfs { .. } => None,
         })
@@ -293,10 +295,7 @@ enum VolumePresenceShape<'volume> {
 }
 
 fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<VolumePresence<'_>> {
-    let name = match &volume.source {
-        VolumeSource::Named { name, .. } | VolumeSource::Provisioned { name, .. } => name,
-        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => return None,
-    };
+    let name = managed_volume_name(volume)?;
     Some(VolumePresence {
         machine_id,
         name,
@@ -306,7 +305,7 @@ fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<Vol
 
 impl VolumePresence<'_> {
     fn matches(self, volume: &ServiceVolume) -> bool {
-        if named_volume_name(volume) != Some(self.name) {
+        if managed_volume_name(volume) != Some(self.name) {
             return false;
         }
         match self.shape {
@@ -321,22 +320,22 @@ impl VolumePresence<'_> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct NamedVolumeUse<'service> {
+pub(super) struct ManagedVolumeUse<'service> {
     service_name: &'service str,
     service: &'service RequestedServiceSpec,
     volume: &'service ServiceVolume,
     global: bool,
 }
 
-pub(super) fn named_volume_uses(
+pub(super) fn managed_volume_uses(
     requested: &[RequestedServiceSpec],
-) -> BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>> {
-    let mut uses = BTreeMap::<DockerVolumeName, Vec<NamedVolumeUse<'_>>>::new();
+) -> BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'_>>> {
+    let mut uses = BTreeMap::<DockerVolumeName, Vec<ManagedVolumeUse<'_>>>::new();
     for spec in requested {
         let service_name = spec.name.as_str();
         for mount in spec.volume_graph.mounts() {
             let volume = spec.volume_graph.volume_for(mount);
-            let Some(name) = named_volume_name(volume) else {
+            let Some(name) = managed_volume_name(volume) else {
                 continue;
             };
             let uses = uses.entry(name.clone()).or_default();
@@ -344,7 +343,7 @@ pub(super) fn named_volume_uses(
                 .iter()
                 .any(|volume_use| volume_use.service_name == service_name)
             {
-                uses.push(NamedVolumeUse {
+                uses.push(ManagedVolumeUse {
                     service_name,
                     service: spec,
                     volume,
@@ -357,7 +356,7 @@ pub(super) fn named_volume_uses(
 }
 
 pub(super) fn reject_mixed_volume_modes(
-    volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
+    volume_uses: &BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'_>>>,
 ) -> Result<(), PlanError> {
     for (name, uses) in volume_uses {
         if let (Some(global), Some(replicated)) = (
@@ -377,12 +376,12 @@ pub(super) fn reject_mixed_volume_modes(
 struct SharedVolumeComponent<'volume_use> {
     volumes: Vec<(
         &'volume_use DockerVolumeName,
-        &'volume_use Vec<NamedVolumeUse<'volume_use>>,
+        &'volume_use Vec<ManagedVolumeUse<'volume_use>>,
     )>,
 }
 
 fn shared_volume_components<'volume_use>(
-    volume_uses: &'volume_use BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'volume_use>>>,
+    volume_uses: &'volume_use BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'volume_use>>>,
 ) -> Vec<SharedVolumeComponent<'volume_use>> {
     let mut remaining = volume_uses
         .iter()
@@ -406,7 +405,7 @@ fn shared_volume_components<'volume_use>(
 
 fn shares_a_service(
     component: &SharedVolumeComponent<'_>,
-    candidate: &[NamedVolumeUse<'_>],
+    candidate: &[ManagedVolumeUse<'_>],
 ) -> bool {
     candidate.iter().any(|candidate| {
         component.volumes.iter().any(|(_, uses)| {
@@ -417,7 +416,7 @@ fn shares_a_service(
 }
 
 pub(super) fn prepare_shared_replicated_volumes(
-    volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
+    volume_uses: &BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'_>>>,
     snapshot: &DeploySnapshot,
     requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
@@ -568,7 +567,7 @@ pub(super) fn plan_volume_operations(
                 .expect("volume_constraints returns a Machine when it succeeds");
             machines.retain(|machine| machine.machine.id == machine_id);
             for volume in missing_volumes {
-                if let Some(name) = named_volume_name(volume) {
+                if let Some(name) = managed_volume_name(volume) {
                     pins.constrain(name.clone(), machine_id);
                 }
                 pins.record_create(machine_id, volume);
@@ -617,7 +616,7 @@ fn volume_constraints<'spec>(
     pins: &VolumePins,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
-    let mounted_volumes = mounted_named_volumes(&spec.volume_graph)?;
+    let mounted_volumes = mounted_managed_volumes(&spec.volume_graph);
     let incomplete = machines.iter().find_map(|machine| {
         snapshot
             .volume_snapshot
@@ -636,7 +635,7 @@ fn volume_constraints<'spec>(
         && let Some((machine_id, machine, message)) = incomplete
         && let Some(name) = mounted_volumes
             .first()
-            .and_then(|volume| named_volume_name(volume))
+            .and_then(|volume| managed_volume_name(volume))
     {
         return Err(PlanError::DockerVolumeUnavailable {
             id: DockerVolumeId {
@@ -652,7 +651,7 @@ fn volume_constraints<'spec>(
             .any(|machine| machine.machine.id == id.machine_id)
             && mounted_volumes
                 .iter()
-                .filter_map(|volume| named_volume_name(volume))
+                .filter_map(|volume| managed_volume_name(volume))
                 .any(|name| name == &id.name)
     }) {
         return Err(PlanError::DockerVolumeUnavailable { id, message });
@@ -662,7 +661,7 @@ fn volume_constraints<'spec>(
         machines.retain(|machine| {
             !pins.observations(snapshot).any(|located| {
                 located.machine_id == machine.machine.id
-                    && named_volume_name(volume) == Some(located.name)
+                    && managed_volume_name(volume) == Some(located.name)
                     && !located.matches(volume)
             })
         });
@@ -689,7 +688,7 @@ fn volume_constraints<'spec>(
         return Err(PlanError::no_eligible_machines(
             mounted_volumes
                 .iter()
-                .filter_map(|volume| named_volume_name(volume))
+                .filter_map(|volume| managed_volume_name(volume))
                 .filter_map(|name| volume_anchor(snapshot, pins, name, requested))
                 .collect(),
         ));
@@ -780,34 +779,22 @@ fn volume_anchor(
     }
 }
 
-fn named_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
+fn managed_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
     match &volume.source {
-        VolumeSource::Named {
-            name,
-            external: false,
-            ..
+        VolumeSource::Ordinary { name, .. } | VolumeSource::Provisioned { name, .. } => Some(name),
+        VolumeSource::External { .. } | VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
+            None
         }
-        | VolumeSource::Provisioned { name, .. } => Some(name),
-        VolumeSource::Named { external: true, .. }
-        | VolumeSource::Bind { .. }
-        | VolumeSource::Tmpfs { .. } => None,
     }
 }
 
-fn mounted_named_volumes(graph: &ServiceVolumeGraph) -> Result<Vec<&ServiceVolume>, PlanError> {
-    let mut by_docker_name = BTreeMap::<DockerVolumeName, &ServiceVolume>::new();
-    for mount in graph.mounts() {
-        let volume = graph.volume_for(mount);
-        let Some(name) = named_volume_name(volume) else {
+fn mounted_managed_volumes(graph: &ServiceVolumeGraph) -> Vec<&ServiceVolume> {
+    let mut by_docker_name = BTreeMap::<&DockerVolumeName, &ServiceVolume>::new();
+    for volume in graph.mounted_volumes() {
+        let Some(name) = managed_volume_name(volume) else {
             continue;
         };
-        if let Some(existing) = by_docker_name.get(name) {
-            if existing.source != volume.source {
-                return Err(PlanError::ConflictingDockerVolumeDefinitions { name: name.clone() });
-            }
-        } else {
-            by_docker_name.insert(name.clone(), volume);
-        }
+        by_docker_name.entry(name).or_insert(volume);
     }
-    Ok(by_docker_name.into_values().collect())
+    by_docker_name.into_values().collect()
 }

@@ -1,18 +1,16 @@
 //! Validated Service Volume and Config definition-plus-mount graphs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
-use super::{
-    ConfigMount, ConfigSpec, PROVISIONED_VOLUME_DRIVER, ServiceMount, ServiceVolume, VolumeSource,
-};
-use crate::ServiceVolumeReference;
+use super::{ConfigMount, ConfigSpec, ServiceMount, ServiceVolume, VolumeSource};
+use crate::{DockerVolumeName, ServiceVolumeReference};
 
 /// Service Volume definitions together with the mounts that refer to them.
 ///
 /// Duplicate references and dangling mounts are rejected. Unused definitions,
-/// repeated mounts, and aliases that share a Docker Volume name stay legal.
+/// repeated mounts, and compatible aliases for one Docker Volume stay legal.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct ServiceVolumeGraph {
     volumes: Vec<ServiceVolume>,
@@ -25,11 +23,9 @@ pub enum ServiceVolumeGraphError {
     DuplicateVolumeReference { reference: ServiceVolumeReference },
     #[error("mount references an undeclared Service Volume: {reference}")]
     UnknownVolumeReference { reference: ServiceVolumeReference },
-    #[error(
-        "ordinary Service Volume {reference} cannot use reserved Docker driver '{PROVISIONED_VOLUME_DRIVER}'"
-    )]
-    /// An ordinary named Volume selected the driver reserved for Provisioned Volumes.
-    ReservedProvisionedVolumeDriver { reference: ServiceVolumeReference },
+    /// Two references describe incompatible sources for one physical Docker Volume.
+    #[error("incompatible Service Volume aliases use Docker Volume {name}")]
+    IncompatibleVolumeAliases { name: DockerVolumeName },
 }
 
 impl ServiceVolumeGraph {
@@ -39,25 +35,28 @@ impl ServiceVolumeGraph {
     ///
     /// Returns [`ServiceVolumeGraphError`] when two definitions share a
     /// reference, a mount names a reference that was not declared, or an
-    /// ordinary named Volume selects the reserved Provisioned Volume driver.
+    /// alias for one Docker Volume declares an incompatible source shape.
     pub fn parse(
         volumes: Vec<ServiceVolume>,
         mounts: Vec<ServiceMount>,
     ) -> Result<Self, ServiceVolumeGraphError> {
         let mut references = BTreeSet::new();
+        let mut docker_volumes = BTreeMap::<&DockerVolumeName, &VolumeSource>::new();
         for volume in &volumes {
-            if matches!(
-                &volume.source,
-                VolumeSource::Named { driver: Some(driver), .. }
-                    if driver.name == PROVISIONED_VOLUME_DRIVER
-            ) {
-                return Err(ServiceVolumeGraphError::ReservedProvisionedVolumeDriver {
-                    reference: volume.reference.clone(),
-                });
-            }
             if !references.insert(&volume.reference) {
                 return Err(ServiceVolumeGraphError::DuplicateVolumeReference {
                     reference: volume.reference.clone(),
+                });
+            }
+            let Some(name) = volume.source.docker_volume_name() else {
+                continue;
+            };
+            if docker_volumes
+                .insert(name, &volume.source)
+                .is_some_and(|existing| existing != &volume.source)
+            {
+                return Err(ServiceVolumeGraphError::IncompatibleVolumeAliases {
+                    name: name.clone(),
                 });
             }
         }

@@ -140,6 +140,16 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("capabilities".into(), Value::Array(capability_wires()));
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert(
+        "external_volume_source".into(),
+        to_value(&VolumeSource::External {
+            name: DockerVolumeName::parse("shared").expect("fixture external Volume name is valid"),
+        }),
+    );
+    fixtures.insert(
+        "ordinary_volume_source".into(),
+        to_value(&service_volume().source),
+    );
+    fixtures.insert(
         "provisioned_volume_source".into(),
         to_value(&provisioned_volume_source()),
     );
@@ -565,6 +575,10 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                     create_machine_path: false,
                     propagation: Some(BindPropagation::Private),
                     recursive: Some(BindRecursive::Disabled),
+                }),
+                to_value(&VolumeSource::External {
+                    name: DockerVolumeName::parse("shared")
+                        .expect("fixture external Volume name is valid"),
                 }),
                 to_value(&service_volume().source),
                 to_value(&named_volume_with_driver().source),
@@ -992,10 +1006,10 @@ fn service_volume() -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture volume reference is valid"),
-        source: VolumeSource::Named {
+        source: VolumeSource::Ordinary {
             name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
-            external: false,
-            driver: None,
+            driver: VolumeDriver::parse("local", BTreeMap::new())
+                .expect("local is an ordinary Volume driver"),
             labels: BTreeMap::new(),
         },
     }
@@ -1005,20 +1019,17 @@ fn named_volume_with_driver() -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture volume reference is valid"),
-        source: VolumeSource::Named {
+        source: VolumeSource::Ordinary {
             name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
-            external: false,
-            driver: Some(volume_driver()),
+            driver: volume_driver(),
             labels: BTreeMap::from([("keep".into(), "1".into())]),
         },
     }
 }
 
 fn volume_driver() -> VolumeDriver {
-    VolumeDriver {
-        name: "nfs".into(),
-        options: BTreeMap::from([("share".into(), "app".into())]),
-    }
+    VolumeDriver::parse("nfs", BTreeMap::from([("share".into(), "app".into())]))
+        .expect("nfs is an ordinary Volume driver")
 }
 
 fn config_spec() -> ConfigSpec {
