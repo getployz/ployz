@@ -380,37 +380,11 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::CreateContainer>(request)?;
-        let network = match self
-            .local
-            .prepare_service_runtime(request.kind, &request.project_name, &request.resolved_spec)
-            .await
-        {
-            Ok(backend) => backend,
-            Err(error) => return local_error(error),
-        };
-        let containers = match self.containers() {
-            Ok(containers) => containers,
-            Err(error) => return respond(error),
-        };
-        let record = self.local_record()?;
-        let machine = record
-            .machine()
-            .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
-        let gateway = machine.subnet.gateway();
-        match containers
-            .create_with_network(
-                &record.id(),
-                gateway,
-                request.kind,
-                &request.project_name,
-                &request.resolved_spec,
-                network,
-            )
-            .await
-        {
-            Ok(created) => respond(created),
-            Err(error) => respond(RpcError::from(&error)),
-        }
+        finish(
+            self.local
+                .create_container(request.kind, &request.project_name, &request.resolved_spec)
+                .await,
+        )
     }
 
     async fn ensure_global_slot(

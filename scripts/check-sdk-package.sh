@@ -172,8 +172,8 @@ for (const intent of [
   sdk.applyAll("app", [helperSpec]),
   sdk.applyOne("app", helperSpec),
 ]) {
-  if (!Array.isArray(intent.provisioned_volumes) || intent.provisioned_volumes.length !== 0) {
-    throw new Error("plain Deploy Intent helpers must emit an empty provisioned_volumes list");
+  if ("provisioned_volumes" in intent) {
+    throw new Error("Deploy Intent helpers must not emit the removed provisioned_volumes field");
   }
 }
 if (typeof sdk.Client.prototype.removeVolumes !== "function") {

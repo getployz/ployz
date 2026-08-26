@@ -1,9 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use ployz_core::{
-    ProvisionedVolume, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ServiceDependency,
-    ServiceVolumeReference, VolumeSource,
-};
+use ployz_core::{RequestedServiceSpec, ServiceDependency};
 use serde::Deserialize;
 use serde_norway::Value;
 use thiserror::Error;
@@ -39,8 +36,6 @@ pub struct ComposeProject {
     pub dependencies: BTreeMap<String, Vec<ServiceDependency>>,
     pub warnings: Vec<String>,
     pub service_profiles: BTreeMap<String, Vec<String>>,
-    pub(super) provisioned_volume_bounds:
-        BTreeMap<ServiceVolumeReference, ProvisionedVolumeMaximumBytes>,
     pub(super) volumes: BTreeMap<String, RawVolume>,
     pub(super) secrets: BTreeMap<String, ProjectSecret>,
     pub(super) environment: BTreeMap<String, String>,
@@ -95,29 +90,6 @@ impl ComposeProject {
             true
         });
         Ok(project)
-    }
-
-    /// Resolve Provisioned Volume bounds against the current Service Volume graphs.
-    #[must_use]
-    pub(crate) fn provisioned_volume_declarations(&self) -> Vec<ProvisionedVolume> {
-        self.services
-            .values()
-            .flat_map(|service| {
-                service
-                    .volumes()
-                    .iter()
-                    .filter(|volume| matches!(&volume.source, VolumeSource::Named { .. }))
-                    .filter_map(|volume| {
-                        Some(ProvisionedVolume {
-                            service: service.name.clone(),
-                            reference: volume.reference.clone(),
-                            maximum_bytes: *self
-                                .provisioned_volume_bounds
-                                .get(&volume.reference)?,
-                        })
-                    })
-            })
-            .collect()
     }
 
     /// Compose `profiles:` per loaded Service. Empty means the Service always starts.

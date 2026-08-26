@@ -1,9 +1,8 @@
 use std::{collections::BTreeMap, num::NonZeroU64};
 
 use ployz_core::{
-    CreateVolumeRequest, DockerVolume, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
-    MachineName, MachineObservation, PartialResult, ProvisionedVolumeMaximumBytes, RpcError,
-    RpcErrorCode, ServiceVolume, VolumeInventory, VolumeSource,
+    DockerVolume, DockerVolumeName, DockerVolumeStorageObservation, MachineId, MachineName,
+    MachineObservation, PartialResult, RpcError, VolumeInventory,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -48,15 +47,6 @@ impl ProvisionedVolumeSize {
         })
     }
 
-    /// Builds the exact internal Docker-driver form of an SDK byte bound.
-    #[must_use]
-    pub(crate) fn from_maximum_bytes(maximum_bytes: ProvisionedVolumeMaximumBytes) -> Self {
-        Self {
-            option: format!("{}b", maximum_bytes.get()),
-            bytes: maximum_bytes.get(),
-        }
-    }
-
     #[must_use]
     pub(crate) fn as_str(&self) -> &str {
         &self.option
@@ -75,45 +65,6 @@ impl ProvisionedVolumeSize {
                 if bound_bytes.get() == self.bytes
         )
     }
-}
-
-/// Builds Docker's named-Volume creation request from a Service mount.
-///
-/// # Errors
-///
-/// Returns `InvalidArgument` when the mount does not use a named Docker Volume.
-pub(crate) fn create_volume_request(
-    volume: &ServiceVolume,
-    provisioned: Option<&ProvisionedVolumeSize>,
-) -> Result<CreateVolumeRequest, RpcError> {
-    let VolumeSource::Named {
-        name,
-        driver,
-        labels,
-        ..
-    } = &volume.source
-    else {
-        return Err(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: "volume creation requires a named Docker Volume".into(),
-            details: serde_json::Value::Null,
-        });
-    };
-    let mut request = CreateVolumeRequest {
-        name: name.clone(),
-        driver: driver
-            .as_ref()
-            .map_or_else(|| "local".into(), |driver| driver.name.clone()),
-        options: driver
-            .as_ref()
-            .map_or_else(Default::default, |driver| driver.options.clone()),
-        labels: labels.clone(),
-    };
-    if let Some(size) = provisioned {
-        request.driver = "ployz".into();
-        request.options = BTreeMap::from([("size".into(), size.as_str().into())]);
-    }
-    Ok(request)
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

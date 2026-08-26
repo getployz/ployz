@@ -6,8 +6,8 @@ use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployOperation,
-    DeployOutcome, ExecutionError, FailedOperation, MachineId, PROTOCOL_MAJOR, ProjectName,
-    RequestedServiceSpec, RpcErrorCode,
+    DeployOutcome, ExecutionError, FailedOperation, MachineAction, MachineId, PROTOCOL_MAJOR,
+    ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode,
 };
 use tokio::time::timeout;
 
@@ -301,15 +301,16 @@ async fn deploy_returns_success_for_a_completed_run() {
 }
 
 #[tokio::test]
-async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
+async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
     let description = advertised_description();
     let session = RelaySession::start().await;
-    let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            DiscoveryService::new(description.clone()),
-        )
-        .await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.create_container_error = Some(RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "Volume Ensure failed".into(),
+        details: serde_json::Value::Null,
+    });
+    let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = sdk::connect(
         &session.url,
         relay::DIAL,
@@ -342,15 +343,14 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
     assert!(matches!(
         failed,
         FailedOperation::Operation {
-            operation: DeployOperation::CreateVolume { volume, .. },
-            error: ExecutionError::Machine { .. },
-        } if volume.reference.as_str() == "scratch"
+            operation: DeployOperation::RunContainer { spec, .. },
+            error: ExecutionError::Machine {
+                action: MachineAction::CreateContainer,
+                ..
+            },
+        } if spec.name.as_str() == "web"
     ));
-    assert_eq!(unexecuted.len(), 1);
-    assert!(matches!(
-        unexecuted.first(),
-        Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
-    ));
+    assert!(unexecuted.is_empty());
     assert!(
         client
             .about()

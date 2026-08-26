@@ -194,8 +194,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                         ("external", "boolean?"),
                         ("driver", "VolumeDriver?"),
                         ("labels", "{ readonly [key: string]: string }?"),
-                        ("no_copy", "boolean?"),
-                        ("subpath", "string?"),
+                    ],
+                ),
+                (
+                    "provisioned",
+                    &[
+                        ("name", "DockerVolumeName"),
+                        ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
+                        ("labels", "{ readonly [key: string]: string }?"),
                     ],
                 ),
                 (
@@ -341,6 +347,8 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("volume", "ServiceVolumeReference"),
                 ("target", "ContainerPath"),
                 ("read_only", "boolean?"),
+                ("no_copy", "boolean?"),
+                ("subpath", "string?"),
             ],
         },
     ),
@@ -675,24 +683,12 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
-        "ProvisionedVolume",
-        Shape::Additive {
-            params: "",
-            fields: &[
-                ("service", "ServiceName"),
-                ("reference", "ServiceVolumeReference"),
-                ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
-            ],
-        },
-    ),
-    (
         "DeployIntent",
         Shape::Additive {
             params: "",
             fields: &[
                 ("project_name", "ProjectName"),
                 ("target", "RequestedServiceSpec[]"),
-                ("provisioned_volumes", "ProvisionedVolume[]"),
                 ("options", "PlanOptions"),
             ],
         },
@@ -713,6 +709,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 (
                     "ObservationOmitted",
                     Some("{ kind: ObservationKind; machine_id: MachineId }"),
+                ),
+                (
+                    "StorageObservationUnknown",
+                    Some("{ machine_id: MachineId }"),
                 ),
                 ("IngressHostname", Some("string")),
                 ("ObserverRelativeHostnameConflict", None),
@@ -740,6 +740,18 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "VolumeToCreate",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("machine_id", "MachineId"),
+                ("machine_name", "MachineName?"),
+                ("name", "DockerVolumeName"),
+                ("maximum_bytes", "ProvisionedVolumeMaximumBytes?"),
+            ],
+        },
+    ),
+    (
         "DeployPreview",
         Shape::Additive {
             params: "",
@@ -748,6 +760,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("operations", "OperationRow[]"),
                 ("warnings", "DeployWarning[]"),
                 ("would_remove", "QualifiedService[]"),
+                ("volumes_to_create", "VolumeToCreate[]"),
                 ("preserved_volumes", "PreservedVolume[]"),
                 ("prune_refusal", "PruneRefusal?"),
             ],
@@ -789,7 +802,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             params: "",
             variants: &[
                 ("starting", &[]),
-                ("creating_volume", &[]),
                 ("creating_container", &[]),
                 ("starting_container", &[]),
                 (
@@ -853,18 +865,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             params: "",
             variants: &[
                 (
-                    "create_volume",
-                    &[("machine_id", "MachineId"), ("volume", "ServiceVolume")],
-                ),
-                (
-                    "create_provisioned_volume",
-                    &[
-                        ("machine_id", "MachineId"),
-                        ("volume", "ServiceVolume"),
-                        ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
-                    ],
-                ),
-                (
                     "wait_healthy",
                     &[
                         ("machine_id", "MachineId"),
@@ -916,7 +916,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "MachineAction",
         Shape::ClosedString(&[
-            "CreateVolume",
             "CreateContainer",
             "StartContainer",
             "InspectContainer",

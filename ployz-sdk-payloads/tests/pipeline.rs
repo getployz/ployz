@@ -6,11 +6,12 @@ use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
     ClusterTeardown, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
     CreateVolumeReport, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DataLossConfirmation, DeployIntent,
-    DeployOperation, DeployOutcome, DeployPreview, DockerVolume, DockerVolumeStorageObservation,
-    ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
+    DeployOutcome, DeployPreview, DockerVolume, DockerVolumeStorageObservation, ExecutionError,
+    HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
     MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY,
     RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode, RuntimeWatchFrame,
     ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeInventory, VolumeSource,
+    VolumeToCreate,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -235,17 +236,17 @@ fn json_fixtures_round_trip_through_rust_types() {
     let intent: DeployIntent = decode_fixture(fixture(&fixtures, "deploy_intent"));
     assert_eq!(intent.project_name.as_str(), "app");
     assert!(intent.target.is_empty());
-    assert!(intent.provisioned_volumes.is_empty());
-    let provisioned: ployz_core::ProvisionedVolume =
-        decode_fixture(fixture(&fixtures, "provisioned_volume"));
-    assert_eq!(provisioned.service.as_str(), "api");
-    assert_eq!(provisioned.reference.as_str(), "data");
-    assert_eq!(provisioned.maximum_bytes.get(), 1_073_741_824);
-    let operation: DeployOperation =
-        decode_fixture(fixture(&fixtures, "create_provisioned_volume_operation"));
+    let provisioned: VolumeSource = decode_fixture(fixture(&fixtures, "provisioned_volume_source"));
     assert!(matches!(
-        operation,
-        DeployOperation::CreateProvisionedVolume { maximum_bytes, .. }
+        provisioned,
+        VolumeSource::Provisioned { maximum_bytes, labels, .. }
+            if maximum_bytes.get() == 1_073_741_824
+                && labels.get("backup").map(String::as_str) == Some("daily")
+    ));
+    let volume: VolumeToCreate = decode_fixture(fixture(&fixtures, "volume_to_create"));
+    assert!(matches!(
+        volume,
+        VolumeToCreate { maximum_bytes: Some(maximum_bytes), .. }
             if maximum_bytes.get() == 1_073_741_824
     ));
     assert!(intent.options.selected.is_empty());
@@ -261,7 +262,8 @@ fn json_fixtures_round_trip_through_rust_types() {
 
     let preview: DeployPreview = decode_fixture(fixture(&fixtures, "deploy_preview"));
     assert_eq!(preview.operations.len(), 1);
-    assert_eq!(preview.warnings.len(), 5);
+    assert_eq!(preview.volumes_to_create.len(), 1);
+    assert_eq!(preview.warnings.len(), 6);
     assert!(matches!(
         preview.operations.first().map(|row| &row.status),
         Some(ployz_core::OperationStatus::Pending)
@@ -504,12 +506,10 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type DeployIntent = Additive<{"));
     assert!(dts.contains("project_name: ProjectName"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
-    assert!(dts.contains("export type ProvisionedVolume = Additive<{"));
-    assert!(dts.contains("service: ServiceName"));
-    assert!(dts.contains("reference: ServiceVolumeReference"));
     assert!(dts.contains("export type ProvisionedVolumeMaximumBytes = string"));
     assert!(dts.contains("maximum_bytes: ProvisionedVolumeMaximumBytes"));
-    assert!(dts.contains("provisioned_volumes: ProvisionedVolume[]"));
+    assert!(dts.contains("kind: \"provisioned\"; name: DockerVolumeName; maximum_bytes: ProvisionedVolumeMaximumBytes"));
+    assert!(!dts.contains("provisioned_volumes: ProvisionedVolume[]"));
     assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
     assert!(dts.contains("export type IngressProxyFragment ="));
@@ -547,9 +547,14 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("readonly __brand: \"ServiceName\""));
     assert!(dts.contains("export type ObservationKind ="));
     assert!(dts.contains("export type DeployWarning ="));
+    assert!(dts.contains("StorageObservationUnknown:"));
     assert!(dts.contains("SkippedDependencyHealth:"));
     assert!(dts.contains("export type DeployPreview = Additive<{"));
     assert!(dts.contains("operations: OperationRow[]"));
+    assert!(dts.contains("volumes_to_create: VolumeToCreate[]"));
+    assert!(dts.contains("export type VolumeToCreate = Additive<{"));
+    assert!(dts.contains("name: DockerVolumeName"));
+    assert!(dts.contains("maximum_bytes?: ProvisionedVolumeMaximumBytes"));
     assert!(dts.contains("export type OperationRow = Additive<{"));
     assert!(dts.contains("export type DeployEvent ="));
     assert!(dts.contains("export type OperationStatus ="));
@@ -566,13 +571,14 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type DeployOperation ="));
     assert!(dts.contains("type: \"run_container\""));
     assert!(dts.contains("type: \"wait_healthy\""));
-    assert!(dts.contains(
-        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes"
-    ));
+    assert!(!dts.contains("type: \"create_volume\""));
+    assert!(!dts.contains("type: \"create_provisioned_volume\""));
+    assert!(!dts.contains("type: \"creating_volume\""));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
     assert!(dts.contains("export type ExecutionError ="));
     assert!(dts.contains("export type MachineAction ="));
+    assert!(!dts.contains("| \"CreateVolume\""));
     assert!(dts.contains("export type HealthFailure ="));
     assert!(dts.contains("export type DependencyHealthFailure ="));
     assert!(dts.contains("export type HookFailure ="));

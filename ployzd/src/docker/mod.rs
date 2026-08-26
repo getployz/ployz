@@ -27,7 +27,7 @@ use bollard::{
 };
 use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
+    ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
     HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
     ImageSummary, MachineId, MachineImages, MachineTelemetry, ProjectName, QualifiedService,
     RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
@@ -40,6 +40,7 @@ use tokio::sync::Mutex;
 use observe::ObservationSink;
 
 pub(crate) use create::NetworkAttachment;
+pub(crate) use lifecycle::ContainerRequest;
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -591,6 +592,30 @@ pub enum Error {
         requested: DockerVolumeName,
         actual: String,
     },
+    /// A mounted external Volume is absent from the target Machine.
+    #[error("external Docker Volume '{0}' does not exist on this Machine")]
+    ExternalVolumeNotFound(DockerVolumeName),
+    /// An existing managed Volume differs from the resolved mounted source.
+    #[error("Docker Volume '{name}' does not match its resolved source: {reason}")]
+    VolumeShapeMismatch {
+        name: DockerVolumeName,
+        reason: String,
+    },
+    /// Two mounted declarations resolve to incompatible shapes for one Docker name.
+    #[error("mounted declarations for Docker Volume '{0}' have conflicting sources")]
+    ConflictingMountedVolumeSources(DockerVolumeName),
+    /// Docker created a Volume but its resulting state could not be observed.
+    #[error("Docker Volume creation succeeded but verification failed for {id:?}: {error}")]
+    VolumeCreatedButUnverified {
+        id: DockerVolumeId,
+        error: Box<RpcError>,
+    },
+    /// Fresh local storage evidence was unavailable for a Provisioned Volume container.
+    #[error("local storage could not be observed for a mounted Provisioned Volume")]
+    StorageUnobservable,
+    /// The target Machine has no storage capable of hosting a Provisioned Volume.
+    #[error("this Machine cannot host a mounted Provisioned Volume")]
+    ProvisionedStorageUnsupported,
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -627,6 +652,7 @@ impl Error {
         match self {
             Self::ContainerNotFound(_)
             | Self::SpecNotFound(_)
+            | Self::ExternalVolumeNotFound(_)
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
                 ..
@@ -634,7 +660,13 @@ impl Error {
             Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 409,
                 ..
-            }) => RpcErrorCode::Conflict,
+            })
+            | Self::VolumeShapeMismatch { .. }
+            | Self::ConflictingMountedVolumeSources(_) => RpcErrorCode::Conflict,
+            Self::VolumeCreatedButUnverified { .. } | Self::StorageUnobservable => {
+                RpcErrorCode::Unavailable
+            }
+            Self::ProvisionedStorageUnsupported => RpcErrorCode::Conflict,
             Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
@@ -664,10 +696,18 @@ impl Error {
 
 impl From<&Error> for RpcError {
     fn from(error: &Error) -> Self {
+        let details = if let Error::VolumeCreatedButUnverified { id, error } = error {
+            serde_json::json!({
+                "created_volume": id,
+                "verification_error": error,
+            })
+        } else {
+            serde_json::Value::Null
+        };
         Self {
             code: error.rpc_code(),
             message: error.to_string(),
-            details: serde_json::Value::Null,
+            details,
         }
     }
 }
@@ -1005,15 +1045,16 @@ mod tests {
             ],
             "mounts": [
                 {"volume":"host","target":"/host"},
-                {"volume":"alias","target":"/data","read_only":true},
+                {"volume":"alias","target":"/data","read_only":true,"no_copy":true,"subpath":"current"},
+                {"volume":"alias","target":"/archive","subpath":"archive"},
                 {"volume":"memory","target":"/run/cache"}
             ]
         }))
         .unwrap();
 
         let mounts = docker_mounts(&spec.volume_graph).unwrap();
-        let [bind_mount, named_mount, tmpfs_mount] = mounts.as_slice() else {
-            panic!("expected three mounts: {mounts:?}")
+        let [bind_mount, named_mount, archive_mount, tmpfs_mount] = mounts.as_slice() else {
+            panic!("expected four mounts: {mounts:?}")
         };
         assert_eq!(bind_mount.typ, Some(MountType::BIND));
         assert_eq!(bind_mount.source.as_deref(), Some("/srv/api"));
@@ -1119,11 +1160,11 @@ mod tests {
         assert_eq!(named_mount.typ, Some(MountType::VOLUME));
         assert_eq!(named_mount.source.as_deref(), Some("database"));
         assert_eq!(named_mount.read_only, Some(true));
+        let named_options = named_mount.volume_options.as_ref().unwrap();
+        assert_eq!(named_options.no_copy, Some(true));
+        assert_eq!(named_options.subpath.as_deref(), Some("current"));
         assert_eq!(
-            named_mount
-                .volume_options
-                .as_ref()
-                .unwrap()
+            named_options
                 .driver_config
                 .as_ref()
                 .unwrap()
@@ -1131,6 +1172,10 @@ mod tests {
                 .as_deref(),
             Some("local")
         );
+        assert_eq!(archive_mount.source.as_deref(), Some("database"));
+        let archive_options = archive_mount.volume_options.as_ref().unwrap();
+        assert_eq!(archive_options.no_copy, Some(false));
+        assert_eq!(archive_options.subpath.as_deref(), Some("archive"));
         assert_eq!(tmpfs_mount.typ, Some(MountType::TMPFS));
         assert!(tmpfs_mount.source.is_none());
         assert_eq!(
@@ -1168,6 +1213,37 @@ mod tests {
         };
         assert_eq!(named.typ, Some(MountType::VOLUME));
         assert_eq!(named.source.as_deref(), Some("missing"));
+
+        let external: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+            "service_id": "11111111111111111111111111111111",
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
+            "volumes": [{"reference":"data","source":{
+                "kind":"named",
+                "name":"external-data",
+                "external":true,
+                "driver":{"name":"foreign","options":{"mode":"owned-elsewhere"}},
+                "labels":{"owner":"foreign"}
+            }}],
+            "mounts": [{
+                "volume":"data",
+                "target":"/data",
+                "no_copy":true,
+                "subpath":"current"
+            }]
+        }))
+        .unwrap();
+        let external = docker_mounts(&external.volume_graph).unwrap().remove(0);
+        assert_eq!(external.source.as_deref(), Some("external-data"));
+        assert_eq!(
+            external.volume_options,
+            Some(bollard::models::MountVolumeOptions {
+                no_copy: Some(true),
+                subpath: Some("current".into()),
+                ..Default::default()
+            })
+        );
     }
 
     #[test]

@@ -6,9 +6,7 @@ const DATA_LOSS_PROTOCOL: &str = "Deploy Plan destroyed stored data; Deploy is a
 fn destroys_stored_data(operation: &DeployOperation) -> bool {
     match operation {
         DeployOperation::RemoveVolume { .. } => true,
-        DeployOperation::CreateVolume { .. }
-        | DeployOperation::CreateProvisionedVolume { .. }
-        | DeployOperation::WaitHealthy { .. }
+        DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::StopContainer { .. }
         | DeployOperation::RemoveContainer { .. }
@@ -41,17 +39,10 @@ fn resolved(spec: &RequestedServiceSpec) -> ployz_core::ResolvedServiceSpec {
 fn deploy_operation_variants_do_not_destroy_stored_data() {
     let mut spec = requested(ServiceMode::Global);
     add_named_volume(&mut spec, "data");
-    let volume = spec
-        .volume_graph
-        .volumes()
-        .first()
-        .expect("named volume was added")
-        .clone();
     let spec = resolved(&spec);
     let machine_id = machine_id('1');
     let container_id = container_id('b');
     let operations = [
-        DeployOperation::CreateVolume { machine_id, volume },
         DeployOperation::RunContainer {
             machine_id,
             spec: spec.clone(),
@@ -115,13 +106,7 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
         .unwrap()
     };
     assert_plan_cannot_destroy_stored_data(&unused_volume, "orphan Docker Volume left behind");
-    assert!(
-        unused_volume
-            .operations
-            .iter()
-            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. })),
-        "an unused snapshot volume must not be created or removed: {DATA_LOSS_PROTOCOL}"
-    );
+    assert!(unused_volume.volumes_to_create.is_empty());
 
     let mut scaled = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

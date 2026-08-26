@@ -365,6 +365,8 @@ fn mount(volume: &ServiceVolumeReference, target: &str) -> ServiceMount {
         volume: volume.clone(),
         target: ContainerPath::parse(target).expect("static mount path is valid"),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     }
 }
 
@@ -570,7 +572,9 @@ mod tests {
                 .iter()
                 .filter_map(|volume| match &volume.source {
                     VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
+                    VolumeSource::Named { .. }
+                    | VolumeSource::Provisioned { .. }
+                    | VolumeSource::Tmpfs { .. } => None,
                 })
                 .eq(["/var/lib/ployz/ingress/envoy"])
         );

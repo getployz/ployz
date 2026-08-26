@@ -11,6 +11,7 @@ mod runtime_watch;
 mod selector;
 mod service_graph;
 mod spec;
+mod volume;
 
 pub use certificate_policy::*;
 pub use cluster_dns::*;
@@ -25,6 +26,7 @@ pub use runtime_watch::*;
 pub use selector::*;
 pub use service_graph::*;
 pub use spec::*;
+pub use volume::*;
 
 use serde::{Deserialize, Serialize};
 

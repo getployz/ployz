@@ -212,9 +212,7 @@ fn global_hook_uses_a_changed_machine_with_an_extra_slot() {
         .into_iter()
         .filter_map(|operation| match operation {
             DeployOperation::RunContainer { machine_id, .. } => Some(machine_id),
-            DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
@@ -306,7 +304,7 @@ fn unmatched_placement_returns_no_eligible_machines() {
 }
 
 #[test]
-fn global_missing_volume_is_created_on_every_eligible_machine_before_containers() {
+fn global_missing_volume_is_previewed_on_every_container_target() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
     let plan = plan_deploy(
@@ -322,15 +320,18 @@ fn global_missing_volume_is_created_on_every_eligible_machine_before_containers(
     assert!(matches!(
         operations(&plan).as_slice(),
         [
-            DeployOperation::CreateVolume { machine_id: first_volume, .. },
-            DeployOperation::CreateVolume { machine_id: second_volume, .. },
             DeployOperation::RunContainer { machine_id: first_container, .. },
             DeployOperation::RunContainer { machine_id: second_container, .. },
-        ] if first_volume == &machine_id('1')
-            && second_volume == &machine_id('2')
-            && first_container == first_volume
-            && second_container == second_volume
+        ] if first_container == &machine_id('1')
+            && second_container == &machine_id('2')
     ));
+    assert_eq!(
+        plan.volumes_to_create
+            .iter()
+            .map(|item| item.machine_id)
+            .collect::<Vec<_>>(),
+        [machine_id('1'), machine_id('2')]
+    );
 }
 
 #[test]
@@ -440,13 +441,18 @@ fn incompatible_volume_excludes_only_its_machine() {
     assert!(
         matches!(
             operations(&plan).as_slice(),
-            [
-                DeployOperation::CreateVolume { machine_id: volume_machine, .. },
-                DeployOperation::RunContainer { machine_id: container_machine, .. },
-            ] if volume_machine == &machine_id('2') && container_machine == &machine_id('2')
+            [DeployOperation::RunContainer { machine_id: container_machine, .. }]
+                if container_machine == &machine_id('2')
         ),
         "unexpected operations: {:?}",
         plan.operations
+    );
+    assert_eq!(
+        plan.volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .machine_id,
+        machine_id('2')
     );
 }
 

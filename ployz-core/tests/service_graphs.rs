@@ -5,7 +5,7 @@ use ployz_core::{
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceConfigGraph, ServiceConfigGraphError,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceSpecGraphError,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeGraphError, ServiceVolumeReference,
-    UpdateOrder, VolumeSource,
+    UpdateOrder, VolumeDriver, VolumeSource,
 };
 
 #[test]
@@ -31,6 +31,26 @@ fn volume_graph_rejects_duplicate_references_and_dangling_mounts() {
         Err(ServiceVolumeGraphError::UnknownVolumeReference {
             reference: reference("missing"),
         })
+    );
+}
+
+#[test]
+fn volume_graph_rejects_the_reserved_driver_for_an_ordinary_volume() {
+    let mut volume = named_volume("data", "data");
+    let VolumeSource::Named { driver, .. } = &mut volume.source else {
+        unreachable!("helper returns a named volume")
+    };
+    *driver = Some(VolumeDriver {
+        name: "ployz".into(),
+        options: BTreeMap::new(),
+    });
+
+    let error = ServiceVolumeGraph::parse(vec![volume], vec![mount("data", "/data")])
+        .expect_err("ordinary volume accepted the reserved driver");
+
+    assert_eq!(
+        error.to_string(),
+        "ordinary Service Volume data cannot use reserved Docker driver 'ployz'"
     );
 }
 
@@ -335,8 +355,6 @@ fn named_volume(volume: &str, name: &str) -> ServiceVolume {
             external: false,
             driver: None,
             labels: BTreeMap::new(),
-            no_copy: false,
-            subpath: None,
         },
     }
 }
@@ -346,6 +364,8 @@ fn mount(volume: &str, target: &str) -> ServiceMount {
         volume: reference(volume),
         target: ContainerPath::parse(target).unwrap(),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     }
 }
 

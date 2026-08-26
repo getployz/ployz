@@ -237,7 +237,6 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
     assert_eq!(plan.prune_refusal, None);
     match operations(&plan).as_slice() {
         [
-            DeployOperation::CreateVolume { .. },
             DeployOperation::RunContainer { spec: first, .. },
             DeployOperation::RunContainer { spec: second, .. },
             DeployOperation::RemoveContainer {
@@ -249,8 +248,9 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
             assert_eq!(second.name.as_str(), "web");
             assert_eq!(*removed, container_id('d'));
         }
-        other => panic!("expected volume, db, web, then prune, got {other:?}"),
+        other => panic!("expected db, web, then prune, got {other:?}"),
     }
+    assert_eq!(plan.volumes_to_create.len(), 1);
 }
 
 #[test]

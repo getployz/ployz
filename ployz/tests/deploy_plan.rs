@@ -20,5 +20,7 @@ mod stored_data;
 mod support;
 #[path = "deploy_plan/validation.rs"]
 mod validation;
+#[path = "deploy_plan/volume_identity.rs"]
+mod volume_identity;
 #[path = "deploy_plan/volumes.rs"]
 mod volumes;

@@ -8,11 +8,11 @@ use ployz::{
     },
 };
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+    ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRuntimeObservation,
     DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, OperationRow,
-    ProjectName, RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceVolume,
-    ServiceVolumeReference, StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource,
-    op,
+    ProjectName, RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceMount,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StartContainerRequest,
+    StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -31,7 +31,7 @@ async fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
     )
     .await
     .unwrap();
-    assert_target_local_volume(&cluster, &client, &machines[1]).await;
+    assert_target_local_volume(&cluster, &mut client, &machines[1]).await;
     assert_startup_health_outcomes(&cluster, &mut client, &machines[0]).await;
     assert_unreachable_middle_keeps_prefix(&cluster, &mut client, &machines).await;
     assert_replacement_health_compensation(&cluster, &mut client, &machines[0]).await;
@@ -131,12 +131,23 @@ async fn assert_startup_health_outcomes(cluster: &Cluster, client: &mut Client, 
     }
 }
 
-async fn assert_target_local_volume(cluster: &Cluster, client: &Client, machine: &Machine) {
+async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, machine: &Machine) {
     let volume = named_volume("deploy-data", "ployz-l3-deploy-data");
-    let plan = deploy_plan(vec![DeployOperation::CreateVolume {
-        machine_id: machine.id,
-        volume,
-    }]);
+    let service_id = ServiceId::random();
+    let mut spec = service_spec(&service_id, "volume-owner");
+    let reference = volume.reference.clone();
+    spec.volume_graph = ServiceVolumeGraph::parse(
+        vec![volume],
+        vec![ServiceMount {
+            volume: reference,
+            target: ContainerPath::parse("/data").unwrap(),
+            read_only: false,
+            no_copy: false,
+            subpath: None,
+        }],
+    )
+    .unwrap();
+    let plan = deploy_plan(vec![run_without_health_monitor(machine, &spec)]);
 
     let outcome = client.confirm(&plan, &CancellationToken::new(), None).await;
 
@@ -154,6 +165,8 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &Client, machine:
             .machine_shell(0, "docker volume inspect ployz-l3-deploy-data")
             .is_err()
     );
+    let containers = wait_for_service(client, &service_id, 1).await;
+    remove_all(client, containers).await;
     cluster
         .machine_shell(1, "docker volume rm ployz-l3-deploy-data")
         .unwrap();
@@ -168,10 +181,10 @@ async fn assert_unreachable_middle_keeps_prefix(
     let spec = service_spec(&service_id, "partial-deploy");
     let operations = vec![
         run_without_health_monitor(&machines[0], &spec),
-        DeployOperation::CreateVolume {
-            machine_id: machines[1].id,
-            volume: named_volume("unreachable", "ployz-l3-unreachable"),
-        },
+        run_without_health_monitor(
+            &machines[1],
+            &service_spec(&ServiceId::random(), "unreachable"),
+        ),
         run_without_health_monitor(&machines[0], &spec),
     ];
     let plan = deploy_plan(operations.clone());
@@ -414,6 +427,7 @@ fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPreview {
             })
             .collect(),
         warnings: Vec::new(),
+        volumes_to_create: Vec::new(),
         would_remove: Vec::new(),
         preserved_volumes: Vec::new(),
         prune_refusal: None,
@@ -428,8 +442,6 @@ fn named_volume(reference: &str, name: &str) -> ServiceVolume {
             external: false,
             driver: None,
             labels: Default::default(),
-            no_copy: false,
-            subpath: None,
         },
     }
 }

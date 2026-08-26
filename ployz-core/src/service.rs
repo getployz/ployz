@@ -6,8 +6,12 @@ use thiserror::Error;
 use crate::{
     Container, ContainerObservation, ContainerRef, ContainerRuntimeObservation, HookContainer,
     Machine, PartialResult, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceId,
-    ServiceMode, ServiceSelector, machine_matches_placement,
+    ServiceMode, ServiceSelector,
 };
+
+mod eligibility;
+
+pub use eligibility::{ServicePlacementEligibility, service_placement_eligibility};
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -61,6 +65,16 @@ impl ServiceObservation {
             .as_observation()
             .resolved_spec;
         (spec.mode == ServiceMode::Global).then_some(spec)
+    }
+
+    /// Observer-derived Global identity and newest Resolved Service Spec.
+    #[must_use]
+    pub fn observed_global_slot(&self) -> Option<ObservedGlobalSlotSpec> {
+        let spec = self.observed_global_slot_spec()?;
+        Some(ObservedGlobalSlotSpec {
+            identity: QualifiedService::new(self.identity.project.clone(), spec.name.clone()),
+            resolved_spec: spec.clone(),
+        })
     }
 
     /// Service Containers for Start; both roles for Stop and Remove.
@@ -118,36 +132,6 @@ impl ObservedGlobalSlotSpec {
                 )
         })
     }
-}
-
-/// Global slot inferred from `service` when `machine` is placement-eligible.
-#[must_use]
-pub fn eligible_global_slot(
-    service: &ServiceObservation,
-    machine: &Machine,
-) -> Option<ObservedGlobalSlotSpec> {
-    let spec = service
-        .observed_global_slot_spec()
-        .filter(|spec| machine_matches_placement(machine, &spec.placement))?;
-    Some(ObservedGlobalSlotSpec {
-        identity: QualifiedService::new(service.identity.project.clone(), spec.name.clone()),
-        resolved_spec: spec.clone(),
-    })
-}
-
-/// Eligible Global slots that do not have a running Container on `machine`.
-#[must_use]
-pub fn missing_global_slots(
-    services: &[ServiceObservation],
-    machine: &Machine,
-) -> Vec<ObservedGlobalSlotSpec> {
-    services
-        .iter()
-        .filter_map(|service| {
-            let slot = eligible_global_slot(service, machine)?;
-            (!slot.is_running_on(&service.containers, machine)).then_some(slot)
-        })
-        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

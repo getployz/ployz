@@ -4,8 +4,9 @@ use ployz_core::{
     ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
     MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
-    machine_matches_target, same_service_mode_kind,
+    ServiceObservation, ServicePlacementEligibility, VolumeSource, VolumeToCreate,
+    explicit_ingress_hosts, hostname_owners, machine_matches_target, same_service_mode_kind,
+    service_placement_eligibility,
 };
 
 use super::{
@@ -23,9 +24,9 @@ use placement::{
     plan_global, plan_replicated,
 };
 use volumes::{
-    ProvisionedVolumeBindings, VolumePins, constrain_volume_candidates, named_volume_uses,
-    plan_volume_operations, prepare_shared_replicated_volumes, preserved_owned_volumes,
-    reject_mixed_volume_modes, scope_requested,
+    VolumePins, constrain_volume_candidates, named_volume_uses, plan_volume_operations,
+    prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
+    scope_requested,
 };
 
 /// Whether Project removal keeps or destroys observer-visible managed volumes.
@@ -48,12 +49,12 @@ pub struct IngressContext<'domain> {
 struct BoundIntent {
     target: Vec<RequestedServiceSpec>,
     requested: Vec<RequestedServiceSpec>,
-    provisioned_volumes: ProvisionedVolumeBindings,
 }
 
 /// Operations and prune results before pending rows are attached.
 struct Planned {
     operations: Vec<DeployOperation>,
+    volumes_to_create: Vec<(MachineId, ployz_core::ServiceVolume)>,
     would_remove: Vec<QualifiedService>,
     preserved_volumes: Vec<PreservedVolume>,
     prune_refusal: Option<PruneRefusal>,
@@ -147,6 +148,37 @@ fn preview_from(
         project_name: project_name.clone(),
         operations: super::pending_rows(&planned.operations, snapshot),
         warnings: planned.warnings,
+        volumes_to_create: planned
+            .volumes_to_create
+            .into_iter()
+            .filter_map(|(machine_id, volume)| {
+                let (name, maximum_bytes) = match volume.source {
+                    VolumeSource::Named {
+                        name,
+                        external: false,
+                        ..
+                    } => (name, None),
+                    VolumeSource::Provisioned {
+                        name,
+                        maximum_bytes,
+                        ..
+                    } => (name, Some(maximum_bytes)),
+                    VolumeSource::Named { external: true, .. }
+                    | VolumeSource::Bind { .. }
+                    | VolumeSource::Tmpfs { .. } => return None,
+                };
+                Some(VolumeToCreate {
+                    machine_id,
+                    machine_name: snapshot
+                        .machines
+                        .iter()
+                        .find(|machine| machine.machine.id == machine_id)
+                        .map(|machine| machine.machine.name.clone()),
+                    name,
+                    maximum_bytes,
+                })
+            })
+            .collect(),
         would_remove: planned.would_remove,
         preserved_volumes: planned.preserved_volumes,
         prune_refusal: planned.prune_refusal,
@@ -171,8 +203,6 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         .cloned()
         .map(|spec| scope_requested(spec, &intent.project_name))
         .collect();
-    let provisioned_volumes =
-        ProvisionedVolumeBindings::parse(&target, &intent.provisioned_volumes)?;
     let mut requested = Vec::new();
     for spec in specs {
         let scoped = target
@@ -187,11 +217,7 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         )?;
         requested.push(planned);
     }
-    Ok(BoundIntent {
-        target,
-        requested,
-        provisioned_volumes,
-    })
+    Ok(BoundIntent { target, requested })
 }
 
 fn hostname_policy_for(
@@ -217,16 +243,13 @@ fn assemble_plan(
     snapshot: &DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
-    let BoundIntent {
-        target,
-        requested,
-        provisioned_volumes,
-    } = bound;
+    let BoundIntent { target, requested } = bound;
+    warnings.extend(storage_eligibility_warnings(&requested, snapshot));
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
-    let mut pins = VolumePins::new(provisioned_volumes);
-    pins.validate_provisioned_volume_bounds(&target, snapshot, &intent.options)?;
+    let mut pins = VolumePins::new();
+    pins.validate_provisioned_volume_definitions(&target, snapshot)?;
     let name_errors_with_service = requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut capacity = CapacityBudget::from_snapshot(snapshot);
@@ -257,9 +280,7 @@ fn assemble_plan(
             | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
                 Some(*machine_id)
             }
-            DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
@@ -290,8 +311,8 @@ fn assemble_plan(
         }
         service_operations.extend(operations);
     }
-    let mut operations = pins.into_creates();
-    operations.extend(service_operations);
+    let volumes_to_create = pins.into_creates_for(&service_operations);
+    let mut operations = service_operations;
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
     let preserved_volumes = preserved_owned_volumes(&intent.project_name, &target, snapshot);
@@ -300,6 +321,7 @@ fn assemble_plan(
     }
     Ok(Planned {
         operations,
+        volumes_to_create,
         would_remove,
         preserved_volumes,
         prune_refusal,
@@ -597,25 +619,93 @@ fn service_error(name_errors_with_service: bool, service: &str, source: PlanErro
     }
 }
 
-fn eligible_machines<'a>(
+fn eligible_machines<'snapshot>(
     requested: &RequestedServiceSpec,
-    snapshot: &'a DeploySnapshot,
+    snapshot: &'snapshot DeploySnapshot,
     options: &PlanOptions,
-) -> Result<Vec<&'a MachineObservation>, PlanError> {
-    let mut machines = snapshot
-        .machines
-        .iter()
-        .filter(|machine| machine.membership != MembershipObservation::Down)
-        .filter(|machine| machine_matches_placement(&machine.machine, &requested.placement))
-        .collect::<Vec<_>>();
+) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
+    let candidates = placement_candidates(requested, snapshot)?;
+    let mut unknown = Vec::new();
+    let mut machines = Vec::new();
+    for machine in &candidates {
+        match service_placement_eligibility(
+            &requested.placement,
+            &requested.volume_graph,
+            &machine.machine,
+            machine.storage.as_ref(),
+        ) {
+            ServicePlacementEligibility::Eligible => machines.push(*machine),
+            ServicePlacementEligibility::Unknown => unknown.push(machine.machine.name.clone()),
+            ServicePlacementEligibility::Ineligible => {}
+        }
+    }
     if machines.is_empty() {
-        return Err(placement_error(requested, snapshot));
+        if !unknown.is_empty() {
+            return Err(PlanError::ProvisionedVolumeStorageUnknown { names: unknown });
+        }
+        if requested.placement.machines.len() == 1 && candidates.len() == 1 {
+            return Err(PlanError::ProvisionedVolumeStorageRequired {
+                machine: candidates
+                    .first()
+                    .expect("explicit placement resolved exactly one Machine")
+                    .machine
+                    .name
+                    .clone(),
+            });
+        }
+        return Err(PlanError::ProvisionedVolumeStorageUnavailable);
     }
     shuffle(
         &mut machines,
         placement_state(options.placement_seed, &requested.name),
     );
     Ok(machines)
+}
+
+fn placement_candidates<'snapshot>(
+    requested: &RequestedServiceSpec,
+    snapshot: &'snapshot DeploySnapshot,
+) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
+    let candidates = snapshot
+        .machines
+        .iter()
+        .filter(|machine| machine.membership != MembershipObservation::Down)
+        .filter(|machine| {
+            ployz_core::machine_matches_placement(&machine.machine, &requested.placement)
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err(placement_error(requested, snapshot));
+    }
+    Ok(candidates)
+}
+
+fn storage_eligibility_warnings(
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> Vec<DeployWarning> {
+    let mut warned = BTreeSet::new();
+    requested
+        .iter()
+        .flat_map(|spec| {
+            snapshot
+                .machines
+                .iter()
+                .filter(|machine| machine.membership != MembershipObservation::Down)
+                .filter(move |machine| {
+                    service_placement_eligibility(
+                        &spec.placement,
+                        &spec.volume_graph,
+                        &machine.machine,
+                        machine.storage.as_ref(),
+                    ) == ServicePlacementEligibility::Unknown
+                })
+        })
+        .filter(|machine| warned.insert(machine.machine.id))
+        .map(|machine| DeployWarning::StorageObservationUnknown {
+            machine_id: machine.machine.id,
+        })
+        .collect()
 }
 
 fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> PlanError {
@@ -705,9 +795,7 @@ fn pre_deploy_operations(
                 machine_id, spec, ..
             }) if hook_machine == Some(machine_id) => Some((machine_id, spec)),
             DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => None,
-            DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }

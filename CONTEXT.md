@@ -125,7 +125,7 @@ A bounded membership-command operation that establishes this Machine's running S
 _Avoid_: scheduler, Cluster-wide Deploy
 
 **Global slot convergence**:
-Machine-local maintenance that restores this participating Machine's missing eligible Global slots from its observations. It is add-only and never schedules replicated Services or removes stale slots.
+Machine-local maintenance that converges this participating Machine to one slot for every observed eligible Global. It creates missing eligible slots, retires definitely ineligible slots, and leaves unknown eligibility unchanged.
 _Avoid_: Cluster-wide reconciler, scheduler, stale-slot pruning
 
 **Observed Global Slot Spec**:

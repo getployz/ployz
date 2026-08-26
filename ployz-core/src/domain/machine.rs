@@ -272,11 +272,11 @@ pub enum MachineStorageObservation {
 /// The latest failed Global reconciliation attempt for one Service on a Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GlobalReconcileFailureObservation {
-    /// Global Service whose local slot could not be ensured.
+    /// Global Service whose local slot could not be reconciled.
     pub service: QualifiedService,
-    /// Last error returned by this Machine's Global slot ensure path.
+    /// Last error returned by this Machine's Global slot ensure or retirement path.
     pub last_error: String,
-    /// RFC 3339 time of the failed ensure attempt.
+    /// RFC 3339 time of the failed reconciliation attempt.
     pub observed_at: String,
 }
 

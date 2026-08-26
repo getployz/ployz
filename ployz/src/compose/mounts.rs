@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use hex::encode as hex_encode;
 use ployz_core::{
-    ContainerPath, DockerVolumeName, MachinePath, ServiceMount, ServiceVolume,
-    ServiceVolumeReference, VolumeDriver, VolumeSource,
+    ContainerPath, DockerVolumeName, MachinePath, ProvisionedVolumeMaximumBytes, ServiceMount,
+    ServiceVolume, ServiceVolumeReference, VolumeDriver, VolumeSource,
 };
 use sha2::{Digest, Sha256};
 
@@ -15,6 +15,7 @@ use super::{
 pub(super) fn volumes(
     service: &RawService,
     root: &RawProject,
+    provisioned_volume_bounds: &BTreeMap<ServiceVolumeReference, ProvisionedVolumeMaximumBytes>,
 ) -> Result<(Vec<ServiceVolume>, Vec<ServiceMount>), ComposeError> {
     if let Some(source) = relative_bind_source(service) {
         return Err(invalid(format!("bind mount source '{source}' is relative")));
@@ -113,6 +114,11 @@ pub(super) fn volumes(
                         invalid(format!("volume '{key}' not found in project volumes"))
                     })?;
                 let external = is_external(&declared.external);
+                if declared.driver.is_none() && !declared.driver_opts.is_empty() {
+                    return Err(invalid(format!(
+                        "volume '{key}': driver_opts requires driver"
+                    )));
+                }
                 let docker_name = if external {
                     declared
                         .name
@@ -123,22 +129,28 @@ pub(super) fn volumes(
                 } else {
                     key.clone()
                 };
-                VolumeSource::Named {
-                    name: DockerVolumeName::parse(docker_name).map_err(invalid)?,
-                    external,
-                    driver: (!external
-                        && (declared.driver.is_some() || !declared.driver_opts.is_empty()))
-                    .then(|| VolumeDriver {
-                        name: declared.driver.clone().unwrap_or_default(),
-                        options: declared.driver_opts.clone(),
-                    }),
-                    labels: if external {
-                        BTreeMap::new()
-                    } else {
-                        declared.labels.clone()
-                    },
-                    no_copy: volume.is_some_and(|volume| volume.nocopy),
-                    subpath: volume.and_then(|volume| volume.subpath.clone()),
+                let name = DockerVolumeName::parse(docker_name).map_err(invalid)?;
+                let reference = ServiceVolumeReference::parse(key).map_err(invalid)?;
+                if let Some(maximum_bytes) = provisioned_volume_bounds.get(&reference) {
+                    VolumeSource::Provisioned {
+                        name,
+                        maximum_bytes: *maximum_bytes,
+                        labels: BTreeMap::new(),
+                    }
+                } else {
+                    VolumeSource::Named {
+                        name,
+                        external,
+                        driver: (!external && declared.driver.is_some()).then(|| VolumeDriver {
+                            name: declared.driver.clone().expect("driver presence checked"),
+                            options: declared.driver_opts.clone(),
+                        }),
+                        labels: if external {
+                            BTreeMap::new()
+                        } else {
+                            declared.labels.clone()
+                        },
+                    }
                 }
             }
             _ => unreachable!("validated volume kind"),
@@ -157,6 +169,8 @@ pub(super) fn volumes(
             volume: reference,
             target: ContainerPath::parse(target).map_err(invalid)?,
             read_only,
+            no_copy: volume.is_some_and(|volume| volume.nocopy),
+            subpath: volume.and_then(|volume| volume.subpath.clone()),
         });
     }
     Ok((

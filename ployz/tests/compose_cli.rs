@@ -364,7 +364,13 @@ x-volumes:
             .first()
             .unwrap()
             .source,
-        VolumeSource::Named { name, external: false, .. } if name.as_str() == "data"
+        VolumeSource::Provisioned {
+            name,
+            maximum_bytes,
+            labels,
+        } if name.as_str() == "data"
+            && maximum_bytes.get() == 10 * 1024_u64.pow(3)
+            && labels.is_empty()
     ));
     fs::remove_dir_all(root).unwrap();
 }

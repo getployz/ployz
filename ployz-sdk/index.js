@@ -172,7 +172,6 @@ function applyAll(project_name, specs, options = defaultPlanOptions()) {
   return {
     project_name,
     target: specs,
-    provisioned_volumes: [],
     options,
   };
 }
@@ -181,7 +180,6 @@ function applyOne(project_name, spec, options = defaultPlanOptions()) {
   return {
     project_name,
     target: [spec],
-    provisioned_volumes: [],
     options: {
       ...defaultPlanOptions(),
       ...options,

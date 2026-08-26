@@ -216,8 +216,6 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
                 external: false,
                 driver: None,
                 labels: BTreeMap::new(),
-                no_copy: option == Some("volume-nocopy"),
-                subpath: None,
             }
         };
         volumes.push(ServiceVolume {
@@ -228,6 +226,8 @@ fn parse_volumes(values: &[String]) -> Result<(Vec<ServiceVolume>, Vec<ServiceMo
             volume: reference,
             target: ContainerPath::parse(target)?,
             read_only: option == Some("ro"),
+            no_copy: option == Some("volume-nocopy"),
+            subpath: None,
         });
     }
     Ok((volumes, mounts))

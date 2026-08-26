@@ -8,8 +8,7 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId,
     MachineName, MachineObservation, MachineTarget, PartialResult, ProjectName,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
-    ServiceObservation, ServiceVolumeReference, VolumeInventory, VolumeObservationFailure,
-    derive_services,
+    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -216,46 +215,6 @@ impl VolumeSnapshot {
             .iter()
             .find(|failure| relevant(&failure.id))
             .map(|failure| (failure.id.clone(), failure.error.message.clone()))
-    }
-
-    fn external_gap(
-        &self,
-        names: &[DockerVolumeName],
-        machine_name: impl Fn(MachineId) -> String,
-    ) -> Option<(DockerVolumeId, String)> {
-        if let Some(failure) = self
-            .named_failures
-            .iter()
-            .find(|failure| names.contains(&failure.id.name))
-        {
-            return Some((failure.id.clone(), failure.error.message.clone()));
-        }
-        let name = names.first()?;
-        if let Some(failure) = self.machine_failures.first() {
-            return Some((
-                DockerVolumeId {
-                    machine_id: failure.machine_id,
-                    name: name.clone(),
-                },
-                format!(
-                    "Machine '{}' Docker Volume inventory failed: {}",
-                    machine_name(failure.machine_id),
-                    failure.error.message
-                ),
-            ));
-        }
-        self.omissions.first().map(|machine_id| {
-            (
-                DockerVolumeId {
-                    machine_id: *machine_id,
-                    name: name.clone(),
-                },
-                format!(
-                    "Machine '{}' Docker Volume inventory produced no terminal response",
-                    machine_name(*machine_id)
-                ),
-            )
-        })
     }
 
     pub(crate) fn deploy_warnings(&self) -> impl Iterator<Item = DeployWarning> + '_ {
@@ -510,34 +469,6 @@ pub enum PlanError {
         /// Service Name repeated in the Deploy Intent target.
         service: ServiceName,
     },
-    /// Two references resolve to one Docker Volume but declare different bounds.
-    #[error(
-        "Provisioned Volume declarations for Docker Volume {name} conflict: {existing_maximum_bytes} and {conflicting_maximum_bytes} byte maximums"
-    )]
-    ConflictingProvisionedVolumeBounds {
-        /// Scoped Docker Volume identity shared by the declarations.
-        name: DockerVolumeName,
-        /// Bound already assigned to `name`.
-        existing_maximum_bytes: ProvisionedVolumeMaximumBytes,
-        /// Later bound that conflicts with the existing declaration.
-        conflicting_maximum_bytes: ProvisionedVolumeMaximumBytes,
-    },
-    /// A Provisioned Volume declaration names no Service Volume in the target.
-    #[error("Provisioned Volume {service}/{reference} does not resolve to a Service Volume")]
-    UnknownProvisionedVolumeReference {
-        /// Service expected to own the local reference.
-        service: ServiceName,
-        /// Service-local Volume Reference that was not found.
-        reference: ServiceVolumeReference,
-    },
-    /// A Provisioned Volume declaration resolves to a Bind or Tmpfs mount source.
-    #[error("Provisioned Volume {service}/{reference} does not resolve to a named Docker Volume")]
-    ProvisionedVolumeReferenceNotNamed {
-        /// Service that owns the local reference.
-        service: ServiceName,
-        /// Service-local Volume Reference with a non-Volume source.
-        reference: ServiceVolumeReference,
-    },
     /// The selected Machine has no usable ZFS storage preparation.
     #[error(
         "Machine '{machine}' requires storage preparation before deploying a Provisioned Volume; enroll it with --storage zfs"
@@ -551,6 +482,15 @@ pub enum PlanError {
         "no observed eligible Machine is storage-ready or has a Machine Pool; enroll one with --storage zfs before deploying a Provisioned Volume"
     )]
     ProvisionedVolumeStorageUnavailable,
+    /// Storage capability was unavailable for every otherwise eligible Machine.
+    #[error(
+        "storage could not be checked on {}; retry after those Machines can report storage capability",
+        MachineNames(.names)
+    )]
+    ProvisionedVolumeStorageUnknown {
+        /// Placement-matching Machines without storage evidence.
+        names: Vec<MachineName>,
+    },
     /// An ordinary Docker Volume already owns the requested machine-local name.
     #[error(
         "Plain Docker Volume {name} already exists on Machine '{machine}'; conversion to a Provisioned Volume is outside the Provisioned Volume MVP"
@@ -591,8 +531,6 @@ pub enum PlanError {
     DependencyCycle { service: String },
     #[error("Docker Volume {id:?} is unavailable: {message}")]
     DockerVolumeUnavailable { id: DockerVolumeId, message: String },
-    #[error("external volumes not found: {}", quoted_names(.names))]
-    ExternalVolumesNotFound { names: Vec<DockerVolumeName> },
     #[error("hostname {hostname} is already published by {owner}")]
     HostnameConflict {
         hostname: IngressHost,
@@ -613,17 +551,12 @@ impl From<ExpandIngressError> for PlanError {
     }
 }
 
-fn quoted_names(names: &[DockerVolumeName]) -> String {
-    let mut quoted = String::new();
-    for (index, name) in names.iter().enumerate() {
-        if index > 0 {
-            quoted.push_str(", ");
-        }
-        quoted.push('\'');
-        quoted.push_str(name.as_str());
-        quoted.push('\'');
+struct MachineNames<'names>(&'names [MachineName]);
+
+impl fmt::Display for MachineNames<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_machine_names(f, self.0)
     }
-    quoted
 }
 
 fn compose_deploy_intent(
@@ -631,66 +564,28 @@ fn compose_deploy_intent(
     project_name: ProjectName,
     options: PlanOptions,
 ) -> DeployIntent {
-    let mut intent = DeployIntent::from_named_specs(
+    DeployIntent::from_named_specs(
         project_name,
         &project.services,
         &project.dependencies,
         options,
     )
-    .with_service_profiles(project.service_profiles());
-    intent.provisioned_volumes = project.provisioned_volume_declarations();
-    intent
+    .with_service_profiles(project.service_profiles())
 }
 
-/// Plan a Compose project: fail if any `external: true` volume is missing from
-/// the snapshot, then plan service operations.
+/// Plan a Compose project.
 ///
 /// # Errors
 ///
-/// Returns when an external volume is absent from every Machine, or when
-/// placement, volumes, service identity, hostname assignment, or the apply-set
-/// dependency graph cannot produce a preview.
+/// Returns when placement, volumes, service identity, hostname assignment, or
+/// the apply-set dependency graph cannot produce a preview.
 pub fn plan_compose(
     project: &ComposeProject,
     snapshot: &DeploySnapshot,
     project_name: ProjectName,
 ) -> Result<DeployPreview, PlanError> {
-    reject_missing_external_volumes(project, snapshot)?;
     let intent = compose_deploy_intent(project, project_name, PlanOptions::default());
     preview_deploy(&intent, snapshot, IngressContext::default())
-}
-
-pub(crate) fn reject_missing_external_volumes(
-    project: &ComposeProject,
-    snapshot: &DeploySnapshot,
-) -> Result<(), PlanError> {
-    let present = snapshot
-        .volume_snapshot
-        .observations()
-        .iter()
-        .map(|volume| &volume.id.name)
-        .collect::<BTreeSet<_>>();
-    let names = project
-        .external_volume_names()
-        .filter(|name| !present.contains(name))
-        .collect::<Vec<_>>();
-    if let Some((id, message)) = snapshot.volume_snapshot.external_gap(&names, |machine_id| {
-        snapshot
-            .machines
-            .iter()
-            .find(|machine| machine.machine.id == machine_id)
-            .map_or_else(
-                || machine_id.to_string(),
-                |machine| machine.machine.name.to_string(),
-            )
-    }) {
-        return Err(PlanError::DockerVolumeUnavailable { id, message });
-    }
-    if names.is_empty() {
-        Ok(())
-    } else {
-        Err(PlanError::ExternalVolumesNotFound { names })
-    }
 }
 
 impl PlanError {

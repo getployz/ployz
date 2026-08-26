@@ -2,12 +2,11 @@ use std::{future::Future, time::Duration};
 
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
-    DockerVolume, DockerVolumeId, ExecutionError, FailedOperation, HookFailure,
-    InspectContainerRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
-    OperationPhase, OperationRow, ProjectName, QualifiedService, RemoveContainerRequest,
-    RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, StartContainerRequest,
-    StopContainerRequest, UpdateOrder, op,
+    ContainerRuntimeObservation, CreateContainerRequest, DeployEvent, DockerVolumeId,
+    ExecutionError, FailedOperation, HookFailure, InspectContainerRequest, MachineAction,
+    MachineId, MachineTarget, MembershipObservation, OperationPhase, OperationRow, ProjectName,
+    QualifiedService, RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, StartContainerRequest, StopContainerRequest, UpdateOrder, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -73,11 +72,6 @@ pub(super) trait MachineOperations {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError>;
-    async fn create_volume(
-        &self,
-        machine_id: &MachineId,
-        request: CreateVolumeRequest,
-    ) -> Result<DockerVolume, RpcError>;
     async fn create_container(
         &self,
         machine_id: &MachineId,
@@ -148,14 +142,6 @@ impl MachineOperations for Client {
                     && container.service_name == service.name
             })
             .collect())
-    }
-
-    async fn create_volume(
-        &self,
-        machine_id: &MachineId,
-        request: CreateVolumeRequest,
-    ) -> Result<DockerVolume, RpcError> {
-        crate::service::create_volume_on_machine(self, machine_id, request).await
     }
 
     async fn create_container(
@@ -305,14 +291,6 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError> {
         wait_out_restart(self.cancellation, || self.inner.service_containers(service)).await
-    }
-
-    async fn create_volume(
-        &self,
-        machine_id: &MachineId,
-        request: CreateVolumeRequest,
-    ) -> Result<DockerVolume, RpcError> {
-        self.inner.create_volume(machine_id, request).await
     }
 
     async fn create_container(
@@ -487,47 +465,6 @@ async fn execute_operation<C: MachineOperations>(
 ) -> Result<(), OperationFailure> {
     progress.set_running(index, OperationPhase::Starting);
     match operation {
-        DeployOperation::CreateVolume { machine_id, volume } => {
-            progress.set_running(index, OperationPhase::CreatingVolume);
-            let request = crate::volume::create_volume_request(volume, None)
-                .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
-            client
-                .create_volume(machine_id, request)
-                .await
-                .map(|_| ())
-                .map_err(|error| machine_error(MachineAction::CreateVolume, error).into())
-        }
-        DeployOperation::CreateProvisionedVolume {
-            machine_id,
-            volume,
-            maximum_bytes,
-            ..
-        } => {
-            progress.set_running(index, OperationPhase::CreatingVolume);
-            let size = crate::volume::ProvisionedVolumeSize::from_maximum_bytes(*maximum_bytes);
-            let request = crate::volume::create_volume_request(volume, Some(&size))
-                .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
-            let created = client
-                .create_volume(machine_id, request)
-                .await
-                .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
-            if size.matches(&created) {
-                Ok(())
-            } else {
-                Err(machine_error(
-                    MachineAction::CreateVolume,
-                    RpcError {
-                        code: RpcErrorCode::InvalidArgument,
-                        message: format!(
-                            "Docker Volume {:?} already exists with a different shape and will not be replaced or converted to the requested {maximum_bytes}-byte Provisioned Volume",
-                            created.id.name
-                        ),
-                        details: serde_json::Value::Null,
-                    },
-                )
-                .into())
-            }
-        }
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, cancellation)
                 .await

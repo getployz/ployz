@@ -121,7 +121,9 @@ mod tests {
                 .iter()
                 .filter_map(|volume| match &volume.source {
                     VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
+                    VolumeSource::Named { .. }
+                    | VolumeSource::Provisioned { .. }
+                    | VolumeSource::Tmpfs { .. } => None,
                 })
                 .collect::<Vec<_>>(),
             ["/var/lib/ployz/ingress", "/run/ployz/ingress"]

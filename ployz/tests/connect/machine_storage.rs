@@ -1,10 +1,9 @@
-use std::{num::NonZeroU64, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 
 use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz_core::{
     CapabilityName, ContractDescription, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId,
-    PROTOCOL_MAJOR, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
-    RequestedServiceSpec, ServiceName, ServiceVolumeReference,
+    PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec,
 };
 use serde_json::Value;
 
@@ -118,22 +117,16 @@ async fn deploy_preview_observes_storage_before_refusing_a_stateless_explicit_ta
         "placement": { "machines": ["one"] },
         "volumes": [{
             "reference": "data",
-            "source": { "kind": "named", "name": "data" }
+            "source": { "kind": "provisioned", "name": "data", "maximum_bytes": "1024" }
         }],
         "mounts": [{ "volume": "data", "target": "/data" }]
     }))
     .unwrap();
-    let mut intent = DeployIntent::apply_one(
+    let intent = DeployIntent::apply_one(
         ProjectName::parse("app").unwrap(),
         requested,
         PlanOptions::default(),
     );
-    intent.provisioned_volumes = vec![ProvisionedVolume {
-        service: ServiceName::parse("api").unwrap(),
-        reference: ServiceVolumeReference::parse("data").unwrap(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1024).unwrap()),
-    }];
-
     let error = client.preview(intent).await.unwrap_err().to_string();
 
     assert!(error.contains("storage preparation"), "{error}");

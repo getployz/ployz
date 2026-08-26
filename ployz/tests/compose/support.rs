@@ -61,34 +61,20 @@ pub(super) fn snapshot_volume(machine_id: MachineId, name: &str) -> DockerVolume
 }
 
 pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
-    DockerVolume {
-        id: DockerVolumeId {
-            machine_id,
-            name: app_volume(logical),
-        },
-        options: BTreeMap::new(),
-        labels: BTreeMap::new(),
-        storage: DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
+    managed_snapshot_volume(machine_id, app_volume(logical).as_str())
+}
+
+pub(super) fn managed_snapshot_volume(machine_id: MachineId, name: &str) -> DockerVolume {
+    let mut volume = snapshot_volume(machine_id, name);
+    volume.labels = BTreeMap::from([
+        (MANAGED_LABEL.to_owned(), String::new()),
+        (PROJECT_NAME_LABEL.to_owned(), "app".to_owned()),
+    ]);
+    volume
 }
 
 pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
-    DockerVolume {
-        id: DockerVolumeId {
-            machine_id,
-            name: app_volume(logical),
-        },
-        options: BTreeMap::new(),
-        labels: BTreeMap::from([
-            (MANAGED_LABEL.to_owned(), String::new()),
-            (PROJECT_NAME_LABEL.to_owned(), "app".to_owned()),
-        ]),
-        storage: DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
+    observed_volume(machine_id, logical)
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {

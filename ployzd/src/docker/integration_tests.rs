@@ -96,7 +96,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     let spec = fixture_spec(&service_id, &service_name);
 
     let created = runtime
-        .create(
+        .create_for_test(
             &machine_id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
@@ -168,7 +168,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     ));
 
     let reset_target = runtime
-        .create(
+        .create_for_test(
             &machine_id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
@@ -260,14 +260,14 @@ async fn concurrent_runtime_creates_admit_only_one_last_bridge_endpoint() {
     let second_spec = fixture_spec(&ServiceId::random(), &ServiceName::parse("second").unwrap());
 
     let (first_result, second_result) = tokio::join!(
-        first.create(
+        first.create_for_test(
             &machine,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
             &project,
             &first_spec
         ),
-        second.create(
+        second.create_for_test(
             &machine,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
@@ -366,7 +366,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     .unwrap();
 
     let created = runtime
-        .create(
+        .create_for_test(
             &machine_id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
@@ -476,7 +476,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     failed_spec.container.pull_policy = PullPolicy::Never;
     assert!(
         runtime
-            .create(
+            .create_for_test(
                 &machine_id,
                 TEST_GATEWAY,
                 ContainerKind::ServiceContainer,
@@ -674,7 +674,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     .unwrap();
 
     let container_id = runtime
-        .create(
+        .create_for_test(
             &machine_id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,

@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use clap::ArgMatches;
 use ployz_core::{
     ContainerAction, ContainerRef, ContainerRuntimeObservation, HealthObservation, LiveServices,
-    MachineObservation, MembershipObservation, RpcError, ServiceObservation, ServiceSelector,
-    machine_matches_placement, select_service,
+    MachineObservation, MembershipObservation, RpcError, ServiceObservation,
+    ServicePlacementEligibility, ServiceSelector, select_service, service_placement_eligibility,
 };
 
 use super::{Error, leaf_matches, with_client};
@@ -21,7 +21,8 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
         == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
-            let machines = client.machines().await?;
+            let mut machines = client.machines().await?;
+            client.observe_machine_storage(&mut machines).await;
             let live = client.live_services_from(&machines).await?;
             print_observation_warning(&live);
             let services = live.services();
@@ -30,15 +31,20 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
             } else {
                 println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
                 for service in &services {
-                    let (running, expected) = service_counts(service, &machines);
+                    let counts = service_counts(service, &machines);
                     println!(
-                        "{}\t{}\t{}/{}\t{}",
+                        "{}\t{}\t{}\t{}",
                         service.service_id,
                         service.identity,
-                        running,
-                        expected,
+                        service_count_text(counts),
                         service.hook_containers.len()
                     );
+                    if counts.unknown > 0 {
+                        eprintln!(
+                            "WARNING: {} has unknown storage eligibility on {} Machine(s)",
+                            service.identity, counts.unknown
+                        );
+                    }
                 }
             }
             Ok(())
@@ -46,7 +52,7 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn service_counts(service: &ServiceObservation, machines: &[MachineObservation]) -> (usize, usize) {
+fn service_counts(service: &ServiceObservation, machines: &[MachineObservation]) -> ServiceCounts {
     let running = service
         .containers
         .iter()
@@ -57,16 +63,56 @@ fn service_counts(service: &ServiceObservation, machines: &[MachineObservation])
             )
         })
         .count();
-    let expected = service
-        .observed_global_slot_spec()
-        .map_or(service.containers.len(), |spec| {
-            machines
-                .iter()
-                .filter(|machine| machine.membership == MembershipObservation::Up)
-                .filter(|machine| machine_matches_placement(&machine.machine, &spec.placement))
-                .count()
-        });
-    (running, expected)
+    let Some(spec) = service.observed_global_slot_spec() else {
+        return ServiceCounts {
+            running,
+            expected: service.containers.len(),
+            unknown: 0,
+        };
+    };
+    let mut eligible = 0;
+    let mut unknown = 0;
+    for machine in machines
+        .iter()
+        .filter(|machine| machine.membership == MembershipObservation::Up)
+    {
+        match service_placement_eligibility(
+            &spec.placement,
+            &spec.volume_graph,
+            &machine.machine,
+            machine.storage.as_ref(),
+        ) {
+            ServicePlacementEligibility::Eligible => eligible += 1,
+            ServicePlacementEligibility::Unknown => unknown += 1,
+            ServicePlacementEligibility::Ineligible => {}
+        }
+    }
+    ServiceCounts {
+        running,
+        expected: eligible,
+        unknown,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ServiceCounts {
+    running: usize,
+    expected: usize,
+    unknown: usize,
+}
+
+fn service_count_text(
+    ServiceCounts {
+        running,
+        expected,
+        unknown,
+    }: ServiceCounts,
+) -> String {
+    if unknown == 0 {
+        format!("{running}/{expected}")
+    } else {
+        format!("{running}/{expected} (+{unknown} unknown)")
+    }
 }
 
 /// List observed Service and hook Containers.
@@ -398,7 +444,105 @@ mod tests {
             machine('d', "batch", MembershipObservation::Up),
         ];
 
-        assert_eq!(service_counts(&service, &machines), (1, 2));
+        assert_eq!(
+            service_counts(&service, &machines),
+            ServiceCounts {
+                running: 1,
+                expected: 2,
+                unknown: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn global_summary_exposes_unknown_storage_and_over_placement() {
+        use std::num::NonZeroU64;
+
+        use ployz_core::{
+            ContainerPath, DockerVolumeName, MachineStorageObservation,
+            ProvisionedVolumeMaximumBytes, ServiceMount, ServiceVolume, ServiceVolumeGraph,
+            ServiceVolumeReference, VolumeSource,
+        };
+
+        let mut service = service_named('a', "app", "api");
+        let mut first = service.containers.pop().unwrap().into_observation();
+        first.runtime = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        };
+        first.resolved_spec.mode = ServiceMode::Global;
+        let reference = ServiceVolumeReference::parse("data").unwrap();
+        first.resolved_spec.volume_graph = ServiceVolumeGraph::parse(
+            vec![ServiceVolume {
+                reference: reference.clone(),
+                source: VolumeSource::Provisioned {
+                    name: DockerVolumeName::parse("app_data").unwrap(),
+                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                        NonZeroU64::new(100).unwrap(),
+                    ),
+                    labels: Default::default(),
+                },
+            }],
+            vec![ServiceMount {
+                volume: reference,
+                target: ContainerPath::parse("/data").unwrap(),
+                read_only: false,
+                no_copy: false,
+                subpath: None,
+            }],
+        )
+        .unwrap();
+        let containers = ('a'..='f')
+            .map(|machine| {
+                let mut observation = first.clone();
+                observation.container_id =
+                    ployz_core::ContainerId::parse(machine.to_string().repeat(64)).unwrap();
+                observation.machine_id = MachineId::parse(machine.to_string().repeat(32)).unwrap();
+                ServiceContainer::try_from(observation).unwrap()
+            })
+            .collect::<Vec<_>>();
+        service.containers = containers.iter().take(3).cloned().collect();
+        let mut machines = ('a'..='f')
+            .chain(std::iter::once('1'))
+            .map(|id| machine(id, &format!("edge-{id}"), MembershipObservation::Up))
+            .collect::<Vec<_>>();
+        for machine in machines.iter_mut().take(3) {
+            machine.storage = Some(MachineStorageObservation::Ready);
+        }
+        for machine in machines.iter_mut().skip(3).take(3) {
+            machine.storage = Some(MachineStorageObservation::Stateless);
+        }
+
+        assert_eq!(
+            service_counts(&service, &machines),
+            ServiceCounts {
+                running: 3,
+                expected: 3,
+                unknown: 1,
+            }
+        );
+        assert_eq!(
+            service_count_text(service_counts(&service, &machines)),
+            "3/3 (+1 unknown)"
+        );
+        service
+            .containers
+            .extend(containers.iter().skip(3).cloned());
+        assert_eq!(
+            service_counts(&service, &machines),
+            ServiceCounts {
+                running: 6,
+                expected: 3,
+                unknown: 1,
+            }
+        );
+        assert_eq!(
+            service_count_text(ServiceCounts {
+                running: 6,
+                expected: 3,
+                unknown: 0,
+            }),
+            "6/3"
+        );
     }
 
     #[test]

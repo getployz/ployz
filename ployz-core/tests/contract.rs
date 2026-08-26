@@ -20,14 +20,13 @@ use ployz_core::{
     MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
     MachineTokenRequest, MachineUpdate, ManagementAddress, NameMatches, OpaquePayload,
     PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult,
-    Placement, PortPublication, PreDeployHook, ProjectName, ProvisionedVolume, PublicIpDiscovery,
-    PublicIpUpdate, PullImageFromMachineRequest, PullPolicy, QualifiedService,
-    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeSource, encode_grpc_frame, grpc_frames, op,
+    Placement, PortPublication, PreDeployHook, ProjectName, PublicIpDiscovery, PublicIpUpdate,
+    PullImageFromMachineRequest, PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
+    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
+    UpdateMachineRequest, UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -36,30 +35,30 @@ const MACHINE_ID: &str = "0123456789abcdef0123456789abcdef";
 const OTHER_MACHINE_ID: &str = "fedcba9876543210fedcba9876543210";
 
 #[test]
-fn provisioned_volume_bounds_are_required_positive_byte_counts() {
+fn provisioned_volume_sources_carry_required_positive_byte_counts() {
     let valid = json!({
-        "service": "api",
-        "reference": "data",
-        "maximum_bytes": "1073741824"
+        "kind": "provisioned",
+        "name": "data",
+        "maximum_bytes": "1073741824",
+        "labels": {"backup": "daily"}
     });
-    let volume: ProvisionedVolume = serde_json::from_value(valid.clone()).unwrap();
-    assert_eq!(volume.maximum_bytes.get(), 1_073_741_824);
-    assert_eq!(serde_json::to_value(volume).unwrap(), valid);
+    let source: VolumeSource = serde_json::from_value(valid.clone()).unwrap();
+    assert_eq!(serde_json::to_value(source).unwrap(), valid);
     let exact_u64_max = json!({
-        "service": "api",
-        "reference": "data",
-        "maximum_bytes": "18446744073709551615"
+        "kind": "provisioned",
+        "name": "data",
+        "maximum_bytes": "18446744073709551615",
+        "labels": {}
     });
-    let volume: ProvisionedVolume = serde_json::from_value(exact_u64_max.clone()).unwrap();
-    assert_eq!(volume.maximum_bytes.get(), u64::MAX);
-    assert_eq!(serde_json::to_value(volume).unwrap(), exact_u64_max);
+    let source: VolumeSource = serde_json::from_value(exact_u64_max.clone()).unwrap();
+    assert_eq!(serde_json::to_value(source).unwrap(), exact_u64_max);
     for invalid in [
-        r#"{"service":"api","reference":"data"}"#,
-        r#"{"service":"api","reference":"data","maximum_bytes":"0"}"#,
-        r#"{"service":"api","reference":"data","maximum_bytes":"18446744073709551616"}"#,
-        r#"{"service":"api","reference":"data","maximum_bytes":9007199254740993}"#,
+        r#"{"kind":"provisioned","name":"data"}"#,
+        r#"{"kind":"provisioned","name":"data","maximum_bytes":"0"}"#,
+        r#"{"kind":"provisioned","name":"data","maximum_bytes":"18446744073709551616"}"#,
+        r#"{"kind":"provisioned","name":"data","maximum_bytes":9007199254740993}"#,
     ] {
-        assert!(serde_json::from_str::<ProvisionedVolume>(invalid).is_err());
+        assert!(serde_json::from_str::<VolumeSource>(invalid).is_err());
     }
 }
 
@@ -321,8 +320,6 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
         external: false,
         driver: None,
         labels: Default::default(),
-        no_copy: false,
-        subpath: None,
     };
     named.scope_to_project(&project);
     named.scope_to_project(&project);
@@ -335,7 +332,9 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
                 Some("shop")
             );
         }
-        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
+        VolumeSource::Provisioned { .. }
+        | VolumeSource::Bind { .. }
+        | VolumeSource::Tmpfs { .. } => {
             panic!("expected a named volume")
         }
     }
@@ -345,8 +344,6 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
         external: true,
         driver: None,
         labels: Default::default(),
-        no_copy: false,
-        subpath: None,
     };
     external.scope_to_project(&project);
     match &external {
@@ -354,7 +351,9 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
             assert_eq!(name.as_str(), "shared");
             assert!(labels.is_empty());
         }
-        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
+        VolumeSource::Provisioned { .. }
+        | VolumeSource::Bind { .. }
+        | VolumeSource::Tmpfs { .. } => {
             panic!("expected a named volume")
         }
     }
@@ -364,8 +363,6 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
         external: false,
         driver: None,
         labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "blog".into())]),
-        no_copy: false,
-        subpath: None,
     };
     foreign.scope_to_project(&project);
     match &foreign {
@@ -376,7 +373,9 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
                 Some("blog")
             );
         }
-        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
+        VolumeSource::Provisioned { .. }
+        | VolumeSource::Bind { .. }
+        | VolumeSource::Tmpfs { .. } => {
             panic!("expected a named volume")
         }
     }
@@ -1453,6 +1452,8 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         volume: reference,
         target: ContainerPath::parse("/var/lib/api").unwrap(),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     };
     let requested = RequestedServiceSpec {
         name: ServiceName::parse("api").unwrap(),

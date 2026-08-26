@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DockerVolume, DockerVolumeId, DockerVolumeName, RpcError};
+use crate::{
+    DockerVolume, DockerVolumeId, DockerVolumeName, PROVISIONED_VOLUME_DRIVER, RpcError,
+    VolumeSource,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CreateVolumeRequest {
@@ -12,6 +15,44 @@ pub struct CreateVolumeRequest {
     pub options: BTreeMap<String, String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+}
+
+impl VolumeSource {
+    /// Build the exact Docker creation request for a managed Volume source.
+    ///
+    /// External named Volumes, Bind Mounts, and Tmpfs Mounts have no creation
+    /// request because Ployz does not create them as Docker Volumes.
+    #[must_use]
+    pub fn to_create_volume_request(&self) -> Option<CreateVolumeRequest> {
+        match self {
+            Self::Named {
+                name,
+                external: false,
+                driver,
+                labels,
+            } => Some(CreateVolumeRequest {
+                name: name.clone(),
+                driver: driver
+                    .as_ref()
+                    .map_or_else(|| "local".into(), |driver| driver.name.clone()),
+                options: driver
+                    .as_ref()
+                    .map_or_else(BTreeMap::new, |driver| driver.options.clone()),
+                labels: labels.clone(),
+            }),
+            Self::Provisioned {
+                name,
+                maximum_bytes,
+                labels,
+            } => Some(CreateVolumeRequest {
+                name: name.clone(),
+                driver: PROVISIONED_VOLUME_DRIVER.into(),
+                options: BTreeMap::from([("size".into(), format!("{}b", maximum_bytes.get()))]),
+                labels: labels.clone(),
+            }),
+            Self::Named { external: true, .. } | Self::Bind { .. } | Self::Tmpfs { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

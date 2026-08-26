@@ -40,10 +40,7 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
     assert!(!spec.volume_graph.mounts().is_empty());
     assert!(spec.config_graph.mounts().is_empty());
     assert!(spec.mounts().first().is_some_and(|mount| mount.read_only));
-    assert!(matches!(
-        spec.volumes().get(1).map(|volume| &volume.source),
-        Some(ployz_core::VolumeSource::Named { no_copy: true, .. })
-    ));
+    assert!(spec.mounts().get(1).is_some_and(|mount| mount.no_copy));
 
     let matches = crate::cli::command()
         .try_get_matches_from([

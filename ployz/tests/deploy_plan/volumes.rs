@@ -1,8 +1,8 @@
 use super::support::*;
 use ployz_core::{
     DockerVolume, DockerVolumeStorageObservation, MachineFailure, MachineStorageObservation,
-    PreservedVolume, ProvisionedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError,
-    RpcErrorCode, ServiceAttempt, ServiceName, VolumeObservationFailure,
+    PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError, RpcErrorCode,
+    ServiceAttempt, ServiceName, VolumeObservationFailure,
 };
 use std::{collections::BTreeMap, num::NonZeroU64};
 
@@ -10,26 +10,17 @@ fn maximum_bytes(bytes: u64) -> ProvisionedVolumeMaximumBytes {
     ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(bytes).unwrap())
 }
 
-fn provisioned(service: &str, reference: &str, bytes: u64) -> ProvisionedVolume {
-    ProvisionedVolume {
-        service: ServiceName::parse(service).unwrap(),
-        reference: ServiceVolumeReference::parse(reference).unwrap(),
-        maximum_bytes: maximum_bytes(bytes),
-    }
-}
-
 fn automatic_provisioned_intent() -> DeployIntent {
     let mut service = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     add_named_volume(&mut service, "data");
-    let mut intent = DeployIntent::apply_all(
+    make_provisioned(&mut service, "data", 1_073_741_824);
+    DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&service],
         PlanOptions::default(),
-    );
-    intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
-    intent
+    )
 }
 
 #[test]
@@ -110,17 +101,16 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
 
     assert!(matches!(
         operations(&plan).as_slice(),
-        [
-            DeployOperation::CreateVolume {
-                machine_id: create,
-                ..
-            },
-            DeployOperation::RunContainer {
-                machine_id: run,
-                ..
-            },
-        ] if *create == machine_id('2') && *run == machine_id('2')
+        [DeployOperation::RunContainer { machine_id: run, .. }]
+            if *run == machine_id('2')
     ));
+    assert_eq!(
+        plan.volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .machine_id,
+        machine_id('2')
+    );
 }
 
 #[test]
@@ -164,6 +154,7 @@ fn explicitly_targeted_provisioned_deploy(
     });
     service.placement.machines = vec![MachineTarget::parse("first").unwrap()];
     add_named_volume(&mut service, "data");
+    make_provisioned(&mut service, "data", 1_073_741_824);
     add_named_volume(&mut service, "cache");
     service.pre_deploy = Some(PreDeployHook {
         command: vec!["prepare".into()],
@@ -172,12 +163,11 @@ fn explicitly_targeted_provisioned_deploy(
         timeout_millis: None,
         user: None,
     });
-    let mut intent = DeployIntent::apply_all(
+    let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&service],
         PlanOptions::default(),
     );
-    intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
     let mut target = machine('1', "first");
     target.storage = storage;
     preview_deploy(
@@ -193,7 +183,7 @@ fn explicitly_targeted_provisioned_deploy(
 }
 
 #[test]
-fn explicitly_targeted_provisioned_volume_precedes_hook_service_and_plain_volume() {
+fn missing_managed_volumes_are_informational_and_container_order_stays_exact() {
     let preview =
         explicitly_targeted_provisioned_deploy(Some(MachineStorageObservation::Ready), Vec::new())
             .unwrap();
@@ -201,15 +191,28 @@ fn explicitly_targeted_provisioned_volume_precedes_hook_service_and_plain_volume
     assert!(matches!(
         operations(&preview).as_slice(),
         [
-            DeployOperation::CreateVolume { volume: cache, .. },
-            DeployOperation::CreateProvisionedVolume {
-                volume: data,
-                ..
-            },
             DeployOperation::RunHook { .. },
-            DeployOperation::RunContainer { .. },
-        ] if data.reference.as_str() == "data" && cache.reference.as_str() == "cache"
+            DeployOperation::RunContainer { .. }
+        ]
     ));
+    assert_eq!(preview.volumes_to_create.len(), 2);
+    let cache = preview
+        .volumes_to_create
+        .first()
+        .expect("ordinary Volume is previewed first");
+    let data = preview
+        .volumes_to_create
+        .get(1)
+        .expect("Provisioned Volume is previewed second");
+    assert_eq!(cache.machine_id, machine_id('1'));
+    assert_eq!(
+        cache.machine_name.as_ref().map(MachineName::as_str),
+        Some("first")
+    );
+    assert_eq!(cache.name.as_str(), "app_cache");
+    assert!(cache.maximum_bytes.is_none());
+    assert_eq!(data.name.as_str(), "app_data");
+    assert_eq!(data.maximum_bytes, Some(maximum_bytes(1_073_741_824)));
 }
 
 #[test]
@@ -227,14 +230,13 @@ fn stateless_explicit_target_requires_storage_preparation() {
 }
 
 #[test]
-fn missing_storage_evidence_requires_storage_preparation() {
-    let error = explicitly_targeted_provisioned_deploy(None, Vec::new())
-        .unwrap_err()
-        .to_string();
-
-    assert!(error.contains("first"), "{error}");
-    assert!(error.contains("storage preparation"), "{error}");
-    assert!(error.contains("--storage zfs"), "{error}");
+fn missing_storage_evidence_reports_that_storage_could_not_be_checked() {
+    assert_eq!(
+        explicitly_targeted_provisioned_deploy(None, Vec::new()),
+        Err(PlanError::ProvisionedVolumeStorageUnknown {
+            names: vec![MachineName::parse("first").unwrap()],
+        })
+    );
 }
 
 #[test]
@@ -259,9 +261,74 @@ fn existing_plain_volume_is_not_adopted_as_provisioned() {
 }
 
 #[test]
+fn ordinary_volume_does_not_adopt_an_existing_provisioned_volume() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.placement.machines = vec![MachineTarget::parse("first").unwrap()];
+    add_named_volume(&mut requested, "data");
+    let mut existing = observed_volume(machine_id('1'), "data");
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 0,
+    };
+
+    let error = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing]).unwrap(),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("app_data"), "{error}");
+    assert!(error.contains("no machines available"), "{error}");
+}
+
+#[test]
+fn omitted_driver_means_exactly_local_with_no_options() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut requested, "data");
+    for mut existing in [
+        {
+            let mut volume = observed_volume(machine_id('1'), "data");
+            volume.storage = DockerVolumeStorageObservation::Plain {
+                driver: "foreign".into(),
+            };
+            volume
+        },
+        {
+            let mut volume = observed_volume(machine_id('1'), "data");
+            volume.options.insert("type".into(), "tmpfs".into());
+            volume
+        },
+    ] {
+        existing.id.machine_id = machine_id('1');
+        let error = plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing]).unwrap(),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, PlanError::NoEligibleMachines { .. }));
+    }
+}
+
+#[test]
 fn existing_matching_provisioned_volume_is_reused_without_creation() {
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.options = BTreeMap::from([("size".into(), "2g".into())]);
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
@@ -278,17 +345,45 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
     )
     .unwrap();
 
-    assert!(
-        operations(&preview)
-            .iter()
-            .all(|operation| !matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
+    assert_eq!(preview.volumes_to_create.len(), 1);
+    assert_eq!(
+        preview
+            .volumes_to_create
+            .first()
+            .expect("missing ordinary Volume is previewed")
+            .name
+            .as_str(),
+        "app_cache"
     );
+}
+
+#[test]
+fn provisioned_volume_requires_requested_labels() {
+    let mut existing = observed_volume(machine_id('1'), "data");
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
+    existing.labels.remove(PROJECT_NAME_LABEL);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 0,
+    };
+
+    let error = explicitly_targeted_provisioned_deploy(
+        Some(MachineStorageObservation::Ready),
+        vec![existing],
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        PlanError::ExistingProvisionedVolumeMismatch { .. }
+    ));
 }
 
 #[test]
 fn existing_provisioned_volume_is_not_implicitly_resized() {
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(2_147_483_648).unwrap(),
@@ -321,6 +416,11 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
         &intent,
         &DeploySnapshot {
             machines: vec![stateless, ready],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+                machine_id('1'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),
@@ -332,15 +432,50 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
             .iter()
             .all(|operation| operation.machine_id() == machine_id('2'))
     );
+    assert!(matches!(
+        &preview.volumes_to_create[..],
+        [item] if item.machine_id == machine_id('2')
+            && item.maximum_bytes.is_some()
+    ));
+}
+
+#[test]
+fn automatic_provisioned_volume_uses_known_eligible_and_warns_about_unknown() {
+    let intent = automatic_provisioned_intent();
+    let mut ready = machine('1', "ready");
+    ready.storage = Some(MachineStorageObservation::Ready);
+    let unknown = machine('2', "unknown");
+
+    let preview = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![ready, unknown],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+                machine_id('2'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap();
+
     assert!(
         operations(&preview)
             .iter()
-            .any(|operation| matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
+            .all(|operation| operation.machine_id() == machine_id('1'))
+    );
+    assert_eq!(
+        preview.warnings,
+        [ployz_core::DeployWarning::StorageObservationUnknown {
+            machine_id: machine_id('2'),
+        }]
     );
 }
 
 #[test]
-fn automatic_provisioned_volume_reports_observer_relative_storage_guidance() {
+fn automatic_provisioned_volume_reports_unknown_storage_guidance() {
     let intent = automatic_provisioned_intent();
     let mut stateless = machine('1', "stateless");
     stateless.storage = Some(MachineStorageObservation::Stateless);
@@ -355,10 +490,15 @@ fn automatic_provisioned_volume_reports_observer_relative_storage_guidance() {
     )
     .unwrap_err();
 
-    assert_eq!(error, PlanError::ProvisionedVolumeStorageUnavailable);
+    assert_eq!(
+        error,
+        PlanError::ProvisionedVolumeStorageUnknown {
+            names: vec![MachineName::parse("unobserved").unwrap()],
+        }
+    );
     let error = error.to_string();
-    assert!(error.contains("no observed eligible Machine"), "{error}");
-    assert!(error.contains("--storage zfs"), "{error}");
+    assert!(error.contains("storage could not be checked"), "{error}");
+    assert!(error.contains("unobserved"), "{error}");
 }
 
 #[test]
@@ -401,14 +541,14 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
     let mut other = machine('2', "other");
     other.storage = Some(MachineStorageObservation::Ready);
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
     };
 
-    assert_eq!(
+    assert_no_eligible(
         preview_deploy(
             &intent,
             &DeploySnapshot {
@@ -419,7 +559,11 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
             },
             IngressContext::default(),
         ),
-        Err(PlanError::ProvisionedVolumeStorageUnavailable)
+        &[EliminatingConstraint::VolumeAlreadyOn {
+            volume: app_volume("data"),
+            located_on: vec![MachineName::parse("pinned").unwrap()],
+        }],
+        &["app_data", "pinned"],
     );
 }
 
@@ -434,7 +578,8 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     unchanged.name = ServiceName::parse("storage").unwrap();
     unchanged.placement.machines = vec![MachineTarget::parse("stateless").unwrap()];
     add_named_volume(&mut unchanged, "data");
-    let mut intent = DeployIntent::apply_all(
+    make_provisioned(&mut unchanged, "data", 1_073_741_824);
+    let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&applied, &unchanged],
         PlanOptions {
@@ -444,7 +589,6 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
             ..PlanOptions::default()
         },
     );
-    intent.provisioned_volumes = vec![provisioned("storage", "data", 1_073_741_824)];
     let mut stateless = machine('1', "stateless");
     stateless.storage = Some(MachineStorageObservation::Stateless);
 
@@ -458,17 +602,20 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     )
     .unwrap();
 
-    assert!(operations(&preview).iter().all(|operation| {
-        operation.service_name() != Some(&unchanged.name)
-            && !matches!(operation, DeployOperation::CreateProvisionedVolume { .. })
-    }));
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.service_name() != Some(&unchanged.name))
+    );
+    assert!(preview.volumes_to_create.is_empty());
 }
 
-fn global_service(name: &str, machine_name: &str) -> RequestedServiceSpec {
+fn global_service(name: &str, machine_name: &str, bytes: u64) -> RequestedServiceSpec {
     let mut service = requested(ServiceMode::Global);
     service.name = ServiceName::parse(name).unwrap();
     service.placement.machines = vec![MachineTarget::parse(machine_name).unwrap()];
     add_named_volume(&mut service, "data");
+    make_provisioned(&mut service, "data", bytes);
     service
 }
 
@@ -478,22 +625,35 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     add_named_volume(&mut requested, "data");
+    make_provisioned(&mut requested, "data", 1_073_741_824);
     let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
-    volumes.push(ServiceVolume {
+    let mut mounts = requested.volume_graph.mounts().to_vec();
+    let mut alias = ServiceVolume {
         reference: ServiceVolumeReference::parse("data-alias").unwrap(),
         source: volumes.first().unwrap().source.clone(),
+    };
+    let VolumeSource::Provisioned {
+        maximum_bytes: alias_maximum,
+        ..
+    } = &mut alias.source
+    else {
+        unreachable!("data fixture is provisioned")
+    };
+    *alias_maximum = maximum_bytes(2_147_483_648);
+    volumes.push(alias);
+    mounts.push(ServiceMount {
+        volume: ServiceVolumeReference::parse("data-alias").unwrap(),
+        target: ContainerPath::parse("/alias").unwrap(),
+        read_only: false,
+        no_copy: false,
+        subpath: None,
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-    let mut intent = DeployIntent::apply_all(
+    let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&requested],
         PlanOptions::default(),
     );
-    intent.provisioned_volumes = vec![
-        provisioned(requested.name.as_str(), "data", 1_073_741_824),
-        provisioned(requested.name.as_str(), "data-alias", 2_147_483_648),
-    ];
 
     assert_eq!(
         preview_deploy(
@@ -504,27 +664,21 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
             },
             IngressContext::default(),
         ),
-        Err(PlanError::ConflictingProvisionedVolumeBounds {
-            name: app_volume("data"),
-            existing_maximum_bytes: maximum_bytes(1_073_741_824),
-            conflicting_maximum_bytes: maximum_bytes(2_147_483_648),
+        Err(PlanError::ConflictingDockerVolumeDefinitions {
+            name: app_volume("data")
         })
     );
 }
 
 #[test]
 fn disjoint_global_volumes_may_have_different_bounds() {
-    let first = global_service("first", "first");
-    let second = global_service("second", "second");
-    let mut intent = DeployIntent::apply_all(
+    let first = global_service("first", "first", 1_073_741_824);
+    let second = global_service("second", "second", 2_147_483_648);
+    let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&first, &second],
         PlanOptions::default(),
     );
-    intent.provisioned_volumes = vec![
-        provisioned(first.name.as_str(), "data", 1_073_741_824),
-        provisioned(second.name.as_str(), "data", 2_147_483_648),
-    ];
 
     let mut first_machine = machine('1', "first");
     first_machine.storage = Some(MachineStorageObservation::Ready);
@@ -543,9 +697,9 @@ fn disjoint_global_volumes_may_have_different_bounds() {
 
 #[test]
 fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
-    let first = global_service("first", "first");
-    let second = global_service("second", "first");
-    let mut intent = DeployIntent::apply_all(
+    let first = global_service("first", "first", 1_073_741_824);
+    let second = global_service("second", "first", 2_147_483_648);
+    let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&first, &second],
         PlanOptions {
@@ -555,10 +709,6 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
             ..PlanOptions::default()
         },
     );
-    intent.provisioned_volumes = vec![
-        provisioned("first", "data", 1_073_741_824),
-        provisioned("second", "data", 2_147_483_648),
-    ];
 
     let result = preview_deploy(
         &intent,
@@ -572,17 +722,54 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
         matches!(
             &result,
             Err(PlanError::Service { source, .. })
-                if matches!(source.as_ref(), PlanError::ConflictingProvisionedVolumeBounds { .. })
+                if matches!(source.as_ref(), PlanError::ConflictingDockerVolumeDefinitions { .. })
         ),
         "unexpected result: {result:?}"
     );
 }
 
 #[test]
+fn colocated_global_services_reject_conflicting_provisioned_labels() {
+    let first = global_service("first", "first", 1_073_741_824);
+    let mut second = global_service("second", "first", 1_073_741_824);
+    let mut volumes = second.volume_graph.volumes().to_vec();
+    let mounts = second.volume_graph.mounts().to_vec();
+    let VolumeSource::Provisioned { labels, .. } = &mut volumes
+        .first_mut()
+        .expect("global_service adds one volume")
+        .source
+    else {
+        unreachable!("global_service adds a Provisioned Volume")
+    };
+    labels.insert("backup".into(), "daily".into());
+    second.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    let intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&first, &second],
+        PlanOptions::default(),
+    );
+
+    let result = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(PlanError::Service { source, .. })
+            if matches!(source.as_ref(), PlanError::ConflictingDockerVolumeDefinitions { .. })
+    ));
+}
+
+#[test]
 fn profile_filtered_service_still_contributes_to_bound_conflicts() {
-    let first = global_service("first", "first");
-    let second = global_service("second", "first");
-    let mut intent = DeployIntent::apply_all(
+    let first = global_service("first", "first", 1_073_741_824);
+    let second = global_service("second", "first", 2_147_483_648);
+    let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&first, &second],
         PlanOptions::default(),
@@ -591,10 +778,6 @@ fn profile_filtered_service_still_contributes_to_bound_conflicts() {
         second.name.clone(),
         vec!["tools".into()],
     )]));
-    intent.provisioned_volumes = vec![
-        provisioned("first", "data", 1_073_741_824),
-        provisioned("second", "data", 2_147_483_648),
-    ];
 
     let result = preview_deploy(
         &intent,
@@ -608,7 +791,7 @@ fn profile_filtered_service_still_contributes_to_bound_conflicts() {
         matches!(
             &result,
             Err(PlanError::Service { source, .. })
-                if matches!(source.as_ref(), PlanError::ConflictingProvisionedVolumeBounds { .. })
+                if matches!(source.as_ref(), PlanError::ConflictingDockerVolumeDefinitions { .. })
         ),
         "unexpected result: {result:?}"
     );
@@ -618,13 +801,13 @@ fn profile_filtered_service_still_contributes_to_bound_conflicts() {
 fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
+    make_provisioned(&mut requested, "data", 1_073_741_824);
     add_named_volume(&mut requested, "cache");
-    let mut intent = DeployIntent::apply_all(
+    let intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&requested],
         PlanOptions::default(),
     );
-    intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
 
     let mut ready = machine('1', "first");
     ready.storage = Some(MachineStorageObservation::Ready);
@@ -638,43 +821,18 @@ fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
     )
     .unwrap();
 
-    let operations = operations(&preview);
-    assert!(operations.iter().any(|operation| matches!(
-        operation,
-        DeployOperation::CreateProvisionedVolume {
-            volume,
-            maximum_bytes: requested_maximum_bytes,
-            ..
-        } if volume.reference.as_str() == "data"
-            && *requested_maximum_bytes == maximum_bytes(1_073_741_824)
-    )));
-    assert!(operations.iter().any(|operation| matches!(
-        operation,
-        DeployOperation::CreateVolume { volume, .. } if volume.reference.as_str() == "cache"
-    )));
-}
-
-#[test]
-fn unknown_provisioned_volume_reference_fails_planning() {
-    let mut intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
-        [],
-        PlanOptions::default(),
-    );
-    intent
-        .provisioned_volumes
-        .push(provisioned("api", "data", 1_073_741_824));
-
-    assert_eq!(
-        preview_deploy(
-            &intent,
-            &DeploySnapshot::default(),
-            IngressContext::default()
-        ),
-        Err(PlanError::UnknownProvisionedVolumeReference {
-            service: ServiceName::parse("api").unwrap(),
-            reference: ServiceVolumeReference::parse("data").unwrap(),
-        })
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert!(preview.volumes_to_create.iter().any(|item| {
+        item.name.as_str() == "app_data" && item.maximum_bytes == Some(maximum_bytes(1_073_741_824))
+    }));
+    assert!(
+        preview
+            .volumes_to_create
+            .iter()
+            .any(|item| { item.name.as_str() == "app_cache" && item.maximum_bytes.is_none() })
     );
 }
 
@@ -683,15 +841,11 @@ fn duplicate_target_services_fail_before_volume_resolution() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
-    let mut intent = DeployIntent::new(
+    let intent = DeployIntent::new(
         ProjectName::parse("app").unwrap(),
         vec![requested.clone(), requested],
         PlanOptions::default(),
     );
-    intent
-        .provisioned_volumes
-        .push(provisioned("api", "data", 1_073_741_824));
-
     assert_eq!(
         preview_deploy(
             &intent,
@@ -725,13 +879,7 @@ fn already_owned_volume_names_are_not_prefixed_again() {
         PlanOptions::default(),
     )
     .unwrap();
-    assert!(
-        plan.operations
-            .iter()
-            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. })),
-        "already-owned physical names must not be prefixed again: {:?}",
-        plan.operations
-    );
+    assert!(plan.volumes_to_create.is_empty());
     assert!(plan.preserved_volumes.is_empty());
 }
 
@@ -807,79 +955,4 @@ fn omitted_owned_volume_is_preserved_in_plan_order() {
             },
         ]
     );
-}
-
-#[test]
-fn external_named_volume_keeps_its_declared_identity() {
-    let mut requested = requested(ServiceMode::Global);
-    add_named_volume(&mut requested, "shared");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
-    let volume = volumes.first_mut().expect("named volume was added");
-    let VolumeSource::Named {
-        external, labels, ..
-    } = &mut volume.source
-    else {
-        panic!("named volume");
-    };
-    *external = true;
-    labels.insert("keep".into(), "me".into());
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::CreateVolume { volume, .. }, DeployOperation::RunContainer { .. }]
-            if matches!(
-                &volume.source,
-                VolumeSource::Named { name, external: true, labels, .. }
-                    if name.as_str() == "shared"
-                        && !labels.contains_key(MANAGED_LABEL)
-                        && !labels.contains_key(PROJECT_NAME_LABEL)
-                        && labels.get("keep").map(String::as_str) == Some("me")
-            )
-    ));
-}
-
-#[test]
-fn foreign_project_volume_label_is_not_rewritten() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    add_named_volume(&mut requested, "data");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
-    let volume = volumes.first_mut().expect("named volume was added");
-    let VolumeSource::Named { name, labels, .. } = &mut volume.source else {
-        panic!("named volume");
-    };
-    *name = DockerVolumeName::parse("blog_data").unwrap();
-    labels.insert(PROJECT_NAME_LABEL.into(), "blog".into());
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::CreateVolume { volume, .. }, DeployOperation::RunContainer { .. }]
-            if matches!(
-                &volume.source,
-                VolumeSource::Named { name, labels, .. }
-                    if name.as_str() == "blog_data"
-                        && labels.get(PROJECT_NAME_LABEL).map(String::as_str) == Some("blog")
-            )
-    ));
 }

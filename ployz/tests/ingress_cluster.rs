@@ -596,9 +596,7 @@ async fn deploy(
             ployz::deploy::DeployOperation::ReplaceContainer(replacement) => {
                 Some(replacement.spec.service_id)
             }
-            ployz::deploy::DeployOperation::CreateVolume { .. }
-            | ployz::deploy::DeployOperation::CreateProvisionedVolume { .. }
-            | ployz::deploy::DeployOperation::WaitHealthy { .. }
+            ployz::deploy::DeployOperation::WaitHealthy { .. }
             | ployz::deploy::DeployOperation::StopContainer { .. }
             | ployz::deploy::DeployOperation::RemoveContainer { .. }
             | ployz::deploy::DeployOperation::StopHook { .. }

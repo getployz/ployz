@@ -14,10 +14,6 @@ async fn dispatches_the_complete_algebra() {
     let service = spec(None, None, None);
     let hook_spec = spec(None, None, Some(5_000));
     let operations = vec![
-        DeployOperation::CreateVolume {
-            machine_id: first,
-            volume: volume(),
-        },
         DeployOperation::RunContainer {
             machine_id: first,
             spec: service.clone(),
@@ -60,7 +56,6 @@ async fn dispatches_the_complete_algebra() {
     ];
     let plan = operations.clone();
     let client = Scripted::new(vec![
-        ok(create_volume_call(first, "local", None)),
         created(
             Call::Create(first, ContainerKind::ServiceContainer),
             &new_run,
@@ -104,135 +99,13 @@ async fn dispatches_the_complete_algebra() {
 }
 
 #[tokio::test]
-async fn provisioned_volume_executes_before_dependent_operations() {
+async fn volume_ensure_failure_is_the_container_operation_failure() {
     let machine_id = machine('1');
-    let provisioned = DeployOperation::CreateProvisionedVolume {
-        machine_id,
-        volume: volume(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_073_741_824).unwrap()),
-    };
-    let dependent = run(&machine_id, spec(None, None, None), true);
-    let created_id = container('a');
-    let client = Scripted::new(vec![
-        Step(
-            create_volume_call(machine_id, "ployz", Some("1073741824b")),
-            volume_reply(machine_id, "ployz", Some("1073741824b")),
-        ),
-        created(
-            Call::Create(machine_id, ContainerKind::ServiceContainer),
-            &created_id,
-        ),
-        ok(Call::Start(machine_id, created_id)),
-    ]);
-
-    let outcome = execute_with(
-        &[provisioned.clone(), dependent.clone()],
-        &client,
-        &CancellationToken::new(),
-    )
-    .await;
-
-    assert_eq!(
-        outcome,
-        DeployOutcome::Success {
-            completed: vec![provisioned, dependent],
-        }
-    );
-    client.assert_done();
-}
-
-#[tokio::test]
-async fn provisioned_volume_race_with_plain_volume_stops_before_container_creation() {
-    let machine_id = machine('1');
-    let provisioned = DeployOperation::CreateProvisionedVolume {
-        machine_id,
-        volume: volume(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_073_741_824).unwrap()),
-    };
-    let dependent = run(&machine_id, spec(None, None, None), true);
-    let client = Scripted::new(vec![Step(
-        create_volume_call(machine_id, "ployz", Some("1073741824b")),
-        volume_reply(machine_id, "local", None),
+    let operation = run(&machine_id, spec(None, None, None), true);
+    let client = Scripted::new(vec![failed(
+        Call::Create(machine_id, ContainerKind::ServiceContainer),
+        "Volume Ensure failed after creating data",
     )]);
-
-    let outcome = execute_with(
-        &[provisioned.clone(), dependent.clone()],
-        &client,
-        &CancellationToken::new(),
-    )
-    .await;
-
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            completed,
-            failed: FailedOperation::Operation {
-                operation,
-                error: ExecutionError::Machine { error, .. },
-            },
-            unexecuted,
-        } if completed.is_empty()
-            && operation == provisioned
-            && error.message.contains("will not be replaced or converted")
-            && unexecuted == vec![dependent]
-    ));
-    client.assert_done();
-}
-
-#[tokio::test]
-async fn provisioned_volume_race_with_a_different_current_bound_stops_before_container_creation() {
-    let machine_id = machine('1');
-    let provisioned = DeployOperation::CreateProvisionedVolume {
-        machine_id,
-        volume: volume(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_073_741_824).unwrap()),
-    };
-    let dependent = run(&machine_id, spec(None, None, None), true);
-    let Reply::Volume(mut observed) = volume_reply(machine_id, "ployz", Some("1073741824b")) else {
-        panic!("volume_reply returned a non-Volume reply")
-    };
-    observed.storage = ployz_core::DockerVolumeStorageObservation::Provisioned {
-        mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
-        bound_bytes: NonZeroU64::new(2_147_483_648).unwrap(),
-        used_bytes: 0,
-    };
-    let client = Scripted::new(vec![Step(
-        create_volume_call(machine_id, "ployz", Some("1073741824b")),
-        Reply::Volume(observed),
-    )]);
-
-    let outcome = execute_with(
-        &[provisioned.clone(), dependent.clone()],
-        &client,
-        &CancellationToken::new(),
-    )
-    .await;
-
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            completed,
-            failed: FailedOperation::Operation { operation, .. },
-            unexecuted,
-        } if completed.is_empty() && operation == provisioned && unexecuted == vec![dependent]
-    ));
-    client.assert_done();
-}
-
-#[tokio::test]
-async fn unnamed_volume_creation_fails_before_machine_io() {
-    let machine_id = machine('1');
-    let mut unnamed = volume();
-    unnamed.source = VolumeSource::Tmpfs {
-        size_bytes: None,
-        mode: None,
-        options: Vec::new(),
-    };
-    let operation = DeployOperation::CreateVolume {
-        machine_id,
-        volume: unnamed,
-    };
-    let client = Scripted::new(Vec::new());
 
     let outcome = execute_with(
         std::slice::from_ref(&operation),
@@ -244,12 +117,19 @@ async fn unnamed_volume_creation_fails_before_machine_io() {
     assert!(matches!(
         outcome,
         DeployOutcome::Failed {
+            completed,
             failed: FailedOperation::Operation {
                 operation: failed,
-                error: ExecutionError::Machine { error, .. },
+                error: ExecutionError::Machine {
+                    action: MachineAction::CreateContainer,
+                    error,
+                },
             },
-            ..
-        } if failed == operation && error.code == RpcErrorCode::InvalidArgument
+            unexecuted,
+        } if completed.is_empty()
+            && failed == operation
+            && error.message == "Volume Ensure failed after creating data"
+            && unexecuted.is_empty()
     ));
     client.assert_done();
 }

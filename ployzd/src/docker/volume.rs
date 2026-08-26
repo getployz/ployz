@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use bollard::{
     Docker,
@@ -8,7 +8,8 @@ use bollard::{
 use futures_util::{StreamExt, stream};
 use ployz_core::{
     CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, MachineId, VolumeInventory, VolumeObservationFailure,
+    DockerVolumeStorageObservation, MachineId, ResolvedServiceSpec, VolumeInventory,
+    VolumeObservationFailure, VolumeSource,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -19,6 +20,80 @@ use crate::VolumePluginStatus;
 const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
 
 impl ContainerRuntime {
+    /// Ensure every mounted Docker Volume exists and every managed source matches exactly.
+    ///
+    /// # Errors
+    ///
+    /// Returns when declarations conflict, an external Volume is absent, or a managed Volume
+    /// cannot be created or verified without mutation.
+    pub(super) async fn ensure_mounted_volumes(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        let mut mounted = BTreeMap::<DockerVolumeName, &VolumeSource>::new();
+        for mount in spec.volume_graph.mounts() {
+            let source = &spec.volume_graph.volume_for(mount).source;
+            let Some(name) = volume_name(source) else {
+                continue;
+            };
+            match mounted.get(name) {
+                Some(existing) if !volume_sources_compatible(existing, source) => {
+                    return Err(Error::ConflictingMountedVolumeSources(name.clone()));
+                }
+                Some(_) => {}
+                None => {
+                    mounted.insert(name.clone(), source);
+                }
+            }
+        }
+        for source in mounted.values() {
+            self.ensure_volume_source(machine_id, source).await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_volume_source(
+        &self,
+        machine_id: &MachineId,
+        source: &VolumeSource,
+    ) -> Result<(), Error> {
+        let Some(name) = volume_name(source) else {
+            return Ok(());
+        };
+        if matches!(source, VolumeSource::Named { external: true, .. }) {
+            return match ensure_volume_exists(&self.docker.client, name.as_str()).await {
+                Err(error) if volume_not_found(&error) => {
+                    Err(Error::ExternalVolumeNotFound(name.clone()))
+                }
+                result => result,
+            };
+        }
+
+        match self.inspect_volume(machine_id, name).await {
+            Ok(volume) => verify_volume(source, &volume),
+            Err(error) if volume_not_found(&error) => {
+                let request = source
+                    .to_create_volume_request()
+                    .expect("managed Docker Volume sources have creation requests");
+                match self.create_volume(machine_id, request).await {
+                    Ok(CreateVolumeReport::Verified { volume }) => verify_volume(source, &volume),
+                    Ok(CreateVolumeReport::Unverified { id, error }) => {
+                        Err(Error::VolumeCreatedButUnverified {
+                            id,
+                            error: Box::new(error),
+                        })
+                    }
+                    Err(error) if volume_conflict(&error) => {
+                        verify_volume(source, &self.inspect_volume(machine_id, name).await?)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Create a Docker Volume and verify its observable state when possible.
     ///
     /// # Errors
@@ -123,6 +198,65 @@ impl ContainerRuntime {
             .await
             .map_err(Into::into)
     }
+}
+
+fn volume_name(source: &VolumeSource) -> Option<&DockerVolumeName> {
+    match source {
+        VolumeSource::Named { name, .. } | VolumeSource::Provisioned { name, .. } => Some(name),
+        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => None,
+    }
+}
+
+fn volume_sources_compatible(left: &VolumeSource, right: &VolumeSource) -> bool {
+    match (left, right) {
+        (
+            VolumeSource::Named { external: true, .. },
+            VolumeSource::Named { external: true, .. },
+        ) => true,
+        (
+            VolumeSource::Named {
+                external: false, ..
+            },
+            VolumeSource::Named {
+                external: false, ..
+            },
+        )
+        | (VolumeSource::Provisioned { .. }, VolumeSource::Provisioned { .. }) => {
+            left.to_create_volume_request() == right.to_create_volume_request()
+        }
+        _ => false,
+    }
+}
+
+fn verify_volume(source: &VolumeSource, observed: &DockerVolume) -> Result<(), Error> {
+    let expected = source
+        .to_create_volume_request()
+        .expect("only managed Docker Volume sources are verified");
+    if !source.matches_managed_volume(observed) {
+        return Err(Error::VolumeShapeMismatch {
+            name: expected.name,
+            reason: "requested and observed managed shapes differ".into(),
+        });
+    }
+    Ok(())
+}
+
+fn volume_not_found(error: &Error) -> bool {
+    docker_status(error, 404)
+}
+
+fn volume_conflict(error: &Error) -> bool {
+    docker_status(error, 409)
+}
+
+fn docker_status(error: &Error, expected: u16) -> bool {
+    matches!(
+        error,
+        Error::Docker(bollard::errors::Error::DockerResponseServerError {
+            status_code,
+            ..
+        }) if *status_code == expected
+    )
 }
 
 // Bollard models Volume Status as key-only data, so valid plugin values use raw JSON recovery.
@@ -237,403 +371,4 @@ fn docker_volume_id(machine_id: &MachineId, name: &str) -> Result<DockerVolumeId
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    use axum::{
-        Json, Router,
-        body::Bytes,
-        extract::State,
-        http::{Method, StatusCode, Uri},
-        response::{IntoResponse, Response},
-        routing::any,
-    };
-    use bollard::Docker;
-
-    use super::*;
-    use crate::docker::{LocalDocker, MachineSpecStore};
-
-    #[derive(Clone, Default)]
-    struct FakeDocker {
-        requests: Arc<Mutex<Vec<(Method, String)>>>,
-        reject_list: Arc<AtomicBool>,
-    }
-
-    async fn fake_docker(
-        State(fake): State<FakeDocker>,
-        method: Method,
-        uri: Uri,
-        body: Bytes,
-    ) -> Response {
-        let path = uri.path().to_owned();
-        fake.requests
-            .lock()
-            .unwrap()
-            .push((method.clone(), path.clone()));
-        let response = if method == Method::GET
-            && path.ends_with("/volumes")
-            && fake.reject_list.load(Ordering::Relaxed)
-        {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"message":"collection unavailable"}),
-            )
-        } else if method == Method::GET && path.ends_with("/volumes") {
-            (
-                StatusCode::OK,
-                serde_json::json!({"Volumes":[
-                    {"Name":"plain","Driver":"local","Mountpoint":"/var/lib/docker/volumes/plain/_data"},
-                    {"Name":"healthy","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/healthy"},
-                    {"Name":"malformed","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/malformed"},
-                    {"Name":"unavailable","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/unavailable"},
-                    {"Name":"mismatched","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/mismatched"}
-                ]}),
-            )
-        } else if method == Method::GET
-            && ["healthy", "data", "cache"]
-                .iter()
-                .any(|name| path.ends_with(&format!("/volumes/{name}")))
-        {
-            let name = path.rsplit('/').next().unwrap();
-            (
-                StatusCode::OK,
-                serde_json::json!({
-                    "Name":name,
-                    "Driver":"ployz",
-                    "Mountpoint":format!("/var/lib/ployz-volumes/{name}"),
-                    "Status":{"bound_bytes":1073741824,"used_bytes":4096}
-                }),
-            )
-        } else if method == Method::GET && path.ends_with("/volumes/malformed") {
-            (
-                StatusCode::OK,
-                serde_json::json!({
-                    "Name":"malformed",
-                    "Driver":"ployz",
-                    "Mountpoint":"/var/lib/ployz-volumes/malformed",
-                    "Status":{"bound_bytes":"not-a-number","used_bytes":4096}
-                }),
-            )
-        } else if method == Method::GET && path.ends_with("/volumes/unavailable") {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"message":"detail unavailable"}),
-            )
-        } else if method == Method::GET && path.ends_with("/volumes/mismatched") {
-            (
-                StatusCode::OK,
-                serde_json::json!({
-                    "Name":"other",
-                    "Driver":"ployz",
-                    "Mountpoint":"/var/lib/ployz-volumes/other",
-                    "Status":{"bound_bytes":1073741824,"used_bytes":4096}
-                }),
-            )
-        } else if method == Method::POST
-            && path.ends_with("/volumes/create")
-            && String::from_utf8_lossy(&body).contains("rejected")
-        {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"message":"create rejected"}),
-            )
-        } else if method == Method::POST && path.ends_with("/volumes/create") {
-            (
-                StatusCode::CREATED,
-                serde_json::json!({
-                    "Name":"unavailable",
-                    "Driver":"ployz",
-                    "Mountpoint":"/var/lib/ployz-volumes/unavailable"
-                }),
-            )
-        } else {
-            (
-                StatusCode::NOT_FOUND,
-                serde_json::json!({"message":format!("unhandled {method} {path}")}),
-            )
-        };
-        (response.0, Json(response.1)).into_response()
-    }
-
-    async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let fake = FakeDocker::default();
-        tokio::spawn(
-            axum::serve(
-                listener,
-                Router::new()
-                    .route("/{*path}", any(fake_docker))
-                    .with_state(fake.clone()),
-            )
-            .into_future(),
-        );
-        let docker = Docker::connect_with_http(
-            &format!("http://{address}"),
-            5,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .unwrap();
-        let specs = MachineSpecStore::open(std::env::temp_dir().join(format!(
-            "ployzd-volume-observation-{}.db",
-            MachineId::random()
-        )))
-        .await
-        .unwrap();
-        (
-            ContainerRuntime::new(LocalDocker::from_client(docker), specs),
-            fake,
-        )
-    }
-
-    #[tokio::test]
-    async fn inventory_reads_provisioned_details_and_keeps_healthy_siblings() {
-        let (runtime, fake) = fake_runtime().await;
-        let machine_id = MachineId::random();
-
-        let inventory = runtime.list_volumes(&machine_id).await.unwrap();
-
-        assert_eq!(
-            inventory
-                .volumes
-                .iter()
-                .map(|volume| volume.id.name.as_str())
-                .collect::<Vec<_>>(),
-            ["plain", "healthy"]
-        );
-        assert_eq!(
-            inventory
-                .failures
-                .iter()
-                .map(|failure| failure.id.name.as_str())
-                .collect::<Vec<_>>(),
-            ["malformed", "unavailable", "mismatched"]
-        );
-        let requests = fake.requests.lock().unwrap();
-        assert!(
-            requests
-                .iter()
-                .any(|(method, path)| method == Method::GET && path.ends_with("/volumes/healthy"))
-        );
-        assert!(
-            !requests
-                .iter()
-                .any(|(method, path)| method == Method::GET && path.ends_with("/volumes/plain"))
-        );
-    }
-
-    #[tokio::test]
-    async fn direct_lookup_does_not_enumerate_unrelated_volumes() {
-        let (runtime, fake) = fake_runtime().await;
-        let machine_id = MachineId::random();
-
-        let volume = runtime
-            .inspect_volume(&machine_id, &DockerVolumeName::parse("healthy").unwrap())
-            .await
-            .unwrap();
-
-        assert_eq!(volume.id.name.as_str(), "healthy");
-        let requests = fake.requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert!(requests.first().is_some_and(
-            |(method, path)| method == Method::GET && path.ends_with("/volumes/healthy")
-        ));
-    }
-
-    #[tokio::test]
-    async fn existence_accepts_integer_status_for_multiple_volumes() {
-        let (runtime, _) = fake_runtime().await;
-
-        ensure_volume_exists(&runtime.docker.client, "data")
-            .await
-            .unwrap();
-        ensure_volume_exists(&runtime.docker.client, "cache")
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn existence_rejects_a_missing_volume() {
-        let (runtime, _) = fake_runtime().await;
-
-        let error = ensure_volume_exists(&runtime.docker.client, "missing")
-            .await
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            Error::Docker(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404,
-                ..
-            })
-        ));
-    }
-
-    #[tokio::test]
-    async fn inspect_rejects_a_mismatched_volume_identity() {
-        let (runtime, _) = fake_runtime().await;
-        let machine_id = MachineId::random();
-
-        let error = runtime
-            .inspect_volume(&machine_id, &DockerVolumeName::parse("mismatched").unwrap())
-            .await
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            Error::UnexpectedVolumeName { requested, actual }
-                if requested.as_str() == "mismatched" && actual == "other"
-        ));
-    }
-
-    #[tokio::test]
-    async fn list_reports_a_mismatched_detail_under_the_requested_name() {
-        let (runtime, _) = fake_runtime().await;
-        let machine_id = MachineId::random();
-
-        let inventory = runtime.list_volumes(&machine_id).await.unwrap();
-
-        let failure = inventory
-            .failures
-            .iter()
-            .find(|failure| failure.id.name.as_str() == "mismatched")
-            .expect("mismatched detail is retained as a named failure");
-        assert_eq!(failure.id.machine_id, machine_id);
-        assert!(failure.error.message.contains("returned Volume 'other'"));
-    }
-
-    #[tokio::test]
-    async fn list_returns_a_top_level_collection_error() {
-        let (runtime, fake) = fake_runtime().await;
-        fake.reject_list.store(true, Ordering::Relaxed);
-
-        let error = runtime
-            .list_volumes(&MachineId::random())
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("collection unavailable"));
-    }
-
-    #[tokio::test]
-    async fn create_reports_mutation_success_separately_from_failed_verification() {
-        let (runtime, fake) = fake_runtime().await;
-        let machine_id = MachineId::random();
-
-        let report = runtime
-            .create_volume(
-                &machine_id,
-                CreateVolumeRequest {
-                    name: DockerVolumeName::parse("unavailable").unwrap(),
-                    driver: "ployz".into(),
-                    options: Default::default(),
-                    labels: Default::default(),
-                },
-            )
-            .await
-            .unwrap();
-
-        let CreateVolumeReport::Unverified { id, error } = report else {
-            panic!("expected created-but-unverified report")
-        };
-        assert_eq!(id.machine_id, machine_id);
-        assert_eq!(id.name.as_str(), "unavailable");
-        assert!(error.message.contains("detail unavailable"), "{error}");
-        let requests = fake.requests.lock().unwrap();
-        assert!(
-            requests
-                .iter()
-                .any(|(method, path)| method == Method::POST && path.ends_with("/volumes/create"))
-        );
-        assert!(
-            requests
-                .iter()
-                .any(|(method, path)| method == Method::GET
-                    && path.ends_with("/volumes/unavailable"))
-        );
-    }
-
-    #[tokio::test]
-    async fn create_returns_docker_rejection_as_an_error() {
-        let (runtime, _) = fake_runtime().await;
-
-        let error = runtime
-            .create_volume(
-                &MachineId::random(),
-                CreateVolumeRequest {
-                    name: DockerVolumeName::parse("rejected").unwrap(),
-                    driver: "ployz".into(),
-                    options: Default::default(),
-                    labels: Default::default(),
-                },
-            )
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("create rejected"));
-    }
-
-    #[test]
-    fn docker_volume_preserves_provisioned_usage_at_alert_threshold() {
-        let contents = serde_json::json!({"Volumes":[{
-            "Name":"data",
-            "Driver":"ployz",
-            "Mountpoint":"/var/lib/ployz-volumes/data",
-            "Status":{"bound_bytes":1073741824,"used_bytes":966367642},
-            "Options":{"size":"1g"}
-        }]})
-        .to_string();
-        let mut volumes = decode_volume_list(Err(bollard::errors::Error::JsonDataError {
-            message: "generated Volume status cannot represent numeric values".into(),
-            contents,
-            column: 0,
-        }))
-        .unwrap();
-        let observed = docker_volume(&MachineId::random(), volumes.remove(0)).unwrap();
-
-        assert_eq!(
-            observed.storage,
-            DockerVolumeStorageObservation::Provisioned {
-                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
-                bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
-                used_bytes: 966_367_642,
-            }
-        );
-    }
-
-    #[test]
-    fn provisioned_volume_without_complete_plugin_evidence_is_an_error() {
-        let error = docker_volume(
-            &MachineId::random(),
-            serde_json::from_value(serde_json::json!({
-                "Name":"data",
-                "Driver":"ployz",
-                "Mountpoint":"/var/lib/ployz-volumes/data"
-            }))
-            .unwrap(),
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("Provisioned Volume status"));
-    }
-
-    #[test]
-    fn provisioned_volume_rejects_a_relative_mountpoint() {
-        let error = docker_volume(
-            &MachineId::random(),
-            serde_json::from_value(serde_json::json!({
-                "Name":"data",
-                "Driver":"ployz",
-                "Mountpoint":"relative/data",
-                "Status":{"bound_bytes":1073741824,"used_bytes":0}
-            }))
-            .unwrap(),
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("invalid mountpoint"));
-    }
-}
+mod tests;

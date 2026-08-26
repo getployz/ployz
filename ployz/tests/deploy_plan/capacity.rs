@@ -41,11 +41,16 @@ fn capacity_filters_before_new_volume_placement() {
 
     assert!(matches!(
         operations(&plan).as_slice(),
-        [
-            DeployOperation::CreateVolume { machine_id: volume, .. },
-            DeployOperation::RunContainer { machine_id: container, .. }
-        ] if volume == &machine_id('2') && container == volume
+        [DeployOperation::RunContainer { machine_id: container, .. }]
+            if container == &machine_id('2')
     ));
+    assert_eq!(
+        plan.volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .machine_id,
+        machine_id('2')
+    );
 }
 
 #[test]

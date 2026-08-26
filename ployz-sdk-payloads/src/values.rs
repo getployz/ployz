@@ -22,15 +22,15 @@ use ployz_core::{
     MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
     MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
     OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
-    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
-    PruneRefusal, PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
+    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, PruneRefusal,
+    PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
     ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
     ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
     ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
     ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StorageChoice,
     TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver,
-    VolumeInventory, VolumeObservationFailure, VolumeSource, WireGuardPublicKey,
+    VolumeInventory, VolumeObservationFailure, VolumeSource, VolumeToCreate, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -139,11 +139,11 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert("capabilities".into(), Value::Array(capability_wires()));
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
-    fixtures.insert("provisioned_volume".into(), to_value(&provisioned_volume()));
     fixtures.insert(
-        "create_provisioned_volume_operation".into(),
-        to_value(&create_provisioned_volume_operation()),
+        "provisioned_volume_source".into(),
+        to_value(&provisioned_volume_source()),
     );
+    fixtures.insert("volume_to_create".into(), to_value(&volume_to_create()));
     fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
     fixtures.insert("requested_service_spec".into(), to_value(&requested_spec()));
     // serde emits null for Option::None; these leaves stay null-free so tsc can `satisfies`.
@@ -262,9 +262,9 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ),
         ("ClusterTeardown", to_value(&cluster_teardown())),
         ("DeployIntent", to_value(&deploy_intent())),
-        ("ProvisionedVolume", to_value(&provisioned_volume())),
         ("DeployPreview", to_value(&deploy_preview())),
         ("PreservedVolume", to_value(&preserved_volume())),
+        ("VolumeToCreate", to_value(&volume_to_create())),
         ("RequestedServiceSpec", to_value(&requested_spec())),
         ("ResolvedServiceSpec", to_value(&resolved_spec())),
         ("ServiceVolume", to_value(&service_volume())),
@@ -432,7 +432,6 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         (
             "MachineAction",
             vec![
-                to_value(&MachineAction::CreateVolume),
                 to_value(&MachineAction::CreateContainer),
                 to_value(&MachineAction::StartContainer),
                 to_value(&MachineAction::InspectContainer),
@@ -569,6 +568,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                 }),
                 to_value(&service_volume().source),
                 to_value(&named_volume_with_driver().source),
+                to_value(&provisioned_volume_source()),
                 to_value(&VolumeSource::Tmpfs {
                     size_bytes: Some(64),
                     mode: Some(0o755),
@@ -815,14 +815,13 @@ fn service_attempt() -> ServiceAttempt {
     }
 }
 
-fn provisioned_volume() -> ProvisionedVolume {
-    ProvisionedVolume {
-        service: ServiceName::parse("api").expect("fixture Service Name is valid"),
-        reference: ServiceVolumeReference::parse("data")
-            .expect("fixture Service Volume Reference is valid"),
+fn provisioned_volume_source() -> VolumeSource {
+    VolumeSource::Provisioned {
+        name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(
             NonZeroU64::new(1_073_741_824).expect("fixture Provisioned Volume bound is positive"),
         ),
+        labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
 }
 
@@ -835,7 +834,7 @@ fn deploy_intent() -> DeployIntent {
 }
 
 fn deploy_preview() -> DeployPreview {
-    DeployPreview::new(
+    let mut preview = DeployPreview::new(
         vec![OperationRow::pending(
             0,
             DeployOperation::StopContainer {
@@ -848,7 +847,9 @@ fn deploy_preview() -> DeployPreview {
         )],
         deploy_warnings().to_vec(),
         ProjectName::parse("app").unwrap(),
-    )
+    );
+    preview.volumes_to_create = vec![volume_to_create()];
+    preview
 }
 
 fn preserved_volume() -> PreservedVolume {
@@ -866,7 +867,7 @@ fn deploy_event_progress() -> DeployEvent {
     }
 }
 
-fn deploy_warnings() -> [DeployWarning; 5] {
+fn deploy_warnings() -> [DeployWarning; 6] {
     [
         DeployWarning::ObservationFailed {
             kind: ObservationKind::Container,
@@ -875,6 +876,9 @@ fn deploy_warnings() -> [DeployWarning; 5] {
         },
         DeployWarning::ObservationOmitted {
             kind: ObservationKind::Volume,
+            machine_id: machine_id(OTHER_MACHINE_ID_HEX),
+        },
+        DeployWarning::StorageObservationUnknown {
             machine_id: machine_id(OTHER_MACHINE_ID_HEX),
         },
         DeployWarning::IngressHostname(
@@ -902,9 +906,10 @@ fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
     DeployOutcome::Failed {
         completed: Vec::new(),
         failed: FailedOperation::Operation {
-            operation: DeployOperation::CreateVolume {
+            operation: DeployOperation::RunContainer {
                 machine_id: machine_id(MACHINE_ID_HEX),
-                volume: service_volume(),
+                spec: resolved_spec(),
+                skip_health_monitor: false,
             },
             error: execution_error_machine(),
         },
@@ -917,7 +922,7 @@ fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
 
 fn execution_error_machine() -> ExecutionError {
     ExecutionError::Machine {
-        action: MachineAction::CreateVolume,
+        action: MachineAction::CreateContainer,
         error: rpc_error(),
     }
 }
@@ -931,23 +936,21 @@ fn replacement_operation() -> ReplacementOperation {
     }
 }
 
-fn create_provisioned_volume_operation() -> DeployOperation {
-    DeployOperation::CreateProvisionedVolume {
+fn volume_to_create() -> VolumeToCreate {
+    VolumeToCreate {
         machine_id: machine_id(MACHINE_ID_HEX),
-        volume: service_volume(),
-        maximum_bytes: provisioned_volume().maximum_bytes,
+        machine_name: Some(MachineName::parse("edge").expect("fixture Machine Name is valid")),
+        name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
+        maximum_bytes: Some(ProvisionedVolumeMaximumBytes::new(
+            NonZeroU64::new(1_073_741_824).unwrap(),
+        )),
     }
 }
 
-fn deploy_operations() -> [DeployOperation; 10] {
+fn deploy_operations() -> [DeployOperation; 8] {
     let machine_id = machine_id(MACHINE_ID_HEX);
     let container_id = container_id();
     [
-        DeployOperation::CreateVolume {
-            machine_id,
-            volume: service_volume(),
-        },
-        create_provisioned_volume_operation(),
         DeployOperation::WaitHealthy {
             machine_id,
             dependent: QualifiedService::parse("app/web").unwrap(),
@@ -994,8 +997,6 @@ fn service_volume() -> ServiceVolume {
             external: false,
             driver: None,
             labels: BTreeMap::new(),
-            no_copy: false,
-            subpath: None,
         },
     }
 }
@@ -1009,8 +1010,6 @@ fn named_volume_with_driver() -> ServiceVolume {
             external: false,
             driver: Some(volume_driver()),
             labels: BTreeMap::from([("keep".into(), "1".into())]),
-            no_copy: true,
-            subpath: Some("db".into()),
         },
     }
 }
@@ -1264,6 +1263,8 @@ fn service_mount() -> ServiceMount {
         volume: ServiceVolumeReference::parse("data").expect("fixture volume reference is valid"),
         target: ContainerPath::parse("/data").expect("fixture container path is valid"),
         read_only: false,
+        no_copy: true,
+        subpath: Some("db".into()),
     }
 }
 
@@ -1301,10 +1302,9 @@ fn operation_statuses() -> [OperationStatus; 5] {
     ]
 }
 
-fn operation_phases() -> [OperationPhase; 10] {
+fn operation_phases() -> [OperationPhase; 9] {
     [
         OperationPhase::Starting,
-        OperationPhase::CreatingVolume,
         OperationPhase::CreatingContainer,
         OperationPhase::StartingContainer,
         OperationPhase::WaitingForHealth {

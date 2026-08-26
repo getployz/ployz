@@ -60,7 +60,6 @@ async function expectRpc(fn, code) {
         container: { image: "nginx", pull_policy: "always" },
       },
     ],
-    provisioned_volumes: [],
     options: {
       force_recreate: false,
       skip_health_monitor: true,

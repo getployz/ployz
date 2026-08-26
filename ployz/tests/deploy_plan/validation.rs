@@ -49,11 +49,17 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
     assert!(matches!(
         operations(&plan).as_slice(),
         [
-            DeployOperation::CreateVolume { machine_id: target, .. },
             DeployOperation::RunContainer { .. },
             DeployOperation::RunContainer { .. },
-        ] if target == &machine_id('2')
+        ]
     ));
+    assert_eq!(
+        plan.volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .machine_id,
+        machine_id('2')
+    );
 }
 
 #[test]
@@ -82,6 +88,7 @@ fn global_named_volume_existing_on_every_machine_is_not_created() {
             DeployOperation::RunContainer { .. },
         ]
     ));
+    assert!(plan.volumes_to_create.is_empty());
 }
 
 #[test]
@@ -111,9 +118,7 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
         .iter()
         .map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => *machine_id,
-            other @ (DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            other @ (DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
@@ -144,6 +149,8 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
         volume: alias,
         target: ContainerPath::parse("/alias").unwrap(),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
@@ -159,11 +166,9 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
 
     assert!(matches!(
         operations(&plan).as_slice(),
-        [
-            DeployOperation::CreateVolume { .. },
-            DeployOperation::RunContainer { .. }
-        ]
+        [DeployOperation::RunContainer { .. }]
     ));
+    assert_eq!(plan.volumes_to_create.len(), 1);
 }
 
 #[test]
@@ -179,8 +184,6 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
             external: false,
             driver: None,
             labels: Default::default(),
-            no_copy: false,
-            subpath: None,
         },
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
@@ -197,11 +200,17 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
 
     assert!(matches!(
         operations(&plan).as_slice(),
-        [
-            DeployOperation::CreateVolume { volume, .. },
-            DeployOperation::RunContainer { .. }
-        ] if volume.reference.as_str() == "data"
+        [DeployOperation::RunContainer { .. }]
     ));
+    assert_eq!(plan.volumes_to_create.len(), 1);
+    assert_eq!(
+        plan.volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .name
+            .as_str(),
+        "app_data"
+    );
 }
 
 #[test]
@@ -228,14 +237,14 @@ fn conflicting_named_volume_aliases_are_rejected() {
                 options: Default::default(),
             }),
             labels: Default::default(),
-            no_copy: false,
-            subpath: None,
         },
     });
     mounts.push(ServiceMount {
         volume: alias,
         target: ContainerPath::parse("/alias").unwrap(),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 

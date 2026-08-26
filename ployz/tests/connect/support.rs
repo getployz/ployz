@@ -163,6 +163,7 @@ pub(super) struct DiscoveryService {
     pub(super) accept_volume_creates: bool,
     pub(super) existing_created_volume: Option<DockerVolume>,
     pub(super) created_volume_verification_error: Option<RpcError>,
+    pub(super) create_container_error: Option<RpcError>,
     pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
@@ -195,6 +196,7 @@ impl DiscoveryService {
             accept_volume_creates: false,
             existing_created_volume: None,
             created_volume_verification_error: None,
+            create_container_error: None,
             created_volumes: Arc::new(Mutex::new(Vec::new())),
             removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
@@ -589,6 +591,11 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(error) = &self.create_container_error {
+            return Ok(Response::new(
+                RpcResponse::from(error.clone()).encode().unwrap(),
+            ));
+        }
         Ok(Response::new(
             RpcResponse::from(ContainerCreated {
                 container_id: created_container_id(),

@@ -11,8 +11,7 @@ use ployz::deploy::{
 };
 use ployz_core::{
     ContainerId, IngressProxyBackend, MachineStorageObservation, OperationPhase, ProjectName,
-    ProvisionedVolume, ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
-    ServiceVolumeReference,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec, VolumeSource,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -164,13 +163,26 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     let (mut client, server) = connected(service).await;
     let mut requested = spec("web");
     add_named_volume(&mut requested, "data");
-    let mut intent =
-        DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
-    intent.provisioned_volumes = vec![ProvisionedVolume {
-        service: ployz_core::ServiceName::parse("web").unwrap(),
-        reference: ServiceVolumeReference::parse("data").unwrap(),
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mounts = requested.volume_graph.mounts().to_vec();
+    let source = &mut volumes
+        .first_mut()
+        .expect("fixture mounts one volume")
+        .source;
+    let (name, labels) = match source {
+        VolumeSource::Named { name, labels, .. } => (name.clone(), labels.clone()),
+        VolumeSource::Bind { .. }
+        | VolumeSource::Provisioned { .. }
+        | VolumeSource::Tmpfs { .. } => unreachable!("fixture starts ordinary"),
+    };
+    *source = VolumeSource::Provisioned {
+        name,
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(157_286_400).unwrap()),
-    }];
+        labels,
+    };
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    let intent =
+        DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
 
     let outcome = client
         .run(intent, &CancellationToken::new(), None)
@@ -186,7 +198,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
 }
 
 #[tokio::test]
-async fn deploy_returns_the_completed_prefix_failed_op_and_unexecuted_suffix() {
+async fn volume_ensure_failure_is_reported_on_the_container_operation() {
     let machine = machine('a', "one");
     let (mut client, server) =
         connected(DeployService::new(machine.clone()).fail_create_volume("volume create failed"))
@@ -215,20 +227,19 @@ async fn deploy_returns_the_completed_prefix_failed_op_and_unexecuted_suffix() {
     assert!(matches!(
         failed,
         FailedOperation::Operation {
-            operation: DeployOperation::CreateVolume { volume, .. },
-            error: ExecutionError::Machine { .. },
-        } if volume.reference.as_str() == "data"
+            operation: DeployOperation::RunContainer { spec, .. },
+            error: ExecutionError::Machine {
+                action: ployz_core::MachineAction::CreateContainer,
+                ..
+            },
+        } if spec.name.as_str() == "web"
     ));
-    assert_eq!(unexecuted.len(), 1);
-    assert!(matches!(
-        unexecuted.first(),
-        Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
-    ));
+    assert!(unexecuted.is_empty());
     server.abort();
 }
 
 #[tokio::test]
-async fn created_but_unverified_volume_stops_before_the_dependent_container() {
+async fn created_but_unverified_volume_fails_the_container_operation() {
     let machine = machine('a', "one");
     let (mut client, server) = connected(
         DeployService::new(machine)
@@ -257,8 +268,12 @@ async fn created_but_unverified_volume_stops_before_the_dependent_container() {
     };
     assert!(completed.is_empty());
     let FailedOperation::Operation {
-        operation: DeployOperation::CreateVolume { .. },
-        error: ExecutionError::Machine { error, .. },
+        operation: DeployOperation::RunContainer { .. },
+        error:
+            ExecutionError::Machine {
+                action: ployz_core::MachineAction::CreateContainer,
+                error,
+            },
     } = &failed
     else {
         panic!("unexpected failed operation: {failed:?}");
@@ -268,10 +283,7 @@ async fn created_but_unverified_volume_stops_before_the_dependent_container() {
         "{}",
         error.message
     );
-    assert!(matches!(
-        unexecuted.as_slice(),
-        [DeployOperation::RunContainer { .. }]
-    ));
+    assert!(unexecuted.is_empty());
     server.abort();
 }
 
@@ -451,6 +463,7 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
             }
             DeployWarning::ObservationFailed { .. }
             | DeployWarning::ObservationOmitted { .. }
+            | DeployWarning::StorageObservationUnknown { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. } => false,
         }),

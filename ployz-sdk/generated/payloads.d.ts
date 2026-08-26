@@ -120,7 +120,8 @@ export type VolumeDriver = Additive<{
 
 export type VolumeSource =
   | Additive<{ kind: "bind"; machine_path: MachinePath; create_machine_path?: boolean; propagation?: string; recursive?: string }>
-  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: VolumeDriver; labels?: { readonly [key: string]: string }; no_copy?: boolean; subpath?: string }>
+  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: VolumeDriver; labels?: { readonly [key: string]: string } }>
+  | Additive<{ kind: "provisioned"; name: DockerVolumeName; maximum_bytes: ProvisionedVolumeMaximumBytes; labels?: { readonly [key: string]: string } }>
   | Additive<{ kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] }>
   | Additive<{ kind?: string }>;
 
@@ -196,6 +197,8 @@ export type ServiceMount = Additive<{
   volume: ServiceVolumeReference;
   target: ContainerPath;
   read_only?: boolean;
+  no_copy?: boolean;
+  subpath?: string;
 }>;
 
 export type ServiceVolume = Additive<{
@@ -396,16 +399,9 @@ export type ServiceAttempt = Additive<{
   name: ServiceName;
 }>;
 
-export type ProvisionedVolume = Additive<{
-  service: ServiceName;
-  reference: ServiceVolumeReference;
-  maximum_bytes: ProvisionedVolumeMaximumBytes;
-}>;
-
 export type DeployIntent = Additive<{
   project_name: ProjectName;
   target: RequestedServiceSpec[];
-  provisioned_volumes: ProvisionedVolume[];
   options: PlanOptions;
 }>;
 
@@ -414,6 +410,7 @@ export type ObservationKind = "container" | "volume";
 export type DeployWarning =
   | Additive<{ ObservationFailed: { kind: ObservationKind; machine_id: MachineId; message: string } }>
   | Additive<{ ObservationOmitted: { kind: ObservationKind; machine_id: MachineId } }>
+  | Additive<{ StorageObservationUnknown: { machine_id: MachineId } }>
   | Additive<{ IngressHostname: string }>
   | "ObserverRelativeHostnameConflict"
   | Additive<{ SkippedDependencyHealth: { dependent: QualifiedService; dependency: QualifiedService } }>;
@@ -425,11 +422,19 @@ export type PreservedVolume = Additive<{
   machine_name?: MachineName;
 }>;
 
+export type VolumeToCreate = Additive<{
+  machine_id: MachineId;
+  machine_name?: MachineName;
+  name: DockerVolumeName;
+  maximum_bytes?: ProvisionedVolumeMaximumBytes;
+}>;
+
 export type DeployPreview = Additive<{
   project_name: ProjectName;
   operations: OperationRow[];
   warnings: DeployWarning[];
   would_remove: QualifiedService[];
+  volumes_to_create: VolumeToCreate[];
   preserved_volumes: PreservedVolume[];
   prune_refusal?: PruneRefusal;
 }>;
@@ -454,7 +459,6 @@ export type OperationStatus =
 
 export type OperationPhase =
   | Additive<{ type: "starting" }>
-  | Additive<{ type: "creating_volume" }>
   | Additive<{ type: "creating_container" }>
   | Additive<{ type: "starting_container" }>
   | Additive<{ type: "waiting_for_health"; container_id: ContainerId; health?: HealthObservation; elapsed_ms: number; deadline_ms: number }>
@@ -478,8 +482,6 @@ export type ReplacementOperation = Additive<{
 }>;
 
 export type DeployOperation =
-  | Additive<{ type: "create_volume"; machine_id: MachineId; volume: ServiceVolume }>
-  | Additive<{ type: "create_provisioned_volume"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes }>
   | Additive<{ type: "wait_healthy"; machine_id: MachineId; dependent: QualifiedService; dependency: QualifiedService }>
   | Additive<{ type: "run_container"; machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
   | Additive<{ type: "stop_container"; machine_id: MachineId; container_id: ContainerId }>
@@ -490,7 +492,7 @@ export type DeployOperation =
   | Additive<{ type: "remove_volume"; id: DockerVolumeId }>
   | Additive<{ type?: string }>;
 
-export type MachineAction = "CreateVolume" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
+export type MachineAction = "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
 export type HealthFailure =
   | Additive<{ type: "cancelled" }>
