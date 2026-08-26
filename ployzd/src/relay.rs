@@ -18,7 +18,10 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tonic::transport::{Server, server::Connected};
+use tonic::{
+    codec::CompressionEncoding,
+    transport::{Server, server::Connected},
+};
 
 use crate::rpc::MachineService;
 
@@ -80,6 +83,7 @@ async fn serve_attach(client: RelayClient, open: Open, service: MachineService) 
     let _ = Server::builder()
         .add_service(
             MachineRpcServer::new(service)
+                .send_compressed(CompressionEncoding::Gzip)
                 .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
         )
         .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(io)))

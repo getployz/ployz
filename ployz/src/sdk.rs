@@ -20,7 +20,7 @@ use ployz_core::{
     DescribeContractRequest, DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId,
     MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
     RUNTIME_WATCH_CAPABILITY, RegisterRequest, Registered, RemoveVolumesRequest, RpcError,
-    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, RuntimeWatchTransportFrame, op,
+    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, decode_runtime_watch_frame, op,
 };
 
 struct SessionInner {
@@ -567,9 +567,8 @@ impl Watch {
                 *guard = None;
                 Ok(None)
             }
-            Some(Ok(Some(payload))) => match payload.decode_json::<RuntimeWatchTransportFrame>() {
-                Ok(frame) => {
-                    let mut frame = frame.into_frame();
+            Some(Ok(Some(payload))) => match decode_runtime_watch_frame(&payload) {
+                Ok(mut frame) => {
                     tokio::select! {
                         () = self.cancel.cancelled() => {
                             *guard = None;
@@ -582,7 +581,11 @@ impl Watch {
                 }
                 Err(error) => {
                     *guard = None;
-                    Err(RpcError::from(ConnectError::from(error)))
+                    Err(RpcError {
+                        code: RpcErrorCode::Internal,
+                        message: error.to_string(),
+                        details: Value::Null,
+                    })
                 }
             },
             Some(Err(status))

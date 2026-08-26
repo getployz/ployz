@@ -25,8 +25,8 @@ use ployz_core::{
     MachineStorageObservation, ManagementAddress, MembershipObservation, ObservedDataLoss,
     OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
     RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, RuntimeWatchTransportFrame, VolumeInventory, VolumeObservationFailure,
-    VolumeRemoved, WireGuardPublicKey, op,
+    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
+    WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -34,6 +34,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{
     Request, Response, Status, Streaming,
+    codec::CompressionEncoding,
     transport::{Channel, Server},
 };
 
@@ -52,6 +53,7 @@ pub(super) async fn serve_discovery(
         Server::builder()
             .add_service(
                 MachineRpcServer::new(service)
+                    .send_compressed(CompressionEncoding::Gzip)
                     .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
             )
             .serve_with_incoming(TcpListenerStream::new(tcp)),
@@ -130,8 +132,7 @@ impl WatchHub {
 fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event: &WatchEvent) {
     let item = match event {
         WatchEvent::Frame(frame) => {
-            OpaquePayload::from_json(&RuntimeWatchTransportFrame::from_frame(frame))
-                .map_err(|error| Status::internal(error.to_string()))
+            encode_runtime_watch_frame(frame).map_err(|error| Status::internal(error.to_string()))
         }
         WatchEvent::Payload(payload) => Ok(payload.clone()),
         WatchEvent::Fail(status) => Err(status.clone()),
@@ -152,6 +153,7 @@ pub(super) struct DiscoveryService {
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
+    pub(super) watch_accepts_gzip: Arc<AtomicBool>,
     watch: Arc<WatchHub>,
     pub(super) machines: Vec<MachineObservation>,
     pub(super) listed_volumes: Arc<Mutex<BTreeMap<MachineId, Vec<DockerVolume>>>>,
@@ -184,6 +186,7 @@ impl DiscoveryService {
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
+            watch_accepts_gzip: Arc::new(AtomicBool::new(false)),
             watch: Arc::new(WatchHub::new()),
             machines: vec![machine('a', "one")],
             listed_volumes: Arc::new(Mutex::new(BTreeMap::new())),
@@ -695,6 +698,14 @@ impl MachineRpc for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
         self.watch_opens.fetch_add(1, Ordering::SeqCst);
+        self.watch_accepts_gzip.store(
+            request
+                .metadata()
+                .get("grpc-accept-encoding")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|encodings| encodings.split(',').any(|item| item.trim() == "gzip")),
+            Ordering::SeqCst,
+        );
         let decoded = request
             .into_inner()
             .decode_request()

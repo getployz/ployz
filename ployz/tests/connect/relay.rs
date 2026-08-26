@@ -15,7 +15,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     time::timeout,
 };
-use tonic::transport::server::Connected;
+use tonic::{codec::CompressionEncoding, transport::server::Connected};
 
 use super::support::{DiscoveryService, test_description};
 
@@ -161,7 +161,7 @@ async fn serve_attach(url: &str, open: Open, service: DiscoveryService) {
         .unwrap();
     let io = Incoming(tunnel.into_io());
     let _ = tonic::transport::Server::builder()
-        .add_service(MachineRpcServer::new(service))
+        .add_service(MachineRpcServer::new(service).send_compressed(CompressionEncoding::Gzip))
         .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(io)))
         .await;
 }

@@ -6,16 +6,16 @@ use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContainerId, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
     DockerVolumeId, DockerVolumeName, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId,
-    MachineStorageObservation, OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
-    RuntimeWatchTransportFrame,
+    MachineRpcClient, MachineStorageObservation, OpaquePayload, PROTOCOL_MAJOR,
+    RUNTIME_WATCH_CAPABILITY, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, op,
 };
 use serde_json::Value;
 use tokio::time::timeout;
-use tonic::Status;
+use tonic::{Request, Status, codec::CompressionEncoding};
 
 use super::relay::{self, FakeMachine, RelaySession};
-use super::support::{DescribeOutcome, DiscoveryService, native_addon};
+use super::support::{DescribeOutcome, DiscoveryService, native_addon, serve_discovery};
 
 const FROZEN_FRAME: &str =
     include_str!("../../../ployz-core/tests/fixtures/runtime_watch_frame.json");
@@ -54,15 +54,15 @@ async fn missing_watch_capability_is_unsupported_and_never_polls_list_rpcs() {
 }
 
 #[tokio::test]
-async fn first_watch_yield_is_the_complete_generated_frame() {
+async fn first_watch_derives_services_from_containers() {
     let (client, service, _session, _machine) = watching_session().await;
-    let first = frozen_frame();
-    service.push_watch_frame(first.clone());
+    let expected = frozen_frame();
+    service.push_watch_frame(expected.clone());
     let watch = client.watch().await.unwrap();
 
     let frame = next_frame(&watch).await;
 
-    assert_eq!(frame, first);
+    assert_eq!(frame, expected);
     assert_redacted(&frame);
     assert!(
         !frame.volumes.is_empty(),
@@ -90,6 +90,44 @@ async fn first_watch_yield_is_the_complete_generated_frame() {
             .load(std::sync::atomic::Ordering::SeqCst),
         0
     );
+}
+
+#[tokio::test]
+async fn watch_negotiates_gzip() {
+    let (client, service, _session, _machine) = watching_session().await;
+    let _watch = client.watch().await.unwrap();
+
+    assert!(
+        service
+            .watch_accepts_gzip
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+#[tokio::test]
+async fn watch_server_sends_negotiated_gzip() {
+    let service = DiscoveryService::new(watch_description());
+    service.push_watch_frame(frozen_frame());
+    let (address, server) = serve_discovery(service).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap()
+        .accept_compressed(CompressionEncoding::Gzip);
+    let request = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
+        .encode()
+        .unwrap();
+
+    let response = client.runtime_watch(Request::new(request)).await.unwrap();
+
+    assert_eq!(
+        response
+            .metadata()
+            .get("grpc-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("gzip")
+    );
+    assert!(response.into_inner().message().await.unwrap().is_some());
+    server.abort();
 }
 
 #[tokio::test]
@@ -280,24 +318,6 @@ async fn store_or_rpc_failure_ends_the_iterable_with_a_typed_error() {
 }
 
 #[tokio::test]
-async fn malformed_reference_graph_fails_the_whole_stream_frame() {
-    let (client, service, _session, _machine) = watching_session().await;
-    let mut malformed: Value = serde_json::from_str(FROZEN_FRAME).unwrap();
-    *malformed
-        .pointer_mut("/containers/0/spec_index")
-        .expect("frozen frame has a Container spec reference") = 99.into();
-    service.push_watch_payload(OpaquePayload::from_json(&malformed).unwrap());
-    let watch = client.watch().await.unwrap();
-
-    let error = next_watch_result(&watch)
-        .await
-        .expect_err("a broken spec reference must reject the frame");
-    assert_eq!(error.code, RpcErrorCode::Internal);
-    assert!(error.message.contains("missing resolved spec 99"));
-    assert_eq!(next_watch_result(&watch).await.unwrap(), None);
-}
-
-#[tokio::test]
 async fn reconnect_starts_with_a_fresh_complete_frame_and_no_cursor() {
     let (client, service, _session, _machine) = watching_session().await;
     let first = frozen_frame();
@@ -385,7 +405,7 @@ async fn frame_above_ceiling_errors_without_closing_session() {
     let (client, service, _session, _machine) = watching_session().await;
     let mut frame = frozen_frame();
     frame.observed_at = "x".repeat(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
-    service.push_watch_frame(frame);
+    service.push_watch_payload(OpaquePayload::from_json(&frame).unwrap());
     let watch = client.watch().await.unwrap();
 
     let error = timeout(Duration::from_secs(10), watch.next())
@@ -442,14 +462,6 @@ async fn next_frame(watch: &sdk::Watch) -> RuntimeWatchFrame {
         .expect("Watch item")
 }
 
-async fn next_watch_result(
-    watch: &sdk::Watch,
-) -> Result<Option<RuntimeWatchFrame>, ployz_core::RpcError> {
-    timeout(Duration::from_secs(2), watch.next())
-        .await
-        .expect("Watch result")
-}
-
 async fn wait_watch_rpc_dropped(service: &DiscoveryService) {
     timeout(Duration::from_secs(2), async {
         loop {
@@ -499,9 +511,7 @@ fn storage_watch_description() -> ContractDescription {
 }
 
 fn frozen_frame() -> RuntimeWatchFrame {
-    serde_json::from_str::<RuntimeWatchTransportFrame>(FROZEN_FRAME)
-        .unwrap()
-        .into_frame()
+    serde_json::from_str(FROZEN_FRAME).unwrap()
 }
 
 fn frame_with_extra_volume(frame: &RuntimeWatchFrame) -> RuntimeWatchFrame {

@@ -1,15 +1,12 @@
-//! Complete Runtime Watch observations and their normalized transport.
+//! Complete Runtime Watch observations carried on the Machine RPC stream.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Container, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, DockerVolume, DockerVolumeId, HealthcheckSpec, HookContainer,
-    IngressHost, MachineId, MachineObservation, ProjectName, QualifiedService, ResolvedServiceSpec,
-    ServiceContainer, ServiceId, ServiceName, ServiceObservation, derive_services,
+    CodecError, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost,
+    MachineId, MachineObservation, OpaquePayload, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    ServiceObservation, derive_services,
 };
 
 crate::value::open_string_enum!(CertificateAvailability, Unrecognized {
@@ -81,365 +78,82 @@ pub struct RuntimeWatchFrame {
     pub observed_at: String,
 }
 
-/// Normalized Runtime Watch transport decoded into an ergonomic [`RuntimeWatchFrame`].
-///
-/// This is public only because the daemon and native SDK live in separate crates. Runtime Watch
-/// consumers receive [`RuntimeWatchFrame`] and never join this transport graph themselves.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct RuntimeWatchTransportFrame(RuntimeWatchFrame);
-
-impl RuntimeWatchTransportFrame {
-    /// Normalize an ergonomic frame for transport.
-    #[must_use]
-    pub fn from_frame(frame: &RuntimeWatchFrame) -> Self {
-        Self::from_owned_frame(frame.clone())
-    }
-
-    fn from_owned_frame(mut frame: RuntimeWatchFrame) -> Self {
-        frame
-            .containers
-            .sort_by_key(|container| container.container_id);
-        frame.services = derive_services(frame.containers.iter().cloned());
-        Self(frame)
-    }
-
-    /// Return the validated ergonomic frame.
-    #[must_use]
-    pub fn into_frame(self) -> RuntimeWatchFrame {
-        self.0
-    }
+#[derive(Serialize)]
+struct RuntimeWatchPayload<'frame> {
+    machines: &'frame [MachineObservation],
+    containers: &'frame [ContainerObservation],
+    volumes: &'frame [DockerVolume],
+    certificates: &'frame [CertificateObservation],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hosted_dns_hostname: Option<&'frame str>,
+    incomplete_ids: &'frame RuntimeWatchIncompleteIds,
+    observed_at: &'frame str,
 }
 
-impl Serialize for RuntimeWatchTransportFrame {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        RuntimeWatchTransportWire::from_frame(&self.0).serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for RuntimeWatchTransportFrame {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        RuntimeWatchTransportWire::deserialize(deserializer)?
-            .into_frame()
-            .map(Self::from_owned_frame)
-            .map_err(D::Error::custom)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-struct RuntimeWatchSpecIndex(usize);
-
-#[derive(Serialize, Deserialize)]
-struct RuntimeWatchContainerWire {
-    container_id: ContainerId,
-    display_name: String,
-    #[serde(default)]
-    created_at_unix_nanos: i64,
-    machine_id: MachineId,
-    project_name: ProjectName,
-    service_id: ServiceId,
-    service_name: ServiceName,
-    kind: ContainerKind,
-    runtime: ContainerRuntimeObservation,
-    #[serde(default)]
-    effective_healthcheck: Option<HealthcheckSpec>,
-    spec_index: RuntimeWatchSpecIndex,
-    #[serde(default)]
-    address: Option<ContainerAddress>,
-    #[serde(default)]
-    labels: BTreeMap<String, String>,
-}
-
-impl RuntimeWatchContainerWire {
-    fn from_observation(
-        observation: &ContainerObservation,
-        spec_index: RuntimeWatchSpecIndex,
-    ) -> Self {
-        Self {
-            container_id: observation.container_id,
-            display_name: observation.display_name.clone(),
-            created_at_unix_nanos: observation.created_at_unix_nanos,
-            machine_id: observation.machine_id,
-            project_name: observation.project_name.clone(),
-            service_id: observation.service_id,
-            service_name: observation.service_name.clone(),
-            kind: observation.kind,
-            runtime: observation.runtime.clone(),
-            effective_healthcheck: observation.effective_healthcheck.clone(),
-            spec_index,
-            address: observation.address,
-            labels: observation.labels.clone(),
-        }
-    }
-
-    fn into_observation(self, resolved_spec: ResolvedServiceSpec) -> ContainerObservation {
-        ContainerObservation {
-            container_id: self.container_id,
-            display_name: self.display_name,
-            created_at_unix_nanos: self.created_at_unix_nanos,
-            machine_id: self.machine_id,
-            project_name: self.project_name,
-            service_id: self.service_id,
-            service_name: self.service_name,
-            kind: self.kind,
-            runtime: self.runtime,
-            effective_healthcheck: self.effective_healthcheck,
-            resolved_spec,
-            address: self.address,
-            labels: self.labels,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct RuntimeWatchServiceWire {
-    identity: QualifiedService,
-    #[serde(default)]
-    member_ids: Vec<ContainerId>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct RuntimeWatchTransportWire {
-    #[serde(default)]
-    machines: Vec<MachineObservation>,
-    #[serde(default)]
-    specs: Vec<ResolvedServiceSpec>,
-    #[serde(default)]
-    containers: Vec<RuntimeWatchContainerWire>,
-    #[serde(default)]
-    services: Vec<RuntimeWatchServiceWire>,
-    #[serde(default)]
-    volumes: Vec<DockerVolume>,
-    #[serde(default)]
-    certificates: Vec<CertificateObservation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    hosted_dns_hostname: Option<String>,
-    #[serde(default)]
-    incomplete_ids: RuntimeWatchIncompleteIds,
-    observed_at: String,
-}
-
-impl RuntimeWatchTransportWire {
-    fn from_frame(frame: &RuntimeWatchFrame) -> Self {
-        let mut specs = Vec::<ResolvedServiceSpec>::new();
-        let containers = frame
-            .containers
-            .iter()
-            .map(|container| {
-                // ponytail: linear dedupe is ideal while a frame has few distinct specs; use a
-                // hashable canonical spec key only if distinct-spec counts become material.
-                let spec_index = specs
-                    .iter()
-                    .position(|spec| spec == &container.resolved_spec)
-                    .unwrap_or_else(|| {
-                        specs.push(container.resolved_spec.clone());
-                        specs.len() - 1
-                    });
-                RuntimeWatchContainerWire::from_observation(
-                    container,
-                    RuntimeWatchSpecIndex(spec_index),
-                )
-            })
-            .collect();
-        let mut services = frame
-            .services
-            .iter()
-            .map(|service| {
-                let mut member_ids = service
-                    .members()
-                    .map(|member| member.as_observation().container_id)
-                    .collect::<Vec<_>>();
-                member_ids.sort_unstable();
-                RuntimeWatchServiceWire {
-                    identity: service.identity.clone(),
-                    member_ids,
-                }
-            })
-            .collect::<Vec<_>>();
-        services.sort_by(|left, right| left.identity.cmp(&right.identity));
-        Self {
-            machines: frame.machines.clone(),
-            specs,
-            containers,
-            services,
-            volumes: frame.volumes.clone(),
-            certificates: frame.certificates.clone(),
-            hosted_dns_hostname: frame.hosted_dns_hostname.clone(),
-            incomplete_ids: frame.incomplete_ids.clone(),
-            observed_at: frame.observed_at.clone(),
-        }
-    }
-
-    fn into_frame(self) -> Result<RuntimeWatchFrame, RuntimeWatchGraphError> {
-        for (duplicate, spec) in self.specs.iter().enumerate() {
-            if let Some(first) = self
-                .specs
-                .iter()
-                .take(duplicate)
-                .position(|existing| existing == spec)
-            {
-                return Err(RuntimeWatchGraphError::DuplicateSpec { first, duplicate });
-            }
-        }
-
-        let mut referenced_specs = vec![false; self.specs.len()];
-        let mut container_indexes = BTreeMap::new();
-        let mut containers = Vec::with_capacity(self.containers.len());
-        for container in self.containers {
-            if container_indexes.contains_key(&container.container_id) {
-                return Err(RuntimeWatchGraphError::DuplicateContainer {
-                    container_id: container.container_id,
-                });
-            }
-            let spec = self.specs.get(container.spec_index.0).ok_or(
-                RuntimeWatchGraphError::MissingSpec {
-                    container_id: container.container_id,
-                    spec_index: container.spec_index.0,
-                },
-            )?;
-            if spec.service_id != container.service_id || spec.name != container.service_name {
-                return Err(RuntimeWatchGraphError::ContradictorySpecIdentity {
-                    container_id: container.container_id,
-                });
-            }
-            *referenced_specs
-                .get_mut(container.spec_index.0)
-                .expect("the resolved spec index was checked") = true;
-            let index = containers.len();
-            container_indexes.insert(container.container_id, index);
-            containers.push(container.into_observation(spec.clone()));
-        }
-        if let Some(spec_index) = referenced_specs.iter().position(|referenced| !referenced) {
-            return Err(RuntimeWatchGraphError::UnreferencedSpec { spec_index });
-        }
-
-        let mut service_identities = BTreeSet::new();
-        let mut assigned = vec![false; containers.len()];
-        let mut services = Vec::with_capacity(self.services.len());
-        for service in self.services {
-            if !service_identities.insert(service.identity.clone()) {
-                return Err(RuntimeWatchGraphError::DuplicateServiceIdentity {
-                    identity: Box::new(service.identity),
-                });
-            }
-            if service.member_ids.is_empty() {
-                return Err(RuntimeWatchGraphError::EmptyService {
-                    identity: Box::new(service.identity),
-                });
-            }
-
-            let mut members = Vec::with_capacity(service.member_ids.len());
-            for member_id in service.member_ids {
-                let Some(&index) = container_indexes.get(&member_id) else {
-                    return Err(RuntimeWatchGraphError::MissingMember {
-                        identity: Box::new(service.identity),
-                        container_id: member_id,
-                    });
-                };
-                let assigned = assigned
-                    .get_mut(index)
-                    .expect("Container indexes are created with the Container rows");
-                if *assigned {
-                    return Err(RuntimeWatchGraphError::DuplicateMember {
-                        container_id: member_id,
-                    });
-                }
-                let member = containers
-                    .get(index)
-                    .expect("Container indexes are created with the Container rows");
-                if member.identity() != service.identity {
-                    return Err(RuntimeWatchGraphError::ContradictoryMembership {
-                        container_id: member_id,
-                        expected: Box::new(service.identity),
-                        actual: Box::new(member.identity()),
-                    });
-                }
-                *assigned = true;
-                members.push(member.clone());
-            }
-            let service_id = members
-                .iter()
-                .max_by_key(|member| (member.created_at_unix_nanos, member.container_id.as_str()))
-                .expect("empty Services were rejected")
-                .service_id;
-
-            let mut containers = Vec::<ServiceContainer>::new();
-            let mut hook_containers = Vec::<HookContainer>::new();
-            for member in members {
-                match Container::from(member) {
-                    Container::Service(container) => containers.push(container),
-                    Container::Hook(container) => hook_containers.push(container),
-                }
-            }
-            services.push(ServiceObservation {
-                identity: service.identity,
-                service_id,
-                containers,
-                hook_containers,
-            });
-        }
-        if let Some(index) = assigned.iter().position(|assigned| !assigned) {
-            return Err(RuntimeWatchGraphError::UnassignedContainer {
-                container_id: containers
-                    .get(index)
-                    .expect("one assignment flag exists per Container row")
-                    .container_id,
-            });
-        }
-
-        Ok(RuntimeWatchFrame {
-            machines: self.machines,
-            containers,
-            services,
-            volumes: self.volumes,
-            certificates: self.certificates,
-            hosted_dns_hostname: self.hosted_dns_hostname,
-            incomplete_ids: self.incomplete_ids,
-            observed_at: self.observed_at,
-        })
-    }
-}
-
-/// Invalid normalized Runtime Watch reference graph.
+/// Runtime Watch JSON could not be encoded, decoded, or admitted under its size ceiling.
 #[derive(Debug, Error)]
-enum RuntimeWatchGraphError {
-    #[error("resolved specs {first} and {duplicate} are duplicates")]
-    DuplicateSpec { first: usize, duplicate: usize },
-    #[error("Container {container_id} references missing resolved spec {spec_index}")]
-    MissingSpec {
-        container_id: ContainerId,
-        spec_index: usize,
-    },
-    #[error("resolved spec {spec_index} is not referenced by a Container")]
-    UnreferencedSpec { spec_index: usize },
-    #[error("Container {container_id} appears more than once")]
-    DuplicateContainer { container_id: ContainerId },
-    #[error("Container {container_id} contradicts its resolved spec identity")]
-    ContradictorySpecIdentity { container_id: ContainerId },
-    #[error("Service {identity} appears more than once")]
-    DuplicateServiceIdentity { identity: Box<QualifiedService> },
-    #[error("Service {identity} has no members")]
-    EmptyService { identity: Box<QualifiedService> },
-    #[error("Service {identity} references missing Container {container_id}")]
-    MissingMember {
-        identity: Box<QualifiedService>,
-        container_id: ContainerId,
-    },
-    #[error("Container {container_id} is referenced more than once")]
-    DuplicateMember { container_id: ContainerId },
-    #[error("Container {container_id} belongs to {actual}, not {expected}")]
-    ContradictoryMembership {
-        container_id: ContainerId,
-        expected: Box<QualifiedService>,
-        actual: Box<QualifiedService>,
-    },
-    #[error("Container {container_id} does not belong to a Service")]
-    UnassignedContainer { container_id: ContainerId },
+pub enum RuntimeWatchPayloadError {
+    #[error(transparent)]
+    Codec(#[from] CodecError),
+    #[error(
+        "Runtime Watch message length too large: found {found} bytes, the limit is {limit} bytes"
+    )]
+    MessageTooLarge { found: usize, limit: usize },
+}
+
+/// Encode a frame without the Service view clients derive from its Containers.
+///
+/// # Errors
+///
+/// Returns when the frame cannot be serialized or exceeds the Runtime Watch ceiling.
+pub fn encode_runtime_watch_frame(
+    frame: &RuntimeWatchFrame,
+) -> Result<OpaquePayload, RuntimeWatchPayloadError> {
+    let RuntimeWatchFrame {
+        machines,
+        containers,
+        services: _,
+        volumes,
+        certificates,
+        hosted_dns_hostname,
+        incomplete_ids,
+        observed_at,
+    } = frame;
+    let payload = OpaquePayload::from_json(&RuntimeWatchPayload {
+        machines,
+        containers,
+        volumes,
+        certificates,
+        hosted_dns_hostname: hosted_dns_hostname.as_deref(),
+        incomplete_ids,
+        observed_at,
+    })?;
+    validate_runtime_watch_payload_size(&payload)?;
+    Ok(payload)
+}
+
+/// Decode a frame and derive its Service view from the transmitted Containers.
+///
+/// # Errors
+///
+/// Returns when the payload is not a Runtime Watch frame or exceeds its ceiling.
+pub fn decode_runtime_watch_frame(
+    payload: &OpaquePayload,
+) -> Result<RuntimeWatchFrame, RuntimeWatchPayloadError> {
+    validate_runtime_watch_payload_size(payload)?;
+    let mut frame = payload.decode_json::<RuntimeWatchFrame>()?;
+    frame.services = derive_services(frame.containers.iter().cloned());
+    Ok(frame)
+}
+
+fn validate_runtime_watch_payload_size(
+    payload: &OpaquePayload,
+) -> Result<(), RuntimeWatchPayloadError> {
+    if payload.json.len() > RUNTIME_WATCH_MESSAGE_SIZE_LIMIT {
+        return Err(RuntimeWatchPayloadError::MessageTooLarge {
+            found: payload.json.len(),
+            limit: RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+        });
+    }
+    Ok(())
 }

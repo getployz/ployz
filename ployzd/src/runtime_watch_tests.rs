@@ -11,12 +11,12 @@ use ployz_core::{
     AdvertisedEndpoint, CertificateAvailability, CertificateBackoff, CertificateFailureKind,
     CertificateObservation, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    GlobalReconcileFailureObservation, HealthObservation, HookContainer, IngressHost,
-    IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName, MachineObservation,
-    MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload, ProjectName,
-    QualifiedService, ResolvedServiceSpec, RttObservation, RttStatistics,
-    RuntimeWatchTransportFrame, SelectedEndpoint, ServiceContainer, ServiceId, ServiceName,
-    ServiceObservation, WireGuardPublicKey,
+    GlobalReconcileFailureObservation, HealthObservation, IngressHost, IssuanceClock,
+    IssuanceFailure, Machine, MachineId, MachineName, MachineObservation, MachineRuntime,
+    ManagementAddress, MembershipObservation, ProjectName, QualifiedService,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
+    SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
+    derive_services, encode_runtime_watch_frame,
 };
 use serde_json::{Value, json};
 
@@ -101,12 +101,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
     assert_eq!(frame.containers, vec![service.clone(), hook.clone()]);
     assert_eq!(
         frame.services,
-        vec![ServiceObservation {
-            identity: service.identity(),
-            service_id: ServiceId::parse(SERVICE_ID).unwrap(),
-            containers: vec![ServiceContainer::try_from(service).unwrap()],
-            hook_containers: vec![HookContainer::try_from(hook).unwrap()],
-        }]
+        derive_services(frame.containers.iter().cloned())
     );
     assert_eq!(frame.volumes, vec![volume]);
     assert_eq!(
@@ -288,8 +283,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
         ]
     );
 
-    let encoded =
-        OpaquePayload::from_json(&RuntimeWatchTransportFrame::from_frame(&frame)).unwrap();
+    let encoded = encode_runtime_watch_frame(&frame).unwrap();
     let round_trip: Value = encoded.decode_json().unwrap();
     assert_no_secret_material(&round_trip.to_string());
     assert_eq!(
@@ -483,6 +477,47 @@ async fn watch_stream_yields_the_first_complete_frame_immediately() {
             .is_err(),
         "first yield must not wait for a timer or a store change"
     );
+}
+
+#[tokio::test]
+async fn watch_stream_omits_services_duplicated_by_containers() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let mut current = snapshot(vec![entry.clone()], Vec::new());
+    current.containers = observations(vec![container(
+        CONTAINER_ID,
+        "api",
+        ContainerKind::ServiceContainer,
+    )]);
+    let fixture = WatchFixture::new(current);
+    let (_wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+    let payload = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("Watch frame")
+        .expect("open stream")
+        .expect("Watch status");
+    let wire: Value = payload.decode_json().unwrap();
+
+    assert!(wire.get("services").is_none());
+}
+
+#[tokio::test]
+async fn watch_stream_rejects_json_above_the_ceiling_before_compression() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+    fixture.set_sample(None, &"x".repeat(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT));
+    let (_wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+    let error = tokio::time::timeout(Duration::from_secs(10), stream.next())
+        .await
+        .expect("Watch error")
+        .expect("stream item")
+        .expect_err("oversized frame must fail");
+
+    assert_eq!(error.code(), tonic::Code::OutOfRange);
+    assert!(error.message().contains("message length too large"));
 }
 
 #[tokio::test]
@@ -869,10 +904,7 @@ async fn next_frame(stream: &mut crate::logs::RpcStream) -> ployz_core::RuntimeW
         .expect("Watch frame")
         .expect("open stream")
         .expect("Watch status");
-    payload
-        .decode_json::<RuntimeWatchTransportFrame>()
-        .unwrap()
-        .into_frame()
+    decode_runtime_watch_frame(&payload).unwrap()
 }
 
 fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchSnapshot {

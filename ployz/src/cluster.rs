@@ -21,7 +21,12 @@ use ployz_core::{
 use serde::Serialize;
 use serde_json::Value;
 use tokio::task::JoinSet;
-use tonic::{Streaming, codec::ProstCodec, codegen::http::uri::PathAndQuery, transport::Channel};
+use tonic::{
+    Streaming,
+    codec::{CompressionEncoding, ProstCodec},
+    codegen::http::uri::PathAndQuery,
+    transport::Channel,
+};
 
 use crate::{
     connect::{
@@ -242,6 +247,7 @@ impl Client {
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self
             .machine_rpc()
+            .accept_compressed(CompressionEncoding::Gzip)
             .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
         Ok(rpc
             .runtime_watch(tonic::Request::new(request))

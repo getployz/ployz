@@ -22,7 +22,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tokio_util::sync::CancellationToken;
-use tonic::{service::Routes, transport::Server};
+use tonic::{codec::CompressionEncoding, service::Routes, transport::Server};
 
 use crate::{
     certificates,
@@ -200,6 +200,7 @@ impl Daemon {
         let proxy = MachineProxy::new(
             Routes::new(
                 MachineRpcServer::new(service.clone())
+                    .send_compressed(CompressionEncoding::Gzip)
                     .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
             ),
             local_id,

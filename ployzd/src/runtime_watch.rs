@@ -11,8 +11,9 @@ use futures_util::{Stream, StreamExt};
 use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, derive_services,
+    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError, derive_services,
+    encode_runtime_watch_frame,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -168,15 +169,19 @@ where
                 .as_ref()
                 .is_none_or(|previous| observation_changed(previous, &frame))
             {
-                let payload =
-                    match OpaquePayload::from_json(&RuntimeWatchTransportFrame::from_frame(&frame))
-                    {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            let _ = sender.send(Err(Status::internal(error.to_string()))).await;
-                            return;
-                        }
-                    };
+                let payload = match encode_runtime_watch_frame(&frame) {
+                    Ok(payload) => payload,
+                    Err(error @ RuntimeWatchPayloadError::MessageTooLarge { .. }) => {
+                        let _ = sender
+                            .send(Err(Status::out_of_range(error.to_string())))
+                            .await;
+                        return;
+                    }
+                    Err(error) => {
+                        let _ = sender.send(Err(Status::internal(error.to_string()))).await;
+                        return;
+                    }
+                };
                 if sender.send(Ok(payload)).await.is_err() {
                     return;
                 }
@@ -228,7 +233,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
     let RuntimeWatchFrame {
         machines,
         containers,
-        services,
+        services: _,
         volumes,
         certificates,
         hosted_dns_hostname,
@@ -238,7 +243,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
     let RuntimeWatchFrame {
         machines: next_machines,
         containers: next_containers,
-        services: next_services,
+        services: _,
         volumes: next_volumes,
         certificates: next_certificates,
         hosted_dns_hostname: next_hosted_dns_hostname,
@@ -247,7 +252,6 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
     } = next;
     machines != next_machines
         || containers != next_containers
-        || services != next_services
         || volumes != next_volumes
         || certificates != next_certificates
         || hosted_dns_hostname != next_hosted_dns_hostname
