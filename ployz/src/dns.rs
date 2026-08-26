@@ -31,6 +31,16 @@ pub enum Error {
     NoReachableMachines(#[from] NoReachableMachines),
 }
 
+impl Error {
+    pub(crate) fn is_retryable_transport(&self) -> bool {
+        match self {
+            Self::Connect(error) => error.is_retryable(),
+            Self::Http(error) => error.is_connect() || error.is_timeout() || error.is_request(),
+            Self::NoReachableMachines(_) => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("no publicly reachable Ingress Proxy Machines found")]
 pub struct NoReachableMachines;
@@ -160,7 +170,11 @@ async fn probe_machine(http: &HttpClient, machine: &Machine) -> bool {
     let Some(public_ip) = machine.public_ip else {
         return false;
     };
-    let address = SocketAddr::new(public_ip, 80);
+    let port = std::env::var("PLOYZ_INGRESS_VERIFY_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(80);
+    let address = SocketAddr::new(public_ip, port);
     let Ok(response) = http
         .get(format!("http://{address}{INGRESS_VERIFY_PATH}"))
         .send()

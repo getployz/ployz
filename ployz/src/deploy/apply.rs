@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::{
-    DeployOutcome, DeployPreview, ExecutionError, VolumeFate,
+    DeployError, DeployOutcome, DeployPreview, ExecutionError, VolumeFate,
     pipeline::{
         PushOutcome, ReconciliationHints, list_machines, plan_options, plan_project, plan_scale,
         push_project_images,
@@ -34,6 +34,28 @@ pub(crate) async fn deploy_spec(
     context: &str,
     project: Option<&ResolvedProject>,
 ) -> Result<(), Failure> {
+    apply_spec(
+        client,
+        requested,
+        force_recreate,
+        skip_health_monitor,
+        project_name,
+        context,
+        project,
+    )
+    .await
+    .map_err(Into::into)
+}
+
+async fn apply_spec(
+    client: &mut Client,
+    requested: &RequestedServiceSpec,
+    force_recreate: bool,
+    skip_health_monitor: bool,
+    project_name: &ProjectName,
+    context: &str,
+    project: Option<&ResolvedProject>,
+) -> Result<(), ApplyError> {
     let preview = client
         .preview(DeployIntent::apply_one(
             project_name.clone(),
@@ -63,8 +85,8 @@ pub(crate) async fn deploy_spec(
 pub(crate) async fn apply_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
-) -> Result<(), Failure> {
-    deploy_spec(
+) -> Result<(), ApplyError> {
+    apply_spec(
         client,
         requested,
         false,
@@ -74,6 +96,51 @@ pub(crate) async fn apply_requested(
         None,
     )
     .await
+}
+
+/// A system-service Apply failure kept typed for enrollment retry decisions.
+#[derive(Debug)]
+pub(crate) enum ApplyError {
+    Prepare(DeployError),
+    Execute(Box<DeployOutcome<ExecutionError>>),
+}
+
+impl ApplyError {
+    pub(crate) fn is_retryable_transport(&self) -> bool {
+        match self {
+            Self::Prepare(DeployError::Connect(error)) => error.is_retryable(),
+            Self::Execute(outcome) => matches!(
+                outcome.as_ref(),
+                DeployOutcome::Failed { failed, .. } if matches!(
+                failed_error(failed),
+                ExecutionError::Machine { error, .. }
+                    if matches!(
+                        error.code,
+                        ployz_core::RpcErrorCode::Unavailable
+                            | ployz_core::RpcErrorCode::Ambiguous
+                    )
+                )
+            ),
+            Self::Prepare(_) => false,
+        }
+    }
+}
+
+impl From<DeployError> for ApplyError {
+    fn from(error: DeployError) -> Self {
+        Self::Prepare(error)
+    }
+}
+
+impl From<ApplyError> for Failure {
+    fn from(error: ApplyError) -> Self {
+        match error {
+            ApplyError::Prepare(error) => error.into(),
+            ApplyError::Execute(outcome) => {
+                Failure::usage(render::outcome_text(&outcome).trim().to_owned())
+            }
+        }
+    }
 }
 
 pub(crate) struct ConfirmGate<'a> {
@@ -161,6 +228,7 @@ async fn confirm_and_execute(
         return Ok(());
     }
     finish(stream_confirm(client, preview, format!("Deploying to {}", gate.context)).await)
+        .map_err(Into::into)
 }
 
 pub(crate) async fn remove_project(
@@ -192,6 +260,7 @@ pub(crate) async fn remove_project(
         )
         .await,
     )
+    .map_err(Into::into)
 }
 
 async fn stream_confirm(
@@ -303,14 +372,21 @@ fn confirm(prompt: &str) -> Result<bool, Failure> {
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
-fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Failure> {
+fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), ApplyError> {
     let text = render::outcome_text(&outcome);
     if !text.is_empty() {
         print!("{text}");
     }
     match outcome {
         DeployOutcome::Success { .. } => Ok(()),
-        DeployOutcome::Failed { .. } => Err(Failure::usage(text.trim().to_owned())),
+        outcome @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute(Box::new(outcome))),
+    }
+}
+
+fn failed_error(failed: &ployz_core::FailedOperation<ExecutionError>) -> &ExecutionError {
+    match failed {
+        ployz_core::FailedOperation::Operation { error, .. }
+        | ployz_core::FailedOperation::ReplacementHealth { error, .. } => error,
     }
 }
 

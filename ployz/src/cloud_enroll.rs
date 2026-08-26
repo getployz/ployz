@@ -4,12 +4,14 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
-    Registered, StorageChoice, WireGuardPublicKey,
+    PairingCredential, Registered, StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
 const DEFAULT_RETRY_AFTER: u64 = 2;
+const PROTOCOL_VERSION: u8 = 2;
+const MAX_TRANSPORT_ATTEMPTS: u8 = 3;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // Healthy production enroll measured 8.15s for Relay List + registerHeld.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -29,6 +31,13 @@ pub(crate) enum Error {
     Status { status: u16, body: String },
     #[error("Cloud response must not carry a Dial Credential")]
     DialOffered,
+    #[error(
+        "Cloud {operation} failed after brief retries: {detail}; rerun the same ployz cloud enroll command"
+    )]
+    RetrySameCommand {
+        operation: &'static str,
+        detail: String,
+    },
 }
 
 impl Error {
@@ -41,6 +50,7 @@ impl Error {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EnrollIdentity {
+    protocol_version: u8,
     name: MachineName,
     // Cloud enroll HTTP expects Display/base64, not the RPC `number[]` wire.
     #[serde(serialize_with = "serialize_as_wireguard_base64")]
@@ -70,6 +80,7 @@ impl EnrollIdentity {
         requested_storage: StorageChoice,
     ) -> Self {
         Self {
+            protocol_version: PROTOCOL_VERSION,
             name,
             public_key: token.public_key,
             advertised_endpoints: token.advertised_endpoints.clone(),
@@ -95,9 +106,23 @@ pub(crate) struct Join {
 pub(crate) enum Outcome {
     Join(Box<Join>),
     Initialize {
+        mode: InitializeMode,
         pairing: CloudPairing,
         storage: StorageChoice,
     },
+}
+
+/// Whether Cloud granted a new Founding Claim or resumed the current one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InitializeMode {
+    New,
+    Resume,
+}
+
+impl From<bool> for InitializeMode {
+    fn from(resumed: bool) -> Self {
+        if resumed { Self::Resume } else { Self::New }
+    }
 }
 
 /// One enroll POST body.
@@ -105,6 +130,7 @@ pub(crate) enum Outcome {
 pub(crate) enum Response {
     Join(Box<Join>),
     Initialize {
+        mode: InitializeMode,
         pairing: CloudPairing,
         storage: StorageChoice,
     },
@@ -113,13 +139,9 @@ pub(crate) enum Response {
     },
 }
 
-/// Cloud enrollment is a rolling-compatibility boundary: official Cloud and
-/// self-hosted Cloud can be older or newer than the CLI. Keep unknown response
-/// fields ignored, and give every additive field a safe default when one exists.
-/// Making a response field required can make the founder exit before callback
-/// and leave every other Machine polling an enrollment that can never finish.
-/// Fields without a safe default require a future enrollment protocol version.
-/// `dial` remains the deliberate exception: a Machine must never hold Dial.
+/// Enrollment protocol 2 is a coordinated compatibility break. Unknown fields
+/// remain harmless, while state-shaping fields are required. `dial` remains a
+/// deliberate rejection: a Machine must never hold Dial.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum EnrollWire {
@@ -136,6 +158,7 @@ enum EnrollWire {
         retry_after: Option<u64>,
     },
     Initialize {
+        resumed: bool,
         pairing: CloudPairing,
         #[serde(default)]
         storage: StorageChoice,
@@ -150,7 +173,7 @@ pub(crate) fn enroll_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     format!("{}/api/enroll/{}", cloud_origin(cloud_url), token.as_str())
 }
 
-/// Founder callback: `POST /api/enroll/<token>/callback`. UX, not the lock.
+/// Final founder commit: `POST /api/enroll/<token>/callback`.
 #[must_use]
 pub(crate) fn callback_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     format!("{}/callback", enroll_url(cloud_url, token))
@@ -167,30 +190,56 @@ fn cloud_origin(cloud_url: &str) -> String {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct EnrollCallback {
+struct EnrollCallback<'a> {
     machine_id: MachineId,
+    pairing_credential: &'a PairingCredential,
 }
 
 /// POST identity until Cloud returns `initialize` or `join`.
 ///
 /// Transport errors and `not_yet` are retried with backoff. A timed-out enroll
-/// is safe to repeat: the founding claim is CAS and joins are idempotent.
+/// is safe to repeat: the Organization claim keeps the same founder and joins
+/// are idempotent.
 ///
 /// # Errors
 ///
 /// HTTP status, unexpected JSON, or a non-transport HTTP failure.
 pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outcome, Error> {
     let http = http_client()?;
+    let mut transport_attempts = 0;
+    let mut announced_wait = false;
     loop {
         match post_json(&http, url, identity).await {
             Ok(bytes) => match parse_enroll(&bytes)? {
                 Response::Join(join) => return Ok(Outcome::Join(join)),
-                Response::Initialize { pairing, storage } => {
-                    return Ok(Outcome::Initialize { pairing, storage });
+                Response::Initialize {
+                    mode,
+                    pairing,
+                    storage,
+                } => {
+                    return Ok(Outcome::Initialize {
+                        mode,
+                        pairing,
+                        storage,
+                    });
                 }
-                Response::NotYet { retry_after } => tokio::time::sleep(retry_after).await,
+                Response::NotYet { retry_after } => {
+                    transport_attempts = 0;
+                    if !announced_wait {
+                        eprintln!("Another Machine is founding this Organization; waiting...");
+                        announced_wait = true;
+                    }
+                    tokio::time::sleep(retry_after).await;
+                }
             },
             Err(error) if error.is_transport() => {
+                transport_attempts += 1;
+                if transport_attempts == MAX_TRANSPORT_ATTEMPTS {
+                    return Err(Error::RetrySameCommand {
+                        operation: "enrollment",
+                        detail: error.to_string(),
+                    });
+                }
                 tokio::time::sleep(Duration::from_secs(DEFAULT_RETRY_AFTER)).await;
             }
             Err(error) => return Err(error),
@@ -198,14 +247,36 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
     }
 }
 
-/// POST `{ machineId }` after Relay Register is held. Not what makes waiters `join`.
+/// POST the founder Machine ID and Pairing Credential after Relay Register is held.
 ///
 /// # Errors
 ///
 /// HTTP failure.
-pub(crate) async fn callback(url: &str, machine_id: MachineId) -> Result<(), Error> {
-    post_json(&http_client()?, url, &EnrollCallback { machine_id }).await?;
-    Ok(())
+pub(crate) async fn callback(
+    url: &str,
+    machine_id: MachineId,
+    pairing_credential: &PairingCredential,
+) -> Result<(), Error> {
+    let http = http_client()?;
+    let body = EnrollCallback {
+        machine_id,
+        pairing_credential,
+    };
+    for attempt in 0..MAX_TRANSPORT_ATTEMPTS {
+        match post_json(&http, url, &body).await {
+            Ok(_) => return Ok(()),
+            Err(_) if attempt + 1 < MAX_TRANSPORT_ATTEMPTS => {
+                tokio::time::sleep(Duration::from_secs(DEFAULT_RETRY_AFTER)).await;
+            }
+            Err(error) => {
+                return Err(Error::RetrySameCommand {
+                    operation: "founder completion",
+                    detail: error.to_string(),
+                });
+            }
+        }
+    }
+    unreachable!("completion attempts are non-zero")
 }
 
 fn http_client() -> Result<reqwest::Client, Error> {
@@ -268,10 +339,15 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             retry_after: Duration::from_secs(retry_after.unwrap_or(DEFAULT_RETRY_AFTER)),
         }),
         EnrollWire::Initialize {
+            resumed,
             pairing,
             storage,
             dial: None,
-        } => Ok(Response::Initialize { pairing, storage }),
+        } => Ok(Response::Initialize {
+            mode: resumed.into(),
+            pairing,
+            storage,
+        }),
     }
 }
 
@@ -383,24 +459,37 @@ mod tests {
     fn initialize_payload_is_cloud_pairing() {
         let value = serde_json::json!({
             "kind": "initialize",
+            "resumed": false,
             "storage": "none",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
         });
-        let Response::Initialize { pairing: got, .. } =
-            parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
+        let Response::Initialize {
+            mode, pairing: got, ..
+        } = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
         else {
             panic!("expected initialize");
         };
+        assert_eq!(mode, InitializeMode::New);
         assert_eq!(got, pairing());
+    }
+
+    #[test]
+    fn initialize_requires_the_protocol_two_resume_directive() {
+        let error = parse_enroll(
+            br#"{"kind":"initialize","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("resumed"), "{error}");
     }
 
     #[test]
     fn initialize_pairing_with_a_dial_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "initialize",
+            "resumed": false,
             "storage": "none",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
@@ -415,7 +504,7 @@ mod tests {
     #[test]
     fn enrollment_defaults_missing_storage_to_none() {
         let Response::Initialize { storage, .. } = parse_enroll(
-            br#"{"kind":"initialize","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
+            br#"{"kind":"initialize","resumed":false,"pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
         )
         .unwrap() else {
             panic!("expected initialize");
@@ -444,10 +533,10 @@ mod tests {
 
     #[test]
     fn enroll_ignores_fields_the_cloud_adds_later() {
-        let Response::NotYet { retry_after } = parse_enroll(
-            br#"{"kind":"not_yet","retryAfter":5,"claimExpiresAt":"2026-08-19T22:58:13.733Z"}"#,
-        )
-        .unwrap() else {
+        let Response::NotYet { retry_after } =
+            parse_enroll(br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#)
+                .unwrap()
+        else {
             panic!("expected not_yet");
         };
         assert_eq!(retry_after, Duration::from_secs(5));
@@ -456,7 +545,7 @@ mod tests {
     #[test]
     fn initialize_ignores_fields_the_cloud_adds_later() {
         let Response::Initialize { pairing: parsed, .. } = parse_enroll(
-            br#"{"kind":"initialize","storage":"none","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret","privateRelayUrl":"http://relay.internal"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#,
+            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret","privateRelayUrl":"http://relay.internal"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#,
         )
         .unwrap() else {
             panic!("expected initialize");
@@ -608,6 +697,7 @@ mod tests {
             StorageChoice::Zfs,
         );
         let json = serde_json::to_value(&identity).unwrap();
+        assert_eq!(json.get("protocolVersion"), Some(&serde_json::json!(2)));
         assert_eq!(
             json.get("publicKey"),
             Some(&serde_json::json!(

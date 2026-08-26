@@ -26,7 +26,8 @@ mod progress;
 mod render;
 
 pub(crate) use apply::{
-    ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec, remove_project,
+    ApplyError, ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec,
+    remove_project,
 };
 pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};

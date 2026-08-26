@@ -7,9 +7,10 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, Machine, MachineId, MachineName, MachineRpc, MachineRpcServer,
-    MachineRuntime, MachineSubnet, ManagementAddress, MembershipObservation, RegisterRequest,
-    Registered, RpcError, RpcErrorCode, RpcResponseBody, WireGuardPublicKey, op,
+    AdvertisedEndpoint, JoinRequest, LocalMachinePhase, Machine, MachineId, MachineName,
+    MachineRpc, MachineRpcServer, MachineRuntime, MachineSubnet, ManagementAddress,
+    MembershipObservation, RegisterRequest, Registered, RpcError, RpcErrorCode, RpcResponseBody,
+    WireGuardPublicKey, op,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener, UnixStream};
@@ -93,6 +94,64 @@ async fn register_assigns_a_free_subnet_publishes_and_rejects_duplicates() {
     server.abort();
     drop(local);
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
+    let (data_dir, store, founder) = open_store("ployzd-register-replay");
+    let (replicated, server) = fake_cluster::store().await;
+    replicated.publish_local_machine(&founder).await.unwrap();
+    replicated
+        .publish_founder_allocator(&founder.id)
+        .await
+        .unwrap();
+    let service = machine_service(store, replicated.clone(), None);
+
+    let target_dir = std::env::temp_dir().join(format!(
+        "ployzd-register-replay-target-{}",
+        MachineId::random()
+    ));
+    let target_store = Arc::new(Mutex::new(LocalMachineStore::open(&target_dir).unwrap()));
+    let public_key = target_store
+        .lock()
+        .unwrap()
+        .record()
+        .wireguard_private_key
+        .public_key();
+    let identity = request("joiner", public_key);
+
+    let first = rpc_register(&service, identity.clone(), false)
+        .await
+        .unwrap();
+    let replay = rpc_register(&service, identity, false).await.unwrap();
+
+    assert_eq!(replay.assigned_machine.id, first.assigned_machine.id);
+    assert_eq!(
+        replay.assigned_machine.subnet,
+        first.assigned_machine.subnet
+    );
+    assert_eq!(replicated.machines().await.unwrap().observations.len(), 2);
+
+    let target = LocalMachine::new(target_store, watch::channel(false).0);
+    target
+        .join(JoinRequest {
+            registration: replay,
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
+        .unwrap();
+    assert_eq!(target.record().unwrap().phase(), LocalMachinePhase::Joining);
+
+    let conflict = rpc_register(&service, request("other", public_key), false)
+        .await
+        .unwrap_err();
+    assert_eq!(conflict.code, RpcErrorCode::Conflict);
+
+    server.abort();
+    drop(service);
+    drop(target);
+    let _ = std::fs::remove_dir_all(data_dir);
+    let _ = std::fs::remove_dir_all(target_dir);
 }
 
 #[tokio::test]

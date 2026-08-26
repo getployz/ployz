@@ -1,173 +1,48 @@
 //! Fake enroll HTTP, Relay, and Machine RPC for membership join tests.
 
-use std::{
-    collections::VecDeque,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ployz::sdk;
 use ployz_core::{
-    AdvertisedEndpoint, CloudPairingSet, ContainerCreated, ContainerId, ContainerKind,
-    ContainerList, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, Domain, EnsureGlobalSlotRequest, HealthObservation,
-    InitializeRequest, Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine,
-    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachineRpc,
-    MachineRpcServer, MachineToken, ManagementAddress, MembershipObservation, OpaquePayload,
-    PROTOCOL_MAJOR, PairingCredential, Registered, ReserveDomainRequest, ResetAccepted, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, WireGuardPublicKey,
+    AdvertisedEndpoint, CloudPairingSet, ContainerChanged, ContainerCreated, ContainerDetails,
+    ContainerId, ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
+    ContractDescription, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, Domain,
+    DomainRecords, EnsureGlobalSlotRequest, HealthObservation, InitializeRequest, Initialized,
+    JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
+    MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineToken,
+    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered,
+    ReserveDomainRequest, ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    VolumeInventory, WireGuardPublicKey,
 };
-use ployz_relay::{ClientError, DialCredential, Open, RegisterRequest, Relay, RelayClient};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixListener},
-    task::JoinHandle,
-};
-use tokio_stream::wrappers::UnixListenerStream;
-use tonic::{Request, Response, Status, Streaming, transport::Server};
+use tokio::task::JoinHandle;
+use tonic::{Request, Response, Status, Streaming};
 
+#[path = "enroll_http.rs"]
+mod enroll_http;
 #[path = "../support/inspect_telemetry.rs"]
 mod inspect_telemetry_fixture;
+#[path = "relay.rs"]
+mod relay;
+#[path = "servers.rs"]
+mod servers;
+
+pub use enroll_http::{EnrollListen, EventLog};
+use relay::hold_register;
+pub use relay::{RelayListen, assert_not_held, wait_for_held};
+pub use servers::{serve_ingress_probe, serve_local_machine, serve_machine};
 
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
-const DIAL: &str = "dial-secret";
 pub const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
 
-pub struct RelayListen {
-    pub url: String,
-    _server: tokio::task::JoinHandle<std::io::Result<()>>,
-}
-
-impl RelayListen {
-    pub async fn start() -> Self {
-        let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
-        let (address, server, _goaway) = relay
-            .serve((std::net::Ipv4Addr::LOCALHOST, 0).into())
-            .await
-            .unwrap();
-        Self {
-            url: format!("http://{address}"),
-            _server: server,
-        }
-    }
-
-    pub async fn revoke(&self, pairing: &str) {
-        sdk::revoke_pairing(&self.url, DIAL, pairing)
-            .await
-            .expect("test Relay accepts Dial revoke");
-    }
-}
-
-pub struct EnrollListen {
-    pub url: String,
-    paths: Arc<Mutex<Vec<String>>>,
-    posts: Arc<Mutex<Vec<serde_json::Value>>>,
-    callbacks: Arc<Mutex<Vec<serde_json::Value>>>,
-    callback_status: Arc<AtomicU16>,
-    _server: tokio::task::JoinHandle<()>,
-}
-
-impl EnrollListen {
-    pub async fn start(body: serde_json::Value) -> Self {
-        Self::script([body]).await
-    }
-
-    pub async fn script(bodies: impl IntoIterator<Item = serde_json::Value>) -> Self {
-        let mut remaining: VecDeque<Vec<u8>> = bodies
-            .into_iter()
-            .map(|body| serde_json::to_vec(&body).unwrap())
-            .collect();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let paths = Arc::new(Mutex::new(Vec::new()));
-        let posts = Arc::new(Mutex::new(Vec::new()));
-        let callbacks = Arc::new(Mutex::new(Vec::new()));
-        let callback_status = Arc::new(AtomicU16::new(200));
-        let recorded_paths = Arc::clone(&paths);
-        let recorded_posts = Arc::clone(&posts);
-        let recorded_callbacks = Arc::clone(&callbacks);
-        let callback_code = Arc::clone(&callback_status);
-        let server = tokio::spawn(async move {
-            loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let mut buf = vec![0; 8192];
-                let n = stream.read(&mut buf).await.unwrap();
-                let raw = buf.get(..n).expect("read count is in bounds");
-                let request = String::from_utf8_lossy(raw);
-                let path = request
-                    .lines()
-                    .next()
-                    .unwrap()
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap()
-                    .to_owned();
-                let is_callback = path.ends_with("/callback");
-                recorded_paths.lock().unwrap().push(path);
-                if is_callback {
-                    recorded_callbacks
-                        .lock()
-                        .unwrap()
-                        .push(enroll_json_body(raw));
-                    let status = callback_code.load(Ordering::SeqCst);
-                    let reason = if status == 200 { "OK" } else { "Error" };
-                    let response = format!(
-                        "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    );
-                    stream.write_all(response.as_bytes()).await.unwrap();
-                    continue;
-                }
-                recorded_posts.lock().unwrap().push(enroll_json_body(raw));
-                let body = remaining.pop_front().expect("scripted enroll has a body");
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-                stream.write_all(&body).await.unwrap();
-            }
-        });
-        Self {
-            url: format!("http://{address}"),
-            paths,
-            posts,
-            callbacks,
-            callback_status,
-            _server: server,
-        }
-    }
-
-    pub fn paths(&self) -> Vec<String> {
-        self.paths.lock().unwrap().clone()
-    }
-
-    pub fn posts(&self) -> Vec<serde_json::Value> {
-        self.posts.lock().unwrap().clone()
-    }
-
-    pub fn callbacks(&self) -> Vec<serde_json::Value> {
-        self.callbacks.lock().unwrap().clone()
-    }
-
-    pub fn fail_callbacks(&self, status: u16) {
-        self.callback_status.store(status, Ordering::SeqCst);
-    }
-}
-
-fn enroll_json_body(raw: &[u8]) -> serde_json::Value {
-    let sep = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .expect("HTTP request has a header separator");
-    serde_json::from_slice(raw.get(sep + 4..).expect("body follows headers")).unwrap()
+fn consume_transient_failure(remaining: &AtomicUsize) -> bool {
+    remaining
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
 }
 
 #[derive(Clone)]
@@ -182,8 +57,20 @@ struct JoinInner {
     join_request: Mutex<Option<JoinRequest>>,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
+    reserve_attempts: AtomicUsize,
+    transient_reserve_failures: AtomicUsize,
+    domain_reserved: AtomicBool,
+    domain_record_requests: Mutex<Vec<CreateDomainRecordsRequest>>,
+    domain_record_attempts: AtomicUsize,
+    transient_domain_record_failures: AtomicUsize,
+    cloud_paired: AtomicBool,
+    cloud_pairing_attempts: AtomicUsize,
+    transient_cloud_pairing_failures: AtomicUsize,
+    events: Mutex<EventLog>,
     resets: AtomicUsize,
     containers: Mutex<Vec<ContainerObservation>>,
+    create_attempts: AtomicUsize,
+    transient_create_failures: AtomicUsize,
     ensure_requests: Mutex<Vec<EnsureGlobalSlotRequest>>,
     ensure_attempts: AtomicUsize,
     transient_ensure_failures: AtomicUsize,
@@ -205,8 +92,20 @@ impl JoinDaemon {
                 join_request: Mutex::new(None),
                 initialize_requests: Mutex::new(Vec::new()),
                 reserve_request: Mutex::new(None),
+                reserve_attempts: AtomicUsize::new(0),
+                transient_reserve_failures: AtomicUsize::new(0),
+                domain_reserved: AtomicBool::new(false),
+                domain_record_requests: Mutex::new(Vec::new()),
+                domain_record_attempts: AtomicUsize::new(0),
+                transient_domain_record_failures: AtomicUsize::new(0),
+                cloud_paired: AtomicBool::new(false),
+                cloud_pairing_attempts: AtomicUsize::new(0),
+                transient_cloud_pairing_failures: AtomicUsize::new(0),
+                events: Mutex::new(EventLog::default()),
                 resets: AtomicUsize::new(0),
                 containers: Mutex::new(Vec::new()),
+                create_attempts: AtomicUsize::new(0),
+                transient_create_failures: AtomicUsize::new(0),
                 ensure_requests: Mutex::new(Vec::new()),
                 ensure_attempts: AtomicUsize::new(0),
                 transient_ensure_failures: AtomicUsize::new(0),
@@ -252,9 +151,56 @@ impl JoinDaemon {
         self.inner.reserve_request.lock().unwrap().clone()
     }
 
+    pub fn domain_record_requests(&self) -> Vec<CreateDomainRecordsRequest> {
+        self.inner.domain_record_requests.lock().unwrap().clone()
+    }
+
+    pub fn founder_tail_attempts(&self) -> [usize; 4] {
+        [
+            self.inner.reserve_attempts.load(Ordering::SeqCst),
+            self.inner.create_attempts.load(Ordering::SeqCst),
+            self.inner.domain_record_attempts.load(Ordering::SeqCst),
+            self.inner.cloud_pairing_attempts.load(Ordering::SeqCst),
+        ]
+    }
+
     pub fn with_containers(self, containers: Vec<ContainerObservation>) -> Self {
         *self.inner.containers.lock().unwrap() = containers;
         self
+    }
+
+    pub fn containers(&self) -> Vec<ContainerObservation> {
+        self.inner.containers.lock().unwrap().clone()
+    }
+
+    pub fn with_reserved_domain(self) -> Self {
+        self.inner.domain_reserved.store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_events(self, events: EventLog) -> Self {
+        *self.inner.events.lock().unwrap() = events;
+        self
+    }
+
+    pub fn transient_founder_tail_failures(self, failures: usize) -> Self {
+        self.inner
+            .transient_reserve_failures
+            .store(failures, Ordering::SeqCst);
+        self.inner
+            .transient_create_failures
+            .store(failures, Ordering::SeqCst);
+        self.inner
+            .transient_domain_record_failures
+            .store(failures, Ordering::SeqCst);
+        self.inner
+            .transient_cloud_pairing_failures
+            .store(failures, Ordering::SeqCst);
+        self
+    }
+
+    fn record(&self, event: &'static str) {
+        self.inner.events.lock().unwrap().record(event);
     }
 
     pub fn fail_ensure(self) -> Self {
@@ -352,14 +298,7 @@ impl MachineRpc for JoinDaemon {
             self.inner
                 .target_inspect_attempts
                 .fetch_add(1, Ordering::SeqCst);
-            if self
-                .inner
-                .transient_target_inspect_failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                    remaining.checked_sub(1)
-                })
-                .is_ok()
-            {
+            if consume_transient_failure(&self.inner.transient_target_inspect_failures) {
                 return Err(Status::unavailable("target Machine is not ready"));
             }
         }
@@ -396,7 +335,7 @@ impl MachineRpc for JoinDaemon {
                 .clone(),
             store_version: Default::default(),
             rtts: Vec::new(),
-            cloud_paired: false,
+            cloud_paired: self.inner.cloud_paired.load(Ordering::SeqCst),
             telemetry,
             storage: None,
             ingress_proxy_backend,
@@ -452,6 +391,12 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.inner
+            .cloud_pairing_attempts
+            .fetch_add(1, Ordering::SeqCst);
+        if consume_transient_failure(&self.inner.transient_cloud_pairing_failures) {
+            return Err(Status::unavailable("transient Cloud Pairing failure"));
+        }
         let decoded = request
             .into_inner()
             .decode_request()
@@ -468,11 +413,14 @@ impl MachineRpc for JoinDaemon {
                     &self.inner._register,
                 )
                 .await?;
+                self.inner.cloud_paired.store(true, Ordering::SeqCst);
+                self.record("set_cloud_pairing");
             }
             None => {
                 if let Some(old) = self.inner._register.lock().unwrap().take() {
                     old.abort();
                 }
+                self.inner.cloud_paired.store(false, Ordering::SeqCst);
             }
         }
         rpc_ok(CloudPairingSet {})
@@ -493,6 +441,7 @@ impl MachineRpc for JoinDaemon {
         let mut machine = self.inner.registration.assigned_machine.clone();
         machine.name = init.name.clone();
         self.inner.initialize_requests.lock().unwrap().push(init);
+        self.record("initialize");
         self.inner.joined.store(true, Ordering::SeqCst);
         if let Some(pairing) = pairing
             && let Err(status) = hold_register(
@@ -573,15 +522,31 @@ impl MachineRpc for JoinDaemon {
     }
     async fn inspect_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::InspectContainer(inspect) = decoded.body else {
+            return Err(Status::invalid_argument("expected InspectContainer"));
+        };
+        let container = self
+            .inner
+            .containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|container| container.container_id == inspect.container_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found("container not found"))?;
+        rpc_ok(ContainerDetails { container })
     }
     async fn list_volumes(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        rpc_ok(VolumeInventory::default())
     }
     async fn inspect_volume(
         &self,
@@ -591,9 +556,45 @@ impl MachineRpc for JoinDaemon {
     }
     async fn create_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        self.inner.create_attempts.fetch_add(1, Ordering::SeqCst);
+        if consume_transient_failure(&self.inner.transient_create_failures) {
+            return Err(Status::unavailable("transient Ingress deployment failure"));
+        }
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::CreateContainer(create) = decoded.body else {
+            return Err(Status::invalid_argument("expected CreateContainer"));
+        };
+        let n = self.inner.containers.lock().unwrap().len() + 1;
+        let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
+        let display_name = format!("{}-{n}", create.resolved_spec.name);
+        self.inner
+            .containers
+            .lock()
+            .unwrap()
+            .push(ContainerObservation {
+                container_id,
+                display_name: display_name.clone(),
+                created_at_unix_nanos: n as i64,
+                machine_id: self.inner.registration.assigned_machine.id,
+                project_name: create.project_name,
+                service_id: create.resolved_spec.service_id,
+                service_name: create.resolved_spec.name.clone(),
+                kind: create.kind,
+                runtime: ContainerRuntimeObservation::Created,
+                effective_healthcheck: None,
+                resolved_spec: create.resolved_spec,
+                address: None,
+                labels: Default::default(),
+            });
+        rpc_ok(ContainerCreated {
+            container_id,
+            display_name,
+        })
     }
     async fn ensure_global_slot(
         &self,
@@ -607,14 +608,7 @@ impl MachineRpc for JoinDaemon {
             return Err(Status::invalid_argument("expected EnsureGlobalSlot"));
         };
         self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
-        if self
-            .inner
-            .transient_ensure_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if consume_transient_failure(&self.inner.transient_ensure_failures) {
             return Err(Status::unavailable("transient ensure failure"));
         }
         if self.inner.fail_ensure.load(Ordering::SeqCst) {
@@ -653,6 +647,7 @@ impl MachineRpc for JoinDaemon {
                 address: None,
                 labels: Default::default(),
             });
+        self.record("deploy_ingress");
         rpc_ok(ContainerCreated {
             container_id,
             display_name: format!("slot-{n}"),
@@ -666,9 +661,28 @@ impl MachineRpc for JoinDaemon {
     }
     async fn start_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::StartContainer(start) = decoded.body else {
+            return Err(Status::invalid_argument("expected StartContainer"));
+        };
+        let mut containers = self.inner.containers.lock().unwrap();
+        let container = containers
+            .iter_mut()
+            .find(|container| container.container_id == start.container_id)
+            .ok_or_else(|| Status::not_found("container not found"))?;
+        container.runtime = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        };
+        drop(containers);
+        self.record("deploy_ingress");
+        rpc_ok(ContainerChanged {
+            container_id: start.container_id,
+        })
     }
     async fn stop_container(
         &self,
@@ -686,7 +700,10 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        rpc_ok(MachineImages {
+            containerd_store: false,
+            images: Vec::new(),
+        })
     }
     async fn ensure_image_ingest(
         &self,
@@ -710,6 +727,10 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.inner.reserve_attempts.fetch_add(1, Ordering::SeqCst);
+        if consume_transient_failure(&self.inner.transient_reserve_failures) {
+            return Err(Status::unavailable("transient domain reservation failure"));
+        }
         let decoded = request
             .into_inner()
             .decode_request()
@@ -718,6 +739,8 @@ impl MachineRpc for JoinDaemon {
             return Err(Status::invalid_argument("expected ReserveDomain"));
         };
         *self.inner.reserve_request.lock().unwrap() = Some(reserve);
+        self.inner.domain_reserved.store(true, Ordering::SeqCst);
+        self.record("reserve_domain");
         rpc_ok(Domain {
             name: CLUSTER_DOMAIN.into(),
         })
@@ -726,11 +749,17 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "no reserved domain".into(),
-            details: serde_json::Value::Null,
-        })
+        if self.inner.domain_reserved.load(Ordering::SeqCst) {
+            rpc_ok(Domain {
+                name: CLUSTER_DOMAIN.into(),
+            })
+        } else {
+            rpc_ok(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: "no reserved domain".into(),
+                details: serde_json::Value::Null,
+            })
+        }
     }
     async fn release_domain(
         &self,
@@ -740,9 +769,30 @@ impl MachineRpc for JoinDaemon {
     }
     async fn create_domain_records(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        self.inner
+            .domain_record_attempts
+            .fetch_add(1, Ordering::SeqCst);
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::CreateDomainRecords(create) = decoded.body else {
+            return Err(Status::invalid_argument("expected CreateDomainRecords"));
+        };
+        if consume_transient_failure(&self.inner.transient_domain_record_failures) {
+            return Err(Status::unavailable("transient DNS publication failure"));
+        }
+        self.inner
+            .domain_record_requests
+            .lock()
+            .unwrap()
+            .push(create.clone());
+        self.record("publish_dns");
+        rpc_ok(DomainRecords {
+            records: create.records,
+        })
     }
     async fn reset(
         &self,
@@ -803,106 +853,6 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
         unused()
     }
-}
-
-pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = tcp.local_addr().unwrap();
-    tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(daemon))
-            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(tcp)),
-    );
-    address
-}
-
-pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf, Arc<AtomicUsize>) {
-    use futures_util::StreamExt as _;
-
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let socket = std::env::temp_dir().join(format!(
-        "ployz-cloud-enroll-{}-{}.sock",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&socket);
-    let unix = UnixListener::bind(&socket).unwrap();
-    let connections = Arc::new(AtomicUsize::new(0));
-    let accepted = Arc::clone(&connections);
-    let incoming = UnixListenerStream::new(unix).inspect(move |connection| {
-        if connection.is_ok() {
-            accepted.fetch_add(1, Ordering::SeqCst);
-        }
-    });
-    tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(daemon))
-            .serve_with_incoming(incoming),
-    );
-    (format!("unix://{}", socket.display()), socket, connections)
-}
-
-async fn hold_register(
-    url: &str,
-    pairing: &PairingCredential,
-    machine_id: &MachineId,
-    slot: &Mutex<Option<JoinHandle<()>>>,
-) -> Result<(), Status> {
-    let mut ws = RelayClient::new(url)
-        .map_err(status_from_client)?
-        .register(pairing.as_str(), machine_id)
-        .await
-        .map_err(status_from_client)?;
-    let hold = tokio::spawn(async move {
-        while let Ok(Some(message)) = ws.recv::<Open>().await {
-            if let Some(nonce) = message.ping_nonce() {
-                let _ = ws.send(&RegisterRequest::pong(nonce)).await;
-            }
-        }
-    });
-    if let Some(old) = slot.lock().unwrap().replace(hold) {
-        old.abort();
-    }
-    Ok(())
-}
-
-fn status_from_client(error: ClientError) -> Status {
-    match error.status() {
-        Some(http::StatusCode::UNAUTHORIZED) => Status::unauthenticated(error.to_string()),
-        Some(http::StatusCode::BAD_REQUEST) => Status::invalid_argument(error.to_string()),
-        Some(http::StatusCode::NOT_FOUND) => Status::not_found(error.to_string()),
-        Some(http::StatusCode::SERVICE_UNAVAILABLE) => Status::unavailable(error.to_string()),
-        _ => Status::unavailable(error.to_string()),
-    }
-}
-
-pub async fn wait_for_held(url: &str, pairing: &str, machine_id: MachineId) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        let listed = sdk::list_held(url, DIAL, pairing).await.unwrap();
-        if listed
-            .iter()
-            .any(|row| row.machine_id().ok() == Some(machine_id) && row.register_rtt_ns.is_some())
-        {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "expected {machine_id} on List with path RTT, got {listed:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-pub async fn assert_not_held(url: &str, pairing: &str, machine_id: MachineId) {
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let listed = sdk::list_held(url, DIAL, pairing).await.unwrap();
-    assert!(
-        listed
-            .iter()
-            .all(|row| row.machine_id().ok() != Some(machine_id)),
-        "Machine must stay off List for revoked pairing, got {listed:?}"
-    );
 }
 
 pub fn registration() -> Registered {

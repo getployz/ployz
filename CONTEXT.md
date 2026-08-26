@@ -197,12 +197,12 @@ The Machine named in cluster KV as the one that may assign Machine Subnets. It i
 _Avoid_: leader, master, IPAM, Cloud IPAM
 
 **Cloud Enroll Token**:
-Cloud's bearer that authorizes copy-paste founding and joining of one Cluster. It is not a Pairing Credential and not a Dial Credential.
+Cloud's Organization-scoped bearer that authorizes copy-paste founding and joining. It does not own enrollment lifecycle and is not a Pairing Credential or Dial Credential.
 _Avoid_: pairing token, API key, join URL as identity
 
 **Founding Claim**:
-Cloud's exclusive, time-bounded permission to Initialize for one Cloud Enroll Token while Relay List is empty. It is not a mesh lock and not an Allocator steal.
-_Avoid_: init mutex, leader election, cluster lock
+Cloud's Organization-scoped exclusive pending enrollment attempt. It has no automatic timeout or transfer: only the matching founder resumes it, and recovery requires an explicit verified reset.
+_Avoid_: token claim, timed lease, init mutex, leader election, cluster lock
 
 **Management Address**:
 The address used to reach a Machine's management plane over the mesh. It is distinct from container, gateway, and endpoint addresses.
