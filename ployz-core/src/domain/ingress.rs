@@ -34,6 +34,10 @@ pub struct IngressProxyServiceSpecError;
 
 /// Replicated key holding the Cluster's immutable Ingress Proxy Backend.
 pub const INGRESS_PROXY_BACKEND_CLUSTER_KEY: &str = "ingress_proxy_backend";
+/// Numeric user required by every supported Envoy image override.
+pub const ENVOY_RUNTIME_UID: u32 = 101;
+/// Numeric group shared by the Envoy process and its private key files.
+pub const ENVOY_RUNTIME_GID: u32 = 101;
 
 /// Concrete Ingress Proxy implementation selected when a Cluster is founded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -268,6 +272,7 @@ fn zentinel_container(image: String) -> ServiceContainerSpec {
 fn envoy_container(image: String) -> ServiceContainerSpec {
     ServiceContainerSpec {
         command: ENVOY_INGRESS_COMMAND.map(str::to_owned).into(),
+        user: Some(format!("{ENVOY_RUNTIME_UID}:{ENVOY_RUNTIME_GID}")),
         ..base_container(image)
     }
 }
@@ -536,6 +541,8 @@ mod tests {
             requested.container.command,
             ["envoy", "-c", "/config/bootstrap.yaml"]
         );
+        assert_eq!(requested.container.image, "envoy:test");
+        assert_eq!(requested.container.user.as_deref(), Some("101:101"));
         assert!(requested.container.cap_add.is_empty());
         assert!(requested.container.cap_drop.is_empty());
         assert_eq!(requested.update, UpdateConfig::default());

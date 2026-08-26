@@ -3,7 +3,7 @@
 use ployz_core::{IngressProxyBackend, MachineTarget, RequestedServiceSpec};
 
 /// Qualified Envoy release selected for new Clusters.
-pub const ENVOY_IMAGE: &str = "docker.io/envoyproxy/envoy@sha256:a707c3821b4cecb5db43d8e86e983e0f57b81010fefbabc01feeb071fb8cc08e";
+pub const ENVOY_IMAGE: &str = "docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66";
 
 #[must_use]
 pub(super) fn service_spec(image: String, machines: Vec<MachineTarget>) -> RequestedServiceSpec {

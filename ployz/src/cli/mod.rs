@@ -386,7 +386,7 @@ fn provisioning_flags(command: Command) -> Command {
 
 fn ingress_backend() -> Arg {
     value("ingress-backend", None)
-        .default_value("zentinel")
+        .default_value("caddy")
         .value_parser(clap::value_parser!(ployz_core::IngressProxyBackend))
         .help("Select the founding-time Ingress Proxy Backend")
 }

@@ -4,7 +4,18 @@ resources:
   name: ployz-http-empty.example.com
   type: STATIC
   connect_timeout: 5s
+  per_connection_buffer_limit_bytes: 32768
   lb_policy: ROUND_ROBIN
+  outlier_detection:
+    split_external_local_origin_errors: true
+    consecutive_5xx: 0
+    enforcing_success_rate: 0
+    enforcing_local_origin_success_rate: 0
+    consecutive_local_origin_failure: 3
+    enforcing_consecutive_local_origin_failure: 100
+    base_ejection_time: 30s
+    max_ejection_time: 30s
+    max_ejection_percent: 50
   metadata:
     filter_metadata:
       com.ployz:
@@ -22,7 +33,18 @@ resources:
   name: ployz-http-example.com
   type: STATIC
   connect_timeout: 5s
+  per_connection_buffer_limit_bytes: 32768
   lb_policy: ROUND_ROBIN
+  outlier_detection:
+    split_external_local_origin_errors: true
+    consecutive_5xx: 0
+    enforcing_success_rate: 0
+    enforcing_local_origin_success_rate: 0
+    consecutive_local_origin_failure: 3
+    enforcing_consecutive_local_origin_failure: 100
+    base_ejection_time: 30s
+    max_ejection_time: 30s
+    max_ejection_percent: 50
   metadata:
     filter_metadata:
       com.ployz:
@@ -45,7 +67,18 @@ resources:
   name: ployz-https-secure.example.com
   type: STATIC
   connect_timeout: 5s
+  per_connection_buffer_limit_bytes: 32768
   lb_policy: ROUND_ROBIN
+  outlier_detection:
+    split_external_local_origin_errors: true
+    consecutive_5xx: 0
+    enforcing_success_rate: 0
+    enforcing_local_origin_success_rate: 0
+    consecutive_local_origin_failure: 3
+    enforcing_consecutive_local_origin_failure: 100
+    base_ejection_time: 30s
+    max_ejection_time: 30s
+    max_ejection_percent: 50
   metadata:
     filter_metadata:
       com.ployz:

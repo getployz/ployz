@@ -224,6 +224,30 @@ _Avoid_: Management Address, globally unique container address
 A Service Container that is healthy and has a Container Address. It is observer-derived eligibility to receive traffic, not a replica identity.
 _Avoid_: replica, endpoint, upstream
 
+**Public Ingress**:
+The public HTTP request path from DNS resolution through a Machine's Ingress Proxy to a Serving Container. It is a diagnostic boundary, not a single process or globally authoritative edge.
+_Avoid_: Edge
+
+**Ingress Proxy**:
+The Machine-local process that receives published HTTP traffic and routes it toward Serving Containers. It is one component of Public Ingress, not the whole public request path.
+_Avoid_: Edge, public ingress as a process
+
+**Published Ingress Configuration**:
+A validated routing configuration made available to a Machine's Ingress Proxy. Publication records the daemon's completed handoff; it does not claim that the Ingress Proxy has adopted the configuration or successfully served traffic from it.
+_Avoid_: Activated configuration, accepted configuration
+
+**Ingress Request ID**:
+An opaque correlation value for one request observed by an Ingress Proxy. It connects the public response to internal diagnostic evidence; it is not authenticated identity or a durable request record.
+_Avoid_: Request identity, trace as proof of identity
+
+**Public Ingress Diagnosis**:
+An evidence-based classification of the earliest proven failure stage for one public request. It may remain Unknown and may name insufficient capacity only when direct capacity evidence exists; a 503 alone is not capacity evidence.
+_Avoid_: Root cause as certainty, 503 as capacity failure
+
+**Ingress Access Event**:
+A Machine-local structured observation of one request handled by an Ingress Proxy, correlated by its Ingress Request ID. It excludes request and response bodies, credentials, cookies, and query strings, and is evidence for diagnosis rather than a durable request record.
+_Avoid_: Request archive, audit record, Public Ingress Diagnosis as certainty
+
 **Internal DNS Answer**:
 An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, Cluster-wide endpoint set

@@ -15,8 +15,10 @@ resources:
         prefix: /
       route:
         cluster: ployz-http-empty.example.com
-        timeout: 60s
-        idle_timeout: 75s
+        timeout: 0s
+        retry_policy:
+          retry_on: connect-failure
+          num_retries: 1
   - name: ployz-http-example.com
     domains:
     - example.com
@@ -31,8 +33,10 @@ resources:
         prefix: /
       route:
         cluster: ployz-http-example.com
-        timeout: 60s
-        idle_timeout: 75s
+        timeout: 0s
+        retry_policy:
+          retry_on: connect-failure
+          num_retries: 1
   - name: ployz-verify
     domains:
     - "*"
@@ -58,5 +62,7 @@ resources:
         prefix: /
       route:
         cluster: ployz-https-secure.example.com
-        timeout: 60s
-        idle_timeout: 75s
+        timeout: 0s
+        retry_policy:
+          retry_on: connect-failure
+          num_retries: 1

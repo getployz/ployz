@@ -32,8 +32,7 @@ const HTTP_CONTAINER_PORT: u16 = 8080;
 const HTTPS_CONTAINER_PORT: u16 = 8443;
 const CONTAINER_CERTS_DIR: &str = "/config/certs";
 const SDS_PATH: &str = "/config/sds.yaml";
-const ROUTE_TIMEOUT: &str = "60s";
-const ROUTE_IDLE_TIMEOUT: &str = "75s";
+const ROUTE_TIMEOUT: &str = "0s";
 const CONNECT_TIMEOUT: &str = "5s";
 /// Envoy rejects `port_value` 0; `127.0.0.1:1` fails closed as HTTP 503.
 const EMPTY_UPSTREAM_PORT: u16 = 1;
@@ -66,6 +65,8 @@ const DOWNSTREAM_TLS_TYPE: &str =
     "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext";
 const HCM_TYPE: &str = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager";
 const ROUTER_TYPE: &str = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router";
+const STDOUT_ACCESS_LOG_TYPE: &str =
+    "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct IngressProcess {
@@ -140,7 +141,7 @@ pub(crate) async fn watch(
 
 fn classify_apply(result: Result<apply::ApplyOutcome, apply::Error>) -> WatchApply {
     match result {
-        Ok(apply::ApplyOutcome::Activated { .. }) => WatchApply::Applied,
+        Ok(apply::ApplyOutcome::Published { .. }) => WatchApply::Applied,
         Err(error @ apply::Error::ValidationRejected { .. }) => {
             WatchApply::WaitForChange(io::Error::other(error))
         }
@@ -289,6 +290,7 @@ version_info: \"{digest}\"
 resources:
 - \"@type\": {LISTENER_TYPE}
   name: ployz-http
+  per_connection_buffer_limit_bytes: 32768
   address:
     socket_address:
       address: 0.0.0.0
@@ -313,6 +315,7 @@ resources:
                 concat!(
                     "- \"@type\": {listener}\n",
                     "  name: ployz-https\n",
+                    "  per_connection_buffer_limit_bytes: 32768\n",
                     "  address:\n",
                     "    socket_address:\n",
                     "      address: 0.0.0.0\n",
@@ -347,6 +350,8 @@ fn write_tls_filter_chain(yaml: &mut String, site: &IngressSite) {
             "      typed_config:\n",
             "        \"@type\": {tls}\n",
             "        common_tls_context:\n",
+            "          tls_params:\n",
+            "            tls_minimum_protocol_version: TLSv1_2\n",
             "          alpn_protocols:\n",
             "          - h2\n",
             "          - http/1.1\n",
@@ -377,6 +382,34 @@ fn write_hcm(yaml: &mut String, stat_prefix: &str, route_config_name: &str) {
             "        \"@type\": {hcm}\n",
             "        stat_prefix: {stat}\n",
             "        codec_type: AUTO\n",
+            "        use_remote_address: true\n",
+            "        generate_request_id: true\n",
+            "        preserve_external_request_id: false\n",
+            "        always_set_request_id_in_response: true\n",
+            "        common_http_protocol_options:\n",
+            "          idle_timeout: 300s\n",
+            "        http2_protocol_options:\n",
+            "          max_concurrent_streams: 100\n",
+            "          initial_stream_window_size: 65536\n",
+            "          initial_connection_window_size: 1048576\n",
+            "        stream_idle_timeout: 300s\n",
+            "        request_headers_timeout: 15s\n",
+            "        upgrade_configs:\n",
+            "        - upgrade_type: websocket\n",
+            "        access_log:\n",
+            "        - name: envoy.access_loggers.stdout\n",
+            "          typed_config:\n",
+            "            \"@type\": {stdout_access_log}\n",
+            "            log_format:\n",
+            "              json_format:\n",
+            "                request_id: \"%REQ(X-REQUEST-ID)%\"\n",
+            "                hostname: \"%REQ(:AUTHORITY)%\"\n",
+            "                method: \"%REQ(:METHOD)%\"\n",
+            "                path: \"%PATH(NQ:PATH)%\"\n",
+            "                status: \"%RESPONSE_CODE%\"\n",
+            "                duration_ms: \"%DURATION%\"\n",
+            "                upstream: \"%UPSTREAM_HOST%\"\n",
+            "                envoy_failure_details: \"%RESPONSE_CODE_DETAILS%\"\n",
             "        rds:\n",
             "          route_config_name: {route}\n",
             "          config_source:\n",
@@ -394,6 +427,7 @@ fn write_hcm(yaml: &mut String, stat_prefix: &str, route_config_name: &str) {
         stat = stat_prefix,
         route = route_config_name,
         router = ROUTER_TYPE,
+        stdout_access_log = STDOUT_ACCESS_LOG_TYPE,
     );
 }
 
@@ -441,7 +475,7 @@ resources:
             let _ = writeln!(yaml, "      route:");
             let _ = writeln!(yaml, "        cluster: {id}");
             let _ = writeln!(yaml, "        timeout: {ROUTE_TIMEOUT}");
-            let _ = writeln!(yaml, "        idle_timeout: {ROUTE_IDLE_TIMEOUT}");
+            write_retry_policy(&mut yaml);
         }
     }
     let _ = writeln!(yaml, "  - name: ployz-verify");
@@ -487,7 +521,7 @@ resources:
             let _ = writeln!(yaml, "      route:");
             let _ = writeln!(yaml, "        cluster: {id}");
             let _ = writeln!(yaml, "        timeout: {ROUTE_TIMEOUT}");
-            let _ = writeln!(yaml, "        idle_timeout: {ROUTE_IDLE_TIMEOUT}");
+            write_retry_policy(&mut yaml);
         }
     }
     yaml
@@ -518,6 +552,12 @@ fn render_cds(projection: &IngressProjection, digest: &str) -> String {
     } else {
         format!("version_info: \"{digest}\"\nresources:\n{body}")
     }
+}
+
+fn write_retry_policy(yaml: &mut String) {
+    yaml.push_str(
+        "        retry_policy:\n          retry_on: connect-failure\n          num_retries: 1\n",
+    );
 }
 
 fn render_sds(projection: &IngressProjection, digest: &str) -> String {
@@ -563,7 +603,18 @@ fn write_cluster(yaml: &mut String, id: &str, digest: &str, endpoints: &[Ingress
             "  name: {id}\n",
             "  type: STATIC\n",
             "  connect_timeout: {connect}\n",
+            "  per_connection_buffer_limit_bytes: 32768\n",
             "  lb_policy: ROUND_ROBIN\n",
+            "  outlier_detection:\n",
+            "    split_external_local_origin_errors: true\n",
+            "    consecutive_5xx: 0\n",
+            "    enforcing_success_rate: 0\n",
+            "    enforcing_local_origin_success_rate: 0\n",
+            "    consecutive_local_origin_failure: 3\n",
+            "    enforcing_consecutive_local_origin_failure: 100\n",
+            "    base_ejection_time: 30s\n",
+            "    max_ejection_time: 30s\n",
+            "    max_ejection_percent: 50\n",
             "  metadata:\n",
             "    filter_metadata:\n",
             "      com.ployz:\n",
@@ -647,9 +698,9 @@ mod watch_tests {
     }
 
     #[test]
-    fn activated_apply_is_terminal_for_this_input() {
+    fn published_apply_is_terminal_for_this_input() {
         assert!(matches!(
-            classify_apply(Ok(ApplyOutcome::Activated {
+            classify_apply(Ok(ApplyOutcome::Published {
                 digest: "digest".into(),
             })),
             WatchApply::Applied

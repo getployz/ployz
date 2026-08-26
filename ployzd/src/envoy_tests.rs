@@ -7,8 +7,15 @@ use super::{
 };
 use crate::corrosion::CertificateChallenge;
 use crate::ingress::{certificate_file_stem, tests::renderer_projection};
-use ployz_core::{ContainerAddress, IngressProxyFragment, MachineId, QualifiedService};
-use std::{fs, path::Path, sync::Mutex};
+use ployz_core::{
+    ContainerAddress, ENVOY_RUNTIME_GID, IngressProxyFragment, MachineId, QualifiedService,
+};
+use std::{
+    fs,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::Path,
+    sync::Mutex,
+};
 
 const SELECTED_IMAGE: &str = "example.invalid/envoy@sha256:exact";
 
@@ -84,8 +91,7 @@ fn http_and_https_routes_carry_timeouts_secrets_and_challenge_direct_responses()
             .rds()
             .contains("cluster: ployz-https-secure.example.com")
     );
-    assert!(rendered.rds().contains("timeout: 60s"));
-    assert!(rendered.rds().contains("idle_timeout: 75s"));
+    assert!(rendered.rds().contains("timeout: 0s"));
     assert!(rendered.cds().contains("connect_timeout: 5s"));
     assert!(rendered.cds().contains("ployz-https-secure.example.com"));
     assert!(rendered.cds().contains("address: 10.210.1.3"));
@@ -111,7 +117,7 @@ fn http_and_https_routes_carry_timeouts_secrets_and_challenge_direct_responses()
     );
     let proxy_routes = rendered.rds().matches("cluster: ployz-http-").count()
         + rendered.rds().matches("cluster: ployz-https-").count();
-    assert_eq!(rendered.rds().matches("timeout: 60s").count(), proxy_routes);
+    assert_eq!(rendered.rds().matches("timeout: 0s").count(), proxy_routes);
 }
 
 #[test]
@@ -260,7 +266,7 @@ async fn rejected_candidate_leaves_live_configuration_untouched() {
     let (image, candidate) = validations.first().unwrap();
     assert_eq!(image, SELECTED_IMAGE);
     assert!(candidate.contains(&format!("projection_digest: {expected_digest}")));
-    assert!(candidate.contains("timeout: 60s"));
+    assert!(candidate.contains("timeout: 0s"));
     assert!(candidate.contains("acme-challenge"));
     assert!(candidate.contains("filename: /config/certs/secure.example.com-"));
     assert!(candidate.contains(".crt"));
@@ -270,8 +276,8 @@ async fn rejected_candidate_leaves_live_configuration_untouched() {
 }
 
 #[tokio::test]
-async fn accepted_candidate_is_activated_without_admin_mutation() {
-    let root = test_root("activated");
+async fn accepted_candidate_is_published_without_claiming_live_adoption() {
+    let root = test_root("published");
     let live = root.join("bootstrap.yaml");
     let projection = renderer_projection();
     let rendered = render(&projection).unwrap();
@@ -282,7 +288,7 @@ async fn accepted_candidate_is_activated_without_admin_mutation() {
         .await
         .unwrap();
 
-    assert_eq!(outcome, ApplyOutcome::Activated { digest });
+    assert_eq!(outcome, ApplyOutcome::Published { digest });
     assert_eq!(
         fs::read_to_string(root.join("lds.yaml")).unwrap(),
         rendered.lds()
@@ -325,14 +331,23 @@ async fn accepted_candidate_writes_certificates_and_removes_stale_files() {
         .find(|site| site.hostname.as_str() == "secure.example.com")
         .unwrap();
     let stem = certificate_file_stem(&site.hostname, site.material().unwrap());
+    let cert_path = certs.join(format!("{stem}.crt"));
+    let key_path = certs.join(format!("{stem}.key"));
+    assert_eq!(fs::read_to_string(&cert_path).unwrap(), "CERT");
+    assert_eq!(fs::read_to_string(&key_path).unwrap(), "KEY");
     assert_eq!(
-        fs::read_to_string(certs.join(format!("{stem}.crt"))).unwrap(),
-        "CERT"
+        fs::metadata(&certs).unwrap().permissions().mode() & 0o777,
+        0o750
     );
     assert_eq!(
-        fs::read_to_string(certs.join(format!("{stem}.key"))).unwrap(),
-        "KEY"
+        fs::metadata(&cert_path).unwrap().permissions().mode() & 0o777,
+        0o644
     );
+    let key_metadata = fs::metadata(&key_path).unwrap();
+    assert_eq!(key_metadata.permissions().mode() & 0o777, 0o640);
+    if fs::metadata("/proc/self").unwrap().uid() == 0 {
+        assert_eq!(key_metadata.gid(), ENVOY_RUNTIME_GID);
+    }
     assert!(!certs.join("stale.crt").exists());
     assert!(!certs.join("stale.key").exists());
 

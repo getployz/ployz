@@ -80,7 +80,7 @@ async fn envoy_founding_deploys_a_healthy_pinned_bridge_proxy() {
 
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
-async fn envoy_routes_http_through_file_watched_xds() {
+async fn envoy_routes_http_across_file_watched_xds_publication() {
     let plan = ClusterPlan::new(&format!("l3-envoy-http-{}", process::id()), 1).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
@@ -113,12 +113,53 @@ async fn envoy_routes_http_through_file_watched_xds() {
 
     let serving = wait_config(&mut client, &machine, |config| {
         config.contains(&format!("address: {}", address.0))
-            && config.contains("timeout: 60s")
+            && config.contains("timeout: 0s")
             && config.contains("connect_timeout: 5s")
     })
     .await;
     assert_eq!(request(&cluster, "envoy.test"), (200, "ok\n".into()));
     assert_ne!(request(&cluster, "missing.test").0, 200);
+
+    let continuity = "/tmp/ployz-envoy-continuity";
+    cluster
+        .machine_shell(
+            0,
+            &format!(
+                "rm -f {continuity}.started {continuity}.stop {continuity}.done {continuity}.failed; nohup sh -c 'touch {continuity}.started; while test ! -e {continuity}.stop; do curl -fsS -H \"Host: envoy.test\" http://127.0.0.1 >/dev/null || {{ touch {continuity}.failed; break; }}; done; touch {continuity}.done' >{continuity}.log 2>&1 &"
+            ),
+        )
+        .unwrap();
+    cluster
+        .machine_shell(
+            0,
+            &format!(
+                "for _ in $(seq 1 100); do test -e {continuity}.started && exit 0; sleep .1; done; exit 1"
+            ),
+        )
+        .unwrap();
+
+    let tick_id = ServiceId::random();
+    create_and_start(
+        &mut client,
+        &machine,
+        http_service(tick_id, "tick", "tick.envoy.test"),
+    )
+    .await;
+    wait_running(&mut client, &tick_id, 1).await;
+    let serving_digest = envoy_digest(&serving).to_owned();
+    wait_config(&mut client, &machine, |config| {
+        config.contains("ployz-http-tick.envoy.test") && envoy_digest(config) != serving_digest
+    })
+    .await;
+    assert_eq!(request(&cluster, "envoy.test"), (200, "ok\n".into()));
+    cluster
+        .machine_shell(
+            0,
+            &format!(
+                "touch {continuity}.stop; for _ in $(seq 1 100); do test -e {continuity}.done && test ! -e {continuity}.failed && exit 0; sleep .1; done; cat {continuity}.log; exit 1"
+            ),
+        )
+        .unwrap();
 
     change_container(
         &mut client,
@@ -158,7 +199,7 @@ async fn envoy_routes_http_through_file_watched_xds() {
 
     for evidence in [
         "phase=\"validation\" outcome=\"accepted\"",
-        "phase=\"activation\" outcome=\"activated\"",
+        "phase=\"publication\" outcome=\"published\"",
     ] {
         wait_log_count(&cluster, evidence, 1).await;
     }

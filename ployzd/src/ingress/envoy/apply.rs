@@ -1,8 +1,9 @@
-//! Atomic Envoy validation and file-watched xDS activation.
+//! Atomic Envoy validation and file-watched xDS publication.
 
 use std::{
     fs::{self, File},
     io,
+    os::unix::fs::{MetadataExt, PermissionsExt, chown},
     path::{Path, PathBuf},
 };
 
@@ -11,6 +12,7 @@ use bollard::{
     query_parameters::RemoveContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
+use ployz_core::ENVOY_RUNTIME_GID;
 use thiserror::Error;
 
 use crate::{
@@ -30,7 +32,7 @@ pub(crate) enum Error {
     /// Rendering failed.
     #[error(transparent)]
     Ingress(#[from] envoy::Error),
-    /// Candidate creation or activation failed.
+    /// Candidate creation or publication failed.
     #[error("Envoy apply filesystem operation failed: {0}")]
     Filesystem(#[from] io::Error),
     /// Docker could not run the selected image's candidate validation.
@@ -50,12 +52,12 @@ pub(crate) enum ValidationOutcome {
     Rejected(String),
 }
 
-/// Observable result after activating a validated Envoy projection.
+/// Observable result after publishing a validated Envoy projection.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ApplyOutcome {
-    /// Live xDS files were replaced; Envoy's file watch consumes them.
-    Activated {
-        /// Digest of the activated projection.
+    /// Live xDS files were replaced; this does not claim Envoy adopted them.
+    Published {
+        /// Digest of the published projection.
         digest: String,
     },
 }
@@ -86,7 +88,7 @@ impl ApplyIo for LocalDocker {
     }
 }
 
-/// Validate, then atomically activate one Envoy projection.
+/// Validate, then atomically publish one Envoy projection.
 ///
 /// A rejected candidate is removed and the previously active files keep serving.
 /// There is no admin mutation and no container signal.
@@ -135,26 +137,26 @@ pub(crate) async fn apply<I: ApplyIo>(
     record_evidence(&digest, Evidence::ValidationAccepted);
 
     if let Err(error) = write_envoy_certificates(live_config, projection) {
-        record_evidence(&digest, Evidence::ActivationFailed);
+        record_evidence(&digest, Evidence::PublicationFailed);
         return Err(Error::Filesystem(error));
     }
-    match candidate.activate(live_config) {
-        Ok(Activation::Durable) => record_evidence(&digest, Evidence::Activated),
-        Ok(Activation::Unsynced(error)) => {
-            record_evidence(&digest, Evidence::ActivatedUnsynced);
-            tracing::warn!(%error, "failed to sync activated Envoy configuration directory");
+    match candidate.publish(live_config) {
+        Ok(Publication::Durable) => record_evidence(&digest, Evidence::Published),
+        Ok(Publication::Unsynced(error)) => {
+            record_evidence(&digest, Evidence::PublishedUnsynced);
+            tracing::warn!(%error, "failed to sync published Envoy configuration directory");
         }
         Err(error) => {
-            record_evidence(&digest, Evidence::ActivationFailed);
+            record_evidence(&digest, Evidence::PublicationFailed);
             return Err(Error::Filesystem(error));
         }
     }
     if let Err(error) = remove_stale_certificate_files(live_config, &projection.sites) {
-        record_evidence(&digest, Evidence::ActivationFailed);
+        record_evidence(&digest, Evidence::PublicationFailed);
         return Err(Error::Filesystem(error));
     }
 
-    Ok(ApplyOutcome::Activated { digest })
+    Ok(ApplyOutcome::Published { digest })
 }
 
 async fn validate_candidate(
@@ -257,9 +259,9 @@ enum Evidence {
     ValidationRejected,
     ValidationFailed,
     CandidateWriteFailed,
-    Activated,
-    ActivatedUnsynced,
-    ActivationFailed,
+    Published,
+    PublishedUnsynced,
+    PublicationFailed,
 }
 
 impl Evidence {
@@ -271,9 +273,9 @@ impl Evidence {
             Self::ValidationRejected => ("validation", "rejected"),
             Self::ValidationFailed => ("validation", "failed"),
             Self::CandidateWriteFailed => ("validation", "candidate_write_failed"),
-            Self::Activated => ("activation", "activated"),
-            Self::ActivatedUnsynced => ("activation", "activated_unsynced"),
-            Self::ActivationFailed => ("activation", "failed"),
+            Self::Published => ("publication", "published"),
+            Self::PublishedUnsynced => ("publication", "published_unsynced"),
+            Self::PublicationFailed => ("publication", "failed"),
         }
     }
 }
@@ -309,52 +311,57 @@ fn write_candidate(
     Ok(Candidate(Some(path)))
 }
 
-/// Envoy runs as uid 101; root-owned 0600 keys would be unreadable in the container.
-const ENVOY_PRIVATE_KEY_MODE: u32 = 0o644;
+const ENVOY_PRIVATE_KEY_MODE: u32 = 0o640;
 
 fn write_envoy_certificates(config_file: &Path, projection: &IngressProjection) -> io::Result<()> {
     write_certificate_files(
         config_file,
         &projection.sites,
         ENVOY_PRIVATE_KEY_MODE,
-        create_directory,
-        skip_group,
+        prepare_directory,
+        set_group,
     )
 }
 
-fn create_directory(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)
+fn prepare_directory(path: &Path) -> io::Result<()> {
+    fs::create_dir_all(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o750))?;
+    set_group(path)
 }
 
-fn skip_group(_: &Path) -> io::Result<()> {
+fn set_group(path: &Path) -> io::Result<()> {
+    fs::metadata(path)?;
+    if fs::metadata("/proc/self")?.uid() == 0 {
+        chown(path, None, Some(ENVOY_RUNTIME_GID))?;
+    }
     Ok(())
 }
 
 struct Candidate(Option<PathBuf>);
 
-enum Activation {
+enum Publication {
     Durable,
     Unsynced(io::Error),
 }
 
 impl Candidate {
     fn path(&self) -> &Path {
-        self.0.as_deref().expect("candidate is not yet activated")
+        self.0.as_deref().expect("candidate is not yet published")
     }
 
-    fn activate(self, live_config: &Path) -> io::Result<Activation> {
-        self.activate_with(live_config, |parent| File::open(parent)?.sync_all())
+    fn publish(self, live_config: &Path) -> io::Result<Publication> {
+        self.publish_with(live_config, |parent| File::open(parent)?.sync_all())
     }
 
-    fn activate_with(
+    fn publish_with(
         mut self,
         live_config: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
-    ) -> io::Result<Activation> {
+    ) -> io::Result<Publication> {
         let live_parent = live_config.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "config file has no parent")
         })?;
-        let candidate = self.0.take().expect("candidate is not yet activated");
+        let candidate = self.0.take().expect("candidate is not yet published");
         // Clusters, secrets, routes, then listeners so Envoy never binds TLS or
         // routes against missing SDS or CDS resources.
         for name in [CDS_FILE, SDS_FILE, RDS_FILE, LDS_FILE] {
@@ -362,8 +369,8 @@ impl Candidate {
         }
         let leftover = fs::remove_dir_all(&candidate);
         Ok(match (sync_parent(live_parent), leftover) {
-            (Ok(()), Ok(())) => Activation::Durable,
-            (Err(error), _) | (Ok(()), Err(error)) => Activation::Unsynced(error),
+            (Ok(()), Ok(())) => Publication::Durable,
+            (Err(error), _) | (Ok(()), Err(error)) => Publication::Unsynced(error),
         })
     }
 }
@@ -376,7 +383,7 @@ impl Drop for Candidate {
         if let Err(error) = fs::remove_dir_all(candidate)
             && error.kind() != io::ErrorKind::NotFound
         {
-            tracing::warn!(path = %candidate.display(), %error, "failed to remove unactivated Envoy candidate");
+            tracing::warn!(path = %candidate.display(), %error, "failed to remove unpublished Envoy candidate");
         }
     }
 }
@@ -445,9 +452,22 @@ mod tests {
     }
 
     #[test]
-    fn post_rename_sync_failure_is_a_committed_activation() {
+    fn publication_evidence_uses_publication_vocabulary() {
+        assert_eq!(Evidence::Published.fields(), ("publication", "published"));
+        assert_eq!(
+            Evidence::PublishedUnsynced.fields(),
+            ("publication", "published_unsynced")
+        );
+        assert_eq!(
+            Evidence::PublicationFailed.fields(),
+            ("publication", "failed")
+        );
+    }
+
+    #[test]
+    fn post_rename_sync_failure_is_a_committed_publication() {
         let root = std::env::temp_dir().join(format!(
-            "ployzd-envoy-activation-unsynced-{}",
+            "ployzd-envoy-publication-unsynced-{}",
             ployz_core::MachineId::random()
         ));
         let live = root.join("bootstrap.yaml");
@@ -458,10 +478,10 @@ mod tests {
         let candidate = write_candidate(&live, &projection, &rendered).unwrap();
 
         let outcome = candidate
-            .activate_with(&live, |_| Err(io::Error::other("sync failed")))
+            .publish_with(&live, |_| Err(io::Error::other("sync failed")))
             .unwrap();
 
-        assert!(matches!(outcome, Activation::Unsynced(_)));
+        assert!(matches!(outcome, Publication::Unsynced(_)));
         assert_eq!(
             fs::read_to_string(root.join(LDS_FILE)).unwrap(),
             rendered.lds()

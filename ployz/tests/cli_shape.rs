@@ -209,7 +209,7 @@ fn reference_shape(
             "ingress-backend".into(),
             Flag {
                 short: None,
-                default: Some("zentinel".into()),
+                default: Some("caddy".into()),
                 env: None,
             },
         );

@@ -134,7 +134,10 @@ mod tests {
 
         assert_eq!(envoy.name, QualifiedService::system_ingress().name);
         assert_eq!(envoy.mode, ServiceMode::Global);
-        assert_eq!(envoy.container.image, ENVOY_IMAGE);
+        assert_eq!(
+            envoy.container.image,
+            "docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66"
+        );
         assert_eq!(
             envoy.container.command,
             ["envoy", "-c", "/config/bootstrap.yaml"]
