@@ -519,6 +519,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("backend: \"caddy\"; config: string"));
     assert!(dts.contains("export type IngressProxyConfig ="));
     assert!(dts.contains("backend: \"zentinel\"; config: string"));
+    assert!(dts.contains("backend: \"envoy\"; config: string"));
     assert!(dts.contains(
         "GET_INGRESS_PROXY_CONFIG_CAPABILITY: CapabilityName = \"ployz.ingress.config.v1\""
     ));

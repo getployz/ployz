@@ -760,8 +760,15 @@ impl MachineRpc for MachineService {
         let path = match backend {
             IngressProxyBackend::Caddy => crate::ingress::caddy::config_path(data_dir),
             IngressProxyBackend::Zentinel => crate::ingress::zentinel::config_path(data_dir),
+            IngressProxyBackend::Envoy => crate::ingress::envoy::config_path(data_dir),
         };
-        match std::fs::read_to_string(&path) {
+        let generated = match backend {
+            IngressProxyBackend::Caddy | IngressProxyBackend::Zentinel => {
+                std::fs::read_to_string(&path)
+            }
+            IngressProxyBackend::Envoy => crate::ingress::envoy::read_generated_config(data_dir),
+        };
+        match generated {
             Ok(config) => respond(IngressProxyConfig::for_backend(backend, config)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => respond(RpcError {
                 code: RpcErrorCode::NotFound,

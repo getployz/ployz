@@ -27,6 +27,8 @@ pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
 pub const CADDY_IMAGE: &str = "caddy:2.10.2";
 /// Exact Zentinel artifact carried by the Layer 3 image.
 pub const ZENTINEL_IMAGE: &str = "ghcr.io/zentinelproxy/zentinel@sha256:ff012547034d13a7d8e6570679c897e4bba6bc702ec5bdd7bf70a7a04b4d6604";
+/// Exact Envoy artifact carried by the Layer 3 image.
+pub const ENVOY_IMAGE: &str = "docker.io/envoyproxy/envoy@sha256:a707c3821b4cecb5db43d8e86e983e0f57b81010fefbabc01feeb071fb8cc08e";
 pub const UNREGISTRY_IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
@@ -38,7 +40,7 @@ static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageTarget {
     pub platform: &'static str,
-    pub requires: [&'static str; 8],
+    pub requires: [&'static str; 9],
 }
 
 #[must_use]
@@ -51,6 +53,7 @@ pub fn image_targets() -> [ImageTarget; 2] {
         SERVICE_CONTAINER_IMAGE,
         CADDY_IMAGE,
         ZENTINEL_IMAGE,
+        ENVOY_IMAGE,
         UNREGISTRY_IMAGE,
     ];
     [
@@ -1075,6 +1078,7 @@ mod tests {
                     SERVICE_CONTAINER_IMAGE,
                     CADDY_IMAGE,
                     ZENTINEL_IMAGE,
+                    ENVOY_IMAGE,
                     UNREGISTRY_IMAGE,
                 ]
         }));

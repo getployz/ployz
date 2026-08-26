@@ -684,6 +684,8 @@ pub enum IngressProxyConfig {
     Caddy(String),
     /// Exact KDL configuration consumed by Zentinel.
     Zentinel(String),
+    /// Exact bootstrap YAML consumed by Envoy.
+    Envoy(String),
 }
 
 impl IngressProxyConfig {
@@ -693,6 +695,7 @@ impl IngressProxyConfig {
         match backend {
             IngressProxyBackend::Caddy => Self::Caddy(config),
             IngressProxyBackend::Zentinel => Self::Zentinel(config),
+            IngressProxyBackend::Envoy => Self::Envoy(config),
         }
     }
 
@@ -700,7 +703,7 @@ impl IngressProxyConfig {
     #[must_use]
     pub fn config(&self) -> &str {
         match self {
-            Self::Caddy(config) | Self::Zentinel(config) => config,
+            Self::Caddy(config) | Self::Zentinel(config) | Self::Envoy(config) => config,
         }
     }
 }

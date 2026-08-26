@@ -395,15 +395,19 @@ async fn ingress_proxy_backend_is_typed_immutable_cluster_authority() {
 
 #[tokio::test]
 async fn ingress_proxy_backend_refuses_unrecognized_cluster_value() {
-    let (store, server) = fake_cluster::store_with_ingress_proxy_backend_value("envoy").await;
+    let (store, server) = fake_cluster::store_with_ingress_proxy_backend_value("traefik").await;
     let error = store.ingress_proxy_backend().await.unwrap_err();
-    assert!(error.to_string().contains("envoy"), "{error}");
+    assert!(error.to_string().contains("traefik"), "{error}");
     server.abort();
 }
 
 #[tokio::test]
 async fn joining_machine_inherits_each_recognized_ingress_proxy_backend() {
-    for backend in [IngressProxyBackend::Caddy, IngressProxyBackend::Zentinel] {
+    for backend in [
+        IngressProxyBackend::Caddy,
+        IngressProxyBackend::Zentinel,
+        IngressProxyBackend::Envoy,
+    ] {
         let (store, server) =
             fake_cluster::store_with_ingress_proxy_backend_value(backend.as_str()).await;
         let (data_dir, local) = joining_record();
@@ -438,7 +442,7 @@ async fn joining_machine_inherits_each_recognized_ingress_proxy_backend() {
 
 #[tokio::test]
 async fn joining_machine_refuses_missing_or_unrecognized_ingress_proxy_backend() {
-    for value in [None, Some("envoy")] {
+    for value in [None, Some("traefik")] {
         let (store, server) = match value {
             Some(value) => fake_cluster::store_with_ingress_proxy_backend_value(value).await,
             None => fake_cluster::store().await,

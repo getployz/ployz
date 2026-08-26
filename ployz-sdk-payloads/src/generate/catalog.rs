@@ -108,6 +108,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             variants: &[
                 ("caddy", &[("config", "string")]),
                 ("zentinel", &[("config", "string")]),
+                ("envoy", &[("config", "string")]),
             ],
         },
     ),

@@ -6,13 +6,15 @@ mod harness;
 
 use harness::{
     CLUSTER_DOMAIN, EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, assert_not_held,
-    founder_machine, ingress_on, registration, serve_machine, wait_for_held,
+    envoy_ingress_on, founder_machine, ingress_on, registration, serve_machine, wait_for_held,
 };
 use ployz_core::{
-    CloudPairing, IngressProxyBackend, InitializeRequest, InspectRequest, LocalMachinePhase,
-    PairingCredential, Registered, SetCloudPairingRequest, op,
+    CloudPairing, HostBind, IngressProxyBackend, InitializeRequest, InspectRequest,
+    LocalMachinePhase, PairingCredential, PortPublication, Registered, SetCloudPairingRequest,
+    TransportProtocol, VolumeSource, ingress_proxy_backend, op,
 };
 use serde_json::json;
+use std::num::NonZeroU16;
 
 #[tokio::test]
 async fn cloud_init_join_participates_and_appears_on_list_held() {
@@ -225,6 +227,7 @@ async fn cloud_founding_transmits_each_selected_ingress_backend() {
     for (selection, expected) in [
         (None, IngressProxyBackend::Zentinel),
         (Some("caddy"), IngressProxyBackend::Caddy),
+        (Some("envoy"), IngressProxyBackend::Envoy),
     ] {
         let founder = founder_machine();
         let relay = RelayListen::start().await;
@@ -904,6 +907,144 @@ async fn join_places_observed_ingress_on_this_machine() {
     assert!(stdout.contains("Joined Machine joiner"), "{stdout}");
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("ployz-system", "ingress")]);
+}
+
+#[tokio::test]
+async fn join_places_observed_envoy_ingress_on_this_machine() {
+    let founder = founder_machine();
+    let mut registration = registration();
+    registration.visible_peers = vec![founder.clone()];
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon =
+        JoinDaemon::new(registration.clone()).with_containers(vec![envoy_ingress_on(&founder)]);
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Joined Machine joiner"), "{stdout}");
+    let ensured = daemon.ensure_requests();
+    assert_eq!(ensure_names(&ensured), [("ployz-system", "ingress")]);
+    let spec = &ensured.first().unwrap().resolved_spec;
+    assert_eq!(
+        spec.container.command,
+        ["envoy", "-c", "/config/bootstrap.yaml"]
+    );
+    assert!(spec.container.cap_add.is_empty());
+    assert_eq!(
+        spec.ports,
+        [
+            PortPublication::Host {
+                bind: HostBind::All,
+                published_port: NonZeroU16::new(80).unwrap(),
+                container_port: NonZeroU16::new(8080).unwrap(),
+                transport_protocol: TransportProtocol::Tcp,
+            },
+            PortPublication::Host {
+                bind: HostBind::All,
+                published_port: NonZeroU16::new(443).unwrap(),
+                container_port: NonZeroU16::new(8443).unwrap(),
+                transport_protocol: TransportProtocol::Tcp,
+            },
+        ]
+    );
+    assert!(
+        spec.volume_graph
+            .volumes()
+            .iter()
+            .filter_map(|volume| match &volume.source {
+                VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
+                VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
+            })
+            .eq(["/var/lib/ployz/ingress/envoy"])
+    );
+    assert_eq!(
+        ingress_proxy_backend(spec).unwrap(),
+        IngressProxyBackend::Envoy
+    );
+}
+
+#[tokio::test]
+async fn join_reconciles_noncanonical_joiner_ingress_to_observed_envoy() {
+    let founder = founder_machine();
+    let joiner = registration().assigned_machine.clone();
+    let mut registration = registration();
+    registration.visible_peers = vec![founder.clone()];
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration.clone())
+        .with_containers(vec![envoy_ingress_on(&founder), ingress_on(&joiner)]);
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let ensured = daemon.ensure_requests();
+    let spec = &ensured.first().unwrap().resolved_spec;
+    assert_eq!(
+        ingress_proxy_backend(spec).unwrap(),
+        IngressProxyBackend::Envoy
+    );
+    assert_eq!(
+        spec.container.command,
+        ["envoy", "-c", "/config/bootstrap.yaml"]
+    );
 }
 
 #[tokio::test]

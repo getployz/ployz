@@ -147,6 +147,95 @@ async fn zentinel_service_is_bootstrapped_before_host_network_is_returned() {
 }
 
 #[tokio::test]
+async fn envoy_service_is_bootstrapped_before_bridge_network_is_returned() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "ployzd-envoy-network-{}",
+        ployz_core::MachineId::random()
+    ));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .initialize(
+            MachineName::parse("edge").unwrap(),
+            crate::machine::FoundingCluster {
+                network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Envoy,
+            },
+            None,
+            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            None,
+            None,
+        )
+        .unwrap();
+    let store = Arc::new(Mutex::new(store));
+    let (replicated, server) = fake_cluster::store_with_ingress_proxy_backend_value("envoy").await;
+    let service = MachineService::with_cluster(
+        store,
+        watch::channel(false).0,
+        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
+    );
+    let spec = IngressProxyBackend::Envoy
+        .requested_service_spec("example.test/envoy".into(), Vec::new(), None)
+        .unwrap()
+        .to_resolved(
+            ployz_core::ServiceId::parse("a".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig::default(),
+        );
+
+    assert!(matches!(
+        service
+            .local
+            .prepare_service_runtime(ContainerKind::PreDeployHook, &ProjectName::system(), &spec,)
+            .await
+            .unwrap(),
+        crate::docker::NetworkAttachment::Bridge
+    ));
+    let config_file = crate::ingress::envoy::config_path(&data_dir);
+    assert!(!config_file.exists());
+
+    assert!(matches!(
+        service
+            .local
+            .prepare_service_runtime(
+                ContainerKind::ServiceContainer,
+                &ProjectName::system(),
+                &spec
+            )
+            .await
+            .unwrap(),
+        crate::docker::NetworkAttachment::Bridge
+    ));
+    let config = std::fs::read_to_string(&config_file).unwrap();
+    assert_eq!(config, crate::ingress::envoy::BOOTSTRAP);
+    assert!(!config.contains("admin:"));
+    assert!(config.contains("path_config_source:"));
+    let envoy_dir = config_file.parent().unwrap();
+    assert!(
+        std::fs::read_to_string(envoy_dir.join("rds.yaml"))
+            .unwrap()
+            .contains("/.ployz-verify")
+    );
+    assert!(envoy_dir.join("lds.yaml").exists());
+    assert!(envoy_dir.join("cds.yaml").exists());
+    assert!(envoy_dir.join("sds.yaml").exists());
+    std::fs::write(&config_file, "authoritative\n").unwrap();
+    service
+        .local
+        .prepare_service_runtime(
+            ContainerKind::ServiceContainer,
+            &ProjectName::system(),
+            &spec,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&config_file).unwrap(),
+        "authoritative\n"
+    );
+    server.abort();
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
 async fn ingress_config_rpc_returns_only_the_selected_backend_file() {
     for (backend, expected) in [
         (
@@ -156,6 +245,12 @@ async fn ingress_config_rpc_returns_only_the_selected_backend_file() {
         (
             IngressProxyBackend::Zentinel,
             IngressProxyConfig::Zentinel("zentinel exact\n".into()),
+        ),
+        (
+            IngressProxyBackend::Envoy,
+            IngressProxyConfig::Envoy(
+                "envoy-lds\n\n---\nenvoy-rds\n\n---\nenvoy-cds\n\n---\nenvoy-sds\n".into(),
+            ),
         ),
     ] {
         let data_dir = std::env::temp_dir().join(format!(
@@ -180,10 +275,16 @@ async fn ingress_config_rpc_returns_only_the_selected_backend_file() {
             fake_cluster::store_with_ingress_proxy_backend_value(backend.as_str()).await;
         let caddy = crate::ingress::caddy::config_path(&data_dir);
         let zentinel = crate::ingress::zentinel::config_path(&data_dir);
+        let envoy = crate::ingress::envoy::config_path(&data_dir);
         std::fs::create_dir_all(caddy.parent().unwrap()).unwrap();
         std::fs::create_dir_all(zentinel.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(envoy.parent().unwrap()).unwrap();
         std::fs::write(&caddy, "caddy exact\n").unwrap();
         std::fs::write(&zentinel, "zentinel exact\n").unwrap();
+        std::fs::write(envoy.parent().unwrap().join("lds.yaml"), "envoy-lds\n").unwrap();
+        std::fs::write(envoy.parent().unwrap().join("rds.yaml"), "envoy-rds\n").unwrap();
+        std::fs::write(envoy.parent().unwrap().join("cds.yaml"), "envoy-cds\n").unwrap();
+        std::fs::write(envoy.parent().unwrap().join("sds.yaml"), "envoy-sds\n").unwrap();
         let service = MachineService::with_cluster(
             Arc::new(Mutex::new(local)),
             watch::channel(false).0,

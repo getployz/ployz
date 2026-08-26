@@ -231,15 +231,19 @@ fn service_has_slot(
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, net::Ipv6Addr, num::NonZeroU32};
+    use std::{
+        cell::Cell,
+        net::Ipv6Addr,
+        num::{NonZeroU16, NonZeroU32},
+    };
 
     use ployz_core::{
         ContainerId, ContainerKind, ContainerObservation, ContainerResources,
-        ContainerRuntimeObservation, HealthObservation, Machine, MachineId, MachineName,
-        MachineTarget, ManagementAddress, Placement, ProjectName, PullPolicy, RequestedServiceSpec,
-        ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId,
-        ServiceMode, ServiceName, ServiceObservation, UpdateConfig, WireGuardPublicKey,
-        service_containers,
+        ContainerRuntimeObservation, HealthObservation, HostBind, Machine, MachineId, MachineName,
+        MachineTarget, ManagementAddress, Placement, PortPublication, ProjectName, PullPolicy,
+        RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
+        ServiceContainerSpec, ServiceId, ServiceMode, ServiceName, ServiceObservation,
+        TransportProtocol, UpdateConfig, VolumeSource, WireGuardPublicKey, service_containers,
     };
 
     use super::*;
@@ -294,6 +298,66 @@ mod tests {
             services: vec![current],
             target_services: Some(vec![target]),
             capacity: Some(BridgeEndpointCapacity::new(0, 0)),
+            ensure_calls: Cell::new(0),
+        };
+
+        catch_up_globals(&mut client, &joiner, false).await.unwrap();
+        assert_eq!(client.ensure_calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn envoy_catch_up_requires_a_bridge_endpoint() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let current = observed_envoy_ingress(&founder, 'c');
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![current],
+            target_services: None,
+            capacity: Some(BridgeEndpointCapacity::new(0, 0)),
+            ensure_calls: Cell::new(0),
+        };
+
+        assert!(catch_up_globals(&mut client, &joiner, false).await.is_err());
+        assert_eq!(client.ensure_calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn envoy_catch_up_succeeds_when_a_bridge_endpoint_is_available() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let identity = QualifiedService::system_ingress();
+        let spec = canonical_envoy_spec('c');
+        let current = grouped(identity.clone(), spec.clone(), running_on(&founder, 'a'));
+        let target = grouped(identity, spec, running_on(&joiner, 'b'));
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![current],
+            target_services: Some(vec![target]),
+            capacity: Some(BridgeEndpointCapacity::new(10, 0)),
+            ensure_calls: Cell::new(0),
+        };
+
+        catch_up_globals(&mut client, &joiner, false).await.unwrap();
+        assert_eq!(client.ensure_calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn catch_up_places_observed_envoy_when_joiner_runs_noncanonical_ingress() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let identity = QualifiedService::system_ingress();
+        let envoy_spec = canonical_envoy_spec('e');
+        let drifted = observed_caddy_ingress(&joiner, 'd');
+        let mut founder_envoy = running_on(&founder, 'e');
+        founder_envoy.created_at_unix_nanos = 2;
+        let current = grouped(identity.clone(), envoy_spec.clone(), founder_envoy);
+        let target = grouped(identity, envoy_spec, running_on(&joiner, 'b'));
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![current, drifted],
+            target_services: Some(vec![target]),
+            capacity: Some(BridgeEndpointCapacity::new(10, 0)),
             ensure_calls: Cell::new(0),
         };
 
@@ -510,6 +574,10 @@ mod tests {
                 Vec::<&str>::new(),
             ),
             (vec!["-c", "/config/zentinel.kdl"], vec!["NET_BIND_SERVICE"]),
+            (
+                vec!["envoy", "-c", "/config/bootstrap.yaml"],
+                Vec::<&str>::new(),
+            ),
         ] {
             let identity = QualifiedService::system_ingress();
             let mut spec = requested(ServiceMode::Global);
@@ -545,6 +613,32 @@ mod tests {
                     .eq(capabilities.iter().copied())
             );
         }
+    }
+
+    #[test]
+    fn add_machine_inherits_canonical_envoy_ingress_spec() {
+        let founder = machine('f', "founder");
+        let joiner = machine('1', "joiner");
+        let slots = plan_global_catch_up(&[observed_envoy_ingress(&founder, 'c')], &joiner, false);
+        assert_eq!(slots.len(), 1);
+        assert_canonical_envoy_spec(slots.first().unwrap().resolved_spec());
+    }
+
+    #[test]
+    fn joiner_running_noncanonical_ingress_still_plans_the_observed_envoy_slot() {
+        let founder = machine('f', "founder");
+        let joiner = machine('1', "joiner");
+        let identity = QualifiedService::system_ingress();
+        let mut founder_envoy = running_on(&founder, 'e');
+        founder_envoy.created_at_unix_nanos = 2;
+        let mut observed = grouped(identity, canonical_envoy_spec('e'), founder_envoy);
+        observed
+            .containers
+            .extend(observed_caddy_ingress(&joiner, 'd').containers);
+
+        let slots = plan_global_catch_up(&[observed], &joiner, false);
+        assert_eq!(slots.len(), 1);
+        assert_canonical_envoy_spec(slots.first().unwrap().resolved_spec());
     }
 
     #[test]
@@ -703,6 +797,70 @@ mod tests {
             running_on(&founder, 'a'),
         )];
         assert!(plan_global_catch_up(&services, &joiner, false).is_empty());
+    }
+
+    fn canonical_envoy_spec(id: char) -> ResolvedServiceSpec {
+        ployz_core::IngressProxyBackend::Envoy
+            .requested_service_spec("envoy:test".into(), Vec::new(), None)
+            .unwrap()
+            .to_resolved(service_id(id), ResolvedUpdateConfig::default())
+    }
+
+    fn observed_envoy_ingress(machine: &Machine, id: char) -> ServiceObservation {
+        grouped(
+            QualifiedService::system_ingress(),
+            canonical_envoy_spec(id),
+            running_on(machine, id),
+        )
+    }
+
+    fn observed_caddy_ingress(machine: &Machine, id: char) -> ServiceObservation {
+        let spec = ployz_core::IngressProxyBackend::Caddy
+            .requested_service_spec("caddy:test".into(), Vec::new(), None)
+            .unwrap()
+            .to_resolved(service_id(id), ResolvedUpdateConfig::default());
+        let mut container = running_on(machine, id);
+        container.created_at_unix_nanos = 1;
+        grouped(QualifiedService::system_ingress(), spec, container)
+    }
+
+    fn assert_canonical_envoy_spec(spec: &ResolvedServiceSpec) {
+        assert_eq!(
+            spec.container.command,
+            ["envoy", "-c", "/config/bootstrap.yaml"]
+        );
+        assert!(spec.container.cap_add.is_empty());
+        assert_eq!(
+            spec.ports,
+            [
+                PortPublication::Host {
+                    bind: HostBind::All,
+                    published_port: NonZeroU16::new(80).unwrap(),
+                    container_port: NonZeroU16::new(8080).unwrap(),
+                    transport_protocol: TransportProtocol::Tcp,
+                },
+                PortPublication::Host {
+                    bind: HostBind::All,
+                    published_port: NonZeroU16::new(443).unwrap(),
+                    container_port: NonZeroU16::new(8443).unwrap(),
+                    transport_protocol: TransportProtocol::Tcp,
+                },
+            ]
+        );
+        assert!(
+            spec.volume_graph
+                .volumes()
+                .iter()
+                .filter_map(|volume| match &volume.source {
+                    VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
+                    VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
+                })
+                .eq(["/var/lib/ployz/ingress/envoy"])
+        );
+        assert_eq!(
+            ingress_proxy_backend(spec).unwrap(),
+            ployz_core::IngressProxyBackend::Envoy
+        );
     }
 
     fn identities(slots: &[ObservedGlobalSlotSpec]) -> Vec<String> {

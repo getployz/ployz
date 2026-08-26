@@ -38,6 +38,7 @@ pub(crate) fn is_system_ingress(observation: &ContainerObservation) -> bool {
 }
 
 pub(crate) mod caddy;
+pub(crate) mod envoy;
 pub(crate) mod zentinel;
 
 use caddy::CaddyAdmin;
@@ -73,6 +74,18 @@ pub(crate) async fn run(
                 machine,
                 replicated,
                 zentinel::config_path(&data_dir),
+                docker,
+                shutdown,
+            )
+            .await
+        }
+        IngressProxyBackend::Envoy => {
+            let docker =
+                docker.ok_or_else(|| io::Error::other("Envoy Ingress Proxy requires Docker"))?;
+            envoy::watch(
+                machine,
+                replicated,
+                envoy::config_path(&data_dir),
                 docker,
                 shutdown,
             )
@@ -604,7 +617,7 @@ async fn wait_before_retry(shutdown: &CancellationToken) -> bool {
     }
 }
 
-fn write_certificate_files(
+pub(crate) fn write_certificate_files(
     config_file: &Path,
     sites: &[IngressSite],
     key_mode: u32,
@@ -631,7 +644,10 @@ fn write_certificate_files(
     Ok(())
 }
 
-fn remove_stale_certificate_files(config_file: &Path, sites: &[IngressSite]) -> io::Result<()> {
+pub(crate) fn remove_stale_certificate_files(
+    config_file: &Path,
+    sites: &[IngressSite],
+) -> io::Result<()> {
     let directory = certificate_directory(config_file)?;
     if !directory.exists() {
         return Ok(());

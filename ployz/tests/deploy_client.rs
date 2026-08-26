@@ -21,6 +21,7 @@ async fn ingress_deploy_inherits_and_cannot_change_the_cluster_backend() {
     for (backend, image) in [
         (IngressProxyBackend::Caddy, "caddy:test"),
         (IngressProxyBackend::Zentinel, "zentinel:test"),
+        (IngressProxyBackend::Envoy, "envoy:test"),
     ] {
         let service = DeployService::new(machine('a', "one")).with_ingress_backend(Some(backend));
         let created = service.created_specs();
@@ -58,6 +59,15 @@ async fn ingress_deploy_inherits_and_cannot_change_the_cluster_backend() {
                 assert_eq!(spec.container.cap_add, ["NET_BIND_SERVICE"]);
                 assert_eq!(spec.container.cap_drop, ["ALL"]);
                 assert!(spec.ports.is_empty());
+            }
+            IngressProxyBackend::Envoy => {
+                assert_eq!(spec.container.image, "envoy:test");
+                assert_eq!(
+                    spec.container.command,
+                    ["envoy", "-c", "/config/bootstrap.yaml"]
+                );
+                assert!(spec.container.cap_add.is_empty());
+                assert_eq!(spec.ports.len(), 2);
             }
         }
         server.abort();

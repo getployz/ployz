@@ -13,6 +13,8 @@ use ployz_core::{
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
 
+#[path = "ingress_cluster/envoy.rs"]
+mod envoy;
 #[path = "ingress_cluster/zentinel.rs"]
 mod zentinel;
 

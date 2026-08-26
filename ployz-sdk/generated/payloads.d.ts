@@ -94,6 +94,7 @@ export type IngressProxyFragment =
 export type IngressProxyConfig =
   | Additive<{ backend: "caddy"; config: string }>
   | Additive<{ backend: "zentinel"; config: string }>
+  | Additive<{ backend: "envoy"; config: string }>
   | Additive<{ backend?: string }>;
 
 export type IngressHostname =

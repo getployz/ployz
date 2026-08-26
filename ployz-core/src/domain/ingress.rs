@@ -16,8 +16,16 @@ const CADDY_INGRESS_COMMAND: [&str; 4] = ["caddy", "run", "-c", "/config/caddy/C
 const CADDY_INGRESS_ADMIN: &str = "unix//run/ingress/caddy/admin.sock";
 const ZENTINEL_INGRESS_COMMAND: [&str; 2] = ["-c", "/config/zentinel.kdl"];
 const ZENTINEL_INGRESS_CAPABILITY: &str = "NET_BIND_SERVICE";
+const ENVOY_INGRESS_COMMAND: [&str; 3] = ["envoy", "-c", "/config/bootstrap.yaml"];
+const ENVOY_HTTP_CONTAINER_PORT: u16 = 8080;
+const ENVOY_HTTPS_CONTAINER_PORT: u16 = 8443;
 const INGRESS_PROXY_DATA_PATH: &str = "/var/lib/ployz/ingress";
 const INGRESS_PROXY_RUNTIME_PATH: &str = "/run/ployz/ingress";
+const SUPPORTED_INGRESS_PROXY_BACKENDS: [IngressProxyBackend; 3] = [
+    IngressProxyBackend::Caddy,
+    IngressProxyBackend::Zentinel,
+    IngressProxyBackend::Envoy,
+];
 
 /// Invalid or mixed concrete wiring for the reserved Ingress Proxy Service.
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +43,8 @@ pub enum IngressProxyBackend {
     Caddy,
     /// Zentinel with host networking and no published ports.
     Zentinel,
+    /// Envoy with bridge networking and unprivileged in-container listeners.
+    Envoy,
 }
 
 /// Docker network mode required by one canonical Ingress Proxy runtime.
@@ -51,15 +61,16 @@ impl IngressProxyBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`ValueError`] unless `value` is `caddy` or `zentinel`.
+    /// Returns [`ValueError`] unless `value` is `caddy`, `zentinel`, or `envoy`.
     pub fn parse(value: &str) -> Result<Self, ValueError> {
         match value {
             "caddy" => Ok(Self::Caddy),
             "zentinel" => Ok(Self::Zentinel),
+            "envoy" => Ok(Self::Envoy),
             _ => Err(ValueError::new(
                 "Ingress Proxy Backend",
                 value,
-                "caddy or zentinel",
+                "caddy, zentinel, or envoy",
             )),
         }
     }
@@ -70,6 +81,7 @@ impl IngressProxyBackend {
         match self {
             Self::Caddy => "caddy",
             Self::Zentinel => "zentinel",
+            Self::Envoy => "envoy",
         }
     }
 
@@ -77,7 +89,9 @@ impl IngressProxyBackend {
     #[must_use]
     pub const fn network_mode(self) -> IngressProxyNetworkMode {
         match self {
-            IngressProxyBackend::Caddy => IngressProxyNetworkMode::Bridge,
+            IngressProxyBackend::Caddy | IngressProxyBackend::Envoy => {
+                IngressProxyNetworkMode::Bridge
+            }
             IngressProxyBackend::Zentinel => IngressProxyNetworkMode::Host,
         }
     }
@@ -101,7 +115,7 @@ impl IngressProxyBackend {
             IngressProxyBackend::Caddy => fragment
                 .as_ref()
                 .is_none_or(|fragment| fragment.as_caddy().is_some()),
-            IngressProxyBackend::Zentinel => fragment.is_none(),
+            IngressProxyBackend::Zentinel | IngressProxyBackend::Envoy => fragment.is_none(),
         };
         if !fragment_matches {
             return Err(IngressProxyServiceSpecError);
@@ -121,6 +135,12 @@ impl IngressProxyBackend {
                     order: Some(UpdateOrder::StopFirst),
                     ..Default::default()
                 },
+            ),
+            IngressProxyBackend::Envoy => (
+                envoy_container(image),
+                envoy_ports(),
+                envoy_volume_graph(),
+                UpdateConfig::default(),
             ),
         };
         Ok(RequestedServiceSpec {
@@ -149,7 +169,7 @@ impl IngressProxyBackend {
     fn matches_resolved(self, spec: &crate::ResolvedServiceSpec) -> bool {
         let update_matches = spec.update.monitor_millis.is_none()
             && match self {
-                IngressProxyBackend::Caddy => matches!(
+                IngressProxyBackend::Caddy | IngressProxyBackend::Envoy => matches!(
                     spec.update.order,
                     UpdateOrder::StartFirst | UpdateOrder::StopFirst
                 ),
@@ -179,7 +199,7 @@ impl IngressProxyBackend {
 pub fn ingress_proxy_backend(
     spec: &ResolvedServiceSpec,
 ) -> Result<IngressProxyBackend, IngressProxyServiceSpecError> {
-    [IngressProxyBackend::Caddy, IngressProxyBackend::Zentinel]
+    SUPPORTED_INGRESS_PROXY_BACKENDS
         .into_iter()
         .find(|backend| backend.matches_resolved(spec))
         .ok_or(IngressProxyServiceSpecError)
@@ -194,7 +214,7 @@ pub fn ingress_proxy_backend(
 pub fn requested_ingress_proxy_backend(
     spec: &RequestedServiceSpec,
 ) -> Result<IngressProxyBackend, IngressProxyServiceSpecError> {
-    [IngressProxyBackend::Caddy, IngressProxyBackend::Zentinel]
+    SUPPORTED_INGRESS_PROXY_BACKENDS
         .into_iter()
         .find(|backend| backend.matches_requested(spec))
         .ok_or(IngressProxyServiceSpecError)
@@ -245,6 +265,13 @@ fn zentinel_container(image: String) -> ServiceContainerSpec {
     }
 }
 
+fn envoy_container(image: String) -> ServiceContainerSpec {
+    ServiceContainerSpec {
+        command: ENVOY_INGRESS_COMMAND.map(str::to_owned).into(),
+        ..base_container(image)
+    }
+}
+
 fn caddy_ports() -> Vec<PortPublication> {
     let host_port = |port, transport_protocol| PortPublication::Host {
         bind: HostBind::All,
@@ -288,6 +315,31 @@ fn zentinel_volume_graph() -> ServiceVolumeGraph {
     .expect("static Zentinel Volume graph is valid")
 }
 
+fn envoy_ports() -> Vec<PortPublication> {
+    let host_port = |published, container| PortPublication::Host {
+        bind: HostBind::All,
+        published_port: NonZeroU16::new(published).expect("Envoy host ports are non-zero"),
+        container_port: NonZeroU16::new(container).expect("Envoy container ports are non-zero"),
+        transport_protocol: TransportProtocol::Tcp,
+    };
+    vec![
+        host_port(80, ENVOY_HTTP_CONTAINER_PORT),
+        host_port(443, ENVOY_HTTPS_CONTAINER_PORT),
+    ]
+}
+
+fn envoy_volume_graph() -> ServiceVolumeGraph {
+    let data = ServiceVolumeReference::parse("ingress-data").expect("static volume is valid");
+    ServiceVolumeGraph::parse(
+        vec![bind_volume(
+            data.clone(),
+            format!("{INGRESS_PROXY_DATA_PATH}/envoy"),
+        )],
+        vec![mount(&data, "/config")],
+    )
+    .expect("static Envoy Volume graph is valid")
+}
+
 fn bind_volume(
     reference: ServiceVolumeReference,
     machine_path: impl Into<String>,
@@ -327,7 +379,7 @@ impl FromStr for IngressProxyBackend {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
+    use std::num::{NonZeroU16, NonZeroU32};
 
     use crate::{
         ConfigSpec, MachineTarget, ResolvedUpdateConfig, ServiceConfigGraph, ServiceId,
@@ -339,7 +391,7 @@ mod tests {
     #[test]
     fn backend_builds_and_recognizes_each_canonical_runtime() {
         let machines = vec![MachineTarget::parse("edge").unwrap()];
-        for backend in [IngressProxyBackend::Caddy, IngressProxyBackend::Zentinel] {
+        for backend in SUPPORTED_INGRESS_PROXY_BACKENDS {
             let requested = backend
                 .requested_service_spec(
                     "example.test/ingress:override".into(),
@@ -382,6 +434,8 @@ mod tests {
         for (backend, order, accepted) in [
             (IngressProxyBackend::Caddy, UpdateOrder::StartFirst, true),
             (IngressProxyBackend::Caddy, UpdateOrder::StopFirst, true),
+            (IngressProxyBackend::Envoy, UpdateOrder::StartFirst, true),
+            (IngressProxyBackend::Envoy, UpdateOrder::StopFirst, true),
             (IngressProxyBackend::Zentinel, UpdateOrder::StopFirst, true),
             (
                 IngressProxyBackend::Zentinel,
@@ -461,10 +515,70 @@ mod tests {
                 )
                 .is_err()
         );
+        assert!(
+            IngressProxyBackend::Envoy
+                .requested_service_spec(
+                    "envoy:test".into(),
+                    Vec::new(),
+                    Some(IngressProxyFragment::parse_caddy("respond ok").unwrap()),
+                )
+                .is_err()
+        );
     }
 
     #[test]
-    fn unknown_backend_spelling_is_rejected_at_the_parse_seam() {
-        assert!(IngressProxyBackend::parse("envoy").is_err());
+    fn envoy_uses_bridge_unprivileged_published_ports() {
+        let requested = IngressProxyBackend::Envoy
+            .requested_service_spec("envoy:test".into(), Vec::new(), None)
+            .unwrap();
+
+        assert_eq!(
+            requested.container.command,
+            ["envoy", "-c", "/config/bootstrap.yaml"]
+        );
+        assert!(requested.container.cap_add.is_empty());
+        assert!(requested.container.cap_drop.is_empty());
+        assert_eq!(requested.update, UpdateConfig::default());
+        assert_eq!(
+            requested.ports,
+            [
+                PortPublication::Host {
+                    bind: HostBind::All,
+                    published_port: NonZeroU16::new(80).unwrap(),
+                    container_port: NonZeroU16::new(ENVOY_HTTP_CONTAINER_PORT).unwrap(),
+                    transport_protocol: TransportProtocol::Tcp,
+                },
+                PortPublication::Host {
+                    bind: HostBind::All,
+                    published_port: NonZeroU16::new(443).unwrap(),
+                    container_port: NonZeroU16::new(ENVOY_HTTPS_CONTAINER_PORT).unwrap(),
+                    transport_protocol: TransportProtocol::Tcp,
+                },
+            ]
+        );
+        assert!(
+            requested
+                .volume_graph
+                .volumes()
+                .iter()
+                .filter_map(|volume| match &volume.source {
+                    VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
+                    VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
+                })
+                .eq(["/var/lib/ployz/ingress/envoy"])
+        );
+    }
+
+    #[test]
+    fn parse_seam_accepts_envoy_and_rejects_an_unknown_spelling() {
+        assert_eq!(
+            IngressProxyBackend::parse("envoy").unwrap(),
+            IngressProxyBackend::Envoy
+        );
+        assert!(IngressProxyBackend::parse("traefik").is_err());
+        assert_eq!(
+            serde_json::to_value(IngressProxyBackend::Envoy).unwrap(),
+            serde_json::json!("envoy")
+        );
     }
 }

@@ -948,6 +948,33 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
     }
 }
 
+pub fn envoy_ingress_on(machine: &Machine) -> ContainerObservation {
+    let spec = ployz_core::IngressProxyBackend::Envoy
+        .requested_service_spec("envoy:test".into(), Vec::new(), None)
+        .unwrap()
+        .to_resolved(
+            ployz_core::ServiceId::parse("e".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig::default(),
+        );
+    ContainerObservation {
+        container_id: ContainerId::parse("b".repeat(64)).unwrap(),
+        display_name: "ingress-envoy".into(),
+        created_at_unix_nanos: 2,
+        machine_id: machine.id,
+        project_name: ployz_core::ProjectName::system(),
+        service_id: spec.service_id,
+        service_name: spec.name.clone(),
+        kind: ContainerKind::ServiceContainer,
+        runtime: ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        },
+        effective_healthcheck: None,
+        resolved_spec: spec,
+        address: None,
+        labels: Default::default(),
+    }
+}
+
 fn up_machine(machine: Machine) -> MachineObservation {
     MachineObservation::new(machine, MembershipObservation::Up)
 }
