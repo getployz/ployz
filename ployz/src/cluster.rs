@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::join_all;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
     ContainerObservation, CreateContainerRequest, DataLoss, DataLossConfirmation,
@@ -286,29 +287,23 @@ impl Client {
         &mut self,
         machines: &[MachineObservation],
     ) -> PartialResult<VolumeInventory, RpcError> {
-        let mut requests = JoinSet::new();
+        let mut requests = Vec::new();
         let mut omissions = Vec::new();
-        for (index, machine) in machines.iter().enumerate() {
+        for machine in machines {
             if !machine.membership.invites_rpc() {
                 omissions.push(machine.machine.id);
                 continue;
             }
             let machine_id = machine.machine.id;
             let client = self.clone();
-            requests
-                .spawn(async move { (index, list_volumes_on_machine(client, machine_id).await) });
+            requests.push(async move { list_volumes_on_machine(client, machine_id).await });
         }
-        let mut outcomes = Vec::with_capacity(requests.len());
-        while let Some(outcome) = requests.join_next().await {
-            outcomes.push(outcome.expect("Volume listing task does not panic"));
-        }
-        outcomes.sort_by_key(|(index, _)| *index);
         let mut result = PartialResult {
             successes: Vec::new(),
             failures: Vec::new(),
             omissions,
         };
-        for (_, outcome) in outcomes {
+        for outcome in join_all(requests).await {
             match outcome {
                 Ok(success) => result.successes.push(success),
                 Err(failure) => result.failures.push(failure),
@@ -323,9 +318,9 @@ impl Client {
         machines: &[MachineObservation],
         name: &DockerVolumeName,
     ) -> PartialResult<DockerVolume, RpcError> {
-        let mut requests = JoinSet::new();
+        let mut requests = Vec::new();
         let mut omissions = Vec::new();
-        for (index, machine) in machines.iter().enumerate() {
+        for machine in machines {
             if !machine.membership.invites_rpc() {
                 omissions.push(machine.machine.id);
                 continue;
@@ -333,27 +328,22 @@ impl Client {
             let mut client = self.clone();
             let machine_id = machine.machine.id;
             let name = name.clone();
-            requests.spawn(async move {
+            requests.push(async move {
                 let result = client
                     .read::<op::InspectVolume>(
                         InspectVolumeRequest { name },
                         &MachineTarget::from(&machine_id),
                     )
                     .await;
-                (index, machine_id, result)
+                (machine_id, result)
             });
         }
-        let mut outcomes = Vec::with_capacity(requests.len());
-        while let Some(outcome) = requests.join_next().await {
-            outcomes.push(outcome.expect("Volume inspection task does not panic"));
-        }
-        outcomes.sort_by_key(|(index, _, _)| *index);
         let mut result = PartialResult {
             successes: Vec::new(),
             failures: Vec::new(),
             omissions,
         };
-        for (_, machine_id, outcome) in outcomes {
+        for (machine_id, outcome) in join_all(requests).await {
             match outcome {
                 Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
                 Err(error) => result.failures.push(MachineFailure { machine_id, error }),
@@ -365,9 +355,9 @@ impl Client {
     /// Destroy named Docker Volumes. The list is the confirmation.
     ///
     /// Each volume is identified by Machine plus name. Fan-out is a Partial
-    /// Result: destroyed names, per-Machine failures (including not-found),
-    /// and omissions for Machines that do not invite RPC. Forced removal is
-    /// off unless `force` is set.
+    /// Result: destroyed or already-absent names, per-Machine failures, and
+    /// omissions for Machines that do not invite RPC. Forced removal is off
+    /// unless `force` is set.
     ///
     /// # Errors
     ///
@@ -478,33 +468,27 @@ impl Client {
         reference: Option<String>,
         targets: &[Machine],
     ) -> PartialResult<MachineImagesObservation, RpcError> {
-        let mut tasks = JoinSet::new();
-        for (index, machine) in targets.iter().enumerate() {
+        let tasks = targets.iter().map(|machine| {
             let mut client = self.clone();
             let machine_id = machine.id;
             let machine_name = machine.name.clone();
             let reference = reference.clone();
-            tasks.spawn(async move {
+            async move {
                 let response = client
                     .read::<op::ListImages>(
                         ListImagesRequest { reference },
                         &MachineTarget::from(&machine_id),
                     )
                     .await;
-                (index, machine_id, machine_name, response)
-            });
-        }
-        let mut outcomes = Vec::with_capacity(tasks.len());
-        while let Some(outcome) = tasks.join_next().await {
-            outcomes.push(outcome.expect("Image listing task does not panic"));
-        }
-        outcomes.sort_by_key(|(index, _, _, _)| *index);
+                (machine_id, machine_name, response)
+            }
+        });
         let mut result = PartialResult {
             successes: Vec::new(),
             failures: Vec::new(),
             omissions: Vec::new(),
         };
-        for (_, machine_id, machine_name, outcome) in outcomes {
+        for (machine_id, machine_name, outcome) in join_all(tasks).await {
             match outcome {
                 Ok(images) => result.successes.push(MachineSuccess {
                     machine_id,
@@ -724,9 +708,9 @@ async fn remove_volumes_on(
     machines: &[MachineObservation],
     request: RemoveVolumesRequest,
 ) -> PartialResult<DockerVolumeName, RpcError> {
-    let mut removals = JoinSet::new();
+    let mut removals = Vec::new();
     let mut omissions = Vec::new();
-    for (index, volume) in request.volumes.iter().enumerate() {
+    for volume in &request.volumes {
         if !machines.iter().any(|machine| {
             machine.machine.id == volume.machine_id && machine.membership.invites_rpc()
         }) {
@@ -738,7 +722,7 @@ async fn remove_volumes_on(
         let client = client.clone();
         let id = volume.clone();
         let force = request.force;
-        removals.spawn(async move {
+        removals.push(async move {
             let outcome = client
                 .invoke::<op::RemoveVolume>(
                     RemoveVolumeRequest {
@@ -749,22 +733,21 @@ async fn remove_volumes_on(
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await;
-            (index, id, outcome)
+            (id, outcome)
         });
     }
-    let mut outcomes = Vec::with_capacity(removals.len());
-    while let Some(outcome) = removals.join_next().await {
-        outcomes.push(outcome.expect("Volume removal task does not panic"));
-    }
-    outcomes.sort_by_key(|(index, _, _)| *index);
     let mut result = PartialResult {
         successes: Vec::new(),
         failures: Vec::new(),
         omissions,
     };
-    for (_, id, outcome) in outcomes {
+    for (id, outcome) in join_all(removals).await {
         match outcome {
-            Ok(_) => result.successes.push(MachineSuccess {
+            Ok(_)
+            | Err(RpcError {
+                code: RpcErrorCode::NotFound,
+                ..
+            }) => result.successes.push(MachineSuccess {
                 machine_id: id.machine_id,
                 value: id.name,
             }),

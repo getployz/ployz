@@ -138,7 +138,8 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when `request` is not
     /// [`RemoveVolumesRequest`] data, the session is closed, or listing
-    /// Machines fails. Per-volume failures stay in the Partial Result.
+    /// Machines fails. Already-absent Volumes count as successful removals;
+    /// other Machine errors stay in the Partial Result.
     #[napi]
     pub async fn remove_volumes(&self, request: serde_json::Value) -> Result<serde_json::Value> {
         let request: RemoveVolumesRequest = serde_json::from_value(request).map_err(|error| {

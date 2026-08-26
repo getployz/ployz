@@ -70,7 +70,7 @@ async fn remove_volumes_keeps_successes_when_another_machine_fails() {
 }
 
 #[tokio::test]
-async fn remove_volumes_treats_not_found_as_a_per_volume_failure() {
+async fn remove_volumes_treats_not_found_as_success() {
     let (client, _session, _machine) = volume_session().await;
 
     let result = client
@@ -78,19 +78,15 @@ async fn remove_volumes_treats_not_found_as_a_per_volume_failure() {
         .await
         .unwrap();
 
-    assert_eq!(result.successes.len(), 1);
     assert_eq!(
         result
             .successes
-            .first()
-            .map(|success| success.value.as_str()),
-        Some("data")
+            .iter()
+            .map(|success| success.value.as_str())
+            .collect::<Vec<_>>(),
+        ["data", "missing"]
     );
-    let [failure] = result.failures.as_slice() else {
-        panic!("expected one not-found failure: {result:?}")
-    };
-    assert_eq!(failure.machine_id, machine_id('a'));
-    assert_eq!(failure.error.code, RpcErrorCode::NotFound);
+    assert!(result.failures.is_empty());
 }
 
 #[tokio::test]

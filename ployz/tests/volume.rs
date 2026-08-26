@@ -1,12 +1,8 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::BTreeMap;
 
-use ployz::volume::{MachineVolume, filter_volumes, parse_assignments, remove_volumes_with};
+use ployz::volume::{MachineVolume, filter_volumes, parse_assignments};
 use ployz_core::{
-    DockerVolume, DockerVolumeId, DockerVolumeName, MachineId, MachineName, NameMatches, RpcError,
-    RpcErrorCode,
+    DockerVolume, DockerVolumeId, DockerVolumeName, MachineId, MachineName, NameMatches,
 };
 
 #[test]
@@ -33,47 +29,6 @@ fn assignments_preserve_values_and_reject_malformed_pairs() {
     );
     assert!(parse_assignments(["missing-delimiter"]).is_err());
     assert!(parse_assignments(["=missing-key"]).is_err());
-}
-
-#[tokio::test]
-async fn later_failures_keep_earlier_removals() {
-    let volumes = vec![
-        volume('1', "first", "one"),
-        volume('2', "second", "gone"),
-        volume('3', "third", "busy"),
-    ];
-    let calls = Arc::new(Mutex::new(Vec::new()));
-
-    let result = remove_volumes_with(&volumes, true, {
-        let calls = Arc::clone(&calls);
-        move |id, force| {
-            calls.lock().unwrap().push((id.clone(), force));
-            async move {
-                match id.name.as_str() {
-                    "gone" => Err(RpcError {
-                        code: RpcErrorCode::NotFound,
-                        message: "raced".into(),
-                        details: serde_json::Value::Null,
-                    }),
-                    "busy" => Err(RpcError {
-                        code: RpcErrorCode::Conflict,
-                        message: "in use".into(),
-                        details: serde_json::Value::Null,
-                    }),
-                    _ => Ok(()),
-                }
-            }
-        }
-    })
-    .await;
-
-    assert_eq!(result.successes.len(), 2, "not-found races are tolerated");
-    let [failure] = result.failures.as_slice() else {
-        panic!("expected one failure: {result:?}")
-    };
-    assert_eq!(failure.machine_id, machine_id('3'));
-    assert_eq!(failure.error.code, RpcErrorCode::Conflict);
-    assert!(calls.lock().unwrap().iter().all(|(_, force)| *force));
 }
 
 fn volume(machine: char, machine_name: &str, name: &str) -> MachineVolume {

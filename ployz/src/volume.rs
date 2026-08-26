@@ -1,10 +1,9 @@
-use std::{collections::BTreeMap, future::Future, num::NonZeroU64};
+use std::{collections::BTreeMap, num::NonZeroU64};
 
 use ployz_core::{
-    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineSuccess, PartialResult, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode,
-    ServiceVolume, VolumeInventory, VolumeSource,
+    CreateVolumeRequest, DockerVolume, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
+    MachineName, MachineObservation, PartialResult, ProvisionedVolumeMaximumBytes, RpcError,
+    RpcErrorCode, ServiceVolume, VolumeInventory, VolumeSource,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -185,51 +184,4 @@ pub fn parse_assignments<'a>(
             Ok((key.into(), value.into()))
         })
         .collect()
-}
-
-pub async fn remove_volumes_with<F, Fut>(
-    volumes: &[MachineVolume],
-    force: bool,
-    remove: F,
-) -> PartialResult<DockerVolumeName, RpcError>
-where
-    F: Fn(DockerVolumeId, bool) -> Fut + Clone + Send + 'static,
-    Fut: Future<Output = Result<(), RpcError>> + Send + 'static,
-{
-    let mut removals = tokio::task::JoinSet::new();
-    for (index, volume) in volumes.iter().enumerate() {
-        let id = volume.volume.id.clone();
-        let remove = remove.clone();
-        removals.spawn(async move {
-            let outcome = remove(id.clone(), force).await;
-            (index, id, outcome)
-        });
-    }
-    let mut outcomes = Vec::with_capacity(volumes.len());
-    while let Some(outcome) = removals.join_next().await {
-        outcomes.push(outcome.expect("Volume removal task does not panic"));
-    }
-    outcomes.sort_by_key(|(index, _, _)| *index);
-    let mut result = PartialResult {
-        successes: Vec::new(),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-    };
-    for (_, id, outcome) in outcomes {
-        match outcome {
-            Ok(())
-            | Err(RpcError {
-                code: RpcErrorCode::NotFound,
-                ..
-            }) => result.successes.push(MachineSuccess {
-                machine_id: id.machine_id,
-                value: id.name,
-            }),
-            Err(error) => result.failures.push(MachineFailure {
-                machine_id: id.machine_id,
-                error,
-            }),
-        }
-    }
-    result
 }

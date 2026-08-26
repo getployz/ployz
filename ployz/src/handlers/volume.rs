@@ -7,14 +7,12 @@ use clap::ArgMatches;
 use ployz_core::{
     CreateVolumeRequest, DockerVolumeName, DockerVolumeStorageObservation, FanoutSelector,
     ListMachinesRequest, MachineObservation, MachineTarget, NameMatches, PartialResult,
-    RemoveVolumeRequest, RpcError, RpcErrorCode, VolumeInventory, op, resolve_machine_selectors,
+    RemoveVolumesRequest, RpcError, RpcErrorCode, VolumeInventory, op, resolve_machine_selectors,
 };
 
 use crate::{
     connect::{Client, TARGET_RPC_TIMEOUT},
-    volume::{
-        MachineVolume, filter_volumes, machine_volumes, parse_assignments, remove_volumes_with,
-    },
+    volume::{MachineVolume, filter_volumes, machine_volumes, parse_assignments},
 };
 
 use super::{Error, confirm, leaf_matches, required, string_values, with_client};
@@ -251,24 +249,12 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 println!("Cancelled. No volumes were removed.");
                 return Ok(());
             }
-            let removal_client = client.clone();
-            let removal = remove_volumes_with(&volumes, force, move |id, force| {
-                let client = removal_client.clone();
-                async move {
-                    client
-                        .invoke::<op::RemoveVolume>(
-                            RemoveVolumeRequest {
-                                name: id.name,
-                                force,
-                            },
-                            &MachineTarget::from(&id.machine_id),
-                            Some(TARGET_RPC_TIMEOUT),
-                        )
-                        .await
-                        .map(drop)
-                }
-            })
-            .await;
+            let removal = client
+                .remove_volumes(RemoveVolumesRequest {
+                    volumes: volumes.into_iter().map(|volume| volume.volume.id).collect(),
+                    force,
+                })
+                .await?;
             if removal.all_targets_succeeded() {
                 Ok(())
             } else {

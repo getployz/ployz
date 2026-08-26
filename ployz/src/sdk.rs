@@ -303,8 +303,8 @@ impl Session {
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the session is closed or listing
-    /// Machines fails. Per-volume not-found and other Machine errors stay in
-    /// the Partial Result.
+    /// Machines fails. Already-absent Volumes count as successful removals;
+    /// other Machine errors stay in the Partial Result.
     pub async fn remove_volumes(
         &self,
         request: RemoveVolumesRequest,
