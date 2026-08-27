@@ -1,4 +1,4 @@
-//! Deterministic TypeScript and JSON fixtures for `@ployz/sdk` public payloads.
+//! Deterministic TypeScript declarations for `@ployz/sdk` public payloads.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,7 +9,7 @@ use std::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::values::{additive_examples, catalogued_capabilities, fixtures, tagged_examples};
+use crate::values::{additive_examples, catalogued_capabilities, tagged_examples};
 
 mod catalog;
 use catalog::{PAYLOADS, Shape};
@@ -23,24 +23,13 @@ export type JsonObject = { readonly [key: string]: JsonValue | undefined };\n\n\
 export type Additive<T extends object> = T & JsonObject;\n\n\
 export type SerdeResult<T, E> =\n  | Additive<{ Ok: T }>\n  | Additive<{ Err: E }>;\n\n";
 
-/// Generated TypeScript declarations and JSON fixtures.
-pub struct Artifacts {
-    pub payloads_dts: String,
-    pub fixtures_json: String,
-}
-
-/// Build the checked-in `@ployz/sdk` artifacts from Rust types.
-#[must_use]
-pub fn artifacts() -> Artifacts {
+fn generated_types() -> String {
     check_additive_fields_match_rust();
     check_externally_tagged_variants_match_rust();
     check_internally_tagged_variants_match_rust();
     check_closed_strings_match_rust();
     check_json_value_fields_are_intentional();
-    Artifacts {
-        payloads_dts: typescript(),
-        fixtures_json: pretty_json(&Value::Object(fixtures().into_iter().collect())),
-    }
+    typescript()
 }
 
 /// Write generated files under the napi package root.
@@ -56,30 +45,20 @@ pub fn artifacts() -> Artifacts {
 ///
 /// Returns filesystem errors from creating `generated/` or writing files.
 pub fn write_generated(root: &Path) -> std::io::Result<()> {
-    let artifacts = artifacts();
     fs::create_dir_all(root.join("generated"))?;
-    fs::write(root.join("generated/payloads.d.ts"), artifacts.payloads_dts)?;
-    fs::write(
-        root.join("generated/fixtures.json"),
-        artifacts.fixtures_json,
-    )?;
+    fs::write(root.join("generated/payloads.d.ts"), generated_types())?;
     Ok(())
 }
 
 /// Compare generated output to the files checked in under `root`.
 #[must_use]
 pub fn drift(root: &Path) -> Option<String> {
-    let expected = artifacts();
+    let expected = generated_types();
     let mut problems = Vec::new();
     match fs::read_to_string(root.join("generated/payloads.d.ts")) {
-        Ok(on_disk) if on_disk == expected.payloads_dts => {}
+        Ok(on_disk) if on_disk == expected => {}
         Ok(_) => problems.push("generated/payloads.d.ts is stale".to_owned()),
         Err(error) => problems.push(format!("generated/payloads.d.ts: {error}")),
-    }
-    match fs::read_to_string(root.join("generated/fixtures.json")) {
-        Ok(on_disk) if on_disk == expected.fixtures_json => {}
-        Ok(_) => problems.push("generated/fixtures.json is stale".to_owned()),
-        Err(error) => problems.push(format!("generated/fixtures.json: {error}")),
     }
     if problems.is_empty() {
         None
@@ -422,12 +401,6 @@ fn external_tag(name: &str, value: &Value) -> String {
 fn strip_optional(ts: &str) -> (&str, bool) {
     ts.strip_suffix('?')
         .map_or((ts, false), |inner| (inner, true))
-}
-
-fn pretty_json(value: &Value) -> String {
-    let mut encoded = serde_json::to_string_pretty(value).expect("fixtures are valid JSON");
-    encoded.push('\n');
-    encoded
 }
 
 /// Package directory for the `@ployz/sdk` napi artifact.

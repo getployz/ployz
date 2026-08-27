@@ -1,9 +1,7 @@
-//! Generated TypeScript and JSON fixtures for the `@ployz/sdk` napi package.
+//! Generated TypeScript declarations and Rust examples for the `@ployz/sdk` napi package.
 
 mod generate;
 mod values;
 
-pub use generate::{
-    PACKAGE_NAME, artifacts, decode_fixture, drift, sdk_package_root, write_generated,
-};
+pub use generate::{PACKAGE_NAME, decode_fixture, drift, sdk_package_root, write_generated};
 pub use values::fixtures;

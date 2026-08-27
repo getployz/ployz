@@ -1,4 +1,4 @@
-//! Rust values that become JSON fixtures and Additive serde examples.
+//! Rust values used by serde and generated-TypeScript tests.
 
 use std::{
     collections::BTreeMap,
@@ -41,7 +41,7 @@ const CONTAINER_ID_HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef
 const INCOMPLETE_CONTAINER_ID_HEX: &str =
     "2222222222222222222222222222222222222222222222222222222222222222";
 
-/// JSON fixtures keyed by stable names, produced from Rust values.
+/// In-memory JSON examples keyed by stable names, produced from Rust values.
 #[must_use]
 pub fn fixtures() -> BTreeMap<String, Value> {
     let mut fixtures = BTreeMap::new();

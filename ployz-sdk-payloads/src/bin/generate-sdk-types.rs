@@ -1,4 +1,4 @@
-//! Write checked-in `@ployz/sdk` TypeScript and JSON fixtures from Rust types.
+//! Write checked-in `@ployz/sdk` TypeScript declarations from Rust types.
 
 fn main() -> std::io::Result<()> {
     let root = ployz_sdk_payloads::sdk_package_root();

@@ -177,10 +177,10 @@ pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
 
 fn service_trees(preview: &DeployPreview) -> String {
     let mut groups: BTreeMap<String, Vec<&OperationRow>> = BTreeMap::new();
-    let mut volumes = Vec::new();
+    let mut out = String::new();
     for row in &preview.operations {
         if matches!(row.operation, DeployOperation::RemoveVolume { .. }) {
-            volumes.push(row);
+            let _ = writeln!(out, "{}", child_line(row));
             continue;
         }
         let name = row
@@ -188,10 +188,6 @@ fn service_trees(preview: &DeployPreview) -> String {
             .as_ref()
             .map_or_else(|| "service".into(), ToString::to_string);
         groups.entry(name).or_default().push(row);
-    }
-    let mut out = String::new();
-    for row in volumes {
-        let _ = writeln!(out, "{}", volume_line(row));
     }
     for (name, rows) in groups {
         let pruned = preview
@@ -201,22 +197,6 @@ fn service_trees(preview: &DeployPreview) -> String {
         out.push_str(&service_block(&name, &rows, pruned));
     }
     out
-}
-
-fn volume_line(row: &OperationRow) -> String {
-    let machine = machine_label(row);
-    match &row.operation {
-        DeployOperation::RemoveVolume { id } => {
-            format!("- remove volume {} on {machine}", id.name)
-        }
-        DeployOperation::RunContainer { .. }
-        | DeployOperation::WaitHealthy { .. }
-        | DeployOperation::StopContainer { .. }
-        | DeployOperation::RemoveContainer { .. }
-        | DeployOperation::ReplaceContainer(_)
-        | DeployOperation::StopHook { .. }
-        | DeployOperation::RunHook { .. } => String::new(),
-    }
 }
 
 fn service_block(name: &str, rows: &[&OperationRow], pruned: bool) -> String {
@@ -619,6 +599,59 @@ mod tests {
         assert!(
             preserved.contains("would preserve volume shop_data on edge"),
             "{preserved}"
+        );
+    }
+
+    #[test]
+    fn service_tree_keeps_volume_and_service_ordering() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let machine = Some(MachineName::parse("edge").unwrap());
+        let container = |index, service: &str, display: &str, id: char| {
+            OperationRow::pending(
+                index,
+                DeployOperation::StopContainer {
+                    machine_id,
+                    container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
+                },
+                machine.clone(),
+                Some(display.into()),
+                Some(ServiceName::parse(service).unwrap()),
+            )
+        };
+        let volume = |index, name: &str| {
+            OperationRow::pending(
+                index,
+                DeployOperation::RemoveVolume {
+                    id: DockerVolumeId {
+                        machine_id,
+                        name: DockerVolumeName::parse(name).unwrap(),
+                    },
+                },
+                machine.clone(),
+                None,
+                None,
+            )
+        };
+        let rows = vec![
+            container(0, "web", "web-old", '1'),
+            volume(1, "z"),
+            container(2, "api", "api-old", '2'),
+            volume(3, "a"),
+            container(4, "web", "web-new", '3'),
+        ];
+        let preview = DeployPreview::new(rows, Vec::new(), ProjectName::parse("app").unwrap());
+
+        assert_eq!(
+            service_trees(&preview),
+            concat!(
+                "- remove volume z on edge\n",
+                "- remove volume a on edge\n",
+                "~ update service api\n",
+                "  ╰── - stop container api-old on edge\n",
+                "~ update service web\n",
+                "  ├── - stop container web-old on edge\n",
+                "  ╰── - stop container web-new on edge\n",
+            )
         );
     }
 
