@@ -288,9 +288,26 @@ mod tests {
 
     use super::*;
 
+    fn command() -> Command {
+        fn isolate(command: Command) -> Command {
+            command
+                .mut_args(|arg| {
+                    if arg.get_id() == "ployz-config" {
+                        arg.env(None::<&str>)
+                            .default_value("/tmp/ployz-handler-tests/config.yaml")
+                    } else {
+                        arg
+                    }
+                })
+                .mut_subcommands(isolate)
+        }
+
+        isolate(crate::cli::command())
+    }
+
     #[test]
     fn version_output_template_must_be_usable() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         let matches = command
             .clone()
             .try_get_matches_from(["ployz", "version", "-o", "{{.Nope}}"])
@@ -303,7 +320,7 @@ mod tests {
 
     #[test]
     fn logs_since_rejects_garbage_before_connecting() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         let cases = [
             (
                 "since",
@@ -344,7 +361,7 @@ mod tests {
 
     #[test]
     fn machine_rename_rejects_an_invalid_machine_name_before_connecting() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         let matches = command
             .clone()
             .try_get_matches_from(["ployz", "machine", "rename", "vultr1", "BAD NAME"])
@@ -359,7 +376,7 @@ mod tests {
 
     #[test]
     fn local_machine_initialisation_remains_explicitly_unimplemented() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         let matches = command
             .clone()
             .try_get_matches_from(["ployz", "machine", "init"])
@@ -372,13 +389,13 @@ mod tests {
 
     #[test]
     fn machine_enrollment_accepts_only_supported_storage_choices() {
-        for command in ["add", "init"] {
+        for action in ["add", "init"] {
             for storage in ["none", "zfs"] {
-                let parsed = crate::cli::command()
+                let parsed = command()
                     .try_get_matches_from([
                         "ployz",
                         "machine",
-                        command,
+                        action,
                         "root@example.test",
                         "--storage",
                         storage,
@@ -392,11 +409,11 @@ mod tests {
                 );
             }
             assert!(
-                crate::cli::command()
+                command()
                     .try_get_matches_from([
                         "ployz",
                         "machine",
-                        command,
+                        action,
                         "root@example.test",
                         "--storage",
                         "other",
@@ -408,17 +425,13 @@ mod tests {
 
     #[test]
     fn cloud_enroll_takes_a_positional_token() {
+        assert!(command().try_get_matches_from(["ployz", "cloud"]).is_err());
         assert!(
-            crate::cli::command()
-                .try_get_matches_from(["ployz", "cloud"])
-                .is_err()
-        );
-        assert!(
-            crate::cli::command()
+            command()
                 .try_get_matches_from(["ployz", "init", "--cloud", "pmet_test"])
                 .is_err()
         );
-        let parsed = crate::cli::command()
+        let parsed = command()
             .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_test"])
             .unwrap();
         let cloud = parsed.subcommand_matches("cloud").unwrap();
@@ -436,12 +449,12 @@ mod tests {
             Some("10.210.0.0/16")
         );
         assert!(
-            crate::cli::command()
+            command()
                 .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_x", "root@host"])
                 .is_err()
         );
         assert!(
-            crate::cli::command()
+            command()
                 .try_get_matches_from([
                     "ployz",
                     "cloud",
@@ -452,7 +465,7 @@ mod tests {
                 ])
                 .is_err()
         );
-        let flags = crate::cli::command()
+        let flags = command()
             .try_get_matches_from([
                 "ployz",
                 "cloud",
@@ -504,7 +517,7 @@ mod tests {
         if crate::provisioning::process_is_root() {
             return;
         }
-        let mut command = crate::cli::command();
+        let mut command = command();
         let matches = command
             .clone()
             .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_test"])
@@ -556,9 +569,7 @@ mod tests {
                 ployz_core::IngressProxyBackend::Envoy,
             ),
         ] {
-            let matches = crate::cli::command()
-                .try_get_matches_from(arguments)
-                .unwrap();
+            let matches = command().try_get_matches_from(arguments).unwrap();
             assert_eq!(
                 leaf_matches(&matches)
                     .get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
@@ -567,7 +578,7 @@ mod tests {
         }
 
         assert!(
-            crate::cli::command()
+            command()
                 .try_get_matches_from([
                     "ployz",
                     "machine",
@@ -622,9 +633,7 @@ mod tests {
                 ployz_core::IngressProxyBackend::Envoy,
             ),
         ] {
-            let matches = crate::cli::command()
-                .try_get_matches_from(arguments)
-                .unwrap();
+            let matches = command().try_get_matches_from(arguments).unwrap();
             assert_eq!(
                 leaf_matches(&matches)
                     .get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
@@ -635,7 +644,7 @@ mod tests {
 
     #[test]
     fn dns_show_uses_the_real_handler() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         let matches = command
             .clone()
             .try_get_matches_from(["ployz", "dns", "show"])
@@ -648,7 +657,7 @@ mod tests {
 
     #[test]
     fn malformed_volume_assignments_fail_before_connecting() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         let matches = command
             .clone()
             .try_get_matches_from([
@@ -670,7 +679,7 @@ mod tests {
 
     #[test]
     fn scale_zero_fails_before_connecting() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         let matches = command
             .clone()
             .try_get_matches_from([
@@ -690,7 +699,7 @@ mod tests {
 
     #[test]
     fn reserved_and_invalid_project_names_fail_before_connecting() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         let reserved = command
             .clone()
             .try_get_matches_from(["ployz", "run", "--project-name", "ployz-system", "alpine"])
@@ -789,7 +798,7 @@ mod tests {
 
     #[test]
     fn nightly_daemon_channel_is_rejected() {
-        let error = crate::cli::command()
+        let error = command()
             .try_get_matches_from([
                 "ployz",
                 "machine",
@@ -808,7 +817,7 @@ mod tests {
 
     #[test]
     fn every_actionable_clap_command_has_an_explicit_handler() {
-        let mut command = crate::cli::command();
+        let mut command = command();
         command.build();
         let mut paths = BTreeSet::new();
         collect_actionable_paths(&command, "", &mut paths);
