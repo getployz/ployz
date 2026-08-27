@@ -3,7 +3,7 @@
 mod support;
 use support::*;
 
-use std::{num::NonZeroU64, sync::atomic::Ordering};
+use std::{num::NonZeroU64, process::Stdio, sync::atomic::Ordering, time::Duration};
 
 use ployz::deploy::{
     DeployError, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployWarning,
@@ -14,6 +14,39 @@ use ployz_core::{
     ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec, VolumeSource,
 };
 use tokio_util::sync::CancellationToken;
+
+#[tokio::test]
+async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone()).with_exec_exit(17);
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(running_container(&machine, &spec("web")));
+    let (address, server) = listening(service).await;
+    let command = format!(
+        "{} --connect tcp://{address} exec -T web true",
+        env!("CARGO_BIN_EXE_ployz")
+    );
+    let mut exec = tokio::process::Command::new("script")
+        .args(["--quiet", "--return", "--command", &command, "/dev/null"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let terminal_stdin = exec.stdin.take().unwrap();
+
+    let status = tokio::time::timeout(Duration::from_secs(2), exec.wait())
+        .await
+        .expect("CLI must exit before terminal stdin closes")
+        .unwrap();
+
+    assert_eq!(status.code(), Some(17));
+    drop(terminal_stdin);
+    server.abort();
+}
 
 #[tokio::test]
 async fn ingress_deploy_inherits_and_cannot_change_the_cluster_backend() {

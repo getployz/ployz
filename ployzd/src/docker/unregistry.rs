@@ -324,8 +324,8 @@ fn is_socket(path: &Path) -> bool {
 mod tests {
     use super::*;
     use ployz_core::{
-        AdvertisedEndpoint, LocalMachinePhase, Machine, MachineId, MachineName, ManagementAddress,
-        WireGuardPublicKey,
+        AdvertisedEndpoint, LocalMachinePhase, MACHINE_API_PORT, Machine, MachineId, MachineName,
+        ManagementAddress, WireGuardPublicKey,
     };
 
     /// Management address unregistry would bind when this Machine is active.
@@ -351,7 +351,9 @@ mod tests {
             management_address: ManagementAddress("fdcc::2".parse().unwrap()),
             public_key: WireGuardPublicKey([2; 32]),
             public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51000".parse().unwrap())],
+            advertised_endpoints: vec![AdvertisedEndpoint(
+                format!("192.0.2.2:{MACHINE_API_PORT}").parse().unwrap(),
+            )],
             runtime: Default::default(),
         }
     }
@@ -443,7 +445,7 @@ mod tests {
         assert_eq!(
             config.env,
             Some(vec![
-                "UNREGISTRY_ADDR=[fdcc::2]:51500".into(),
+                format!("UNREGISTRY_ADDR=[fdcc::2]:{UNREGISTRY_PORT}"),
                 "UNREGISTRY_CONTAINERD_NAMESPACE=moby".into(),
                 format!("UNREGISTRY_CONTAINERD_SOCK={CONTAINER_SOCKET_PARENT}/containerd.sock"),
             ])

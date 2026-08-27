@@ -8,8 +8,8 @@ use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
     HealthObservation, HttpProtocol, IngressHost, IngressHostname, IssuanceClock, IssuanceFailure,
-    IssuanceGate, Machine, MachineId, PortPublication, ProjectName, ResolvedServiceSpec, ServiceId,
-    ServiceName, resolve_certificate_policy,
+    IssuanceGate, MACHINE_API_PORT, Machine, MachineId, PortPublication, ProjectName,
+    ResolvedServiceSpec, ServiceId, ServiceName, resolve_certificate_policy,
 };
 use serde_json::json;
 
@@ -626,7 +626,7 @@ fn machine_with_endpoint(seed: &str, address: &str) -> Machine {
         "subnet": "10.210.1.0/24",
         "management_address": "fdcc::1",
         "public_key": vec![3; 32],
-        "advertised_endpoints": [format!("{address}:51000")],
+        "advertised_endpoints": [format!("{address}:{MACHINE_API_PORT}")],
     }))
     .unwrap()
 }

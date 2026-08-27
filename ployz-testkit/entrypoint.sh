@@ -45,7 +45,7 @@ if [ "${PLOYZ_TESTKIT_PRIME:-}" = 1 ]; then
   exit 0
 fi
 while :; do
-  ployzd --machine-api-address '[::]:51000' "$@" &
+  ployzd --machine-api-address '[::]:7569' "$@" &
   ployzd_pid=$!
   echo "$ployzd_pid" >/run/ployzd.pid
   wait "$ployzd_pid" || exit $?

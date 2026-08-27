@@ -565,10 +565,15 @@ async fn create_and_start<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::CreateContainer, error))?;
     progress.set_display_name(index, created.display_name.clone());
     progress.set_running(index, OperationPhase::StartingContainer);
-    client
+    if let Err(error) = client
         .start_container(machine_id, &created.container_id)
         .await
-        .map_err(|error| machine_error(MachineAction::StartContainer, error))?;
+    {
+        let _ = client
+            .remove_container(machine_id, &created.container_id)
+            .await;
+        return Err(machine_error(MachineAction::StartContainer, error));
+    }
     Ok(created)
 }
 

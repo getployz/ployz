@@ -12,6 +12,10 @@ Issue #616 is a narrow greenfield contract exception: the pre-release Caddy-only
 
 Issue #662 is a narrow greenfield contract exception: the pre-release combined named Service Volume source is replaced in lockstep by distinct External, Ordinary, and Provisioned source forms. Clients and daemons from before #662 are not migrated or supported through compatibility aliases. This exception does not relax lagged-daemon compatibility for later changes to the new contract.
 
+Issue #666 is a narrow greenfield contract exception: ployzd closes an exec session when Docker reports that the remote process exited, even if the hijacked stream remains open. Pre-change daemons are unsupported. This exception does not relax lagged-daemon compatibility for later changes.
+
+Issue #668 is a narrow greenfield contract exception: the Ployz-owned ports move from `51000`/`51001`/`51002`/`51500` to `7569`/`7570`/`7571`/`7572`, with client, daemon, and testkit switching in lockstep and beta Machines re-initializing. This exception does not relax lagged-daemon compatibility for later changes.
+
 Runtime Watch's pre-release normalized transport is a narrow greenfield exception: ployz and ployzd switch in lockstep to direct `RuntimeWatchFrame` JSON with negotiated gzip. Pre-change daemon/client pairs are unsupported, and clients derive Services from the transmitted Containers. This exception does not relax lagged-daemon compatibility for later Runtime Watch changes.
 
 ## Names

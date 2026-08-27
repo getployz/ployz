@@ -378,14 +378,19 @@ impl Service<http::Request<Body>> for MachineProxy {
 mod tests {
     use std::net::Ipv6Addr;
 
-    use ployz_core::{MachineId, ManagementAddress};
+    use ployz_core::{MACHINE_API_PORT, MachineId, ManagementAddress};
     use tonic::service::Routes;
 
     use super::MachineProxy;
 
     #[tokio::test]
     async fn remote_backend_survives_disappearance_from_later_snapshots() {
-        let proxy = MachineProxy::new(Routes::default(), MachineId::random(), 51000, None);
+        let proxy = MachineProxy::new(
+            Routes::default(),
+            MachineId::random(),
+            MACHINE_API_PORT,
+            None,
+        );
         proxy
             .remote_backend(ManagementAddress(Ipv6Addr::LOCALHOST))
             .unwrap();

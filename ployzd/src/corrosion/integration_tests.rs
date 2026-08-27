@@ -9,8 +9,8 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
-    DockerVolumeName, IngressHost, LocalMachinePhase, Machine, MachineId, MachineName,
-    ManagementAddress, WireGuardPublicKey,
+    DockerVolumeName, IngressHost, LocalMachinePhase, MACHINE_API_PORT, Machine, MachineId,
+    MachineName, ManagementAddress, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -522,7 +522,9 @@ fn machine(name: &str, seed: u8) -> Machine {
         public_key: WireGuardPublicKey([seed; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(
-            format!("192.0.2.{seed}:51000").parse().unwrap(),
+            format!("192.0.2.{seed}:{MACHINE_API_PORT}")
+                .parse()
+                .unwrap(),
         )],
         runtime: Default::default(),
     }

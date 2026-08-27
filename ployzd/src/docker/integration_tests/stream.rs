@@ -9,10 +9,125 @@ use ployz_core::{
     ExecResponseFrame, LogBody, LogEntry, LogsOptions, MachineId, MachineName, MachineRpcClient,
     MachineRpcServer, OpaquePayload, op,
 };
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{Request, Status, transport::Server};
 
 use super::*;
+
+#[tokio::test]
+async fn exec_forwards_output_while_docker_inspection_is_pending() {
+    let root = TestRoot::new();
+    let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let docker_address = docker_listener.local_addr().unwrap();
+    let (release_inspection, inspection_released) = tokio::sync::oneshot::channel();
+    let docker_server = tokio::spawn(async move {
+        let mut create = accept_docker_request(&docker_listener).await;
+        create
+            .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 13\r\nConnection: close\r\n\r\n{\"Id\":\"slow\"}")
+            .await
+            .unwrap();
+        drop(create);
+        let mut hijack = accept_docker_request(&docker_listener).await;
+        hijack
+            .write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut inspect = accept_docker_request(&docker_listener).await;
+        hijack
+            .write_all(b"\x01\0\0\0\0\0\0\x04out\n\x02\0\0\0\0\0\0\x04err\n")
+            .await
+            .unwrap();
+        inspection_released.await.unwrap();
+        inspect
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\nConnection: close\r\n\r\n{\"Running\":false,\"ExitCode\":7}")
+            .await
+            .unwrap();
+    });
+    let docker = bollard::Docker::connect_with_http(
+        &format!("http://{docker_address}"),
+        5,
+        bollard::API_DEFAULT_VERSION,
+    )
+    .unwrap();
+    let machine_store = crate::machine::LocalMachineStore::open(&root.0).unwrap();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
+    let (restart, _) = tokio::sync::watch::channel(false);
+    let service = crate::rpc::MachineService::new(Arc::new(Mutex::new(machine_store)), restart)
+        .with_containers(runtime);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(service))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let config = exec_config(&ContainerId::parse("a".repeat(64)).unwrap(), ["sh"], false);
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([config])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+    let frames = tokio::time::timeout(Duration::from_secs(2), async {
+        let stdout = output.message().await.unwrap().unwrap();
+        let stderr = output.message().await.unwrap().unwrap();
+        [
+            ExecResponseFrame::decode(&stdout).unwrap(),
+            ExecResponseFrame::decode(&stderr).unwrap(),
+        ]
+    })
+    .await;
+    release_inspection.send(()).unwrap();
+    docker_server.await.unwrap();
+    assert_eq!(
+        frames.expect("exec output stalled behind the pending Docker inspection"),
+        [
+            ExecResponseFrame::Stdout(b"out\n".to_vec()),
+            ExecResponseFrame::Stderr(b"err\n".to_vec()),
+        ]
+    );
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::Exit(7)
+    );
+    assert!(output.message().await.unwrap().is_none());
+    server.abort();
+}
+
+async fn accept_docker_request(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {
+    let (stream, _) = listener.accept().await.unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut content_length = 0;
+    loop {
+        let mut line = String::new();
+        assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = value.trim().parse().unwrap();
+        }
+    }
+    reader
+        .read_exact(&mut vec![0; content_length])
+        .await
+        .unwrap();
+    reader.into_inner()
+}
 
 #[tokio::test]
 #[ignore = "requires Docker and alpine:3.23.3"]
@@ -85,9 +200,13 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     .unwrap();
     assert!(frames.contains(&ExecResponseFrame::Stdout(b"out".to_vec())));
     assert!(frames.contains(&ExecResponseFrame::Stderr(b"err".to_vec())));
-    assert!(frames.contains(&ExecResponseFrame::Exit(42)));
+    assert!(matches!(frames.last(), Some(ExecResponseFrame::Exit(42))));
 
-    let open_config = exec_config(&created.container_id, ["sh", "-c", "exit 7"], false);
+    let open_config = exec_config(
+        &created.container_id,
+        ["sh", "-c", "sleep 30 & exit 7"],
+        false,
+    );
     let (request_sender, request_receiver) = tokio::sync::mpsc::channel(1);
     request_sender.send(open_config).await.unwrap();
     let mut request = Request::new(ReceiverStream::new(request_receiver));
@@ -105,7 +224,10 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     .await
     .expect("exec output must close while the request stream remains open")
     .unwrap();
-    assert!(open_frames.contains(&ExecResponseFrame::Exit(7)));
+    assert!(matches!(
+        open_frames.last(),
+        Some(ExecResponseFrame::Exit(7))
+    ));
     drop(request_sender);
 
     let detached = exec_frames(

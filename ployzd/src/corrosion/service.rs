@@ -3,7 +3,7 @@ use std::{
     fs::{self, OpenOptions},
     future::Future,
     io::{Read, Write},
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
@@ -19,13 +19,12 @@ use bollard::{
 use serde::Serialize;
 
 use crate::{docker::ManagedService, filesystem::atomic_write};
+use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT};
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
 pub const IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
 pub const DEFAULT_CONTAINER_NAME: &str = "ployz-corrosion";
-pub const DEFAULT_API_ADDRESS: &str = "127.0.0.1:51002";
-pub const DEFAULT_GOSSIP_ADDRESS: &str = "127.0.0.1:51001";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
 const START_TIMEOUT: Duration = Duration::from_secs(4 * 60 + 30);
@@ -64,12 +63,8 @@ impl CorrosionConfig {
         Self::new(
             data_dir,
             run_dir,
-            DEFAULT_API_ADDRESS
-                .parse()
-                .expect("static address is valid"),
-            DEFAULT_GOSSIP_ADDRESS
-                .parse()
-                .expect("static address is valid"),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_GOSSIP_PORT)),
             DEFAULT_CONTAINER_NAME,
         )
     }

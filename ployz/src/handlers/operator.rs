@@ -73,7 +73,10 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                         write_stdout_frame(&mut std::io::stdout(), &bytes)?
                     }
                     ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
-                    ExecResponseFrame::Exit(code) => exit = code,
+                    ExecResponseFrame::Exit(code) => {
+                        exit = code;
+                        break;
+                    }
                     ExecResponseFrame::Error(error) => return Err(error.into()),
                 }
             }

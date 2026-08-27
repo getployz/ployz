@@ -20,11 +20,11 @@ use crate::{
 mod docker;
 mod inspect;
 
+pub use crate::UNREGISTRY_PORT;
 pub use docker::*;
 pub use inspect::*;
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const UNREGISTRY_PORT: u16 = 51500;
 
 /// When a Machine includes a catalogued capability in `describe_contract`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

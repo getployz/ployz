@@ -20,10 +20,7 @@ use api::Statement;
 pub(crate) use api::{ApiClient, Subscription};
 pub use certificate::{CertificateChallenge, CertificateMaterial, CertificateRow};
 pub use publisher::{run_machine_publisher, wait_for_catch_up};
-pub use service::{
-    CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
-    RunningCorrosion,
-};
+pub use service::{CorrosionConfig, DEFAULT_CONTAINER_NAME, RunningCorrosion};
 pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};
 pub use store::{ReplicatedObservations, ReplicatedStore};
 

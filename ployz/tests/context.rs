@@ -7,7 +7,7 @@ use ployz::{
         select_connections,
     },
 };
-use ployz_core::MachineId;
+use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT, MACHINE_API_PORT, MachineId};
 
 #[test]
 fn config_round_trips_ordered_connections_with_private_permissions() {
@@ -59,11 +59,13 @@ fn config_round_trips_ordered_connections_with_private_permissions() {
 
 #[test]
 fn direct_connections_accept_only_the_reduced_transport_set() {
+    let tcp = format!("tcp://127.0.0.1:{MACHINE_API_PORT}");
+    assert_eq!(Connection::from_str(&tcp).unwrap().to_string(), tcp);
+
     for (input, canonical) in [
         ("root@example.com", "ssh://root@example.com"),
         ("ssh://root@example.com:2222", "ssh://root@example.com:2222"),
         ("ssh://root@[::1]:2222", "ssh://root@[::1]:2222"),
-        ("tcp://127.0.0.1:51000", "tcp://127.0.0.1:51000"),
         (
             "unix:///run/ployz/ployz.sock",
             "unix:///run/ployz/ployz.sock",
@@ -91,8 +93,12 @@ fn direct_connections_accept_only_the_reduced_transport_set() {
 
 #[test]
 fn connection_sources_follow_direct_context_and_local_precedence() {
-    let prod = Connection::tcp("127.0.0.1:51000".parse().unwrap());
-    let dev = Connection::tcp("127.0.0.1:51001".parse().unwrap());
+    let prod = Connection::tcp(format!("127.0.0.1:{MACHINE_API_PORT}").parse().unwrap());
+    let dev = Connection::tcp(
+        format!("127.0.0.1:{CORROSION_GOSSIP_PORT}")
+            .parse()
+            .unwrap(),
+    );
     let config = Config::new(
         "/tmp/config.yaml",
         Some("prod".into()),
@@ -180,21 +186,21 @@ fn relay_connections_are_not_persisted() {
 #[test]
 fn stored_connections_reject_missing_multiple_malformed_and_removed_transports() {
     for yaml in [
-        "{}",
-        "ssh: root@example.com\ntcp: 127.0.0.1:51000",
-        "tcp: localhost",
-        "unix: relative.sock",
-        "tcp: 127.0.0.1:51000\nssh_key_file: /tmp/key",
-        "ssh_go: root@example.com",
-        "ssh_cli: root@example.com",
+        "{}".into(),
+        format!("ssh: root@example.com\ntcp: 127.0.0.1:{MACHINE_API_PORT}"),
+        "tcp: localhost".into(),
+        "unix: relative.sock".into(),
+        format!("tcp: 127.0.0.1:{MACHINE_API_PORT}\nssh_key_file: /tmp/key"),
+        "ssh_go: root@example.com".into(),
+        "ssh_cli: root@example.com".into(),
     ] {
         assert!(
-            serde_norway::from_str::<Connection>(yaml).is_err(),
+            serde_norway::from_str::<Connection>(&yaml).is_err(),
             "accepted {yaml:?}"
         );
     }
     assert!(
-        Connection::tcp("127.0.0.1:51000".parse().unwrap())
+        Connection::tcp(format!("127.0.0.1:{MACHINE_API_PORT}").parse().unwrap())
             .with_ssh_key_file("/tmp/key")
             .is_err()
     );
@@ -203,9 +209,14 @@ fn stored_connections_reject_missing_multiple_malformed_and_removed_transports()
 #[test]
 fn selecting_a_connection_moves_only_that_entry_to_the_front() {
     let mut context = Context {
-        connections: [51000, 51001, 51002, 51003]
-            .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
-            .into(),
+        connections: [
+            MACHINE_API_PORT,
+            CORROSION_GOSSIP_PORT,
+            CORROSION_API_PORT,
+            51003,
+        ]
+        .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
+        .into(),
     };
     let original = context.clone();
 
@@ -216,11 +227,11 @@ fn selecting_a_connection_moves_only_that_entry_to_the_front() {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
-        [
-            "tcp://127.0.0.1:51002",
-            "tcp://127.0.0.1:51000",
-            "tcp://127.0.0.1:51001",
-            "tcp://127.0.0.1:51003",
+        vec![
+            format!("tcp://127.0.0.1:{CORROSION_API_PORT}"),
+            format!("tcp://127.0.0.1:{MACHINE_API_PORT}"),
+            format!("tcp://127.0.0.1:{CORROSION_GOSSIP_PORT}"),
+            "tcp://127.0.0.1:51003".into(),
         ]
     );
 
@@ -298,13 +309,9 @@ fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
     fs::write(&config, "not: [valid").unwrap();
     fs::write(&socket, "placeholder").unwrap();
 
-    let direct = resolve_connections(
-        &config,
-        Some("tcp://127.0.0.1:51000"),
-        Some("ignored"),
-        &socket,
-    )
-    .unwrap();
+    let direct_destination = format!("tcp://127.0.0.1:{MACHINE_API_PORT}");
+    let direct =
+        resolve_connections(&config, Some(&direct_destination), Some("ignored"), &socket).unwrap();
     assert_eq!(direct.source, ConnectionSource::Direct);
 
     assert!(resolve_connections(&config, None, None, &socket).is_err());
@@ -316,13 +323,19 @@ fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
             (
                 "dev".into(),
                 Context {
-                    connections: vec![Connection::tcp("127.0.0.1:51001".parse().unwrap())],
+                    connections: vec![Connection::tcp(
+                        format!("127.0.0.1:{CORROSION_GOSSIP_PORT}")
+                            .parse()
+                            .unwrap(),
+                    )],
                 },
             ),
             (
                 "prod".into(),
                 Context {
-                    connections: vec![Connection::tcp("127.0.0.1:51000".parse().unwrap())],
+                    connections: vec![Connection::tcp(
+                        format!("127.0.0.1:{MACHINE_API_PORT}").parse().unwrap(),
+                    )],
                 },
             ),
         ]),
@@ -427,7 +440,7 @@ fn load_or_empty_with_no_file_has_no_current_context() {
 
 #[test]
 fn selecting_connections_with_no_current_context_is_no_current_context() {
-    let prod = Connection::tcp("127.0.0.1:51000".parse().unwrap());
+    let prod = Connection::tcp(format!("127.0.0.1:{MACHINE_API_PORT}").parse().unwrap());
     let path = PathBuf::from("/tmp/config.yaml");
     let config = Config::new(
         &path,
@@ -448,7 +461,7 @@ fn selecting_connections_with_no_current_context_is_no_current_context() {
 
 #[test]
 fn selecting_connections_with_a_missing_name_is_context_not_found() {
-    let prod = Connection::tcp("127.0.0.1:51000".parse().unwrap());
+    let prod = Connection::tcp(format!("127.0.0.1:{MACHINE_API_PORT}").parse().unwrap());
     let path = PathBuf::from("/tmp/config.yaml");
     let config = Config::new(
         &path,

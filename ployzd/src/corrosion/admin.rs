@@ -163,6 +163,7 @@ enum AdminResponse {
 mod tests {
     use std::io;
 
+    use ployz_core::CORROSION_GOSSIP_PORT;
     use serde_json::json;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -182,21 +183,22 @@ mod tests {
 
     #[test]
     fn membership_state_is_decoded_at_the_admin_boundary() {
+        let address = format!("[fdcc::1]:{CORROSION_GOSSIP_PORT}");
         let state = decode_membership_state(json!({
-            "id": {"addr": "[fdcc::1]:51001"},
+            "id": {"addr": &address},
             "state": "Alive"
         }))
         .unwrap();
-        assert_eq!(state.address, "[fdcc::1]:51001".parse().unwrap());
+        assert_eq!(state.address, address.parse().unwrap());
         assert_eq!(state.membership, ployz_core::MembershipObservation::Up);
     }
 
     #[test]
     fn rtt_samples_are_decoded_without_inventing_missing_measurements() {
-        let address = "[fdcc::1]:51001";
+        let address = format!("[fdcc::1]:{CORROSION_GOSSIP_PORT}");
         let decoded = decode_member_rtt(json!({
             "id": "peer-1",
-            "state": {"addr": address},
+            "state": {"addr": &address},
             "rtts": [10.0, 20.0]
         }))
         .unwrap()

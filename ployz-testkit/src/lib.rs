@@ -13,11 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub use ployz_core::MACHINE_API_PORT;
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, DescribeContractRequest, DockerVolumeName, InitializeRequest,
-    InspectRequest, JoinRequest, ListImagesRequest, LocalMachinePhase, Machine, MachineName,
-    MachineRpcClient, MembershipObservation, OpaquePayload, Registered, ResetRequest, RpcResponse,
-    RpcResponseBody, op,
+    AdvertisedEndpoint, CORROSION_API_PORT, CORROSION_GOSSIP_PORT, ContainerId,
+    DescribeContractRequest, DockerVolumeName, InitializeRequest, InspectRequest, JoinRequest,
+    ListImagesRequest, LocalMachinePhase, Machine, MachineName, MachineRpcClient,
+    MembershipObservation, OpaquePayload, Registered, ResetRequest, RpcResponse, RpcResponseBody,
+    op,
 };
 use thiserror::Error;
 
@@ -32,7 +34,6 @@ pub const ENVOY_IMAGE: &str = "docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6
 pub const UNREGISTRY_IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
-pub const MACHINE_API_PORT: u16 = 51000;
 const HOST_ENTRY_API_PORT: u16 = 51003;
 static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
@@ -531,7 +532,7 @@ impl Cluster {
         payload: &str,
     ) -> Result<Output, TestkitError> {
         let script = format!(
-            "token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H \"Authorization: Bearer $token\" -H 'Content-Type: application/json' --data-binary {} http://127.0.0.1:51002/{path}",
+            "token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H \"Authorization: Bearer $token\" -H 'Content-Type: application/json' --data-binary {} http://127.0.0.1:{CORROSION_API_PORT}/{path}",
             shell_quote(payload)
         );
         let output = docker_output(["exec", &self.container_name(index)?, "sh", "-c", &script])?;
@@ -543,6 +544,7 @@ impl Cluster {
     }
 
     fn gossip_rule(&self, index: usize, action: &str) -> Result<(), TestkitError> {
+        let gossip_port = CORROSION_GOSSIP_PORT.to_string();
         docker([
             "exec",
             &self.container_name(index)?,
@@ -552,7 +554,7 @@ impl Cluster {
             "--protocol",
             "udp",
             "--destination-port",
-            "51001",
+            &gossip_port,
             "--jump",
             "DROP",
         ])
@@ -1125,7 +1127,7 @@ mod tests {
                 public_key: WireGuardPublicKey([key; 32]),
                 public_ip: None,
                 advertised_endpoints: vec![AdvertisedEndpoint(
-                    format!("127.0.0.1:{}", 51000 + u16::from(key))
+                    format!("127.0.0.1:{}", MACHINE_API_PORT + u16::from(key))
                         .parse()
                         .unwrap(),
                 )],

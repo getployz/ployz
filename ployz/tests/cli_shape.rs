@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
+#[cfg(unix)]
+use std::io::{BufRead, BufReader};
 use std::path::Path;
+#[cfg(unix)]
+use std::process::{Command as ProcessCommand, Stdio};
 
 use clap::{ArgAction, Command};
 use clap_complete::{Shell, generate};
@@ -689,4 +693,23 @@ fn native_completion_is_generated_for_every_supported_shell() {
             "legacy name in {shell:?} completion"
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn completion_exits_on_sigpipe_when_the_reader_closes_after_one_line() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["completion", "bash"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut first_line = String::new();
+    output.read_line(&mut first_line).unwrap();
+    drop(output);
+
+    assert!(!first_line.is_empty());
+    assert_eq!(child.wait().unwrap().signal(), Some(13));
 }

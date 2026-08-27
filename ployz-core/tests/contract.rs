@@ -35,6 +35,19 @@ const MACHINE_ID: &str = "0123456789abcdef0123456789abcdef";
 const OTHER_MACHINE_ID: &str = "fedcba9876543210fedcba9876543210";
 
 #[test]
+fn ployz_owned_ports_use_the_fixed_ploy_range() {
+    assert_eq!(
+        [
+            ployz_core::MACHINE_API_PORT,
+            ployz_core::CORROSION_GOSSIP_PORT,
+            ployz_core::CORROSION_API_PORT,
+            ployz_core::UNREGISTRY_PORT,
+        ],
+        [7569, 7570, 7571, 7572]
+    );
+}
+
+#[test]
 fn provisioned_volume_sources_carry_required_positive_byte_counts() {
     let valid = json!({
         "kind": "provisioned",
@@ -801,7 +814,7 @@ fn image_ingest_contract_returns_the_management_address_destination() {
     let opened = ImageIngestOpened {
         destination: ImageIngestDestination {
             management_address: ManagementAddress("fdcc::7".parse().unwrap()),
-            port: 51500,
+            port: ployz_core::UNREGISTRY_PORT,
         },
     };
     let response = RpcResponse::from(opened);
@@ -859,7 +872,7 @@ fn image_ingest_contract_returns_the_management_address_destination() {
 fn peer_image_pull_contract_names_the_source_management_destination() {
     let source = ImageIngestDestination {
         management_address: ManagementAddress("fdcc::7".parse().unwrap()),
-        port: 51500,
+        port: ployz_core::UNREGISTRY_PORT,
     };
     let request = op::PullImageFromMachine::into_request(PullImageFromMachineRequest {
         image: "busybox:1.37.0".into(),

@@ -3,9 +3,9 @@
 use std::{net::IpAddr, path::Path, process, time::Duration};
 
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerAction, IngressProxyBackend, InspectRequest, Machine,
-    MachineTarget, MachineUpdate, PublicIpUpdate, ResolvedServiceSpec, ServiceId,
-    StopContainerRequest, op,
+    CERTIFICATE_POLICY_CLUSTER_KEY, CORROSION_API_PORT, ContainerAction, IngressProxyBackend,
+    InspectRequest, Machine, MachineTarget, MachineUpdate, PublicIpUpdate, ResolvedServiceSpec,
+    ServiceId, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
@@ -541,7 +541,7 @@ fn corrosion_exec(cluster: &Cluster, index: usize, path: &str, payload: &str) ->
         .machine_shell(
             index,
             &format!(
-                r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary {quoted} http://127.0.0.1:51002/{path}"#
+                r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary {quoted} http://127.0.0.1:{CORROSION_API_PORT}/{path}"#
             ),
         )
         .unwrap()

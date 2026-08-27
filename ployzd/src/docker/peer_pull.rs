@@ -80,12 +80,13 @@ async fn docker_cli<const N: usize>(args: [&str; N]) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::UNREGISTRY_PORT;
 
     #[test]
     fn localhost_pull_reference_keeps_the_image_path() {
         assert_eq!(
-            localhost_registry_reference(51500, "busybox:1.37.0"),
-            "127.0.0.1:51500/busybox:1.37.0"
+            localhost_registry_reference(UNREGISTRY_PORT, "busybox:1.37.0"),
+            format!("127.0.0.1:{UNREGISTRY_PORT}/busybox:1.37.0")
         );
         assert_eq!(
             localhost_registry_reference(9, "registry.test/team/api:v1"),

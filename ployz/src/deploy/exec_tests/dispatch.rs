@@ -186,34 +186,40 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
 }
 
 #[tokio::test]
-async fn create_then_start_failure_keeps_the_container_without_cleanup() {
-    let machine = machine('1');
-    let created_id = container('a');
-    let plan = vec![run(&machine, spec(None, None, None), false)];
-    let client = Scripted::new(vec![
-        created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
-            &created_id,
-        ),
-        failed(Call::Start(machine, created_id), "start failed"),
-    ]);
+async fn create_then_start_failure_removes_the_candidate_and_keeps_the_start_error() {
+    for cleanup in [
+        ok(Call::Remove(machine('1'), container('a'))),
+        failed(Call::Remove(machine('1'), container('a')), "cleanup failed"),
+    ] {
+        let machine = machine('1');
+        let created_id = container('a');
+        let plan = vec![run(&machine, spec(None, None, None), false)];
+        let client = Scripted::new(vec![
+            created(
+                Call::Create(machine, ContainerKind::ServiceContainer),
+                &created_id,
+            ),
+            failed(Call::Start(machine, created_id), "start failed"),
+            cleanup,
+        ]);
 
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::Operation {
-                error: ExecutionError::Machine {
-                    action: MachineAction::StartContainer,
+        assert!(matches!(
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::StartContainer,
+                        error,
+                    },
                     ..
                 },
                 ..
-            },
-            ..
-        }
-    ));
-    client.assert_done();
+            } if error.message == "start failed"
+        ));
+        client.assert_done();
+    }
 }
 
 #[tokio::test]

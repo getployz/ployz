@@ -15,8 +15,8 @@ use axum::{
 };
 use futures_util::StreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, ContainerObservation, HttpProtocol, Machine, MachineId,
-    MachineName, ManagementAddress, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerId, ContainerObservation, HttpProtocol, MACHINE_API_PORT, Machine,
+    MachineId, MachineName, ManagementAddress, WireGuardPublicKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -468,7 +468,9 @@ async fn watcher_fixture() -> WatcherFixture {
         management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
+        advertised_endpoints: vec![AdvertisedEndpoint(
+            format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
+        )],
         runtime: Default::default(),
     };
     let state = WatchState {

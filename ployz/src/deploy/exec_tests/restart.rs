@@ -131,6 +131,7 @@ async fn start_unavailable_stops_waiting_when_cancelled() {
             &created_id,
         ),
         failed_unavailable(Call::Start(machine, created_id), "transport error"),
+        ok(Call::Remove(machine, created_id)),
     ]);
     let cancellation = CancellationToken::new();
     let execute = execute_with(&plan, &client, &cancellation);

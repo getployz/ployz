@@ -15,10 +15,11 @@ use ployz::{
     operator::open_machine_logs,
 };
 use ployz_core::{
-    CapabilityName, ContainerKind, ContainerRuntimeObservation, ContractDescription,
-    DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
-    LogsOptions, MachineId, MachineRpcServer, MembershipObservation, PROJECT_NAME_LABEL,
-    PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
+    CORROSION_GOSSIP_PORT, CapabilityName, ContainerKind, ContainerRuntimeObservation,
+    ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
+    HealthObservation, LogsOptions, MACHINE_API_PORT, MachineId, MachineRpcServer,
+    MembershipObservation, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
+    UNREGISTRY_PORT, op,
 };
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, UnixListener};
@@ -67,8 +68,9 @@ async fn unix_proxy_dialing_is_direct_and_tcp_is_explicitly_unsupported() {
     drop((stream, accepted));
 
     let tcp = Connection::tcp("127.0.0.1:1".parse().unwrap());
+    let unregistry = format!("10.210.0.1:{UNREGISTRY_PORT}");
     assert!(matches!(
-        connector.dial_proxy(&tcp, "tcp", "10.210.0.1:51500").await,
+        connector.dial_proxy(&tcp, "tcp", &unregistry).await,
         Err(ConnectError::ProxyUnsupported(_))
     ));
     assert!(matches!(
@@ -224,7 +226,7 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
     });
     let selected = SelectedConnections {
         source: ConnectionSource::Context("prod".into()),
-        connections: [51000, 51001]
+        connections: [MACHINE_API_PORT, CORROSION_GOSSIP_PORT]
             .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
             .into(),
     };
@@ -242,7 +244,10 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
     );
     assert_eq!(
         original.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        ["tcp://127.0.0.1:51000", "tcp://127.0.0.1:51001"]
+        vec![
+            format!("tcp://127.0.0.1:{MACHINE_API_PORT}"),
+            format!("tcp://127.0.0.1:{CORROSION_GOSSIP_PORT}"),
+        ]
     );
 }
 

@@ -782,9 +782,9 @@ mod tests {
     };
     use crate::corrosion::AdminClient;
     use ployz_core::{
-        AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
-        ManagementAddress, MembershipObservation, RttObservation, RttStatistics, SelectedEndpoint,
-        WireGuardPublicKey,
+        AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineIdentity,
+        MachineName, MachineRuntime, ManagementAddress, MembershipObservation, RttObservation,
+        RttStatistics, SelectedEndpoint, WireGuardPublicKey,
     };
     const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
     const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
@@ -842,7 +842,7 @@ mod tests {
             selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
             rtts: vec![RttObservation {
                 peer_id: "peer".into(),
-                address: format!("[{}]:51001", peer.management_address.0)
+                address: format!("[{}]:{CORROSION_GOSSIP_PORT}", peer.management_address.0)
                     .parse()
                     .unwrap(),
                 machine: None,

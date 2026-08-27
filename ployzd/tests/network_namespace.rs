@@ -4,7 +4,7 @@ use std::{
     process::{Child, ChildStdout, Command, Stdio},
 };
 
-use ployz_core::ManagementAddress;
+use ployz_core::{MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
 use ployzd::network::{NetworkError, apply_firewall_rules};
 
 const TEST_NAME: &str =
@@ -287,20 +287,20 @@ fn mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_mach
     send_datagram(&source, "10.210.1.2", "198.51.100.2", 40102);
     assert_eq!(external.peer(), "198.51.100.1");
 
-    let mut container_api = stream_server(&target, "10.210.2.1", 51000);
-    connect(&source, "10.210.1.2", "10.210.2.1", 51000);
+    let mut container_api = stream_server(&target, "10.210.2.1", MACHINE_API_PORT);
+    connect(&source, "10.210.1.2", "10.210.2.1", MACHINE_API_PORT);
     assert_eq!(container_api.peer(), "10.210.1.2");
 
-    let mut management_api = stream_server(&target, "fdcc::2", 51000);
-    connect(&source, "fdcc::1", "fdcc::2", 51000);
+    let mut management_api = stream_server(&target, "fdcc::2", MACHINE_API_PORT);
+    connect(&source, "fdcc::1", "fdcc::2", MACHINE_API_PORT);
     assert_eq!(management_api.peer(), "fdcc::1");
 
-    let mut local_ingest = stream_server(&target, "fdcc::2", 51500);
-    connect(&target, "fdcc::2", "fdcc::2", 51500);
+    let mut local_ingest = stream_server(&target, "fdcc::2", UNREGISTRY_PORT);
+    connect(&target, "fdcc::2", "fdcc::2", UNREGISTRY_PORT);
     assert_eq!(local_ingest.peer(), "fdcc::2");
 
-    let mut remote_ingest = stream_server(&target, "fdcc::2", 51500);
-    connect(&source, "fdcc::1", "fdcc::2", 51500);
+    let mut remote_ingest = stream_server(&target, "fdcc::2", UNREGISTRY_PORT);
+    connect(&source, "fdcc::1", "fdcc::2", UNREGISTRY_PORT);
     assert_eq!(remote_ingest.peer(), "fdcc::1");
 
     ns(&target, "ip6tables", &["-P", "INPUT", "ACCEPT"]);
@@ -308,8 +308,8 @@ fn mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_mach
     connect(&container, "fd00::2", "fdcc::2", 51501);
     assert_eq!(unrestricted.peer(), "fd00::2");
 
-    let _ingest = stream_server(&target, "fdcc::2", 51500);
-    assert_connection_denied(&container, "fd00::2", "fdcc::2", 51500);
+    let _ingest = stream_server(&target, "fdcc::2", UNREGISTRY_PORT);
+    assert_connection_denied(&container, "fd00::2", "fdcc::2", UNREGISTRY_PORT);
 }
 
 fn apply_in_namespace(namespace: &str, subnet: &str, management_address: &str) {

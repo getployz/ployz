@@ -3,14 +3,16 @@
 use std::{
     fs::{self, File, OpenOptions},
     io,
-    net::{AddrParseError, IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use ployz_core::{LocalMachinePhase, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT};
+use ployz_core::{
+    CORROSION_API_PORT, LocalMachinePhase, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+};
 use sd_notify::NotifyState;
 use thiserror::Error;
 use tokio::{
@@ -27,8 +29,8 @@ use tonic::{codec::CompressionEncoding, service::Routes, transport::Server};
 use crate::{
     certificates,
     corrosion::{
-        CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
-        RunningCorrosion, run_machine_publisher,
+        CorrosionConfig, DEFAULT_CONTAINER_NAME, Error as CorrosionError, RunningCorrosion,
+        run_machine_publisher,
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
@@ -87,8 +89,6 @@ pub enum Error {
     SpecStore(#[from] SpecStoreError),
     #[error(transparent)]
     Corrosion(#[from] CorrosionError),
-    #[error(transparent)]
-    Addr(#[from] AddrParseError),
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
     #[error("local Machine record lock poisoned")]
@@ -590,7 +590,7 @@ async fn start_corrosion(
         CorrosionConfig::new(
             config.data_dir.join("corrosion"),
             run_dir,
-            DEFAULT_API_ADDRESS.parse()?,
+            SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
             SocketAddr::new(
                 IpAddr::V6(machine.management_address.0),
                 CORROSION_GOSSIP_PORT,

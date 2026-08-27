@@ -143,7 +143,7 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::MachineToken;
+    use ployz_core::{MACHINE_API_PORT, MachineToken};
 
     use super::*;
 
@@ -153,7 +153,10 @@ mod tests {
         let ssh = configure_ssh_key("root@example.com".parse().unwrap(), Some(key)).unwrap();
         assert_eq!(ssh.ssh_key_file(), Some(std::path::Path::new(key)));
 
-        for destination in ["tcp://127.0.0.1:51000", "unix:///tmp/ployz.sock"] {
+        for destination in [
+            format!("tcp://127.0.0.1:{MACHINE_API_PORT}"),
+            "unix:///tmp/ployz.sock".into(),
+        ] {
             let connection = configure_ssh_key(destination.parse().unwrap(), Some(key)).unwrap();
             assert_eq!(connection.ssh_key_file(), None, "destination {destination}");
         }

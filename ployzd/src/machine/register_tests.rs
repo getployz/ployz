@@ -7,8 +7,8 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, JoinRequest, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineRpc, MachineRpcServer, MachineRuntime, MachineSubnet, ManagementAddress,
+    AdvertisedEndpoint, CORROSION_GOSSIP_PORT, JoinRequest, LocalMachinePhase, Machine, MachineId,
+    MachineName, MachineRpc, MachineRpcServer, MachineRuntime, MachineSubnet, ManagementAddress,
     MembershipObservation, RegisterRequest, Registered, RpcError, RpcErrorCode, RpcResponseBody,
     WireGuardPublicKey, op,
 };
@@ -877,7 +877,12 @@ async fn serve_membership(
 ) -> (tokio::task::JoinHandle<()>, PathBuf, PathBuf) {
     let states: Vec<_> = states
         .iter()
-        .map(|&(machine, state)| (format!("[{}]:51001", machine.management_address.0), state))
+        .map(|&(machine, state)| {
+            (
+                format!("[{}]:{CORROSION_GOSSIP_PORT}", machine.management_address.0),
+                state,
+            )
+        })
         .collect();
     let root = std::env::temp_dir().join(format!("ployzd-register-admin-{}", MachineId::random()));
     std::fs::create_dir_all(&root).unwrap();

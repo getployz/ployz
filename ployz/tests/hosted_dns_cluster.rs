@@ -6,7 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    CreateDomainRecordsRequest, DnsRecord, DnsRecordType, MachineUpdate, PublicIpUpdate, op,
+    CORROSION_API_PORT, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, MachineUpdate,
+    PublicIpUpdate, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use reqwest::{Client as HttpClient, redirect::Policy};
@@ -97,7 +98,7 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
     let stored = cluster
         .machine_shell(
             0,
-            r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary '{"query":"SELECT value FROM cluster WHERE key = ?","params":["hosted_dns"]}' http://127.0.0.1:51002/v1/queries"#,
+            &format!(r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary '{{"query":"SELECT value FROM cluster WHERE key = ?","params":["hosted_dns"]}}' http://127.0.0.1:{CORROSION_API_PORT}/v1/queries"#),
         )
         .unwrap();
     assert!(stored.contains("raw-token"), "stored reservation: {stored}");

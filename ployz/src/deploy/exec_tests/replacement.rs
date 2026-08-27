@@ -311,7 +311,7 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
 }
 
 #[tokio::test]
-async fn stop_first_create_or_start_failure_runs_no_compensation() {
+async fn stop_first_create_failure_stays_partial_and_start_failure_removes_only_the_candidate() {
     for start_fails in [false, true] {
         let machine = machine('1');
         let old = container('a');
@@ -325,6 +325,7 @@ async fn stop_first_create_or_start_failure_runs_no_compensation() {
             steps.extend([
                 created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
                 failed(Call::Start(machine, new), "start failed"),
+                ok(Call::Remove(machine, new)),
             ]);
         } else {
             steps.push(failed(

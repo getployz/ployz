@@ -831,4 +831,6 @@ if PLOYZ_SDK_PACKAGE_ROOT="$sdk_src" bash "$ROOT/scripts/pack-sdk-package.sh" "$
 fi
 rm -rf "$sdk_src" "$sdk_dest" "$sdk_bindings"
 
+"$ROOT/scripts/test-qualify-clean-init.sh"
+
 echo "release contracts passed"

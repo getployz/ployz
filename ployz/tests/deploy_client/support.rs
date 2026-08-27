@@ -17,13 +17,14 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContainerCreated, ContainerDetails, ContainerId,
     ContainerKind, ContainerList, ContainerPath, ContainerRuntimeObservation, ContractDescription,
-    CreateVolumeReport, DockerVolume, DockerVolumeId, DockerVolumeName, Domain, HealthObservation,
-    LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId,
-    MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, ProjectName,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, UpdateOrder, VolumeInventory, VolumeSource, WireGuardPublicKey,
+    CreateVolumeReport, DockerVolume, DockerVolumeId, DockerVolumeName, Domain, ExecResponseFrame,
+    HealthObservation, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
+    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
+    MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, VolumeSource,
+    WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -44,6 +45,7 @@ pub(super) struct DeployService {
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     mutating_rpcs: Arc<AtomicUsize>,
     domain: Option<String>,
+    exec_exit: Option<i32>,
     hold_health: bool,
     ingress_backend: Option<ployz_core::IngressProxyBackend>,
 }
@@ -60,6 +62,7 @@ impl DeployService {
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
+            exec_exit: None,
             hold_health: false,
             ingress_backend: Some(ployz_core::IngressProxyBackend::Caddy),
         }
@@ -76,6 +79,7 @@ impl DeployService {
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
+            exec_exit: None,
             hold_health: false,
             ingress_backend: Some(ployz_core::IngressProxyBackend::Caddy),
         }
@@ -101,6 +105,11 @@ impl DeployService {
 
     pub(super) fn with_domain(mut self, name: &str) -> Self {
         self.domain = Some(name.into());
+        self
+    }
+
+    pub(super) fn with_exec_exit(mut self, code: i32) -> Self {
+        self.exec_exit = Some(code);
         self
     }
 
@@ -140,7 +149,7 @@ impl DeployService {
 
 #[tonic::async_trait]
 impl MachineRpc for DeployService {
-    type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type ExecStream = tokio_stream::wrappers::ReceiverStream<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
@@ -456,9 +465,26 @@ impl MachineRpc for DeployService {
     }
     async fn exec(
         &self,
-        _request: Request<Streaming<OpaquePayload>>,
+        request: Request<Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::ExecStream>, Status> {
-        unused()
+        let Some(code) = self.exec_exit else {
+            return unused();
+        };
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        for frame in [
+            ExecResponseFrame::ExecId("test-exec".into()),
+            ExecResponseFrame::Exit(code),
+        ] {
+            sender.send(Ok(frame.encode().unwrap())).await.unwrap();
+        }
+        tokio::spawn(async move {
+            let mut requests = request.into_inner();
+            while let Ok(Some(_)) = requests.message().await {}
+            drop(sender);
+        });
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            receiver,
+        )))
     }
     async fn container_logs(
         &self,

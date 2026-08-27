@@ -1,10 +1,12 @@
+use std::time::Duration;
+
 use bollard::{
     container::LogOutput,
     exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults},
     query_parameters::LogsOptionsBuilder,
 };
 use chrono::DateTime;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use ployz_core::{
     ContainerLogsRequest, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
     MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
@@ -118,28 +120,15 @@ impl ContainerRuntime {
                 let exec_id = created.id;
                 let tty = config.options.tty;
                 tokio::spawn(async move {
-                    let _ = async {
-                        while let Some(output) = output.next().await {
-                            match output {
-                                Ok(output) => {
-                                    send_exec(&sender, exec_output(output, tty)).await?;
-                                }
-                                Err(error) => return send_exec_error(&sender, error).await,
-                            }
-                        }
-                        match docker.inspect_exec(&exec_id).await {
-                            Ok(inspected) => {
-                                let code = inspected.exit_code.unwrap_or(1);
-                                let code = i32::try_from(code).unwrap_or(1);
-                                send_exec(&sender, ExecResponseFrame::Exit(code)).await
-                            }
-                            Err(error) => send_exec_error(&sender, error).await,
-                        }
-                    }
+                    let _ = forward_attached_exec(
+                        &docker,
+                        &exec_id,
+                        &mut output,
+                        tty,
+                        &sender,
+                        stdin_task,
+                    )
                     .await;
-                    if let Some(task) = stdin_task {
-                        task.abort();
-                    }
                 });
             }
         }
@@ -186,6 +175,80 @@ impl ContainerRuntime {
     }
 }
 
+async fn forward_attached_exec(
+    docker: &bollard::Docker,
+    exec_id: &str,
+    output: &mut (impl Stream<Item = Result<LogOutput, bollard::errors::Error>> + Unpin),
+    tty: bool,
+    sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
+    stdin_task: Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), Status> {
+    enum Completion {
+        StreamEnded,
+        ProcessExited(Option<i64>),
+        Failed(bollard::errors::Error),
+    }
+
+    let process_exited = wait_for_exec_exit(docker, exec_id);
+    tokio::pin!(process_exited);
+    let completion = loop {
+        tokio::select! {
+            biased;
+            result = &mut process_exited => match result {
+                Ok(exit_code) => break Ok(Completion::ProcessExited(exit_code)),
+                Err(error) => break Ok(Completion::Failed(error)),
+            },
+            next = output.next() => match next {
+                Some(Ok(output)) => {
+                    if let Err(error) = send_exec(sender, exec_output(output, tty)).await {
+                        break Err(error);
+                    }
+                }
+                Some(Err(error)) => break Ok(Completion::Failed(error)),
+                None => break Ok(Completion::StreamEnded),
+            },
+        }
+    };
+    if let Some(task) = stdin_task {
+        task.abort();
+    }
+    let completion = completion?;
+
+    match completion {
+        Completion::StreamEnded => match docker.inspect_exec(exec_id).await {
+            Ok(inspected) => send_exec_exit(sender, inspected.exit_code).await,
+            Err(error) => send_exec_error(sender, error).await,
+        },
+        Completion::Failed(error) => send_exec_error(sender, error).await,
+        Completion::ProcessExited(exit_code) => {
+            // ponytail: one bounded drain preserves buffered frames without waiting on a held hijack.
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+            while tokio::time::Instant::now() < deadline {
+                match tokio::time::timeout_at(deadline, output.next()).await {
+                    Ok(Some(Ok(output))) => send_exec(sender, exec_output(output, tty)).await?,
+                    Ok(Some(Err(error))) => return send_exec_error(sender, error).await,
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            send_exec_exit(sender, exit_code).await
+        }
+    }
+}
+
+async fn wait_for_exec_exit(
+    docker: &bollard::Docker,
+    exec_id: &str,
+) -> Result<Option<i64>, bollard::errors::Error> {
+    loop {
+        // ponytail: one inspect per 100 ms; use a Docker exec wait API if one appears.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let inspected = docker.inspect_exec(exec_id).await?;
+        if inspected.running == Some(false) {
+            return Ok(inspected.exit_code);
+        }
+    }
+}
+
 fn exec_output(output: LogOutput, tty: bool) -> ExecResponseFrame {
     match output {
         LogOutput::StdErr { message } if !tty => ExecResponseFrame::Stderr(message.to_vec()),
@@ -220,6 +283,17 @@ async fn send_exec_error(
             message: error.to_string(),
             details: Value::Null,
         }),
+    )
+    .await
+}
+
+async fn send_exec_exit(
+    sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
+    code: Option<i64>,
+) -> Result<(), Status> {
+    send_exec(
+        sender,
+        ExecResponseFrame::Exit(code.and_then(|code| i32::try_from(code).ok()).unwrap_or(1)),
     )
     .await
 }

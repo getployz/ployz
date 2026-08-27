@@ -332,7 +332,9 @@ fn format_wg_show_peer_stats(peer: &WireGuardPeer, now_unix_seconds: u64) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::{MachineId, MachineIdentity, MachineName, MachineStorageObservation};
+    use ployz_core::{
+        CORROSION_GOSSIP_PORT, MachineId, MachineIdentity, MachineName, MachineStorageObservation,
+    };
 
     #[test]
     fn storage_column_distinguishes_ready_without_a_pool() {
@@ -403,7 +405,9 @@ mod tests {
                 machine_id: source,
                 value: vec![RttObservation {
                     peer_id: "peer-live".into(),
-                    address: "[fdcc::2]:51001".parse().unwrap(),
+                    address: format!("[fdcc::2]:{CORROSION_GOSSIP_PORT}")
+                        .parse()
+                        .unwrap(),
                     machine: Some(MachineIdentity {
                         id: target,
                         name: MachineName::parse("node-b").unwrap(),
@@ -429,7 +433,9 @@ mod tests {
     fn rtt_observation(peer_id: &str, median_ns: u64, population_stddev_ns: u64) -> RttObservation {
         RttObservation {
             peer_id: peer_id.into(),
-            address: "[fdcc::2]:51001".parse().unwrap(),
+            address: format!("[fdcc::2]:{CORROSION_GOSSIP_PORT}")
+                .parse()
+                .unwrap(),
             machine: None,
             statistics: RttStatistics {
                 median_ns,

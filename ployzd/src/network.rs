@@ -6,11 +6,11 @@ use std::{
 };
 
 use ipnet::{IpNet, Ipv4Net};
-pub use ployz_core::UNREGISTRY_PORT;
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineSubnet, ManagementAddress, SelectedEndpoint,
     WireGuardPublicKey,
 };
+pub use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, UNREGISTRY_PORT};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -27,8 +27,6 @@ pub const DOCKER_NETWORK_NAME: &str = "ployz";
 pub const WIREGUARD_INTERFACE_NAME: &str = "ployz-wg";
 pub const WIREGUARD_PORT: u16 = 51820;
 pub const WIREGUARD_KEEPALIVE_SECONDS: u16 = 25;
-pub const MACHINE_API_PORT: u16 = 51000;
-pub const CORROSION_GOSSIP_PORT: u16 = 51001;
 pub const ENDPOINT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 pub const PEER_DOWN_INTERVAL: Duration = Duration::from_secs(180 + 5 + 90);
 

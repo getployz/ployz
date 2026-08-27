@@ -5,10 +5,10 @@ use std::{
 
 use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, GetIngressProxyConfigRequest, INGRESS_VERIFY_PATH,
-    ListMachinesRequest, Machine, MachineId, MachineTarget, MembershipObservation, ProjectName,
-    RequestedServiceSpec, ResolvedServiceSpec, ServiceId, StartContainerRequest,
-    StopContainerRequest, op,
+    CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, GetIngressProxyConfigRequest,
+    INGRESS_VERIFY_PATH, ListMachinesRequest, Machine, MachineId, MachineTarget,
+    MembershipObservation, ProjectName, RequestedServiceSpec, ResolvedServiceSpec, ServiceId,
+    StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -835,7 +835,7 @@ fn publish_certificate_row(
         .machine_shell(
             index,
             &format!(
-                r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary {quoted} http://127.0.0.1:51002/v1/transactions"#
+                r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary {quoted} http://127.0.0.1:{CORROSION_API_PORT}/v1/transactions"#
             ),
         )
         .unwrap();

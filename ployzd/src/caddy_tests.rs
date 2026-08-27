@@ -9,10 +9,10 @@ use crate::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol, INGRESS_VERIFY_PATH,
-    IngressHost, IngressHostname, IngressProxyFragment, Machine, MachineId, MachineName,
-    ManagementAddress, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
-    ServiceContainer, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
-    service_containers,
+    IngressHost, IngressHostname, IngressProxyFragment, MACHINE_API_PORT, Machine, MachineId,
+    MachineName, ManagementAddress, PortPublication, ProjectName, QualifiedService,
+    ResolvedServiceSpec, ServiceContainer, ServiceId, ServiceName, TransportProtocol,
+    WireGuardPublicKey, service_containers,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -1111,7 +1111,9 @@ async fn failed_load_preserves_the_last_caddyfile() {
         management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
+        advertised_endpoints: vec![AdvertisedEndpoint(
+            format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
+        )],
         runtime: Default::default(),
     };
     let admin = FakeAdmin {
@@ -1141,7 +1143,9 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
         management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
+        advertised_endpoints: vec![AdvertisedEndpoint(
+            format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
+        )],
         runtime: Default::default(),
     };
     let observations = [observation(

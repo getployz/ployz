@@ -8,12 +8,12 @@ use std::{
 
 use futures_util::StreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, CertificateAvailability, CertificateBackoff, CertificateFailureKind,
-    CertificateObservation, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    GlobalReconcileFailureObservation, HealthObservation, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId, MachineName, MachineObservation, MachineRuntime,
-    ManagementAddress, MembershipObservation, ProjectName, QualifiedService,
+    AdvertisedEndpoint, CORROSION_GOSSIP_PORT, CertificateAvailability, CertificateBackoff,
+    CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
+    DockerVolumeName, GlobalReconcileFailureObservation, HealthObservation, IngressHost,
+    IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName, MachineObservation,
+    MachineRuntime, ManagementAddress, MembershipObservation, ProjectName, QualifiedService,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
     SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
     derive_services, encode_runtime_watch_frame,
@@ -368,7 +368,7 @@ fn machine(name: &str, id: &str, seed: u8) -> Machine {
 fn rtt_on(machine: &Machine, statistics: RttStatistics) -> RttObservation {
     RttObservation {
         peer_id: machine.name.as_str().into(),
-        address: format!("[{}]:51001", machine.management_address.0)
+        address: format!("[{}]:{CORROSION_GOSSIP_PORT}", machine.management_address.0)
             .parse()
             .unwrap(),
         machine: None,
