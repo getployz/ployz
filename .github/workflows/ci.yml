@@ -35,7 +35,18 @@ jobs:
       - run: scripts/check-evidence-inventories.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo build -p ployz-sdk --locked
-      - run: cargo test --workspace --all-features --locked
+      - name: Test with a hostile ambient Ployz context
+        env:
+          PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+        run: |
+          cat > "$PLOYZ_CONFIG" <<'EOF'
+          current_context: hostile
+          contexts:
+            hostile:
+              connections:
+                - tcp: 127.0.0.1:1
+          EOF
+          cargo test --workspace --all-features --locked
       - run: bash scripts/check-sdk-package.sh
       - run: bash scripts/test-release-contracts.sh
       - run: bash scripts/test-testkit-image.sh

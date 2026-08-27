@@ -123,14 +123,14 @@ exit 1
         vec!["logs", "api", "--file", compose.to_str().unwrap()],
         vec!["version"],
     ] {
-        let _ = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        let _ = ployz(&root)
             .args(args)
             .env("PATH", &path)
             .env("PLOYZ_DOCKER_CALLS", &calls)
             .output()
             .unwrap();
     }
-    let _ = Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let _ = ployz(&root)
         .arg("deploy")
         .current_dir(&root)
         .env("PATH", &path)
@@ -469,7 +469,7 @@ secrets:
         "docker",
         "#!/bin/sh\nexport DOCKER_HOST=tcp://127.0.0.1:1\nexec /usr/bin/docker \"$@\"\n",
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = ployz(&root)
         .arg("deploy")
         .current_dir(caller)
         .env("COMPOSE_FILE", compose)
@@ -556,6 +556,12 @@ fn test_dir(label: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).unwrap();
     path
+}
+
+fn ployz(root: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command.env("PLOYZ_CONFIG", root.join("config.yaml"));
+    command
 }
 
 fn real_docker_fixture(label: &str) -> Option<(PathBuf, PathBuf)> {
