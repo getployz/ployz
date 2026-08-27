@@ -33,18 +33,10 @@ class Ployz < Formula
     if Hardware::CPU.intel?
       url "https://github.com/${repo}/releases/download/${tag}/ployz_macos_amd64.tar.gz"
       sha256 "$hash_macos_amd64"
-
-      def install
-        bin.install "ployz"
-      end
     end
     if Hardware::CPU.arm?
       url "https://github.com/${repo}/releases/download/${tag}/ployz_macos_arm64.tar.gz"
       sha256 "$hash_macos_arm64"
-
-      def install
-        bin.install "ployz"
-      end
     end
   end
 
@@ -53,22 +45,18 @@ class Ployz < Formula
       if Hardware::CPU.is_64_bit?
         url "https://github.com/${repo}/releases/download/${tag}/ployz_linux_amd64.tar.gz"
         sha256 "$hash_linux_amd64"
-
-        def install
-          bin.install "ployz"
-        end
       end
     end
     if Hardware::CPU.arm?
       if Hardware::CPU.is_64_bit?
         url "https://github.com/${repo}/releases/download/${tag}/ployz_linux_arm64.tar.gz"
         sha256 "$hash_linux_arm64"
-
-        def install
-          bin.install "ployz"
-        end
       end
     end
+  end
+
+  def install
+    bin.install "ployz"
   end
 
   def caveats

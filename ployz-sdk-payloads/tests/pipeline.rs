@@ -1,4 +1,4 @@
-//! Pipeline tests for `@ployz/sdk` generated TypeScript and JSON fixtures.
+//! Pipeline tests for `@ployz/sdk` generated TypeScript and Rust examples.
 
 use std::collections::BTreeMap;
 
@@ -67,7 +67,7 @@ fn workspace_forbids_unsafe_outside_the_napi_crate() {
 }
 
 #[test]
-fn generated_artifacts_match_checked_in_files() {
+fn generated_declarations_match_checked_in_file() {
     if let Some(drift) = drift(&sdk_package_root()) {
         panic!("{drift}");
     }
@@ -482,7 +482,7 @@ fn observation_enums_keep_an_unknown_case() {
 
 #[test]
 fn generated_typescript_encodes_additive_evolution_rules() {
-    let dts = ployz_sdk_payloads::artifacts().payloads_dts;
+    let dts = include_str!("../../ployz-sdk/generated/payloads.d.ts");
     assert!(dts.contains("export type Additive<T extends object> = T & JsonObject;"));
     assert!(dts.contains("export type MembershipObservation ="));
     assert!(dts.contains("| (string & {});"));

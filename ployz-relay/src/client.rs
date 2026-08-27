@@ -7,23 +7,22 @@ use std::{
     time::Duration,
 };
 
+use crate::{
+    ATTACH_PATH, DIAL_PATH, HeldRegister, LIST_PATH, ListResponse, MACHINE_ID_HEADER,
+    PAIRING_HEADER, REGISTER_PATH, REVOKE_PATH, RegisterRequest, Status, TUNNEL_ID_HEADER,
+    TunnelFrame,
+};
 use futures_util::{SinkExt, StreamExt};
 use http::{HeaderName, HeaderValue, StatusCode};
 use ployz_core::MachineId;
 use prost::Message;
+use reqwest::Url;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{Message as WsMessage, client::IntoClientRequest, error::Error as WsError},
-};
-use url::Url;
-
-use crate::{
-    ATTACH_PATH, DIAL_PATH, HeldRegister, LIST_PATH, ListResponse, MACHINE_ID_HEADER,
-    PAIRING_HEADER, REGISTER_PATH, REVOKE_PATH, RegisterRequest, Status, TUNNEL_ID_HEADER,
-    TunnelFrame,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);

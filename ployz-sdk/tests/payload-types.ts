@@ -11,24 +11,36 @@ import type {
   Ulimit,
   VolumeDriver,
 } from "../generated/payloads";
-import fixtures from "../generated/fixtures.json";
 
-const spec = fixtures.requested_service_spec_typed;
-const source = spec.volumes[0].source;
-
-source.driver satisfies VolumeDriver;
-spec.configs satisfies NonNullable<RequestedServiceSpec["configs"]>;
-spec.configs[0] satisfies ConfigSpec;
-fixtures.config_mount satisfies ConfigMount;
-spec.container.resources.devices[0] satisfies DeviceMapping;
-fixtures.device_reservation satisfies DeviceReservation;
-spec.container.resources.ulimits.nofile satisfies Ulimit;
-spec.container.healthcheck satisfies HealthcheckSpec;
-fixtures.resolved_service_spec_typed.configs satisfies NonNullable<
+({ name: "nfs", options: { share: "app" } }) satisfies VolumeDriver;
+([{ name: "settings", content: [112, 111, 114, 116] }]) satisfies NonNullable<
+  RequestedServiceSpec["configs"]
+>;
+([{ name: "settings", content: [112, 111, 114, 116] }]) satisfies NonNullable<
   ResolvedServiceSpec["configs"]
 >;
-fixtures.container_observation_disabled_healthcheck
-  .effective_healthcheck satisfies ContainerObservation["effective_healthcheck"];
+({
+  config_name: "settings",
+  target: "/etc/api/settings.toml",
+  uid: 1000,
+  gid: 1000,
+  mode: 0o440,
+}) satisfies ConfigMount;
+({
+  machine_path: "/dev/fuse",
+  container_path: "/dev/fuse",
+  cgroup_permissions: "rwm",
+}) satisfies DeviceMapping;
+({
+  driver: "nvidia",
+  count: 1,
+  device_ids: ["GPU-0"],
+  capabilities: [["gpu"]],
+  options: { count: "1" },
+}) satisfies DeviceReservation;
+({ soft: 1024, hard: 2048 }) satisfies Ulimit;
+({ state: "configured", test: ["CMD", "true"] }) satisfies HealthcheckSpec;
+({ state: "disabled" }) satisfies ContainerObservation["effective_healthcheck"];
 
 // @ts-expect-error VolumeDriver options values are strings
 const invalidDriver: VolumeDriver = { name: "nfs", options: { share: 1 } };

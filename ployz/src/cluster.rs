@@ -32,8 +32,7 @@ use tonic::{
 use crate::{
     connect::{
         BoxProxyStream, ConnectError, Connector, TARGET_RPC_TIMEOUT, TransportError,
-        UNARY_RETRY_DELAYS, apply_timeout, is_unary_retryable, rpc_error, stop_rpc_timeout,
-        target_request,
+        UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout, target_request,
     },
     context::{Connection, ConnectionSource, Transport},
     deploy::{DeploySnapshot, VolumeSnapshot},
@@ -164,7 +163,7 @@ impl Client {
             };
             match outcome {
                 Ok(response) => return Ok(response),
-                Err(error) if is_unary_retryable(&error) => {
+                Err(error) if error.is_retryable() => {
                     let Some(delay) = delays.next() else {
                         return Err(error);
                     };

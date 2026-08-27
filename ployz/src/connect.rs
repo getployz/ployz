@@ -373,10 +373,6 @@ pub(crate) async fn apply_timeout<T>(
     result.map_err(rpc_error)
 }
 
-pub(crate) fn is_unary_retryable(error: &ConnectError) -> bool {
-    error.is_retryable()
-}
-
 pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> tonic::Request<T> {
     let mut request = tonic::Request::new(payload);
     if let Some(target) = target {

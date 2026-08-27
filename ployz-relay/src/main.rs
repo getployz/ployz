@@ -40,17 +40,13 @@ async fn run() -> Result<(), Error> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    let dial = DialCredential::parse(env_or_empty(DIAL_ENV))?;
+    let dial = DialCredential::parse(std::env::var(DIAL_ENV).unwrap_or_default())?;
     let relay = Relay::new(dial);
     let (_address, handle, goaway) = relay.serve(args.listen).await?;
     shutdown_signal().await?;
     goaway.start();
     handle.await.expect("relay serve task panicked")?;
     Ok(())
-}
-
-fn env_or_empty(key: &str) -> String {
-    std::env::var(key).unwrap_or_default()
 }
 
 async fn shutdown_signal() -> io::Result<()> {

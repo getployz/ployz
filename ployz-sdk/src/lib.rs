@@ -142,13 +142,8 @@ impl Client {
     /// other Machine errors stay in the Partial Result.
     #[napi]
     pub async fn remove_volumes(&self, request: serde_json::Value) -> Result<serde_json::Value> {
-        let request: RemoveVolumesRequest = serde_json::from_value(request).map_err(|error| {
-            rpc_to_napi(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-            })
-        })?;
+        let request: RemoveVolumesRequest =
+            serde_json::from_value(request).map_err(invalid_json)?;
         let result = self
             .inner
             .remove_volumes(request)
@@ -193,14 +188,8 @@ impl Client {
         machine: String,
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let confirm_data_loss: DataLossConfirmation = serde_json::from_value(confirm_data_loss)
-            .map_err(|error| {
-                rpc_to_napi(RpcError {
-                    code: RpcErrorCode::InvalidArgument,
-                    message: error.to_string(),
-                    details: serde_json::Value::Null,
-                })
-            })?;
+        let confirm_data_loss: DataLossConfirmation =
+            serde_json::from_value(confirm_data_loss).map_err(invalid_json)?;
         let removed = self
             .inner
             .remove_machine(&machine, &confirm_data_loss)
@@ -252,14 +241,8 @@ impl Client {
         confirm_data_loss: serde_json::Value,
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
-        let confirm_data_loss: DataLossConfirmation = serde_json::from_value(confirm_data_loss)
-            .map_err(|error| {
-                rpc_to_napi(RpcError {
-                    code: RpcErrorCode::InvalidArgument,
-                    message: error.to_string(),
-                    details: serde_json::Value::Null,
-                })
-            })?;
+        let confirm_data_loss: DataLossConfirmation =
+            serde_json::from_value(confirm_data_loss).map_err(invalid_json)?;
         let outcome = self
             .inner
             .destroy_project(
@@ -306,14 +289,8 @@ impl Client {
         &self,
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let confirm_data_loss: DataLossConfirmation = serde_json::from_value(confirm_data_loss)
-            .map_err(|error| {
-                rpc_to_napi(RpcError {
-                    code: RpcErrorCode::InvalidArgument,
-                    message: error.to_string(),
-                    details: serde_json::Value::Null,
-                })
-            })?;
+        let confirm_data_loss: DataLossConfirmation =
+            serde_json::from_value(confirm_data_loss).map_err(invalid_json)?;
         let teardown = self
             .inner
             .destroy_cluster(&confirm_data_loss)
