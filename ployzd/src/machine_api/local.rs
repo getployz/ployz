@@ -1,3 +1,5 @@
+//! Local Machine RPC. Listeners take [`super::MachineApi`], not this type.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,

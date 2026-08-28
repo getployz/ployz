@@ -1,3 +1,5 @@
+//! Machine Target routing applied by [`super::MachineApi`] at construction.
+
 use std::{
     collections::HashMap,
     convert::Infallible,

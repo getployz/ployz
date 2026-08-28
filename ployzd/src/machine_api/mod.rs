@@ -40,6 +40,8 @@ pub struct MachineApi {
 }
 
 /// Configure this Machine's Machine API before it becomes servable.
+///
+/// Options live here so construction does not name the private local RPC type.
 pub struct MachineApiBuilder {
     store: Arc<Mutex<LocalMachineStore>>,
     restart: watch::Sender<bool>,
