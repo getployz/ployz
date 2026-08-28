@@ -275,7 +275,12 @@ impl ContainerRuntime {
 
 fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
     let mut observation = observation.clone();
-    observation.resolved_spec.container.environment.clear();
+    let keep = ployz_core::ingress_proxy_profile_environment_keys();
+    observation
+        .resolved_spec
+        .container
+        .environment
+        .retain(|key, _| keep.contains(key));
     if let Some(hook) = &mut observation.resolved_spec.pre_deploy {
         hook.environment.clear();
     }
@@ -397,6 +402,58 @@ mod tests {
                 .get("TOKEN")
                 .map(String::as_str),
             Some("service-secret")
+        );
+    }
+
+    #[test]
+    fn publication_keeps_caddy_admin_so_redacted_caddy_still_identifies() {
+        let mut spec = ployz_core::IngressProxyBackend::Caddy
+            .requested_service_spec("caddy:test".into(), Vec::new(), None)
+            .unwrap()
+            .to_resolved(
+                ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+                ployz_core::ResolvedUpdateConfig::default(),
+            );
+        spec.container
+            .environment
+            .insert("TOKEN".into(), "service-secret".into());
+        let observation = ContainerObservation {
+            container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+            display_name: "ingress-test".into(),
+            created_at_unix_nanos: 1,
+            machine_id: ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
+            project_name: ployz_core::ProjectName::system(),
+            service_id: spec.service_id,
+            service_name: spec.name.clone(),
+            kind: ployz_core::ContainerKind::ServiceContainer,
+            runtime: ployz_core::ContainerRuntimeObservation::Created,
+            effective_healthcheck: None,
+            resolved_spec: spec,
+            address: None,
+            labels: Default::default(),
+        };
+
+        let redacted = redacted_container(&observation);
+
+        assert_eq!(
+            redacted
+                .resolved_spec
+                .container
+                .environment
+                .get("CADDY_ADMIN")
+                .map(String::as_str),
+            Some("unix//run/ingress/caddy/admin.sock")
+        );
+        assert!(
+            !redacted
+                .resolved_spec
+                .container
+                .environment
+                .contains_key("TOKEN")
+        );
+        assert_eq!(
+            ployz_core::ingress_proxy_backend(&redacted.resolved_spec).unwrap(),
+            ployz_core::IngressProxyBackend::Caddy
         );
     }
 

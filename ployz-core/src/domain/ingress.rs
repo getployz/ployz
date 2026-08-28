@@ -1,6 +1,11 @@
 //! Concrete Ingress Proxy backend identity and reserved-Service wiring.
 
-use std::{collections::BTreeMap, fmt, num::NonZeroU16, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    num::NonZeroU16,
+    str::FromStr,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -224,6 +229,20 @@ pub fn requested_ingress_proxy_backend(
         .ok_or(IngressProxyServiceSpecError)
 }
 
+/// Environment keys emitted by reserved Ingress Proxy backend profiles.
+#[must_use]
+pub fn ingress_proxy_profile_environment_keys() -> BTreeSet<String> {
+    SUPPORTED_INGRESS_PROXY_BACKENDS
+        .into_iter()
+        .filter_map(|backend| {
+            backend
+                .requested_service_spec(String::new(), Vec::new(), None)
+                .ok()
+        })
+        .flat_map(|spec| spec.container.environment.into_keys())
+        .collect()
+}
+
 fn base_container(image: String) -> ServiceContainerSpec {
     ServiceContainerSpec {
         image,
@@ -421,6 +440,11 @@ mod tests {
             assert_eq!(ingress_proxy_backend(&resolved).unwrap(), backend);
             assert_eq!(requested.placement.machines, machines);
         }
+    }
+
+    #[test]
+    fn profile_environment_keys_include_caddy_admin() {
+        assert!(ingress_proxy_profile_environment_keys().contains("CADDY_ADMIN"));
     }
 
     #[test]
