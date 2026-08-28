@@ -63,19 +63,20 @@ async fn replicated_container_observations_are_advertised_only_with_a_cluster_st
         MachineId::random()
     ));
     let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-    let without_cluster = MachineService::new(Arc::clone(&store), watch::channel(false).0)
-        .describe_contract(Request::new(
-            op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
-                .encode()
-                .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::DescribeContract>()
-        .unwrap();
+    let without_cluster =
+        MachineService::with_cluster(Arc::clone(&store), watch::channel(false).0, None)
+            .describe_contract(Request::new(
+                op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::DescribeContract>()
+            .unwrap();
     assert!(!without_cluster.supports(GET_CONTAINER_OBSERVATIONS_CAPABILITY));
 
     let (replicated, server) = fake_cluster::store().await;
@@ -602,7 +603,7 @@ async fn runtime_watch_without_a_cluster_store_is_unavailable() {
     ));
     let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
     let (restart, _) = watch::channel(false);
-    let service = MachineService::new(store, restart);
+    let service = MachineService::with_cluster(store, restart, None);
     let error = service
         .runtime_watch(Request::new(
             op::RuntimeWatch::into_request(RuntimeWatchRequest {})

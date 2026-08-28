@@ -15,7 +15,7 @@ use ployz_core::{
 };
 use ployzd::{
     corrosion::{CorrosionConfig, ReplicatedStore},
-    proxy::MachineProxy,
+    machine_api::MachineProxy,
 };
 use tokio::{net::TcpListener as TokioTcpListener, sync::oneshot, task::JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;

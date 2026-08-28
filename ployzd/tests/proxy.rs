@@ -8,7 +8,7 @@ use ployz_core::{
     FanoutOutcome, FanoutResponse, FanoutSelector, Machine, MachineId, MachineName, MachineTarget,
     ManagementAddress, WireGuardPublicKey, encode_grpc_frame, grpc_frames,
 };
-use ployzd::proxy::{
+use ployzd::machine_api::{
     MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route,
 };
 use tokio::{net::TcpListener, sync::oneshot};

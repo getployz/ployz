@@ -8,7 +8,7 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_GOSSIP_PORT, JoinRequest, LocalMachinePhase, Machine, MachineId,
-    MachineName, MachineRpc, MachineRpcServer, MachineRuntime, MachineSubnet, ManagementAddress,
+    MachineName, MachineRpc, MachineRuntime, MachineSubnet, ManagementAddress,
     MembershipObservation, RegisterRequest, Registered, RpcError, RpcErrorCode, RpcResponseBody,
     WireGuardPublicKey, op,
 };
@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
     corrosion::{AdminClient, ReplicatedStore, fake_cluster},
-    rpc::{MachineService, REGISTER_FORWARDED_METADATA},
+    machine_api::{MachineApi, MachineService, REGISTER_FORWARDED_METADATA},
 };
 
 #[tokio::test]
@@ -271,15 +271,14 @@ async fn contact_forwards_register_and_returns_the_allocator_payload() {
         .unwrap();
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(machine_service(
-                allocator_store,
-                allocator_replica.clone(),
-                None,
-            )))
-            .serve_with_incoming(TcpListenerStream::new(listener)),
-    );
+    tokio::spawn(Server::builder().serve_with_incoming(
+        MachineApi::from_local(machine_service(
+            allocator_store,
+            allocator_replica.clone(),
+            None,
+        )),
+        TcpListenerStream::new(listener),
+    ));
 
     let (contact_dir, contact_store, _contact) = open_store("ployzd-register-contact");
     let (contact_replica, contact_cluster) = fake_cluster::store().await;
@@ -484,15 +483,14 @@ async fn unreachable_allocator_forwards_when_reread_names_a_reachable_allocator(
         .unwrap();
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(machine_service(
-                allocator_store,
-                allocator_replica.clone(),
-                None,
-            )))
-            .serve_with_incoming(TcpListenerStream::new(listener)),
-    );
+    tokio::spawn(Server::builder().serve_with_incoming(
+        MachineApi::from_local(machine_service(
+            allocator_store,
+            allocator_replica.clone(),
+            None,
+        )),
+        TcpListenerStream::new(listener),
+    ));
 
     let (contact_dir, contact_store, _contact_machine) = open_store("ployzd-register-reread");
     let (contact_replica, contact_cluster) = fake_cluster::store().await;
@@ -615,11 +613,10 @@ async fn two_steals_leave_one_writer_and_the_loser_forwards() {
     fake_cluster::age_allocator(&replica).await;
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(winner.clone()))
-            .serve_with_incoming(TcpListenerStream::new(listener)),
-    );
+    tokio::spawn(Server::builder().serve_with_incoming(
+        MachineApi::from_local(winner.clone()),
+        TcpListenerStream::new(listener),
+    ));
     let loser = machine_service(loser_store, replica.clone(), Some(port));
 
     let forwarded = rpc_register(

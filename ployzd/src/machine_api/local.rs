@@ -1,3 +1,5 @@
+//! Local Machine RPC. Listeners take [`super::MachineApi`], not this type.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -46,11 +48,6 @@ pub struct MachineService {
 
 impl MachineService {
     #[must_use]
-    pub fn new(store: Arc<Mutex<LocalMachineStore>>, restart: watch::Sender<bool>) -> Self {
-        Self::with_cluster(store, restart, None)
-    }
-
-    #[must_use]
     pub fn with_cluster(
         store: Arc<Mutex<LocalMachineStore>>,
         restart: watch::Sender<bool>,
@@ -65,11 +62,6 @@ impl MachineService {
             cloud_pairing: None,
             global_reconcile: global_reconcile_observation_channel().1,
         }
-    }
-
-    #[must_use]
-    pub fn with_containers(self, containers: ContainerRuntime) -> Self {
-        self.with_optional_containers(Some(containers))
     }
 
     #[must_use]
@@ -119,6 +111,10 @@ impl MachineService {
     pub(crate) fn with_machine_api_port(mut self, port: u16) -> Self {
         self.machine_api_port = port;
         self
+    }
+
+    pub(super) fn machine_api_port(&self) -> u16 {
+        self.machine_api_port
     }
 
     #[allow(clippy::result_large_err)]
@@ -1065,5 +1061,5 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 }
 
 #[cfg(test)]
-#[path = "rpc_tests.rs"]
+#[path = "local_tests.rs"]
 mod tests;
