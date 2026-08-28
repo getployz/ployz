@@ -60,9 +60,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             if tty {
                 send_terminal_size(&session.input).await?;
             }
-            if !detach {
-                spawn_stdin(session.input.clone());
-            }
+            let _stdin = (!detach).then(|| spawn_stdin(session.input.clone()));
             let resize_task = tty.then(|| spawn_resize(session.input.clone()));
             drop(session.input);
             let mut exit = 0;
@@ -400,14 +398,33 @@ async fn send_terminal_size(
         .map_err(|_| Error::usage("exec request stream closed"))
 }
 
-fn spawn_stdin(sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>) {
-    spawn_stdin_reader(std::io::stdin(), sender);
+#[must_use]
+struct StdinReader {
+    forward: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for StdinReader {
+    fn drop(&mut self) {
+        self.forward.abort();
+    }
+}
+
+fn spawn_stdin(sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>) -> StdinReader {
+    spawn_stdin_reader(std::io::stdin(), sender)
 }
 
 fn spawn_stdin_reader(
     mut stdin: impl std::io::Read + Send + 'static,
     sender: tokio::sync::mpsc::Sender<ployz_core::OpaquePayload>,
-) {
+) -> StdinReader {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let forward = tokio::spawn(async move {
+        while let Some(payload) = rx.recv().await {
+            if sender.send(payload).await.is_err() {
+                return;
+            }
+        }
+    });
     // ponytail: a stalled reader can linger until CLI exit; add cancellable OS I/O if exec becomes reusable.
     drop(std::thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
@@ -419,11 +436,12 @@ fn spawn_stdin_reader(
             let Ok(payload) = frame.encode() else {
                 return;
             };
-            if sender.blocking_send(payload).is_err() {
+            if tx.blocking_send(payload).is_err() {
                 return;
             }
         }
     }));
+    StdinReader { forward }
 }
 
 #[cfg(unix)]
@@ -473,7 +491,7 @@ mod tests {
         let file = std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
 
-        spawn_stdin_reader(file, sender);
+        let _reader = spawn_stdin_reader(file, sender);
         let mut actual = Vec::new();
         while let Some(payload) = receiver.recv().await {
             let ExecRequestFrame::Stdin(bytes) = ExecRequestFrame::decode(&payload).unwrap() else {
@@ -482,6 +500,31 @@ mod tests {
             actual.extend(bytes);
         }
         assert_eq!(actual, input.to_vec());
+    }
+
+    #[tokio::test]
+    async fn dropping_stdin_reader_closes_the_request_channel_while_read_is_stalled() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let reader = spawn_stdin_reader(
+            StalledRead {
+                started: started_tx,
+                release: release_rx,
+            },
+            sender,
+        );
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(reader);
+        let closed = tokio::time::timeout(Duration::from_secs(1), receiver.recv()).await;
+        release_tx.send(()).unwrap();
+        assert!(
+            matches!(closed, Ok(None)),
+            "request stream stayed open after the stdin reader was dropped"
+        );
     }
 
     #[test]
@@ -508,21 +551,21 @@ mod tests {
         assert_eq!(printable_log_bytes(&LogBody::Error("nope".into())), None);
     }
 
+    struct StalledRead {
+        started: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl Read for StalledRead {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.started.send(()).unwrap();
+            self.release.recv().unwrap();
+            Ok(0)
+        }
+    }
+
     #[test]
     fn stalled_stdin_reader_does_not_block_runtime_shutdown() {
-        struct StalledRead {
-            started: mpsc::Sender<()>,
-            release: mpsc::Receiver<()>,
-        }
-
-        impl Read for StalledRead {
-            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
-                self.started.send(()).unwrap();
-                self.release.recv().unwrap();
-                Ok(0)
-            }
-        }
-
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::channel();
@@ -532,7 +575,7 @@ mod tests {
                 .unwrap();
             runtime.block_on(async {
                 let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-                spawn_stdin_reader(
+                let _reader = spawn_stdin_reader(
                     StalledRead {
                         started: started_tx,
                         release: release_rx,
