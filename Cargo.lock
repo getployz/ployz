@@ -2162,6 +2162,7 @@ dependencies = [
  "ployz-relay",
  "ployz-testkit",
  "reqwest",
+ "rustix",
  "semver",
  "serde",
  "serde_json",
