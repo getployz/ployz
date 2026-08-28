@@ -14,8 +14,9 @@ use std::{
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use hickory_server::proto::{
-    op::{Header, HeaderCounts, Message, Metadata, ResponseCode},
+    op::{Edns, Header, HeaderCounts, Message, Metadata, ResponseCode},
     rr::{Name, RData, Record, RecordType, rdata::A},
+    serialize::binary::BinEncoder,
 };
 use hickory_server::{
     Server,
@@ -270,7 +271,10 @@ impl RequestHandler for Handler {
                 metadata.authoritative = true;
                 metadata.recursion_available = true;
                 metadata.response_code = code;
-                let response = MessageResponseBuilder::from_message_request(request).build(
+                let edns = request.edns.as_ref();
+                let (answers, truncated) = fit_udp_answers(request, &metadata, edns, &answers);
+                metadata.truncation = truncated;
+                let response = MessageResponseBuilder::new(&request.queries, edns).build(
                     metadata,
                     answers.iter(),
                     [].iter(),
@@ -534,6 +538,30 @@ async fn forward_tcp(request: &[u8], upstream: SocketAddr) -> io::Result<Message
 
 fn decode_message(bytes: &[u8]) -> io::Result<Message> {
     Message::from_vec(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+// Hickory encodes UDP with no response EDNS at 4096 bytes, so TC never fires
+// for a classic 512-byte client. Probe at request.max_payload() first.
+fn fit_udp_answers<'a>(
+    request: &Request,
+    metadata: &Metadata,
+    edns: Option<&Edns>,
+    answers: &'a [Record],
+) -> (&'a [Record], bool) {
+    if request.protocol() != Protocol::Udp {
+        return (answers, false);
+    }
+    let mut bytes = Vec::new();
+    let mut encoder = BinEncoder::new(&mut bytes);
+    encoder.set_max_size(request.max_payload());
+    let Ok(info) = MessageResponseBuilder::new(&request.queries, edns)
+        .build(*metadata, answers.iter(), [].iter(), [].iter(), [].iter())
+        .destructive_emit(&mut encoder)
+    else {
+        return (&[], true);
+    };
+    let n = usize::from(info.counts().answers).min(answers.len());
+    (answers.get(..n).unwrap_or(&[]), info.truncation)
 }
 
 async fn send_error<R: ResponseHandler>(
