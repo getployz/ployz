@@ -797,7 +797,15 @@ async fn replace_container<C: MachineOperations>(
             .remove_container(&operation.machine_id, &operation.old_container_id)
             .await,
     )
-    .map_err(|error| machine_error(MachineAction::RemoveContainer, error).into())
+    .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
+    client
+        .wait_for_container_observations(
+            &[operation.old_container_id],
+            ContainerObservationCondition::Dropped,
+            cancellation,
+        )
+        .await
+        .map_err(|error| machine_error(MachineAction::InspectContainer, error).into())
 }
 
 #[expect(

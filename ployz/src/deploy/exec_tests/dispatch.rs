@@ -95,6 +95,7 @@ async fn dispatches_the_complete_algebra() {
         )),
         ok(Call::Stop(first, old)),
         ok(Call::Remove(first, old)),
+        dropped(old),
         ok(Call::Stop(second, hook)),
         ok(Call::Remove(second, hook)),
         created(Call::Create(first, ContainerKind::PreDeployHook), &new_hook),
