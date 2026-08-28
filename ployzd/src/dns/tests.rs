@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use hickory_server::proto::op::{Edns, Query as WireQuery};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation,
     Machine, MachineId, MachineName, MachineRuntime, ManagementAddress, ProjectName,
@@ -424,6 +425,126 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
             Ipv4Addr::new(10, 210, 3, 2),
         ]
     );
+}
+
+#[tokio::test]
+async fn oversized_internal_udp_sets_tc_and_stays_within_client_limit() {
+    let (udp, tcp, mut server) = serve_internal(50).await;
+
+    let (no_edns_len, no_edns) = query_udp(udp, None).await;
+    assert!(no_edns_len <= 512, "no-EDNS UDP was {no_edns_len} bytes");
+    assert!(no_edns.metadata.truncation);
+    assert!(!no_edns.answers.is_empty());
+
+    let (edns_512_len, edns_512) = query_udp(udp, Some(512)).await;
+    assert!(edns_512_len <= 512, "EDNS 512 UDP was {edns_512_len} bytes");
+    assert!(edns_512.metadata.truncation);
+    assert!(!edns_512.answers.is_empty());
+
+    let (edns_4096_len, edns_4096) = query_udp(udp, Some(4096)).await;
+    assert!(
+        edns_4096_len <= 4096,
+        "EDNS 4096 UDP was {edns_4096_len} bytes"
+    );
+    assert!(!edns_4096.metadata.truncation);
+    assert_eq!(edns_4096.answers.len(), 50);
+
+    let tcp_response = query_tcp(tcp, None).await;
+    assert!(!tcp_response.metadata.truncation);
+    assert_eq!(tcp_response.answers.len(), 50);
+
+    server.shutdown_gracefully().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_internal_udp_answer_is_not_truncated() {
+    let (udp, _, mut server) = serve_internal(2).await;
+    let (len, response) = query_udp(udp, None).await;
+    assert!(len <= 512, "small UDP was {len} bytes");
+    assert!(!response.metadata.truncation);
+    assert_eq!(response.answers.len(), 2);
+    server.shutdown_gracefully().await.unwrap();
+}
+
+async fn serve_internal(count: u16) -> (SocketAddr, SocketAddr, Server<Handler>) {
+    let handler = Handler {
+        projection: Arc::new(RwLock::new(unfiltered_projection(&replica_observations(
+            count,
+        )))),
+        local_subnet: SUBNET.parse().unwrap(),
+        upstreams: Vec::new(),
+    };
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let udp_addr = udp.local_addr().unwrap();
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tcp_addr = tcp.local_addr().unwrap();
+    let mut server = Server::new(handler);
+    server.register_socket(udp);
+    server.register_listener(tcp, TCP_REQUEST_TIMEOUT, TCP_RESPONSE_BUFFER);
+    (udp_addr, tcp_addr, server)
+}
+
+async fn query_udp(addr: SocketAddr, edns_payload: Option<u16>) -> (usize, Message) {
+    let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client.send_to(&a_query(edns_payload), addr).await.unwrap();
+    let mut buf = [0u8; 4096];
+    let (len, _) = tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut buf))
+        .await
+        .expect("UDP Internal DNS response")
+        .unwrap();
+    let packet = buf.get(..len).unwrap();
+    (len, Message::from_vec(packet).unwrap())
+}
+
+async fn query_tcp(addr: SocketAddr, edns_payload: Option<u16>) -> Message {
+    let query = a_query(edns_payload);
+    let length = u16::try_from(query.len()).unwrap();
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_u16(length).await.unwrap();
+    stream.write_all(&query).await.unwrap();
+    let length = tokio::time::timeout(Duration::from_secs(2), stream.read_u16())
+        .await
+        .expect("TCP Internal DNS length")
+        .unwrap();
+    let mut response = vec![0; usize::from(length)];
+    stream.read_exact(&mut response).await.unwrap();
+    Message::from_vec(&response).unwrap()
+}
+
+fn a_query(edns_payload: Option<u16>) -> Vec<u8> {
+    let mut message = Message::query();
+    message.add_query(WireQuery::query(
+        Name::from_ascii("api.app.internal.").unwrap(),
+        RecordType::A,
+    ));
+    if let Some(max_payload) = edns_payload {
+        let mut edns = Edns::new();
+        edns.set_max_payload(max_payload);
+        message.set_edns(edns);
+    }
+    message.to_vec().unwrap()
+}
+
+fn replica_observations(count: u16) -> Vec<ContainerObservation> {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let service = ServiceId::parse("b".repeat(32)).unwrap();
+    let name = ServiceName::parse("api").unwrap();
+    (0..count)
+        .map(|i| {
+            let host = u8::try_from(i + 1).unwrap();
+            let mut observation = observation(
+                1,
+                &machine,
+                &service,
+                &name,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, host]),
+            );
+            observation.container_id = ContainerId::parse(format!("{i:064x}")).unwrap();
+            observation
+        })
+        .collect()
 }
 
 fn unfiltered_projection(observations: &[ContainerObservation]) -> Projection {

@@ -6,8 +6,8 @@ mod founder_resumption;
 mod harness;
 
 use harness::{
-    CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RelayListen, TOKEN,
-    assert_not_held, envoy_ingress_on, founder_machine, ingress_on, registration,
+    CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, RelayListen,
+    TOKEN, assert_not_held, envoy_ingress_on, founder_machine, ingress_on, registration,
     serve_ingress_probe, serve_machine, wait_for_held,
 };
 use ployz_core::{
@@ -687,6 +687,82 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     );
     assert_eq!(daemon.reset_count(), 0);
     assert_eq!(enroll.posts().len(), 1);
+}
+
+#[tokio::test]
+async fn reset_enroll_posts_the_rotated_public_key() {
+    let local = registration();
+    let mut assigned = local.clone();
+    assigned.assigned_machine.id = ployz_core::MachineId::parse("c".repeat(32)).unwrap();
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let join = json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": pairing,
+        "registration": assigned,
+    });
+    let mut rotated = assigned.clone();
+    rotated.assigned_machine.public_key = RESET_PUBLIC_KEY;
+    let enroll = EnrollListen::script([
+        join.clone(),
+        json!({
+            "kind": "join",
+            "storage": "none",
+            "pairing": pairing,
+            "registration": rotated,
+        }),
+    ])
+    .await;
+    let daemon = JoinDaemon::new(local.clone());
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let mut client = connect_daemon(machine_addr).await;
+    client
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: local.assigned_machine.name,
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
+                public_ip: None,
+                advertised_endpoints: local.assigned_machine.advertised_endpoints,
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let before = daemon.public_key();
+
+    let output = init_cloud(
+        &format!("tcp://{machine_addr}"),
+        &enroll.url,
+        "rejoined",
+        true,
+        true,
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(daemon.reset_count(), 1);
+    assert_ne!(daemon.public_key(), before);
+    assert_eq!(
+        enroll.posts().last().unwrap()["publicKey"],
+        json!(daemon.public_key().to_string())
+    );
+    assert_eq!(
+        daemon
+            .join_request()
+            .registration
+            .assigned_machine
+            .public_key,
+        daemon.public_key()
+    );
 }
 
 #[tokio::test]
