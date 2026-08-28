@@ -261,8 +261,8 @@ The HTTP hostname a Service publishes through ingress. Cluster Domain assignment
 _Avoid_: empty hostname sentinel
 
 **Hostname Owner**:
-The Qualified Service that wins an Ingress Hostname in one observer's Container observations. Derived; not a persisted record, lease, or lock. Different observers may select different owners until their observations match.
-_Avoid_: hostname lease, ownership table, global hostname uniqueness
+The Qualified Service that wins an Ingress Hostname from one observer's Service Container observations; Serving is not required. Derived; not a persisted record, lease, or lock. Different observers may select different owners until their observations match.
+_Avoid_: hostname lease, ownership table, global hostname uniqueness, Serving as the ownership gate
 
 **Certificate Material**:
 The certificate and private key held in cluster state for one Ingress Hostname. It is served as given; it is not an issuance request and not a local proxy store.
