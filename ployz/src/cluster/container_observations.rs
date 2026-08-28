@@ -104,8 +104,7 @@ impl Client {
                 responses = join_all(calls) => responses,
             };
             let requested = requested.into_iter().collect::<BTreeSet<_>>();
-            let mut skipped = BTreeSet::new();
-            let mut serving_by_machine = BTreeMap::new();
+            let mut round = Vec::new();
             for (machine_id, response) in responses {
                 match response {
                     Ok(response) => {
@@ -116,41 +115,72 @@ impl Client {
                         let containers = service_containers(
                             response.containers.values().filter_map(Clone::clone),
                         );
-                        serving_by_machine.insert(
+                        round.push((
                             machine_id,
-                            serving_replicas(&containers)
+                            Ok(serving_replicas(&containers)
                                 .into_iter()
                                 .map(|container| container.as_observation().container_id)
-                                .collect::<BTreeSet<_>>(),
-                        );
+                                .collect::<BTreeSet<_>>()),
+                        ));
                     }
-                    Err(error)
-                        if matches!(
-                            error.code,
-                            RpcErrorCode::Unsupported
-                                | RpcErrorCode::Unavailable
-                                | RpcErrorCode::NotFound
-                        ) =>
-                    {
-                        skipped.insert(machine_id);
-                    }
-                    Err(mut error) => {
-                        error.message = format!("Machine {machine_id}: {}", error.message);
-                        return Err(error);
-                    }
+                    Err(error) => round.push((machine_id, Err(error))),
                 }
             }
-            capable.retain(|machine_id| !skipped.contains(machine_id));
-            pending.retain(|container_id| {
-                serving_by_machine.values().any(|serving| match condition {
-                    ContainerObservationCondition::Serving => !serving.contains(container_id),
-                    ContainerObservationCondition::Dropped => serving.contains(container_id),
-                })
-            });
+            let ok_votes = apply_round(&mut capable, &mut pending, condition, round)?;
             wait = std::cmp::min(RPC_HOLD, deadline.saturating_duration_since(Instant::now()));
+            if !pending.is_empty() && !capable.is_empty() && ok_votes == 0 && !wait.is_zero() {
+                tokio::select! {
+                    () = cancellation.cancelled() => return Err(cancelled()),
+                    () = tokio::time::sleep(wait) => {}
+                }
+            }
         }
         Ok(())
     }
+}
+
+fn apply_round(
+    capable: &mut Vec<MachineId>,
+    pending: &mut BTreeSet<ContainerId>,
+    condition: ContainerObservationCondition,
+    responses: Vec<(MachineId, Result<BTreeSet<ContainerId>, RpcError>)>,
+) -> Result<usize, RpcError> {
+    let mut dropped = BTreeSet::new();
+    let mut serving_by_machine = BTreeMap::new();
+    let mut ok_votes = 0;
+    for (machine_id, response) in responses {
+        match response {
+            Ok(serving) => {
+                ok_votes += 1;
+                serving_by_machine.insert(machine_id, serving);
+            }
+            Err(error) if error.code == RpcErrorCode::Unsupported => {
+                dropped.insert(machine_id);
+            }
+            Err(error)
+                if matches!(
+                    error.code,
+                    RpcErrorCode::Unavailable | RpcErrorCode::NotFound
+                ) => {}
+            Err(mut error) => {
+                error.message = format!("Machine {machine_id}: {}", error.message);
+                return Err(error);
+            }
+        }
+    }
+    capable.retain(|machine_id| !dropped.contains(machine_id));
+    pending.retain(|container_id| {
+        capable
+            .iter()
+            .any(|machine_id| match serving_by_machine.get(machine_id) {
+                None => true,
+                Some(serving) => match condition {
+                    ContainerObservationCondition::Serving => !serving.contains(container_id),
+                    ContainerObservationCondition::Dropped => serving.contains(container_id),
+                },
+            })
+    });
+    Ok(ok_votes)
 }
 
 fn cancelled() -> RpcError {
@@ -183,5 +213,108 @@ fn invalid_response(machine_id: MachineId) -> RpcError {
             "Machine {machine_id} returned an incomplete replicated Container Observation map"
         ),
         details: Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn machine(hex: char) -> MachineId {
+        MachineId::parse(hex.to_string().repeat(32)).unwrap()
+    }
+
+    fn container(hex: char) -> ContainerId {
+        ContainerId::parse(hex.to_string().repeat(64)).unwrap()
+    }
+
+    fn error(code: RpcErrorCode) -> RpcError {
+        RpcError {
+            code,
+            message: "transient".into(),
+            details: Value::Null,
+        }
+    }
+
+    #[test]
+    fn unavailable_and_not_found_keep_a_capable_machine_and_the_pending_container() {
+        for code in [RpcErrorCode::Unavailable, RpcErrorCode::NotFound] {
+            let machine = machine('1');
+            let container = container('a');
+            let mut capable = vec![machine];
+            let mut pending = BTreeSet::from([container]);
+
+            apply_round(
+                &mut capable,
+                &mut pending,
+                ContainerObservationCondition::Serving,
+                vec![(machine, Err(error(code.clone())))],
+            )
+            .unwrap();
+
+            assert_eq!(capable, vec![machine], "{code:?}");
+            assert_eq!(pending, BTreeSet::from([container]), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn serving_on_one_machine_does_not_clear_pending_while_another_is_unavailable() {
+        let first = machine('1');
+        let second = machine('2');
+        let container = container('a');
+        let mut capable = vec![first, second];
+        let mut pending = BTreeSet::from([container]);
+
+        apply_round(
+            &mut capable,
+            &mut pending,
+            ContainerObservationCondition::Serving,
+            vec![
+                (first, Ok(BTreeSet::from([container]))),
+                (second, Err(error(RpcErrorCode::Unavailable))),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(capable, vec![first, second]);
+        assert_eq!(pending, BTreeSet::from([container]));
+    }
+
+    #[test]
+    fn all_capable_serving_votes_clear_pending() {
+        let machine = machine('1');
+        let container = container('a');
+        let mut capable = vec![machine];
+        let mut pending = BTreeSet::from([container]);
+
+        apply_round(
+            &mut capable,
+            &mut pending,
+            ContainerObservationCondition::Serving,
+            vec![(machine, Ok(BTreeSet::from([container])))],
+        )
+        .unwrap();
+
+        assert_eq!(capable, vec![machine]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn unsupported_drops_the_machine_from_capable() {
+        let machine = machine('1');
+        let container = container('a');
+        let mut capable = vec![machine];
+        let mut pending = BTreeSet::from([container]);
+
+        apply_round(
+            &mut capable,
+            &mut pending,
+            ContainerObservationCondition::Serving,
+            vec![(machine, Err(error(RpcErrorCode::Unsupported)))],
+        )
+        .unwrap();
+
+        assert!(capable.is_empty());
+        assert!(pending.is_empty());
     }
 }
