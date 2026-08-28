@@ -6,27 +6,29 @@ use std::{
 
 use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CapabilityName, CodecError, ConfigMount, ConfigSpec,
-    ConfiguredHealthcheck, ContainerCreated, ContainerHostname, ContainerKind, ContainerLabels,
-    ContainerPath, ContainerResources, ContainerRuntimeObservation, ContractDescription,
-    CreateContainerRequest, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY,
-    DescribeContractRequest, DnsRecord, DnsRecordType, DockerVolumeName, Domain, DomainRecords,
-    ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FanoutFailure,
-    FanoutOutcome, FanoutResponse, FramingError, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-    GetIngressProxyConfigRequest, HealthObservation, HealthcheckCommand, HealthcheckSpec,
-    HttpProtocol, ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled,
-    ImageSummary, IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment,
-    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
-    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
-    MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
-    MachineTokenRequest, MachineUpdate, ManagementAddress, NameMatches, OpaquePayload,
-    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult,
-    Placement, PortPublication, PreDeployHook, ProjectName, PublicIpDiscovery, PublicIpUpdate,
-    PullImageFromMachineRequest, PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
-    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
-    UpdateMachineRequest, UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    ConfiguredHealthcheck, ContainerCreated, ContainerHostname, ContainerId, ContainerKind,
+    ContainerLabels, ContainerObservationMap, ContainerPath, ContainerResources,
+    ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
+    CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
+    DnsRecordType, DockerVolumeName, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY,
+    EnsureImageIngestRequest, ExtraHost, FanoutFailure, FanoutOutcome, FanoutResponse,
+    FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
+    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation,
+    HealthcheckCommand, HealthcheckSpec, HttpProtocol, ImageIngestDestination, ImageIngestOpened,
+    ImageIngestReason, ImagePulled, ImageSummary, IngressHost, IngressHostname, IngressProxyConfig,
+    IngressProxyFragment, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest,
+    MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
+    MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess,
+    MachineTarget, MachineTokenRequest, MachineUpdate, ManagementAddress, NameMatches,
+    OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    PartialResult, Placement, PortPublication, PreDeployHook, ProjectName, PublicIpDiscovery,
+    PublicIpUpdate, PullImageFromMachineRequest, PullPolicy, QualifiedService,
+    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
+    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
+    VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -126,6 +128,10 @@ fn response_kinds_match_the_frozen_wire_contract() {
         (ResponseKind::MachineList, "machine_list"),
         (ResponseKind::ContainerList, "container_list"),
         (ResponseKind::ContainerDetails, "container_details"),
+        (
+            ResponseKind::ContainerObservationMap,
+            "container_observation_map",
+        ),
         (ResponseKind::ContainerCreated, "container_created"),
         (ResponseKind::ContainerChanged, "container_changed"),
         (ResponseKind::DockerVolume, "docker_volume"),
@@ -768,6 +774,36 @@ fn json_payload_round_trips_through_the_opaque_prost_envelope() {
     let response_payload = response.encode().unwrap();
     assert_eq!(
         response_payload.decode_json::<RpcResponse>().unwrap(),
+        response
+    );
+}
+
+#[test]
+fn replicated_container_observation_contract_is_batched_and_complete() {
+    let first = ContainerId::parse("a".repeat(64)).unwrap();
+    let second = ContainerId::parse("b".repeat(64)).unwrap();
+    let request = op::GetContainerObservations::into_request(GetContainerObservationsRequest {
+        container_ids: vec![first, second],
+        wait_millis: 2_000,
+    });
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    assert_eq!(request.body.command(), "get_container_observations");
+    assert_eq!(
+        GET_CONTAINER_OBSERVATIONS_CAPABILITY,
+        "ployz.container.observations.v1"
+    );
+
+    let response = ContainerObservationMap {
+        containers: BTreeMap::from([(first, None), (second, None)]),
+    };
+    assert_eq!(
+        RpcResponse::from(response.clone())
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::GetContainerObservations>()
+            .unwrap(),
         response
     );
 }

@@ -49,6 +49,7 @@ macro_rules! rpc_catalog {
                 InspectWireguard: (inspect_wireguard, "InspectWireguard", InspectWireGuardRequest, "inspect_wireguard", WireGuardInspected, INSPECT_WIREGUARD_CAPABILITY, "ployz.wireguard.inspect.v1", Always),
                 ListContainers: (list_containers, "ListContainers", ListContainersRequest, "list_containers", ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container),
                 InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container),
+                GetContainerObservations: (get_container_observations, "GetContainerObservations", GetContainerObservationsRequest, "get_container_observations", ContainerObservationMap, GET_CONTAINER_OBSERVATIONS_CAPABILITY, "ployz.container.observations.v1", Cluster),
                 CreateContainer: (create_container, "CreateContainer", CreateContainerRequest, "create_container", ContainerCreated, CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1", Container),
                 EnsureGlobalSlot: (ensure_global_slot, "EnsureGlobalSlot", EnsureGlobalSlotRequest, "ensure_global_slot", ContainerCreated, ENSURE_GLOBAL_SLOT_CAPABILITY, "ployz.container.ensure-global-slot.v1", Container),
                 StartContainer: (start_container, "StartContainer", StartContainerRequest, "start_container", ContainerChanged, START_CONTAINER_CAPABILITY, "ployz.container.start.v1", Container),

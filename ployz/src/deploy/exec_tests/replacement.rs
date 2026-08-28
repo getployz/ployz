@@ -226,7 +226,9 @@ async fn stop_first_tolerates_disappearance_between_inspect_and_stop() {
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), healthy()),
+        serving(new),
         Step(Call::Remove(machine, old), Reply::Error(missing)),
+        dropped(old),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -255,6 +257,7 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
             created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
             ok(Call::Start(machine, new)),
             observed(Call::Inspect(machine, new), healthy()),
+            serving(new),
         ]);
         if order == UpdateOrder::StartFirst {
             steps.push(Step(
@@ -263,6 +266,7 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
             ));
         }
         steps.push(Step(Call::Remove(machine, old), Reply::Error(missing)));
+        steps.push(dropped(old));
         let client = Scripted::new(steps);
 
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -295,11 +299,13 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
             created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
             ok(Call::Start(machine, new)),
             observed(Call::Inspect(machine, new), healthy()),
+            serving(new),
         ]);
         if order == UpdateOrder::StartFirst {
             steps.push(ok(Call::Stop(machine, old)));
         }
         steps.push(ok(Call::Remove(machine, old)));
+        steps.push(dropped(old));
         let client = Scripted::new(steps);
 
         assert!(matches!(

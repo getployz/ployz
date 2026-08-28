@@ -510,12 +510,55 @@ async fn assert_start_first_gap(
     })
     .await;
 
+    let replacement = requested(&machines[1], "new");
+    let (done, mut deployed) = tokio::sync::watch::channel(false);
+    let probe = async {
+        while !*deployed.borrow() {
+            let response = cluster
+                .machine_shell(2, "curl -fsS -H 'Host: switch.test' http://127.0.0.1")
+                .expect(
+                    "reachable consumer must retain a live upstream during start-first replace",
+                );
+            assert!(matches!(response.trim(), "old" | "new"), "{response:?}");
+            tokio::select! {
+                result = deployed.changed() => if result.is_err() { break },
+                () = tokio::time::sleep(Duration::from_millis(25)) => {}
+            }
+        }
+    };
+    let replace = async {
+        let deployed_service_id = deploy(client, &replacement).await;
+        done.send(true).unwrap();
+        deployed_service_id
+    };
+    let ((), deployed_service_id) = tokio::join!(probe, replace);
+    assert_eq!(deployed_service_id, service_id);
+    let new_address = wait_running(client, &service_id, 1)
+        .await
+        .into_iter()
+        .next()
+        .unwrap()
+        .address
+        .unwrap();
+    wait_config(client, &machines[2], |config| {
+        config.contains(&format!("{}:8081", new_address.0))
+            && !config.contains(&format!("{}:8081", old_address.0))
+    })
+    .await;
+    assert_eq!(
+        cluster
+            .machine_shell(2, "curl -fsS -H 'Host: switch.test' http://127.0.0.1")
+            .unwrap()
+            .trim(),
+        "new"
+    );
+
     cluster
         .machine_shell(2, "kill -STOP $(cat /run/ployzd.pid)")
         .unwrap();
-    let replacement = requested(&machines[1], "new");
+    let replacement = requested(&machines[0], "final");
     assert_eq!(deploy(client, &replacement).await, service_id);
-    let new_address = wait_running(client, &service_id, 1)
+    let final_address = wait_running(client, &service_id, 1)
         .await
         .into_iter()
         .next()
@@ -525,8 +568,8 @@ async fn assert_start_first_gap(
     let delayed = cluster
         .machine_shell(2, "cat /var/lib/ployz/ingress/caddy/Caddyfile")
         .unwrap();
-    assert!(delayed.contains(&format!("{}:8081", old_address.0)));
-    assert!(!delayed.contains(&format!("{}:8081", new_address.0)));
+    assert!(delayed.contains(&format!("{}:8081", new_address.0)));
+    assert!(!delayed.contains(&format!("{}:8081", final_address.0)));
     assert!(
         cluster
             .machine_shell(2, "curl -fsS -H 'Host: switch.test' http://127.0.0.1",)
@@ -537,8 +580,8 @@ async fn assert_start_first_gap(
         .machine_shell(2, "kill -CONT $(cat /run/ployzd.pid)")
         .unwrap();
     wait_config(client, &machines[2], |config| {
-        config.contains(&format!("{}:8081", new_address.0))
-            && !config.contains(&format!("{}:8081", old_address.0))
+        config.contains(&format!("{}:8081", final_address.0))
+            && !config.contains(&format!("{}:8081", new_address.0))
     })
     .await;
     assert_eq!(
@@ -546,7 +589,7 @@ async fn assert_start_first_gap(
             .machine_shell(2, "curl -fsS -H 'Host: switch.test' http://127.0.0.1",)
             .unwrap()
             .trim(),
-        "new"
+        "final"
     );
 }
 

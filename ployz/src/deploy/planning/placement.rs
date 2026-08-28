@@ -154,6 +154,7 @@ pub(super) fn plan_global(
                     operations.push(DeployOperation::StopContainer {
                         machine_id,
                         container_id: other_observation.container_id,
+                        purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
                     });
                 }
             }

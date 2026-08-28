@@ -542,6 +542,12 @@ impl MachineRpc for JoinDaemon {
             .ok_or_else(|| Status::not_found("container not found"))?;
         rpc_ok(ContainerDetails { container })
     }
+    async fn get_container_observations(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn list_volumes(
         &self,
         _request: Request<OpaquePayload>,

@@ -1,12 +1,20 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    convert::Infallible,
     sync::{Arc, Mutex},
 };
 
-use axum::{Router, body::Bytes, extract::State, routing::post};
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    extract::State,
+    http::StatusCode,
+    routing::post,
+};
+use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::broadcast};
 
 use super::store::{
     AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, PUBLISH_FOUNDING_INGRESS_PROXY_BACKEND,
@@ -22,6 +30,9 @@ struct ClusterKv {
     network: String,
     ingress_proxy_backend: Option<String>,
     machines: BTreeMap<String, String>,
+    containers: BTreeMap<String, String>,
+    container_changes: broadcast::Sender<()>,
+    container_subscriptions: bool,
     allocator: Option<(String, bool)>,
     allocator_script: VecDeque<(String, bool)>,
 }
@@ -33,31 +44,41 @@ struct Statement {
 }
 
 pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(None, None).await
+    bind(None, None, false).await
+}
+
+pub(crate) async fn store_with_container_changes() -> (ReplicatedStore, tokio::task::JoinHandle<()>)
+{
+    bind(None, None, true).await
 }
 
 pub(crate) async fn store_with_allocator_value(
     value: &str,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(Some((value.to_owned(), true)), None).await
+    bind(Some((value.to_owned(), true)), None, false).await
 }
 
 pub(crate) async fn store_with_ingress_proxy_backend_value(
     value: &str,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(None, Some(value.to_owned())).await
+    bind(None, Some(value.to_owned()), false).await
 }
 
 async fn bind(
     allocator: Option<(String, bool)>,
     ingress_proxy_backend: Option<String>,
+    container_subscriptions: bool,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let (container_changes, _) = broadcast::channel(16);
     let kv = Arc::new(Mutex::new(ClusterKv {
         network: "10.210.0.0/16".into(),
         ingress_proxy_backend,
         machines: BTreeMap::new(),
+        containers: BTreeMap::new(),
+        container_changes,
+        container_subscriptions,
         allocator,
         allocator_script: VecDeque::new(),
     }));
@@ -67,6 +88,7 @@ async fn bind(
             Router::new()
                 .route("/v1/queries", post(queries))
                 .route("/v1/transactions", post(transactions))
+                .route("/v1/subscriptions", post(subscriptions))
                 .with_state(kv),
         )
         .await
@@ -86,6 +108,40 @@ async fn transactions(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> V
     execute(&kv, serde_json::from_slice(&body).unwrap()).into()
 }
 
+async fn subscriptions(
+    State(kv): State<Arc<Mutex<ClusterKv>>>,
+    body: Bytes,
+) -> Result<Body, StatusCode> {
+    let statement: Statement = serde_json::from_slice(&body).unwrap();
+    assert_eq!(statement.query, "SELECT id, container FROM containers");
+    let kv = kv.lock().unwrap();
+    if !kv.container_subscriptions {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let receiver = kv.container_changes.subscribe();
+    drop(kv);
+    let snapshot = stream::once(async {
+        Ok::<_, Infallible>(Bytes::from_static(
+            b"{\"columns\":[\"id\",\"container\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+        ))
+    });
+    let changes = stream::unfold(receiver, |mut receiver| async move {
+        loop {
+            match receiver.recv().await {
+                Ok(()) => {
+                    return Some((
+                        Ok::<_, Infallible>(Bytes::from_static(b"{\"change\":{}}\n")),
+                        receiver,
+                    ));
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Ok(Body::from_stream(snapshot.chain(changes)))
+}
+
 fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
     let mut kv = kv.lock().unwrap();
     match statement.query.as_str() {
@@ -98,6 +154,15 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
         "SELECT info FROM machines WHERE id = ?" => {
             let id = text_param(&statement.params, 0);
             events(&["info"], kv.machines.get(id).map(|info| vec![json!(info)]))
+        }
+        "SELECT container FROM containers WHERE id = ?" => {
+            let id = text_param(&statement.params, 0);
+            events(
+                &["container"],
+                kv.containers
+                    .get(id)
+                    .map(|container| vec![json!(container)]),
+            )
         }
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
@@ -164,6 +229,13 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),
                 );
+            }
+            query if query.starts_with("INSERT INTO containers (id, container,") => {
+                kv.containers.insert(
+                    text_param(&statement.params, 0).to_owned(),
+                    text_param(&statement.params, 1).to_owned(),
+                );
+                let _ = kv.container_changes.send(());
             }
             query => panic!("unexpected statement {query}"),
         }

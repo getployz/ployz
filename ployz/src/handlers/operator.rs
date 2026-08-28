@@ -12,7 +12,6 @@ use ployz_core::{
     LogOrigin, LogsOptions, QualifiedService, ServiceSelector, select_service,
 };
 use tokio::io::copy_bidirectional;
-use tokio_util::sync::CancellationToken;
 
 use crate::{
     compose::{LoadOptions, load_project},
@@ -24,7 +23,7 @@ use crate::{
     },
 };
 
-use super::{Error, leaf_matches, string_values, with_client_context};
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, string_values, with_client_context};
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
@@ -285,20 +284,6 @@ fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
             now,
         )?,
     })
-}
-
-fn cancellation_on_ctrl_c() -> CancellationToken {
-    let cancellation = CancellationToken::new();
-    let signal = cancellation.clone();
-    tokio::spawn(async move {
-        tokio::select! {
-            () = signal.cancelled() => {}
-            result = tokio::signal::ctrl_c() => if result.is_ok() {
-                signal.cancel();
-            }
-        }
-    });
-    cancellation
 }
 
 async fn print_logs(

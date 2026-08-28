@@ -505,6 +505,7 @@ fn operation_label(operation: &DeployOperation) -> String {
         DeployOperation::StopContainer {
             machine_id,
             container_id,
+            ..
         } => format!("stop {container_id} on {machine_id}"),
         DeployOperation::RemoveContainer {
             machine_id,
@@ -612,6 +613,7 @@ mod tests {
                 DeployOperation::StopContainer {
                     machine_id,
                     container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
+                    purpose: ployz_core::StopContainerPurpose::Lifecycle,
                 },
                 machine.clone(),
                 Some(display.into()),

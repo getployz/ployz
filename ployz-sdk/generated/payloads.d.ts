@@ -660,6 +660,7 @@ export const EXEC_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.exec.v
 export const INSPECT_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.inspect.v1";
 export const LIST_CONTAINERS_CAPABILITY: CapabilityName = "ployz.container.list.v1";
 export const CONTAINER_LOGS_CAPABILITY: CapabilityName = "ployz.container.logs.v1";
+export const GET_CONTAINER_OBSERVATIONS_CAPABILITY: CapabilityName = "ployz.container.observations.v1";
 export const REMOVE_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.remove.v1";
 export const START_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.start.v1";
 export const STOP_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.stop.v1";
@@ -700,6 +701,7 @@ export const CATALOGUED_CAPABILITIES = [
   "ployz.container.inspect.v1",
   "ployz.container.list.v1",
   "ployz.container.logs.v1",
+  "ployz.container.observations.v1",
   "ployz.container.remove.v1",
   "ployz.container.start.v1",
   "ployz.container.stop.v1",

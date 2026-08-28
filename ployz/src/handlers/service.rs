@@ -7,7 +7,9 @@ use ployz_core::{
     ServicePlacementEligibility, ServiceSelector, select_service,
 };
 
-use super::{Error, leaf_matches, with_client};
+use crate::cluster::ContainerObservationCondition;
+
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client};
 
 /// List the observed Services.
 ///
@@ -260,6 +262,12 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
+            let service_container_ids = services
+                .iter()
+                .flat_map(|service| &service.containers)
+                .map(|container| container.as_observation().container_id)
+                .collect::<HashSet<_>>();
+            let mut changed = Vec::new();
             let mut partial = false;
             for service in services {
                 let outcomes = client
@@ -267,6 +275,9 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
                     .await;
                 for success in outcomes.successes {
                     println!("{:?}\t{}\t{}", action, success.machine_id, success.value);
+                    if service_container_ids.contains(&success.value) {
+                        changed.push(success.value);
+                    }
                 }
                 for failure in outcomes.failures {
                     eprintln!(
@@ -279,6 +290,20 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
                     partial = true;
                 }
             }
+            let cancellation = cancellation_on_ctrl_c();
+            let _parent = cancellation.clone().drop_guard();
+            client
+                .wait_for_container_observations(
+                    &changed,
+                    match action {
+                        ContainerAction::Start => ContainerObservationCondition::Serving,
+                        ContainerAction::Stop | ContainerAction::Remove => {
+                            ContainerObservationCondition::Dropped
+                        }
+                    },
+                    &cancellation,
+                )
+                .await?;
             if !live.containers.all_targets_succeeded() {
                 eprintln!("WARNING: the Service selection came from a partial Live Observation");
                 partial = true;
