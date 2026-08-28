@@ -59,7 +59,8 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             if tty {
                 send_terminal_size(&session.input).await?;
             }
-            let _stdin = (!detach).then(|| spawn_stdin(session.input.clone()));
+            let _stdin =
+                (!detach && stdin_is_readable()).then(|| spawn_stdin(session.input.clone()));
             let resize_task = tty.then(|| spawn_resize(session.input.clone()));
             drop(session.input);
             let mut exit = 0;
@@ -381,6 +382,20 @@ async fn send_terminal_size(
         .send(ExecRequestFrame::Resize { width, height }.encode()?)
         .await
         .map_err(|_| Error::usage("exec request stream closed"))
+}
+
+/// Reading terminal stdin from a background process group raises SIGTTIN and
+/// stops the whole CLI, so a finished remote command could never terminate the
+/// session — `timeout(1)` and most CI harnesses run the CLI in a background
+/// group. Skip the reader there; exec then behaves as if stdin were closed.
+// ponytail: checked once at exec start; a later Ctrl-Z/bg still stops a
+// foreground-started reader, which is ordinary job control.
+fn stdin_is_readable() -> bool {
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return true;
+    }
+    rustix::termios::tcgetpgrp(&stdin).is_ok_and(|owner| owner == rustix::process::getpgrp())
 }
 
 #[must_use]

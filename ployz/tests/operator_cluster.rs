@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
 async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     let plan = ClusterPlan::new(&format!("l3-operator-{}", process::id()), 2).unwrap();
+    let first_machine_container = plan.machine_name(0);
     let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_two().await.unwrap();
     let mut client = ployz::connect::connect(
@@ -148,6 +149,27 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     assert!(
         tty.iter()
             .any(|frame| matches!(frame, ExecResponseFrame::Stdout(_)))
+    );
+
+    // #666: the packaged CLI must exit when the remote command exits even
+    // though terminal stdin never reaches EOF. `timeout(1)` also parks the
+    // CLI in a background process group, where a terminal stdin read would
+    // SIGTTIN-stop the process; `script` supplies the PTY.
+    let held_terminal = std::process::Command::new("docker")
+        .args([
+            "exec",
+            &first_machine_container,
+            "script",
+            "-qec",
+            "timeout 60 ployz exec -T app/operator-streams sh -c 'exit 7'; echo CODE:$?",
+            "/dev/null",
+        ])
+        .output()
+        .unwrap();
+    let held_terminal_stdout = String::from_utf8_lossy(&held_terminal.stdout);
+    assert!(
+        held_terminal_stdout.contains("CODE:7"),
+        "exec with held terminal stdin must exit with the remote code: {held_terminal_stdout}",
     );
 
     let detached_frames = run_exec(
