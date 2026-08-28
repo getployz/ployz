@@ -46,6 +46,7 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
         ok(Call::Start(machine, hook_id)),
         observed(Call::Inspect(machine, hook_id), exited(0)),
         ok(Call::Stop(machine, suffix)),
+        dropped(suffix),
     ]);
     assert!(matches!(
         execute_with(&plan, &client, &CancellationToken::new()).await,

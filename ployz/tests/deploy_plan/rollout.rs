@@ -518,7 +518,11 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
     assert!(matches!(
         operations(&plan).as_slice(),
         [
-            DeployOperation::StopContainer { container_id: stopped, .. },
+            DeployOperation::StopContainer {
+                container_id: stopped,
+                purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
+                ..
+            },
             DeployOperation::ReplaceContainer(ReplacementOperation {
                 old_container_id: replaced,
                 ..

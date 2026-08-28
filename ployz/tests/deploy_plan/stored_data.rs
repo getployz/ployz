@@ -51,6 +51,7 @@ fn deploy_operation_variants_do_not_destroy_stored_data() {
         DeployOperation::StopContainer {
             machine_id,
             container_id,
+            purpose: ployz_core::StopContainerPurpose::Lifecycle,
         },
         DeployOperation::RemoveContainer {
             machine_id,

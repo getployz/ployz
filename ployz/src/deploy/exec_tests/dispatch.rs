@@ -10,6 +10,7 @@ async fn dispatches_the_complete_algebra() {
     let new_run = container('d');
     let replacement = container('e');
     let new_hook = container('f');
+    let bind_conflict = container('8');
     let nested = container('9');
     let service = spec(None, None, None);
     let hook_spec = spec(None, None, Some(5_000));
@@ -22,6 +23,12 @@ async fn dispatches_the_complete_algebra() {
         DeployOperation::StopContainer {
             machine_id: first,
             container_id: old,
+            purpose: ployz_core::StopContainerPurpose::Lifecycle,
+        },
+        DeployOperation::StopContainer {
+            machine_id: first,
+            container_id: bind_conflict,
+            purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
         },
         DeployOperation::RemoveContainer {
             machine_id: first,
@@ -61,14 +68,31 @@ async fn dispatches_the_complete_algebra() {
             &new_run,
         ),
         ok(Call::Start(first, new_run)),
+        ok(Call::Wait(
+            vec![new_run],
+            ContainerObservationCondition::Serving,
+        )),
         ok(Call::Stop(first, old)),
+        ok(Call::Wait(
+            vec![old],
+            ContainerObservationCondition::Dropped,
+        )),
+        ok(Call::Stop(first, bind_conflict)),
         ok(Call::Stop(first, removed)),
         ok(Call::Remove(first, removed)),
+        ok(Call::Wait(
+            vec![removed],
+            ContainerObservationCondition::Dropped,
+        )),
         created(
             Call::Create(first, ContainerKind::ServiceContainer),
             &replacement,
         ),
         ok(Call::Start(first, replacement)),
+        ok(Call::Wait(
+            vec![replacement],
+            ContainerObservationCondition::Serving,
+        )),
         ok(Call::Stop(first, old)),
         ok(Call::Remove(first, old)),
         ok(Call::Stop(second, hook)),
@@ -81,6 +105,10 @@ async fn dispatches_the_complete_algebra() {
             &nested,
         ),
         ok(Call::Start(second, nested)),
+        ok(Call::Wait(
+            vec![nested],
+            ContainerObservationCondition::Serving,
+        )),
         ok(Call::RemoveVolume(DockerVolumeId {
             machine_id: first,
             name: DockerVolumeName::parse("data").unwrap(),
@@ -141,6 +169,7 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
         .map(|id| DeployOperation::StopContainer {
             machine_id: machine,
             container_id: container(id),
+            purpose: ployz_core::StopContainerPurpose::Lifecycle,
         })
         .to_vec();
     let plan = operations.clone();
@@ -150,14 +179,17 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
             .iter()
             .take(failed_index + 1)
             .enumerate()
-            .map(|(index, operation)| {
+            .flat_map(|(index, operation)| {
                 let DeployOperation::StopContainer { container_id, .. } = operation else {
                     unreachable!()
                 };
                 if index == failed_index {
-                    failed(Call::Stop(machine, *container_id), "boom")
+                    vec![failed(Call::Stop(machine, *container_id), "boom")]
                 } else {
-                    ok(Call::Stop(machine, *container_id))
+                    vec![
+                        ok(Call::Stop(machine, *container_id)),
+                        dropped(*container_id),
+                    ]
                 }
             })
             .collect();
@@ -238,6 +270,7 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
         DeployOperation::StopContainer {
             machine_id: machine,
             container_id: stopped,
+            purpose: ployz_core::StopContainerPurpose::Lifecycle,
         },
         DeployOperation::RemoveContainer {
             machine_id: machine,
@@ -248,13 +281,16 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
     ];
     let client = Scripted::new(vec![
         Step(Call::Stop(machine, stopped), Reply::Error(missing.clone())),
+        dropped(stopped),
         Step(Call::Stop(machine, removed), Reply::Error(missing.clone())),
         Step(
             Call::Remove(machine, removed),
             Reply::Error(missing.clone()),
         ),
+        dropped(removed),
         Step(Call::RemoveVolume(volume), Reply::Error(missing)),
         ok(Call::Stop(machine, suffix)),
+        dropped(suffix),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;

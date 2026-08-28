@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -7,13 +7,14 @@ use std::{
 
 use ployz_core::{
     CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged, ContainerDetails,
-    ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled,
-    IngressProxyBackend, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin, MachineId,
-    MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
+    ContainerList, ContainerObservationMap, ContractDescription, Domain, DomainRecords,
+    ImageIngestReason, ImagePulled, IngressProxyBackend, IngressProxyConfig, LocalMachinePhase,
+    LogMetadata, LogOrigin, MachineId, MachineLogService, MachineRpc, MachineRpcClient,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    VolumeRemoved, op,
 };
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::{sync::watch, time::Instant};
 use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
 
@@ -30,6 +31,7 @@ use crate::{
 /// Metadata on a forwarded Machine-to-Machine Register. The named Allocator
 /// admits locally and does not forward again.
 pub(crate) const REGISTER_FORWARDED_METADATA: &str = "x-ployz-register-forwarded";
+const MAX_CONTAINER_OBSERVATION_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct MachineService {
@@ -372,6 +374,30 @@ impl MachineRpc for MachineService {
                 container: observation,
             }),
             Err(error) => respond(RpcError::from(&error)),
+        }
+    }
+
+    async fn get_container_observations(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::GetContainerObservations>(request)?;
+        let wait = Duration::from_millis(request.wait_millis);
+        if wait > MAX_CONTAINER_OBSERVATION_WAIT {
+            return respond(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "container observation wait exceeds 5 seconds".into(),
+                details: Value::Null,
+            });
+        }
+        let replicated = match self.replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        let response = container_observations(replicated, &request.container_ids, wait).await;
+        match response {
+            Ok(response) => respond(response),
+            Err(error) => respond(cluster_store_error(error)),
         }
     }
 
@@ -843,6 +869,42 @@ impl MachineRpc for MachineService {
     }
 }
 
+async fn container_observations(
+    replicated: &ReplicatedStore,
+    container_ids: &[ployz_core::ContainerId],
+    wait: Duration,
+) -> Result<ContainerObservationMap, crate::corrosion::Error> {
+    if wait.is_zero() || container_ids.is_empty() {
+        return read_container_observations(replicated, container_ids).await;
+    }
+    let mut changes = replicated.subscribe_container_changes().await?;
+    let initial = read_container_observations(replicated, container_ids).await?;
+    let deadline = Instant::now() + wait;
+    loop {
+        match tokio::time::timeout_at(deadline, changes.changed()).await {
+            Ok(Ok(())) => {
+                let current = read_container_observations(replicated, container_ids).await?;
+                if current != initial {
+                    return Ok(current);
+                }
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return read_container_observations(replicated, container_ids).await,
+        }
+    }
+}
+
+async fn read_container_observations(
+    replicated: &ReplicatedStore,
+    container_ids: &[ployz_core::ContainerId],
+) -> Result<ContainerObservationMap, crate::corrosion::Error> {
+    let mut containers = BTreeMap::new();
+    for container_id in container_ids {
+        containers.insert(*container_id, replicated.container(container_id).await?);
+    }
+    Ok(ContainerObservationMap { containers })
+}
+
 #[allow(clippy::result_large_err)]
 fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
     match error {
@@ -960,6 +1022,14 @@ fn store_error(error: StoreError) -> RpcError {
     };
     RpcError {
         code,
+        message: error.to_string(),
+        details: Value::Null,
+    }
+}
+
+fn cluster_store_error(error: crate::corrosion::Error) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Internal,
         message: error.to_string(),
         details: Value::Null,
     }

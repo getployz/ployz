@@ -147,6 +147,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
     assert_eq!(
         names(CapabilityAdvertisement::Cluster),
         [
+            "ployz.container.observations.v1",
             "ployz.dns.reserve.v1",
             "ployz.dns.show.v1",
             "ployz.dns.release.v1",

@@ -295,6 +295,17 @@ pub struct ReplacementOperation {
     pub skip_health_monitor: bool,
 }
 
+/// Why a Deploy stops a Container.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopContainerPurpose {
+    /// Complete a lifecycle change and wait for replicated consumers to drop it.
+    #[default]
+    Lifecycle,
+    /// Free a Docker host-port bind before the following replacement starts.
+    FreeHostPorts,
+}
+
 /// One step in a Deploy Plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -315,6 +326,8 @@ pub enum DeployOperation {
     StopContainer {
         machine_id: MachineId,
         container_id: ContainerId,
+        #[serde(default)]
+        purpose: StopContainerPurpose,
     },
     /// Remove a stopped container.
     RemoveContainer {

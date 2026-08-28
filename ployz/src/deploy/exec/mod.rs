@@ -6,12 +6,14 @@ use ployz_core::{
     ExecutionError, FailedOperation, HookFailure, InspectContainerRequest, MachineAction,
     MachineId, MachineTarget, MembershipObservation, OperationPhase, OperationRow, ProjectName,
     QualifiedService, RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, StartContainerRequest, StopContainerRequest, UpdateOrder, op,
+    RpcErrorCode, StartContainerRequest, StopContainerPurpose, StopContainerRequest, UpdateOrder,
+    op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::cluster::ContainerObservationCondition;
 use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 
 use super::{
@@ -68,6 +70,12 @@ fn replacement_health_failure_outcome_from<E>(
 }
 
 pub(super) trait MachineOperations {
+    async fn wait_for_container_observations(
+        &self,
+        container_ids: &[ContainerId],
+        condition: ContainerObservationCondition,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RpcError>;
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -104,6 +112,15 @@ pub(super) trait MachineOperations {
 }
 
 impl MachineOperations for Client {
+    async fn wait_for_container_observations(
+        &self,
+        container_ids: &[ContainerId],
+        condition: ContainerObservationCondition,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RpcError> {
+        Client::wait_for_container_observations(self, container_ids, condition, cancellation).await
+    }
+
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -286,6 +303,17 @@ struct RestartTolerant<'a, C> {
 }
 
 impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
+    async fn wait_for_container_observations(
+        &self,
+        container_ids: &[ContainerId],
+        condition: ContainerObservationCondition,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RpcError> {
+        self.inner
+            .wait_for_container_observations(container_ids, condition, cancellation)
+            .await
+    }
+
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -490,10 +518,22 @@ async fn execute_operation<C: MachineOperations>(
         DeployOperation::StopContainer {
             machine_id,
             container_id,
+            purpose,
         } => {
             progress.set_running(index, OperationPhase::StoppingContainer);
             ignore_not_found(client.stop_container(machine_id, container_id, None).await)
-                .map_err(|error| machine_error(MachineAction::StopContainer, error).into())
+                .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
+            if *purpose == StopContainerPurpose::Lifecycle {
+                client
+                    .wait_for_container_observations(
+                        &[*container_id],
+                        ContainerObservationCondition::Dropped,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|error| machine_error(MachineAction::InspectContainer, error))?;
+            }
+            Ok(())
         }
         DeployOperation::RemoveContainer {
             machine_id,
@@ -504,7 +544,15 @@ async fn execute_operation<C: MachineOperations>(
                 .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
             progress.set_running(index, OperationPhase::RemovingContainer);
             ignore_not_found(client.remove_container(machine_id, container_id).await)
-                .map_err(|error| machine_error(MachineAction::RemoveContainer, error).into())
+                .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
+            client
+                .wait_for_container_observations(
+                    &[*container_id],
+                    ContainerObservationCondition::Dropped,
+                    cancellation,
+                )
+                .await
+                .map_err(|error| machine_error(MachineAction::InspectContainer, error).into())
         }
         DeployOperation::ReplaceContainer(replacement) => {
             replace_container(
@@ -613,6 +661,14 @@ async fn run_container<C: MachineOperations>(
         )
         .await?;
     }
+    client
+        .wait_for_container_observations(
+            &[created.container_id],
+            ContainerObservationCondition::Serving,
+            cancellation,
+        )
+        .await
+        .map_err(|error| machine_error(MachineAction::InspectContainer, error))?;
     Ok(created.container_id)
 }
 
@@ -717,9 +773,16 @@ async fn replace_container<C: MachineOperations>(
         });
     }
 
+    client
+        .wait_for_container_observations(
+            &[container_id],
+            ContainerObservationCondition::Serving,
+            cancellation,
+        )
+        .await
+        .map_err(|error| machine_error(MachineAction::InspectContainer, error))?;
+
     if !stop_first {
-        // TODO(UT-074): the Ingress Proxy learns about the new container asynchronously, so stopping the old
-        // single replica here can still cause a brief interruption.
         progress.set_running(index, OperationPhase::StoppingContainer);
         ignore_not_found(
             client

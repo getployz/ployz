@@ -263,6 +263,16 @@ pub struct InspectContainerRequest {
     pub container_id: ContainerId,
 }
 
+/// Read complete replicated observations for a batch of Container IDs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetContainerObservationsRequest {
+    /// Container IDs whose current replicated documents are requested.
+    pub container_ids: Vec<ContainerId>,
+    /// Maximum daemon-side hold before returning the current map.
+    #[serde(default)]
+    pub wait_millis: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CreateContainerRequest {
     pub kind: ContainerKind,
@@ -648,6 +658,13 @@ pub struct ContainerDetails {
     pub container: ContainerObservation,
 }
 
+/// Complete replicated observation map; `None` means the row is absent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContainerObservationMap {
+    /// One present or absent answer for every requested Container ID.
+    pub containers: BTreeMap<ContainerId, Option<ContainerObservation>>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContainerCreated {
     pub container_id: ContainerId,
@@ -819,6 +836,7 @@ define_responses! {
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
+    ContainerObservationMap(ContainerObservationMap) => "container_observation_map";
     ContainerCreated(ContainerCreated) => "container_created";
     ContainerChanged(ContainerChanged) => "container_changed";
     DockerVolume(DockerVolume) => "docker_volume";

@@ -12,6 +12,7 @@ async fn start_lost_to_a_daemon_restart_starts_the_created_container() {
         ),
         failed_unavailable(Call::Start(machine, created_id), "transport error"),
         ok(Call::Start(machine, created_id)),
+        serving(created_id),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -33,6 +34,7 @@ async fn start_lost_to_a_daemon_restart_accepts_a_container_that_is_already_runn
         failed_unavailable(Call::Start(machine, created_id), "transport error"),
         ok(Call::Start(machine, created_id)),
         observed(Call::Inspect(machine, created_id), running()),
+        serving(created_id),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -58,12 +60,14 @@ async fn two_consecutive_run_containers_each_survive_a_target_restart() {
         ),
         failed_unavailable(Call::Start(first_machine, first), "transport error"),
         ok(Call::Start(first_machine, first)),
+        serving(first),
         created(
             Call::Create(second_machine, ContainerKind::ServiceContainer),
             &second,
         ),
         failed_unavailable(Call::Start(second_machine, second), "transport error"),
         ok(Call::Start(second_machine, second)),
+        serving(second),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -85,6 +89,7 @@ async fn inspect_lost_to_a_daemon_restart_is_waited_out() {
         ok(Call::Start(machine, created_id)),
         failed_unavailable(Call::Inspect(machine, created_id), "transport error"),
         observed(Call::Inspect(machine, created_id), running()),
+        serving(created_id),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;

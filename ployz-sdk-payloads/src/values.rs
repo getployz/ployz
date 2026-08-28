@@ -28,9 +28,10 @@ use ployz_core::{
     ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
     ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StorageChoice,
-    TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver,
-    VolumeInventory, VolumeObservationFailure, VolumeSource, VolumeToCreate, WireGuardPublicKey,
+    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    StopContainerPurpose, StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss,
+    UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory, VolumeObservationFailure,
+    VolumeSource, VolumeToCreate, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -854,6 +855,7 @@ fn deploy_preview() -> DeployPreview {
             DeployOperation::StopContainer {
                 machine_id: machine_id(MACHINE_ID_HEX),
                 container_id: container_id(),
+                purpose: StopContainerPurpose::Lifecycle,
             },
             Some(MachineName::parse("edge").expect("fixture Machine Name is valid")),
             Some("api-1".into()),
@@ -912,6 +914,7 @@ fn deploy_outcome() -> DeployOutcome<ExecutionError> {
         completed: vec![DeployOperation::StopContainer {
             machine_id: machine_id(MACHINE_ID_HEX),
             container_id: container_id(),
+            purpose: StopContainerPurpose::Lifecycle,
         }],
     }
 }
@@ -930,6 +933,7 @@ fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
         unexecuted: vec![DeployOperation::StopContainer {
             machine_id: machine_id(MACHINE_ID_HEX),
             container_id: container_id(),
+            purpose: StopContainerPurpose::Lifecycle,
         }],
     }
 }
@@ -978,6 +982,7 @@ fn deploy_operations() -> [DeployOperation; 8] {
         DeployOperation::StopContainer {
             machine_id,
             container_id,
+            purpose: StopContainerPurpose::Lifecycle,
         },
         DeployOperation::RemoveContainer {
             machine_id,

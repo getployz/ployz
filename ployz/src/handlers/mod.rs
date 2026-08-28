@@ -7,6 +7,7 @@ use std::{
 
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
+use tokio_util::sync::CancellationToken;
 
 use crate::failure::Failure;
 
@@ -121,6 +122,20 @@ fn confirm() -> Result<bool, Error> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
+}
+
+fn cancellation_on_ctrl_c() -> CancellationToken {
+    let cancellation = CancellationToken::new();
+    let signal = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            () = signal.cancelled() => {}
+            result = tokio::signal::ctrl_c() => if result.is_ok() {
+                signal.cancel();
+            }
+        }
+    });
+    cancellation
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, Error> {

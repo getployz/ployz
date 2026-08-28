@@ -43,6 +43,7 @@ async fn execute_with<C: MachineOperations>(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Call {
+    Wait(Vec<ContainerId>, ContainerObservationCondition),
     List(QualifiedService),
     Create(MachineId, ContainerKind),
     Start(MachineId, ContainerId),
@@ -96,6 +97,15 @@ impl Scripted {
 }
 
 impl MachineOperations for Scripted {
+    async fn wait_for_container_observations(
+        &self,
+        container_ids: &[ContainerId],
+        condition: ContainerObservationCondition,
+        _cancellation: &CancellationToken,
+    ) -> Result<(), RpcError> {
+        unit(self.next(Call::Wait(container_ids.to_vec(), condition)))
+    }
+
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -191,6 +201,20 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
     }
 }
 
+fn serving(container_id: ContainerId) -> Step {
+    ok(Call::Wait(
+        vec![container_id],
+        ContainerObservationCondition::Serving,
+    ))
+}
+
+fn dropped(container_id: ContainerId) -> Step {
+    ok(Call::Wait(
+        vec![container_id],
+        ContainerObservationCondition::Dropped,
+    ))
+}
+
 #[path = "exec_tests/dispatch.rs"]
 mod dispatch;
 #[path = "exec_tests/health.rs"]
@@ -241,6 +265,7 @@ fn stop(machine_id: &MachineId, container_id: &ContainerId) -> DeployOperation {
     DeployOperation::StopContainer {
         machine_id: *machine_id,
         container_id: *container_id,
+        purpose: ployz_core::StopContainerPurpose::Lifecycle,
     }
 }
 

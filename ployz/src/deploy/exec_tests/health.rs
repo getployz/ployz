@@ -39,6 +39,7 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
             &new,
         ),
         ok(Call::Start(machine('1'), new)),
+        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -164,6 +165,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
         ),
         ok(Call::Start(machine, no_check)),
         observed(Call::Inspect(machine, no_check), running()),
+        serving(no_check),
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
             &inherited,
@@ -175,12 +177,14 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
             ployz_core::HealthcheckSpec::Configured(inherited_healthcheck),
         ),
         observed(Call::Inspect(machine, inherited), healthy()),
+        serving(inherited),
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
             &early,
         ),
         ok(Call::Start(machine, early)),
         observed(Call::Inspect(machine, early), healthy()),
+        serving(early),
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
             &transient,
@@ -188,6 +192,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
         ok(Call::Start(machine, transient)),
         observed(Call::Inspect(machine, transient), unhealthy()),
         observed(Call::Inspect(machine, transient), healthy()),
+        serving(transient),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -205,6 +210,7 @@ async fn health_monitor_accepts_a_clean_exit_instead_of_failing_as_restarting() 
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), exited(0)),
+        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -227,6 +233,7 @@ async fn health_monitor_succeeds_on_the_first_healthy_probe() {
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), starting()),
         observed(Call::Inspect(machine, new), healthy()),
+        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -244,6 +251,7 @@ async fn health_monitor_accepts_running_without_a_healthcheck_after_the_monitor(
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), running()),
+        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -363,6 +371,7 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
+        serving(new),
     ]);
     assert!(matches!(
         execute_with(&plan, &client, &CancellationToken::new()).await,
@@ -390,6 +399,7 @@ async fn health_monitor_does_not_inherit_when_spec_disables_the_check() {
             running(),
             ployz_core::HealthcheckSpec::Configured(inherited),
         ),
+        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
