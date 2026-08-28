@@ -46,11 +46,6 @@ pub struct MachineService {
 
 impl MachineService {
     #[must_use]
-    pub fn new(store: Arc<Mutex<LocalMachineStore>>, restart: watch::Sender<bool>) -> Self {
-        Self::with_cluster(store, restart, None)
-    }
-
-    #[must_use]
     pub fn with_cluster(
         store: Arc<Mutex<LocalMachineStore>>,
         restart: watch::Sender<bool>,
@@ -70,15 +65,6 @@ impl MachineService {
     #[must_use]
     pub fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
         self.local = self.local.with_containers(containers);
-        self
-    }
-
-    #[must_use]
-    pub(super) fn attach_cluster(
-        mut self,
-        cluster: Option<(ReplicatedStore, AdminClient)>,
-    ) -> Self {
-        self.local = self.local.with_cluster(cluster);
         self
     }
 

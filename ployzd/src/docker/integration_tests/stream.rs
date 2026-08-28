@@ -60,7 +60,7 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
     let (restart, _) = tokio::sync::watch::channel(false);
     let api = MachineApi::builder(Arc::new(Mutex::new(machine_store)), restart)
-        .with_containers(runtime)
+        .with_optional_containers(Some(runtime))
         .build()
         .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -179,7 +179,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
 
     let (restart, _) = tokio::sync::watch::channel(false);
     let api = MachineApi::builder(machine_store, restart)
-        .with_containers(runtime.clone())
+        .with_optional_containers(Some(runtime.clone()))
         .build()
         .unwrap();
     let server =
