@@ -36,6 +36,7 @@ pub use servers::{serve_ingress_probe, serve_local_machine, serve_machine};
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
 pub const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
+pub const RESET_PUBLIC_KEY: WireGuardPublicKey = WireGuardPublicKey([0xff; 32]);
 
 fn consume_transient_failure(remaining: &AtomicUsize) -> bool {
     remaining
@@ -52,6 +53,7 @@ pub struct JoinDaemon {
 
 struct JoinInner {
     registration: Registered,
+    public_key: Mutex<WireGuardPublicKey>,
     daemon_version: Mutex<String>,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
@@ -86,6 +88,7 @@ impl JoinDaemon {
     pub fn new(registration: Registered) -> Self {
         Self {
             inner: Arc::new(JoinInner {
+                public_key: Mutex::new(registration.assigned_machine.public_key),
                 registration,
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
@@ -145,6 +148,10 @@ impl JoinDaemon {
 
     pub fn reset_count(&self) -> usize {
         self.inner.resets.load(Ordering::SeqCst)
+    }
+
+    pub fn public_key(&self) -> WireGuardPublicKey {
+        *self.inner.public_key.lock().unwrap()
     }
 
     pub fn reserve_request(&self) -> Option<ReserveDomainRequest> {
@@ -326,7 +333,7 @@ impl MachineRpc for JoinDaemon {
                 LocalMachinePhase::Uninitialized
             },
             machine: joined.then(|| self.inner.registration.assigned_machine.clone()),
-            public_key: self.inner.registration.assigned_machine.public_key,
+            public_key: *self.inner.public_key.lock().unwrap(),
             advertised_endpoints: self
                 .inner
                 .registration
@@ -347,7 +354,7 @@ impl MachineRpc for JoinDaemon {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(MachineToken {
-            public_key: self.inner.registration.assigned_machine.public_key,
+            public_key: *self.inner.public_key.lock().unwrap(),
             public_ip: None,
             advertised_endpoints: self
                 .inner
@@ -373,6 +380,13 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::Join(join) = decoded.body else {
             return Err(Status::invalid_argument("expected Join"));
         };
+        if join.registration.assigned_machine.public_key != self.public_key() {
+            return rpc_ok(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "assigned public key does not match this Machine".into(),
+                details: serde_json::Value::Null,
+            });
+        }
         if let Some(pairing) = join.cloud_pairing.clone() {
             hold_register(
                 pairing.relay_url(),
@@ -806,6 +820,7 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.resets.fetch_add(1, Ordering::SeqCst);
         self.inner.joined.store(false, Ordering::SeqCst);
+        *self.inner.public_key.lock().unwrap() = RESET_PUBLIC_KEY;
         if let Some(hold) = self.inner._register.lock().unwrap().take() {
             hold.abort();
         }

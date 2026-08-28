@@ -64,16 +64,15 @@ pub fn enroll_with_installer(
     runtime()?.block_on(async {
         let mut client = connect_machine(matches).await?;
         client = synchronize_daemon(matches, client, installer).await?;
-        let details = client
-            .call::<op::Inspect>(InspectRequest::default(), None)
-            .await?;
-        let machine_token = client
-            .call::<op::MachineToken>(MachineTokenRequest::default(), None)
-            .await?;
-        let name = crate::handlers::machine::machine_name(requested_name, &machine_token)?;
-        let identity =
-            EnrollIdentity::from_machine_token(name.clone(), &machine_token, requested_storage);
-        let outcome = cloud_enroll::enroll(&url, &identity).await?;
+        let (mut details, mut machine_token, mut name, mut outcome) =
+            enroll_current_identity(&mut client, requested_name.clone(), requested_storage, &url)
+                .await?;
+        if join_must_refresh_identity(&details, &outcome, matches.get_flag("reset")) {
+            client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
+            (details, machine_token, name, outcome) =
+                enroll_current_identity(&mut client, requested_name, requested_storage, &url)
+                    .await?;
+        }
         match outcome {
             Outcome::Join(join) => enroll_join(matches, client, details, *join).await,
             Outcome::Initialize {
@@ -99,6 +98,42 @@ pub fn enroll_with_installer(
     })
 }
 
+fn join_must_refresh_identity(details: &MachineDetails, outcome: &Outcome, reset: bool) -> bool {
+    let Outcome::Join(join) = outcome else {
+        return false;
+    };
+    reset
+        && details.phase != LocalMachinePhase::Uninitialized
+        && !already_assigned(details, &join.registration.assigned_machine)
+}
+
+fn already_assigned(details: &MachineDetails, assigned: &Machine) -> bool {
+    details.phase == LocalMachinePhase::Participating
+        && details
+            .machine
+            .as_ref()
+            .is_some_and(|machine| machine.id == assigned.id)
+}
+
+async fn enroll_current_identity(
+    client: &mut Client,
+    requested_name: Option<MachineName>,
+    requested_storage: StorageChoice,
+    url: &str,
+) -> Result<(MachineDetails, MachineToken, MachineName, Outcome), Error> {
+    let details = client
+        .call::<op::Inspect>(InspectRequest::default(), None)
+        .await?;
+    let machine_token = client
+        .call::<op::MachineToken>(MachineTokenRequest::default(), None)
+        .await?;
+    let name = crate::handlers::machine::machine_name(requested_name, &machine_token)?;
+    let identity =
+        EnrollIdentity::from_machine_token(name.clone(), &machine_token, requested_storage);
+    let outcome = cloud_enroll::enroll(url, &identity).await?;
+    Ok((details, machine_token, name, outcome))
+}
+
 async fn enroll_join(
     matches: &ArgMatches,
     mut client: Client,
@@ -106,11 +141,7 @@ async fn enroll_join(
     join: Join,
 ) -> Result<(), Error> {
     let assigned = join.registration.assigned_machine.clone();
-    if details.phase == LocalMachinePhase::Participating
-        && details
-            .machine
-            .is_some_and(|machine| machine.id == assigned.id)
-    {
+    if already_assigned(&details, &assigned) {
         println!("Initialised Machine {} ({})", assigned.name, assigned.id);
         return Ok(());
     }
