@@ -7,13 +7,14 @@ use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ExecConfig, ExecOptions, ExecRequestFrame,
     ExecResponseFrame, LogBody, LogEntry, LogsOptions, MachineId, MachineName, MachineRpcClient,
-    MachineRpcServer, OpaquePayload, op,
+    OpaquePayload, op,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{Request, Status, transport::Server};
 
 use super::*;
+use crate::machine_api::MachineApi;
 
 #[tokio::test]
 async fn exec_forwards_output_while_docker_inspection_is_pending() {
@@ -58,15 +59,14 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
         .unwrap();
     let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
     let (restart, _) = tokio::sync::watch::channel(false);
-    let service = crate::rpc::MachineService::new(Arc::new(Mutex::new(machine_store)), restart)
-        .with_containers(runtime);
+    let api = MachineApi::builder(Arc::new(Mutex::new(machine_store)), restart)
+        .with_containers(runtime)
+        .build()
+        .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(service))
-            .serve_with_incoming(TcpListenerStream::new(listener)),
-    );
+    let server =
+        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
     let mut client = MachineRpcClient::connect(format!("http://{address}"))
         .await
         .unwrap();
@@ -178,13 +178,12 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     runtime.start(&created.container_id).await.unwrap();
 
     let (restart, _) = tokio::sync::watch::channel(false);
-    let service =
-        crate::rpc::MachineService::new(machine_store, restart).with_containers(runtime.clone());
-    let server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(service))
-            .serve_with_incoming(TcpListenerStream::new(listener)),
-    );
+    let api = MachineApi::builder(machine_store, restart)
+        .with_containers(runtime.clone())
+        .build()
+        .unwrap();
+    let server =
+        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
     let mut client = MachineRpcClient::connect(format!("http://{address}"))
         .await
         .unwrap();

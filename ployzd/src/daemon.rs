@@ -10,9 +10,7 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{
-    CORROSION_API_PORT, LocalMachinePhase, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-};
+use ployz_core::{CORROSION_API_PORT, LocalMachinePhase};
 use sd_notify::NotifyState;
 use thiserror::Error;
 use tokio::{
@@ -24,7 +22,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tokio_util::sync::CancellationToken;
-use tonic::{codec::CompressionEncoding, service::Routes, transport::Server};
+use tonic::transport::Server;
 
 use crate::{
     certificates,
@@ -38,10 +36,9 @@ use crate::{
     global_reconcile::{self, global_reconcile_observation_channel},
     ingress,
     machine::{LocalMachineBody, LocalMachineStore, StoreError},
+    machine_api::MachineApi,
     metrics,
-    network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
-    proxy::MachineProxy,
-    rpc::MachineService,
+    network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
 };
 
 /// How the daemon attaches a Container Runtime.
@@ -184,31 +181,22 @@ impl Daemon {
             .parent()
             .unwrap_or_else(|| Path::new("/run/ployz"))
             .join("ingress");
-        let service = MachineService::with_cluster(
-            Arc::clone(&store),
-            reset.clone(),
-            corrosion
-                .as_ref()
-                .map(|running| (running.store().clone(), running.admin_client())),
-        )
-        .with_optional_containers(containers.clone())
-        .with_ingress_data_dir(config.data_dir.clone())
-        .with_image_ingest(Arc::clone(&ingest))
-        .with_cloud_pairing(cloud_pairing_tx)
-        .with_global_reconcile_observations(global_reconcile_observations);
-        let proxy = MachineProxy::new(
-            Routes::new(
-                MachineRpcServer::new(service.clone())
-                    .send_compressed(CompressionEncoding::Gzip)
-                    .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
-            ),
-            local_id,
-            MACHINE_API_PORT,
-            replicated_store.clone(),
-        );
+        let machine_api = MachineApi::builder(Arc::clone(&store), reset.clone())
+            .with_cluster(
+                corrosion
+                    .as_ref()
+                    .map(|running| (running.store().clone(), running.admin_client())),
+            )
+            .with_optional_containers(containers.clone())
+            .with_ingress_data_dir(config.data_dir.clone())
+            .with_image_ingest(Arc::clone(&ingest))
+            .with_cloud_pairing(cloud_pairing_tx)
+            .with_global_reconcile_observations(global_reconcile_observations)
+            .build()
+            .map_err(|_| Error::StorePoisoned)?;
 
         let rpc = Server::builder().serve_with_incoming_shutdown(
-            proxy.clone(),
+            machine_api.clone(),
             UnixListenerStream::new(rpc_listener),
             shutdown.clone().cancelled_owned(),
         );
@@ -238,11 +226,11 @@ impl Daemon {
                 tokio::try_join!(
                     serve_machine_api(
                         explicit_machine_api_listener,
-                        proxy.clone(),
+                        machine_api.clone(),
                         shutdown.clone()
                     ),
-                    serve_machine_api(management_listener, proxy.clone(), shutdown.clone()),
-                    serve_machine_api(gateway_listener, proxy.clone(), shutdown.clone()),
+                    serve_machine_api(management_listener, machine_api.clone(), shutdown.clone()),
+                    serve_machine_api(gateway_listener, machine_api.clone(), shutdown.clone()),
                 )
                 .map(|_| ())
             };
@@ -329,7 +317,7 @@ impl Daemon {
                     }
                 }
             };
-            let global_reconcile_local = service.local();
+            let global_reconcile_local = machine_api.local();
             let global_reconcile = async {
                 match replicated_store.clone() {
                     Some(replicated) => global_reconcile::run(
@@ -351,7 +339,7 @@ impl Daemon {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                crate::relay::run(cloud_pairing_rx, local_id, service, shutdown.clone()).await
+                crate::relay::run(cloud_pairing_rx, machine_api.clone(), shutdown.clone()).await
             };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
@@ -538,13 +526,13 @@ pub async fn wait_until_socket_accepts(
 
 async fn serve_machine_api(
     listener: Option<TcpListener>,
-    proxy: MachineProxy,
+    machine_api: MachineApi,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     match listener {
         Some(listener) => Server::builder()
             .serve_with_incoming_shutdown(
-                proxy,
+                machine_api,
                 TcpListenerStream::new(listener),
                 shutdown.cancelled_owned(),
             )

@@ -13,8 +13,8 @@ use ployz::{
     connect::{Connector, SystemConnector},
     context::{Connection, SshDestination},
 };
-use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineRpcServer, op};
-use ployzd::{machine::LocalMachineStore, rpc::MachineService};
+use ployz_core::{DescribeContractRequest, MachineRpcClient, op};
+use ployzd::{machine::LocalMachineStore, machine_api::MachineApi};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpListener as TokioTcpListener, UnixListener},
@@ -35,20 +35,15 @@ async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
     ));
     let machine_id = store.lock().unwrap().record().id();
     let (reset, _) = watch::channel(false);
-    let service = MachineService::new(store, reset);
+    let api = MachineApi::builder(store, reset).build().unwrap();
     let tcp = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
     let tcp_address = tcp.local_addr().unwrap();
     let listener = UnixListener::bind(&socket).unwrap();
     let tcp_server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(service.clone()))
-            .serve_with_incoming(TcpListenerStream::new(tcp)),
+        Server::builder().serve_with_incoming(api.clone(), TcpListenerStream::new(tcp)),
     );
-    let unix_server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(service))
-            .serve_with_incoming(UnixListenerStream::new(listener)),
-    );
+    let unix_server =
+        tokio::spawn(Server::builder().serve_with_incoming(api, UnixListenerStream::new(listener)));
     let port = unused_address().port();
     let sshd = start_sshd(&root, port);
     wait_for_port(SocketAddr::from(([127, 0, 0, 1], port)));

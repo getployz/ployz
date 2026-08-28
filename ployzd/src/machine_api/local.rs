@@ -68,13 +68,17 @@ impl MachineService {
     }
 
     #[must_use]
-    pub fn with_containers(self, containers: ContainerRuntime) -> Self {
-        self.with_optional_containers(Some(containers))
+    pub fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
+        self.local = self.local.with_containers(containers);
+        self
     }
 
     #[must_use]
-    pub fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
-        self.local = self.local.with_containers(containers);
+    pub(super) fn attach_cluster(
+        mut self,
+        cluster: Option<(ReplicatedStore, AdminClient)>,
+    ) -> Self {
+        self.local = self.local.with_cluster(cluster);
         self
     }
 
@@ -119,6 +123,10 @@ impl MachineService {
     pub(crate) fn with_machine_api_port(mut self, port: u16) -> Self {
         self.machine_api_port = port;
         self
+    }
+
+    pub(super) fn machine_api_port(&self) -> u16 {
+        self.machine_api_port
     }
 
     #[allow(clippy::result_large_err)]
@@ -1065,5 +1073,5 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 }
 
 #[cfg(test)]
-#[path = "rpc_tests.rs"]
+#[path = "local_tests.rs"]
 mod tests;

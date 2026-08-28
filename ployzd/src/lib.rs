@@ -26,11 +26,10 @@ mod hosted_dns;
 pub(crate) mod ingress;
 pub mod logs;
 pub mod machine;
+pub mod machine_api;
 #[doc(hidden)]
 pub mod machine_pool;
 pub mod metrics;
 pub mod network;
-pub mod proxy;
 pub mod relay;
-pub mod rpc;
 pub(crate) mod runtime_watch;
