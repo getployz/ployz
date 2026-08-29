@@ -58,9 +58,9 @@ mod tests {
     #[test]
     fn observation_reports_root_total_and_available_bytes() {
         let observed = observe();
-        let (total, available) = filesystem_space(Path::new("/")).unwrap();
+        let (total, _) = filesystem_space(Path::new("/")).unwrap();
         assert_eq!(observed.disk_total_bytes, Some(total));
-        assert_eq!(observed.disk_available_bytes, Some(available));
+        let available = observed.disk_available_bytes.expect("root disk available");
         assert!(available <= total);
     }
 

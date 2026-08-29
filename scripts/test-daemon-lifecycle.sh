@@ -98,6 +98,7 @@ run_installer latest
 [ -x "$TMP/install/ployz-uninstall" ]
 [ -f "$TMP/state/preserved" ]
 grep -Fq 'EnvironmentFile=-/etc/default/ployz' "$TMP/systemd/ployz.service"
+grep -Fxq 'TimeoutStopSec=15' "$TMP/systemd/ployz.service"
 grep -Fxq 'RestartPreventExitStatus=78' "$TMP/systemd/ployz.service"
 grep -Fxq 'Before=docker.service' "$TMP/systemd/ployz-volume-plugin.socket"
 grep -Fxq 'ListenStream=/run/docker/plugins/ployz.sock' "$TMP/systemd/ployz-volume-plugin.socket"

@@ -13,14 +13,14 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::watch,
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::Connected};
 
 use crate::machine_api::MachineApi;
 
-/// Held Cloud Relay Register. Dropping it ends the stream.
+/// Held Cloud Relay Register. Dropping it ends the stream and Attach servers.
 #[must_use]
 pub struct RegisterHold {
     task: JoinHandle<()>,
@@ -48,12 +48,21 @@ pub async fn hold_register(
     let machine_id = machine_api.machine_id();
     let mut ws = client.register(pairing.as_str(), &machine_id).await?;
     let task = tokio::spawn(async move {
-        while let Ok(Some(message)) = ws.recv::<Open>().await {
-            if let Some(nonce) = message.ping_nonce() {
-                let _ = ws.send(&RegisterRequest::pong(nonce)).await;
-                continue;
+        let mut attaches = JoinSet::new();
+        loop {
+            tokio::select! {
+                message = ws.recv::<Open>() => {
+                    let Ok(Some(message)) = message else {
+                        break;
+                    };
+                    if let Some(nonce) = message.ping_nonce() {
+                        let _ = ws.send(&RegisterRequest::pong(nonce)).await;
+                        continue;
+                    }
+                    attaches.spawn(serve_attach(client.clone(), message, machine_api.clone()));
+                }
+                Some(_) = attaches.join_next() => {}
             }
-            tokio::spawn(serve_attach(client.clone(), message, machine_api.clone()));
         }
     });
     Ok(RegisterHold { task })
@@ -220,6 +229,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(description.machine_id, session.machine_id);
+    }
+
+    #[tokio::test]
+    async fn dropping_register_hold_ends_attached_rpc() {
+        let relay = RelayListen::start().await;
+        let (machine_id, api) = test_api();
+        let hold = hold_register(&relay.url, &secret(), api)
+            .await
+            .expect("Register hello is accepted");
+        wait_for_held(&relay.url, machine_id).await;
+        let mut client = connect_relay(
+            &relay.url,
+            DialCredential::parse(DIAL).unwrap(),
+            RelayPairing::parse(PAIRING).unwrap(),
+            machine_id,
+        )
+        .await
+        .unwrap();
+        client
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await
+            .unwrap();
+        drop(hold);
+        let stalled = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.call::<op::DescribeContract>(DescribeContractRequest {}, None),
+        )
+        .await;
+        assert!(
+            stalled.is_err() || stalled.unwrap().is_err(),
+            "Attach must not keep serving Machine RPC after Register hold drops"
+        );
     }
 
     #[tokio::test]

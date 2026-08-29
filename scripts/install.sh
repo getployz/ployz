@@ -492,6 +492,7 @@ ExecStart=$INSTALL_BIN_DIR/ployzd
 # Set PLOYZ_LOG=debug in /etc/default/ployz to raise verbosity.
 EnvironmentFile=-/etc/default/ployz
 TimeoutStartSec=20
+TimeoutStopSec=15
 Restart=always
 RestartPreventExitStatus=78
 RestartSec=2

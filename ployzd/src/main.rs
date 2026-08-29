@@ -70,13 +70,15 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run(args)) {
+    let code = match runtime.block_on(run(args)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             daemon_error_exit_code(&error)
         }
-    }
+    };
+    runtime.shutdown_timeout(Duration::from_secs(5));
+    code
 }
 
 fn daemon_error_exit_code(error: &Error) -> ExitCode {
