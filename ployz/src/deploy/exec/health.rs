@@ -254,11 +254,6 @@ fn classify_health(
         } if expectation == HealthExpectation::ContainerReady && health_deadline.is_none() => {
             HealthPoll::Complete
         }
-        ContainerRuntimeObservation::Exited { code: 0 }
-            if expectation == HealthExpectation::ContainerReady =>
-        {
-            HealthPoll::Complete
-        }
         ContainerRuntimeObservation::Running {
             health:
                 HealthObservation::Starting
@@ -278,7 +273,7 @@ fn classify_health(
         }
         // The process already died. Waiting would let a later healthy snapshot
         // during the next start window succeed the deploy.
-        ContainerRuntimeObservation::Restarting
+        ContainerRuntimeObservation::Restarting | ContainerRuntimeObservation::Exited { .. }
             if expectation == HealthExpectation::ContainerReady =>
         {
             HealthPoll::Failed(HealthFailure::Runtime {

@@ -202,7 +202,7 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
 }
 
 #[tokio::test]
-async fn health_monitor_accepts_a_clean_exit_instead_of_failing_as_restarting() {
+async fn health_monitor_fails_a_clean_exit_without_waiting_for_serving() {
     let machine = machine('1');
     let new = container('a');
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];
@@ -210,12 +210,25 @@ async fn health_monitor_accepts_a_clean_exit_instead_of_failing_as_restarting() 
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), exited(0)),
-        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    assert!(matches!(
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Health {
+                    failure: HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Exited { code: 0 },
+                    },
+                    ..
+                },
+                ..
+            },
+            ..
+        }
+    ));
     client.assert_done();
 }
 
