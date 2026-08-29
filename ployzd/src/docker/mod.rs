@@ -624,6 +624,8 @@ pub enum Error {
     SpecNotFound(ContainerId),
     #[error("container {0} was not found")]
     ContainerNotFound(ContainerId),
+    #[error("Docker name '{0}' is occupied by a different Serving Shape")]
+    SlotNameOccupied(String),
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
     #[error("container duration exceeds Docker's range")]
@@ -663,7 +665,8 @@ impl Error {
                 status_code: 409,
                 ..
             })
-            | Self::VolumeShapeMismatch { .. } => RpcErrorCode::Conflict,
+            | Self::VolumeShapeMismatch { .. }
+            | Self::SlotNameOccupied(_) => RpcErrorCode::Conflict,
             Self::VolumeCreatedButUnverified { .. } | Self::StorageUnobservable => {
                 RpcErrorCode::Unavailable
             }

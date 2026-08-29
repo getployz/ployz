@@ -737,6 +737,9 @@ impl ResolvedServiceSpec {
     }
 }
 
+mod serving_shape;
+pub use serving_shape::ServingShape;
+
 #[must_use]
 pub fn compare_specs(
     current: &ResolvedServiceSpec,
@@ -747,131 +750,11 @@ pub fn compare_specs(
     // recreate until the Machine API supports the narrower in-place updates retained by the
     // baseline TODOs.
     if requested.container.pull_policy == PullPolicy::Always
-        || immutable_service_fields_changed(current, requested)
+        || current.serving_shape() != requested.serving_shape()
     {
         return SpecChange::NeedsRecreate;
     }
     resource_change(&current.container.resources, &requested.container.resources)
-}
-
-fn immutable_service_fields_changed(
-    current: &ResolvedServiceSpec,
-    requested: &RequestedServiceSpec,
-) -> bool {
-    let ResolvedServiceSpec {
-        service_id: _,
-        name: current_name,
-        mode: current_mode,
-        container: current_container,
-        placement: current_placement,
-        ports: current_ports,
-        volume_graph: current_volumes,
-        config_graph: current_configs,
-        pre_deploy: _,
-        ingress_proxy_fragment: current_ingress_proxy_fragment,
-        update: _,
-    } = current;
-    let RequestedServiceSpec {
-        name: requested_name,
-        mode: requested_mode,
-        container: requested_container,
-        placement: requested_placement,
-        ports: requested_ports,
-        volume_graph: requested_volumes,
-        config_graph: requested_configs,
-        pre_deploy: _,
-        ingress_proxy_fragment: requested_ingress_proxy_fragment,
-        update: _,
-    } = requested;
-
-    current_name != requested_name
-        || !same_service_mode_kind(current_mode, requested_mode)
-        || immutable_container_fields_changed(current_container, requested_container)
-        || current_placement != requested_placement
-        || !same_multiset(current_ports, requested_ports)
-        || !same_multiset(current_volumes.volumes(), requested_volumes.volumes())
-        || !same_multiset(current_volumes.mounts(), requested_volumes.mounts())
-        || !same_multiset(current_configs.configs(), requested_configs.configs())
-        || !same_multiset(current_configs.mounts(), requested_configs.mounts())
-        || current_ingress_proxy_fragment != requested_ingress_proxy_fragment
-}
-
-fn immutable_container_fields_changed(
-    current: &ServiceContainerSpec,
-    requested: &ServiceContainerSpec,
-) -> bool {
-    let ServiceContainerSpec {
-        image: current_image,
-        command: current_command,
-        entrypoint: current_entrypoint,
-        environment: current_environment,
-        labels: current_labels,
-        hostname: current_hostname,
-        extra_hosts: current_extra_hosts,
-        cap_add: current_cap_add,
-        cap_drop: current_cap_drop,
-        healthcheck: current_healthcheck,
-        pull_policy: _,
-        init: current_init,
-        user: current_user,
-        working_directory: current_working_directory,
-        tty: current_tty,
-        open_stdin: current_open_stdin,
-        privileged: current_privileged,
-        pid_mode: current_pid_mode,
-        log_driver: current_log_driver,
-        resources: _,
-        stop_timeout_secs: current_stop_timeout_secs,
-        sysctls: current_sysctls,
-        restart: current_restart,
-    } = current;
-    let ServiceContainerSpec {
-        image: requested_image,
-        command: requested_command,
-        entrypoint: requested_entrypoint,
-        environment: requested_environment,
-        labels: requested_labels,
-        hostname: requested_hostname,
-        extra_hosts: requested_extra_hosts,
-        cap_add: requested_cap_add,
-        cap_drop: requested_cap_drop,
-        healthcheck: requested_healthcheck,
-        pull_policy: _,
-        init: requested_init,
-        user: requested_user,
-        working_directory: requested_working_directory,
-        tty: requested_tty,
-        open_stdin: requested_open_stdin,
-        privileged: requested_privileged,
-        pid_mode: requested_pid_mode,
-        log_driver: requested_log_driver,
-        resources: _,
-        stop_timeout_secs: requested_stop_timeout_secs,
-        sysctls: requested_sysctls,
-        restart: requested_restart,
-    } = requested;
-
-    current_image != requested_image
-        || current_command != requested_command
-        || current_entrypoint != requested_entrypoint
-        || current_environment != requested_environment
-        || current_labels != requested_labels
-        || current_hostname != requested_hostname
-        || current_extra_hosts != requested_extra_hosts
-        || !same_multiset(current_cap_add, requested_cap_add)
-        || !same_multiset(current_cap_drop, requested_cap_drop)
-        || current_healthcheck != requested_healthcheck
-        || current_init != requested_init
-        || current_user != requested_user
-        || current_working_directory != requested_working_directory
-        || current_tty != requested_tty
-        || current_open_stdin != requested_open_stdin
-        || current_privileged != requested_privileged
-        || current_pid_mode != requested_pid_mode
-        || current_log_driver != requested_log_driver
-        || current_stop_timeout_secs != requested_stop_timeout_secs
-        || current_sysctls != requested_sysctls
-        || current_restart != requested_restart
 }
 
 fn resource_change(current: &ContainerResources, requested: &ContainerResources) -> SpecChange {
@@ -907,24 +790,6 @@ fn resource_change(current: &ContainerResources, requested: &ContainerResources)
         return SpecChange::NeedsUpdate;
     }
     SpecChange::UpToDate
-}
-
-fn same_multiset<T: PartialEq>(left: &[T], right: &[T]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    // ponytail: O(n²) avoids requiring Ord or cloning domain values; sort if specs become large.
-    let mut matched = vec![false; right.len()];
-    left.iter().all(|item| {
-        right
-            .iter()
-            .zip(&mut matched)
-            .find(|(candidate, used)| !**used && item == *candidate)
-            .is_some_and(|(_, used)| {
-                *used = true;
-                true
-            })
-    })
 }
 
 #[cfg(test)]

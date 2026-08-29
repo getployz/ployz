@@ -3,7 +3,7 @@
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerObservation, HttpProtocol, IngressHost,
     IngressProxyBackend, IngressProxyFragment, Machine, MachineId, PortPublication,
-    QualifiedService, ServiceContainer, hostname_owners, service_containers, serving_replicas,
+    QualifiedService, ServiceContainer, hostname_owners, service_containers, serving_containers,
 };
 use serde::Serialize;
 use std::{
@@ -216,14 +216,12 @@ impl IngressProjection {
             }
         }
 
-        let mut serving = serving_replicas(&containers);
-        serving.sort_by_key(|container| container_order(&machine.id, container));
+        let mut serving = serving_containers(&containers);
+        serving.sort_by_key(|serving| container_order(&machine.id, serving.as_container()));
         let mut upstreams = BTreeMap::<QualifiedService, Vec<ContainerAddress>>::new();
-        for container in &serving {
-            let observation = container.as_observation();
-            let address = observation
-                .address
-                .expect("Serving Container has an address");
+        for serving in &serving {
+            let observation = serving.as_observation();
+            let address = serving.address();
             let owner = observation.identity();
             upstreams.entry(owner.clone()).or_default().push(address);
             for port in &observation.resolved_spec.ports {

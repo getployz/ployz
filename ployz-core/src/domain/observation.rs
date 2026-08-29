@@ -204,6 +204,17 @@ impl ServiceContainer {
     pub fn into_observation(self) -> ContainerObservation {
         self.observation
     }
+
+    /// Container Address when this Container is healthy and addressed.
+    ///
+    /// Presence is a per-Container runtime fact, not eligibility to receive
+    /// traffic. Traffic also requires a selected Serving Shape.
+    #[must_use]
+    pub fn traffic_address(&self) -> Option<ContainerAddress> {
+        let observation = self.as_observation();
+        observation.runtime.is_healthy().then_some(())?;
+        observation.address
+    }
 }
 
 impl HookContainer {

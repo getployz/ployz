@@ -221,8 +221,12 @@ The address assigned to one container within its Machine Subnet. Its apparent cl
 _Avoid_: Management Address, globally unique container address
 
 **Serving Container**:
-A Service Container that is healthy and has a Container Address. It is observer-derived eligibility to receive traffic, not a replica identity.
+A Service Container that is healthy, has a Container Address, and carries this observer's selected Serving Shape for its Qualified Service. It is observer-derived eligibility to receive traffic, not a replica identity.
 _Avoid_: replica, endpoint, upstream
+
+**Serving Shape**:
+The content identity of the Resolved Service Spec fields whose change requires a new Container. Equal shapes are interchangeable Containers. It is derived from observed spec content, not Cluster intent. Service ID is not a Serving Shape.
+_Avoid_: current version, desired generation, Service ID as generation
 
 **Public Ingress**:
 The public HTTP request path from DNS resolution through a Machine's Ingress Proxy to a Serving Container. It is a diagnostic boundary, not a single process or globally authoritative edge.
@@ -249,7 +253,7 @@ A Machine-local structured observation of one request handled by an Ingress Prox
 _Avoid_: Request archive, audit record, Public Ingress Diagnosis as certainty
 
 **Internal DNS Answer**:
-An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.
+An observer-local, TTL-zero A answer derived from Serving Containers and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, Cluster-wide endpoint set
 
 **Caller Project**:

@@ -10,7 +10,7 @@ use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, DescribeContractRequest, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
     GetContainerObservationsRequest, MachineId, MachineTarget, RpcError, RpcErrorCode, op,
-    service_containers, serving_replicas,
+    service_containers,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -121,8 +121,9 @@ impl Client {
                         );
                         round.push((
                             machine_id,
-                            Ok(serving_replicas(&containers)
-                                .into_iter()
+                            Ok(containers
+                                .iter()
+                                .filter(|container| container.traffic_address().is_some())
                                 .map(|container| container.as_observation().container_id)
                                 .collect::<BTreeSet<_>>()),
                         ));

@@ -109,10 +109,7 @@ fn automatic_sites_match_the_frozen_caddyfile_contract() {
             &local,
             "api",
             Some([10, 210, 1, 2]),
-            vec![
-                ingress("example.com", 80, HttpProtocol::Http),
-                ingress("secure.example.com", 8443, HttpProtocol::Https),
-            ],
+            vec![ingress("example.com", 80, HttpProtocol::Http)],
         ),
     ];
 
@@ -191,8 +188,8 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
         vec![ingress("example.com", 8080, HttpProtocol::Http)],
     );
     local_container.created_at_unix_nanos = 1;
-    local_container.resolved_spec.ingress_proxy_fragment =
-        Some(IngressProxyFragment::parse_caddy("# old").unwrap());
+    let fragment = IngressProxyFragment::parse_caddy("# selected").unwrap();
+    local_container.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
     let mut remote_container = observation(
         2,
         &remote,
@@ -201,7 +198,6 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
         vec![ingress("example.com", 8080, HttpProtocol::Http)],
     );
     remote_container.created_at_unix_nanos = 2;
-    let fragment = IngressProxyFragment::parse_caddy("# selected").unwrap();
     remote_container.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
     let material = CertificateMaterial::new("CERT", "KEY").unwrap();
     let challenge = CertificateChallenge::new("token", "response").unwrap();
@@ -930,16 +926,16 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
 # Docs: https://github.com/getployz/ployz2\n\
 \n\
 # User-defined global config from Service 'ployz-system/ingress'.\n\
-{\n\tauto_https off\n\tadmin unix/10.210.1.2 10.210.2.2\n}\n\n"
+{\n\tauto_https off\n\tadmin unix/10.210.2.2\n}\n\n"
     ));
     assert!(caddyfile.contains(
         "# User-defined config for Service 'app/api'.\n\
-api.example { reverse_proxy 10.210.1.2 10.210.2.2 }"
+api.example { reverse_proxy 10.210.2.2 }"
     ));
     assert!(!caddyfile.contains("old.example"));
     assert!(caddyfile.contains(
         "# User-defined config for Service 'app/gateway'.\n\
-gateway.example { reverse_proxy 10.210.1.2:9000 10.210.2.2:9000 }"
+gateway.example { reverse_proxy 10.210.2.2:9000 }"
     ));
     assert!(caddyfile.contains(
         "# Skipped invalid user-defined configs:\n\

@@ -27,7 +27,7 @@ use hickory_server::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     ContainerObservation, Machine, MachineId, MembershipObservation, QualifiedService, ServiceId,
-    service_containers, serving_replicas, synthesize_membership,
+    service_containers, serving_containers, synthesize_membership,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -129,16 +129,14 @@ impl Projection {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        for container in serving_replicas(&containers) {
-            let observation = container.as_observation();
+        for serving in serving_containers(&containers) {
+            let observation = serving.as_observation();
             if observation.machine_id != *local_id
                 && down_machines.is_some_and(|down| down.contains(&observation.machine_id))
             {
                 continue;
             }
-            let address = observation
-                .address
-                .expect("Serving Container has a Container Address");
+            let address = serving.address();
             let identity = observation.identity();
             service_ids
                 .entry(observation.service_id)

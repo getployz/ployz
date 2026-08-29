@@ -10,7 +10,7 @@ use bollard::{
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, Machine, MachineId,
     MachineStorageObservation, ProjectName, ResolvedServiceSpec, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
+    ServicePlacementIneligibleReason, ServicePlacementUnknownReason, SlotOccupancy,
 };
 
 #[cfg(test)]
@@ -175,7 +175,7 @@ impl ContainerRuntime {
             network,
             storage,
         } = request;
-        let mut existing = self
+        let existing = self
             .list_managed(&machine.id)
             .await
             .map_err(E::from)?
@@ -201,24 +201,17 @@ impl ContainerRuntime {
             }
         }
         let network = network.await?;
-        if let Some(current_index) = existing
-            .iter()
-            .position(|slot| slot.service_id == spec.service_id)
-        {
-            let current_index = existing
-                .iter()
-                .position(|slot| {
-                    slot.service_id == spec.service_id && runtime_is_running(&slot.runtime)
-                })
-                .unwrap_or(current_index);
-            let existing = existing.swap_remove(current_index);
-            if !runtime_is_running(&existing.runtime) {
-                self.start(&existing.container_id).await.map_err(E::from)?;
+        match SlotOccupancy::classify(existing, spec.serving_shape()) {
+            SlotOccupancy::Current(slot) => {
+                if !runtime_is_running(&slot.runtime) {
+                    self.start(&slot.container_id).await.map_err(E::from)?;
+                }
+                return Ok(GlobalSlotConvergence::Ensured(ContainerCreated {
+                    container_id: slot.container_id,
+                    display_name: slot.display_name,
+                }));
             }
-            return Ok(GlobalSlotConvergence::Ensured(ContainerCreated {
-                container_id: existing.container_id,
-                display_name: existing.display_name,
-            }));
+            SlotOccupancy::OtherShape | SlotOccupancy::Empty => {}
         }
         let created = self
             .prepare_and_create(
@@ -297,6 +290,9 @@ impl ContainerRuntime {
                             let existing = self
                                 .inspect_managed_by_name(&machine.id, &display_name)
                                 .await?;
+                            if existing.resolved_spec.serving_shape() != spec.serving_shape() {
+                                return Err(Error::SlotNameOccupied(display_name));
+                            }
                             return Ok(ContainerCreated {
                                 container_id: existing.container_id,
                                 display_name: existing.display_name,
@@ -617,7 +613,7 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
 fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
     let id = spec.service_id.as_str();
     let suffix = id.get(..8).unwrap_or(id);
-    format!("{}-{suffix}", spec.name)
+    format!("{}-{suffix}-{}", spec.name, spec.serving_shape().token())
 }
 
 fn ineligible_error(reason: ServicePlacementIneligibleReason) -> Error {
