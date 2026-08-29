@@ -44,29 +44,32 @@ impl AdminClient {
     }
 
     async fn command(&self, command: &impl Serialize) -> Result<Vec<Value>, Error> {
-        let stream = UnixStream::connect(&self.socket_path).await?;
-        let mut framed = LengthDelimitedCodec::builder()
-            .big_endian()
-            .length_field_length(4)
-            .new_framed(stream);
-        framed
-            .send(Bytes::from(serde_json::to_vec(command)?))
-            .await?;
+        super::within_io_timeout(async {
+            let stream = UnixStream::connect(&self.socket_path).await?;
+            let mut framed = LengthDelimitedCodec::builder()
+                .big_endian()
+                .length_field_length(4)
+                .new_framed(stream);
+            framed
+                .send(Bytes::from(serde_json::to_vec(command)?))
+                .await?;
 
-        let mut values = Vec::new();
-        while let Some(frame) = framed.next().await {
-            let frame = frame.map_err(|error| Error::Protocol(error.to_string()))?;
-            let response = decode_response(&frame)?;
-            match response {
-                AdminResponse::Success => return Ok(values),
-                AdminResponse::Json(value) => values.push(value),
-                AdminResponse::Error { msg } => return Err(Error::Api(msg)),
-                AdminResponse::Log { .. } => {}
+            let mut values = Vec::new();
+            while let Some(frame) = framed.next().await {
+                let frame = frame.map_err(|error| Error::Protocol(error.to_string()))?;
+                let response = decode_response(&frame)?;
+                match response {
+                    AdminResponse::Success => return Ok(values),
+                    AdminResponse::Json(value) => values.push(value),
+                    AdminResponse::Error { msg } => return Err(Error::Api(msg)),
+                    AdminResponse::Log { .. } => {}
+                }
             }
-        }
-        Err(Error::Protocol(
-            "admin response ended before Success".into(),
-        ))
+            Err(Error::Protocol(
+                "admin response ended before Success".into(),
+            ))
+        })
+        .await
     }
 
     pub async fn membership_states(&self) -> Result<Vec<MembershipState>, Error> {
@@ -171,7 +174,7 @@ mod tests {
     };
 
     use super::{AdminClient, decode_member_rtt, decode_membership_state, decode_response};
-    use crate::corrosion::Error;
+    use crate::corrosion::{Error, IO_TIMEOUT};
 
     #[test]
     fn malformed_response_is_a_protocol_error() {
@@ -258,6 +261,35 @@ mod tests {
             .unwrap();
         assert_eq!(response, vec![json!({"state": "Alive"})]);
         server.await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn membership_states_times_out_when_admin_never_replies() {
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-corrosion-admin-hang-{}",
+            ployz_core::MachineId::random()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("admin.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let error = tokio::time::timeout(
+            IO_TIMEOUT + std::time::Duration::from_secs(1),
+            AdminClient::new(path).membership_states(),
+        )
+        .await
+        .expect("hung admin must fail")
+        .expect_err("hung admin must fail");
+        assert!(
+            matches!(error, Error::Io(ref error) if error.kind() == io::ErrorKind::TimedOut),
+            "{error}"
+        );
+        server.abort();
         std::fs::remove_dir_all(root).unwrap();
     }
 

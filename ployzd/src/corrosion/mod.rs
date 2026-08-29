@@ -24,6 +24,8 @@ pub use service::{CorrosionConfig, DEFAULT_CONTAINER_NAME, RunningCorrosion};
 pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};
 pub use store::{ReplicatedObservations, ReplicatedStore};
 
+use std::time::Duration;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -49,4 +51,19 @@ pub enum Error {
     Api(String),
     #[error("invalid Corrosion protocol response: {0}")]
     Protocol(String),
+}
+
+pub(crate) const IO_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub(crate) async fn within_io_timeout<T>(
+    work: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(IO_TIMEOUT, work)
+        .await
+        .unwrap_or_else(|_| {
+            Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Corrosion I/O timed out",
+            )))
+        })
 }

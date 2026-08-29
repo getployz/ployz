@@ -239,7 +239,11 @@ impl Session {
     /// gathering fails, or planning fails.
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
-        let preview = client.preview(intent).await?;
+        let preview = tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => return Err(closed()),
+            preview = client.preview(intent) => preview?,
+        };
         Ok(PreparedDeploy {
             preview,
             client,
@@ -260,9 +264,11 @@ impl Session {
         volumes: VolumeFate,
     ) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
-        let preview = client
-            .preview_project_removal(&project_name, volumes)
-            .await?;
+        let preview = tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => return Err(closed()),
+            preview = client.preview_project_removal(&project_name, volumes) => preview?,
+        };
         Ok(PreparedDeploy {
             preview,
             client,

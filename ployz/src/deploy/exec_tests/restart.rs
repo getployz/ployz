@@ -163,3 +163,44 @@ async fn start_unavailable_stops_waiting_when_cancelled() {
     ));
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_create_waits_for_the_one_shot_then_removes() {
+    let machine = machine('1');
+    let created_id = container('a');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted::new(vec![
+        created_later(
+            Call::Create(machine, ContainerKind::ServiceContainer),
+            &created_id,
+        ),
+        ok(Call::Remove(machine, created_id)),
+    ]);
+    let cancellation = CancellationToken::new();
+    let execute = execute_with(&plan, &client, &cancellation);
+    tokio::pin!(execute);
+    tokio::select! {
+        outcome = &mut execute => panic!("create returned before cancel: {outcome:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
+    }
+    cancellation.cancel();
+    tokio::select! {
+        outcome = &mut execute => panic!("dropped in-flight create on cancel: {outcome:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
+    }
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), execute)
+        .await
+        .expect("cancelled create must return after the one-shot completes");
+
+    assert!(matches!(
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Cancelled,
+                ..
+            },
+            ..
+        }
+    ));
+    client.assert_done();
+}

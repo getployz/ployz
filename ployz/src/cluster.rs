@@ -519,11 +519,19 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns a connection or remote RPC error from `ListMachines`.
+    /// Returns a connection or remote RPC error from `ListMachines`. The whole
+    /// call, including unary retries, is capped at 10 seconds and surfaces as
+    /// deadline exceeded when that cap elapses.
     pub async fn machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
-        self.call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map(|list| list.machines)
+        match tokio::time::timeout(
+            TARGET_RPC_TIMEOUT,
+            self.call::<op::ListMachines>(ListMachinesRequest {}, None),
+        )
+        .await
+        {
+            Ok(result) => result.map(|list| list.machines),
+            Err(_) => Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into()),
+        }
     }
 
     pub(crate) async fn observe_machine_storage(&self, machines: &mut [MachineObservation]) {

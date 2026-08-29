@@ -59,6 +59,7 @@ enum Reply {
     Ok,
     Listed(Vec<ContainerObservation>),
     Created(ContainerId),
+    CreatedLater(ContainerId),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -113,7 +114,11 @@ impl MachineOperations for Scripted {
         match self.next(Call::List(service.clone())) {
             Reply::Listed(containers) => Ok(containers),
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
+            Reply::Ok
+            | Reply::Created(_)
+            | Reply::CreatedLater(_)
+            | Reply::Observed(_, _)
+            | Reply::Pending => {
                 panic!("scripted list requires Listed or Error")
             }
         }
@@ -131,8 +136,16 @@ impl MachineOperations for Scripted {
                 display_name: container_id.to_string(),
                 container_id,
             }),
+            Reply::CreatedLater(container_id) => {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                Ok(ContainerCreated {
+                    display_name: container_id.to_string(),
+                    container_id,
+                })
+            }
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Listed(_) | Reply::Observed(_, _) | Reply::Pending => {
+            Reply::Pending => std::future::pending().await,
+            Reply::Ok | Reply::Listed(_) | Reply::Observed(_, _) => {
                 panic!("scripted create requires Created or Error")
             }
         }
@@ -159,7 +172,7 @@ impl MachineOperations for Scripted {
             }
             Reply::Pending => std::future::pending().await,
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Listed(_) | Reply::Created(_) => {
+            Reply::Ok | Reply::Listed(_) | Reply::Created(_) | Reply::CreatedLater(_) => {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
@@ -195,7 +208,11 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
     match reply {
         Reply::Ok => Ok(()),
         Reply::Error(error) => Err(error),
-        Reply::Listed(_) | Reply::Created(_) | Reply::Observed(_, _) | Reply::Pending => {
+        Reply::Listed(_)
+        | Reply::Created(_)
+        | Reply::CreatedLater(_)
+        | Reply::Observed(_, _)
+        | Reply::Pending => {
             panic!("scripted mutation requires Ok or Error")
         }
     }
@@ -391,6 +408,10 @@ fn ok(call: Call) -> Step {
 
 fn created(call: Call, container_id: &ContainerId) -> Step {
     Step(call, Reply::Created(*container_id))
+}
+
+fn created_later(call: Call, container_id: &ContainerId) -> Step {
+    Step(call, Reply::CreatedLater(*container_id))
 }
 
 fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {

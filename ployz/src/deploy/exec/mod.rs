@@ -597,6 +597,10 @@ async fn execute_operation<C: MachineOperations>(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "progress row plus Project label travel together through execute"
+)]
 async fn create_and_start<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -605,12 +609,25 @@ async fn create_and_start<C: MachineOperations>(
     kind: ContainerKind,
     project_name: &ProjectName,
     spec: &ResolvedServiceSpec,
+    cancellation: &CancellationToken,
 ) -> Result<ContainerCreated, ExecutionError> {
     progress.set_running(index, OperationPhase::CreatingContainer);
-    let created = client
+    let created = match client
         .create_container(machine_id, kind, project_name, spec)
         .await
-        .map_err(|error| machine_error(MachineAction::CreateContainer, error))?;
+    {
+        Ok(created) => created,
+        Err(_) if cancellation.is_cancelled() => return Err(ExecutionError::Cancelled),
+        Err(error) => {
+            return Err(machine_error(MachineAction::CreateContainer, error));
+        }
+    };
+    if cancellation.is_cancelled() {
+        let _ = client
+            .remove_container(machine_id, &created.container_id)
+            .await;
+        return Err(ExecutionError::Cancelled);
+    }
     progress.set_display_name(index, created.display_name.clone());
     progress.set_running(index, OperationPhase::StartingContainer);
     if let Err(error) = client
@@ -647,6 +664,7 @@ async fn run_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         project_name,
         spec,
+        cancellation,
     )
     .await?;
     if !skip_health_monitor {
@@ -720,6 +738,7 @@ async fn replace_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         project_name,
         &operation.spec,
+        cancellation,
     )
     .await?;
     let container_id = created.container_id;
@@ -840,6 +859,7 @@ async fn run_hook<C: MachineOperations>(
         ContainerKind::PreDeployHook,
         project_name,
         spec,
+        cancellation,
     )
     .await?;
     let container_id = created.container_id;

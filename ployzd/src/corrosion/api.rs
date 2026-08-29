@@ -77,15 +77,20 @@ impl ApiClient {
         &self,
         statements: impl IntoIterator<Item = Statement>,
     ) -> Result<(), Error> {
-        let response = self
-            .client
-            .post(self.base_url.join("v1/transactions").expect("static path"))
-            .json(&statements.into_iter().collect::<Vec<_>>())
-            .send()
-            .await?;
-        let status = response.status();
+        let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
-        let body = response.bytes().await?;
+        let (status, body) = super::within_io_timeout(async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/transactions").expect("static path"))
+                .json(&statements)
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.bytes().await?;
+            Ok::<_, Error>((status, body))
+        })
+        .await?;
         let decoded = serde_json::from_slice::<ExecResponse>(&body);
         if !status.is_success() {
             return Err(decoded
@@ -121,14 +126,18 @@ impl ApiClient {
     }
 
     pub(crate) async fn query(&self, statement: Statement) -> Result<QueryResult, Error> {
-        let response = self
-            .client
-            .post(self.base_url.join("v1/queries").expect("static path"))
-            .json(&statement)
-            .send()
-            .await?;
-        let status = response.status();
-        let body = response.bytes().await?;
+        let (status, body) = super::within_io_timeout(async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/queries").expect("static path"))
+                .json(&statement)
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.bytes().await?;
+            Ok::<_, Error>((status, body))
+        })
+        .await?;
         if !status.is_success() {
             return Err(Error::Api(format!(
                 "HTTP {status}: {}",
@@ -354,6 +363,7 @@ mod tests {
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use super::{ApiClient, Statement};
+    use crate::corrosion::IO_TIMEOUT;
 
     #[tokio::test]
     async fn subscription_accepts_live_change_resnapshot_and_later_change() {
@@ -404,6 +414,36 @@ mod tests {
         })
         .await
         .unwrap();
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn query_times_out_when_corrosion_never_replies() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/queries",
+                    post(|| async { std::future::pending::<Body>().await }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
+        let error = tokio::time::timeout(
+            IO_TIMEOUT + Duration::from_secs(1),
+            client.query(Statement::new("SELECT 1", [])),
+        )
+        .await
+        .expect("hung query must fail")
+        .expect_err("hung query must fail");
+        assert!(
+            matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+            "{error}"
+        );
         server.abort();
     }
 }
