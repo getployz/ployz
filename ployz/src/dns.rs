@@ -7,9 +7,9 @@ use std::{
 
 use ployz_core::{
     ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, HttpProtocol,
-    INGRESS_VERIFY_PATH, IngressHost, IngressHostname, IngressLabelTooLong, Machine, MachineId,
-    MachineObservation, PortPublication, ProjectName, QualifiedService, RequestedServiceSpec,
-    cluster_dns_verdict, op,
+    INGRESS_VERIFY_PATH, IngressHost, IngressHostname, IngressLabelTooLong, LiveServices, Machine,
+    MachineId, MachineObservation, PortPublication, ProjectName, QualifiedService,
+    RequestedServiceSpec, cluster_dns_verdict, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -83,31 +83,33 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
     }
 }
 
-/// Publish remaining member public IPs after a Machine leaves.
+/// Publish remaining ingress public IPs after a Machine leaves.
 ///
-/// Uses the pre-removal membership snapshot so refresh does not Inspect over a
-/// reconverging mesh. Ingress Proxy filtering would need that mesh, so this path keeps
-/// every remaining public IP.
+/// An empty remaining set does not write records.
 ///
 /// # Errors
 ///
 /// Returns a connection or hosted-DNS error. An unreserved domain is success.
-pub(crate) async fn update_records_after_removal(
+pub(crate) async fn update_records_after_removal<E>(
     client: &mut Client,
     members: Vec<MachineObservation>,
     removed: &MachineId,
+    live: &LiveServices<E>,
 ) -> Result<(), Error> {
     if client.domain_if_reserved().await?.is_none() {
         return Ok(());
     }
-    let remaining = remaining_members(
+    // Inspect after membership delete is how #248 fails.
+    let remaining = remaining_ingress_members(
         members.into_iter().map(|observation| observation.machine),
         removed,
+        &ingress_machine_ids(live),
     );
-    if remaining.is_empty() {
+    let reachable = probe_machines(remaining).await?;
+    if reachable.is_empty() {
         return Ok(());
     }
-    publish_records(client, records_from_machines(&remaining)?).await
+    publish_records(client, records_from_machines(&reachable)?).await
 }
 
 /// Publish wildcard records for reachable Ingress Proxy Machines.
@@ -118,13 +120,7 @@ pub(crate) async fn update_records_after_removal(
 pub async fn update_records_for_ingress(client: &mut Client) -> Result<(), Error> {
     let observations = client.machines().await?;
     let live = client.live_services_from(&observations).await?;
-    let services = live.services();
-    let ingress_machines = services
-        .iter()
-        .flat_map(|service| &service.containers)
-        .filter(|container| crate::ingress::is_system_ingress(container.as_observation()))
-        .map(|container| container.as_observation().machine_id)
-        .collect::<BTreeSet<_>>();
+    let ingress_machines = ingress_machine_ids(&live);
     if ingress_machines.is_empty() {
         return Ok(());
     }
@@ -191,13 +187,25 @@ fn reachability_matches(machine_id: &MachineId, status: u16, body: Option<&[u8]>
     status == 200 && body == Some(machine_id.as_str().as_bytes())
 }
 
-fn remaining_members(
+fn ingress_machine_ids<E>(live: &LiveServices<E>) -> BTreeSet<MachineId> {
+    live.services()
+        .iter()
+        .flat_map(|service| &service.containers)
+        .filter(|container| crate::ingress::is_system_ingress(container.as_observation()))
+        .map(|container| container.as_observation().machine_id)
+        .collect()
+}
+
+fn remaining_ingress_members(
     members: impl IntoIterator<Item = Machine>,
     removed: &MachineId,
+    ingress: &BTreeSet<MachineId>,
 ) -> Vec<Machine> {
     members
         .into_iter()
-        .filter(|machine| machine.id != *removed && machine.public_ip.is_some())
+        .filter(|machine| {
+            machine.id != *removed && ingress.contains(&machine.id) && machine.public_ip.is_some()
+        })
         .collect()
 }
 
@@ -471,9 +479,7 @@ pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
-
-    use std::num::NonZeroU16;
+    use std::{collections::BTreeSet, net::IpAddr, num::NonZeroU16};
 
     use ployz_core::{
         DnsRecord, DnsRecordType, HttpProtocol, IngressHostname, Machine, MachineId,
@@ -482,8 +488,8 @@ mod tests {
 
     use super::{
         DomainRequired, ExpandIngressError, NoReachableMachines, expand_ingress_ports,
-        ingress_dns_warnings, reachability_matches, records_from_machines, remaining_members,
-        resolve_ingress_addresses,
+        ingress_dns_warnings, reachability_matches, records_from_machines,
+        remaining_ingress_members, resolve_ingress_addresses,
     };
 
     #[test]
@@ -527,13 +533,14 @@ mod tests {
 
     #[test]
     fn remaining_members_drop_the_removed_machine_from_a_three_machine_wildcard() {
-        let remaining = remaining_members(
+        let remaining = remaining_ingress_members(
             [
                 machine('1', "192.0.2.1"),
                 machine('2', "198.51.100.1"),
                 machine('3', "203.0.113.1"),
             ],
             &MachineId::parse("2".repeat(32)).unwrap(),
+            &machine_ids(['1', '2', '3']),
         );
         let records = records_from_machines(&remaining).unwrap();
         assert_eq!(
@@ -544,6 +551,38 @@ mod tests {
                 values: vec!["192.0.2.1".into(), "203.0.113.1".into()],
             }]
         );
+    }
+
+    #[test]
+    fn remaining_members_omit_a_public_machine_that_was_not_ingress() {
+        let remaining = remaining_ingress_members(
+            [
+                machine('1', "192.0.2.1"),
+                machine('2', "198.51.100.1"),
+                machine('3', "203.0.113.1"),
+            ],
+            &MachineId::parse("2".repeat(32)).unwrap(),
+            &machine_ids(['1', '2']),
+        );
+        let records = records_from_machines(&remaining).unwrap();
+        assert_eq!(
+            records,
+            vec![DnsRecord {
+                name: "*".into(),
+                record_type: DnsRecordType::A,
+                values: vec!["192.0.2.1".into()],
+            }]
+        );
+    }
+
+    #[test]
+    fn remaining_members_are_empty_when_the_last_ingress_machine_is_removed() {
+        let remaining = remaining_ingress_members(
+            [machine('1', "192.0.2.1"), machine('3', "203.0.113.1")],
+            &MachineId::parse("1".repeat(32)).unwrap(),
+            &machine_ids(['1']),
+        );
+        assert!(remaining.is_empty());
     }
 
     #[test]
@@ -921,5 +960,12 @@ mod tests {
         .unwrap();
         machine.public_ip = Some(public_ip.parse::<IpAddr>().unwrap());
         machine
+    }
+
+    fn machine_ids(seeds: impl IntoIterator<Item = char>) -> BTreeSet<MachineId> {
+        seeds
+            .into_iter()
+            .map(|seed| MachineId::parse(seed.to_string().repeat(32)).unwrap())
+            .collect()
     }
 }

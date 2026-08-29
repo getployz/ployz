@@ -349,6 +349,87 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn hosted_dns_wildcard_omits_non_ingress_members_after_machine_removal() {
+    let plan = ClusterPlan::new(&format!("l3-dns-mixed-{}", process::id()), 3).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    let machines = cluster.initialize_three().await.unwrap();
+    let direct = cluster.api_address(0).unwrap();
+    for index in 0..machines.len() {
+        poison_production_dns(&cluster, index);
+    }
+
+    let first_ip = outer_ipv4(&cluster, 0);
+    let second_ip = outer_ipv4(&cluster, 1);
+    let third_ip = outer_ipv4(&cluster, 2);
+    for (machine, address) in machines.iter().zip([first_ip, second_ip, third_ip]) {
+        cluster
+            .update_machine(
+                0,
+                machine.id.as_str(),
+                MachineUpdate {
+                    public_ip: PublicIpUpdate::Set(IpAddr::V4(address)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_exact_ingress(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
+    wait_exact_ingress(IpAddr::V4(second_ip), machines[1].id.as_str().as_bytes()).await;
+    wait_exact_ingress(IpAddr::V4(third_ip), machines[2].id.as_str().as_bytes()).await;
+
+    cluster
+        .machine_shell(
+            2,
+            "id=$(docker ps -aq --filter label=ployz.service.name=ingress | head -n1); [ -n \"$id\" ] && docker rm -f \"$id\"",
+        )
+        .unwrap();
+    wait_ingress_absent(IpAddr::V4(third_ip)).await;
+
+    let (port, hosted) = fake_hosted_service().await;
+    let gateway = cluster
+        .machine_shell(0, "ip route show default | awk '{print $3; exit}'")
+        .unwrap();
+    let endpoint = format!("http://{}:{port}", gateway.trim());
+    cli(
+        &direct,
+        &["dns", "reserve", "--endpoint", endpoint.as_str()],
+    );
+    assert_eq!(
+        authoritative_wildcard_a(&hosted.requests()),
+        vec![first_ip.to_string(), second_ip.to_string()],
+        "ordinary refresh must omit a public Machine that does not serve ingress"
+    );
+
+    let before_remove = record_requests(&hosted.requests()).len();
+    cli(
+        &direct,
+        &["machine", "rm", machines[1].id.as_str(), "--yes"],
+    );
+    let after_partial = hosted.requests();
+    assert_eq!(record_requests(&after_partial).len(), before_remove + 1);
+    assert_eq!(
+        authoritative_wildcard_a(&after_partial),
+        vec![first_ip.to_string()],
+        "removing one ingress Machine must not publish a remaining non-ingress member"
+    );
+
+    let third_direct = cluster.api_address(2).unwrap();
+    cli(
+        &third_direct,
+        &["machine", "rm", machines[0].id.as_str(), "--yes"],
+    );
+    assert_eq!(
+        authoritative_wildcard_a(&hosted.requests()),
+        vec![first_ip.to_string()],
+        "removing the last ingress Machine must keep last-known-good records, not the non-ingress member"
+    );
+}
+
 fn poison_production_dns(cluster: &Cluster, index: usize) {
     cluster
         .machine_shell(
@@ -394,6 +475,35 @@ async fn wait_exact_ingress(address: IpAddr, expected: &[u8]) {
     })
     .await
     .expect("Ingress Proxy verification endpoint did not become reachable");
+}
+
+async fn wait_ingress_absent(address: IpAddr) {
+    let http = HttpClient::builder()
+        .no_proxy()
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let reachable = http
+                .get(format!(
+                    "http://{}{}",
+                    std::net::SocketAddr::new(address, 80),
+                    ployz_core::INGRESS_VERIFY_PATH
+                ))
+                .send()
+                .await
+                .ok()
+                .is_some_and(|response| response.status().as_u16() == 200);
+            if !reachable {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Ingress Proxy verification endpoint stayed reachable");
 }
 
 fn cli(direct: &str, args: &[&str]) -> String {

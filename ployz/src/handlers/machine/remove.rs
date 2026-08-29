@@ -29,10 +29,6 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 "the current entry Machine cannot be removed while another Machine is visible",
             ));
         }
-        let selected_observation = machines
-            .iter()
-            .find(|entry| entry.machine.id == selected.id)
-            .expect("selected Machine came from this list");
         let confirmation = if no_reset {
             None
         } else {
@@ -44,9 +40,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 &observed, &named,
             )?)
         };
-        let live = client
-            .live_services_from(std::slice::from_ref(selected_observation))
-            .await?;
+        let live = client.live_services_from(&machines).await?;
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
         for line in service_warnings(&selected.name, &services) {
@@ -95,7 +89,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             config.save()?;
         }
         if let Err(error) =
-            crate::dns::update_records_after_removal(&mut client, machines, &selected.id).await
+            crate::dns::update_records_after_removal(&mut client, machines, &selected.id, &live)
+                .await
         {
             eprintln!(
                 "{}",
