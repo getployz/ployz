@@ -913,9 +913,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
-        LocalMachineError::DuplicateMachine => respond(RpcError {
+        LocalMachineError::KeyAlreadyNamed | LocalMachineError::NameTaken => respond(RpcError {
             code: RpcErrorCode::Conflict,
-            message: "Machine name or public key already exists".into(),
+            message: error.to_string(),
             details: Value::Null,
         }),
         LocalMachineError::EmptyUpdate => respond(RpcError {
