@@ -41,6 +41,8 @@ assert_contains "$action" "load: true"
 
 layer3="$ROOT/scripts/run-layer3-tests.sh"
 assert_contains "$layer3" "--test-threads=1"
+assert_contains "$layer3" "--no-fail-fast"
+assert_contains "$layer3" "--test certificates_cluster"
 if grep -Fq "for scenario" "$layer3"; then
     echo "$layer3 still isolates cluster scenarios" >&2
     exit 1

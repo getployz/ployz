@@ -32,6 +32,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - run: bash scripts/check-layer3-runner.sh
+      - run: bash scripts/check-product-paths.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo build -p ployz-sdk --locked
       - name: Test with a hostile ambient Ployz context
@@ -51,6 +53,7 @@ jobs:
       - run: bash scripts/test-testkit-image.sh
       - run: bash scripts/test-cli-installer.sh
       - run: bash scripts/test-daemon-lifecycle.sh
+      - run: bash scripts/test-qualify-release.sh
       - name: Check the daemon stays outside the CLI graph
         run: |
           if cargo tree --package ployz --target all --edges normal --prefix none --locked | grep -q '^ployzd '; then

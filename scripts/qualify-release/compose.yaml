@@ -1,0 +1,8 @@
+services:
+  data:
+    image: alpine:3.23.3
+    command: ["sleep", "infinity"]
+    volumes:
+      - qualify-data:/data
+volumes:
+  qualify-data:

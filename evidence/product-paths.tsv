@@ -1,0 +1,12 @@
+path	rung1	rung2	rung3	rung4	rung5
+compose-normalize	-	ployz/tests/compose.rs::normalized_surface_reaches_requested_specs	ployz/tests/compose_cli.rs::real_compose_normalizes_without_a_daemon_and_project_inputs_stay_relative	-	-
+cli-shape	-	-	ployz/tests/cli_shape.rs::clap_tree_matches_all_frozen_command_pages_and_declared_deviations	-	-
+cluster-deploy	-	ployz/tests/compose.rs::compose_plan_separates_volume_preview_from_service_operations	-	ployz/tests/deploy_cluster.rs::deploy_execution_preserves_partial_effects_and_never_repairs_them	scripts/qualify-release.sh
+named-volume	-	ployz/tests/compose.rs::one_named_volume_can_have_different_options_per_mount	-	ployz/tests/volume_layer3.rs::volume_cli_mounts_and_partial_results_stay_machine_local	scripts/qualify-release.sh
+machine-init-ssh	-	-	ployz/tests/cli_shape.rs::clap_tree_matches_all_frozen_command_pages_and_declared_deviations	-	scripts/qualify-release.sh
+internal-dns	-	-	-	ployz/tests/internal_dns_cluster.rs::internal_dns_tracks_healthy_replicated_containers	gap
+ingress-http	-	-	-	ployz/tests/ingress_cluster.rs::caddy_projects_and_loads_cluster_services_on_three_machines	gap
+acme-certs	-	-	-	ployz/tests/certificates_cluster.rs::custom_https_hostname_obtains_a_certificate_from_a_fake_ca	gap
+exec-logs	-	-	-	ployz/tests/operator_cluster.rs::exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster	gap
+installer	scripts/test-cli-installer.sh	-	-	-	-
+daemon-install	scripts/test-daemon-lifecycle.sh	-	-	-	-
