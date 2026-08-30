@@ -2,6 +2,8 @@
 
 Ployz is a cluster of Docker machines. The CLI is `ployz`. The daemon is `ployzd`. Operational semantics stay deliberately weak: a Cluster is what one entry Machine observes, not a globally authoritative entity.
 
+Architectural bets and their red flags live in [DESIGN.md](DESIGN.md).
+
 ## Language
 
 **Ployz**:
@@ -11,6 +13,14 @@ _Avoid_: Uncloud, Ployz2
 **Cluster**:
 The product-level mesh as observed from one entry machine. A Cluster is not a globally authoritative entity or complete view.
 _Avoid_: Cluster truth, authoritative cluster state
+
+**Cluster Observation**:
+One Entry Machine's incomplete, potentially stale view of a Cluster.
+_Avoid_: Cluster truth, complete view
+
+**Entry Machine**:
+The Machine through which a client observes a Cluster and routes commands. It represents only what it can currently observe.
+_Avoid_: Controller, leader, source of Cluster truth
 
 **Machine**:
 A durable participant identity in a Cluster. Its local lifecycle and its membership as observed by another Machine are separate facts.
