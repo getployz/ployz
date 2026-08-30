@@ -14,6 +14,14 @@ _Avoid_: Uncloud, Ployz2
 The product-level mesh as observed from one entry machine. A Cluster is not a globally authoritative entity or complete view.
 _Avoid_: Cluster truth, authoritative cluster state
 
+**Cluster Observation**:
+One Entry Machine's incomplete, potentially stale view of a Cluster.
+_Avoid_: Cluster truth, complete view
+
+**Entry Machine**:
+The Machine through which a client observes a Cluster and routes commands. It represents only what it can currently observe.
+_Avoid_: Controller, leader, source of Cluster truth
+
 **Machine**:
 A durable participant identity in a Cluster. Its local lifecycle and its membership as observed by another Machine are separate facts.
 _Avoid_: Node, host, member

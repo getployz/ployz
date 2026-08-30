@@ -1,9 +1,14 @@
 # Ployz design
 
-Ployz runs containerized services across a Cluster of Docker Machines joined by a
-flat WireGuard mesh. There is no central control plane: every Machine is an equal
-entry point, state replicates between Machines as CRDTs, and a Cluster is what one
-entry Machine observes — never a globally authoritative entity.
+Ployz is the distributed deployment engine behind Ployz Cloud. Cloud is the
+primary product surface; the CLI, SDK, and Compose integration are adapters into
+the same system.
+
+Ployz runs containerized services across a Cluster of user-owned Docker Machines
+joined by a flat WireGuard mesh. There is no central control plane: every Machine
+is an equal Entry Machine, state replicates between Machines as CRDTs, and a
+Cluster Observation is what one Entry Machine sees — never a globally
+authoritative entity.
 
 Vocabulary: capitalized terms (Machine, Deploy, Cluster, …) carry the exact
 meanings defined in [CONTEXT.md](CONTEXT.md).
@@ -14,7 +19,9 @@ Judge every new feature against the bets below before designing it. Each bet sta
 the position, why Ployz holds it, and the red flags that signal a design fighting
 it. A change that fights a bet needs an ADR in `docs/adr/` justifying the
 exception — or a redesign. A red flag is not an automatic no; it is a demand for
-that justification.
+that justification. The Boundaries section at the end lists what Ployz
+deliberately does not provide; a feature that needs one of those is fighting the
+design, not filling a gap.
 
 ## 1. Observer-relative truth
 
@@ -110,18 +117,20 @@ Allocator that does exist is itself only a Replicated Observation.
 round trip to an allocator, refusing to operate because an allocator is
 unreachable.
 
-## 7. Cloud is a byte pipe
+## 7. Cloud drives, never owns
 
-**The bet.** The Cloud Relay is a hosted pipe Machines dial out to and hold open.
-It carries opaque streams, interprets none of them, holds no Cluster observation,
-and is not a Machine or mesh peer.
+**The bet.** Cloud is the primary way users drive Ployz, but it is not a Cluster
+controller and holds no runtime truth. The Cloud Relay is a hosted pipe Machines
+dial out to and hold open: it carries opaque streams, interprets none of them,
+holds no Cluster observation, and is not a Machine or mesh peer.
 
 **Why.** A dumb relay keeps the hosted surface small and auditable. The Cluster is
-fully functional without it, and no Cloud outage or compromise can corrupt Cluster
-semantics — it can only sever the pipe.
+fully functional without Cloud, and no Cloud outage or compromise can corrupt
+Cluster semantics — it can only sever the pipe and pause Cloud-driven actions.
 
 **Red flags:** relay-side interpretation or routing of payloads, Cloud-held
-Cluster state, features that work only through the relay.
+runtime state, Cluster operations whose correctness depends on Cloud
+reachability.
 
 ## 8. Evidence over claims
 
@@ -149,3 +158,34 @@ nobody else will build.
 
 **Red flags:** hand-rolled consensus, custom overlay networking, bespoke TLS,
 reimplementing behavior a shipped, proven component already provides.
+
+## 10. Client-first, daemon when forced
+
+**The bet.** Behavior lands in the client first. The daemon owns only behavior
+that must continue without a client, enforce a Machine-local safety boundary, or
+manage a Machine-local resource — Machine lifecycle, networking, local Docker
+operations and observations, Machine-local serving infrastructure. New daemon
+policy needs one of those reasons.
+
+**Why.** Client changes are cheaper to distribute than daemon changes: a daemon
+change must reach every Machine in every Cluster, while a client update ships
+instantly. This is an economic preference, not a rule that all coordination
+belongs in the client.
+
+**Red flags:** daemon-side policy without one of the three reasons, daemon logic
+a client could compute from the observations it already gathers.
+
+## Boundaries
+
+Ployz deliberately does not provide:
+
+- an authoritative global Cluster view;
+- a centralized scheduler or control-plane quorum;
+- Cluster-wide atomic operations or general rollback;
+- automatic correction of every difference between observations;
+- a generic abstraction over container runtimes — Docker is the runtime;
+- continuously replicated persistent storage.
+
+These boundaries keep failure visible and each Machine independently useful. Add
+a stronger guarantee only when the product requires it and the system can prove
+it.
