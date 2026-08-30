@@ -3,6 +3,7 @@
 use std::{ops::AsyncFnMut, time::Duration};
 
 use clap::ArgMatches;
+use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, CloudPairing, DescribeContractRequest, InitializeRequest, InspectRequest,
     JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken,
@@ -60,6 +61,9 @@ pub fn enroll_with_installer(
     let requested_storage = *matches
         .get_one::<StorageChoice>("storage")
         .expect("storage has a default");
+    let cluster_network = *matches
+        .get_one::<Ipv4Net>("network")
+        .expect("Cluster network has a default");
 
     runtime()?.block_on(async {
         let mut client = connect_machine(matches).await?;
@@ -82,6 +86,7 @@ pub fn enroll_with_installer(
                     details,
                     machine_token,
                     name,
+                    cluster_network,
                     mode,
                     pairing,
                     storage,
@@ -187,6 +192,7 @@ async fn enroll_founder(
     details: MachineDetails,
     machine_token: MachineToken,
     name: MachineName,
+    cluster_network: Ipv4Net,
     mode: InitializeMode,
     pairing: CloudPairing,
     storage: StorageChoice,
@@ -246,13 +252,7 @@ async fn enroll_founder(
                 .call::<op::Initialize>(
                     InitializeRequest {
                         name,
-                        cluster_network: matches
-                            .get_one::<String>("network")
-                            .expect("Cluster network has a default")
-                            .parse()
-                            .map_err(|error| {
-                                Error::usage(format!("invalid Cluster network: {error}"))
-                            })?,
+                        cluster_network,
                         ingress_proxy_backend: backend,
                         public_ip: machine_token.public_ip,
                         advertised_endpoints: machine_token.advertised_endpoints,

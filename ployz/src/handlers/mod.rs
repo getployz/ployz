@@ -460,8 +460,8 @@ mod tests {
             Some("pmet_test")
         );
         assert_eq!(
-            enroll.get_one::<String>("network").map(String::as_str),
-            Some("10.210.0.0/16")
+            enroll.get_one::<ipnet::Ipv4Net>("network").copied(),
+            Some("10.210.0.0/16".parse().unwrap())
         );
         assert!(
             command()
@@ -509,8 +509,8 @@ mod tests {
             .unwrap();
         assert_eq!(enroll.get_one::<String>("name").unwrap(), "edge");
         assert_eq!(
-            enroll.get_one::<String>("network").unwrap(),
-            "10.220.0.0/16"
+            enroll.get_one::<ipnet::Ipv4Net>("network").copied(),
+            Some("10.220.0.0/16".parse().unwrap())
         );
         assert_eq!(
             enroll.get_one::<ployz_core::StorageChoice>("storage"),
@@ -524,6 +524,24 @@ mod tests {
         assert_eq!(
             enroll.get_one::<String>("cloud-url").map(String::as_str),
             Some("example.test")
+        );
+    }
+
+    #[test]
+    fn cloud_enroll_rejects_an_invalid_cluster_network() {
+        assert!(
+            command()
+                .try_get_matches_from([
+                    "ployz",
+                    "cloud",
+                    "enroll",
+                    "pmet_test",
+                    "--reset",
+                    "--yes",
+                    "--network",
+                    "not-a-cidr",
+                ])
+                .is_err()
         );
     }
 
