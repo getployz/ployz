@@ -2,6 +2,8 @@
 
 Ployz is a cluster of Docker machines. The CLI is `ployz`. The daemon is `ployzd`. Operational semantics stay deliberately weak: a Cluster is what one entry Machine observes, not a globally authoritative entity.
 
+Architectural bets and their red flags live in [DESIGN.md](DESIGN.md).
+
 ## Language
 
 **Ployz**:

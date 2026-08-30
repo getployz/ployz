@@ -1,5 +1,7 @@
 # Change workflow
 
+Before designing a feature, read `DESIGN.md`. A change that fights one of its bets needs an ADR justifying the exception — or a redesign.
+
 Use `$implement` for Rust changes.
 
 For `$implement`, `$four-axis-review` supersedes `$code-review`. After implementation, follow its incremental rerun loop until all four axes pass. Do not run `$four-axis-review` on docs, CI, research, or scripts.
