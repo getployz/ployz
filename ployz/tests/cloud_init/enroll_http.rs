@@ -8,9 +8,10 @@ use std::{
     },
 };
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
 };
 
 #[derive(Clone, Default)]
@@ -24,6 +25,14 @@ impl EventLog {
     pub fn entries(&self) -> Vec<&'static str> {
         self.0.lock().unwrap().clone()
     }
+}
+
+enum EnrollReplies {
+    Script(VecDeque<Vec<u8>>),
+    Occupy {
+        join: serde_json::Value,
+        claimed: Option<String>,
+    },
 }
 
 pub struct EnrollListen {
@@ -48,10 +57,32 @@ impl EnrollListen {
         bodies: impl IntoIterator<Item = serde_json::Value>,
         events: EventLog,
     ) -> Self {
-        let mut remaining: VecDeque<Vec<u8>> = bodies
-            .into_iter()
-            .map(|body| serde_json::to_vec(&body).unwrap())
-            .collect();
+        Self::listen(
+            EnrollReplies::Script(
+                bodies
+                    .into_iter()
+                    .map(|body| serde_json::to_vec(&body).unwrap())
+                    .collect(),
+            ),
+            events,
+        )
+        .await
+    }
+
+    /// First POST claims the name. A later POST with a different public key
+    /// returns `not_yet`.
+    pub async fn occupying_join(join: serde_json::Value) -> Self {
+        Self::listen(
+            EnrollReplies::Occupy {
+                join,
+                claimed: None,
+            },
+            EventLog::default(),
+        )
+        .await
+    }
+
+    async fn listen(replies: EnrollReplies, events: EventLog) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let paths = Arc::new(Mutex::new(Vec::new()));
@@ -62,6 +93,7 @@ impl EnrollListen {
         let recorded_posts = Arc::clone(&posts);
         let recorded_callbacks = Arc::clone(&callbacks);
         let callback_code = Arc::clone(&callback_status);
+        let replies = Arc::new(Mutex::new(replies));
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -79,9 +111,8 @@ impl EnrollListen {
                     .nth(1)
                     .unwrap()
                     .to_owned();
-                let is_callback = path.ends_with("/callback");
-                recorded_paths.lock().unwrap().push(path);
-                if is_callback {
+                recorded_paths.lock().unwrap().push(path.clone());
+                if path.ends_with("/callback") {
                     events.record("callback");
                     recorded_callbacks
                         .lock()
@@ -89,20 +120,13 @@ impl EnrollListen {
                         .push(enroll_json_body(raw));
                     let status = callback_code.load(Ordering::SeqCst);
                     let reason = if status == 200 { "OK" } else { "Error" };
-                    let response = format!(
-                        "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    );
-                    stream.write_all(response.as_bytes()).await.unwrap();
+                    write_http(&mut stream, status, reason, &[]).await;
                     continue;
                 }
-                recorded_posts.lock().unwrap().push(enroll_json_body(raw));
-                let body = remaining.pop_front().expect("scripted enroll has a body");
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-                stream.write_all(&body).await.unwrap();
+                let post = enroll_json_body(raw);
+                recorded_posts.lock().unwrap().push(post.clone());
+                let body = replies.lock().unwrap().next(&post);
+                write_http(&mut stream, 200, "OK", &body).await;
             }
         });
         Self {
@@ -130,6 +154,48 @@ impl EnrollListen {
     pub fn set_callback_status(&self, status: u16) {
         self.callback_status.store(status, Ordering::SeqCst);
     }
+}
+
+impl EnrollReplies {
+    fn next(&mut self, post: &serde_json::Value) -> Vec<u8> {
+        match self {
+            Self::Script(remaining) => remaining.pop_front().expect("scripted enroll has a body"),
+            Self::Occupy { join, claimed } => occupy_join(join, claimed, post),
+        }
+    }
+}
+
+fn occupy_join(
+    join: &serde_json::Value,
+    claimed: &mut Option<String>,
+    post: &serde_json::Value,
+) -> Vec<u8> {
+    let posted = post["publicKey"]
+        .as_str()
+        .expect("enroll POST carries publicKey");
+    if let Some(existing) = claimed.as_ref()
+        && existing != posted
+    {
+        return serde_json::to_vec(&serde_json::json!({
+            "kind": "not_yet",
+            "retryAfter": 0,
+        }))
+        .unwrap();
+    }
+    *claimed = Some(posted.to_owned());
+    let mut body = join.clone();
+    let key = STANDARD.decode(posted).expect("enroll publicKey is base64");
+    body["registration"]["assigned_machine"]["public_key"] = serde_json::to_value(key).unwrap();
+    serde_json::to_vec(&body).unwrap()
+}
+
+async fn write_http(stream: &mut TcpStream, status: u16, reason: &str, body: &[u8]) {
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes()).await.unwrap();
+    stream.write_all(body).await.unwrap();
 }
 
 fn enroll_json_body(raw: &[u8]) -> serde_json::Value {

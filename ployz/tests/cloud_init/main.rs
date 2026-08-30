@@ -766,6 +766,75 @@ async fn reset_enroll_posts_the_rotated_public_key() {
 }
 
 #[tokio::test]
+async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
+    let local = registration();
+    let mut assigned = local.clone();
+    assigned.assigned_machine.id = ployz_core::MachineId::parse("c".repeat(32)).unwrap();
+    assigned.assigned_machine.name = ployz_core::MachineName::parse("rejoined").unwrap();
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::occupying_join(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": pairing,
+        "registration": assigned,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(local.clone());
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let mut client = connect_daemon(machine_addr).await;
+    client
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: local.assigned_machine.name,
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
+                public_ip: None,
+                advertised_endpoints: local.assigned_machine.advertised_endpoints,
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        init_cloud(
+            &format!("tcp://{machine_addr}"),
+            &enroll.url,
+            "rejoined",
+            true,
+            true,
+        ),
+    )
+    .await
+    .expect("enroll must finish; not_yet means the first POST occupied the name");
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let posted: Vec<String> = enroll
+        .posts()
+        .iter()
+        .map(|post| post["publicKey"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(posted, [daemon.public_key().to_string()]);
+    assert_eq!(
+        daemon
+            .join_request()
+            .registration
+            .assigned_machine
+            .public_key,
+        daemon.public_key()
+    );
+}
+
+#[tokio::test]
 async fn initialize_without_pairing_stays_off_list_until_set_cloud_pairing() {
     let founder = founder_machine();
     let machine_id = founder.id;
