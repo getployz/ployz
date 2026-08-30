@@ -690,6 +690,74 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
 }
 
 #[tokio::test]
+async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
+    let founder = founder_machine();
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "resumed": false,
+        "storage": "none",
+        "pairing": CloudPairing::parse(
+            "https://relay.example.invalid",
+            PairingCredential::parse(PAIRING).unwrap()
+        )
+        .unwrap(),
+    }))
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+    connect_daemon(machine_addr)
+        .await
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: founder.name,
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
+                public_ip: None,
+                advertised_endpoints: founder.advertised_endpoints,
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--network",
+            "not-a-cidr",
+            "--reset",
+            "--yes",
+            "--no-ingress",
+            "--no-dns",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(daemon.reset_count(), 0);
+    assert!(enroll.posts().is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid value 'not-a-cidr' for '--network <network>'"),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
 async fn reset_enroll_posts_the_rotated_public_key() {
     let local = registration();
     let mut assigned = local.clone();
@@ -697,23 +765,14 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let join = json!({
+    let mut rotated = assigned.clone();
+    rotated.assigned_machine.public_key = RESET_PUBLIC_KEY;
+    let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
         "pairing": pairing,
-        "registration": assigned,
-    });
-    let mut rotated = assigned.clone();
-    rotated.assigned_machine.public_key = RESET_PUBLIC_KEY;
-    let enroll = EnrollListen::script([
-        join.clone(),
-        json!({
-            "kind": "join",
-            "storage": "none",
-            "pairing": pairing,
-            "registration": rotated,
-        }),
-    ])
+        "registration": rotated,
+    }))
     .await;
     let daemon = JoinDaemon::new(local.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -751,10 +810,86 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     );
     assert_eq!(daemon.reset_count(), 1);
     assert_ne!(daemon.public_key(), before);
+    let posted = enroll.posts();
+    assert_eq!(posted.len(), 1);
     assert_eq!(
-        enroll.posts().last().unwrap()["publicKey"],
-        json!(daemon.public_key().to_string())
+        posted.first().and_then(|post| post.get("publicKey")),
+        Some(&json!(daemon.public_key().to_string()))
     );
+    assert_eq!(
+        daemon
+            .join_request()
+            .registration
+            .assigned_machine
+            .public_key,
+        daemon.public_key()
+    );
+}
+
+#[tokio::test]
+async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
+    let local = registration();
+    let mut assigned = local.clone();
+    assigned.assigned_machine.id = ployz_core::MachineId::parse("c".repeat(32)).unwrap();
+    assigned.assigned_machine.name = ployz_core::MachineName::parse("rejoined").unwrap();
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::occupying_join(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": pairing,
+        "registration": assigned,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(local.clone());
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let mut client = connect_daemon(machine_addr).await;
+    client
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: local.assigned_machine.name,
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
+                public_ip: None,
+                advertised_endpoints: local.assigned_machine.advertised_endpoints,
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        init_cloud(
+            &format!("tcp://{machine_addr}"),
+            &enroll.url,
+            "rejoined",
+            true,
+            true,
+        ),
+    )
+    .await
+    .expect("enroll must finish; not_yet means the first POST occupied the name");
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let posted: Vec<String> = enroll
+        .posts()
+        .iter()
+        .map(|post| {
+            post.get("publicKey")
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(posted, [daemon.public_key().to_string()]);
     assert_eq!(
         daemon
             .join_request()

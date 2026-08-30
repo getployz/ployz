@@ -262,7 +262,11 @@ fn cloud_enroll() -> Command {
     base("enroll", "Found or join a Cluster through Cloud")
         .arg(positional("token", true))
         .arg(value("name", Some('n')))
-        .arg(value("network", None).default_value("10.210.0.0/16"))
+        .arg(
+            value("network", None)
+                .default_value("10.210.0.0/16")
+                .value_parser(clap::value_parser!(ipnet::Ipv4Net)),
+        )
         .arg(
             value("storage", None)
                 .default_value("none")

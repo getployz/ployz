@@ -73,8 +73,9 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
 }
 
 #[tokio::test]
-async fn new_founding_claim_never_resets_a_participating_machine() {
+async fn new_founding_claim_with_reset_resets_then_initializes() {
     let founder = founder_machine();
+    let machine_id = founder.id;
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
@@ -117,16 +118,22 @@ async fn new_founding_claim_never_resets_a_participating_machine() {
     )
     .await;
 
-    assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("new founding claim requires an uninitialized Machine"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(daemon.initialize_requests().len(), 1);
-    assert!(enroll.callbacks().is_empty());
+    assert_eq!(daemon.reset_count(), 1);
+    assert_eq!(daemon.initialize_requests().len(), 2);
+    assert_eq!(
+        enroll.callbacks(),
+        [json!({
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+        })]
+    );
+    wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]
