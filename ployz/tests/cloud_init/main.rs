@@ -697,23 +697,14 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let join = json!({
+    let mut rotated = assigned.clone();
+    rotated.assigned_machine.public_key = RESET_PUBLIC_KEY;
+    let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",
         "pairing": pairing,
-        "registration": assigned,
-    });
-    let mut rotated = assigned.clone();
-    rotated.assigned_machine.public_key = RESET_PUBLIC_KEY;
-    let enroll = EnrollListen::script([
-        join.clone(),
-        json!({
-            "kind": "join",
-            "storage": "none",
-            "pairing": pairing,
-            "registration": rotated,
-        }),
-    ])
+        "registration": rotated,
+    }))
     .await;
     let daemon = JoinDaemon::new(local.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -751,8 +742,10 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     );
     assert_eq!(daemon.reset_count(), 1);
     assert_ne!(daemon.public_key(), before);
+    let posted = enroll.posts();
+    assert_eq!(posted.len(), 1);
     assert_eq!(
-        enroll.posts().last().unwrap()["publicKey"],
+        posted[0]["publicKey"],
         json!(daemon.public_key().to_string())
     );
     assert_eq!(

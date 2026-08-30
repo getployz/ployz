@@ -64,15 +64,11 @@ pub fn enroll_with_installer(
     runtime()?.block_on(async {
         let mut client = connect_machine(matches).await?;
         client = synchronize_daemon(matches, client, installer).await?;
-        let (mut details, mut machine_token, mut name, mut outcome) =
-            enroll_current_identity(&mut client, requested_name.clone(), requested_storage, &url)
-                .await?;
-        if join_must_refresh_identity(&details, &outcome, matches.get_flag("reset")) {
+        if matches.get_flag("reset") {
             client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
-            (details, machine_token, name, outcome) =
-                enroll_current_identity(&mut client, requested_name, requested_storage, &url)
-                    .await?;
         }
+        let (details, machine_token, name, outcome) =
+            enroll_current_identity(&mut client, requested_name, requested_storage, &url).await?;
         match outcome {
             Outcome::Join(join) => enroll_join(matches, client, details, *join).await,
             Outcome::Initialize {
@@ -96,15 +92,6 @@ pub fn enroll_with_installer(
             }
         }
     })
-}
-
-fn join_must_refresh_identity(details: &MachineDetails, outcome: &Outcome, reset: bool) -> bool {
-    let Outcome::Join(join) = outcome else {
-        return false;
-    };
-    reset
-        && details.phase != LocalMachinePhase::Uninitialized
-        && !already_assigned(details, &join.registration.assigned_machine)
 }
 
 fn already_assigned(details: &MachineDetails, assigned: &Machine) -> bool {

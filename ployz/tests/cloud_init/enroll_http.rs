@@ -69,8 +69,6 @@ impl EnrollListen {
         .await
     }
 
-    /// First POST claims the name. A later POST with a different public key
-    /// returns `not_yet`.
     pub async fn occupying_join(join: serde_json::Value) -> Self {
         Self::listen(
             EnrollReplies::Occupy {
