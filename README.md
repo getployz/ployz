@@ -1,6 +1,6 @@
 # ployz2
 
-Ployz runs containerized Services across a Cluster of your own Docker Machines.
+CLI and daemon for a cluster of Docker machines
 
 ## Install
 

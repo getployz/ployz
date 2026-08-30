@@ -1,11 +1,11 @@
 # Ployz
 
-Ployz is a Rust container orchestrator with deliberately weak operational semantics and its own product identity.
+Ployz is a cluster of Docker machines. The CLI is `ployz`. The daemon is `ployzd`. Operational semantics stay deliberately weak: a Cluster is what one entry Machine observes, not a globally authoritative entity.
 
 ## Language
 
 **Ployz**:
-The product, CLI, and daemon reconstructed in this repository.
+The product, CLI, and daemon in this repository.
 _Avoid_: Uncloud, Ployz2
 
 **Cluster**:

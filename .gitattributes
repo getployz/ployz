@@ -1,2 +1,2 @@
-# Frozen upstream evidence is byte-for-byte, including source whitespace.
-evidence/upstream/** -whitespace
+# CLI freeze pages are byte-for-byte, including source whitespace.
+evidence/cli-freeze/** -whitespace

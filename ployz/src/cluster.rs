@@ -284,7 +284,7 @@ impl Client {
     ///
     /// Down, Unknown, and Unrecognized are omitted. Up and Suspect are read
     /// independently with bounded transient retries.
-    /// UT-028: keep each probed target's success or typed failure.
+    /// Keep each probed target's success or typed failure.
     pub async fn list_volumes(
         &mut self,
         machines: &[MachineObservation],
@@ -565,7 +565,7 @@ impl Client {
         let mut tasks = JoinSet::new();
         let mut omissions = Vec::new();
         for machine in machines {
-            // TODO(UT-102): the entry Machine's observer-relative Membership Observation is the
+            // TODO: the entry Machine's observer-relative Membership Observation is the
             // current trust boundary; it can be stale and is not an authority or freshness proof.
             if machine.membership.invites_rpc() {
                 tasks.spawn(list_on_machine(self.clone(), machine.machine.id));
@@ -578,7 +578,7 @@ impl Client {
             failures: Vec::new(),
             omissions,
         };
-        // TODO(UT-015, UT-017): retain target failures and omissions beside successful container
+        // TODO: retain target failures and omissions beside successful container
         // observations; an entry-relative answer remains partial evidence.
         while let Some(joined) = tasks.join_next().await {
             match joined {

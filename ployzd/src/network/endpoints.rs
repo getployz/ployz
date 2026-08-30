@@ -75,7 +75,7 @@ fn read_interfaces(up_only: bool) -> Result<Vec<Interface>, NetworkError> {
 }
 
 fn routable_addresses(interfaces: Vec<Interface>) -> Vec<IpAddr> {
-    // TODO(UT-108): check for link/ether ifaces?
+    // TODO: check for link/ether ifaces?
     interfaces
         .into_iter()
         .filter(|interface| {

@@ -15,7 +15,7 @@ use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     let plan = ClusterPlan::new(&format!("l3-operator-{}", process::id()), 2).unwrap();
     let first_machine_container = plan.machine_name(0);

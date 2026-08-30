@@ -60,7 +60,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         }
         let name = helpers::machine_name(requested_name, &token)?;
 
-        // TODO(UT-140): registration is intentionally unfenced and may succeed on a minority.
+        // TODO: registration is intentionally unfenced and may succeed on a minority.
         let registration = entry
             .call::<op::Register>(
                 RegisterRequest {

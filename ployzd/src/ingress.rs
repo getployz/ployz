@@ -187,7 +187,7 @@ impl IngressProjection {
         observations: &[ContainerObservation],
         certificates: &BTreeMap<IngressHost, CertificateRow>,
     ) -> Self {
-        // TODO(UT-116): keep the ingress projection membership-blind until the membership model is
+        // TODO: keep the ingress projection membership-blind until the membership model is
         // intentionally changed across replicated projections.
         let containers = service_containers(observations.iter().cloned());
         let owners = hostname_owners(containers.iter().map(ServiceContainer::as_observation));

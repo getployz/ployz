@@ -30,7 +30,7 @@ pub(super) enum ProxyMode {
 
 pub(super) fn mode_for(virtualized: bool, rootless: bool) -> ProxyMode {
     if virtualized {
-        // TODO(UT-024): the virtualized-and-rootless combination uses the VM path.
+        // TODO: the virtualized-and-rootless combination uses the VM path.
         ProxyMode::Vm
     } else if rootless {
         ProxyMode::Rootless
@@ -290,7 +290,7 @@ impl Listener {
 }
 
 fn start_helper(name: &str, destination: &str, bind: Option<String>) -> Result<Child, PushError> {
-    // TODO(UT-025): the helper image is intentionally fixed rather than configurable.
+    // TODO: the helper image is intentionally fixed rather than configurable.
     let mut command = Command::new("docker");
     command.args([
         "run",

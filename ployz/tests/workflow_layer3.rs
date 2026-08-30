@@ -16,7 +16,7 @@ use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE};
 /// L3-005..L3-007, L3-009..L3-010, L3-014, L3-029..L3-030,
 /// L3-040..L3-041, and L3-045..L3-046.
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image and Docker Compose"]
+#[ignore = "informing: requires the privileged Ployz testkit image and Docker Compose"]
 async fn run_deploy_and_scale_execute_through_the_real_cli() {
     let plan = ClusterPlan::new(&format!("l3-workflows-{}", std::process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -249,7 +249,7 @@ volumes:
 
 /// #474: both successful removal paths warn instead of silently losing replicas.
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image and Docker Compose"]
+#[ignore = "informing: requires the privileged Ployz testkit image and Docker Compose"]
 async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
     for no_reset in [false, true] {
         let plan = ClusterPlan::new(

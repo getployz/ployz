@@ -24,7 +24,7 @@ use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tonic::transport::Server;
 
 #[tokio::test]
-#[ignore = "Layer 3: requires sudo, ssh, sshd, and ssh-keygen"]
+#[ignore = "informing: requires sudo, ssh, sshd, and ssh-keygen"]
 async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
     let root = std::env::temp_dir().join(format!("ployz-openssh-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -85,7 +85,7 @@ async fn real_machine_discovery_matches_over_tcp_unix_and_system_ssh() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires sudo, ssh, sshd, and ssh-keygen"]
+#[ignore = "informing: requires sudo, ssh, sshd, and ssh-keygen"]
 async fn system_ssh_proxy_preserves_binary_bytes_and_listener_cancellation() {
     let root = std::env::temp_dir().join(format!("ployz-proxy-openssh-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

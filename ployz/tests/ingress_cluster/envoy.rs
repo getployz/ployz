@@ -1,4 +1,4 @@
-//! Envoy founding tracer against the privileged Layer 3 cluster.
+//! Envoy founding tracer against the privileged informing cluster.
 
 use std::{net::IpAddr, path::Path, process, time::Duration};
 
@@ -15,7 +15,7 @@ use super::{
 };
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn envoy_founding_deploys_a_healthy_pinned_bridge_proxy() {
     let plan = ClusterPlan::new(&format!("l3-envoy-{}", process::id()), 1).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -79,7 +79,7 @@ async fn envoy_founding_deploys_a_healthy_pinned_bridge_proxy() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn envoy_routes_http_across_file_watched_xds_publication() {
     let plan = ClusterPlan::new(&format!("l3-envoy-http-{}", process::id()), 1).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -213,7 +213,7 @@ fn envoy_digest(config: &str) -> &str {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn envoy_serves_https_with_rotated_material_without_restart() {
     let plan = ClusterPlan::new(&format!("l3-envoy-https-{}", process::id()), 1).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -315,7 +315,7 @@ async fn envoy_serves_https_with_rotated_material_without_restart() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn envoy_obtains_a_managed_certificate_over_http01() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");

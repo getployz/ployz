@@ -177,7 +177,7 @@ impl Projection {
         query: InternalQuery,
     ) -> ResponsePlan {
         if record_type != RecordType::A {
-            // TODO(UT-110): internal records remain A-only; other types return an authoritative
+            // TODO: internal records remain A-only; other types return an authoritative
             // empty NOERROR response until a product decision adds them.
             return ResponsePlan::Internal {
                 code: ResponseCode::NoError,
@@ -221,7 +221,7 @@ impl Projection {
                 answers: Vec::new(),
             };
         }
-        // TODO(UT-111): keep TTL zero rather than adding a DNS cache without a product decision.
+        // TODO: keep TTL zero rather than adding a DNS cache without a product decision.
         let answers = addresses
             .into_iter()
             .map(|address| Record::from_rdata(name.clone(), 0, RData::A(A(address))))

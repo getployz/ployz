@@ -70,4 +70,4 @@ Reuse the existing newtype and RPC macros for repeated mechanical shapes. A one-
 
 ## Docs
 
-`//!` on crate and module files. `///` on public items: what it does, and `# Errors` when it returns `Result`. `//` explains why (workaround, design), not what the next line does. TODOs carry an issue id: `// TODO(UT-123):`.
+`//!` on crate and module files. `///` on public items: what it does, and `# Errors` when it returns `Result`. `//` explains why (workaround, design), not what the next line does. Open work is `// TODO:` plus why. Optional GitHub issue: `// TODO(#123):`.

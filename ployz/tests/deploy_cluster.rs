@@ -18,7 +18,7 @@ use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn deploy_execution_preserves_partial_effects_and_never_repairs_them() {
     let plan = ClusterPlan::new(&format!("l3-deploy-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();

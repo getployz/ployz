@@ -18,7 +18,7 @@ use serde_json::json;
 
 /// L3-008, L3-013, L3-047..L3-055, L3-067, and the machine-local-volume negative family.
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     let plan = ClusterPlan::new(&format!("l3-volume-product-{}", std::process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();

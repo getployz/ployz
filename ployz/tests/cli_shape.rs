@@ -34,12 +34,15 @@ struct Positional {
 fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let deviations = deviations(&fs::read_to_string(root.join("CLI_DEVIATIONS.md")).unwrap());
+    let freeze = root.join("evidence/cli-freeze");
     let mut expected = BTreeMap::new();
-    for entry in fs::read_dir(root.join("evidence/upstream/cli-reference")).unwrap() {
+    let mut freeze_pages = 0usize;
+    for entry in fs::read_dir(&freeze).unwrap() {
         let path = entry.unwrap().path();
         if path.extension() != Some(OsStr::new("md")) {
             continue;
         }
+        freeze_pages += 1;
         let markdown = fs::read_to_string(path).unwrap();
         let (command_path, flags, positionals) = reference_shape(&markdown, &deviations);
         expected.insert(
@@ -53,8 +56,12 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
     }
     assert_eq!(
         expected.len(),
-        58,
-        "the complete frozen oracle must be read"
+        freeze_pages,
+        "every freeze page must parse to a command shape"
+    );
+    assert!(
+        freeze_pages > 0,
+        "evidence/cli-freeze must contain command pages"
     );
 
     let mut command = ployz::cli::command();

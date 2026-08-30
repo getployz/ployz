@@ -14,7 +14,7 @@ use crate::{
 pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let Some(destination) = matches.get_one::<String>("destination") else {
-        // TODO(UT-049): local Machine initialization remains outside the remote lifecycle path.
+        // TODO: local Machine initialization remains outside the remote lifecycle path.
         return Err(Error::usage(
             "local machine initialisation is not implemented; specify a remote machine",
         ));

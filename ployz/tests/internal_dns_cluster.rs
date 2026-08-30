@@ -9,7 +9,7 @@ use ployz_core::{
 use ployz_testkit::{Cluster, ClusterPlan};
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn internal_dns_tracks_healthy_replicated_containers() {
     let plan = ClusterPlan::new(&format!("l3-dns-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();

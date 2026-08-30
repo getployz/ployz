@@ -45,7 +45,7 @@ impl FakeHostedService {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_cluster_boundaries() {
     let plan = ClusterPlan::new(&format!("l3-hosted-dns-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -257,7 +257,7 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn hosted_dns_wildcard_follows_machine_membership() {
     let plan = ClusterPlan::new(&format!("l3-dns-member-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -350,7 +350,7 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn hosted_dns_wildcard_omits_non_ingress_members_after_machine_removal() {
     let plan = ClusterPlan::new(&format!("l3-dns-mixed-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();

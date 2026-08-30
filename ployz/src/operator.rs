@@ -97,7 +97,7 @@ impl ExecMode {
         if detach {
             return Ok(Self::Detached);
         }
-        // TODO(UT-039): preserve the Compose-style stdout-driven TTY rule.
+        // TODO: preserve the Compose-style stdout-driven TTY rule.
         let tty = stdout_terminal && !no_tty;
         if tty && !stdin_terminal {
             return Err(OperatorError::TtyRequiresStdin);
@@ -467,7 +467,7 @@ pub async fn open_service_logs(
             .encode()?;
             let identity = format!("{}/{}", arg.service, observation.display_name);
             let target = MachineTarget::from(&observation.machine_id);
-            // TODO(UT-082): earlier Container log streams intentionally survive until the
+            // TODO: earlier Container log streams intentionally survive until the
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
@@ -528,7 +528,7 @@ pub async fn open_machine_logs(
             .encode()?;
             let identity = format!("{service}@{}", machine.machine.name);
             let target = MachineTarget::from(&machine.machine.id);
-            // TODO(UT-083): earlier Machine log streams intentionally survive until the
+            // TODO: earlier Machine log streams intentionally survive until the
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client

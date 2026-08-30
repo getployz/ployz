@@ -73,7 +73,7 @@ pub struct MachineProxy {
     local_id: MachineId,
     remote_port: u16,
     replicated: Option<ReplicatedStore>,
-    // TODO(UT-139): stale remote backends intentionally reconnect until ployzd restarts.
+    // TODO: stale remote backends intentionally reconnect until ployzd restarts.
     remote_backends: Arc<Mutex<HashMap<ManagementAddress, Channel>>>,
 }
 

@@ -177,7 +177,7 @@ fn selected_attempts(
 pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let replicas = parse_u32(matches, "replicas")?;
-    // TODO(EO-012): reject zero before resolving configuration or connecting to a Machine.
+    // TODO: reject zero before resolving configuration or connecting to a Machine.
     let replicas = NonZeroU32::new(replicas)
         .ok_or_else(|| Error::usage("replicas must be greater than zero"))?;
     let selector = ServiceSelector::parse(required(matches, "service")?)?;

@@ -476,7 +476,7 @@ install_binaries() {
     install -m 0755 "$tmp_dir/ployzd" "$INSTALL_BIN_DIR/ployzd"
     install -m 0755 "$tmp_dir/ployz-uninstall" "$INSTALL_BIN_DIR/ployz-uninstall"
     DAEMON_REPLACED=true
-    # UT-148: Machines deliberately receive no CLI binary or alias.
+    # Machines deliberately receive no CLI binary or alias.
 }
 
 install_systemd() {

@@ -19,7 +19,7 @@ use super::{Error, confirm, leaf_matches, required, string_values, with_client};
 
 pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    // EO-011: an explicit non-empty name is required; anonymous Docker Volumes stay unsupported.
+    // An explicit non-empty name is required; anonymous Docker Volumes stay unsupported.
     let name = DockerVolumeName::parse(required(matches, "volume-name")?)?;
     let size = matches
         .get_one::<crate::volume::ProvisionedVolumeSize>("size")

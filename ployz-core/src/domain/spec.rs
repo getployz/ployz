@@ -745,10 +745,8 @@ pub fn compare_specs(
     current: &ResolvedServiceSpec,
     requested: &RequestedServiceSpec,
 ) -> SpecChange {
-    // TODO(UT-006, UT-011, UT-062 through UT-071, UT-080, UT-081, UT-091, UT-092):
-    // ingress, placement, unused-volume, bind-option/default, and mutable-resource changes still
-    // recreate until the Machine API supports the narrower in-place updates retained by the
-    // baseline TODOs.
+    // TODO: ingress, placement, unused-volume, bind-option/default, and mutable-resource changes still
+    // recreate until the Machine API supports the narrower in-place updates.
     if requested.container.pull_policy == PullPolicy::Always
         || current.serving_shape() != requested.serving_shape()
     {

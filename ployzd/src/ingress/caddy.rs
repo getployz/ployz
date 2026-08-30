@@ -211,7 +211,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         ) {
             Ok(rendered) => {
                 let candidate = automatic_caddyfile(projection, timestamp, Some(&rendered));
-                // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
+                // TODO: /adapt remains the only validation for custom Caddyfile
                 // candidates and may accept a configuration that /load rejects.
                 match admin.adapt(&candidate).await {
                     Ok(_) => output = candidate,

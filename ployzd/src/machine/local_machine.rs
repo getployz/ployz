@@ -486,7 +486,7 @@ impl LocalMachine {
                     advertised_endpoints: request.advertised_endpoints,
                     runtime: request.runtime,
                 };
-                // TODO(UT-140): cross-process registration stays unfenced and has no rollback.
+                // TODO: cross-process registration stays unfenced and has no rollback.
                 publication.publish(&assigned_machine).await?;
                 assigned_machine
             }

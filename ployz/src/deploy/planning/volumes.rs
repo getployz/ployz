@@ -553,13 +553,12 @@ pub(super) fn plan_volume_operations(
     pins: &mut VolumePins,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(), PlanError> {
-    // TODO(UT-001, UT-051, UT-052, UT-078): preserve the baseline
-    // placement ceiling: do not filter by memory, image platform, or local image presence.
+    // TODO: preserve the placement ceiling: do not filter by memory, image platform, or local image presence.
     let (mounted_volumes, missing_volumes) =
         planned_volume_constraints(spec, snapshot, pins, machines)?;
     match spec.mode {
         ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {
-            // TODO(UT-005): named-volume driver and label options remain part of planned creation;
+            // TODO: named-volume driver and label options remain part of planned creation;
             // revisit only if Ployz changes to externally managed volumes exclusively.
             let machine_id = machines
                 .first()

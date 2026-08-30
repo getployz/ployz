@@ -18,7 +18,8 @@ use crate::connect::{Client, ConnectError};
 
 const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Default hosted DNS API. `dns reserve`, `machine init`, and `cloud enroll` share this.
+/// Default hosted DNS API (`dns.uncloud.run` until Ployz hosts its own).
+/// `dns reserve`, `machine init`, and `cloud enroll` share this.
 pub(crate) const HOSTED_DNS_ENDPOINT: &str = "https://dns.uncloud.run/v1";
 
 #[derive(Debug, Error)]
@@ -639,10 +640,7 @@ mod tests {
         assert_eq!(
             spec.ports,
             vec![
-                ingress(
-                    explicit("web-app.opaque.ployz.example"),
-                    HttpProtocol::Http
-                ),
+                ingress(explicit("web-app.opaque.ployz.example"), HttpProtocol::Http),
                 ingress(explicit("app.example.com"), HttpProtocol::Https),
                 ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http,),
                 PortPublication::Host {

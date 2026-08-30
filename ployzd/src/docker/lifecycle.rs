@@ -123,7 +123,7 @@ impl ContainerRuntime {
             network,
             storage,
         } = request;
-        // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
+        // TODO: direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
             project = project_name.as_str(),

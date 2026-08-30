@@ -51,8 +51,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             &format!("Remove Machine {} ({})?", selected.name, selected.id),
         )?;
 
-        // TODO(UT-055): do not reroute away from the current entry before removal.
-        // TODO(UT-056): there is no drain or unschedulable phase before cleanup.
+        // TODO: do not reroute away from the current entry before removal.
+        // TODO: there is no drain or unschedulable phase before cleanup.
         match confirmation {
             None => {
                 client.remove_machine_membership(&selected_target).await?;

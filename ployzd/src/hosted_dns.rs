@@ -6,13 +6,13 @@ use thiserror::Error;
 
 use crate::corrosion::ReplicatedStore;
 
-// TODO: Replace dns.uncloud.run and Uncloud-branded domains with
-// Ployz-hosted DNS once that infrastructure exists.
+// Hosted DNS still uses Uncloud's API at dns.uncloud.run. Point this at a
+// Ployz endpoint when that service exists.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Reservation {
     pub(crate) endpoint: String,
     pub(crate) name: String,
-    // TODO(UT-141): encrypt the token in the store.
+    // TODO: encrypt the token in the store.
     pub(crate) token: String,
 }
 
@@ -329,8 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn release_purges_hosted_records_even_when_the_domain_has_none() {
-        let (endpoint, requests) =
-            fake_server([(202, r#"{"name":"opaque.ployz.example"}"#)]).await;
+        let (endpoint, requests) = fake_server([(202, r#"{"name":"opaque.ployz.example"}"#)]).await;
         let reservation = super::Reservation {
             endpoint,
             name: "opaque.ployz.example".into(),

@@ -10,7 +10,7 @@ use std::{
 use ployz::compose::{BuildOptions, LoadOptions, execute_build, load_project, plan_build};
 
 #[test]
-#[ignore = "Layer 3: requires Docker, Compose, and registry:2"]
+#[ignore = "informing: requires Docker, Compose, and registry:2"]
 fn compose_build_basic_pushes_only_buildable_resolved_images() {
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()

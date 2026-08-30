@@ -241,7 +241,7 @@ fn assemble_plan(
 ) -> Result<Planned, PlanError> {
     let BoundIntent { target, requested } = bound;
     warnings.extend(storage_eligibility_warnings(&requested, snapshot));
-    // TODO(UT-009): preserve the missing within-spec port-conflict validation.
+    // TODO: preserve the missing within-spec port-conflict validation.
     let volume_uses = managed_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::new();

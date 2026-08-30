@@ -138,7 +138,7 @@ pub(crate) async fn push_using_machines(
     machines: &[ployz_core::MachineObservation],
 ) -> Result<PartialResult<(), PushError>, PushError> {
     let mut cancellation = Cancellation::new();
-    // TODO(UT-022): without an explicit platform, Docker chooses what to push; target platforms are not inferred.
+    // TODO: without an explicit platform, Docker chooses what to push; target platforms are not inferred.
     let platform = platform.map(validated_platform).transpose()?;
     validate_push_reference(image)?;
     let inspected = cancellation
@@ -491,7 +491,7 @@ impl PushSession {
             .as_mut()
             .expect("push command was stored")
             .wait();
-        // TODO(UT-023): direct push keeps Docker's progress stream; no quiet mode is exposed.
+        // TODO: direct push keeps Docker's progress stream; no quiet mode is exposed.
         tokio::select! {
             outcome = push => {
                 let status = outcome.map_err(|error| PushError::Docker {

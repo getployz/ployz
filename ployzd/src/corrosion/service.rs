@@ -35,7 +35,7 @@ pub struct CorrosionConfig {
     api_address: SocketAddr,
     gossip_address: SocketAddr,
     container_name: String,
-    // TODO(UT-100): every peer remains a bootstrap target; add partial selection only after a product decision.
+    // TODO: every peer remains a bootstrap target; add partial selection only after a product decision.
     bootstrap: Vec<SocketAddr>,
 }
 
@@ -102,7 +102,7 @@ impl CorrosionConfig {
         create_private_dir(&self.run_dir)?;
         let token = load_or_create_token(&self.data_dir.join(TOKEN_FILE))?;
         let schema_path = self.data_dir.join("schema.sql");
-        // TODO(EO-019): Ployz deliberately has no replicated Store Schema/value evolution contract;
+        // TODO: Ployz deliberately has no replicated Store Schema/value evolution contract;
         // mixed-version Machines may omit or fail to read newer data. Do not add migrations or version gates.
         atomic_write(&schema_path, SCHEMA.as_bytes(), 0o644)?;
 
@@ -127,7 +127,7 @@ impl CorrosionConfig {
             },
         };
         let encoded = toml::to_string(&config)?;
-        // TODO(UT-101): retain the loose Corrosion-owned config boundary until ownership is decided.
+        // TODO: retain the loose Corrosion-owned config boundary until ownership is decided.
         atomic_write(
             &self.data_dir.join("config.toml"),
             encoded.as_bytes(),

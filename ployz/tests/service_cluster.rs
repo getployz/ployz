@@ -9,7 +9,7 @@ use ployz_core::{
 use ployz_testkit::{Cluster, ClusterPlan};
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     let plan = ClusterPlan::new(&format!("l3-service-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();

@@ -11,7 +11,7 @@ repoint_homebrew_tap() {
     cat > "$tap/README.md" <<'EOF'
 # homebrew-ployz
 
-Homebrew tap for the Ployz CLI reconstructed at https://github.com/getployz/ployz2.
+Homebrew tap for the Ployz CLI at https://github.com/getployz/ployz2.
 
 ```
 brew install getployz/ployz/ployz

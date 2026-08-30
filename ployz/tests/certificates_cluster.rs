@@ -13,7 +13,7 @@ use ployz_core::{
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
@@ -94,7 +94,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn several_machines_order_once_and_every_machine_answers() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
@@ -168,7 +168,7 @@ async fn several_machines_order_once_and_every_machine_answers() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn down_machine_does_not_block_ordering() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
@@ -218,7 +218,7 @@ async fn down_machine_does_not_block_ordering() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn certificate_renews_before_expiry_without_restart() {
     let lifetime = Duration::from_secs(90);
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
@@ -267,7 +267,7 @@ async fn certificate_renews_before_expiry_without_restart() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn machines_holding_the_same_certificate_renew_once() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
@@ -321,7 +321,7 @@ async fn machines_holding_the_same_certificate_renew_once() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn failed_renewal_keeps_serving_the_existing_certificate() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
@@ -369,7 +369,7 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn joining_machine_serves_existing_certificate() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
@@ -463,7 +463,7 @@ fn count_orders(ordered: &[String], hostname: &str) -> usize {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_here() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");

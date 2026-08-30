@@ -109,8 +109,8 @@ pub enum StreamProtocolError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-// TODO(EO-005): exec user, privilege, working-directory, and environment options
-// remain outside the reconstructed contract.
+// TODO: exec user, privilege, working-directory, and environment options
+// remain outside the wire contract.
 pub struct ExecOptions {
     pub command: Vec<String>,
     pub attach_stdin: bool,

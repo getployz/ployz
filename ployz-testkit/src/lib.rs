@@ -1,4 +1,4 @@
-//! Docker-in-Docker support for the ignored Layer 3 parity suite.
+//! Docker-in-Docker support for the ignored informing cluster suite.
 
 pub mod fake_acme;
 mod machine_admin;
@@ -27,9 +27,9 @@ pub const IMAGE: &str = "ghcr.io/getployz/ployz2-testkit:main";
 pub const CORROSION_IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
 pub const CADDY_IMAGE: &str = "caddy:2.10.2";
-/// Exact Zentinel artifact carried by the Layer 3 image.
+/// Exact Zentinel artifact carried by the informing cluster image.
 pub const ZENTINEL_IMAGE: &str = "ghcr.io/zentinelproxy/zentinel@sha256:ff012547034d13a7d8e6570679c897e4bba6bc702ec5bdd7bf70a7a04b4d6604";
-/// Exact Envoy artifact carried by the Layer 3 image.
+/// Exact Envoy artifact carried by the informing cluster image.
 pub const ENVOY_IMAGE: &str = "docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66";
 pub const UNREGISTRY_IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";

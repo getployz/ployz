@@ -1,4 +1,4 @@
-//! Zentinel ingress lifecycle tracer against the privileged Layer 3 cluster.
+//! Zentinel ingress lifecycle tracer against the privileged informing cluster.
 
 use std::{path::Path, process, time::Duration};
 
@@ -13,7 +13,7 @@ use super::{
 };
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn zentinel_recovers_after_its_sole_serving_container_returns() {
     let plan = ClusterPlan::new(&format!("l3-zentinel-{}", process::id()), 1).unwrap();
     let cluster = Cluster::create(plan).unwrap();

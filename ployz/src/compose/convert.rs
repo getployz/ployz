@@ -245,7 +245,7 @@ fn convert_service(
             .map(|machine| MachineTarget::parse(machine).map_err(invalid))
             .collect::<Result<_, _>>()?,
     };
-    // TODO(UT-076): preserve the baseline gap: service-level `tmpfs` is not reinterpreted as mounts.
+    // TODO: service-level `tmpfs` is not reinterpreted as mounts.
     let container = ServiceContainerSpec {
         image,
         command: shell(&raw.command)?,
@@ -592,7 +592,7 @@ fn classify(name: &str, service: &RawService) -> Result<Vec<String>, ComposeErro
     if service.other.get("networks").is_some_and(custom_networks) {
         warnings.push(unsupported_feature(name, "networks"));
     }
-    // TODO(UT-047): secret file mounts remain unsupported; plaintext env references are separate.
+    // TODO: secret file mounts remain unsupported; plaintext env references are separate.
     if !service.secrets.is_empty() {
         warnings.push(unsupported_feature(name, "secrets"));
     }
@@ -627,13 +627,13 @@ fn validate_definitions(project: &RawProject) -> Result<(), ComposeError> {
         )));
     }
     for (name, config) in &project.configs {
-        // TODO(UT-002): external config objects remain unsupported.
+        // TODO: external config objects remain unsupported.
         if is_external(&config.external) {
             return Err(invalid(format!(
                 "external configs are not supported: {name}"
             )));
         }
-        // TODO(UT-003, UT-004): config labels and environment sources remain ignored.
+        // TODO: config labels and environment sources remain ignored.
         let _ = (&config.labels, &config.environment);
     }
     Ok(())

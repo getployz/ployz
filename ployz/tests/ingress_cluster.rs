@@ -19,7 +19,7 @@ mod envoy;
 mod zentinel;
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     let plan = ClusterPlan::new(&format!("l3-caddy-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -161,7 +161,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn certificate_material_in_cluster_state_is_served_without_restart() {
     let plan = ClusterPlan::new(&format!("l3-certs-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();

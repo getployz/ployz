@@ -197,7 +197,7 @@ impl ContainerRuntime {
     }
 
     async fn sync_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
-        // TODO(UT-120): preserve stale rows when Docker cannot provide a complete inventory.
+        // TODO: preserve stale rows when Docker cannot provide a complete inventory.
         let machine_id = sink
             .local
             .lock()

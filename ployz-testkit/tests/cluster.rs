@@ -20,7 +20,7 @@ fn image_ingest_catalog(cluster: &Cluster, index: usize, address: ManagementAddr
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn initializes_joins_converges_restarts_and_tears_down() {
     let plan = ClusterPlan::new(&format!("l3-001-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan.clone()).unwrap();
@@ -72,7 +72,7 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn machine_add_and_cloud_join_reach_participating() {
     let cloud_pairing = CloudPairing::parse(
         "ws://127.0.0.1:9",
@@ -126,7 +126,7 @@ async fn machine_add_and_cloud_join_reach_participating() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn failed_join_leaves_the_registered_ghost_until_teardown() {
     let plan = ClusterPlan::new(&format!("l3-ghost-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -168,7 +168,7 @@ async fn failed_join_leaves_the_registered_ghost_until_teardown() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn adds_a_third_machine_without_coordination_or_rollback() {
     let plan = ClusterPlan::new(&format!("l3-add-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -202,7 +202,7 @@ async fn adds_a_third_machine_without_coordination_or_rollback() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn updates_removes_and_inspects_machine_network_state() {
     let plan = ClusterPlan::new(&format!("l3-admin-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -541,7 +541,7 @@ async fn update_eventually(
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
     let plan = ClusterPlan::new(&format!("l3-056-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -607,7 +607,7 @@ async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn direct_image_transfer_reconciles_and_stays_machine_only() {
     let mut plan = ClusterPlan::new(&format!("l3-ingest-{}", process::id()), 2).unwrap();
     for machine in &mut plan.machines {
@@ -797,7 +797,7 @@ timeout 60 sh -c '
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn multi_platform_direct_push_retains_success_beside_target_failure() {
     let mut plan = ClusterPlan::new(&format!("l3-image-push-{}", process::id()), 2).unwrap();
     plan.machines
@@ -853,7 +853,7 @@ async fn multi_platform_direct_push_retains_success_beside_target_failure() {
 }
 
 #[tokio::test]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn daemon_stays_ready_when_image_ingest_cannot_open() {
     let mut disabled = ClusterPlan::new(&format!("l3-ingest-store-{}", process::id()), 2).unwrap();
     for machine in &mut disabled.machines {

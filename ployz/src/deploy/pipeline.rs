@@ -373,7 +373,7 @@ fn choose_scale_spec(
             requested: None,
         });
     }
-    // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
+    // TODO: mixed historical specs use one observed regular container; there is no chooser.
     let mut requested = observed_container.resolved_spec.to_requested();
     requested.mode = ServiceMode::Replicated { replicas };
     Ok(ScaleSpec {

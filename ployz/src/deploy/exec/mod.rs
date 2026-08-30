@@ -423,7 +423,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     tx: Option<UnboundedSender<DeployEvent>>,
     project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
-    // TODO(UT-087): there is deliberately no persisted "already run" guard at this boundary.
+    // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations: Vec<DeployOperation> = rows.iter().map(|row| row.operation.clone()).collect();
     let client = RestartTolerant {
         inner: client,

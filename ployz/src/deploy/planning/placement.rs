@@ -401,7 +401,7 @@ fn remove_unused(
     for container in current {
         let observation = container.as_observation();
         if !used.contains(&observation.container_id) {
-            // TODO(UT-075): placement changes remove now-ineligible containers; there is no
+            // TODO: placement changes remove now-ineligible containers; there is no
             // deploy-time Machine filter that leaves excluded containers running.
             operations.push(DeployOperation::RemoveContainer {
                 machine_id: observation.machine_id,

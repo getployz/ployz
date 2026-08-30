@@ -18,7 +18,7 @@ pub(super) fn configs(
     let mut specs = BTreeMap::new();
     let mut mounts = Vec::new();
     for item in &service.configs {
-        // TODO(UT-053): short-syntax configs remain unsupported.
+        // TODO: short-syntax configs remain unsupported.
         let RawServiceConfig::Long {
             source,
             target,
