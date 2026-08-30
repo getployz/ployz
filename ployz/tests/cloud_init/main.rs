@@ -690,6 +690,74 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
 }
 
 #[tokio::test]
+async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
+    let founder = founder_machine();
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "resumed": false,
+        "storage": "none",
+        "pairing": CloudPairing::parse(
+            "https://relay.example.invalid",
+            PairingCredential::parse(PAIRING).unwrap()
+        )
+        .unwrap(),
+    }))
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+    connect_daemon(machine_addr)
+        .await
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: founder.name,
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
+                public_ip: None,
+                advertised_endpoints: founder.advertised_endpoints,
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--network",
+            "not-a-cidr",
+            "--reset",
+            "--yes",
+            "--no-ingress",
+            "--no-dns",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(daemon.reset_count(), 0);
+    assert!(enroll.posts().is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid value 'not-a-cidr' for '--network <network>'"),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
 async fn reset_enroll_posts_the_rotated_public_key() {
     let local = registration();
     let mut assigned = local.clone();
