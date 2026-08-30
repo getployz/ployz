@@ -745,8 +745,8 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     let posted = enroll.posts();
     assert_eq!(posted.len(), 1);
     assert_eq!(
-        posted[0]["publicKey"],
-        json!(daemon.public_key().to_string())
+        posted.first().and_then(|post| post.get("publicKey")),
+        Some(&json!(daemon.public_key().to_string()))
     );
     assert_eq!(
         daemon
@@ -814,7 +814,12 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
     let posted: Vec<String> = enroll
         .posts()
         .iter()
-        .map(|post| post["publicKey"].as_str().unwrap().to_owned())
+        .map(|post| {
+            post.get("publicKey")
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+                .to_owned()
+        })
         .collect();
     assert_eq!(posted, [daemon.public_key().to_string()]);
     assert_eq!(

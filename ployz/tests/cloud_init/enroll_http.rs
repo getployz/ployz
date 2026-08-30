@@ -168,8 +168,9 @@ fn occupy_join(
     claimed: &mut Option<String>,
     post: &serde_json::Value,
 ) -> Vec<u8> {
-    let posted = post["publicKey"]
-        .as_str()
+    let posted = post
+        .get("publicKey")
+        .and_then(serde_json::Value::as_str)
         .expect("enroll POST carries publicKey");
     if let Some(existing) = claimed.as_ref()
         && existing != posted
@@ -183,7 +184,9 @@ fn occupy_join(
     *claimed = Some(posted.to_owned());
     let mut body = join.clone();
     let key = STANDARD.decode(posted).expect("enroll publicKey is base64");
-    body["registration"]["assigned_machine"]["public_key"] = serde_json::to_value(key).unwrap();
+    *body
+        .pointer_mut("/registration/assigned_machine/public_key")
+        .expect("join registration has public_key") = serde_json::to_value(key).unwrap();
     serde_json::to_vec(&body).unwrap()
 }
 
