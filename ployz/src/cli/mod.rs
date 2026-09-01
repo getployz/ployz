@@ -401,7 +401,7 @@ fn machine_add() -> Command {
 
 fn machine_init() -> Command {
     let command = Command::new("init")
-        .about("Initialise a cluster on a remote machine")
+        .about("Initialise a cluster on this Machine or a remote machine")
         .args(connection_args(false))
         .arg(value("context", Some('c')).default_value("default"))
         .arg(value("dns-endpoint", None).default_value(crate::dns::HOSTED_DNS_ENDPOINT))
