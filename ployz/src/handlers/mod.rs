@@ -390,15 +390,57 @@ mod tests {
     }
 
     #[test]
-    fn local_machine_initialisation_remains_explicitly_unimplemented() {
+    fn local_machine_init_requires_root_to_install() {
+        if crate::provisioning::process_is_root() {
+            return;
+        }
         let mut command = command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "machine", "init"])
+            .try_get_matches_from([
+                "ployz",
+                "machine",
+                "init",
+                "--yes",
+                "--storage",
+                "none",
+                "--no-dns",
+                "--no-ingress",
+                "--context",
+                "local-init",
+            ])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "local machine initialisation is not implemented; specify a remote machine",
+            "run this command with sudo",
+        );
+    }
+
+    #[test]
+    fn local_machine_init_without_install_dials_the_unix_socket() {
+        if std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists() {
+            return;
+        }
+        let mut command = command();
+        let matches = command
+            .clone()
+            .try_get_matches_from([
+                "ployz",
+                "machine",
+                "init",
+                "--no-install",
+                "--yes",
+                "--storage",
+                "none",
+                "--no-dns",
+                "--no-ingress",
+                "--context",
+                "local-init-no-install",
+            ])
+            .unwrap();
+        assert_eq!(
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            "all 1 connections from Direct failed",
         );
     }
 

@@ -121,7 +121,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "fixed-wireguard-port".to_owned(),
             "images-json-output".to_owned(),
             "ingress-proxy-vocabulary".to_owned(),
-            "local-machine-init-stub".to_owned(),
+            "local-machine-init".to_owned(),
             "listing-json-output".to_owned(),
             "machine-enrollment-storage".to_owned(),
             "machine-remove-named-data-loss".to_owned(),
@@ -547,7 +547,7 @@ fn reference_positionals(
             },
         ));
     }
-    if command_path == "ployz machine init" && deviations.contains("local-machine-init-stub") {
+    if command_path == "ployz machine init" && deviations.contains("local-machine-init") {
         positionals
             .first_mut()
             .expect("machine init has a destination positional")

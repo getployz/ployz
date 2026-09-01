@@ -7,18 +7,13 @@ use ployz_core::{
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
 use crate::{
-    context::Context,
+    connect::DEFAULT_LOCAL_SOCKET,
+    context::{Connection, Context},
     handlers::{Error, leaf_matches},
 };
 
 pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let Some(destination) = matches.get_one::<String>("destination") else {
-        // TODO: local Machine initialization remains outside the remote lifecycle path.
-        return Err(Error::usage(
-            "local machine initialisation is not implemented; specify a remote machine",
-        ));
-    };
     if matches.get_one::<String>("connect").is_some() {
         return Err(Error::usage(
             "machine init creates a new context; do not use --connect",
@@ -35,11 +30,15 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             "context {context_name:?} already exists"
         )));
     }
-    let connection = destination.parse()?;
-    let connection = helpers::configure_ssh_key(
-        connection,
-        matches.get_one::<String>("ssh-key").map(String::as_str),
-    )?;
+    let destination = matches.get_one::<String>("destination");
+    let connection = match destination {
+        None => Connection::unix(DEFAULT_LOCAL_SOCKET)?,
+        Some(dest) => helpers::configure_ssh_key(
+            dest.parse()?,
+            matches.get_one::<String>("ssh-key").map(String::as_str),
+        )?,
+    };
+    let local = destination.is_none();
     let requested_name = matches
         .get_one::<String>("name")
         .map(MachineName::parse)
@@ -55,13 +54,22 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<ployz_core::IngressProxyBackend>("ingress-backend")
         .expect("founding Ingress Proxy Backend has a default");
     let yes = matches.get_flag("yes");
+    let no_install = matches.get_flag("no-install");
     let storage = crate::provisioning::resolve_storage(matches)?;
-    if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches, storage)?;
+    if !no_install {
+        if local {
+            crate::provisioning::provision_local(storage)?;
+        } else {
+            crate::provisioning::provision(matches, storage)?;
+        }
     }
 
     let (machine, connection) = runtime()?.block_on(async {
-        let mut target = helpers::connect_direct(&connection).await?;
+        let mut target = if local && !no_install {
+            helpers::reconnect_direct(&connection).await?
+        } else {
+            helpers::connect_direct(&connection).await?
+        };
         let mut token = target
             .call::<op::MachineToken>(token_request.clone(), None)
             .await?;
