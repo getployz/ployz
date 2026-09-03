@@ -248,9 +248,9 @@ fn destroying_volumes_names_owned_docker_volumes_only() {
             &plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap()
         )
         .data_loss,
-        [DataLoss::DockerVolume(
-            owned_volume(machine_id('1'), "data").id
-        )]
+        [DataLoss::DockerVolume {
+            id: owned_volume(machine_id('1'), "data").id
+        }]
     );
 }
 

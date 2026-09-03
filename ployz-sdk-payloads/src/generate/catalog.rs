@@ -14,10 +14,6 @@ pub(super) enum Shape {
         params: &'static str,
         fields: &'static [(&'static str, &'static str)],
     },
-    ExternallyTagged {
-        params: &'static str,
-        variants: &'static [(&'static str, Option<&'static str>)],
-    },
     InternallyTagged {
         tag: &'static str,
         params: &'static str,
@@ -554,9 +550,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DataLoss",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "kind",
             params: "",
-            variants: &[("DockerVolume", Some("DockerVolumeId"))],
+            variants: &[("docker_volume", &[("id", "DockerVolumeId")])],
         },
     ),
     (
@@ -700,26 +697,34 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DeployWarning",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "",
             variants: &[
                 (
-                    "ObservationFailed",
-                    Some("{ kind: ObservationKind; machine_id: MachineId; message: string }"),
+                    "observation_failed",
+                    &[
+                        ("kind", "ObservationKind"),
+                        ("machine_id", "MachineId"),
+                        ("message", "string"),
+                    ],
                 ),
                 (
-                    "ObservationOmitted",
-                    Some("{ kind: ObservationKind; machine_id: MachineId }"),
+                    "observation_omitted",
+                    &[("kind", "ObservationKind"), ("machine_id", "MachineId")],
                 ),
                 (
-                    "StorageObservationUnknown",
-                    Some("{ machine_id: MachineId }"),
+                    "storage_observation_unknown",
+                    &[("machine_id", "MachineId")],
                 ),
-                ("IngressHostname", Some("string")),
-                ("ObserverRelativeHostnameConflict", None),
+                ("ingress_hostname", &[("message", "string")]),
+                ("observer_relative_hostname_conflict", &[]),
                 (
-                    "SkippedDependencyHealth",
-                    Some("{ dependent: QualifiedService; dependency: QualifiedService }"),
+                    "skipped_dependency_health",
+                    &[
+                        ("dependent", "QualifiedService"),
+                        ("dependency", "QualifiedService"),
+                    ],
                 ),
             ],
         },
@@ -1001,29 +1006,38 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "StopAttempt",
+        Shape::InternallyTagged {
+            tag: "type",
+            params: "<E = ExecutionError>",
+            variants: &[("stopped", &[]), ("failed", &[("error", "E")])],
+        },
+    ),
+    (
         "RestartAttempt",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
-                ("NotAttempted", None),
-                ("Attempted", Some("SerdeResult<null, E>")),
+                ("not_attempted", &[]),
+                ("restarted", &[]),
+                ("failed", &[("error", "E")]),
             ],
         },
     ),
     (
         "ReplacementCompensation",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
+                ("start_first", &[("stop_new_container", "StopAttempt<E>")]),
                 (
-                    "StartFirst",
-                    Some("{ stop_new_container: SerdeResult<null, E> }"),
-                ),
-                (
-                    "StopFirst",
-                    Some(
-                        "{ stop_new_container: SerdeResult<null, E>; restart_old_container: RestartAttempt<E> }",
-                    ),
+                    "stop_first",
+                    &[
+                        ("stop_new_container", "StopAttempt<E>"),
+                        ("restart_old_container", "RestartAttempt<E>"),
+                    ],
                 ),
             ],
         },

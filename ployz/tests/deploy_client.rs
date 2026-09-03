@@ -698,7 +698,7 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
     );
     assert!(
         preview.warnings.iter().any(|warning| match warning {
-            DeployWarning::IngressHostname(message) => {
+            DeployWarning::IngressHostname { message } => {
                 message.contains("preview-deploy.invalid")
                     && message.contains("192.0.2.1")
                     && !message.to_ascii_lowercase().contains("certificate")

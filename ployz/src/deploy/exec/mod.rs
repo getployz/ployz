@@ -18,6 +18,7 @@ use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestartAttempt,
+    StopAttempt,
 };
 
 pub(super) use super::progress::Progress;
@@ -759,21 +760,23 @@ async fn replace_container<C: MachineOperations>(
             return Err(error.into());
         }
         progress.set_running(index, OperationPhase::Compensating);
-        let stop_new_container = ignore_not_found(
-            client
-                .stop_container(
-                    &operation.machine_id,
-                    &container_id,
-                    Some(stop_grace_period(&operation.spec).unwrap_or(0)),
-                )
-                .await,
-        )
-        .map_err(|error| machine_error(MachineAction::StopContainer, error));
+        let stop_new_container = StopAttempt::from(
+            ignore_not_found(
+                client
+                    .stop_container(
+                        &operation.machine_id,
+                        &container_id,
+                        Some(stop_grace_period(&operation.spec).unwrap_or(0)),
+                    )
+                    .await,
+            )
+            .map_err(|error| machine_error(MachineAction::StopContainer, error)),
+        );
         let compensation = if stop_first {
             ReplacementCompensation::StopFirst {
                 stop_new_container,
                 restart_old_container: if restart_old_on_failure {
-                    RestartAttempt::Attempted(
+                    RestartAttempt::attempted(
                         client
                             .start_container(&operation.machine_id, &operation.old_container_id)
                             .await

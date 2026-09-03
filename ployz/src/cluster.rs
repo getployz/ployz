@@ -900,13 +900,13 @@ async fn data_loss_on_machine(
             .value
             .volumes
             .into_iter()
-            .map(|volume| DataLoss::DockerVolume(volume.id))
+            .map(|volume| DataLoss::DockerVolume { id: volume.id })
             .chain(
                 volumes
                     .value
                     .failures
                     .into_iter()
-                    .map(|failure| DataLoss::DockerVolume(failure.id)),
+                    .map(|failure| DataLoss::DockerVolume { id: failure.id }),
             )
             .collect(),
     })

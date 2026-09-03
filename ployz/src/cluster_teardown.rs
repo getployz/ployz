@@ -146,7 +146,7 @@ fn cluster_volume_loss(snapshot: &DeploySnapshot) -> ObservedDataLoss {
             .volume_snapshot
             .known_ids()
             .cloned()
-            .map(DataLoss::DockerVolume)
+            .map(|id| DataLoss::DockerVolume { id })
             .collect(),
     }
 }
@@ -187,7 +187,7 @@ mod tests {
 
         assert_eq!(
             cluster_volume_loss(&snapshot).data_loss,
-            [DataLoss::DockerVolume(id)]
+            [DataLoss::DockerVolume { id }]
         );
     }
 }

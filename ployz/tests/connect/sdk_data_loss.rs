@@ -23,14 +23,18 @@ async fn data_loss_if_machine_removed_lists_volumes_and_empty_without_mutating()
     assert_eq!(
         with_volumes.data_loss,
         [
-            DataLoss::DockerVolume(DockerVolumeId {
-                machine_id: loaded.id,
-                name: DockerVolumeName::parse("data").unwrap(),
-            }),
-            DataLoss::DockerVolume(DockerVolumeId {
-                machine_id: loaded.id,
-                name: DockerVolumeName::parse("logs").unwrap(),
-            }),
+            DataLoss::DockerVolume {
+                id: DockerVolumeId {
+                    machine_id: loaded.id,
+                    name: DockerVolumeName::parse("data").unwrap(),
+                }
+            },
+            DataLoss::DockerVolume {
+                id: DockerVolumeId {
+                    machine_id: loaded.id,
+                    name: DockerVolumeName::parse("logs").unwrap(),
+                }
+            },
         ]
     );
 

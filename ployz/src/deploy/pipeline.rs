@@ -249,7 +249,9 @@ pub(super) struct PushedImage {
 
 impl From<IngressDnsWarning> for DeployWarning {
     fn from(warning: IngressDnsWarning) -> Self {
-        Self::IngressHostname(warning.to_string())
+        Self::IngressHostname {
+            message: warning.to_string(),
+        }
     }
 }
 

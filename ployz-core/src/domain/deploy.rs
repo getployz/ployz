@@ -263,23 +263,70 @@ pub enum FailedOperation<E> {
 
 /// Compensation after a replacement health failure.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReplacementCompensation<E> {
     /// New container started first; `stop_new_container` is that stop attempt.
-    StartFirst { stop_new_container: Result<(), E> },
+    StartFirst { stop_new_container: StopAttempt<E> },
     /// Old container stopped first; `restart_old_container` is that restart attempt.
     StopFirst {
-        stop_new_container: Result<(), E>,
+        stop_new_container: StopAttempt<E>,
         restart_old_container: RestartAttempt<E>,
     },
 }
 
+/// Outcome of stopping the new container during compensation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StopAttempt<E> {
+    /// The container stopped, or was already gone.
+    Stopped,
+    /// The stop returned `error`.
+    Failed { error: E },
+}
+
+impl<E> StopAttempt<E> {
+    /// Whether the container is stopped.
+    #[must_use]
+    pub const fn stopped(&self) -> bool {
+        matches!(self, Self::Stopped)
+    }
+}
+
+impl<E> From<Result<(), E>> for StopAttempt<E> {
+    fn from(result: Result<(), E>) -> Self {
+        match result {
+            Ok(()) => Self::Stopped,
+            Err(error) => Self::Failed { error },
+        }
+    }
+}
+
 /// Whether restarting the old container was attempted after stop-first replacement failure.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum RestartAttempt<E> {
     /// Restart was not attempted.
     NotAttempted,
-    /// Restart was attempted; `Ok(())` or the restart error.
-    Attempted(Result<(), E>),
+    /// The old container restarted.
+    Restarted,
+    /// The restart returned `error`.
+    Failed { error: E },
+}
+
+impl<E> RestartAttempt<E> {
+    /// Record one restart attempt.
+    pub fn attempted(result: Result<(), E>) -> Self {
+        match result {
+            Ok(()) => Self::Restarted,
+            Err(error) => Self::Failed { error },
+        }
+    }
+
+    /// Whether the old container is running again.
+    #[must_use]
+    pub const fn restarted(&self) -> bool {
+        matches!(self, Self::Restarted)
+    }
 }
 
 /// Replace one container with a newly resolved spec on the same Machine.
@@ -501,6 +548,7 @@ impl Display for ObservationKind {
 
 /// A warning attached to a Deploy Preview. Display matches the CLI warning body.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeployWarning {
     /// Listing containers or volumes on `machine_id` returned `message`.
     ObservationFailed {
@@ -518,8 +566,8 @@ pub enum DeployWarning {
         /// Machine whose storage capability could not be checked.
         machine_id: MachineId,
     },
-    /// An Ingress Hostname misses this Cluster. The string is the CLI warning body.
-    IngressHostname(String),
+    /// An Ingress Hostname misses this Cluster. `message` is the CLI warning body.
+    IngressHostname { message: String },
     /// Conflict detection used this Machine's current view and does not claim uniqueness.
     ObserverRelativeHostnameConflict,
     /// `--skip-health` weakened one `service_healthy` edge to ordering only.
@@ -544,7 +592,7 @@ impl Display for DeployWarning {
                 f,
                 "storage could not be checked on Machine {machine_id}; Provisioned Volume placement ignored that Machine"
             ),
-            Self::IngressHostname(message) => f.write_str(message),
+            Self::IngressHostname { message } => f.write_str(message),
             Self::ObserverRelativeHostnameConflict => f.write_str(
                 "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness.",
             ),

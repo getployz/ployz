@@ -388,10 +388,12 @@ fn machine_named(id: &MachineId, name: &str) -> MachineObservation {
 }
 
 fn volume(machine_id: MachineId, name: &str) -> DataLoss {
-    DataLoss::DockerVolume(DockerVolumeId {
-        machine_id,
-        name: DockerVolumeName::parse(name).unwrap(),
-    })
+    DataLoss::DockerVolume {
+        id: DockerVolumeId {
+            machine_id,
+            name: DockerVolumeName::parse(name).unwrap(),
+        },
+    }
 }
 
 fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {

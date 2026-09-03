@@ -22,9 +22,15 @@ struct ClusterLoss {
 impl ClusterLoss {
     fn all(&self) -> Vec<DataLoss> {
         vec![
-            DataLoss::DockerVolume(self.shop_data.clone()),
-            DataLoss::DockerVolume(self.shop_logs.clone()),
-            DataLoss::DockerVolume(self.scratch.clone()),
+            DataLoss::DockerVolume {
+                id: self.shop_data.clone(),
+            },
+            DataLoss::DockerVolume {
+                id: self.shop_logs.clone(),
+            },
+            DataLoss::DockerVolume {
+                id: self.scratch.clone(),
+            },
         ]
     }
 }

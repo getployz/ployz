@@ -28,7 +28,7 @@ use ployz_core::{
     ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
     ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StopAttempt,
     StopContainerPurpose, StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss,
     UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory, VolumeObservationFailure,
     VolumeSource, VolumeToCreate, WireGuardPublicKey,
@@ -521,7 +521,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                     operation: replacement_operation(),
                     error: execution_error_machine(),
                     compensation: ReplacementCompensation::<ExecutionError>::StartFirst {
-                        stop_new_container: Ok(()),
+                        stop_new_container: StopAttempt::Stopped,
                     },
                 }),
             ],
@@ -530,17 +530,29 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             "RestartAttempt",
             vec![
                 to_value(&RestartAttempt::<ExecutionError>::NotAttempted),
-                to_value(&RestartAttempt::<ExecutionError>::Attempted(Ok(()))),
+                to_value(&RestartAttempt::<ExecutionError>::Restarted),
+                to_value(&RestartAttempt::Failed {
+                    error: ExecutionError::Cancelled,
+                }),
+            ],
+        ),
+        (
+            "StopAttempt",
+            vec![
+                to_value(&StopAttempt::<ExecutionError>::Stopped),
+                to_value(&StopAttempt::Failed {
+                    error: ExecutionError::Cancelled,
+                }),
             ],
         ),
         (
             "ReplacementCompensation",
             vec![
                 to_value(&ReplacementCompensation::<ExecutionError>::StartFirst {
-                    stop_new_container: Ok(()),
+                    stop_new_container: StopAttempt::Stopped,
                 }),
                 to_value(&ReplacementCompensation::<ExecutionError>::StopFirst {
-                    stop_new_container: Ok(()),
+                    stop_new_container: StopAttempt::Stopped,
                     restart_old_container: RestartAttempt::NotAttempted,
                 }),
             ],
@@ -816,7 +828,9 @@ fn remove_volumes_request() -> RemoveVolumesRequest {
 }
 
 fn data_loss() -> DataLoss {
-    DataLoss::DockerVolume(docker_volume().id)
+    DataLoss::DockerVolume {
+        id: docker_volume().id,
+    }
 }
 
 fn observed_data_loss() -> ObservedDataLoss {
@@ -911,10 +925,11 @@ fn deploy_warnings() -> [DeployWarning; 6] {
         DeployWarning::StorageObservationUnknown {
             machine_id: machine_id(OTHER_MACHINE_ID_HEX),
         },
-        DeployWarning::IngressHostname(
-            "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
-                .into(),
-        ),
+        DeployWarning::IngressHostname {
+            message:
+                "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
+                    .into(),
+        },
         DeployWarning::ObserverRelativeHostnameConflict,
         DeployWarning::SkippedDependencyHealth {
             dependent: QualifiedService::parse("app/web").unwrap(),

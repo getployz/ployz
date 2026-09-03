@@ -10,10 +10,6 @@ export type JsonValue =
 
 export type JsonObject = { readonly [key: string]: JsonValue | undefined };
 
-export type SerdeResult<T, E> =
-  | { Ok: T }
-  | { Err: E };
-
 export type MachineId = string & { readonly __brand: "MachineId" };
 
 export type ContainerId = string & { readonly __brand: "ContainerId" };
@@ -312,7 +308,7 @@ export type RemoveVolumesRequest = {
 };
 
 export type DataLoss =
-  | { DockerVolume: DockerVolumeId };
+  | { kind: "docker_volume"; id: DockerVolumeId };
 
 export type ObservedDataLoss = {
   data_loss: DataLoss[];
@@ -395,12 +391,12 @@ export type DeployIntent = {
 export type ObservationKind = "container" | "volume";
 
 export type DeployWarning =
-  | { ObservationFailed: { kind: ObservationKind; machine_id: MachineId; message: string } }
-  | { ObservationOmitted: { kind: ObservationKind; machine_id: MachineId } }
-  | { StorageObservationUnknown: { machine_id: MachineId } }
-  | { IngressHostname: string }
-  | "ObserverRelativeHostnameConflict"
-  | { SkippedDependencyHealth: { dependent: QualifiedService; dependency: QualifiedService } };
+  | { type: "observation_failed"; kind: ObservationKind; machine_id: MachineId; message: string }
+  | { type: "observation_omitted"; kind: ObservationKind; machine_id: MachineId }
+  | { type: "storage_observation_unknown"; machine_id: MachineId }
+  | { type: "ingress_hostname"; message: string }
+  | { type: "observer_relative_hostname_conflict" }
+  | { type: "skipped_dependency_health"; dependent: QualifiedService; dependency: QualifiedService };
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services" | "filtered_profiles" | "guessed_project_name";
 
@@ -500,13 +496,18 @@ export type ExecutionError =
   | { type: "hook"; container_id: ContainerId; failure: HookFailure }
   | { type: "cancelled" };
 
+export type StopAttempt<E = ExecutionError> =
+  | { type: "stopped" }
+  | { type: "failed"; error: E };
+
 export type RestartAttempt<E = ExecutionError> =
-  | "NotAttempted"
-  | { Attempted: SerdeResult<null, E> };
+  | { type: "not_attempted" }
+  | { type: "restarted" }
+  | { type: "failed"; error: E };
 
 export type ReplacementCompensation<E = ExecutionError> =
-  | { StartFirst: { stop_new_container: SerdeResult<null, E> } }
-  | { StopFirst: { stop_new_container: SerdeResult<null, E>; restart_old_container: RestartAttempt<E> } };
+  | { type: "start_first"; stop_new_container: StopAttempt<E> }
+  | { type: "stop_first"; stop_new_container: StopAttempt<E>; restart_old_container: RestartAttempt<E> };
 
 export type FailedOperation<E = ExecutionError> =
   | { type: "operation"; operation: DeployOperation; error: E }

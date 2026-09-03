@@ -39,7 +39,7 @@ pub use ployz_core::{
     ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
     DeployWarning, ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction,
     ObservationKind, OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
-    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, StopAttempt,
 };
 
 pub(crate) use progress::pending_rows;

@@ -113,10 +113,12 @@ mod tests {
     }
 
     fn loss(machine: char, name: &str) -> DataLoss {
-        DataLoss::DockerVolume(DockerVolumeId {
-            machine_id: machine_id(machine),
-            name: DockerVolumeName::parse(name).unwrap(),
-        })
+        DataLoss::DockerVolume {
+            id: DockerVolumeId {
+                machine_id: machine_id(machine),
+                name: DockerVolumeName::parse(name).unwrap(),
+            },
+        }
     }
 
     fn machine_id(value: char) -> MachineId {

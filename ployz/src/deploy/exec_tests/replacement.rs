@@ -28,7 +28,7 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
                     stop_new_container,
                 },
                 ..
-            }, .. } if stop_new_container.is_ok() == stop_succeeds
+            }, .. } if stop_new_container.stopped() == stop_succeeds
         ));
         client.assert_done();
     }
@@ -56,7 +56,7 @@ async fn replacement_compensation_tolerates_a_missing_new_container() {
         DeployOutcome::Failed {
             failed: FailedOperation::ReplacementHealth {
                 compensation: ReplacementCompensation::StartFirst {
-                    stop_new_container: Ok(()),
+                    stop_new_container: StopAttempt::Stopped,
                 },
                 ..
             },
@@ -131,11 +131,11 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
             DeployOutcome::Failed { failed: FailedOperation::ReplacementHealth {
                 compensation: ReplacementCompensation::StopFirst {
                     stop_new_container,
-                    restart_old_container: RestartAttempt::Attempted(restart),
+                    restart_old_container: restart,
                 },
                 ..
-            }, .. } if stop_new_container.is_ok() == stop_succeeds
-                && restart.is_ok() == restart_succeeds
+            }, .. } if stop_new_container.stopped() == stop_succeeds
+                && restart.restarted() == restart_succeeds
         ));
         client.assert_done();
     }
@@ -200,7 +200,7 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
             DeployOutcome::Failed {
                 failed: FailedOperation::ReplacementHealth {
                     compensation: ReplacementCompensation::StopFirst {
-                        restart_old_container: RestartAttempt::Attempted(Ok(())),
+                        restart_old_container: RestartAttempt::Restarted,
                         ..
                     },
                     ..

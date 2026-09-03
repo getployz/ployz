@@ -139,7 +139,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     );
 
     let loss: DataLoss = decode_fixture(fixture(&fixtures, "data_loss"));
-    assert!(matches!(loss, DataLoss::DockerVolume(_)));
+    assert!(matches!(loss, DataLoss::DockerVolume { .. }));
     assert_eq!(
         serde_json::to_value(&loss).unwrap(),
         *fixture(&fixtures, "data_loss")
@@ -489,7 +489,10 @@ fn observation_enums_keep_an_unknown_case() {
 fn generated_typescript_encodes_evolution_rules() {
     let dts = include_str!("../../ployz-sdk/generated/payloads.d.ts");
     assert!(!dts.contains("Additive"));
-    assert!(dts.contains("export type SerdeResult<T, E> =\n  | { Ok: T }\n  | { Err: E };"));
+    assert!(
+        !dts.contains("SerdeResult"),
+        "Result never reaches the SDK; outcomes are tagged"
+    );
     assert!(dts.contains("export type MembershipObservation ="));
     assert!(dts.contains("| (string & {});"));
     assert!(dts.contains("export type ContainerRuntimeObservation ="));
@@ -516,7 +519,7 @@ fn generated_typescript_encodes_evolution_rules() {
     ));
     assert!(dts.contains("storage: DockerVolumeStorageObservation"));
     assert!(dts.contains("export type DataLoss ="));
-    assert!(dts.contains("DockerVolume: DockerVolumeId"));
+    assert!(dts.contains("| { kind: \"docker_volume\"; id: DockerVolumeId }"));
     assert!(dts.contains("export type ObservedDataLoss = {"));
     assert!(dts.contains("data_loss: DataLoss[]"));
     assert!(dts.contains("export type DataLossConfirmation = {"));
@@ -580,8 +583,9 @@ fn generated_typescript_encodes_evolution_rules() {
     assert!(dts.contains("readonly __brand: \"ServiceName\""));
     assert!(dts.contains("export type ObservationKind ="));
     assert!(dts.contains("export type DeployWarning ="));
-    assert!(dts.contains("StorageObservationUnknown:"));
-    assert!(dts.contains("SkippedDependencyHealth:"));
+    assert!(dts.contains("type: \"storage_observation_unknown\"; machine_id: MachineId"));
+    assert!(dts.contains("type: \"ingress_hostname\"; message: string"));
+    assert!(dts.contains("type: \"skipped_dependency_health\"; dependent: QualifiedService; dependency: QualifiedService"));
     assert!(dts.contains("export type DeployPreview = {"));
     assert!(dts.contains("operations: OperationRow[]"));
     assert!(dts.contains("volumes_to_create: VolumeToCreate[]"));
@@ -608,6 +612,9 @@ fn generated_typescript_encodes_evolution_rules() {
     assert!(!dts.contains("type: \"create_provisioned_volume\""));
     assert!(!dts.contains("type: \"creating_volume\""));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
+    assert!(dts.contains("export type StopAttempt<E = ExecutionError> =\n  | { type: \"stopped\" }\n  | { type: \"failed\"; error: E };"));
+    assert!(dts.contains("| { type: \"not_attempted\" }\n  | { type: \"restarted\" }\n  | { type: \"failed\"; error: E };"));
+    assert!(dts.contains("| { type: \"start_first\"; stop_new_container: StopAttempt<E> }"));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
     assert!(dts.contains("export type ExecutionError ="));
     assert!(dts.contains("export type MachineAction ="));
