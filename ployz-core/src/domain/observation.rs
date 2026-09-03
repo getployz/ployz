@@ -20,17 +20,14 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
 /// Docker state may ever use this spelling.
 pub const UNRECOGNIZED_STATE: &str = "unrecognized";
 
-/// How many `unrecognized` wrappers a reader unwraps before keeping the whole
-/// wrapped value as observed. Each older hop that re-encodes an unknown
-/// observation adds one.
-const UNRECOGNIZED_UNWRAP_LIMIT: usize = 8;
-
 /// Docker state as observed, including the untouched value of a future state.
 ///
 /// On the wire, a known state is `{ "state": "running", ... }`. An unknown
 /// state is `{ "state": "unrecognized", "raw": <the value as observed> }`, so
 /// every reader sees a closed set of `state` spellings, and a newer reader
-/// recovers the observed value from `raw`.
+/// recovers the observed value from `raw`. A wrapper is at most one deep: a
+/// reader from before this form passes it through bare, and a reader that
+/// knows it unwraps before re-encoding, so one unwrap is the whole walk.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContainerRuntimeObservation {
     Created,
@@ -94,19 +91,20 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
         D: Deserializer<'de>,
     {
         let raw = Value::deserialize(deserializer)?;
-        let mut current = &raw;
-        for _ in 0..UNRECOGNIZED_UNWRAP_LIMIT {
-            match Self::from_wire(current).map_err(D::Error::custom)? {
-                Wire::Known(observation) => return Ok(observation),
-                Wire::Unrecognized(inner) => current = inner,
-                Wire::Unknown => {
-                    return Ok(Self::Unknown {
-                        raw: current.clone(),
-                    });
-                }
+        let inner = match Self::from_wire(&raw).map_err(D::Error::custom)? {
+            Wire::Known(observation) => return Ok(observation),
+            Wire::Unknown => return Ok(Self::Unknown { raw }),
+            Wire::Unrecognized(inner) => inner,
+        };
+        // The wrapper carries what a writer could not classify, so a value
+        // that does not parse here is kept as observed rather than failing
+        // the whole frame.
+        Ok(match Self::from_wire(inner) {
+            Ok(Wire::Known(observation)) => observation,
+            Ok(Wire::Unrecognized(_) | Wire::Unknown) | Err(_) => {
+                Self::Unknown { raw: inner.clone() }
             }
-        }
-        Ok(Self::Unknown { raw })
+        })
     }
 }
 

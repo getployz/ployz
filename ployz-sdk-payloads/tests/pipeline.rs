@@ -498,7 +498,10 @@ fn generated_typescript_encodes_evolution_rules() {
     assert!(dts.contains("export type ContainerRuntimeObservation ="));
     assert!(dts.contains("| { state: \"unrecognized\"; raw: JsonValue }"));
     for line in dts.lines() {
-        let Some(arm) = line.find("| {").map(|start| &line[start..]) else {
+        let Some(arm) = line
+            .find("| {")
+            .map(|start| line[start..].trim_end_matches(';'))
+        else {
             continue;
         };
         assert!(

@@ -1,4 +1,13 @@
 //! Deterministic TypeScript declarations for `@ployz/sdk` public payloads.
+//!
+//! The declarations describe exactly what the SDK's Rust layer emits and
+//! accepts, not what a newer ployzd might send: Rust owns that version
+//! boundary. So object types are exact (Rust drops unknown fields on
+//! re-serialization) and tagged unions are closed (a `#[serde(tag)]` enum
+//! fails to decode an unknown tag inside the SDK, so JavaScript never sees
+//! one). The one state Rust passes through, `ContainerRuntimeObservation`'s
+//! unknown case, is a named arm rather than a hole. Open strings stay open
+//! because Rust passes those through as observed.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -138,6 +147,8 @@ fn emit_internally_tagged(
     tag: &str,
     variants: &[(&str, &[(&str, &str)])],
 ) -> String {
+    // No trailing `{ tag?: string }` arm: Rust rejects an unknown tag before
+    // JavaScript could see one, and the arm defeats discriminant narrowing.
     let mut arms = Vec::new();
     for (tag_value, fields) in variants {
         let mut members = vec![format!("{tag}: \"{tag_value}\"")];

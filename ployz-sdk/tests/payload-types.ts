@@ -8,7 +8,6 @@ import type {
   DeployEvent,
   DeployIntent,
   DeviceMapping,
-  DockerVolumeId,
   DeviceReservation,
   HealthcheckSpec,
   MachineId,
@@ -146,14 +145,6 @@ const noHealthcheck: HealthcheckSpec = {};
 // @ts-expect-error an unknown Docker state is not a bare tag; it arrives as unrecognized + raw
 const futureState: ContainerRuntimeObservation = { state: "hibernating" };
 
-// Data Loss is a tagged union whose identity nests per kind, so narrowing
-// on `kind` yields the identity that belongs to it.
-function volumeIdentity(loss: DataLoss): DockerVolumeId {
-  switch (loss.kind) {
-    case "docker_volume":
-      return loss.id;
-  }
-}
-void volumeIdentity;
+// Data Loss is a tagged union whose identity nests per kind.
 // @ts-expect-error identity fields do not spread beside the kind
 const flatLoss: DataLoss = { kind: "docker_volume", machine_id: "m" as MachineId, name: "data" };

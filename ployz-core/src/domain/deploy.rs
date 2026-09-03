@@ -274,7 +274,7 @@ pub enum ReplacementCompensation<E> {
     },
 }
 
-/// Outcome of stopping the new container during compensation.
+/// The stop attempt on the new container during compensation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StopAttempt<E> {

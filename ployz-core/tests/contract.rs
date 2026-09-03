@@ -658,10 +658,8 @@ fn unknown_observation_variants_preserve_the_raw_value() {
 #[test]
 fn unrecognized_wrappers_unwrap_to_the_observed_value() {
     // A newer reader recovers a state that crossed an older hop.
-    let via_old_hop = json!({
-        "state": UNRECOGNIZED_STATE,
-        "raw": { "state": UNRECOGNIZED_STATE, "raw": { "state": "exited", "code": 3 } }
-    });
+    let exited = json!({ "state": "exited", "code": 3 });
+    let via_old_hop = json!({ "state": UNRECOGNIZED_STATE, "raw": exited });
     let observation: ContainerRuntimeObservation = serde_json::from_value(via_old_hop).unwrap();
     assert_eq!(observation, ContainerRuntimeObservation::Exited { code: 3 });
 
@@ -673,16 +671,26 @@ fn unrecognized_wrappers_unwrap_to_the_observed_value() {
         ContainerRuntimeObservation::Unknown { raw: bare }
     );
 
-    // Unwrapping is bounded, so hostile nesting cannot recurse without limit.
-    let mut nested = json!({ "state": "future" });
-    for _ in 0..64 {
-        nested = json!({ "state": UNRECOGNIZED_STATE, "raw": nested });
-    }
-    let observation: ContainerRuntimeObservation = serde_json::from_value(nested).unwrap();
-    assert!(matches!(
+    // One unwrap is the whole walk; deeper nesting is kept as observed.
+    let inner = json!({ "state": UNRECOGNIZED_STATE, "raw": exited });
+    let twice = json!({ "state": UNRECOGNIZED_STATE, "raw": inner });
+    let observation: ContainerRuntimeObservation = serde_json::from_value(twice).unwrap();
+    assert_eq!(
         observation,
-        ContainerRuntimeObservation::Unknown { .. }
-    ));
+        ContainerRuntimeObservation::Unknown { raw: inner }
+    );
+
+    // What a writer could not classify may not parse either; keep it as
+    // observed instead of failing the frame. Top level stays strict.
+    let malformed = json!({ "state": "running" });
+    let wrapped = json!({ "state": UNRECOGNIZED_STATE, "raw": malformed });
+    let observation: ContainerRuntimeObservation = serde_json::from_value(wrapped).unwrap();
+    assert_eq!(
+        observation,
+        ContainerRuntimeObservation::Unknown { raw: malformed }
+    );
+    serde_json::from_value::<ContainerRuntimeObservation>(json!({ "state": "running" }))
+        .unwrap_err();
 }
 
 #[test]
