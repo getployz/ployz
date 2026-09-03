@@ -100,5 +100,7 @@ const intent: DeployIntent = {
 }) satisfies DeployIntent;
 // keyof a payload is its declared field names, not string.
 ("project_name") satisfies keyof DeployIntent;
+// @ts-expect-error an undeclared name is not a key of DeployIntent
+("from_a_newer_daemon") satisfies keyof DeployIntent;
 // @ts-expect-error unknown keys are not readable on a plain object type
 const unknownField: unknown = intent.from_a_newer_daemon;
