@@ -9,7 +9,7 @@ use std::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::values::{additive_examples, catalogued_capabilities, tagged_examples};
+use crate::values::{catalogued_capabilities, object_examples, tagged_examples};
 
 mod catalog;
 use catalog::{PAYLOADS, Shape};
@@ -20,11 +20,10 @@ pub const PACKAGE_NAME: &str = "@ployz/sdk";
 const TYPESCRIPT_PREAMBLE: &str = "\
 export type JsonValue =\n  | null\n  | boolean\n  | number\n  | string\n  | JsonValue[]\n  | JsonObject;\n\n\
 export type JsonObject = { readonly [key: string]: JsonValue | undefined };\n\n\
-export type Additive<T extends object> = T & JsonObject;\n\n\
-export type SerdeResult<T, E> =\n  | Additive<{ Ok: T }>\n  | Additive<{ Err: E }>;\n\n";
+export type SerdeResult<T, E> =\n  | { Ok: T }\n  | { Err: E };\n\n";
 
 fn generated_types() -> String {
-    check_additive_fields_match_rust();
+    check_object_fields_match_rust();
     check_externally_tagged_variants_match_rust();
     check_internally_tagged_variants_match_rust();
     check_closed_strings_match_rust();
@@ -101,7 +100,7 @@ fn emit_shape(name: &str, shape: &Shape) -> String {
         Shape::ClosedString(known) => {
             format!("export type {name} = {};\n", quoted_union(known))
         }
-        Shape::Additive { params, fields } => emit_additive(name, params, fields),
+        Shape::Object { params, fields } => emit_object(name, params, fields),
         Shape::ExternallyTagged { params, variants } => {
             emit_externally_tagged(name, params, variants)
         }
@@ -121,8 +120,8 @@ fn quoted_union(known: &[&str]) -> String {
         .join(" | ")
 }
 
-fn emit_additive(name: &str, params: &str, fields: &[(&str, &str)]) -> String {
-    let mut body = format!("export type {name}{params} = Additive<{{\n");
+fn emit_object(name: &str, params: &str, fields: &[(&str, &str)]) -> String {
+    let mut body = format!("export type {name}{params} = {{\n");
     for (field, ts) in fields {
         let (ts, optional) = strip_optional(ts);
         body.push_str("  ");
@@ -134,7 +133,7 @@ fn emit_additive(name: &str, params: &str, fields: &[(&str, &str)]) -> String {
         body.push_str(ts);
         body.push_str(";\n");
     }
-    body.push_str("}>;\n");
+    body.push_str("};\n");
     body
 }
 
@@ -149,11 +148,11 @@ fn emit_externally_tagged(name: &str, params: &str, variants: &[(&str, Option<&s
                 body.push('"');
             }
             Some(ts) => {
-                body.push_str("Additive<{ ");
+                body.push_str("{ ");
                 body.push_str(variant);
                 body.push_str(": ");
                 body.push_str(ts);
-                body.push_str(" }>");
+                body.push_str(" }");
             }
         }
         if index + 1 == variants.len() {
@@ -182,9 +181,9 @@ fn emit_internally_tagged(
                 members.push(format!("{field}: {ts}"));
             }
         }
-        arms.push(format!("Additive<{{ {} }}>", members.join("; ")));
+        arms.push(format!("{{ {} }}", members.join("; ")));
     }
-    arms.push(format!("Additive<{{ {tag}?: string }}>"));
+    arms.push(format!("{{ {tag}?: string }}"));
     format!(
         "export type {name}{params} =\n  | {};\n",
         arms.join("\n  | ")
@@ -215,15 +214,15 @@ fn capability_typescript() -> String {
     out
 }
 
-fn check_additive_fields_match_rust() {
-    let examples = additive_examples();
+fn check_object_fields_match_rust() {
+    let examples = object_examples();
     for (name, shape) in PAYLOADS {
-        let Shape::Additive { fields, .. } = shape else {
+        let Shape::Object { fields, .. } = shape else {
             continue;
         };
         let value = examples
             .get(*name)
-            .unwrap_or_else(|| panic!("{name} Additive shape has no serde example"));
+            .unwrap_or_else(|| panic!("{name} Object shape has no serde example"));
         let object = value
             .as_object()
             .unwrap_or_else(|| panic!("{name} serde value is not an object"));
@@ -310,7 +309,7 @@ fn check_json_value_fields_are_intentional() {
         match shape {
             Shape::Alias(ts) => assert_json_field_is_intentional(name, "alias", ts),
             Shape::Branded | Shape::OpenString(_) | Shape::ClosedString(_) => {}
-            Shape::Additive { fields, .. } => {
+            Shape::Object { fields, .. } => {
                 for (field, ts) in *fields {
                     assert_json_field_is_intentional(name, field, ts);
                 }

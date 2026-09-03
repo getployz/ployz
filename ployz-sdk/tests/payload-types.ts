@@ -3,11 +3,14 @@ import type {
   ConfigSpec,
   ContainerObservation,
   DataLossConfirmation,
+  DeployIntent,
   DeviceMapping,
   DeviceReservation,
   HealthcheckSpec,
+  ProjectName,
   RequestedServiceSpec,
   ResolvedServiceSpec,
+  ServiceName,
   Ulimit,
   VolumeDriver,
 } from "../generated/payloads";
@@ -64,3 +67,38 @@ const invalidEffective: ContainerObservation["effective_healthcheck"] =
   "disabled";
 // @ts-expect-error DataLossConfirmation is an object, not a bare Data Loss list
 const invalidConfirmation: DataLossConfirmation = [];
+
+// Payloads are plain object types, not index-signature intersections, so a
+// literal with a misspelled field is rejected instead of absorbed.
+const web: RequestedServiceSpec = {
+  name: "web" as ServiceName,
+  mode: { mode: "replicated", replicas: 1 },
+  container: { image: "nginx", pull_policy: "always" },
+};
+const intent: DeployIntent = {
+  project_name: "app" as ProjectName,
+  target: [web],
+  options: {
+    force_recreate: false,
+    skip_health_monitor: false,
+    placement_seed: 0,
+    selected: [{ name: "web" as ServiceName }],
+  },
+};
+({
+  name: "web" as ServiceName,
+  // @ts-expect-error replica is not a field of the replicated ServiceMode arm
+  mode: { mode: "replicated", replica: 1 },
+  container: { image: "nginx", pull_policy: "always" },
+}) satisfies RequestedServiceSpec;
+({
+  project_name: "app" as ProjectName,
+  target: [web],
+  options: intent.options,
+  // @ts-expect-error targets is not a field of DeployIntent
+  targets: [web],
+}) satisfies DeployIntent;
+// keyof a payload is its declared field names, not string.
+("project_name") satisfies keyof DeployIntent;
+// @ts-expect-error unknown keys are not readable on a plain object type
+const unknownField: unknown = intent.from_a_newer_daemon;

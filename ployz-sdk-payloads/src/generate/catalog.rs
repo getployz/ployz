@@ -10,7 +10,7 @@ pub(super) enum Shape {
     Branded,
     OpenString(&'static [&'static str]),
     ClosedString(&'static [&'static str]),
-    Additive {
+    Object {
         params: &'static str,
         fields: &'static [(&'static str, &'static str)],
     },
@@ -164,7 +164,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "VolumeDriver",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("name", "string"),
@@ -251,7 +251,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "LogDriver",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("name", "string"),
@@ -261,7 +261,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DeviceMapping",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("machine_path", "MachinePath"),
@@ -272,7 +272,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DeviceReservation",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("driver", "string?"),
@@ -285,14 +285,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "Ulimit",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("soft", "number"), ("hard", "number")],
         },
     ),
     (
         "ContainerResources",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("cpu_nanos", "number?"),
@@ -307,28 +307,28 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "UpdateConfig",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("order", "UpdateOrder?"), ("monitor_millis", "number?")],
         },
     ),
     (
         "ResolvedUpdateConfig",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("order", "UpdateOrder"), ("monitor_millis", "number?")],
         },
     ),
     (
         "Placement",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("machines", "MachineTarget[]?")],
         },
     ),
     (
         "PreDeployHook",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("command", "string[]"),
@@ -341,7 +341,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ServiceMount",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("volume", "ServiceVolumeReference"),
@@ -354,7 +354,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ServiceVolume",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("reference", "ServiceVolumeReference"),
@@ -364,14 +364,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ConfigSpec",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("name", "string"), ("content", "number[]?")],
         },
     ),
     (
         "ConfigMount",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("config_name", "string"),
@@ -384,7 +384,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ServiceContainerSpec",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("image", "string"),
@@ -416,7 +416,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "RequestedServiceSpec",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("name", "ServiceName"),
@@ -435,7 +435,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ResolvedServiceSpec",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("service_id", "ServiceId"),
@@ -479,7 +479,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DockerVolumeId",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("machine_id", "MachineId"), ("name", "DockerVolumeName")],
         },
@@ -504,7 +504,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DockerVolume",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("id", "DockerVolumeId"),
@@ -516,14 +516,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "VolumeObservationFailure",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("id", "DockerVolumeId"), ("error", "RpcError")],
         },
     ),
     (
         "VolumeInventory",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("volumes", "DockerVolume[]"),
@@ -547,7 +547,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "RemoveVolumesRequest",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("volumes", "DockerVolumeId[]"), ("force", "boolean?")],
         },
@@ -561,35 +561,35 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ObservedDataLoss",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("data_loss", "DataLoss[]")],
         },
     ),
     (
         "DataLossConfirmation",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("confirmed", "DataLoss[]")],
         },
     ),
     (
         "UnconfirmedDataLoss",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("missing", "DataLoss[]")],
         },
     ),
     (
         "LocalMachineRemoved",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("reset_warning", "string?")],
         },
     ),
     (
         "ClusterTeardown",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("destroyed_projects", "ProjectName[]"),
@@ -600,7 +600,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ContractDescription",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("machine_id", "MachineId"),
@@ -612,7 +612,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "RpcError",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("code", "RpcErrorCode"),
@@ -624,21 +624,21 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "MachineSuccess",
-        Shape::Additive {
+        Shape::Object {
             params: "<T>",
             fields: &[("machine_id", "MachineId"), ("value", "T")],
         },
     ),
     (
         "MachineFailure",
-        Shape::Additive {
+        Shape::Object {
             params: "<E>",
             fields: &[("machine_id", "MachineId"), ("error", "E")],
         },
     ),
     (
         "PartialResult",
-        Shape::Additive {
+        Shape::Object {
             params: "<T, E>",
             fields: &[
                 ("successes", "Array<MachineSuccess<T>>"),
@@ -665,7 +665,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "PlanOptions",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("force_recreate", "boolean"),
@@ -677,14 +677,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ServiceAttempt",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("name", "ServiceName")],
         },
     ),
     (
         "DeployIntent",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("project_name", "ProjectName"),
@@ -734,14 +734,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "PreservedVolume",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("id", "DockerVolumeId"), ("machine_name", "MachineName?")],
         },
     ),
     (
         "VolumeToCreate",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("machine_id", "MachineId"),
@@ -753,7 +753,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DeployPreview",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("project_name", "ProjectName"),
@@ -768,7 +768,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "OperationRow",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("index", "number"),
@@ -848,7 +848,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ReplacementOperation",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("machine_id", "MachineId"),
@@ -1068,7 +1068,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "MachineRuntime",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("daemon_version", "string"),
@@ -1082,7 +1082,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "Machine",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("id", "MachineId"),
@@ -1098,7 +1098,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "RegisterRequest",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("name", "MachineName"),
@@ -1112,7 +1112,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "Registered",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("assigned_machine", "Machine"),
@@ -1123,14 +1123,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "RttStatistics",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[("median_ns", "number"), ("population_stddev_ns", "number")],
         },
     ),
     (
         "GlobalReconcileFailureObservation",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("service", "QualifiedService"),
@@ -1141,7 +1141,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "MachineObservation",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("machine", "Machine"),
@@ -1158,7 +1158,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "ContainerObservation",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("container_id", "ContainerId"),
@@ -1181,7 +1181,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ("HookContainer", Shape::Alias("ContainerObservation")),
     (
         "ServiceObservation",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("identity", "QualifiedService"),
@@ -1193,7 +1193,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "CertificateBackoff",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("failure_kind", "CertificateFailureKind"),
@@ -1204,7 +1204,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "CertificateObservation",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("hostname", "IngressHost"),
@@ -1216,7 +1216,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "RuntimeWatchIncompleteIds",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("machines", "MachineId[]"),
@@ -1228,7 +1228,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "RuntimeWatchFrame",
-        Shape::Additive {
+        Shape::Object {
             params: "",
             fields: &[
                 ("machines", "MachineObservation[]"),
