@@ -271,14 +271,14 @@ async fn assert_replacement_health_compensation(
             (
                 UpdateOrder::StartFirst,
                 ReplacementCompensation::StartFirst { stop_new_container },
-            ) => stop_new_container.is_ok(),
+            ) => stop_new_container.stopped(),
             (
                 UpdateOrder::StopFirst,
                 ReplacementCompensation::StopFirst {
                     stop_new_container,
-                    restart_old_container: ployz::deploy::RestartAttempt::Attempted(restart),
+                    restart_old_container,
                 },
-            ) => stop_new_container.is_ok() && restart.is_ok(),
+            ) => stop_new_container.stopped() && restart_old_container.restarted(),
             _ => false,
         });
         assert_eq!(unexecuted, operations.get(1..).unwrap());

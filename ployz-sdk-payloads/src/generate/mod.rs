@@ -1,4 +1,13 @@
 //! Deterministic TypeScript declarations for `@ployz/sdk` public payloads.
+//!
+//! The declarations describe exactly what the SDK's Rust layer emits and
+//! accepts, not what a newer ployzd might send: Rust owns that version
+//! boundary. So object types are exact (Rust drops unknown fields on
+//! re-serialization) and tagged unions are closed (a `#[serde(tag)]` enum
+//! fails to decode an unknown tag inside the SDK, so JavaScript never sees
+//! one). The one state Rust passes through, `ContainerRuntimeObservation`'s
+//! unknown case, is a named arm rather than a hole. Open strings stay open
+//! because Rust passes those through as observed.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,9 +16,9 @@ use std::{
 };
 
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use crate::values::{additive_examples, catalogued_capabilities, tagged_examples};
+use crate::values::{catalogued_capabilities, object_examples, tagged_decoders, tagged_examples};
 
 mod catalog;
 use catalog::{PAYLOADS, Shape};
@@ -19,14 +28,12 @@ pub const PACKAGE_NAME: &str = "@ployz/sdk";
 
 const TYPESCRIPT_PREAMBLE: &str = "\
 export type JsonValue =\n  | null\n  | boolean\n  | number\n  | string\n  | JsonValue[]\n  | JsonObject;\n\n\
-export type JsonObject = { readonly [key: string]: JsonValue | undefined };\n\n\
-export type Additive<T extends object> = T & JsonObject;\n\n\
-export type SerdeResult<T, E> =\n  | Additive<{ Ok: T }>\n  | Additive<{ Err: E }>;\n\n";
+export type JsonObject = { readonly [key: string]: JsonValue | undefined };\n\n";
 
 fn generated_types() -> String {
-    check_additive_fields_match_rust();
-    check_externally_tagged_variants_match_rust();
+    check_object_fields_match_rust();
     check_internally_tagged_variants_match_rust();
+    check_tagged_payloads_reject_unknown_tags();
     check_closed_strings_match_rust();
     check_json_value_fields_are_intentional();
     typescript()
@@ -101,10 +108,7 @@ fn emit_shape(name: &str, shape: &Shape) -> String {
         Shape::ClosedString(known) => {
             format!("export type {name} = {};\n", quoted_union(known))
         }
-        Shape::Additive { params, fields } => emit_additive(name, params, fields),
-        Shape::ExternallyTagged { params, variants } => {
-            emit_externally_tagged(name, params, variants)
-        }
+        Shape::Object { params, fields } => emit_object(name, params, fields),
         Shape::InternallyTagged {
             tag,
             params,
@@ -121,8 +125,8 @@ fn quoted_union(known: &[&str]) -> String {
         .join(" | ")
 }
 
-fn emit_additive(name: &str, params: &str, fields: &[(&str, &str)]) -> String {
-    let mut body = format!("export type {name}{params} = Additive<{{\n");
+fn emit_object(name: &str, params: &str, fields: &[(&str, &str)]) -> String {
+    let mut body = format!("export type {name}{params} = {{\n");
     for (field, ts) in fields {
         let (ts, optional) = strip_optional(ts);
         body.push_str("  ");
@@ -134,34 +138,7 @@ fn emit_additive(name: &str, params: &str, fields: &[(&str, &str)]) -> String {
         body.push_str(ts);
         body.push_str(";\n");
     }
-    body.push_str("}>;\n");
-    body
-}
-
-fn emit_externally_tagged(name: &str, params: &str, variants: &[(&str, Option<&str>)]) -> String {
-    let mut body = format!("export type {name}{params} =\n");
-    for (index, (variant, payload)) in variants.iter().enumerate() {
-        body.push_str("  | ");
-        match payload {
-            None => {
-                body.push('"');
-                body.push_str(variant);
-                body.push('"');
-            }
-            Some(ts) => {
-                body.push_str("Additive<{ ");
-                body.push_str(variant);
-                body.push_str(": ");
-                body.push_str(ts);
-                body.push_str(" }>");
-            }
-        }
-        if index + 1 == variants.len() {
-            body.push_str(";\n");
-        } else {
-            body.push('\n');
-        }
-    }
+    body.push_str("};\n");
     body
 }
 
@@ -171,6 +148,8 @@ fn emit_internally_tagged(
     tag: &str,
     variants: &[(&str, &[(&str, &str)])],
 ) -> String {
+    // No trailing `{ tag?: string }` arm: Rust rejects an unknown tag before
+    // JavaScript could see one, and the arm defeats discriminant narrowing.
     let mut arms = Vec::new();
     for (tag_value, fields) in variants {
         let mut members = vec![format!("{tag}: \"{tag_value}\"")];
@@ -182,9 +161,8 @@ fn emit_internally_tagged(
                 members.push(format!("{field}: {ts}"));
             }
         }
-        arms.push(format!("Additive<{{ {} }}>", members.join("; ")));
+        arms.push(format!("{{ {} }}", members.join("; ")));
     }
-    arms.push(format!("Additive<{{ {tag}?: string }}>"));
     format!(
         "export type {name}{params} =\n  | {};\n",
         arms.join("\n  | ")
@@ -215,15 +193,15 @@ fn capability_typescript() -> String {
     out
 }
 
-fn check_additive_fields_match_rust() {
-    let examples = additive_examples();
+fn check_object_fields_match_rust() {
+    let examples = object_examples();
     for (name, shape) in PAYLOADS {
-        let Shape::Additive { fields, .. } = shape else {
+        let Shape::Object { fields, .. } = shape else {
             continue;
         };
         let value = examples
             .get(*name)
-            .unwrap_or_else(|| panic!("{name} Additive shape has no serde example"));
+            .unwrap_or_else(|| panic!("{name} Object shape has no serde example"));
         let object = value
             .as_object()
             .unwrap_or_else(|| panic!("{name} serde value is not an object"));
@@ -245,38 +223,6 @@ fn check_additive_fields_match_rust() {
     }
 }
 
-fn check_externally_tagged_variants_match_rust() {
-    let examples = tagged_examples();
-    for (name, shape) in PAYLOADS {
-        let Shape::ExternallyTagged { variants, .. } = shape else {
-            continue;
-        };
-        let mut seen = BTreeSet::new();
-        for value in serde_examples(name, &examples) {
-            let key = external_tag(name, value);
-            let payload = variants
-                .iter()
-                .find_map(|(variant, payload)| (*variant == key).then_some(*payload));
-            assert!(
-                payload.is_some(),
-                "{name} TypeScript is missing variant {key}"
-            );
-            assert_eq!(
-                payload == Some(None),
-                value.is_string(),
-                "{name} variant {key} unit/payload shape does not match serde"
-            );
-            seen.insert(key);
-        }
-        for (variant, _) in *variants {
-            assert!(
-                seen.contains(*variant),
-                "{name} TypeScript variant {variant} has no serde example"
-            );
-        }
-    }
-}
-
 fn check_internally_tagged_variants_match_rust() {
     let examples = tagged_examples();
     for (name, shape) in PAYLOADS {
@@ -292,9 +238,22 @@ fn check_internally_tagged_variants_match_rust() {
                 .get(*tag)
                 .and_then(Value::as_str)
                 .unwrap_or_else(|| panic!("{name} serde example is missing tag {tag}"));
-            if variants.iter().any(|(variant, _)| *variant == wire) {
-                seen.insert(wire.to_owned());
+            let Some((_, fields)) = variants.iter().find(|(variant, _)| *variant == wire) else {
+                panic!("{name} TypeScript is missing variant {wire}; generated unions are closed");
+            };
+            for key in object.keys().filter(|key| key != tag) {
+                assert!(
+                    fields.iter().any(|(field, _)| field == key),
+                    "{name}.{wire} TypeScript fields missing serde key {key}"
+                );
             }
+            for (field, ts) in *fields {
+                assert!(
+                    strip_optional(ts).1 || object.contains_key(*field),
+                    "{name}.{wire} serde value missing field {field}"
+                );
+            }
+            seen.insert(wire.to_owned());
         }
         for (variant, _) in *variants {
             assert!(
@@ -305,21 +264,58 @@ fn check_internally_tagged_variants_match_rust() {
     }
 }
 
+/// The one tagged payload whose Rust type keeps an unknown tag as observed.
+const PASSTHROUGH_PAYLOAD: &str = "ContainerRuntimeObservation";
+
+fn check_tagged_payloads_reject_unknown_tags() {
+    let decoders = tagged_decoders();
+    let examples = tagged_examples();
+    for name in decoders.keys() {
+        assert!(
+            PAYLOADS.iter().any(|(payload, shape)| payload == name
+                && matches!(shape, Shape::InternallyTagged { .. })),
+            "{name} has a decoder but is not a tagged payload in the catalog"
+        );
+    }
+    for (name, shape) in PAYLOADS {
+        let Shape::InternallyTagged { tag, .. } = shape else {
+            continue;
+        };
+        let decodes = decoders
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} has no decoder"));
+        for example in serde_examples(name, &examples) {
+            assert!(
+                decodes(example.clone()),
+                "{name} decoder rejects its own serde example; the table row names the wrong type"
+            );
+        }
+        let unknown = Value::Object(Map::from_iter([(
+            (*tag).to_owned(),
+            Value::from("from_a_newer_daemon"),
+        )]));
+        if *name == PASSTHROUGH_PAYLOAD {
+            assert!(
+                decodes(unknown),
+                "{name} must keep an unknown {tag} as observed; its union names that case"
+            );
+        } else {
+            assert!(
+                !decodes(unknown),
+                "{name} accepts an unknown {tag}, so its closed TypeScript union would be false"
+            );
+        }
+    }
+}
+
 fn check_json_value_fields_are_intentional() {
     for (name, shape) in PAYLOADS {
         match shape {
             Shape::Alias(ts) => assert_json_field_is_intentional(name, "alias", ts),
             Shape::Branded | Shape::OpenString(_) | Shape::ClosedString(_) => {}
-            Shape::Additive { fields, .. } => {
+            Shape::Object { fields, .. } => {
                 for (field, ts) in *fields {
                     assert_json_field_is_intentional(name, field, ts);
-                }
-            }
-            Shape::ExternallyTagged { variants, .. } => {
-                for (variant, payload) in *variants {
-                    if let Some(ts) = payload {
-                        assert_json_field_is_intentional(name, variant, ts);
-                    }
                 }
             }
             Shape::InternallyTagged { variants, .. } => {
@@ -337,8 +333,11 @@ fn assert_json_field_is_intentional(type_name: &str, field: &str, ts: &str) {
     let inner = strip_optional(ts).0;
     if inner.contains("JsonValue") || inner.contains("JsonObject") {
         assert!(
-            type_name == "RpcError" && field == "details",
-            "{type_name}.{field} uses {ts}; only RpcError.details may stay JsonValue (per-code JSON, not one wire type)"
+            matches!(
+                (type_name, field),
+                ("RpcError", "details") | (PASSTHROUGH_PAYLOAD, "unrecognized.raw")
+            ),
+            "{type_name}.{field} uses {ts}; only RpcError.details and {PASSTHROUGH_PAYLOAD}.unrecognized.raw may stay JsonValue"
         );
     }
 }
@@ -375,27 +374,6 @@ fn serde_examples<'a>(name: &str, examples: &'a BTreeMap<&'static str, Vec<Value
         .unwrap_or_else(|| panic!("{name} shape has no serde example"));
     assert!(!values.is_empty(), "{name} shape has no serde example");
     values
-}
-
-fn external_tag(name: &str, value: &Value) -> String {
-    match value {
-        Value::String(wire) => wire.clone(),
-        Value::Object(object) => {
-            assert_eq!(
-                object.len(),
-                1,
-                "{name} externally tagged JSON must have one variant key"
-            );
-            object
-                .keys()
-                .next()
-                .expect("externally tagged object has a variant key")
-                .clone()
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => {
-            panic!("{name} serde example is not a tagged enum: {value}")
-        }
-    }
 }
 
 fn strip_optional(ts: &str) -> (&str, bool) {

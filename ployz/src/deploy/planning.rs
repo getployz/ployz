@@ -109,7 +109,7 @@ fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
     let DeployOperation::RemoveVolume { id } = operation else {
         return None;
     };
-    Some(DataLoss::DockerVolume(id.clone()))
+    Some(DataLoss::DockerVolume { id: id.clone() })
 }
 
 /// Calculate a Deploy Preview for this Intent against this Snapshot.

@@ -105,6 +105,12 @@ for (const name of forbidden) {
 }
 
 const dts = fs.readFileSync(require.resolve("@ployz/sdk/index.d.ts"), "utf8");
+const payloads = fs.readFileSync(path.join(pkgDir, "generated/payloads.d.ts"), "utf8");
+for (const [file, text] of [["index.d.ts", dts], ["generated/payloads.d.ts", payloads]]) {
+  if (text.includes("Additive")) {
+    throw new Error(`${file} must not reference Additive: an index signature disables excess-property checks`);
+  }
+}
 if (!dts.includes("export declare function connect")) {
   throw new Error("index.d.ts is missing connect");
 }

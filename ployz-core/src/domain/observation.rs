@@ -16,7 +16,18 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
     Unhealthy => "unhealthy",
 });
 
+/// Wire `state` of [`ContainerRuntimeObservation::Unknown`]. Reserved: no known
+/// Docker state may ever use this spelling.
+pub const UNRECOGNIZED_STATE: &str = "unrecognized";
+
 /// Docker state as observed, including the untouched value of a future state.
+///
+/// On the wire, a known state is `{ "state": "running", ... }`. An unknown
+/// state is `{ "state": "unrecognized", "raw": <the value as observed> }`, so
+/// every reader sees a closed set of `state` spellings, and a newer reader
+/// recovers the observed value from `raw`. A wrapper is at most one deep: a
+/// reader from before this form passes it through bare, and a reader that
+/// knows it unwraps before re-encoding, so one unwrap is the whole walk.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContainerRuntimeObservation {
     Created,
@@ -65,7 +76,10 @@ impl Serialize for ContainerRuntimeObservation {
             }
             Self::Removing => insert_state(&mut object, "removing"),
             Self::Dead => insert_state(&mut object, "dead"),
-            Self::Unknown { raw } => return raw.serialize(serializer),
+            Self::Unknown { raw } => {
+                insert_state(&mut object, UNRECOGNIZED_STATE);
+                object.insert("raw".into(), raw.clone());
+            }
         }
         Value::Object(object).serialize(serializer)
     }
@@ -77,37 +91,71 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
         D: Deserializer<'de>,
     {
         let raw = Value::deserialize(deserializer)?;
+        let Some(inner) = unrecognized_raw(&raw) else {
+            return match Self::parse(&raw).map_err(D::Error::custom)? {
+                Some(observation) => Ok(observation),
+                None => Ok(Self::Unknown { raw }),
+            };
+        };
+        // The wrapper carries what a writer could not classify, so a value
+        // that does not parse here is kept as observed rather than failing
+        // the whole frame.
+        Ok(match Self::parse(inner) {
+            Ok(Some(observation)) => observation,
+            Ok(None) | Err(_) => Self::Unknown { raw: inner.clone() },
+        })
+    }
+}
+
+/// The `raw` of an `unrecognized` wrapper, when `raw` is one.
+fn unrecognized_raw(raw: &Value) -> Option<&Value> {
+    let object = raw.as_object()?;
+    if object.get("state").and_then(Value::as_str) != Some(UNRECOGNIZED_STATE) {
+        return None;
+    }
+    object.get("raw")
+}
+
+impl ContainerRuntimeObservation {
+    /// A known state, or `None` for a value this reader keeps as observed:
+    /// not an object, no string `state`, an unknown `state`, or a nested
+    /// `unrecognized` wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns the field error when a known `state` is missing its fields.
+    fn parse(raw: &Value) -> Result<Option<Self>, serde_json::Error> {
         let Some(object) = raw.as_object() else {
-            return Ok(Self::Unknown { raw });
+            return Ok(None);
         };
         let Some(state) = object.get("state").and_then(Value::as_str) else {
-            return Ok(Self::Unknown { raw });
+            return Ok(None);
         };
 
-        match state {
-            "created" => Ok(Self::Created),
+        Ok(Some(match state {
+            "created" => Self::Created,
             "running" => {
                 let health = object
                     .get("health")
                     .cloned()
-                    .ok_or_else(|| D::Error::missing_field("health"))?;
-                Ok(Self::Running {
-                    health: serde_json::from_value(health).map_err(D::Error::custom)?,
-                })
+                    .ok_or_else(|| serde_json::Error::missing_field("health"))?;
+                Self::Running {
+                    health: serde_json::from_value(health)?,
+                }
             }
-            "paused" => Ok(Self::Paused),
-            "restarting" => Ok(Self::Restarting),
+            "paused" => Self::Paused,
+            "restarting" => Self::Restarting,
             "exited" => {
                 let code = object
                     .get("code")
                     .and_then(Value::as_i64)
-                    .ok_or_else(|| D::Error::missing_field("code"))?;
-                Ok(Self::Exited { code })
+                    .ok_or_else(|| serde_json::Error::missing_field("code"))?;
+                Self::Exited { code }
             }
-            "removing" => Ok(Self::Removing),
-            "dead" => Ok(Self::Dead),
-            _ => Ok(Self::Unknown { raw }),
-        }
+            "removing" => Self::Removing,
+            "dead" => Self::Dead,
+            _ => return Ok(None),
+        }))
     }
 }
 

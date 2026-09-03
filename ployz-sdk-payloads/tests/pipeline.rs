@@ -139,7 +139,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     );
 
     let loss: DataLoss = decode_fixture(fixture(&fixtures, "data_loss"));
-    assert!(matches!(loss, DataLoss::DockerVolume(_)));
+    assert!(matches!(loss, DataLoss::DockerVolume { .. }));
     assert_eq!(
         serde_json::to_value(&loss).unwrap(),
         *fixture(&fixtures, "data_loss")
@@ -447,14 +447,15 @@ fn observation_enums_keep_an_unknown_case() {
         decode_fixture(fixture(&fixtures, "health_observation_unknown"));
     assert_eq!(health, HealthObservation::Unrecognized("degraded".into()));
 
-    let unknown_json = fixture(&fixtures, "container_runtime_unknown");
-    let unknown: ContainerRuntimeObservation = decode_fixture(unknown_json);
+    let legacy_json = fixture(&fixtures, "container_runtime_legacy_unknown");
+    let unknown: ContainerRuntimeObservation = decode_fixture(legacy_json);
     assert_eq!(
         unknown,
         ContainerRuntimeObservation::Unknown {
-            raw: unknown_json.clone()
+            raw: legacy_json.clone()
         }
     );
+    let unknown_json = fixture(&fixtures, "container_runtime_unknown");
     assert_eq!(serde_json::to_value(&unknown).unwrap(), *unknown_json);
 
     let known: ContainerRuntimeObservation =
@@ -481,14 +482,28 @@ fn observation_enums_keep_an_unknown_case() {
 }
 
 #[test]
-fn generated_typescript_encodes_additive_evolution_rules() {
+fn generated_typescript_encodes_evolution_rules() {
     let dts = include_str!("../../ployz-sdk/generated/payloads.d.ts");
-    assert!(dts.contains("export type Additive<T extends object> = T & JsonObject;"));
+    assert!(!dts.contains("Additive"));
+    assert!(
+        !dts.contains("SerdeResult"),
+        "Result never reaches the SDK; outcomes are tagged"
+    );
     assert!(dts.contains("export type MembershipObservation ="));
     assert!(dts.contains("| (string & {});"));
     assert!(dts.contains("export type ContainerRuntimeObservation ="));
-    assert!(dts.contains("state?: string"));
-    assert!(dts.contains("export type DockerVolume = Additive<{"));
+    assert!(dts.contains("| { state: \"unrecognized\"; raw: JsonValue }"));
+    // An open arm is a union member whose only field is an optional string
+    // tag, e.g. `| { state?: string };`. Rust rejects unknown tags, so none
+    // may be emitted.
+    assert!(
+        !dts.lines().any(|line| {
+            let arm = line.trim().trim_end_matches(';');
+            arm.starts_with("| {") && arm.contains("?: string }") && !arm.contains(';')
+        }),
+        "tagged unions are closed"
+    );
+    assert!(dts.contains("export type DockerVolume = {"));
     assert!(dts.contains("export type DockerVolumeStorageObservation ="));
     assert!(dts.contains("kind: \"plain\"; driver: string"));
     assert!(dts.contains(
@@ -496,33 +511,33 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     ));
     assert!(dts.contains("storage: DockerVolumeStorageObservation"));
     assert!(dts.contains("export type DataLoss ="));
-    assert!(dts.contains("DockerVolume: DockerVolumeId"));
-    assert!(dts.contains("export type ObservedDataLoss = Additive<{"));
+    assert!(dts.contains("| { kind: \"docker_volume\"; id: DockerVolumeId }"));
+    assert!(dts.contains("export type ObservedDataLoss = {"));
     assert!(dts.contains("data_loss: DataLoss[]"));
-    assert!(dts.contains("export type DataLossConfirmation = Additive<{"));
+    assert!(dts.contains("export type DataLossConfirmation = {"));
     assert!(dts.contains("confirmed: DataLoss[]"));
-    assert!(dts.contains("export type UnconfirmedDataLoss = Additive<{"));
+    assert!(dts.contains("export type UnconfirmedDataLoss = {"));
     assert!(dts.contains("missing: DataLoss[]"));
-    assert!(dts.contains("export type LocalMachineRemoved = Additive<{"));
+    assert!(dts.contains("export type LocalMachineRemoved = {"));
     assert!(dts.contains("reset_warning?: string"));
-    assert!(dts.contains("export type ClusterTeardown = Additive<{"));
+    assert!(dts.contains("export type ClusterTeardown = {"));
     assert!(dts.contains("destroyed_projects: ProjectName[]"));
     assert!(dts.contains("machines: PartialResult<LocalMachineRemoved, RpcError>"));
     assert!(dts.contains("pairing_revoked: boolean"));
     assert!(dts.contains("export type MachineTarget = string"));
-    assert!(dts.contains("export type ContractDescription = Additive<{"));
+    assert!(dts.contains("export type ContractDescription = {"));
     assert!(dts.contains("readonly __brand: \"ProjectName\""));
     assert!(dts.contains("export type QualifiedService = string"));
     assert!(dts.contains("identity: QualifiedService"));
-    assert!(dts.contains("export type DeployIntent = Additive<{"));
+    assert!(dts.contains("export type DeployIntent = {"));
     assert!(dts.contains("project_name: ProjectName"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
     assert!(dts.contains("export type ProvisionedVolumeMaximumBytes = string"));
     assert!(dts.contains("maximum_bytes: ProvisionedVolumeMaximumBytes"));
     assert!(dts.contains("kind: \"provisioned\"; name: DockerVolumeName; maximum_bytes: ProvisionedVolumeMaximumBytes"));
     assert!(!dts.contains("provisioned_volumes: ProvisionedVolume[]"));
-    assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
-    assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
+    assert!(dts.contains("export type RequestedServiceSpec = {"));
+    assert!(dts.contains("export type ResolvedServiceSpec = {"));
     assert!(dts.contains("export type IngressProxyFragment ="));
     assert!(dts.contains("backend: \"caddy\"; config: string"));
     assert!(dts.contains("export type IngressProxyConfig ="));
@@ -534,21 +549,21 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(!dts.contains("GET_CADDY_CONFIG_CAPABILITY"));
     assert!(dts.contains("ingress_proxy_fragment?: IngressProxyFragment"));
     assert!(!dts.contains("caddy_config?: string"));
-    assert!(dts.contains("export type ServiceVolume = Additive<{"));
-    assert!(dts.contains("export type VolumeDriver = Additive<{"));
+    assert!(dts.contains("export type ServiceVolume = {"));
+    assert!(dts.contains("export type VolumeDriver = {"));
     assert!(dts.contains("kind: \"external\"; name: DockerVolumeName"));
     assert!(dts.contains("kind: \"ordinary\"; name: DockerVolumeName; driver: VolumeDriver"));
     assert!(!dts.contains("kind: \"named\""));
-    assert!(dts.contains("export type ConfigSpec = Additive<{"));
+    assert!(dts.contains("export type ConfigSpec = {"));
     assert!(dts.contains("content?: number[]"));
     assert!(dts.contains("configs?: ConfigSpec[]"));
-    assert!(dts.contains("export type ConfigMount = Additive<{"));
+    assert!(dts.contains("export type ConfigMount = {"));
     assert!(dts.contains("config_mounts?: ConfigMount[]"));
-    assert!(dts.contains("export type DeviceMapping = Additive<{"));
+    assert!(dts.contains("export type DeviceMapping = {"));
     assert!(dts.contains("devices?: DeviceMapping[]"));
-    assert!(dts.contains("export type DeviceReservation = Additive<{"));
+    assert!(dts.contains("export type DeviceReservation = {"));
     assert!(dts.contains("device_reservations?: DeviceReservation[]"));
-    assert!(dts.contains("export type Ulimit = Additive<{"));
+    assert!(dts.contains("export type Ulimit = {"));
     assert!(dts.contains("ulimits?: { readonly [key: string]: Ulimit }"));
     assert!(dts.contains("effective_healthcheck: HealthcheckSpec | null"));
     assert!(dts.contains("details?: JsonValue;"));
@@ -560,15 +575,16 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("readonly __brand: \"ServiceName\""));
     assert!(dts.contains("export type ObservationKind ="));
     assert!(dts.contains("export type DeployWarning ="));
-    assert!(dts.contains("StorageObservationUnknown:"));
-    assert!(dts.contains("SkippedDependencyHealth:"));
-    assert!(dts.contains("export type DeployPreview = Additive<{"));
+    assert!(dts.contains("type: \"storage_observation_unknown\"; machine_id: MachineId"));
+    assert!(dts.contains("type: \"ingress_hostname\"; message: string"));
+    assert!(dts.contains("type: \"skipped_dependency_health\"; dependent: QualifiedService; dependency: QualifiedService"));
+    assert!(dts.contains("export type DeployPreview = {"));
     assert!(dts.contains("operations: OperationRow[]"));
     assert!(dts.contains("volumes_to_create: VolumeToCreate[]"));
-    assert!(dts.contains("export type VolumeToCreate = Additive<{"));
+    assert!(dts.contains("export type VolumeToCreate = {"));
     assert!(dts.contains("name: DockerVolumeName"));
     assert!(dts.contains("maximum_bytes?: ProvisionedVolumeMaximumBytes"));
-    assert!(dts.contains("export type OperationRow = Additive<{"));
+    assert!(dts.contains("export type OperationRow = {"));
     assert!(dts.contains("export type DeployEvent ="));
     assert!(dts.contains("export type OperationStatus ="));
     assert!(dts.contains("export type OperationPhase ="));
@@ -583,11 +599,17 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("selected: ServiceAttempt[]"));
     assert!(dts.contains("export type DeployOperation ="));
     assert!(dts.contains("type: \"run_container\""));
+    assert!(dts.contains(
+        "type: \"stop_container\"; machine_id: MachineId; container_id: ContainerId; purpose: StopContainerPurpose"
+    ));
     assert!(dts.contains("type: \"wait_healthy\""));
     assert!(!dts.contains("type: \"create_volume\""));
     assert!(!dts.contains("type: \"create_provisioned_volume\""));
     assert!(!dts.contains("type: \"creating_volume\""));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
+    assert!(dts.contains("export type StopAttempt<E = ExecutionError> =\n  | { type: \"stopped\" }\n  | { type: \"failed\"; error: E };"));
+    assert!(dts.contains("| { type: \"not_attempted\" }\n  | { type: \"restarted\" }\n  | { type: \"failed\"; error: E };"));
+    assert!(dts.contains("| { type: \"start_first\"; stop_new_container: StopAttempt<E> }"));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
     assert!(dts.contains("export type ExecutionError ="));
     assert!(dts.contains("export type MachineAction ="));
@@ -600,27 +622,27 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(!dts.contains("Success: { completed: DeployOperation[] }"));
     assert!(dts.contains("unexecuted: DeployOperation[]"));
     assert!(dts.contains("failed: FailedOperation<E>"));
-    assert!(dts.contains("export type RuntimeWatchFrame = Additive<{"));
+    assert!(dts.contains("export type RuntimeWatchFrame = {"));
     assert!(dts.contains("incomplete_ids: RuntimeWatchIncompleteIds"));
     assert!(dts.contains("hosted_dns_hostname?: string"));
-    assert!(dts.contains("export type Machine = Additive<{"));
+    assert!(dts.contains("export type Machine = {"));
     assert!(dts.contains("export type StorageChoice = \"none\" | \"zfs\";"));
     assert!(dts.contains("export type MachineStorageObservation ="));
     assert!(
         dts.contains("state: \"pool\"; size_bytes: number; used_bytes: number; free_bytes: number")
     );
-    assert!(dts.contains("export type RegisterRequest = Additive<{"));
+    assert!(dts.contains("export type RegisterRequest = {"));
     assert!(dts.contains("storage: StorageChoice"));
     assert!(dts.contains("storage?: MachineStorageObservation"));
     assert!(dts.contains("public_key: WireGuardPublicKey"));
-    assert!(dts.contains("export type Registered = Additive<{"));
+    assert!(dts.contains("export type Registered = {"));
     assert!(dts.contains("assigned_machine: Machine"));
     assert!(dts.contains("visible_peers: Machine[]"));
     assert!(dts.contains("target_versions: { readonly [key: string]: number }"));
-    assert!(dts.contains("export type ContainerObservation = Additive<{"));
-    assert!(dts.contains("export type ServiceObservation = Additive<{"));
-    assert!(dts.contains("export type RttStatistics = Additive<{"));
-    assert!(dts.contains("export type CertificateObservation = Additive<{"));
+    assert!(dts.contains("export type ContainerObservation = {"));
+    assert!(dts.contains("export type ServiceObservation = {"));
+    assert!(dts.contains("export type RttStatistics = {"));
+    assert!(dts.contains("export type CertificateObservation = {"));
     assert!(dts.contains("resolved_spec: ResolvedServiceSpec"));
     assert!(!dts.contains("export declare function connect"));
     assert!(!dts.contains("export declare class Client"));

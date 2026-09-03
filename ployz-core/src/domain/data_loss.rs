@@ -11,11 +11,14 @@ use crate::{DockerVolumeId, LocalMachineRemoved, ProjectName, RpcError, RpcError
 /// One named thing an operation will destroy.
 ///
 /// Identity is per kind: a Docker Volume carries its Machine together with its
-/// name. A kind cannot be paired with an identity that does not belong to it.
+/// name. A kind cannot be paired with an identity that does not belong to it,
+/// so each kind nests its own identity under `id` rather than spreading fields
+/// beside the tag.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DataLoss {
     /// A Docker Volume identified by its Machine together with its name.
-    DockerVolume(DockerVolumeId),
+    DockerVolume { id: DockerVolumeId },
 }
 
 impl DataLoss {
@@ -23,7 +26,7 @@ impl DataLoss {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::DockerVolume(id) => id.name.as_str(),
+            Self::DockerVolume { id } => id.name.as_str(),
         }
     }
 }
@@ -31,7 +34,7 @@ impl DataLoss {
 impl fmt::Display for DataLoss {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DockerVolume(id) => {
+            Self::DockerVolume { id } => {
                 write!(f, "{} on {}", id.name.as_str(), id.machine_id.as_str())
             }
         }

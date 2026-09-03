@@ -30,13 +30,13 @@ function parseRpc(error) {
 }
 
 function dockerVolume(loss) {
-  if (!loss || typeof loss !== "object" || !loss.DockerVolume) {
-    throw new Error(`expected DockerVolume Data Loss, got ${JSON.stringify(loss)}`);
+  if (!loss || typeof loss !== "object" || loss.kind !== "docker_volume" || !loss.id) {
+    throw new Error(`expected docker_volume Data Loss, got ${JSON.stringify(loss)}`);
   }
-  if ("kind" in loss || "scope" in loss || "name" in loss) {
-    throw new Error(`Data Loss must not be a kind/name/scope bag: ${JSON.stringify(loss)}`);
+  if ("scope" in loss || "name" in loss || "machine_id" in loss) {
+    throw new Error(`Data Loss identity must nest under id, not spread beside kind: ${JSON.stringify(loss)}`);
   }
-  return loss.DockerVolume;
+  return loss.id;
 }
 
 (async () => {
@@ -119,7 +119,8 @@ function dockerVolume(loss) {
     confirmed: [
       ...observed.data_loss,
       {
-        DockerVolume: { machine_id: volumeMachineId, name: "staging_data" },
+        kind: "docker_volume",
+        id: { machine_id: volumeMachineId, name: "staging_data" },
       },
     ],
   };

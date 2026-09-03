@@ -28,11 +28,12 @@ use ployz_core::{
     ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
     ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StopAttempt,
     StopContainerPurpose, StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss,
     UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory, VolumeObservationFailure,
     VolumeSource, VolumeToCreate, WireGuardPublicKey,
 };
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 const MACHINE_ID_HEX: &str = "0123456789abcdef0123456789abcdef";
@@ -124,6 +125,17 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert(
         "container_runtime_unknown".into(),
+        json!({
+            "state": "unrecognized",
+            "raw": {
+                "state": "hibernating",
+                "wake_at": "tomorrow",
+                "vendor": { "reason": 7 }
+            }
+        }),
+    );
+    fixtures.insert(
+        "container_runtime_legacy_unknown".into(),
         json!({
             "state": "hibernating",
             "wake_at": "tomorrow",
@@ -223,7 +235,7 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures
 }
 
-pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
+pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
     let frame = runtime_watch_frame();
     let machine_observation = frame
         .machines
@@ -376,6 +388,68 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
     ])
 }
 
+/// Whether a wire value decodes as one payload type.
+pub(super) type Decodes = fn(Value) -> bool;
+
+/// A decoder for every internally tagged payload, so the generator can prove
+/// each rejects an unknown tag: the reason its generated union is closed.
+/// `ContainerRuntimeObservation` keeps one as observed instead, and its union
+/// names that case.
+pub(super) fn tagged_decoders() -> BTreeMap<&'static str, Decodes> {
+    fn decodes<T: DeserializeOwned>(value: Value) -> bool {
+        serde_json::from_value::<T>(value).is_ok()
+    }
+    let rows = [
+        (
+            "MachineStorageObservation",
+            decodes::<MachineStorageObservation> as Decodes,
+        ),
+        ("ServiceMode", decodes::<ServiceMode>),
+        ("IngressProxyFragment", decodes::<IngressProxyFragment>),
+        ("IngressProxyConfig", decodes::<IngressProxyConfig>),
+        ("IngressHostname", decodes::<IngressHostname>),
+        ("HostBind", decodes::<HostBind>),
+        ("PortPublication", decodes::<PortPublication>),
+        ("VolumeSource", decodes::<VolumeSource>),
+        ("HealthcheckSpec", decodes::<HealthcheckSpec>),
+        ("RestartPolicy", decodes::<RestartPolicy>),
+        (
+            "DockerVolumeStorageObservation",
+            decodes::<DockerVolumeStorageObservation>,
+        ),
+        ("CreateVolumeReport", decodes::<CreateVolumeReport>),
+        ("DataLoss", decodes::<DataLoss>),
+        (
+            "ContainerRuntimeObservation",
+            decodes::<ContainerRuntimeObservation>,
+        ),
+        ("DeployWarning", decodes::<DeployWarning>),
+        ("OperationStatus", decodes::<OperationStatus>),
+        ("OperationPhase", decodes::<OperationPhase>),
+        ("DeployEvent", decodes::<DeployEvent>),
+        ("DeployOperation", decodes::<DeployOperation>),
+        ("HealthFailure", decodes::<HealthFailure>),
+        ("HookFailure", decodes::<HookFailure>),
+        (
+            "DependencyHealthFailure",
+            decodes::<DependencyHealthFailure>,
+        ),
+        ("ExecutionError", decodes::<ExecutionError>),
+        ("StopAttempt", decodes::<StopAttempt<ExecutionError>>),
+        ("RestartAttempt", decodes::<RestartAttempt<ExecutionError>>),
+        (
+            "ReplacementCompensation",
+            decodes::<ReplacementCompensation<ExecutionError>>,
+        ),
+        (
+            "FailedOperation",
+            decodes::<FailedOperation<ExecutionError>>,
+        ),
+        ("DeployOutcome", decodes::<DeployOutcome<ExecutionError>>),
+    ];
+    rows.into_iter().collect()
+}
+
 pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
     let DeployOutcome::Failed { failed, .. } = deploy_outcome_failed() else {
         panic!("failed fixture is Failed");
@@ -414,6 +488,13 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             vec![
                 to_value(&deploy_outcome()),
                 to_value(&deploy_outcome_failed()),
+            ],
+        ),
+        (
+            "StopContainerPurpose",
+            vec![
+                to_value(&StopContainerPurpose::Lifecycle),
+                to_value(&StopContainerPurpose::FreeHostPorts),
             ],
         ),
         (
@@ -510,7 +591,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                     operation: replacement_operation(),
                     error: execution_error_machine(),
                     compensation: ReplacementCompensation::<ExecutionError>::StartFirst {
-                        stop_new_container: Ok(()),
+                        stop_new_container: StopAttempt::Stopped,
                     },
                 }),
             ],
@@ -519,17 +600,29 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             "RestartAttempt",
             vec![
                 to_value(&RestartAttempt::<ExecutionError>::NotAttempted),
-                to_value(&RestartAttempt::<ExecutionError>::Attempted(Ok(()))),
+                to_value(&RestartAttempt::<ExecutionError>::Restarted),
+                to_value(&RestartAttempt::Failed {
+                    error: ExecutionError::Cancelled,
+                }),
+            ],
+        ),
+        (
+            "StopAttempt",
+            vec![
+                to_value(&StopAttempt::<ExecutionError>::Stopped),
+                to_value(&StopAttempt::Failed {
+                    error: ExecutionError::Cancelled,
+                }),
             ],
         ),
         (
             "ReplacementCompensation",
             vec![
                 to_value(&ReplacementCompensation::<ExecutionError>::StartFirst {
-                    stop_new_container: Ok(()),
+                    stop_new_container: StopAttempt::Stopped,
                 }),
                 to_value(&ReplacementCompensation::<ExecutionError>::StopFirst {
-                    stop_new_container: Ok(()),
+                    stop_new_container: StopAttempt::Stopped,
                     restart_old_container: RestartAttempt::NotAttempted,
                 }),
             ],
@@ -553,6 +646,9 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                 to_value(&ContainerRuntimeObservation::Exited { code: 0 }),
                 to_value(&ContainerRuntimeObservation::Removing),
                 to_value(&ContainerRuntimeObservation::Dead),
+                to_value(&ContainerRuntimeObservation::Unknown {
+                    raw: json!({ "Status": "hibernating", "ExitCode": 0 }),
+                }),
             ],
         ),
         (
@@ -802,7 +898,9 @@ fn remove_volumes_request() -> RemoveVolumesRequest {
 }
 
 fn data_loss() -> DataLoss {
-    DataLoss::DockerVolume(docker_volume().id)
+    DataLoss::DockerVolume {
+        id: docker_volume().id,
+    }
 }
 
 fn observed_data_loss() -> ObservedDataLoss {
@@ -897,10 +995,11 @@ fn deploy_warnings() -> [DeployWarning; 6] {
         DeployWarning::StorageObservationUnknown {
             machine_id: machine_id(OTHER_MACHINE_ID_HEX),
         },
-        DeployWarning::IngressHostname(
-            "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
-                .into(),
-        ),
+        DeployWarning::IngressHostname {
+            message:
+                "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
+                    .into(),
+        },
         DeployWarning::ObserverRelativeHostnameConflict,
         DeployWarning::SkippedDependencyHealth {
             dependent: QualifiedService::parse("app/web").unwrap(),

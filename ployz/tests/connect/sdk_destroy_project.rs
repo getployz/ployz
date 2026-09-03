@@ -22,14 +22,20 @@ struct ProjectVolumes {
 impl ProjectVolumes {
     fn shop_loss(&self) -> Vec<DataLoss> {
         vec![
-            DataLoss::DockerVolume(self.shop_data.clone()),
-            DataLoss::DockerVolume(self.shop_logs.clone()),
+            DataLoss::DockerVolume {
+                id: self.shop_data.clone(),
+            },
+            DataLoss::DockerVolume {
+                id: self.shop_logs.clone(),
+            },
         ]
     }
 
     fn union_loss(&self) -> Vec<DataLoss> {
         let mut loss = self.shop_loss();
-        loss.push(DataLoss::DockerVolume(self.staging_data.clone()));
+        loss.push(DataLoss::DockerVolume {
+            id: self.staging_data.clone(),
+        });
         loss
     }
 
@@ -89,7 +95,9 @@ async fn destroy_project_destroys_named_volumes_after_confirmation() {
         .unwrap();
     assert_eq!(
         leftover.data_loss,
-        [DataLoss::DockerVolume(volumes.staging_data.clone())]
+        [DataLoss::DockerVolume {
+            id: volumes.staging_data.clone()
+        }]
     );
 }
 
