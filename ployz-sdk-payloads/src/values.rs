@@ -388,63 +388,64 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
     ])
 }
 
-/// Whether each internally tagged payload rejects an unknown tag: the reason
-/// its generated union is closed. `ContainerRuntimeObservation` keeps one
-/// as observed instead, and its union names that case.
-/// Whether a wire value fails to decode as one payload type.
-pub(super) type RejectsUnknown = fn(Value) -> bool;
+/// Whether a wire value decodes as one payload type.
+pub(super) type Decodes = fn(Value) -> bool;
 
-pub(super) fn tagged_rejects_unknown() -> BTreeMap<&'static str, RejectsUnknown> {
-    fn rejects<T: DeserializeOwned>(value: Value) -> bool {
-        serde_json::from_value::<T>(value).is_err()
+/// A decoder for every internally tagged payload, so the generator can prove
+/// each rejects an unknown tag: the reason its generated union is closed.
+/// `ContainerRuntimeObservation` keeps one as observed instead, and its union
+/// names that case.
+pub(super) fn tagged_decoders() -> BTreeMap<&'static str, Decodes> {
+    fn decodes<T: DeserializeOwned>(value: Value) -> bool {
+        serde_json::from_value::<T>(value).is_ok()
     }
-    let rows: [(&'static str, RejectsUnknown); 28] = [
+    let rows = [
         (
             "MachineStorageObservation",
-            rejects::<MachineStorageObservation>,
+            decodes::<MachineStorageObservation> as Decodes,
         ),
-        ("ServiceMode", rejects::<ServiceMode>),
-        ("IngressProxyFragment", rejects::<IngressProxyFragment>),
-        ("IngressProxyConfig", rejects::<IngressProxyConfig>),
-        ("IngressHostname", rejects::<IngressHostname>),
-        ("HostBind", rejects::<HostBind>),
-        ("PortPublication", rejects::<PortPublication>),
-        ("VolumeSource", rejects::<VolumeSource>),
-        ("HealthcheckSpec", rejects::<HealthcheckSpec>),
-        ("RestartPolicy", rejects::<RestartPolicy>),
+        ("ServiceMode", decodes::<ServiceMode>),
+        ("IngressProxyFragment", decodes::<IngressProxyFragment>),
+        ("IngressProxyConfig", decodes::<IngressProxyConfig>),
+        ("IngressHostname", decodes::<IngressHostname>),
+        ("HostBind", decodes::<HostBind>),
+        ("PortPublication", decodes::<PortPublication>),
+        ("VolumeSource", decodes::<VolumeSource>),
+        ("HealthcheckSpec", decodes::<HealthcheckSpec>),
+        ("RestartPolicy", decodes::<RestartPolicy>),
         (
             "DockerVolumeStorageObservation",
-            rejects::<DockerVolumeStorageObservation>,
+            decodes::<DockerVolumeStorageObservation>,
         ),
-        ("CreateVolumeReport", rejects::<CreateVolumeReport>),
-        ("DataLoss", rejects::<DataLoss>),
+        ("CreateVolumeReport", decodes::<CreateVolumeReport>),
+        ("DataLoss", decodes::<DataLoss>),
         (
             "ContainerRuntimeObservation",
-            rejects::<ContainerRuntimeObservation>,
+            decodes::<ContainerRuntimeObservation>,
         ),
-        ("DeployWarning", rejects::<DeployWarning>),
-        ("OperationStatus", rejects::<OperationStatus>),
-        ("OperationPhase", rejects::<OperationPhase>),
-        ("DeployEvent", rejects::<DeployEvent>),
-        ("DeployOperation", rejects::<DeployOperation>),
-        ("HealthFailure", rejects::<HealthFailure>),
-        ("HookFailure", rejects::<HookFailure>),
+        ("DeployWarning", decodes::<DeployWarning>),
+        ("OperationStatus", decodes::<OperationStatus>),
+        ("OperationPhase", decodes::<OperationPhase>),
+        ("DeployEvent", decodes::<DeployEvent>),
+        ("DeployOperation", decodes::<DeployOperation>),
+        ("HealthFailure", decodes::<HealthFailure>),
+        ("HookFailure", decodes::<HookFailure>),
         (
             "DependencyHealthFailure",
-            rejects::<DependencyHealthFailure>,
+            decodes::<DependencyHealthFailure>,
         ),
-        ("ExecutionError", rejects::<ExecutionError>),
-        ("StopAttempt", rejects::<StopAttempt<ExecutionError>>),
-        ("RestartAttempt", rejects::<RestartAttempt<ExecutionError>>),
+        ("ExecutionError", decodes::<ExecutionError>),
+        ("StopAttempt", decodes::<StopAttempt<ExecutionError>>),
+        ("RestartAttempt", decodes::<RestartAttempt<ExecutionError>>),
         (
             "ReplacementCompensation",
-            rejects::<ReplacementCompensation<ExecutionError>>,
+            decodes::<ReplacementCompensation<ExecutionError>>,
         ),
         (
             "FailedOperation",
-            rejects::<FailedOperation<ExecutionError>>,
+            decodes::<FailedOperation<ExecutionError>>,
         ),
-        ("DeployOutcome", rejects::<DeployOutcome<ExecutionError>>),
+        ("DeployOutcome", decodes::<DeployOutcome<ExecutionError>>),
     ];
     rows.into_iter().collect()
 }

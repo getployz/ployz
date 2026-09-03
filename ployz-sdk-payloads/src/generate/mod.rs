@@ -18,9 +18,7 @@ use std::{
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::values::{
-    catalogued_capabilities, object_examples, tagged_examples, tagged_rejects_unknown,
-};
+use crate::values::{catalogued_capabilities, object_examples, tagged_decoders, tagged_examples};
 
 mod catalog;
 use catalog::{PAYLOADS, Shape};
@@ -266,27 +264,44 @@ fn check_internally_tagged_variants_match_rust() {
     }
 }
 
+/// The one tagged payload whose Rust type keeps an unknown tag as observed.
+const PASSTHROUGH_PAYLOAD: &str = "ContainerRuntimeObservation";
+
 fn check_tagged_payloads_reject_unknown_tags() {
-    let rejects = tagged_rejects_unknown();
+    let decoders = tagged_decoders();
+    let examples = tagged_examples();
+    for name in decoders.keys() {
+        assert!(
+            PAYLOADS.iter().any(|(payload, shape)| payload == name
+                && matches!(shape, Shape::InternallyTagged { .. })),
+            "{name} has a decoder but is not a tagged payload in the catalog"
+        );
+    }
     for (name, shape) in PAYLOADS {
         let Shape::InternallyTagged { tag, .. } = shape else {
             continue;
         };
-        let rejects = rejects
+        let decodes = decoders
             .get(name)
-            .unwrap_or_else(|| panic!("{name} has no unknown-tag decoder"));
+            .unwrap_or_else(|| panic!("{name} has no decoder"));
+        for example in serde_examples(name, &examples) {
+            assert!(
+                decodes(example.clone()),
+                "{name} decoder rejects its own serde example; the table row names the wrong type"
+            );
+        }
         let unknown = Value::Object(Map::from_iter([(
             (*tag).to_owned(),
             Value::from("from_a_newer_daemon"),
         )]));
-        if *name == "ContainerRuntimeObservation" {
+        if *name == PASSTHROUGH_PAYLOAD {
             assert!(
-                !rejects(unknown),
+                decodes(unknown),
                 "{name} must keep an unknown {tag} as observed; its union names that case"
             );
         } else {
             assert!(
-                rejects(unknown),
+                !decodes(unknown),
                 "{name} accepts an unknown {tag}, so its closed TypeScript union would be false"
             );
         }
@@ -320,7 +335,7 @@ fn assert_json_field_is_intentional(type_name: &str, field: &str, ts: &str) {
         assert!(
             matches!(
                 (type_name, field),
-                ("RpcError", "details") | ("ContainerRuntimeObservation", "unrecognized.raw")
+                ("RpcError", "details") | (PASSTHROUGH_PAYLOAD, "unrecognized.raw")
             ),
             "{type_name}.{field} uses {ts}; only RpcError.details and ContainerRuntimeObservation.unrecognized.raw may stay JsonValue"
         );
