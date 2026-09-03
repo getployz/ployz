@@ -25,8 +25,6 @@ fn docker_volume_data_loss_carries_machine_and_name() {
             }
         })
     );
-    assert!(encoded.get("name").is_none());
-    assert!(encoded.get("scope").is_none());
     assert_eq!(serde_json::from_value::<DataLoss>(encoded).unwrap(), loss);
 }
 

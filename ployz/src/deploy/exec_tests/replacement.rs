@@ -131,7 +131,8 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
             DeployOutcome::Failed { failed: FailedOperation::ReplacementHealth {
                 compensation: ReplacementCompensation::StopFirst {
                     stop_new_container,
-                    restart_old_container: restart,
+                    restart_old_container:
+                        restart @ (RestartAttempt::Restarted | RestartAttempt::Failed { .. }),
                 },
                 ..
             }, .. } if stop_new_container.stopped() == stop_succeeds

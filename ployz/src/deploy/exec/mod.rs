@@ -776,7 +776,7 @@ async fn replace_container<C: MachineOperations>(
             ReplacementCompensation::StopFirst {
                 stop_new_container,
                 restart_old_container: if restart_old_on_failure {
-                    RestartAttempt::attempted(
+                    RestartAttempt::from(
                         client
                             .start_container(&operation.machine_id, &operation.old_container_id)
                             .await

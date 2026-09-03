@@ -226,9 +226,11 @@ fn check_internally_tagged_variants_match_rust() {
                 .get(*tag)
                 .and_then(Value::as_str)
                 .unwrap_or_else(|| panic!("{name} serde example is missing tag {tag}"));
-            if variants.iter().any(|(variant, _)| *variant == wire) {
-                seen.insert(wire.to_owned());
-            }
+            assert!(
+                variants.iter().any(|(variant, _)| *variant == wire),
+                "{name} TypeScript is missing variant {wire}; generated unions are closed"
+            );
+            seen.insert(wire.to_owned());
         }
         for (variant, _) in *variants {
             assert!(
@@ -268,7 +270,7 @@ fn assert_json_field_is_intentional(type_name: &str, field: &str, ts: &str) {
                 (type_name, field),
                 ("RpcError", "details") | ("ContainerRuntimeObservation", "unrecognized.raw")
             ),
-            "{type_name}.{field} uses {ts}; only RpcError.details (per-code JSON, not one wire type) and ContainerRuntimeObservation.unrecognized.raw (the observed value of a state this build does not know) may stay JsonValue"
+            "{type_name}.{field} uses {ts}; only RpcError.details and ContainerRuntimeObservation.unrecognized.raw may stay JsonValue"
         );
     }
 }

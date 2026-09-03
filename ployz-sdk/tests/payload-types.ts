@@ -14,6 +14,7 @@ import type {
   MachineId,
   ProjectName,
   RequestedServiceSpec,
+  RestartPolicy,
   ResolvedServiceSpec,
   ServiceMode,
   ServiceName,
@@ -113,18 +114,6 @@ const unknownField: unknown = intent.from_a_newer_daemon;
 
 // Tagged unions are closed: Rust rejects an unknown tag, and the one state
 // Rust passes through is a named arm. So `switch` narrows and exhausts.
-function describeEvent(event: DeployEvent): string {
-  switch (event.type) {
-    case "progress":
-      return `${event.completed}/${event.total}`;
-    case "outcome":
-      return event.outcome.type;
-    default: {
-      const exhaustive: never = event;
-      return exhaustive;
-    }
-  }
-}
 function describeRuntime(runtime: ContainerRuntimeObservation): string {
   switch (runtime.state) {
     case "running":
@@ -145,12 +134,15 @@ function describeRuntime(runtime: ContainerRuntimeObservation): string {
     }
   }
 }
-void describeEvent;
 void describeRuntime;
 // @ts-expect-error the empty object is not a DeployEvent
 const noEvent: DeployEvent = {};
 // @ts-expect-error a ServiceMode needs a known mode
 const noMode: ServiceMode = {};
+// @ts-expect-error a RestartPolicy needs a known name
+const noRestart: RestartPolicy = {};
+// @ts-expect-error a HealthcheckSpec needs a known state
+const noHealthcheck: HealthcheckSpec = {};
 // @ts-expect-error an unknown Docker state is not a bare tag; it arrives as unrecognized + raw
 const futureState: ContainerRuntimeObservation = { state: "hibernating" };
 

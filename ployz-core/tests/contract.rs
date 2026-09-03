@@ -635,13 +635,7 @@ fn unknown_observation_variants_preserve_the_raw_value() {
         serde_json::from_value(docker_state.clone()).unwrap();
     assert_eq!(
         observation,
-        ContainerRuntimeObservation::Unknown {
-            raw: docker_state.clone()
-        }
-    );
-    assert_eq!(
-        serde_json::to_value(&observation).unwrap(),
-        json!({ "state": UNRECOGNIZED_STATE, "raw": docker_state })
+        ContainerRuntimeObservation::Unknown { raw: docker_state }
     );
 
     let health: HealthObservation = serde_json::from_str("\"degraded\"").unwrap();

@@ -313,15 +313,16 @@ pub enum RestartAttempt<E> {
     Failed { error: E },
 }
 
-impl<E> RestartAttempt<E> {
-    /// Record one restart attempt.
-    pub fn attempted(result: Result<(), E>) -> Self {
+impl<E> From<Result<(), E>> for RestartAttempt<E> {
+    fn from(result: Result<(), E>) -> Self {
         match result {
             Ok(()) => Self::Restarted,
             Err(error) => Self::Failed { error },
         }
     }
+}
 
+impl<E> RestartAttempt<E> {
     /// Whether the old container is running again.
     #[must_use]
     pub const fn restarted(&self) -> bool {

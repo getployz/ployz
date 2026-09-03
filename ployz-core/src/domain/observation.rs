@@ -20,8 +20,9 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
 /// Docker state may ever use this spelling.
 pub const UNRECOGNIZED_STATE: &str = "unrecognized";
 
-/// How many `unrecognized` wrappers a reader unwraps before keeping the value
-/// as-is. Each older hop that re-encodes an unknown observation adds one.
+/// How many `unrecognized` wrappers a reader unwraps before keeping the whole
+/// wrapped value as observed. Each older hop that re-encodes an unknown
+/// observation adds one.
 const UNRECOGNIZED_UNWRAP_LIMIT: usize = 8;
 
 /// Docker state as observed, including the untouched value of a future state.
@@ -92,12 +93,17 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
     where
         D: Deserializer<'de>,
     {
-        let mut raw = Value::deserialize(deserializer)?;
+        let raw = Value::deserialize(deserializer)?;
+        let mut current = &raw;
         for _ in 0..UNRECOGNIZED_UNWRAP_LIMIT {
-            match Self::from_wire(&raw).map_err(D::Error::custom)? {
+            match Self::from_wire(current).map_err(D::Error::custom)? {
                 Wire::Known(observation) => return Ok(observation),
-                Wire::Unrecognized(inner) => raw = inner,
-                Wire::Unknown => return Ok(Self::Unknown { raw }),
+                Wire::Unrecognized(inner) => current = inner,
+                Wire::Unknown => {
+                    return Ok(Self::Unknown {
+                        raw: current.clone(),
+                    });
+                }
             }
         }
         Ok(Self::Unknown { raw })
@@ -105,16 +111,16 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
 }
 
 /// One step of reading a wire value.
-enum Wire {
+enum Wire<'raw> {
     Known(ContainerRuntimeObservation),
     /// An `unrecognized` wrapper; read its `raw` next.
-    Unrecognized(Value),
+    Unrecognized(&'raw Value),
     /// Not an object, no string `state`, or a `state` this reader does not know.
     Unknown,
 }
 
 impl ContainerRuntimeObservation {
-    fn from_wire(raw: &Value) -> Result<Wire, serde_json::Error> {
+    fn from_wire(raw: &Value) -> Result<Wire<'_>, serde_json::Error> {
         let Some(object) = raw.as_object() else {
             return Ok(Wire::Unknown);
         };
@@ -146,7 +152,7 @@ impl ContainerRuntimeObservation {
             "dead" => Self::Dead,
             UNRECOGNIZED_STATE => {
                 return Ok(match object.get("raw") {
-                    Some(inner) => Wire::Unrecognized(inner.clone()),
+                    Some(inner) => Wire::Unrecognized(inner),
                     None => Wire::Unknown,
                 });
             }

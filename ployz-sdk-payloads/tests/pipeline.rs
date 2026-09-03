@@ -497,18 +497,13 @@ fn generated_typescript_encodes_evolution_rules() {
     assert!(dts.contains("| (string & {});"));
     assert!(dts.contains("export type ContainerRuntimeObservation ="));
     assert!(dts.contains("| { state: \"unrecognized\"; raw: JsonValue }"));
-    for tag in [
-        "backend",
-        "kind",
-        "mode",
-        "name",
-        "state",
-        "type",
-        "verification",
-    ] {
+    for line in dts.lines() {
+        let Some(arm) = line.find("| {").map(|start| &line[start..]) else {
+            continue;
+        };
         assert!(
-            !dts.contains(&format!("{{ {tag}?: string }}")),
-            "tagged unions are closed: Rust rejects an unknown {tag}"
+            !(arm.contains("?: string }") && !arm.contains(';')),
+            "tagged unions are closed: Rust rejects an unknown tag, yet {line} is an open arm"
         );
     }
     assert!(dts.contains("export type DockerVolume = {"));
