@@ -337,7 +337,7 @@ fn assert_json_field_is_intentional(type_name: &str, field: &str, ts: &str) {
                 (type_name, field),
                 ("RpcError", "details") | (PASSTHROUGH_PAYLOAD, "unrecognized.raw")
             ),
-            "{type_name}.{field} uses {ts}; only RpcError.details and ContainerRuntimeObservation.unrecognized.raw may stay JsonValue"
+            "{type_name}.{field} uses {ts}; only RpcError.details and {PASSTHROUGH_PAYLOAD}.unrecognized.raw may stay JsonValue"
         );
     }
 }

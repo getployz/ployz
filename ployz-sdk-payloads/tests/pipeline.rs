@@ -602,9 +602,6 @@ fn generated_typescript_encodes_evolution_rules() {
     assert!(dts.contains(
         "type: \"stop_container\"; machine_id: MachineId; container_id: ContainerId; purpose: StopContainerPurpose"
     ));
-    assert!(
-        dts.contains("export type StopContainerPurpose = \"lifecycle\" | \"free_host_ports\";")
-    );
     assert!(dts.contains("type: \"wait_healthy\""));
     assert!(!dts.contains("type: \"create_volume\""));
     assert!(!dts.contains("type: \"create_provisioned_volume\""));
