@@ -125,6 +125,17 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert(
         "container_runtime_unknown".into(),
         json!({
+            "state": "unrecognized",
+            "raw": {
+                "state": "hibernating",
+                "wake_at": "tomorrow",
+                "vendor": { "reason": 7 }
+            }
+        }),
+    );
+    fixtures.insert(
+        "container_runtime_legacy_unknown".into(),
+        json!({
             "state": "hibernating",
             "wake_at": "tomorrow",
             "vendor": { "reason": 7 }
@@ -553,6 +564,9 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                 to_value(&ContainerRuntimeObservation::Exited { code: 0 }),
                 to_value(&ContainerRuntimeObservation::Removing),
                 to_value(&ContainerRuntimeObservation::Dead),
+                to_value(&ContainerRuntimeObservation::Unknown {
+                    raw: json!({ "Status": "hibernating", "ExitCode": 0 }),
+                }),
             ],
         ),
         (

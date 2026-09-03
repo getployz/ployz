@@ -16,7 +16,20 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
     Unhealthy => "unhealthy",
 });
 
+/// Wire `state` of [`ContainerRuntimeObservation::Unknown`]. Reserved: no known
+/// Docker state may ever use this spelling.
+pub const UNRECOGNIZED_STATE: &str = "unrecognized";
+
+/// How many `unrecognized` wrappers a reader unwraps before keeping the value
+/// as-is. Each older hop that re-encodes an unknown observation adds one.
+const UNRECOGNIZED_UNWRAP_LIMIT: usize = 8;
+
 /// Docker state as observed, including the untouched value of a future state.
+///
+/// On the wire, a known state is `{ "state": "running", ... }`. An unknown
+/// state is `{ "state": "unrecognized", "raw": <the value as observed> }`, so
+/// every reader sees a closed set of `state` spellings, and a newer reader
+/// recovers the observed value from `raw`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContainerRuntimeObservation {
     Created,
@@ -65,7 +78,10 @@ impl Serialize for ContainerRuntimeObservation {
             }
             Self::Removing => insert_state(&mut object, "removing"),
             Self::Dead => insert_state(&mut object, "dead"),
-            Self::Unknown { raw } => return raw.serialize(serializer),
+            Self::Unknown { raw } => {
+                insert_state(&mut object, UNRECOGNIZED_STATE);
+                object.insert("raw".into(), raw.clone());
+            }
         }
         Value::Object(object).serialize(serializer)
     }
@@ -76,38 +92,67 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
     where
         D: Deserializer<'de>,
     {
-        let raw = Value::deserialize(deserializer)?;
+        let mut raw = Value::deserialize(deserializer)?;
+        for _ in 0..UNRECOGNIZED_UNWRAP_LIMIT {
+            match Self::from_wire(&raw).map_err(D::Error::custom)? {
+                Wire::Known(observation) => return Ok(observation),
+                Wire::Unrecognized(inner) => raw = inner,
+                Wire::Unknown => return Ok(Self::Unknown { raw }),
+            }
+        }
+        Ok(Self::Unknown { raw })
+    }
+}
+
+/// One step of reading a wire value.
+enum Wire {
+    Known(ContainerRuntimeObservation),
+    /// An `unrecognized` wrapper; read its `raw` next.
+    Unrecognized(Value),
+    /// Not an object, no string `state`, or a `state` this reader does not know.
+    Unknown,
+}
+
+impl ContainerRuntimeObservation {
+    fn from_wire(raw: &Value) -> Result<Wire, serde_json::Error> {
         let Some(object) = raw.as_object() else {
-            return Ok(Self::Unknown { raw });
+            return Ok(Wire::Unknown);
         };
         let Some(state) = object.get("state").and_then(Value::as_str) else {
-            return Ok(Self::Unknown { raw });
+            return Ok(Wire::Unknown);
         };
 
-        match state {
-            "created" => Ok(Self::Created),
+        let known = match state {
+            "created" => Self::Created,
             "running" => {
                 let health = object
                     .get("health")
                     .cloned()
-                    .ok_or_else(|| D::Error::missing_field("health"))?;
-                Ok(Self::Running {
-                    health: serde_json::from_value(health).map_err(D::Error::custom)?,
-                })
+                    .ok_or_else(|| serde_json::Error::missing_field("health"))?;
+                Self::Running {
+                    health: serde_json::from_value(health)?,
+                }
             }
-            "paused" => Ok(Self::Paused),
-            "restarting" => Ok(Self::Restarting),
+            "paused" => Self::Paused,
+            "restarting" => Self::Restarting,
             "exited" => {
                 let code = object
                     .get("code")
                     .and_then(Value::as_i64)
-                    .ok_or_else(|| D::Error::missing_field("code"))?;
-                Ok(Self::Exited { code })
+                    .ok_or_else(|| serde_json::Error::missing_field("code"))?;
+                Self::Exited { code }
             }
-            "removing" => Ok(Self::Removing),
-            "dead" => Ok(Self::Dead),
-            _ => Ok(Self::Unknown { raw }),
-        }
+            "removing" => Self::Removing,
+            "dead" => Self::Dead,
+            UNRECOGNIZED_STATE => {
+                return Ok(match object.get("raw") {
+                    Some(inner) => Wire::Unrecognized(inner.clone()),
+                    None => Wire::Unknown,
+                });
+            }
+            _ => return Ok(Wire::Unknown),
+        };
+        Ok(Wire::Known(known))
     }
 }
 

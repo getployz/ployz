@@ -2,7 +2,9 @@ import type {
   ConfigMount,
   ConfigSpec,
   ContainerObservation,
+  ContainerRuntimeObservation,
   DataLossConfirmation,
+  DeployEvent,
   DeployIntent,
   DeviceMapping,
   DeviceReservation,
@@ -10,6 +12,7 @@ import type {
   ProjectName,
   RequestedServiceSpec,
   ResolvedServiceSpec,
+  ServiceMode,
   ServiceName,
   Ulimit,
   VolumeDriver,
@@ -104,3 +107,46 @@ const intent: DeployIntent = {
 ("from_a_newer_daemon") satisfies keyof DeployIntent;
 // @ts-expect-error unknown keys are not readable on a plain object type
 const unknownField: unknown = intent.from_a_newer_daemon;
+
+// Tagged unions are closed: Rust rejects an unknown tag, and the one state
+// Rust passes through is a named arm. So `switch` narrows and exhausts.
+function describeEvent(event: DeployEvent): string {
+  switch (event.type) {
+    case "progress":
+      return `${event.completed}/${event.total}`;
+    case "outcome":
+      return event.outcome.type;
+    default: {
+      const exhaustive: never = event;
+      return exhaustive;
+    }
+  }
+}
+function describeRuntime(runtime: ContainerRuntimeObservation): string {
+  switch (runtime.state) {
+    case "running":
+      return runtime.health;
+    case "exited":
+      return String(runtime.code);
+    case "unrecognized":
+      return JSON.stringify(runtime.raw);
+    case "created":
+    case "paused":
+    case "restarting":
+    case "removing":
+    case "dead":
+      return runtime.state;
+    default: {
+      const exhaustive: never = runtime;
+      return exhaustive;
+    }
+  }
+}
+void describeEvent;
+void describeRuntime;
+// @ts-expect-error the empty object is not a DeployEvent
+const noEvent: DeployEvent = {};
+// @ts-expect-error a ServiceMode needs a known mode
+const noMode: ServiceMode = {};
+// @ts-expect-error an unknown Docker state is not a bare tag; it arrives as unrecognized + raw
+const futureState: ContainerRuntimeObservation = { state: "hibernating" };

@@ -183,7 +183,6 @@ fn emit_internally_tagged(
         }
         arms.push(format!("{{ {} }}", members.join("; ")));
     }
-    arms.push(format!("{{ {tag}?: string }}"));
     format!(
         "export type {name}{params} =\n  | {};\n",
         arms.join("\n  | ")
@@ -336,8 +335,11 @@ fn assert_json_field_is_intentional(type_name: &str, field: &str, ts: &str) {
     let inner = strip_optional(ts).0;
     if inner.contains("JsonValue") || inner.contains("JsonObject") {
         assert!(
-            type_name == "RpcError" && field == "details",
-            "{type_name}.{field} uses {ts}; only RpcError.details may stay JsonValue (per-code JSON, not one wire type)"
+            matches!(
+                (type_name, field),
+                ("RpcError", "details") | ("ContainerRuntimeObservation", "unrecognized.raw")
+            ),
+            "{type_name}.{field} uses {ts}; only RpcError.details (per-code JSON, not one wire type) and ContainerRuntimeObservation.unrecognized.raw (the observed value of a state this build does not know) may stay JsonValue"
         );
     }
 }

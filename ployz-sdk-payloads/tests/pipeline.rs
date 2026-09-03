@@ -447,15 +447,20 @@ fn observation_enums_keep_an_unknown_case() {
         decode_fixture(fixture(&fixtures, "health_observation_unknown"));
     assert_eq!(health, HealthObservation::Unrecognized("degraded".into()));
 
-    let unknown_json = fixture(&fixtures, "container_runtime_unknown");
-    let unknown: ContainerRuntimeObservation = decode_fixture(unknown_json);
+    let legacy_json = fixture(&fixtures, "container_runtime_legacy_unknown");
+    let unknown: ContainerRuntimeObservation = decode_fixture(legacy_json);
     assert_eq!(
         unknown,
         ContainerRuntimeObservation::Unknown {
-            raw: unknown_json.clone()
+            raw: legacy_json.clone()
         }
     );
+    let unknown_json = fixture(&fixtures, "container_runtime_unknown");
     assert_eq!(serde_json::to_value(&unknown).unwrap(), *unknown_json);
+    assert_eq!(
+        decode_fixture::<ContainerRuntimeObservation>(unknown_json),
+        unknown
+    );
 
     let known: ContainerRuntimeObservation =
         decode_fixture(fixture(&fixtures, "container_runtime_known_unknown_fields"));
@@ -488,7 +493,21 @@ fn generated_typescript_encodes_evolution_rules() {
     assert!(dts.contains("export type MembershipObservation ="));
     assert!(dts.contains("| (string & {});"));
     assert!(dts.contains("export type ContainerRuntimeObservation ="));
-    assert!(dts.contains("state?: string"));
+    assert!(dts.contains("| { state: \"unrecognized\"; raw: JsonValue }"));
+    for tag in [
+        "backend",
+        "kind",
+        "mode",
+        "name",
+        "state",
+        "type",
+        "verification",
+    ] {
+        assert!(
+            !dts.contains(&format!("{{ {tag}?: string }}")),
+            "tagged unions are closed: Rust rejects an unknown {tag}"
+        );
+    }
     assert!(dts.contains("export type DockerVolume = {"));
     assert!(dts.contains("export type DockerVolumeStorageObservation ="));
     assert!(dts.contains("kind: \"plain\"; driver: string"));

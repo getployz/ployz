@@ -71,8 +71,7 @@ export type StorageChoice = "none" | "zfs";
 export type MachineStorageObservation =
   | { state: "stateless" }
   | { state: "ready" }
-  | { state: "pool"; size_bytes: number; used_bytes: number; free_bytes: number }
-  | { state?: string };
+  | { state: "pool"; size_bytes: number; used_bytes: number; free_bytes: number };
 
 export type UpdateOrder = "start_first" | "stop_first";
 
@@ -82,34 +81,28 @@ export type TransportProtocol = "tcp" | "udp";
 
 export type ServiceMode =
   | { mode: "replicated"; replicas: number }
-  | { mode: "global" }
-  | { mode?: string };
+  | { mode: "global" };
 
 export type IngressProxyFragment =
-  | { backend: "caddy"; config: string }
-  | { backend?: string };
+  | { backend: "caddy"; config: string };
 
 export type IngressProxyConfig =
   | { backend: "caddy"; config: string }
   | { backend: "zentinel"; config: string }
-  | { backend: "envoy"; config: string }
-  | { backend?: string };
+  | { backend: "envoy"; config: string };
 
 export type IngressHostname =
   | { kind: "cluster_domain"; label?: string }
-  | { kind: "explicit"; hostname: IngressHost }
-  | { kind?: string };
+  | { kind: "explicit"; hostname: IngressHost };
 
 export type HostBind =
   | { kind: "all" }
   | { kind: "address"; address: string }
-  | { kind: "prefix"; prefix: string }
-  | { kind?: string };
+  | { kind: "prefix"; prefix: string };
 
 export type PortPublication =
   | { mode: "ingress"; hostname: IngressHostname; load_balancer_port: number; container_port: number; http_protocol: HttpProtocol }
-  | { mode: "host"; bind: HostBind; published_port: number; container_port: number; transport_protocol: TransportProtocol }
-  | { mode?: string };
+  | { mode: "host"; bind: HostBind; published_port: number; container_port: number; transport_protocol: TransportProtocol };
 
 export type VolumeDriver = {
   name: string;
@@ -121,20 +114,17 @@ export type VolumeSource =
   | { kind: "external"; name: DockerVolumeName }
   | { kind: "ordinary"; name: DockerVolumeName; driver: VolumeDriver; labels?: { readonly [key: string]: string } }
   | { kind: "provisioned"; name: DockerVolumeName; maximum_bytes: ProvisionedVolumeMaximumBytes; labels?: { readonly [key: string]: string } }
-  | { kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] }
-  | { kind?: string };
+  | { kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] };
 
 export type HealthcheckSpec =
   | { state: "disabled" }
-  | { state: "configured"; test: string[]; interval_millis?: number; timeout_millis?: number; start_period_millis?: number; start_interval_millis?: number; retries?: number }
-  | { state?: string };
+  | { state: "configured"; test: string[]; interval_millis?: number; timeout_millis?: number; start_period_millis?: number; start_interval_millis?: number; retries?: number };
 
 export type RestartPolicy =
   | { name: "no" }
   | { name: "always" }
   | { name: "unless-stopped" }
-  | { name: "on-failure"; maximum_retry_count?: number }
-  | { name?: string };
+  | { name: "on-failure"; maximum_retry_count?: number };
 
 export type LogDriver = {
   name: string;
@@ -293,8 +283,7 @@ export type DockerVolumeId = {
 
 export type DockerVolumeStorageObservation =
   | { kind: "plain"; driver: string }
-  | { kind: "provisioned"; mountpoint: MachinePath; bound_bytes: number; used_bytes: number }
-  | { kind?: string };
+  | { kind: "provisioned"; mountpoint: MachinePath; bound_bytes: number; used_bytes: number };
 
 export type DockerVolume = {
   id: DockerVolumeId;
@@ -315,8 +304,7 @@ export type VolumeInventory = {
 
 export type CreateVolumeReport =
   | { verification: "verified"; volume: DockerVolume }
-  | { verification: "unverified"; id: DockerVolumeId; error: RpcError }
-  | { verification?: string };
+  | { verification: "unverified"; id: DockerVolumeId; error: RpcError };
 
 export type RemoveVolumesRequest = {
   volumes: DockerVolumeId[];
@@ -385,7 +373,7 @@ export type ContainerRuntimeObservation =
   | { state: "exited"; code: number }
   | { state: "removing" }
   | { state: "dead" }
-  | { state?: string };
+  | { state: "unrecognized"; raw: JsonValue };
 
 export type PlanOptions = {
   force_recreate: boolean;
@@ -453,8 +441,7 @@ export type OperationStatus =
   | { type: "running"; phase: OperationPhase }
   | { type: "completed" }
   | { type: "failed"; error: ExecutionError }
-  | { type: "unexecuted" }
-  | { type?: string };
+  | { type: "unexecuted" };
 
 export type OperationPhase =
   | { type: "starting" }
@@ -465,13 +452,11 @@ export type OperationPhase =
   | { type: "stopping_container" }
   | { type: "removing_container" }
   | { type: "removing_volume" }
-  | { type: "compensating" }
-  | { type?: string };
+  | { type: "compensating" };
 
 export type DeployEvent =
   | { type: "progress"; completed: number; total: number; rows: OperationRow[] }
-  | { type: "outcome"; outcome: DeployOutcome }
-  | { type?: string };
+  | { type: "outcome"; outcome: DeployOutcome };
 
 export type ReplacementOperation = {
   machine_id: MachineId;
@@ -488,37 +473,32 @@ export type DeployOperation =
   | { type: "replace_container"; machine_id: MachineId; old_container_id: ContainerId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }
   | { type: "stop_hook"; machine_id: MachineId; container_id: ContainerId }
   | { type: "run_hook"; machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> }
-  | { type: "remove_volume"; id: DockerVolumeId }
-  | { type?: string };
+  | { type: "remove_volume"; id: DockerVolumeId };
 
 export type MachineAction = "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
 export type HealthFailure =
   | { type: "cancelled" }
   | { type: "timed_out" }
-  | { type: "runtime"; observation: ContainerRuntimeObservation }
-  | { type?: string };
+  | { type: "runtime"; observation: ContainerRuntimeObservation };
 
 export type HookFailure =
   | { type: "cancelled"; stop_error: RpcError | null }
   | { type: "timed_out"; stop_error: RpcError | null }
-  | { type: "exit"; code: number }
-  | { type?: string };
+  | { type: "exit"; code: number };
 
 export type DependencyHealthFailure =
   | { type: "cancelled" }
   | { type: "no_containers" }
   | { type: "observation"; error: RpcError }
-  | { type: "container"; container_id: ContainerId; failure: HealthFailure }
-  | { type?: string };
+  | { type: "container"; container_id: ContainerId; failure: HealthFailure };
 
 export type ExecutionError =
   | { type: "machine"; action: MachineAction; error: RpcError }
   | { type: "health"; container_id: ContainerId; failure: HealthFailure }
   | { type: "dependency_health"; dependency: QualifiedService; failure: DependencyHealthFailure }
   | { type: "hook"; container_id: ContainerId; failure: HookFailure }
-  | { type: "cancelled" }
-  | { type?: string };
+  | { type: "cancelled" };
 
 export type RestartAttempt<E = ExecutionError> =
   | "NotAttempted"
@@ -530,13 +510,11 @@ export type ReplacementCompensation<E = ExecutionError> =
 
 export type FailedOperation<E = ExecutionError> =
   | { type: "operation"; operation: DeployOperation; error: E }
-  | { type: "replacement_health"; operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> }
-  | { type?: string };
+  | { type: "replacement_health"; operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> };
 
 export type DeployOutcome<E = ExecutionError> =
   | { type: "success"; completed: DeployOperation[] }
-  | { type: "failed"; completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] }
-  | { type?: string };
+  | { type: "failed"; completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] };
 
 export type MachineRuntime = {
   daemon_version: string;

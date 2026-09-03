@@ -103,7 +103,7 @@ The unresolved Container ID, display name, or ID prefix used to select one Conta
 _Avoid_: Container name as identity, replica identity
 
 **Container Runtime Observation**:
-A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unknown external state. Container observations do not combine into an authoritative Service state.
+A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unrecognized external state carried verbatim as its observed value. Container observations do not combine into an authoritative Service state.
 _Avoid_: Service state, desired state
 
 **Requested Service Spec**:

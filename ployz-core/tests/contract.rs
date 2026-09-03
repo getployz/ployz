@@ -27,8 +27,8 @@ use ployz_core::{
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeSource, encode_grpc_frame, grpc_frames, op,
+    ServiceVolume, ServiceVolumeReference, UNRECOGNIZED_STATE, UpdateConfig, UpdateMachineRequest,
+    UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -624,7 +624,25 @@ fn unknown_observation_variants_preserve_the_raw_value() {
             raw: future.clone()
         }
     );
-    assert_eq!(serde_json::to_value(observation).unwrap(), future);
+    let wrapped = json!({ "state": UNRECOGNIZED_STATE, "raw": future });
+    assert_eq!(serde_json::to_value(&observation).unwrap(), wrapped);
+    let reread: ContainerRuntimeObservation = serde_json::from_value(wrapped.clone()).unwrap();
+    assert_eq!(reread, observation);
+
+    // Docker's own inspect State object has no `state` key at all.
+    let docker_state = json!({ "Status": "hibernating", "ExitCode": 0 });
+    let observation: ContainerRuntimeObservation =
+        serde_json::from_value(docker_state.clone()).unwrap();
+    assert_eq!(
+        observation,
+        ContainerRuntimeObservation::Unknown {
+            raw: docker_state.clone()
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&observation).unwrap(),
+        json!({ "state": UNRECOGNIZED_STATE, "raw": docker_state })
+    );
 
     let health: HealthObservation = serde_json::from_str("\"degraded\"").unwrap();
     assert_eq!(health, HealthObservation::Unrecognized("degraded".into()));
@@ -641,6 +659,36 @@ fn unknown_observation_variants_preserve_the_raw_value() {
             health: HealthObservation::Healthy
         }
     );
+}
+
+#[test]
+fn unrecognized_wrappers_unwrap_to_the_observed_value() {
+    // A newer reader recovers a state that crossed an older hop.
+    let via_old_hop = json!({
+        "state": UNRECOGNIZED_STATE,
+        "raw": { "state": UNRECOGNIZED_STATE, "raw": { "state": "exited", "code": 3 } }
+    });
+    let observation: ContainerRuntimeObservation = serde_json::from_value(via_old_hop).unwrap();
+    assert_eq!(observation, ContainerRuntimeObservation::Exited { code: 3 });
+
+    // A wrapper without `raw` is kept whole rather than invented.
+    let bare = json!({ "state": UNRECOGNIZED_STATE });
+    let observation: ContainerRuntimeObservation = serde_json::from_value(bare.clone()).unwrap();
+    assert_eq!(
+        observation,
+        ContainerRuntimeObservation::Unknown { raw: bare }
+    );
+
+    // Unwrapping is bounded, so hostile nesting cannot recurse without limit.
+    let mut nested = json!({ "state": "future" });
+    for _ in 0..64 {
+        nested = json!({ "state": UNRECOGNIZED_STATE, "raw": nested });
+    }
+    let observation: ContainerRuntimeObservation = serde_json::from_value(nested).unwrap();
+    assert!(matches!(
+        observation,
+        ContainerRuntimeObservation::Unknown { .. }
+    ));
 }
 
 #[test]

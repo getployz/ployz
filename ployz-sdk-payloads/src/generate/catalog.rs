@@ -660,6 +660,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("exited", &[("code", "number")]),
                 ("removing", &[]),
                 ("dead", &[]),
+                ("unrecognized", &[("raw", "JsonValue")]),
             ],
         },
     ),
