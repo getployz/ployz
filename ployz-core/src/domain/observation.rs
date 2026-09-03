@@ -91,42 +91,48 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
         D: Deserializer<'de>,
     {
         let raw = Value::deserialize(deserializer)?;
-        let inner = match Self::from_wire(&raw).map_err(D::Error::custom)? {
-            Wire::Known(observation) => return Ok(observation),
-            Wire::Unknown => return Ok(Self::Unknown { raw }),
-            Wire::Unrecognized(inner) => inner,
+        let Some(inner) = unrecognized_raw(&raw) else {
+            return match Self::parse(&raw).map_err(D::Error::custom)? {
+                Some(observation) => Ok(observation),
+                None => Ok(Self::Unknown { raw }),
+            };
         };
         // The wrapper carries what a writer could not classify, so a value
         // that does not parse here is kept as observed rather than failing
         // the whole frame.
-        Ok(match Self::from_wire(inner) {
-            Ok(Wire::Known(observation)) => observation,
-            Ok(Wire::Unrecognized(_) | Wire::Unknown) | Err(_) => {
-                Self::Unknown { raw: inner.clone() }
-            }
+        Ok(match Self::parse(inner) {
+            Ok(Some(observation)) => observation,
+            Ok(None) | Err(_) => Self::Unknown { raw: inner.clone() },
         })
     }
 }
 
-/// One step of reading a wire value.
-enum Wire<'raw> {
-    Known(ContainerRuntimeObservation),
-    /// An `unrecognized` wrapper; read its `raw` next.
-    Unrecognized(&'raw Value),
-    /// Not an object, no string `state`, or a `state` this reader does not know.
-    Unknown,
+/// The `raw` of an `unrecognized` wrapper, when `raw` is one.
+fn unrecognized_raw(raw: &Value) -> Option<&Value> {
+    let object = raw.as_object()?;
+    if object.get("state").and_then(Value::as_str) != Some(UNRECOGNIZED_STATE) {
+        return None;
+    }
+    object.get("raw")
 }
 
 impl ContainerRuntimeObservation {
-    fn from_wire(raw: &Value) -> Result<Wire<'_>, serde_json::Error> {
+    /// A known state, or `None` for a value this reader keeps as observed:
+    /// not an object, no string `state`, an unknown `state`, or a nested
+    /// `unrecognized` wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns the field error when a known `state` is missing its fields.
+    fn parse(raw: &Value) -> Result<Option<Self>, serde_json::Error> {
         let Some(object) = raw.as_object() else {
-            return Ok(Wire::Unknown);
+            return Ok(None);
         };
         let Some(state) = object.get("state").and_then(Value::as_str) else {
-            return Ok(Wire::Unknown);
+            return Ok(None);
         };
 
-        let known = match state {
+        Ok(Some(match state {
             "created" => Self::Created,
             "running" => {
                 let health = object
@@ -148,15 +154,8 @@ impl ContainerRuntimeObservation {
             }
             "removing" => Self::Removing,
             "dead" => Self::Dead,
-            UNRECOGNIZED_STATE => {
-                return Ok(match object.get("raw") {
-                    Some(inner) => Wire::Unrecognized(inner),
-                    None => Wire::Unknown,
-                });
-            }
-            _ => return Ok(Wire::Unknown),
-        };
-        Ok(Wire::Known(known))
+            _ => return Ok(None),
+        }))
     }
 }
 

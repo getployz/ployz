@@ -16,9 +16,11 @@ use std::{
 };
 
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use crate::values::{catalogued_capabilities, object_examples, tagged_examples};
+use crate::values::{
+    catalogued_capabilities, object_examples, tagged_examples, tagged_rejects_unknown,
+};
 
 mod catalog;
 use catalog::{PAYLOADS, Shape};
@@ -33,6 +35,7 @@ export type JsonObject = { readonly [key: string]: JsonValue | undefined };\n\n"
 fn generated_types() -> String {
     check_object_fields_match_rust();
     check_internally_tagged_variants_match_rust();
+    check_tagged_payloads_reject_unknown_tags();
     check_closed_strings_match_rust();
     check_json_value_fields_are_intentional();
     typescript()
@@ -237,16 +240,54 @@ fn check_internally_tagged_variants_match_rust() {
                 .get(*tag)
                 .and_then(Value::as_str)
                 .unwrap_or_else(|| panic!("{name} serde example is missing tag {tag}"));
-            assert!(
-                variants.iter().any(|(variant, _)| *variant == wire),
-                "{name} TypeScript is missing variant {wire}; generated unions are closed"
-            );
+            let Some((_, fields)) = variants.iter().find(|(variant, _)| *variant == wire) else {
+                panic!("{name} TypeScript is missing variant {wire}; generated unions are closed");
+            };
+            for key in object.keys().filter(|key| key != tag) {
+                assert!(
+                    fields.iter().any(|(field, _)| field == key),
+                    "{name}.{wire} TypeScript fields missing serde key {key}"
+                );
+            }
+            for (field, ts) in *fields {
+                assert!(
+                    strip_optional(ts).1 || object.contains_key(*field),
+                    "{name}.{wire} serde value missing field {field}"
+                );
+            }
             seen.insert(wire.to_owned());
         }
         for (variant, _) in *variants {
             assert!(
                 seen.contains(*variant),
                 "{name} TypeScript variant {variant} has no serde example"
+            );
+        }
+    }
+}
+
+fn check_tagged_payloads_reject_unknown_tags() {
+    let rejects = tagged_rejects_unknown();
+    for (name, shape) in PAYLOADS {
+        let Shape::InternallyTagged { tag, .. } = shape else {
+            continue;
+        };
+        let rejects = rejects
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} has no unknown-tag decoder"));
+        let unknown = Value::Object(Map::from_iter([(
+            (*tag).to_owned(),
+            Value::from("from_a_newer_daemon"),
+        )]));
+        if *name == "ContainerRuntimeObservation" {
+            assert!(
+                !rejects(unknown),
+                "{name} must keep an unknown {tag} as observed; its union names that case"
+            );
+        } else {
+            assert!(
+                rejects(unknown),
+                "{name} accepts an unknown {tag}, so its closed TypeScript union would be false"
             );
         }
     }

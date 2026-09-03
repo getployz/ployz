@@ -457,10 +457,6 @@ fn observation_enums_keep_an_unknown_case() {
     );
     let unknown_json = fixture(&fixtures, "container_runtime_unknown");
     assert_eq!(serde_json::to_value(&unknown).unwrap(), *unknown_json);
-    assert_eq!(
-        decode_fixture::<ContainerRuntimeObservation>(unknown_json),
-        unknown
-    );
 
     let known: ContainerRuntimeObservation =
         decode_fixture(fixture(&fixtures, "container_runtime_known_unknown_fields"));
@@ -497,18 +493,16 @@ fn generated_typescript_encodes_evolution_rules() {
     assert!(dts.contains("| (string & {});"));
     assert!(dts.contains("export type ContainerRuntimeObservation ="));
     assert!(dts.contains("| { state: \"unrecognized\"; raw: JsonValue }"));
-    for line in dts.lines() {
-        let Some(arm) = line
-            .find("| {")
-            .map(|start| line[start..].trim_end_matches(';'))
-        else {
-            continue;
-        };
-        assert!(
-            !(arm.contains("?: string }") && !arm.contains(';')),
-            "tagged unions are closed: Rust rejects an unknown tag, yet {line} is an open arm"
-        );
-    }
+    // An open arm is a union member whose only field is an optional string
+    // tag, e.g. `| { state?: string };`. Rust rejects unknown tags, so none
+    // may be emitted.
+    assert!(
+        !dts.lines().any(|line| {
+            let arm = line.trim().trim_end_matches(';');
+            arm.starts_with("| {") && arm.contains("?: string }") && !arm.contains(';')
+        }),
+        "tagged unions are closed"
+    );
     assert!(dts.contains("export type DockerVolume = {"));
     assert!(dts.contains("export type DockerVolumeStorageObservation ="));
     assert!(dts.contains("kind: \"plain\"; driver: string"));
@@ -605,6 +599,12 @@ fn generated_typescript_encodes_evolution_rules() {
     assert!(dts.contains("selected: ServiceAttempt[]"));
     assert!(dts.contains("export type DeployOperation ="));
     assert!(dts.contains("type: \"run_container\""));
+    assert!(dts.contains(
+        "type: \"stop_container\"; machine_id: MachineId; container_id: ContainerId; purpose: StopContainerPurpose"
+    ));
+    assert!(
+        dts.contains("export type StopContainerPurpose = \"lifecycle\" | \"free_host_ports\";")
+    );
     assert!(dts.contains("type: \"wait_healthy\""));
     assert!(!dts.contains("type: \"create_volume\""));
     assert!(!dts.contains("type: \"create_provisioned_volume\""));

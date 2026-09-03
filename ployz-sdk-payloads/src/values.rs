@@ -33,6 +33,7 @@ use ployz_core::{
     UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory, VolumeObservationFailure,
     VolumeSource, VolumeToCreate, WireGuardPublicKey,
 };
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 const MACHINE_ID_HEX: &str = "0123456789abcdef0123456789abcdef";
@@ -387,6 +388,67 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
     ])
 }
 
+/// Whether each internally tagged payload rejects an unknown tag: the reason
+/// its generated union is closed. `ContainerRuntimeObservation` keeps one
+/// as observed instead, and its union names that case.
+/// Whether a wire value fails to decode as one payload type.
+pub(super) type RejectsUnknown = fn(Value) -> bool;
+
+pub(super) fn tagged_rejects_unknown() -> BTreeMap<&'static str, RejectsUnknown> {
+    fn rejects<T: DeserializeOwned>(value: Value) -> bool {
+        serde_json::from_value::<T>(value).is_err()
+    }
+    let rows: [(&'static str, RejectsUnknown); 28] = [
+        (
+            "MachineStorageObservation",
+            rejects::<MachineStorageObservation>,
+        ),
+        ("ServiceMode", rejects::<ServiceMode>),
+        ("IngressProxyFragment", rejects::<IngressProxyFragment>),
+        ("IngressProxyConfig", rejects::<IngressProxyConfig>),
+        ("IngressHostname", rejects::<IngressHostname>),
+        ("HostBind", rejects::<HostBind>),
+        ("PortPublication", rejects::<PortPublication>),
+        ("VolumeSource", rejects::<VolumeSource>),
+        ("HealthcheckSpec", rejects::<HealthcheckSpec>),
+        ("RestartPolicy", rejects::<RestartPolicy>),
+        (
+            "DockerVolumeStorageObservation",
+            rejects::<DockerVolumeStorageObservation>,
+        ),
+        ("CreateVolumeReport", rejects::<CreateVolumeReport>),
+        ("DataLoss", rejects::<DataLoss>),
+        (
+            "ContainerRuntimeObservation",
+            rejects::<ContainerRuntimeObservation>,
+        ),
+        ("DeployWarning", rejects::<DeployWarning>),
+        ("OperationStatus", rejects::<OperationStatus>),
+        ("OperationPhase", rejects::<OperationPhase>),
+        ("DeployEvent", rejects::<DeployEvent>),
+        ("DeployOperation", rejects::<DeployOperation>),
+        ("HealthFailure", rejects::<HealthFailure>),
+        ("HookFailure", rejects::<HookFailure>),
+        (
+            "DependencyHealthFailure",
+            rejects::<DependencyHealthFailure>,
+        ),
+        ("ExecutionError", rejects::<ExecutionError>),
+        ("StopAttempt", rejects::<StopAttempt<ExecutionError>>),
+        ("RestartAttempt", rejects::<RestartAttempt<ExecutionError>>),
+        (
+            "ReplacementCompensation",
+            rejects::<ReplacementCompensation<ExecutionError>>,
+        ),
+        (
+            "FailedOperation",
+            rejects::<FailedOperation<ExecutionError>>,
+        ),
+        ("DeployOutcome", rejects::<DeployOutcome<ExecutionError>>),
+    ];
+    rows.into_iter().collect()
+}
+
 pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
     let DeployOutcome::Failed { failed, .. } = deploy_outcome_failed() else {
         panic!("failed fixture is Failed");
@@ -425,6 +487,13 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             vec![
                 to_value(&deploy_outcome()),
                 to_value(&deploy_outcome_failed()),
+            ],
+        ),
+        (
+            "StopContainerPurpose",
+            vec![
+                to_value(&StopContainerPurpose::Lifecycle),
+                to_value(&StopContainerPurpose::FreeHostPorts),
             ],
         ),
         (

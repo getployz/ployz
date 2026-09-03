@@ -276,9 +276,9 @@ async fn assert_replacement_health_compensation(
                 UpdateOrder::StopFirst,
                 ReplacementCompensation::StopFirst {
                     stop_new_container,
-                    restart_old_container: restart,
+                    restart_old_container,
                 },
-            ) => stop_new_container.stopped() && restart.restarted(),
+            ) => stop_new_container.stopped() && restart_old_container.restarted(),
             _ => false,
         });
         assert_eq!(unexecuted, operations.get(1..).unwrap());

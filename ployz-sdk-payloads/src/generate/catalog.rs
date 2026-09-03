@@ -865,6 +865,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "StopContainerPurpose",
+        Shape::ClosedString(&["lifecycle", "free_host_ports"]),
+    ),
+    (
         "DeployOperation",
         Shape::InternallyTagged {
             tag: "type",
@@ -888,7 +892,11 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ),
                 (
                     "stop_container",
-                    &[("machine_id", "MachineId"), ("container_id", "ContainerId")],
+                    &[
+                        ("machine_id", "MachineId"),
+                        ("container_id", "ContainerId"),
+                        ("purpose", "StopContainerPurpose"),
+                    ],
                 ),
                 (
                     "remove_container",

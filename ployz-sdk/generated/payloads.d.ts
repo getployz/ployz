@@ -461,10 +461,12 @@ export type ReplacementOperation = {
   skip_health_monitor: boolean;
 };
 
+export type StopContainerPurpose = "lifecycle" | "free_host_ports";
+
 export type DeployOperation =
   | { type: "wait_healthy"; machine_id: MachineId; dependent: QualifiedService; dependency: QualifiedService }
   | { type: "run_container"; machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }
-  | { type: "stop_container"; machine_id: MachineId; container_id: ContainerId }
+  | { type: "stop_container"; machine_id: MachineId; container_id: ContainerId; purpose: StopContainerPurpose }
   | { type: "remove_container"; machine_id: MachineId; container_id: ContainerId }
   | { type: "replace_container"; machine_id: MachineId; old_container_id: ContainerId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }
   | { type: "stop_hook"; machine_id: MachineId; container_id: ContainerId }
