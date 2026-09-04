@@ -65,6 +65,15 @@ impl MachineService {
     }
 
     #[must_use]
+    pub(super) fn with_cluster_option(
+        mut self,
+        cluster: Option<(ReplicatedStore, AdminClient)>,
+    ) -> Self {
+        self.local = self.local.with_cluster(cluster);
+        self
+    }
+
+    #[must_use]
     pub fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
         self.local = self.local.with_containers(containers);
         self
