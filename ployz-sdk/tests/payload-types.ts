@@ -1,6 +1,7 @@
 import type {
   ConfigMount,
   ConfigSpec,
+  ClusterTeardown,
   ContainerObservation,
   ContainerRuntimeObservation,
   DataLoss,
@@ -11,16 +12,28 @@ import type {
   DeviceReservation,
   HealthcheckSpec,
   MachineId,
+  LocalMachineRemoved,
   ProjectName,
+  Registered,
   RequestedServiceSpec,
   RestartPolicy,
   ResolvedServiceSpec,
   ServiceMode,
   ServiceName,
+  RuntimeWatchFrame,
   Ulimit,
   VolumeDriver,
 } from "../generated/payloads";
-import { RpcError } from "../index";
+import {
+  applyAll,
+  applyOne,
+  Client,
+  connect,
+  listHeld,
+  register,
+  RpcError,
+} from "../index";
+import type { HeldRegister, PreparedDeploy } from "../index";
 
 new RpcError({
   code: "unavailable",
@@ -154,3 +167,44 @@ const futureState: ContainerRuntimeObservation = { state: "hibernating" };
 // Data Loss is a tagged union whose identity nests per kind.
 // @ts-expect-error identity fields do not spread beside the kind
 const flatLoss: DataLoss = { kind: "docker_volume", machine_id: "m" as MachineId, name: "data" };
+
+// The facade accepts generated payloads and keeps destructive actions explicit.
+declare const client: Client;
+const connectOptions = {
+  relayUrl: "https://relay.example",
+  bearer: "bearer",
+  pairing: "pairing",
+  machineId: "machine" as MachineId,
+};
+connect(connectOptions) satisfies Promise<Client>;
+listHeld("https://relay.example", "bearer", "pairing") satisfies Promise<HeldRegister[]>;
+register(
+  "https://relay.example",
+  "bearer",
+  "pairing",
+  "machine" as MachineId,
+  {
+    name: "machine",
+    storage: "none",
+    public_key: [],
+    advertised_endpoints: [],
+    runtime: {
+      daemon_version: "1",
+      docker_version: "1",
+      hostname: "machine",
+      architecture: "arm64",
+      os_pretty_name: "macOS",
+      kernel_version: "1",
+    },
+  } satisfies import("../generated/payloads").RegisterRequest,
+) satisfies Promise<Registered>;
+applyAll("app" as ProjectName, [web]) satisfies DeployIntent;
+applyOne("app" as ProjectName, web) satisfies DeployIntent;
+client.preview(intent) satisfies Promise<PreparedDeploy>;
+client.runtime.watch() satisfies AsyncIterable<RuntimeWatchFrame>;
+client.removeMachine("machine", { confirmed: [] }) satisfies Promise<LocalMachineRemoved>;
+client.destroyCluster({ confirmed: [] }) satisfies Promise<ClusterTeardown>;
+// @ts-expect-error destructive methods require an explicit confirmation object
+client.removeMachine("machine", []);
+// @ts-expect-error MachineId is branded; a plain string cannot cross the facade
+connect({ ...connectOptions, machineId: "machine" });
