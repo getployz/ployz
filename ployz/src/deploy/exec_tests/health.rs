@@ -86,27 +86,40 @@ async fn dependency_gate_rejects_zero_service_containers_and_hooks() {
 #[tokio::test(start_paused = true)]
 async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines() {
     let dependency = QualifiedService::parse("app/api").unwrap();
-    for (runtime, polls, expected) in [
-        (unhealthy(), 6, "runtime"),
-        (starting(), 8, "timed_out"),
-        (running(), 8, "timed_out"),
-        (ContainerRuntimeObservation::Restarting, 6, "runtime"),
+    for (runtime, seconds, expected) in [
+        (unhealthy(), 5, "runtime"),
+        (starting(), 7, "timed_out"),
+        (running(), 7, "timed_out"),
+        (ContainerRuntimeObservation::Restarting, 5, "runtime"),
     ] {
         let id = container('a');
         let mut observed = observation(&machine('1'), &id, runtime);
-        observed.resolved_spec.container.healthcheck = Some(healthcheck());
+        observed.resolved_spec.container.healthcheck = Some(
+            ployz_core::HealthcheckSpec::Configured(ployz_core::ConfiguredHealthcheck {
+                interval_millis: Some(1_000),
+                timeout_millis: Some(1_000),
+                retries: Some(1),
+                ..configured_healthcheck()
+            }),
+        );
         let plan = vec![DeployOperation::WaitHealthy {
             machine_id: machine('1'),
             dependent: QualifiedService::parse("app/web").unwrap(),
             dependency: dependency.clone(),
         }];
-        let client = Scripted::new(
-            (0..polls)
-                .map(|_| listed(&dependency, vec![observed.clone()]))
-                .collect(),
-        );
+        let client = Scripted {
+            observations: Some(vec![observed]),
+            ..Scripted::new(Vec::new())
+        };
 
-        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+        let started = tokio::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(seconds + 1),
+            execute_with(&plan, &client, &CancellationToken::new()),
+        )
+        .await
+        .expect("dependency health must finish by its deadline");
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(seconds));
 
         let DeployOutcome::Failed {
             failed:

@@ -427,11 +427,10 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
     )
     .unwrap();
 
-    assert!(
-        operations(&preview)
-            .iter()
-            .all(|operation| operation.machine_id() == machine_id('2'))
-    );
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { machine_id: target, .. }] if target == &machine_id('2')
+    ));
     assert!(matches!(
         &preview.volumes_to_create[..],
         [item] if item.machine_id == machine_id('2')
@@ -461,11 +460,10 @@ fn automatic_provisioned_volume_uses_known_eligible_and_warns_about_unknown() {
     )
     .unwrap();
 
-    assert!(
-        operations(&preview)
-            .iter()
-            .all(|operation| operation.machine_id() == machine_id('1'))
-    );
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { machine_id: target, .. }] if target == &machine_id('1')
+    ));
     assert_eq!(
         preview.warnings,
         [ployz_core::DeployWarning::StorageObservationUnknown {

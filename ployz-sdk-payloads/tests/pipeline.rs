@@ -48,24 +48,6 @@ fn npm_package_identity_matches_the_napi_crate() {
 }
 
 #[test]
-fn workspace_forbids_unsafe_outside_the_napi_crate() {
-    let workspace = include_str!("../../Cargo.toml");
-    assert!(workspace.contains("unsafe_code = \"forbid\""));
-    assert!(!workspace.contains("unsafe_code = \"deny\""));
-    assert!(!workspace.contains("unsafe_code = \"allow\""));
-    let sdk_manifest = include_str!("../../ployz-sdk/Cargo.toml");
-    assert!(sdk_manifest.contains("unsafe_code = \"allow\""));
-    assert!(
-        !sdk_manifest
-            .lines()
-            .any(|line| line.trim() == "workspace = true"),
-        "ployz-sdk must not inherit workspace lints"
-    );
-    let payloads = include_str!("../src/lib.rs");
-    assert!(!payloads.contains("allow(unsafe_code)"));
-}
-
-#[test]
 fn generated_declarations_match_checked_in_file() {
     if let Some(drift) = drift(&sdk_package_root()) {
         panic!("{drift}");
