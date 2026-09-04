@@ -12,7 +12,7 @@ use ployz_core::{
 };
 use serde::Serialize;
 
-use super::{machine_list, with_client};
+use super::with_client;
 use crate::{
     connect::TARGET_RPC_TIMEOUT,
     handlers::{Error, leaf_matches},
@@ -22,7 +22,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     let output = leaf_matches(root).get_one::<String>("output").cloned();
     with_client(root, |client| {
         Box::pin(async move {
-            let mut machines = machine_list(client).await?;
+            let mut machines = client.machines().await?;
             client.observe_machine_storage(&mut machines).await;
             let warning = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION"));
             if output.as_deref() == Some("json") {
@@ -140,7 +140,7 @@ struct MachineObservationOutput<'a> {
 pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
-            let machines = machine_list(client).await?;
+            let machines = client.machines().await?;
             let mut requests = Vec::new();
             let mut result = PartialResult {
                 successes: Vec::new(),

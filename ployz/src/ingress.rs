@@ -7,12 +7,12 @@ use ployz_core::{
 use thiserror::Error;
 
 mod caddy;
-mod envoy;
-mod zentinel;
-
 pub use caddy::IngressImageError;
-pub use envoy::ENVOY_IMAGE;
-pub use zentinel::ZENTINEL_IMAGE;
+
+/// Qualified Envoy release selected for new Clusters.
+pub const ENVOY_IMAGE: &str = "docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66";
+/// Qualified Zentinel release selected for new Clusters.
+pub const ZENTINEL_IMAGE: &str = "ghcr.io/zentinelproxy/zentinel@sha256:ff012547034d13a7d8e6570679c897e4bba6bc702ec5bdd7bf70a7a04b4d6604";
 
 /// Failure while selecting one concrete Ingress Proxy deployment.
 #[derive(Debug, Error)]
@@ -53,13 +53,25 @@ pub async fn service_spec_for_backend(
             if caddy_config.is_some() {
                 return Err(DeploymentError::CaddyFragmentOnZentinel);
             }
-            zentinel::service_spec(image.unwrap_or_else(|| ZENTINEL_IMAGE.to_owned()), machines)
+            IngressProxyBackend::Zentinel
+                .requested_service_spec(
+                    image.unwrap_or_else(|| ZENTINEL_IMAGE.to_owned()),
+                    machines,
+                    None,
+                )
+                .expect("Zentinel profile accepts no fragment")
         }
         IngressProxyBackend::Envoy => {
             if caddy_config.is_some() {
                 return Err(DeploymentError::CaddyFragmentOnEnvoy);
             }
-            envoy::service_spec(image.unwrap_or_else(|| ENVOY_IMAGE.to_owned()), machines)
+            IngressProxyBackend::Envoy
+                .requested_service_spec(
+                    image.unwrap_or_else(|| ENVOY_IMAGE.to_owned()),
+                    machines,
+                    None,
+                )
+                .expect("Envoy profile accepts no fragment")
         }
     })
 }

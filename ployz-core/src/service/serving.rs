@@ -1,6 +1,6 @@
 //! Serving Containers and Machine-local occupancy of one Serving Shape.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::{
     ContainerAddress, ContainerObservation, ContainerRuntimeObservation, QualifiedService,
@@ -60,15 +60,12 @@ pub fn serving_containers<'serving>(
         }) else {
             continue;
         };
-        // One shape today. A later blue-green insert adds a second key without
-        // changing callers.
-        let mut selected = BTreeSet::new();
-        selected.insert(newest.as_observation().resolved_spec.serving_shape());
+        let selected = newest.as_observation().resolved_spec.serving_shape();
         for container in members {
             let Some(address) = container.traffic_address() else {
                 continue;
             };
-            if selected.contains(&container.as_observation().resolved_spec.serving_shape()) {
+            if container.as_observation().resolved_spec.serving_shape() == selected {
                 serving.push(ServingContainer { container, address });
             }
         }

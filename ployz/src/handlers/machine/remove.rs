@@ -5,7 +5,7 @@ use ployz_core::{
 };
 
 use super::super::{connect_client, runtime, string_values};
-use super::{ConnectionOptions, helpers, machine_list, target};
+use super::{ConnectionOptions, helpers, target};
 use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -17,7 +17,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let named = string_values(matches, "data-loss");
     runtime()?.block_on(async {
         let mut client = connect_client(matches, options.context()).await?;
-        let machines = machine_list(&mut client).await?;
+        let machines = client.machines().await?;
         let selected = select_machine(&machines, &selector)?;
         let selected_target = MachineTarget::from(&selected.id);
         let current = client

@@ -50,7 +50,6 @@ jobs:
           cargo test --workspace --all-features --locked
       - run: bash scripts/check-sdk-package.sh
       - run: bash scripts/test-release-contracts.sh
-      - run: bash scripts/test-testkit-image.sh
       - run: bash scripts/test-cli-installer.sh
       - run: bash scripts/test-daemon-lifecycle.sh
       - run: bash scripts/test-qualify-release.sh

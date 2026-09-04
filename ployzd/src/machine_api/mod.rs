@@ -40,17 +40,8 @@ pub struct MachineApi {
 }
 
 /// Configure this Machine's Machine API before it becomes servable.
-///
-/// Options live here so construction does not name the private local RPC type.
 pub struct MachineApiBuilder {
-    store: Arc<Mutex<LocalMachineStore>>,
-    restart: watch::Sender<bool>,
-    cluster: Option<(ReplicatedStore, AdminClient)>,
-    containers: Option<ContainerRuntime>,
-    ingress_data_dir: Option<PathBuf>,
-    ingest: Option<Arc<ImageIngest>>,
-    cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
-    global_reconcile: Option<GlobalReconcileObservations>,
+    service: local::MachineService,
 }
 
 impl MachineApi {
@@ -61,14 +52,7 @@ impl MachineApi {
         restart: watch::Sender<bool>,
     ) -> MachineApiBuilder {
         MachineApiBuilder {
-            store,
-            restart,
-            cluster: None,
-            containers: None,
-            ingress_data_dir: None,
-            ingest: None,
-            cloud_pairing: None,
-            global_reconcile: None,
+            service: local::MachineService::with_cluster(store, restart, None),
         }
     }
 
@@ -97,25 +81,25 @@ impl MachineApi {
 impl MachineApiBuilder {
     #[must_use]
     pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
-        self.cluster = cluster;
+        self.service = self.service.with_cluster_option(cluster);
         self
     }
 
     #[must_use]
     pub(crate) fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
-        self.containers = containers;
+        self.service = self.service.with_optional_containers(containers);
         self
     }
 
     #[must_use]
     pub(crate) fn with_ingress_data_dir(mut self, path: PathBuf) -> Self {
-        self.ingress_data_dir = Some(path);
+        self.service = self.service.with_ingress_data_dir(path);
         self
     }
 
     #[must_use]
     pub(crate) fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
-        self.ingest = Some(ingest);
+        self.service = self.service.with_image_ingest(ingest);
         self
     }
 
@@ -124,7 +108,7 @@ impl MachineApiBuilder {
         mut self,
         pairing: watch::Sender<Option<CloudPairing>>,
     ) -> Self {
-        self.cloud_pairing = Some(pairing);
+        self.service = self.service.with_cloud_pairing(pairing);
         self
     }
 
@@ -133,7 +117,9 @@ impl MachineApiBuilder {
         mut self,
         observations: GlobalReconcileObservations,
     ) -> Self {
-        self.global_reconcile = Some(observations);
+        self.service = self
+            .service
+            .with_global_reconcile_observations(observations);
         self
     }
 
@@ -144,22 +130,7 @@ impl MachineApiBuilder {
     /// Returns [`LocalMachineError::LockPoisoned`] when the local record lock is
     /// poisoned.
     pub fn build(self) -> Result<MachineApi, LocalMachineError> {
-        let mut service =
-            local::MachineService::with_cluster(self.store, self.restart, self.cluster);
-        service = service.with_optional_containers(self.containers);
-        if let Some(path) = self.ingress_data_dir {
-            service = service.with_ingress_data_dir(path);
-        }
-        if let Some(ingest) = self.ingest {
-            service = service.with_image_ingest(ingest);
-        }
-        if let Some(pairing) = self.cloud_pairing {
-            service = service.with_cloud_pairing(pairing);
-        }
-        if let Some(observations) = self.global_reconcile {
-            service = service.with_global_reconcile_observations(observations);
-        }
-        wrap(service)
+        wrap(self.service)
     }
 }
 

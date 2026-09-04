@@ -5,7 +5,7 @@ use ployz_core::{
 };
 
 use super::super::{connect_client, runtime};
-use super::{ConnectionOptions, helpers, machine_list, target};
+use super::{ConnectionOptions, helpers, target};
 use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
@@ -33,7 +33,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
     let assigned = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
-        let visible = machine_list(&mut entry).await?;
+        let visible = entry.machines().await?;
         let mut target_client = helpers::connect_direct(&connection).await?;
         let mut token = target_client
             .call::<op::MachineToken>(token_request.clone(), None)

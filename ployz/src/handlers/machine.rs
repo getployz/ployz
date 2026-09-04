@@ -5,14 +5,11 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    AdvertisedEndpoint, MachineName, MachineObservation, MachineTarget, MachineUpdate,
-    PublicIpUpdate, UpdateMachineRequest, op,
+    AdvertisedEndpoint, MachineName, MachineTarget, MachineUpdate, PublicIpUpdate,
+    UpdateMachineRequest, op,
 };
 
-use crate::{
-    connect::{Client, TARGET_RPC_TIMEOUT},
-    context::Config,
-};
+use crate::{connect::TARGET_RPC_TIMEOUT, context::Config};
 
 use super::{Error, leaf_matches, string_values, with_client};
 
@@ -73,10 +70,6 @@ impl ConnectionOptions {
     pub(super) fn load_or_empty_config(&self) -> Result<Config, Error> {
         Ok(Config::load_or_empty(&self.config_path)?)
     }
-}
-
-pub(super) async fn machine_list(client: &mut Client) -> Result<Vec<MachineObservation>, Error> {
-    Ok(client.machines().await?)
 }
 
 pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str, Error> {
