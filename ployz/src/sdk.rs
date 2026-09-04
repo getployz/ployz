@@ -11,8 +11,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{
-    Client, ConnectError, DialCredential, HeldRegister, PairingCredential, connect_relay,
-    list_held as list_held_relay, revoke_cloud_pairing,
+    Client, ConnectError, DialCredential, HeldRegister, PairingCredential, TransportError,
+    connect_relay, list_held as list_held_relay, revoke_cloud_pairing,
 };
 use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
@@ -549,11 +549,12 @@ impl RunningDeploy {
 }
 
 impl Watch {
-    /// Next complete frame, or `None` if this stream was cancelled or ended.
+    /// Next complete frame, or `None` if this stream was cancelled.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the daemon, store, or RPC fails.
+    /// Returns a generated [`RpcError`] when the daemon, store, or RPC fails,
+    /// including when the stream ends without cancellation.
     pub async fn next(&self) -> Result<Option<RuntimeWatchFrame>, RpcError> {
         if self.cancel.is_cancelled() {
             return Ok(None);
@@ -569,9 +570,21 @@ impl Watch {
             }
         };
         match message {
-            None | Some(Ok(None)) => {
+            None => {
                 *guard = None;
                 Ok(None)
+            }
+            Some(Ok(None)) => {
+                *guard = None;
+                if self.cancel.is_cancelled() {
+                    Ok(None)
+                } else {
+                    Err(RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "Watch stream ended; reconnect to resume".into(),
+                        details: Value::Null,
+                    })
+                }
             }
             Some(Ok(Some(payload))) => match decode_runtime_watch_frame(&payload) {
                 Ok(mut frame) => {
@@ -594,15 +607,15 @@ impl Watch {
                     })
                 }
             },
-            Some(Err(status))
-                if self.cancel.is_cancelled() || status.code() == tonic::Code::Cancelled =>
-            {
+            Some(Err(_)) if self.cancel.is_cancelled() => {
                 *guard = None;
                 Ok(None)
             }
             Some(Err(status)) => {
                 *guard = None;
-                Err(RpcError::from(ConnectError::from(status)))
+                Err(RpcError::from(ConnectError::Rpc(
+                    TransportError::from_stream_status(status),
+                )))
             }
         }
     }

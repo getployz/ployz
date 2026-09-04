@@ -230,6 +230,10 @@ impl DiscoveryService {
     pub(super) fn live_watch_senders(&self) -> usize {
         self.watch.live_count()
     }
+
+    pub(super) fn end_watch(&self) {
+        self.watch.live.lock().unwrap().clear();
+    }
 }
 
 pub(super) struct CountingConnector {

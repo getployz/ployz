@@ -85,6 +85,28 @@ if (typeof sdk.revokePairing !== "function") {
 if (typeof sdk.Client !== "function") {
   throw new Error("Client export is missing");
 }
+if (typeof sdk.RpcError !== "function") {
+  throw new Error("RpcError export is missing");
+}
+
+const facadePath = require.resolve("@ployz/sdk");
+const Module = require("node:module");
+const originalLoad = Module._load;
+const unrelated = new Error(JSON.stringify({ code: "internal", message: "not an RPC error" }));
+let isolatedSdk;
+try {
+  Module._load = function (request, parent) {
+    if (request === "./ployz-sdk.node" && parent?.filename === facadePath) {
+      return { connect: () => Promise.reject(unrelated) };
+    }
+    return originalLoad.apply(this, arguments);
+  };
+  delete require.cache[facadePath];
+  isolatedSdk = require(facadePath);
+} finally {
+  Module._load = originalLoad;
+  delete require.cache[facadePath];
+}
 
 const forbidden = [
   "call",
@@ -194,19 +216,27 @@ async function expectRpc(fn, code) {
     await fn();
     throw new Error(`expected ${code}`);
   } catch (error) {
-    let rpc;
-    try {
-      rpc = JSON.parse(error.message);
-    } catch {
-      throw new Error(`expected generated RpcError JSON, got ${error && error.message}`);
+    if (!(error instanceof sdk.RpcError)) {
+      throw new Error(`expected RpcError, got ${error && error.constructor.name}`);
     }
-    if (rpc.code !== code) {
-      throw new Error(`expected ${code}, got ${rpc.code}`);
+    if (error.code !== code) {
+      throw new Error(`expected ${code}, got ${error.code}`);
+    }
+    if (!error.message || error.message.startsWith("{")) {
+      throw new Error(`RpcError must expose its message directly, got ${error.message}`);
     }
   }
 }
 
 (async () => {
+  try {
+    await isolatedSdk.connect({});
+    throw new Error("expected unrelated native error");
+  } catch (error) {
+    if (error !== unrelated || error instanceof isolatedSdk.RpcError) {
+      throw new Error("JSON-shaped native errors must pass through unchanged");
+    }
+  }
   await expectRpc(
     () =>
       sdk.connect({

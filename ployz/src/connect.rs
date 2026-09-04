@@ -629,6 +629,18 @@ pub struct TransportError {
 }
 
 impl TransportError {
+    pub(crate) fn from_stream_status(status: tonic::Status) -> Self {
+        // Remote statuses cross the wire without a source. Tonic attaches one
+        // only when the client stream itself fails.
+        let interrupted =
+            status.code() == tonic::Code::Cancelled || std::error::Error::source(&status).is_some();
+        let mut error = Self::from(status);
+        if interrupted {
+            error.code = tonic::Code::Unavailable;
+        }
+        error
+    }
+
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message

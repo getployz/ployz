@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const expectRpcError = require("./expect-rpc-error");
 
 const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
@@ -31,20 +32,12 @@ fs.copyFileSync(path.join(pkg, "index.js"), path.join(dir, "index.js"));
 fs.copyFileSync(addon, path.join(dir, "ployz-sdk.node"));
 const sdk = require(dir);
 
-function parseRpc(error) {
-  try {
-    return JSON.parse(error.message);
-  } catch {
-    throw new Error(`error is not generated RpcError JSON: ${error && error.message}`);
-  }
-}
-
 async function expectRpc(fn, code) {
   try {
     await fn();
     throw new Error(`expected ${code}`);
   } catch (error) {
-    const rpc = parseRpc(error);
+    const rpc = expectRpcError(sdk, error);
     if (rpc.code !== code) {
       throw new Error(`expected ${code}, got ${rpc.code}: ${rpc.message}`);
     }

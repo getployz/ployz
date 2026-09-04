@@ -20,6 +20,12 @@ import type {
   Ulimit,
   VolumeDriver,
 } from "../generated/payloads";
+import { RpcError } from "../index";
+
+new RpcError({
+  code: "unavailable",
+  message: "Watch interrupted",
+}) satisfies Error;
 
 ({ name: "nfs", options: { share: "app" } }) satisfies VolumeDriver;
 ([{ name: "settings", content: [112, 111, 114, 116] }]) satisfies NonNullable<

@@ -44,6 +44,10 @@ export type ConfirmOptions = WatchOptions;
 
 export type RunOptions = WatchOptions;
 
+export declare const RpcError: {
+  new (error: RpcError, options?: ErrorOptions): Error & RpcError;
+};
+
 export type PreparedDeploy = DeployPreview & {
   readonly noop: boolean;
   confirm(options?: ConfirmOptions): RunningDeploy;
