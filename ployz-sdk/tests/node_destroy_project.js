@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const expectRpcError = require("./expect-rpc-error");
 
 const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
@@ -20,14 +21,6 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-destroy-project-"))
 fs.copyFileSync(path.join(pkg, "index.js"), path.join(dir, "index.js"));
 fs.copyFileSync(addon, path.join(dir, "ployz-sdk.node"));
 const sdk = require(dir);
-
-function parseRpc(error) {
-  try {
-    return JSON.parse(error.message);
-  } catch {
-    throw new Error(`error is not generated RpcError JSON: ${error && error.message}`);
-  }
-}
 
 function dockerVolume(loss) {
   if (!loss || typeof loss !== "object" || loss.kind !== "docker_volume" || !loss.id) {
@@ -79,7 +72,7 @@ function dockerVolume(loss) {
     if (error.message === "unconfirmed destroy must fail") {
       throw error;
     }
-    const rpc = parseRpc(error);
+    const rpc = expectRpcError(sdk, error);
     if (rpc.code !== "invalid_argument") {
       throw new Error(`expected invalid_argument, got ${JSON.stringify(rpc)}`);
     }
@@ -99,7 +92,7 @@ function dockerVolume(loss) {
     if (error.message === "ObservedDataLoss must not confirm a read") {
       throw error;
     }
-    const rpc = parseRpc(error);
+    const rpc = expectRpcError(sdk, error);
     if (rpc.code !== "invalid_argument") {
       throw new Error(`expected invalid_argument for a read echo, got ${JSON.stringify(rpc)}`);
     }
@@ -109,7 +102,7 @@ function dockerVolume(loss) {
     () => {
       throw new Error("reserved Project Data Loss must fail");
     },
-    (error) => parseRpc(error),
+    (error) => expectRpcError(sdk, error),
   );
   if (reserved.code !== "invalid_argument" || !reserved.message.includes("ployz-system")) {
     throw new Error(`reserved Project must be refused, got ${JSON.stringify(reserved)}`);

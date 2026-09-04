@@ -128,7 +128,7 @@ impl RelaySession {
 }
 
 pub(super) struct FakeMachine {
-    _accept: tokio::task::JoinHandle<()>,
+    accept: tokio::task::JoinHandle<()>,
 }
 
 impl FakeMachine {
@@ -137,6 +137,7 @@ impl FakeMachine {
         let mut register = client.register(PAIRING, &machine_id).await.unwrap();
         let url = url.to_owned();
         let accept = tokio::spawn(async move {
+            let mut tunnels = tokio::task::JoinSet::new();
             while let Ok(Some(open)) = register.recv::<Open>().await {
                 if let Some(nonce) = open.ping_nonce() {
                     let _ = register.send(&RegisterRequest::pong(nonce)).await;
@@ -144,12 +145,16 @@ impl FakeMachine {
                 }
                 let url = url.clone();
                 let service = service.clone();
-                tokio::spawn(async move {
+                tunnels.spawn(async move {
                     serve_attach(&url, open, service).await;
                 });
             }
         });
-        Self { _accept: accept }
+        Self { accept }
+    }
+
+    pub(super) fn disconnect(&self) {
+        self.accept.abort();
     }
 }
 

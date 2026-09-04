@@ -21,6 +21,37 @@ if (!native) {
   );
 }
 
+class RpcError extends Error {
+  constructor({ code, message, details }, options) {
+    super(message, options);
+    this.name = "RpcError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const RPC_ERROR_PREFIX = "PLOYZ_RPC_ERROR:";
+
+function throwRpcError(error) {
+  if (typeof error?.message !== "string" || !error.message.startsWith(RPC_ERROR_PREFIX)) {
+    throw error;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(error.message.slice(RPC_ERROR_PREFIX.length));
+  } catch {
+    throw error;
+  }
+  if (typeof payload?.code === "string" && typeof payload.message === "string") {
+    throw new RpcError(payload, { cause: error });
+  }
+  throw error;
+}
+
+function withRpcError(promise) {
+  return promise.catch(throwRpcError);
+}
+
 class Client {
   constructor(inner) {
     this._inner = inner;
@@ -30,16 +61,16 @@ class Client {
   }
 
   about() {
-    return this._inner.about();
+    return withRpcError(this._inner.about());
   }
 
   async preview(intent) {
-    return wrapPreview(await this._inner.preview(intent));
+    return wrapPreview(await withRpcError(this._inner.preview(intent)));
   }
 
   async previewProjectRemoval(projectName, destroyVolumes) {
     return wrapPreview(
-      await this._inner.previewProjectRemoval(projectName, destroyVolumes),
+      await withRpcError(this._inner.previewProjectRemoval(projectName, destroyVolumes)),
     );
   }
 
@@ -50,31 +81,31 @@ class Client {
   }
 
   removeVolumes(request) {
-    return this._inner.removeVolumes(request);
+    return withRpcError(this._inner.removeVolumes(request));
   }
 
   dataLossIfMachineRemoved(machine) {
-    return this._inner.dataLossIfMachineRemoved(machine);
+    return withRpcError(this._inner.dataLossIfMachineRemoved(machine));
   }
 
   removeMachine(machine, confirmDataLoss) {
-    return this._inner.removeMachine(machine, confirmDataLoss);
+    return withRpcError(this._inner.removeMachine(machine, confirmDataLoss));
   }
 
   dataLossIfProjectDestroyed(projectName, destroyVolumes = false) {
-    return this._inner.dataLossIfProjectDestroyed(projectName, destroyVolumes);
+    return withRpcError(this._inner.dataLossIfProjectDestroyed(projectName, destroyVolumes));
   }
 
   destroyProject(projectName, confirmDataLoss, destroyVolumes = false) {
-    return this._inner.destroyProject(projectName, confirmDataLoss, destroyVolumes);
+    return withRpcError(this._inner.destroyProject(projectName, confirmDataLoss, destroyVolumes));
   }
 
   dataLossIfClusterDestroyed() {
-    return this._inner.dataLossIfClusterDestroyed();
+    return withRpcError(this._inner.dataLossIfClusterDestroyed());
   }
 
   destroyCluster(confirmDataLoss) {
-    return this._inner.destroyCluster(confirmDataLoss);
+    return withRpcError(this._inner.destroyCluster(confirmDataLoss));
   }
 
   close() {
@@ -88,7 +119,11 @@ function wrapPreview(handle) {
     ...payload,
     noop: payload.operations.length === 0,
     confirm(options = {}) {
-      return wrapRunning(handle.confirm(), options && options.signal);
+      try {
+        return wrapRunning(handle.confirm(), options && options.signal);
+      } catch (error) {
+        throwRpcError(error);
+      }
     },
   };
 }
@@ -139,13 +174,13 @@ async function* iterateWatch(start, signal) {
     signal.addEventListener("abort", stop, { once: true });
   }
   try {
-    stream = await start();
+    stream = await withRpcError(start());
     if (signal?.aborted) {
       stream.cancel();
       return;
     }
     for (;;) {
-      const value = await stream.next();
+      const value = await withRpcError(stream.next());
       if (value == null || signal?.aborted) {
         return;
       }
@@ -189,16 +224,17 @@ function applyOne(project_name, spec, options = defaultPlanOptions()) {
 }
 
 async function connect(options) {
-  return new Client(await native.connect(options));
+  return new Client(await withRpcError(native.connect(options)));
 }
 
 module.exports = {
   connect,
-  listHeld: native.listHeld,
-  register: native.register,
-  revokePairing: native.revokePairing,
+  listHeld: (...args) => withRpcError(native.listHeld(...args)),
+  register: (...args) => withRpcError(native.register(...args)),
+  revokePairing: (...args) => withRpcError(native.revokePairing(...args)),
   packageName: native.packageName,
   Client,
+  RpcError,
   applyAll,
   applyOne,
 };

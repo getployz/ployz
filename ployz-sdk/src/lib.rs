@@ -368,12 +368,12 @@ impl RunningDeployHandle {
 
 #[napi]
 impl WatchStream {
-    /// Next complete `RuntimeWatchFrame`, or `null` when this stream ended.
+    /// Next complete `RuntimeWatchFrame`, or `null` when this stream was cancelled.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] JSON payload when the daemon, store, or
-    /// RPC fails.
+    /// RPC fails, including when the stream ends without cancellation.
     #[napi]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         match self.inner.next().await {
@@ -497,9 +497,11 @@ fn invalid_json(error: serde_json::Error) -> Error {
     })
 }
 
+const RPC_ERROR_PREFIX: &str = "PLOYZ_RPC_ERROR:";
+
 fn rpc_to_napi(error: RpcError) -> Error {
     match serde_json::to_string(&error) {
-        Ok(json) => Error::from_reason(json),
+        Ok(json) => Error::from_reason(format!("{RPC_ERROR_PREFIX}{json}")),
         Err(_) => Error::from_reason(error.to_string()),
     }
 }

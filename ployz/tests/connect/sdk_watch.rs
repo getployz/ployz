@@ -318,6 +318,54 @@ async fn store_or_rpc_failure_ends_the_iterable_with_a_typed_error() {
 }
 
 #[tokio::test]
+async fn unexpected_stream_end_asks_the_caller_to_reconnect() {
+    let (client, service, _session, _machine) = watching_session().await;
+    service.push_watch_frame(frozen_frame());
+    let watch = client.watch().await.unwrap();
+    let _first = next_frame(&watch).await;
+
+    service.end_watch();
+
+    let error = timeout(Duration::from_secs(1), watch.next())
+        .await
+        .expect("ended stream must not hang")
+        .expect_err("ended stream must ask the caller to reconnect");
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
+#[tokio::test]
+async fn lost_relay_tunnel_asks_the_caller_to_reconnect() {
+    let (client, service, _session, machine) = watching_session().await;
+    service.push_watch_frame(frozen_frame());
+    let watch = client.watch().await.unwrap();
+    let _first = next_frame(&watch).await;
+
+    machine.disconnect();
+
+    let error = timeout(Duration::from_secs(2), watch.next())
+        .await
+        .expect("lost tunnel must not hang")
+        .expect_err("lost tunnel must ask the caller to reconnect");
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
+#[tokio::test]
+async fn remote_cancellation_asks_the_caller_to_reconnect() {
+    let (client, service, _session, _machine) = watching_session().await;
+    service.push_watch_frame(frozen_frame());
+    let watch = client.watch().await.unwrap();
+    let _first = next_frame(&watch).await;
+
+    service.fail_watch(Status::cancelled("daemon cancelled Watch"));
+
+    let error = timeout(Duration::from_secs(1), watch.next())
+        .await
+        .expect("remote cancellation must not hang")
+        .expect_err("remote cancellation must ask the caller to reconnect");
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
+#[tokio::test]
 async fn reconnect_starts_with_a_fresh_complete_frame_and_no_cursor() {
     let (client, service, _session, _machine) = watching_session().await;
     let first = frozen_frame();
@@ -395,7 +443,7 @@ async fn node_watch_decodes_frames_above_tonics_default() {
         service
             .watch_opens
             .load(std::sync::atomic::Ordering::SeqCst),
-        2
+        3
     );
     assert_no_list_rpc(&service);
 }

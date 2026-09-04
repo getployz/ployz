@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const expectRpcError = require("./expect-rpc-error");
 const { AbortController } = globalThis;
 
 const addon = process.env.PLOYZ_SDK_ADDON;
@@ -20,14 +21,6 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-watch-"));
 fs.copyFileSync(path.join(pkg, "index.js"), path.join(dir, "index.js"));
 fs.copyFileSync(addon, path.join(dir, "ployz-sdk.node"));
 const sdk = require(dir);
-
-function parseRpc(error) {
-  try {
-    return JSON.parse(error.message);
-  } catch {
-    throw new Error(`error is not generated RpcError JSON: ${error && error.message}`);
-  }
-}
 
 function assertFrame(frame, label) {
   if (!frame || typeof frame !== "object") {
@@ -90,12 +83,19 @@ async function takeOne(client) {
   }
   const second = await takeOne(client);
   assertFrame(second, "reconnect Watch");
+
+  const closing = client.runtime.watch()[Symbol.asyncIterator]();
+  assertFrame((await closing.next()).value, "closing Watch");
+  const pending = closing.next();
   await client.close();
+  if (!(await pending).done) {
+    throw new Error("Session close must end an active Watch");
+  }
   try {
     await takeOne(client);
     throw new Error("Watch after close must fail");
   } catch (error) {
-    const rpc = parseRpc(error);
+    const rpc = expectRpcError(sdk, error);
     if (rpc.code !== "unavailable") {
       throw new Error(`expected unavailable after close, got ${rpc.code}: ${rpc.message}`);
     }
