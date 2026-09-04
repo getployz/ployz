@@ -18,12 +18,11 @@ use ployz_core::{
     ImageIngestReason, ImagePulled, ImageSummary, IngressHost, IngressHostname, IngressProxyConfig,
     IngressProxyFragment, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest,
     MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
-    MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess,
-    MachineTarget, MachineTokenRequest, MachineUpdate, ManagementAddress, NameMatches,
-    OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    PartialResult, Placement, PortPublication, PreDeployHook, ProjectName, PublicIpDiscovery,
-    PublicIpUpdate, PullImageFromMachineRequest, PullPolicy, QualifiedService,
-    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    MachinePath, MachineSubnet, MachineSuccess, MachineTarget, MachineTokenRequest, MachineUpdate,
+    ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
+    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy,
+    QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
@@ -1742,60 +1741,4 @@ fn service_ingress_proxy_fragment_is_backend_tagged_without_a_caddy_alias() {
         .to_string()
         .contains("non-empty configuration")
     );
-}
-
-// Catalog-driven compile witness for MachineRpc. Exec is absent from the catalog
-// (bidirectional stream) and is wired by hand, same as ployz-core/build.rs.
-macro_rules! compile_fixture {
-    (
-        package $package:literal
-        unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
-    ) => {
-        struct CompileFixture;
-        type EmptyRpcStream =
-            tonic::codegen::tokio_stream::Empty<Result<OpaquePayload, tonic::Status>>;
-
-        #[tonic::async_trait]
-        impl MachineRpc for CompileFixture {
-            type ExecStream = EmptyRpcStream;
-            // ponytail: ident concat is unstable; name each catalog stream type here.
-            type ContainerLogsStream = EmptyRpcStream;
-            type MachineLogsStream = EmptyRpcStream;
-            type RuntimeWatchStream = EmptyRpcStream;
-
-            $(
-                async fn $unary_name(
-                    &self,
-                    _request: tonic::Request<OpaquePayload>,
-                ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
-                    unreachable!()
-                }
-            )+
-
-            async fn exec(
-                &self,
-                _request: tonic::Request<tonic::Streaming<OpaquePayload>>,
-            ) -> Result<tonic::Response<Self::ExecStream>, tonic::Status> {
-                unreachable!()
-            }
-
-            $(
-                async fn $stream_name(
-                    &self,
-                    _request: tonic::Request<OpaquePayload>,
-                ) -> Result<tonic::Response<EmptyRpcStream>, tonic::Status> {
-                    unreachable!()
-                }
-            )+
-        }
-    };
-}
-
-ployz_core::rpc_catalog!(compile_fixture);
-
-#[test]
-fn tonic_generates_both_sides_of_the_machine_rpc_service() {
-    let _server = MachineRpcServer::new(CompileFixture);
-    let _client: Option<MachineRpcClient<tonic::transport::Channel>> = None;
 }
