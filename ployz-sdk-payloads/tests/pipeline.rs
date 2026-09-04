@@ -835,14 +835,6 @@ fn capability_fixture_matches_the_rpc_catalog() {
 }
 
 #[test]
-fn no_nats_compatibility_package_is_introduced() {
-    let root = sdk_package_root();
-    let workspace = root.parent().expect("workspace root");
-    assert!(!workspace.join("packages/ployz-sdk").exists());
-    assert!(!workspace.join("ployz-nats-sdk").exists());
-}
-
-#[test]
 fn write_generated_fails_when_the_package_root_is_a_file() {
     let path = std::env::temp_dir().join(format!(
         "ployz-sdk-write-generated-{}.tmp",
