@@ -10,6 +10,6 @@ acme-certs	-	-	-	ployz/tests/certificates_cluster.rs::custom_https_hostname_obta
 exec-logs	-	-	-	ployz/tests/operator_cluster.rs::exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster	gap
 installer	scripts/test-cli-installer.sh	-	-	-	-
 daemon-install	scripts/test-daemon-lifecycle.sh	-	-	-	-
-sdk-payloads	scripts/check-sdk-package.sh	ployz-sdk-payloads/tests/pipeline.rs::generated_typescript_encodes_evolution_rules	-	-	-
+sdk-payloads	scripts/check-sdk-package.sh	ployz-sdk-payloads/tests/pipeline.rs::generated_declarations_match_checked_in_file	-	-	-
 sdk-rpc-errors	scripts/check-sdk-package.sh	-	-	-	-
 sdk-runtime-watch	-	ployz/tests/connect/sdk_watch.rs::lost_relay_tunnel_asks_the_caller_to_reconnect	-	-	-
