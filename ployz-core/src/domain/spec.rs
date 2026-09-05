@@ -496,7 +496,7 @@ pub struct ResolvedServiceSpec {
     pub container: ServiceContainerSpec,
     pub placement: Placement,
     pub ports: Vec<PortPublication>,
-    pub volume_graph: ServiceVolumeGraph,
+    pub volume_graph: crate::ResolvedServiceVolumeGraph,
     pub config_graph: ServiceConfigGraph,
     pub pre_deploy: Option<PreDeployHook>,
     /// Backend-tagged custom configuration for this Service.
@@ -546,7 +546,7 @@ struct ResolvedServiceSpecWire {
     #[serde(default)]
     ports: Vec<PortPublication>,
     #[serde(default)]
-    volumes: Vec<ServiceVolume>,
+    volumes: Vec<ResolvedServiceVolumeWire>,
     #[serde(default)]
     mounts: Vec<ServiceMount>,
     #[serde(default)]
@@ -612,7 +612,17 @@ impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
             container: wire.container.spec,
             placement: wire.placement,
             ports: wire.ports,
-            volume_graph: ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
+            volume_graph: ServiceVolumeGraph::parse(
+                wire.volumes
+                    .into_iter()
+                    .map(|volume| ServiceVolume {
+                        reference: volume.reference,
+                        source: volume.source.to_requested(),
+                    })
+                    .collect(),
+                wire.mounts,
+            )?
+            .try_into()?,
             config_graph: ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
             pre_deploy: wire.pre_deploy,
             ingress_proxy_fragment: wire.ingress_proxy_fragment,
@@ -635,7 +645,16 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
             },
             placement: spec.placement,
             ports: spec.ports,
-            volumes,
+            volumes: volumes
+                .into_iter()
+                .map(|volume| ResolvedServiceVolumeWire {
+                    reference: volume.reference,
+                    source: volume
+                        .source
+                        .try_into()
+                        .expect("resolved graph establishes scope"),
+                })
+                .collect(),
             mounts,
             configs,
             pre_deploy: spec.pre_deploy,
@@ -671,25 +690,28 @@ impl RequestedServiceSpec {
     }
 
     /// Copy this spec onto a Service Container after placement.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Rejects managed sources that have not been scoped to a Project.
     pub fn to_resolved(
         &self,
         service_id: ServiceId,
         update: ResolvedUpdateConfig,
-    ) -> ResolvedServiceSpec {
-        ResolvedServiceSpec {
+    ) -> Result<ResolvedServiceSpec, crate::ServiceVolumeGraphError> {
+        Ok(ResolvedServiceSpec {
             service_id,
             name: self.name.clone(),
             mode: self.mode.clone(),
             container: self.container.clone(),
             placement: self.placement.clone(),
             ports: self.ports.clone(),
-            volume_graph: self.volume_graph.clone(),
+            volume_graph: self.volume_graph.clone().try_into()?,
             config_graph: self.config_graph.clone(),
             pre_deploy: self.pre_deploy.clone(),
             ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
             update,
-        }
+        })
     }
 }
 
@@ -727,7 +749,7 @@ impl ResolvedServiceSpec {
             container: self.container.clone(),
             placement: self.placement.clone(),
             ports: self.ports.clone(),
-            volume_graph: self.volume_graph.clone(),
+            volume_graph: self.volume_graph.to_requested(),
             config_graph: self.config_graph.clone(),
             pre_deploy: self.pre_deploy.clone(),
             ingress_proxy_fragment: self.ingress_proxy_fragment.clone(),
@@ -910,4 +932,10 @@ mod tests {
         assert_eq!(left, HealthcheckSpec::Disabled);
         assert_ne!(left, configured(&["CMD", "true"]));
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct ResolvedServiceVolumeWire {
+    reference: crate::ServiceVolumeReference,
+    source: crate::ResolvedVolumeSource,
 }

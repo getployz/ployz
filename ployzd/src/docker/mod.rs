@@ -1045,7 +1045,7 @@ mod tests {
             "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
             "volumes": [
                 {"reference":"host","source":{"kind":"bind","machine_path":"/srv/api"}},
-                {"reference":"alias","source":{"kind":"ordinary","name":"database","driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
+                {"reference":"alias","source":{"kind":"ordinary","name":"app_database","scope":{"project":"app","logical_name":"database"},"driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
                 {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
             ],
             "mounts": [
@@ -1086,18 +1086,19 @@ mod tests {
             let mut recursive_spec = spec.clone();
             let mut volumes = recursive_spec.volume_graph.volumes().to_vec();
             let mounts = recursive_spec.volume_graph.mounts().to_vec();
-            let ployz_core::VolumeSource::Bind {
+            let mut raw = volumes.first().unwrap().source.kind().clone();
+            let ployz_core::RawVolumeSource::Bind {
                 recursive: setting, ..
-            } = &mut volumes
-                .first_mut()
-                .expect("fixture has a bind volume")
-                .source
+            } = &mut raw
             else {
                 panic!("expected bind volume")
             };
             *setting = Some(recursive);
-            recursive_spec.volume_graph =
-                ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+            volumes.first_mut().unwrap().source = raw.admit().unwrap();
+            recursive_spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+                .unwrap()
+                .try_into()
+                .unwrap();
             let translated = docker_mounts(&recursive_spec.volume_graph)
                 .unwrap()
                 .remove(0)
@@ -1142,19 +1143,20 @@ mod tests {
             let mut propagation_spec = spec.clone();
             let mut volumes = propagation_spec.volume_graph.volumes().to_vec();
             let mounts = propagation_spec.volume_graph.mounts().to_vec();
-            let ployz_core::VolumeSource::Bind {
+            let mut raw = volumes.first().unwrap().source.kind().clone();
+            let ployz_core::RawVolumeSource::Bind {
                 propagation: setting,
                 ..
-            } = &mut volumes
-                .first_mut()
-                .expect("fixture has a bind volume")
-                .source
+            } = &mut raw
             else {
                 panic!("expected bind volume")
             };
             *setting = Some(propagation);
-            propagation_spec.volume_graph =
-                ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+            volumes.first_mut().unwrap().source = raw.admit().unwrap();
+            propagation_spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+                .unwrap()
+                .try_into()
+                .unwrap();
             let translated = docker_mounts(&propagation_spec.volume_graph)
                 .unwrap()
                 .remove(0)
@@ -1163,7 +1165,7 @@ mod tests {
             assert_eq!(translated.propagation, expected);
         }
         assert_eq!(named_mount.typ, Some(MountType::VOLUME));
-        assert_eq!(named_mount.source.as_deref(), Some("database"));
+        assert_eq!(named_mount.source.as_deref(), Some("app_database"));
         assert_eq!(named_mount.read_only, Some(true));
         let named_options = named_mount.volume_options.as_ref().unwrap();
         assert_eq!(named_options.no_copy, Some(true));
@@ -1177,7 +1179,7 @@ mod tests {
                 .as_deref(),
             Some("local")
         );
-        assert_eq!(archive_mount.source.as_deref(), Some("database"));
+        assert_eq!(archive_mount.source.as_deref(), Some("app_database"));
         let archive_options = archive_mount.volume_options.as_ref().unwrap();
         assert_eq!(archive_options.no_copy, Some(false));
         assert_eq!(archive_options.subpath.as_deref(), Some("archive"));
@@ -1208,7 +1210,7 @@ mod tests {
                 "name": "api",
                 "mode": { "mode": "replicated", "replicas": 1 },
                 "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
-                "volumes": [{"reference":"data","source":{"kind":"ordinary","name":"missing","driver":{"name":"local","options":{}}}}],
+                "volumes": [{"reference":"data","source":{"kind":"ordinary","name":"app_missing","scope":{"project":"app","logical_name":"missing"},"driver":{"name":"local","options":{}}}}],
                 "mounts": [{"volume":"data","target":"/data"}]
             }))
             .unwrap();
@@ -1217,7 +1219,7 @@ mod tests {
             panic!("valid Service Volume graph still maps a named Docker Volume")
         };
         assert_eq!(named.typ, Some(MountType::VOLUME));
-        assert_eq!(named.source.as_deref(), Some("missing"));
+        assert_eq!(named.source.as_deref(), Some("app_missing"));
 
         let external: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
             "service_id": "11111111111111111111111111111111",

@@ -149,7 +149,7 @@ impl ServingShape {
             "restart": restart,
             "placement": placement,
             "ports": sorted_json(ports),
-            "volumes": sorted_json(volumes),
+            "volumes": sorted_json(&volumes.iter().map(|volume| (&volume.reference, volume.source.kind(), volume.source.creation_labels())).collect::<Vec<_>>()),
             "mounts": sorted_json(mounts),
             "configs": sorted_json(configs),
             "config_mounts": sorted_json(config_mounts),

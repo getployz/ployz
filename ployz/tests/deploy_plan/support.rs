@@ -64,7 +64,7 @@ pub(super) use ployz_core::{
     ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig,
     RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
     ServiceVolume, ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig,
-    UpdateOrder, VolumeSource, WireGuardPublicKey,
+    UpdateOrder, WireGuardPublicKey,
 };
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -151,11 +151,13 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
     let mut mounts = requested.volume_graph.mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: reference.clone(),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse(name).unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: Default::default(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     });
     mounts.push(ServiceMount {
         volume: reference,
@@ -174,16 +176,18 @@ pub(super) fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str,
         .iter_mut()
         .find(|volume| volume.reference.as_str() == reference)
         .expect("fixture volume exists");
-    let VolumeSource::Ordinary { name, labels, .. } = &volume.source else {
+    let ployz_core::RawVolumeSource::Ordinary { name, labels, .. } = volume.source.kind() else {
         panic!("fixture volume starts ordinary")
     };
-    volume.source = VolumeSource::Provisioned {
+    volume.source = ployz_core::RawVolumeSource::Provisioned {
         name: name.clone(),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(
             std::num::NonZeroU64::new(bytes).unwrap(),
         ),
         labels: labels.clone(),
-    };
+    }
+    .admit()
+    .expect("valid volume declaration");
     spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 }
 
@@ -258,13 +262,15 @@ pub(super) fn container(
             health: HealthObservation::Healthy,
         },
         effective_healthcheck: None,
-        resolved_spec: scoped_spec(requested).to_resolved(
-            *service_id,
-            ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: requested.update.monitor_millis,
-            },
-        ),
+        resolved_spec: scoped_spec(requested)
+            .to_resolved(
+                *service_id,
+                ResolvedUpdateConfig {
+                    order: UpdateOrder::StartFirst,
+                    monitor_millis: requested.update.monitor_millis,
+                },
+            )
+            .expect("volume graph is scoped"),
         address: None,
         labels: Default::default(),
     })

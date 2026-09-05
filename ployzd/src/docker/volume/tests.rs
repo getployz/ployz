@@ -12,16 +12,20 @@ async fn duplicate_compatible_aliases_ensure_one_volume() {
     let (runtime, fake) = fake_runtime().await;
     let name = DockerVolumeName::parse("aliases").unwrap();
     let managed = spec_with_sources(vec![
-        VolumeSource::Ordinary {
+        ployz_core::RawVolumeSource::Ordinary {
             name: name.clone(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
-        },
-        VolumeSource::Ordinary {
+        }
+        .admit()
+        .expect("valid volume declaration"),
+        ployz_core::RawVolumeSource::Ordinary {
             name: name.clone(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     ]);
 
     runtime
@@ -43,8 +47,12 @@ async fn duplicate_compatible_aliases_ensure_one_volume() {
         serde_json::json!({"Name":name,"Driver":"anything","Mountpoint":""}),
     );
     let external = spec_with_sources(vec![
-        VolumeSource::External { name: name.clone() },
-        VolumeSource::External { name },
+        ployz_core::RawVolumeSource::External { name: name.clone() }
+            .admit()
+            .expect("valid volume declaration"),
+        ployz_core::RawVolumeSource::External { name }
+            .admit()
+            .unwrap(),
     ]);
     runtime
         .ensure_mounted_volumes(&MachineId::random(), &external)
@@ -182,9 +190,11 @@ async fn existence_rejects_a_missing_volume() {
 #[tokio::test]
 async fn external_volume_is_checked_for_existence_only() {
     let (runtime, fake) = fake_runtime().await;
-    let source = VolumeSource::External {
+    let source = ployz_core::RawVolumeSource::External {
         name: DockerVolumeName::parse("malformed").unwrap(),
-    };
+    }
+    .admit()
+    .expect("valid volume declaration");
 
     runtime
         .ensure_volume_source(&MachineId::random(), &source)
@@ -201,7 +211,7 @@ async fn external_volume_is_checked_for_existence_only() {
 #[tokio::test]
 async fn missing_ordinary_volume_uses_exact_declared_shape() {
     let (runtime, fake) = fake_runtime().await;
-    let source = VolumeSource::Ordinary {
+    let mut source = ployz_core::RawVolumeSource::Ordinary {
         name: DockerVolumeName::parse("ordinary").unwrap(),
         driver: ployz_core::VolumeDriver::parse(
             "example-driver",
@@ -209,7 +219,10 @@ async fn missing_ordinary_volume_uses_exact_declared_shape() {
         )
         .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
-    };
+    }
+    .admit()
+    .expect("valid volume declaration");
+    source.scope_to_project(&ployz_core::ProjectName::parse("app").unwrap());
 
     runtime
         .ensure_volume_source(&MachineId::random(), &source)
@@ -224,10 +237,10 @@ async fn missing_ordinary_volume_uses_exact_declared_shape() {
     assert_eq!(
         request,
         &serde_json::json!({
-            "Name":"ordinary",
+            "Name":"app_ordinary",
             "Driver":"example-driver",
             "DriverOpts":{"mode":"safe"},
-            "Labels":{"backup":"daily"}
+            "Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
         })
     );
 }
@@ -235,11 +248,14 @@ async fn missing_ordinary_volume_uses_exact_declared_shape() {
 #[tokio::test]
 async fn normalized_local_driver_uses_no_options() {
     let (runtime, fake) = fake_runtime().await;
-    let source = VolumeSource::Ordinary {
+    let mut source = ployz_core::RawVolumeSource::Ordinary {
         name: DockerVolumeName::parse("default-driver").unwrap(),
         driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
         labels: BTreeMap::new(),
-    };
+    }
+    .admit()
+    .expect("valid volume declaration");
+    source.scope_to_project(&ployz_core::ProjectName::parse("app").unwrap());
 
     runtime
         .ensure_volume_source(&MachineId::random(), &source)
@@ -273,10 +289,10 @@ async fn missing_provisioned_volume_uses_ployz_driver_bound_and_labels() {
     assert_eq!(
         request,
         &serde_json::json!({
-            "Name":"bounded",
+            "Name":"app_bounded",
             "Driver":"ployz",
             "DriverOpts":{"size":"2147483648b"},
-            "Labels":{"backup":"daily"}
+            "Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
         })
     );
 }
@@ -285,13 +301,13 @@ async fn missing_provisioned_volume_uses_ployz_driver_bound_and_labels() {
 async fn existing_managed_volume_allows_extra_labels() {
     let (runtime, fake) = fake_runtime().await;
     fake.volumes.lock().unwrap().insert(
-        "ordinary".into(),
+        "app_ordinary".into(),
         serde_json::json!({
-            "Name":"ordinary",
+            "Name":"app_ordinary",
             "Driver":"example-driver",
-            "Mountpoint":"/volumes/ordinary",
+            "Mountpoint":"/volumes/app_ordinary",
             "Options":{"mode":"safe"},
-            "Labels":{"backup":"daily","unrelated":"kept"}
+            "Labels":{"backup":"daily","unrelated":"kept","ployz.managed":"","ployz.project.name":"app"}
         }),
     );
 
@@ -300,13 +316,9 @@ async fn existing_managed_volume_allows_extra_labels() {
         .await
         .unwrap();
 
-    assert!(
-        fake.requests
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|(method, path)| { method == Method::GET && path.ends_with("/volumes/ordinary") })
-    );
+    assert!(fake.requests.lock().unwrap().iter().all(|(method, path)| {
+        method == Method::GET && path.ends_with("/volumes/app_ordinary")
+    }));
 }
 
 #[tokio::test]
@@ -316,36 +328,36 @@ async fn existing_managed_volume_refuses_every_unsafe_shape_mismatch() {
         (
             ordinary_source("wrong-driver"),
             serde_json::json!({
-                "Name":"wrong-driver","Driver":"local","Mountpoint":"/volumes/wrong-driver",
-                "Options":{"mode":"safe"},"Labels":{"backup":"daily"}
+                "Name":"app_wrong-driver","Driver":"local","Mountpoint":"/volumes/app_wrong-driver",
+                "Options":{"mode":"safe"},"Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
             }),
         ),
         (
             ordinary_source("wrong-options"),
             serde_json::json!({
-                "Name":"wrong-options","Driver":"example-driver","Mountpoint":"/volumes/wrong-options",
-                "Options":{"mode":"unsafe"},"Labels":{"backup":"daily"}
+                "Name":"app_wrong-options","Driver":"example-driver","Mountpoint":"/volumes/app_wrong-options",
+                "Options":{"mode":"unsafe"},"Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
             }),
         ),
         (
             ordinary_source("wrong-label"),
             serde_json::json!({
-                "Name":"wrong-label","Driver":"example-driver","Mountpoint":"/volumes/wrong-label",
-                "Options":{"mode":"safe"},"Labels":{"backup":"never"}
+                "Name":"app_wrong-label","Driver":"example-driver","Mountpoint":"/volumes/app_wrong-label",
+                "Options":{"mode":"safe"},"Labels":{"backup":"never","ployz.managed":"","ployz.project.name":"app"}
             }),
         ),
         (
             provisioned_source("wrong-kind", 2_147_483_648),
             serde_json::json!({
-                "Name":"wrong-kind","Driver":"local","Mountpoint":"/volumes/wrong-kind",
-                "Options":{"size":"2147483648b"},"Labels":{"backup":"daily"}
+                "Name":"app_wrong-kind","Driver":"local","Mountpoint":"/volumes/app_wrong-kind",
+                "Options":{"size":"2147483648b"},"Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
             }),
         ),
         (
             provisioned_source("wrong-maximum", 2_147_483_648),
             serde_json::json!({
-                "Name":"wrong-maximum","Driver":"ployz","Mountpoint":"/volumes/wrong-maximum",
-                "Options":{"size":"2147483648b"},"Labels":{"backup":"daily"},
+                "Name":"app_wrong-maximum","Driver":"ployz","Mountpoint":"/volumes/app_wrong-maximum",
+                "Options":{"size":"2147483648b"},"Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"},
                 "Status":{"bound_bytes":1073741824,"used_bytes":0}
             }),
         ),
@@ -372,9 +384,11 @@ async fn existing_managed_volume_refuses_every_unsafe_shape_mismatch() {
 #[tokio::test]
 async fn missing_external_volume_fails_without_create() {
     let (runtime, fake) = fake_runtime().await;
-    let source = VolumeSource::External {
+    let source = ployz_core::RawVolumeSource::External {
         name: DockerVolumeName::parse("external-missing").unwrap(),
-    };
+    }
+    .admit()
+    .expect("valid volume declaration");
 
     assert!(matches!(
         runtime.ensure_volume_source(&MachineId::random(), &source).await,
@@ -395,7 +409,7 @@ async fn created_but_unverified_error_keeps_identity_and_retry_inspects_without_
     fake.fail_after_create
         .lock()
         .unwrap()
-        .insert("retry-volume".into());
+        .insert("app_retry-volume".into());
     let machine_id = MachineId::random();
     let source = ordinary_source("retry-volume");
 
@@ -407,7 +421,7 @@ async fn created_but_unverified_error_keeps_identity_and_retry_inspects_without_
         panic!("expected created-but-unverified error, got {error}")
     };
     assert_eq!(id.machine_id, machine_id);
-    assert_eq!(id.name.as_str(), "retry-volume");
+    assert_eq!(id.name.as_str(), "app_retry-volume");
     let rpc = ployz_core::RpcError::from(&error);
     assert_eq!(rpc.code, ployz_core::RpcErrorCode::Unavailable);
     assert_eq!(
@@ -415,7 +429,7 @@ async fn created_but_unverified_error_keeps_identity_and_retry_inspects_without_
             .get("created_volume")
             .and_then(|created| created.get("name"))
             .unwrap(),
-        "retry-volume"
+        "app_retry-volume"
     );
 
     runtime
@@ -439,17 +453,19 @@ async fn created_but_unverified_error_keeps_identity_and_retry_inspects_without_
 async fn a_later_volume_failure_does_not_roll_back_an_earlier_create() {
     let (runtime, fake) = fake_runtime().await;
     fake.volumes.lock().unwrap().insert(
-        "z-mismatch".into(),
+        "app_z-mismatch".into(),
         serde_json::json!({
-            "Name":"z-mismatch","Driver":"local","Mountpoint":"/volumes/z-mismatch"
+            "Name":"app_z-mismatch","Driver":"local","Mountpoint":"/volumes/app_z-mismatch"
         }),
     );
     let spec = spec_with_sources(vec![
-        VolumeSource::Ordinary {
+        ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse("a-created").unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
         ordinary_source("z-mismatch"),
     ]);
 
@@ -459,7 +475,7 @@ async fn a_later_volume_failure_does_not_roll_back_an_earlier_create() {
             .await,
         Err(Error::VolumeShapeMismatch { .. })
     ));
-    assert!(fake.volumes.lock().unwrap().contains_key("a-created"));
+    assert!(fake.volumes.lock().unwrap().contains_key("app_a-created"));
     assert!(
         fake.requests
             .lock()
@@ -472,11 +488,15 @@ async fn a_later_volume_failure_does_not_roll_back_an_earlier_create() {
 #[tokio::test]
 async fn a_volume_created_before_container_creation_failure_is_left_for_retry() {
     let (runtime, fake) = fake_runtime().await;
-    let spec = spec_with_sources(vec![VolumeSource::Ordinary {
-        name: DockerVolumeName::parse("created-before-container-failure").unwrap(),
-        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
-        labels: BTreeMap::new(),
-    }]);
+    let spec = spec_with_sources(vec![
+        ployz_core::RawVolumeSource::Ordinary {
+            name: DockerVolumeName::parse("created-before-container-failure").unwrap(),
+            driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
+            labels: BTreeMap::new(),
+        }
+        .admit()
+        .expect("valid volume declaration"),
+    ]);
     let project = ployz_core::ProjectName::parse("app").unwrap();
 
     assert!(
@@ -497,7 +517,7 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
         fake.volumes
             .lock()
             .unwrap()
-            .contains_key("created-before-container-failure")
+            .contains_key("app_created-before-container-failure")
     );
     assert!(
         fake.requests

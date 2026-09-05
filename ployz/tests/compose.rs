@@ -17,7 +17,7 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname,
     IngressProxyFragment, MANAGED_LABEL, MachineFailure, MachineStorageObservation,
     PROJECT_NAME_LABEL, PortPublication, ProjectName, RestartPolicy, RpcError, RpcErrorCode,
-    ServiceMode, TransportProtocol, UpdateOrder, VolumeObservationFailure, VolumeSource,
+    ServiceMode, TransportProtocol, UpdateOrder, VolumeObservationFailure,
 };
 
 #[path = "compose/support.rs"]
@@ -240,8 +240,8 @@ configs:
     assert_eq!(api.config_mounts().first().unwrap().mode, Some(0o640));
     assert_eq!(api.volumes().len(), 3);
     assert!(api.volumes().iter().any(|volume| matches!(
-        &volume.source,
-        VolumeSource::Bind {
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Bind {
             create_machine_path: true,
             propagation: Some(ployz_core::BindPropagation::Rprivate),
             recursive: Some(ployz_core::BindRecursive::Disabled),
@@ -249,8 +249,8 @@ configs:
         }
     )));
     assert!(api.volumes().iter().any(|volume| matches!(
-        &volume.source,
-        VolumeSource::Ordinary { name, .. } if name.as_str() == "data"
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Ordinary { name, .. } if name.as_str() == "data"
     )));
     assert!(api.container.image.starts_with("registry.example/api:"));
     assert_eq!(
@@ -649,8 +649,8 @@ fn compose_normalizes_an_omitted_ordinary_volume_driver_to_local() {
     .unwrap();
     let source = &service(&project, "app").volumes().first().unwrap().source;
     assert!(matches!(
-        source,
-        VolumeSource::Ordinary { driver, .. }
+        source.kind(),
+        ployz_core::RawVolumeSource::Ordinary { driver, .. }
             if driver.name() == "local" && driver.options().is_empty()
     ));
 }
@@ -752,8 +752,9 @@ volumes:
             .volumes()
             .first()
             .unwrap()
-            .source,
-        VolumeSource::External { .. }
+            .source
+            .kind(),
+        ployz_core::RawVolumeSource::External { .. }
     ));
     let existing = machine('a', "one");
     let plan = plan_compose(
@@ -1350,14 +1351,19 @@ secrets: {token: {x-command: "printf resolved"}}
         .iter()
         .filter_map(DeployOperation::spec)
         .flat_map(|spec| spec.volume_graph.volumes())
-        .find(|volume| matches!(&volume.source, VolumeSource::Ordinary { .. }))
+        .find(|volume| {
+            matches!(
+                volume.source.kind(),
+                ployz_core::RawVolumeSource::Ordinary { .. }
+            )
+        })
         .expect("run operation carries the managed Volume");
     assert!(matches!(
-        &volume.source,
-        VolumeSource::Ordinary { name, labels, .. }
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Ordinary { name, labels, .. }
             if name.as_str() == "app_data"
-                && labels.get(MANAGED_LABEL) == Some(&String::new())
-                && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
+                && volume.source.creation_labels().get(MANAGED_LABEL) == Some(&String::new())
+                && volume.source.creation_labels().get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
     ));
     assert_eq!(volume.reference, requested_volume.reference);
     assert_eq!(previewed_volume.name.as_str(), "app_data");
@@ -1465,8 +1471,8 @@ fn mounted_x_volume_resolves_to_a_provisioned_source() {
         .first()
         .expect("fixture mounts one volume");
     assert!(matches!(
-        &volume.source,
-        VolumeSource::Provisioned { name, maximum_bytes, labels }
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Provisioned { name, maximum_bytes, labels }
             if name.as_str() == "data"
                 && maximum_bytes.get() == 10 * 1024_u64.pow(3)
                 && labels.is_empty()
@@ -1544,7 +1550,8 @@ fn compose_x_volume_size_stays_in_resolved_service_spec() {
             .volumes()
             .first()
             .expect("fixture mounts one volume");
-        let VolumeSource::Provisioned { maximum_bytes, .. } = &volume.source else {
+        let ployz_core::RawVolumeSource::Provisioned { maximum_bytes, .. } = volume.source.kind()
+        else {
             panic!("x-volume did not remain provisioned in resolved spec")
         };
         maximum_bytes.get()
@@ -1721,17 +1728,24 @@ fn created_named_volume(
         .iter()
         .filter_map(DeployOperation::spec)
         .flat_map(|spec| spec.volume_graph.volumes())
-        .find(|volume| matches!(&volume.source, VolumeSource::Ordinary { name, .. } if name == &previewed.name))
+        .find(|volume| matches!(volume.source.kind(), ployz_core::RawVolumeSource::Ordinary { name, .. } if name == &previewed.name))
         .expect("container operation carries the previewed Volume");
-    let VolumeSource::Ordinary { name, labels, .. } = &volume.source else {
+    let ployz_core::RawVolumeSource::Ordinary { name, .. } = volume.source.kind() else {
         panic!(
             "expected an ordinary Docker Volume, got {:?}",
             volume.source
         );
     };
-    assert_eq!(labels.get(MANAGED_LABEL), Some(&String::new()));
     assert_eq!(
-        labels.get(PROJECT_NAME_LABEL).map(String::as_str),
+        volume.source.creation_labels().get(MANAGED_LABEL),
+        Some(&String::new())
+    );
+    assert_eq!(
+        volume
+            .source
+            .creation_labels()
+            .get(PROJECT_NAME_LABEL)
+            .map(String::as_str),
         Some(project)
     );
     assert_eq!(name, &previewed.name);
@@ -2138,6 +2152,19 @@ fn cpu_quantities_reject_invalid_normalized_input() {
                     .get(),
                 expected
             );
+        }
+    }
+}
+
+#[test]
+fn normalized_volume_declarations_reject_forged_project_ownership() {
+    for owner in ["app", "foreign"] {
+        for key in [PROJECT_NAME_LABEL, MANAGED_LABEL] {
+            let yaml = format!(
+                "name: app\nservices:\n  db:\n    image: postgres:17\n    volumes: [data:/data]\nvolumes:\n  data:\n    labels:\n      {key}: {owner}\n"
+            );
+            let error = parse_normalized(&yaml, ".").unwrap_err().to_string();
+            assert!(error.contains("non-reserved user label"), "{error}");
         }
     }
 }

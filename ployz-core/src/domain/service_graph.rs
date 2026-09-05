@@ -26,6 +26,8 @@ pub enum ServiceVolumeGraphError {
     /// Two references describe incompatible sources for one physical Docker Volume.
     #[error("incompatible Service Volume aliases use Docker Volume {name}")]
     IncompatibleVolumeAliases { name: DockerVolumeName },
+    #[error("resolved Service Volume {reference} has no Project scope")]
+    UnscopedVolume { reference: ServiceVolumeReference },
 }
 
 impl ServiceVolumeGraph {
@@ -70,6 +72,22 @@ impl ServiceVolumeGraph {
         Ok(Self { volumes, mounts })
     }
 
+    /// Scope managed declarations and revalidate aliases after physical names change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an incompatible-alias error if scoping creates a physical-name collision.
+    pub fn scope_to_project(
+        self,
+        project: &crate::ProjectName,
+    ) -> Result<Self, ServiceVolumeGraphError> {
+        let (mut volumes, mounts) = self.into_parts();
+        for volume in &mut volumes {
+            volume.source.scope_to_project(project);
+        }
+        Self::parse(volumes, mounts)
+    }
+
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
         &self.volumes
@@ -101,8 +119,12 @@ impl ServiceVolumeGraph {
 
     /// Mounted Provisioned Volume definitions, including repeated mounts.
     pub fn mounted_provisioned_volumes(&self) -> impl Iterator<Item = &ServiceVolume> {
-        self.mounted_volumes()
-            .filter(|volume| matches!(volume.source, VolumeSource::Provisioned { .. }))
+        self.mounted_volumes().filter(|volume| {
+            matches!(
+                volume.source.kind(),
+                crate::RawVolumeSource::Provisioned { .. }
+            )
+        })
     }
 
     /// Whether any mounted source requires Provisioned storage capability.
@@ -235,4 +257,40 @@ pub enum ServiceSpecGraphError {
     Volume(#[from] ServiceVolumeGraphError),
     #[error(transparent)]
     Config(#[from] ServiceConfigGraphError),
+}
+
+/// A graph whose managed sources all carry privately established Project scope.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ResolvedServiceVolumeGraph(ServiceVolumeGraph);
+
+impl TryFrom<ServiceVolumeGraph> for ResolvedServiceVolumeGraph {
+    type Error = ServiceVolumeGraphError;
+    fn try_from(graph: ServiceVolumeGraph) -> Result<Self, Self::Error> {
+        if let Some(volume) = graph
+            .volumes()
+            .iter()
+            .find(|volume| !volume.source.is_resolved())
+        {
+            return Err(ServiceVolumeGraphError::UnscopedVolume {
+                reference: volume.reference.clone(),
+            });
+        }
+        Ok(Self(graph))
+    }
+}
+impl std::ops::Deref for ResolvedServiceVolumeGraph {
+    type Target = ServiceVolumeGraph;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl ResolvedServiceVolumeGraph {
+    /// Preserve exact scoped source identity for an observed scale request.
+    #[must_use]
+    pub fn to_requested(&self) -> ServiceVolumeGraph {
+        self.0.clone()
+    }
+    pub(crate) fn into_parts(self) -> (Vec<ServiceVolume>, Vec<ServiceMount>) {
+        self.0.into_parts()
+    }
 }

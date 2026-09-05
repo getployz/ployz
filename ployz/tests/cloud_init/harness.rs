@@ -894,10 +894,12 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         }
     }))
     .unwrap();
-    let spec = spec.to_resolved(
-        ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
-        ployz_core::ResolvedUpdateConfig::default(),
-    );
+    let spec = spec
+        .to_resolved(
+            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("a".repeat(64)).unwrap(),
         display_name: "ingress-a".into(),
@@ -923,7 +925,8 @@ pub fn envoy_ingress_on(machine: &Machine) -> ContainerObservation {
         .to_resolved(
             ployz_core::ServiceId::parse("e".repeat(32)).unwrap(),
             ployz_core::ResolvedUpdateConfig::default(),
-        );
+        )
+        .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("b".repeat(64)).unwrap(),
         display_name: "ingress-envoy".into(),

@@ -301,20 +301,22 @@ mod tests {
 
         use ployz_core::{
             ContainerPath, DockerVolumeName, ProvisionedVolumeMaximumBytes, ServiceMount,
-            ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
+            ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
         };
 
         let reference = ServiceVolumeReference::parse("data").unwrap();
         spec.volume_graph = ServiceVolumeGraph::parse(
             vec![ServiceVolume {
                 reference: reference.clone(),
-                source: VolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("app_data").unwrap(),
+                source: ployz_core::RawVolumeSource::Provisioned {
+                    name: DockerVolumeName::parse("data").unwrap(),
                     maximum_bytes: ProvisionedVolumeMaximumBytes::new(
                         NonZeroU64::new(100).unwrap(),
                     ),
                     labels: Default::default(),
-                },
+                }
+                .admit()
+                .expect("valid volume declaration"),
             }],
             vec![ServiceMount {
                 volume: reference,
@@ -324,6 +326,10 @@ mod tests {
                 subpath: None,
             }],
         )
+        .unwrap()
+        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+        .unwrap()
+        .try_into()
         .unwrap();
     }
 

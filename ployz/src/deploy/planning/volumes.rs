@@ -105,12 +105,7 @@ pub(super) fn scope_requested(
     mut spec: RequestedServiceSpec,
     project: &ProjectName,
 ) -> Result<RequestedServiceSpec, PlanError> {
-    let mut volumes = spec.volume_graph.volumes().to_vec();
-    let mounts = spec.volume_graph.mounts().to_vec();
-    for volume in &mut volumes {
-        volume.source.scope_to_project(project);
-    }
-    spec.volume_graph = match ServiceVolumeGraph::parse(volumes, mounts) {
+    spec.volume_graph = match spec.volume_graph.scope_to_project(project) {
         Ok(graph) => graph,
         Err(ployz_core::ServiceVolumeGraphError::IncompatibleVolumeAliases { name }) => {
             return Err(PlanError::ConflictingDockerVolumeDefinitions { name });
@@ -161,7 +156,7 @@ impl VolumePins {
         machines: &[&MachineObservation],
     ) -> Result<(), PlanError> {
         for volume in spec.volume_graph.mounted_provisioned_volumes() {
-            let VolumeSource::Provisioned { name, .. } = &volume.source else {
+            let ployz_core::RawVolumeSource::Provisioned { name, .. } = volume.source.kind() else {
                 unreachable!("mounted_provisioned_volumes filters source kinds")
             };
             for machine in machines {
@@ -189,11 +184,11 @@ impl VolumePins {
         snapshot: &DeploySnapshot,
     ) -> Result<(), PlanError> {
         for volume in spec.volume_graph.mounted_provisioned_volumes() {
-            let VolumeSource::Provisioned {
+            let ployz_core::RawVolumeSource::Provisioned {
                 name,
                 maximum_bytes,
                 ..
-            } = &volume.source
+            } = volume.source.kind()
             else {
                 unreachable!("mounted_provisioned_volumes filters source kinds")
             };
@@ -270,13 +265,12 @@ fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVo
     target
         .iter()
         .flat_map(|spec| spec.volume_graph.mounted_volumes())
-        .filter_map(|volume| match &volume.source {
-            VolumeSource::Ordinary { name, .. } | VolumeSource::Provisioned { name, .. } => {
-                Some(name.clone())
-            }
-            VolumeSource::External { .. }
-            | VolumeSource::Bind { .. }
-            | VolumeSource::Tmpfs { .. } => None,
+        .filter_map(|volume| match volume.source.kind() {
+            ployz_core::RawVolumeSource::Ordinary { name, .. }
+            | ployz_core::RawVolumeSource::Provisioned { name, .. } => Some(name.clone()),
+            ployz_core::RawVolumeSource::External { .. }
+            | ployz_core::RawVolumeSource::Bind { .. }
+            | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
         })
         .collect()
 }
@@ -779,11 +773,12 @@ fn volume_anchor(
 }
 
 fn managed_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
-    match &volume.source {
-        VolumeSource::Ordinary { name, .. } | VolumeSource::Provisioned { name, .. } => Some(name),
-        VolumeSource::External { .. } | VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
-            None
-        }
+    match volume.source.kind() {
+        ployz_core::RawVolumeSource::Ordinary { name, .. }
+        | ployz_core::RawVolumeSource::Provisioned { name, .. } => Some(name),
+        ployz_core::RawVolumeSource::External { .. }
+        | ployz_core::RawVolumeSource::Bind { .. }
+        | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
     }
 }
 

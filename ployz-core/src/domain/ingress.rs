@@ -14,7 +14,7 @@ use crate::{
     Placement, PortPublication, PullPolicy, QualifiedService, RequestedServiceSpec,
     ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceMount,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig,
-    UpdateOrder, ValueError, VolumeSource,
+    UpdateOrder, ValueError,
 };
 
 const CADDY_INGRESS_COMMAND: [&str; 4] = ["caddy", "run", "-c", "/config/caddy/Caddyfile"];
@@ -194,7 +194,10 @@ impl IngressProxyBackend {
                     spec.ingress_proxy_fragment.clone(),
                 )
                 .is_ok_and(|expected| {
-                    expected.to_resolved(spec.service_id, spec.update.clone()) == *spec
+                    expected
+                        .to_resolved(spec.service_id, spec.update.clone())
+                        .expect("volume graph is scoped")
+                        == *spec
                 })
     }
 }
@@ -370,12 +373,14 @@ fn bind_volume(
 ) -> ServiceVolume {
     ServiceVolume {
         reference,
-        source: VolumeSource::Bind {
+        source: crate::RawVolumeSource::Bind {
             machine_path: MachinePath::parse(machine_path).expect("static data path is valid"),
             create_machine_path: true,
             propagation: None,
             recursive: None,
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     }
 }
 
@@ -425,13 +430,15 @@ mod tests {
                     None,
                 )
                 .unwrap();
-            let resolved = requested.to_resolved(
-                ServiceId::random(),
-                ResolvedUpdateConfig {
-                    order: requested.update.order.unwrap_or(UpdateOrder::StartFirst),
-                    monitor_millis: None,
-                },
-            );
+            let resolved = requested
+                .to_resolved(
+                    ServiceId::random(),
+                    ResolvedUpdateConfig {
+                        order: requested.update.order.unwrap_or(UpdateOrder::StartFirst),
+                        monitor_millis: None,
+                    },
+                )
+                .expect("volume graph is scoped");
 
             assert_eq!(
                 requested_ingress_proxy_backend(&requested).unwrap(),
@@ -460,6 +467,7 @@ mod tests {
                         monitor_millis: None,
                     },
                 )
+                .expect("volume graph is scoped")
         };
 
         for (backend, order, accepted) in [
@@ -532,8 +540,9 @@ mod tests {
             assert!(requested_ingress_proxy_backend(&malformed).is_err());
         }
 
-        let mut wrong_resolved_update =
-            requested.to_resolved(ServiceId::random(), ResolvedUpdateConfig::default());
+        let mut wrong_resolved_update = requested
+            .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+            .expect("volume graph is scoped");
         wrong_resolved_update.update.monitor_millis = Some(1);
         assert!(ingress_proxy_backend(&wrong_resolved_update).is_err());
 
@@ -594,12 +603,13 @@ mod tests {
                 .volume_graph
                 .volumes()
                 .iter()
-                .filter_map(|volume| match &volume.source {
-                    VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::External { .. }
-                    | VolumeSource::Ordinary { .. }
-                    | VolumeSource::Provisioned { .. }
-                    | VolumeSource::Tmpfs { .. } => None,
+                .filter_map(|volume| match volume.source.kind() {
+                    crate::RawVolumeSource::Bind { machine_path, .. } =>
+                        Some(machine_path.as_str()),
+                    crate::RawVolumeSource::External { .. }
+                    | crate::RawVolumeSource::Ordinary { .. }
+                    | crate::RawVolumeSource::Provisioned { .. }
+                    | crate::RawVolumeSource::Tmpfs { .. } => None,
                 })
                 .eq(["/var/lib/ployz/ingress/envoy"])
         );

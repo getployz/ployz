@@ -413,7 +413,8 @@ mod tests {
             .to_resolved(
                 ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
                 ployz_core::ResolvedUpdateConfig::default(),
-            );
+            )
+            .expect("volume graph is scoped");
         spec.container
             .environment
             .insert("TOKEN".into(), "service-secret".into());

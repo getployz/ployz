@@ -219,19 +219,19 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert!(intent.target.is_empty());
     let external: VolumeSource = decode_fixture(fixture(&fixtures, "external_volume_source"));
     assert!(matches!(
-        external,
-        VolumeSource::External { name } if name.as_str() == "shared"
+        external.kind(),
+        ployz_core::RawVolumeSource::External { name } if name.as_str() == "shared"
     ));
     let ordinary: VolumeSource = decode_fixture(fixture(&fixtures, "ordinary_volume_source"));
     assert!(matches!(
-        ordinary,
-        VolumeSource::Ordinary { driver, labels, .. }
+        ordinary.kind(),
+        ployz_core::RawVolumeSource::Ordinary { driver, labels, .. }
             if driver.name() == "local" && driver.options().is_empty() && labels.is_empty()
     ));
     let provisioned: VolumeSource = decode_fixture(fixture(&fixtures, "provisioned_volume_source"));
     assert!(matches!(
-        provisioned,
-        VolumeSource::Provisioned { maximum_bytes, labels, .. }
+        provisioned.kind(),
+        ployz_core::RawVolumeSource::Provisioned { maximum_bytes, labels, .. }
             if maximum_bytes.get() == 1_073_741_824
                 && labels.get("backup").map(String::as_str) == Some("daily")
     ));
@@ -472,8 +472,14 @@ fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
     assert_eq!(config.name, "settings");
     assert_eq!(config.content, b"port = 8080");
     assert_eq!(requested.config_mounts().len(), 2);
-    match requested.volumes().first().map(|volume| &volume.source) {
-        Some(VolumeSource::Ordinary { driver, .. }) => assert_eq!(driver.name(), "nfs"),
+    match requested
+        .volumes()
+        .first()
+        .map(|volume| volume.source.kind())
+    {
+        Some(ployz_core::RawVolumeSource::Ordinary { driver, .. }) => {
+            assert_eq!(driver.name(), "nfs")
+        }
         other => panic!("typed requested spec must nest VolumeDriver, got {other:?}"),
     }
     assert_eq!(requested.container.resources.devices.len(), 1);

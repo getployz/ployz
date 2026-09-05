@@ -154,9 +154,14 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert(
         "external_volume_source".into(),
-        to_value(&VolumeSource::External {
-            name: DockerVolumeName::parse("shared").expect("fixture external Volume name is valid"),
-        }),
+        to_value(
+            &ployz_core::RawVolumeSource::External {
+                name: DockerVolumeName::parse("shared")
+                    .expect("fixture external Volume name is valid"),
+            }
+            .admit()
+            .expect("valid volume declaration"),
+        ),
     );
     fixtures.insert(
         "ordinary_volume_source".into(),
@@ -291,6 +296,14 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         ("RequestedServiceSpec", to_value(&requested_spec())),
         ("ResolvedServiceSpec", to_value(&resolved_spec())),
         ("ServiceVolume", to_value(&service_volume())),
+        (
+            "ResolvedServiceVolume",
+            to_value(&typed_resolved_spec())["volumes"][0].clone(),
+        ),
+        (
+            "ScopedVolumeSource",
+            to_value(&typed_resolved_spec())["volumes"][0]["source"]["scope"].clone(),
+        ),
         ("ServiceMount", to_value(&service_mount())),
         ("VolumeDriver", to_value(&volume_driver())),
         ("ConfigSpec", to_value(&config_spec())),
@@ -667,24 +680,37 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         (
             "VolumeSource",
             vec![
-                to_value(&VolumeSource::Bind {
-                    machine_path: MachinePath::parse("/data").expect("fixture bind path is valid"),
-                    create_machine_path: false,
-                    propagation: Some(BindPropagation::Private),
-                    recursive: Some(BindRecursive::Disabled),
-                }),
-                to_value(&VolumeSource::External {
-                    name: DockerVolumeName::parse("shared")
-                        .expect("fixture external Volume name is valid"),
-                }),
+                to_value(
+                    &ployz_core::RawVolumeSource::Bind {
+                        machine_path: MachinePath::parse("/data")
+                            .expect("fixture bind path is valid"),
+                        create_machine_path: false,
+                        propagation: Some(BindPropagation::Private),
+                        recursive: Some(BindRecursive::Disabled),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                ),
+                to_value(
+                    &ployz_core::RawVolumeSource::External {
+                        name: DockerVolumeName::parse("shared")
+                            .expect("fixture external Volume name is valid"),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                ),
                 to_value(&service_volume().source),
                 to_value(&named_volume_with_driver().source),
                 to_value(&provisioned_volume_source()),
-                to_value(&VolumeSource::Tmpfs {
-                    size_bytes: Some(64),
-                    mode: Some(0o755),
-                    options: Vec::new(),
-                }),
+                to_value(
+                    &ployz_core::RawVolumeSource::Tmpfs {
+                        size_bytes: Some(64),
+                        mode: Some(0o755),
+                        options: Vec::new(),
+                    }
+                    .admit()
+                    .expect("valid volume declaration"),
+                ),
             ],
         ),
         (
@@ -929,13 +955,15 @@ fn service_attempt() -> ServiceAttempt {
 }
 
 fn provisioned_volume_source() -> VolumeSource {
-    VolumeSource::Provisioned {
+    ployz_core::RawVolumeSource::Provisioned {
         name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(
             NonZeroU64::new(1_073_741_824).expect("fixture Provisioned Volume bound is positive"),
         ),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
+    .admit()
+    .expect("valid volume declaration")
 }
 
 fn deploy_intent() -> DeployIntent {
@@ -1110,12 +1138,14 @@ fn service_volume() -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture volume reference is valid"),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
             driver: VolumeDriver::parse("local", BTreeMap::new())
                 .expect("local is an ordinary Volume driver"),
             labels: BTreeMap::new(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     }
 }
 
@@ -1123,11 +1153,13 @@ fn named_volume_with_driver() -> ServiceVolume {
     ServiceVolume {
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture volume reference is valid"),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
             driver: volume_driver(),
             labels: BTreeMap::from([("keep".into(), "1".into())]),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     }
 }
 
@@ -1242,7 +1274,14 @@ fn typed_requested_spec() -> RequestedServiceSpec {
 }
 
 fn typed_resolved_spec() -> ResolvedServiceSpec {
-    typed_requested_spec().to_resolved(service_id(), ResolvedUpdateConfig::default())
+    let mut requested = typed_requested_spec();
+    requested.volume_graph = requested
+        .volume_graph
+        .scope_to_project(&ProjectName::parse("app").unwrap())
+        .unwrap();
+    requested
+        .to_resolved(service_id(), ResolvedUpdateConfig::default())
+        .expect("volume graph is scoped")
 }
 
 fn container_observation_disabled_healthcheck() -> ContainerObservation {

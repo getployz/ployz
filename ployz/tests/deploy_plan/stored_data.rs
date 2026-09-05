@@ -26,13 +26,15 @@ fn assert_plan_cannot_destroy_stored_data(plan: &ployz::deploy::DeployPreview, l
 }
 
 fn resolved(spec: &RequestedServiceSpec) -> ployz_core::ResolvedServiceSpec {
-    spec.to_resolved(
-        service_id('a'),
-        ResolvedUpdateConfig {
-            order: UpdateOrder::StartFirst,
-            monitor_millis: spec.update.monitor_millis,
-        },
-    )
+    scoped_spec(spec)
+        .to_resolved(
+            service_id('a'),
+            ResolvedUpdateConfig {
+                order: UpdateOrder::StartFirst,
+                monitor_millis: spec.update.monitor_millis,
+            },
+        )
+        .expect("volume graph is scoped")
 }
 
 #[test]

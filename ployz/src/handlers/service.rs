@@ -491,7 +491,7 @@ mod tests {
         use ployz_core::{
             ContainerPath, DockerVolumeName, MachineStorageObservation,
             ProvisionedVolumeMaximumBytes, ServiceMount, ServiceVolume, ServiceVolumeGraph,
-            ServiceVolumeReference, VolumeSource,
+            ServiceVolumeReference,
         };
 
         let mut service = service_named('a', "app", "api");
@@ -512,13 +512,15 @@ mod tests {
                 parts.resolved_spec.volume_graph = ServiceVolumeGraph::parse(
                     vec![ServiceVolume {
                         reference: reference.clone(),
-                        source: VolumeSource::Provisioned {
-                            name: DockerVolumeName::parse("app_data").unwrap(),
+                        source: ployz_core::RawVolumeSource::Provisioned {
+                            name: DockerVolumeName::parse("data").unwrap(),
                             maximum_bytes: ProvisionedVolumeMaximumBytes::new(
                                 NonZeroU64::new(100).unwrap(),
                             ),
                             labels: Default::default(),
-                        },
+                        }
+                        .admit()
+                        .expect("valid volume declaration"),
                     }],
                     vec![ServiceMount {
                         volume: reference,
@@ -529,6 +531,10 @@ mod tests {
                     }],
                 )
                 .unwrap()
+                .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
             })
             .unwrap();
         let containers = ('a'..='f')

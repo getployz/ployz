@@ -266,7 +266,7 @@ mod tests {
         ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec,
         ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
         ServiceMount, ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
-        ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource, WireGuardPublicKey,
+        ServiceVolumeReference, TransportProtocol, UpdateConfig, WireGuardPublicKey,
         service_containers,
     };
 
@@ -309,13 +309,15 @@ mod tests {
         let requested = ployz_core::IngressProxyBackend::Zentinel
             .requested_service_spec("zentinel:test".into(), Vec::new(), None)
             .unwrap();
-        let spec = requested.to_resolved(
-            service_id('c'),
-            ResolvedUpdateConfig {
-                order: ployz_core::UpdateOrder::StopFirst,
-                monitor_millis: None,
-            },
-        );
+        let spec = requested
+            .to_resolved(
+                service_id('c'),
+                ResolvedUpdateConfig {
+                    order: ployz_core::UpdateOrder::StopFirst,
+                    monitor_millis: None,
+                },
+            )
+            .expect("volume graph is scoped");
         let current = grouped(identity.clone(), spec.clone(), running_on(&founder, 'a'));
         let target = grouped(identity, spec, running_on(&joiner, 'b'));
         let mut client = FakeCatchUpClient {
@@ -649,7 +651,8 @@ mod tests {
             }
             let service = grouped(
                 identity,
-                spec.to_resolved(service_id('c'), ResolvedUpdateConfig::default()),
+                spec.to_resolved(service_id('c'), ResolvedUpdateConfig::default())
+                    .expect("volume graph is scoped"),
                 running_on(&founder, 'a'),
             );
 
@@ -855,7 +858,8 @@ mod tests {
         spec.name = ServiceName::parse("api").unwrap();
         let services = [grouped(
             qualified("app", "api"),
-            spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default()),
+            spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+                .expect("volume graph is scoped"),
             running_on(&founder, 'a'),
         )];
         assert!(plan_global_catch_up(&services, &joiner, false).is_empty());
@@ -870,13 +874,15 @@ mod tests {
         spec.volume_graph = ServiceVolumeGraph::parse(
             vec![ServiceVolume {
                 reference: reference.clone(),
-                source: VolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("app_data").unwrap(),
+                source: ployz_core::RawVolumeSource::Provisioned {
+                    name: DockerVolumeName::parse("data").unwrap(),
                     maximum_bytes: ProvisionedVolumeMaximumBytes::new(
                         NonZeroU64::new(100).unwrap(),
                     ),
                     labels: Default::default(),
-                },
+                }
+                .admit()
+                .expect("valid volume declaration"),
             }],
             vec![ServiceMount {
                 volume: reference,
@@ -886,10 +892,13 @@ mod tests {
                 subpath: None,
             }],
         )
+        .unwrap()
+        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
         .unwrap();
         let service = grouped(
             qualified("app", "api"),
-            spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default()),
+            spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+                .expect("volume graph is scoped"),
             running_on(&founder, 'a'),
         );
 
@@ -901,6 +910,7 @@ mod tests {
             .requested_service_spec("envoy:test".into(), Vec::new(), None)
             .unwrap()
             .to_resolved(service_id(id), ResolvedUpdateConfig::default())
+            .expect("volume graph is scoped")
     }
 
     fn observed_envoy_ingress(machine: &Machine, id: char) -> ServiceObservation {
@@ -915,7 +925,8 @@ mod tests {
         let spec = ployz_core::IngressProxyBackend::Caddy
             .requested_service_spec("caddy:test".into(), Vec::new(), None)
             .unwrap()
-            .to_resolved(service_id(id), ResolvedUpdateConfig::default());
+            .to_resolved(service_id(id), ResolvedUpdateConfig::default())
+            .expect("volume graph is scoped");
         let mut container = running_on(machine, id);
         container
             .try_update(|parts| parts.created_at_unix_nanos = 1)
@@ -950,12 +961,13 @@ mod tests {
             spec.volume_graph
                 .volumes()
                 .iter()
-                .filter_map(|volume| match &volume.source {
-                    VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::External { .. }
-                    | VolumeSource::Ordinary { .. }
-                    | VolumeSource::Provisioned { .. }
-                    | VolumeSource::Tmpfs { .. } => None,
+                .filter_map(|volume| match volume.source.kind() {
+                    ployz_core::RawVolumeSource::Bind { machine_path, .. } =>
+                        Some(machine_path.as_str()),
+                    ployz_core::RawVolumeSource::External { .. }
+                    | ployz_core::RawVolumeSource::Ordinary { .. }
+                    | ployz_core::RawVolumeSource::Provisioned { .. }
+                    | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
                 })
                 .eq(["/var/lib/ployz/ingress/envoy"])
         );
@@ -1062,7 +1074,8 @@ mod tests {
         spec.container.image = image.into();
         grouped(
             identity,
-            spec.to_resolved(service_id(id), ResolvedUpdateConfig::default()),
+            spec.to_resolved(service_id(id), ResolvedUpdateConfig::default())
+                .expect("volume graph is scoped"),
             container,
         )
     }
@@ -1115,7 +1128,8 @@ mod tests {
             runtime,
             effective_healthcheck: None,
             resolved_spec: requested(ServiceMode::Global)
-                .to_resolved(service_id('a'), ResolvedUpdateConfig::default()),
+                .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+                .expect("volume graph is scoped"),
             address: None,
             labels: Default::default(),
         })

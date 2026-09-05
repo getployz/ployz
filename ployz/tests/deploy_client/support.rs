@@ -24,7 +24,7 @@ use ployz_core::{
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    UpdateOrder, VolumeInventory, VolumeSource, WireGuardPublicKey,
+    UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -466,13 +466,15 @@ impl MachineRpc for DeployService {
         } else {
             HealthObservation::Healthy
         };
-        let spec = spec("web").to_resolved(
-            ServiceId::random(),
-            ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: None,
-            },
-        );
+        let spec = spec("web")
+            .to_resolved(
+                ServiceId::random(),
+                ResolvedUpdateConfig {
+                    order: UpdateOrder::StartFirst,
+                    monitor_millis: None,
+                },
+            )
+            .expect("volume graph is scoped");
         encoded(RpcResponse::from(ContainerDetails {
             container: ployz_core::ContainerObservation::try_from(
                 ployz_core::ContainerObservationParts {
@@ -530,13 +532,15 @@ impl MachineRpc for DeployService {
                 *rounds = rounds.saturating_sub(1);
                 ready
             });
-        let spec = spec("web").to_resolved(
-            ServiceId::random(),
-            ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: None,
-            },
-        );
+        let spec = spec("web")
+            .to_resolved(
+                ServiceId::random(),
+                ResolvedUpdateConfig {
+                    order: UpdateOrder::StartFirst,
+                    monitor_millis: None,
+                },
+            )
+            .expect("volume graph is scoped");
         let containers = get
             .container_ids
             .into_iter()
@@ -832,13 +836,20 @@ pub(super) fn running_container(
     machine: &MachineObservation,
     spec: &RequestedServiceSpec,
 ) -> ployz_core::ContainerObservation {
-    let resolved = spec.to_resolved(
-        ServiceId::random(),
-        ResolvedUpdateConfig {
-            order: UpdateOrder::StartFirst,
-            monitor_millis: spec.update.monitor_millis,
-        },
-    );
+    let mut spec = spec.clone();
+    spec.volume_graph = spec
+        .volume_graph
+        .scope_to_project(&ProjectName::parse("app").unwrap())
+        .unwrap();
+    let resolved = spec
+        .to_resolved(
+            ServiceId::random(),
+            ResolvedUpdateConfig {
+                order: UpdateOrder::StartFirst,
+                monitor_millis: spec.update.monitor_millis,
+            },
+        )
+        .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("1".repeat(64)).unwrap(),
         display_name: format!("{}-1", spec.name),
@@ -862,11 +873,13 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
     requested.volume_graph = ServiceVolumeGraph::parse(
         vec![ServiceVolume {
             reference: reference.clone(),
-            source: VolumeSource::Ordinary {
+            source: ployz_core::RawVolumeSource::Ordinary {
                 name: DockerVolumeName::parse(name).unwrap(),
                 driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
                 labels: Default::default(),
-            },
+            }
+            .admit()
+            .expect("valid volume declaration"),
         }],
         vec![ServiceMount {
             volume: reference,

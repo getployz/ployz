@@ -361,6 +361,32 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "ScopedVolumeSource",
+        Shape::Object {
+            params: "",
+            fields: &[
+                ("project", "ProjectName"),
+                ("logical_name", "DockerVolumeName"),
+            ],
+        },
+    ),
+    (
+        "ResolvedVolumeSource",
+        Shape::Alias(
+            "(Extract<VolumeSource, { kind: \"ordinary\" | \"provisioned\" }> & { scope: ScopedVolumeSource }) | (Exclude<VolumeSource, { kind: \"ordinary\" | \"provisioned\" }> & { scope?: null })",
+        ),
+    ),
+    (
+        "ResolvedServiceVolume",
+        Shape::Object {
+            params: "",
+            fields: &[
+                ("reference", "ServiceVolumeReference"),
+                ("source", "ResolvedVolumeSource"),
+            ],
+        },
+    ),
+    (
         "ConfigSpec",
         Shape::Object {
             params: "",
@@ -442,7 +468,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("container", "ServiceContainerSpec"),
                 ("placement", "Placement?"),
                 ("ports", "PortPublication[]?"),
-                ("volumes", "ServiceVolume[]?"),
+                ("volumes", "ResolvedServiceVolume[]?"),
                 ("mounts", "ServiceMount[]?"),
                 ("configs", "ConfigSpec[]?"),
                 ("pre_deploy", "PreDeployHook?"),

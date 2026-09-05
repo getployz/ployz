@@ -76,9 +76,9 @@ async fn rejected_admission_does_not_poll_deferred_network() {
 async fn run_replacement_hook_and_missing_global_reach_the_same_volume_ensure() {
     let (runtime, fake) = fake_runtime().await;
     fake.volumes.lock().unwrap().insert(
-        "unsafe".into(),
+        "app_unsafe".into(),
         serde_json::json!({
-            "Name":"unsafe","Driver":"local","Mountpoint":"/volumes/unsafe"
+            "Name":"app_unsafe","Driver":"local","Mountpoint":"/volumes/app_unsafe"
         }),
     );
     let spec = spec_with_sources(vec![ordinary_source("unsafe")]);

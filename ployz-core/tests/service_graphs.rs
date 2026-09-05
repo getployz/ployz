@@ -5,7 +5,7 @@ use ployz_core::{
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceConfigGraph, ServiceConfigGraphError,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceSpecGraphError,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeGraphError, ServiceVolumeReference,
-    UpdateOrder, VolumeDriver, VolumeSource,
+    UpdateOrder, VolumeDriver,
 };
 
 #[test]
@@ -39,9 +39,11 @@ fn volume_graph_rejects_incompatible_docker_volume_aliases() {
     let ordinary = named_volume("data", "shared");
     let external = ServiceVolume {
         reference: reference("data-alias"),
-        source: VolumeSource::External {
+        source: ployz_core::RawVolumeSource::External {
             name: DockerVolumeName::parse("shared").unwrap(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     };
     let error = ServiceVolumeGraph::parse(vec![ordinary, external], vec![])
         .expect_err("incompatible aliases used one Docker Volume");
@@ -185,7 +187,7 @@ fn graph_deserialization_runs_the_same_validation() {
 
 #[test]
 fn requested_and_resolved_conversions_preserve_graph_invariants() {
-    let requested = requested_with_graphs(
+    let mut requested = requested_with_graphs(
         vec![
             named_volume("data", "shared"),
             named_volume("data-alias", "shared"),
@@ -202,6 +204,15 @@ fn requested_and_resolved_conversions_preserve_graph_invariants() {
         ],
         vec![config_mount("settings"), config_mount("settings")],
     );
+    assert!(
+        requested
+            .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+            .is_err()
+    );
+    requested.volume_graph = requested
+        .volume_graph
+        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+        .unwrap();
     let volumes = requested.volume_graph.clone();
     let configs = requested.config_graph.clone();
     let update = ResolvedUpdateConfig {
@@ -209,8 +220,10 @@ fn requested_and_resolved_conversions_preserve_graph_invariants() {
         monitor_millis: Some(1_000),
     };
 
-    let resolved = requested.to_resolved(ServiceId::random(), update.clone());
-    assert_eq!(resolved.volume_graph, volumes);
+    let resolved = requested
+        .to_resolved(ServiceId::random(), update.clone())
+        .expect("volume graph is scoped");
+    assert_eq!(resolved.volume_graph.to_requested(), volumes);
     assert_eq!(resolved.config_graph, configs);
     assert_eq!(resolved.update, update);
 
@@ -223,7 +236,7 @@ fn requested_and_resolved_conversions_preserve_graph_invariants() {
 
 #[test]
 fn persisted_and_rpc_decoded_specs_validate_graph_invariants_on_entry() {
-    let valid = requested_with_graphs(
+    let mut valid = requested_with_graphs(
         vec![named_volume("data", "data")],
         vec![mount("data", "/var/data")],
         vec![config("settings", b"x")],
@@ -266,7 +279,13 @@ fn persisted_and_rpc_decoded_specs_validate_graph_invariants_on_entry() {
         .to_string()
     );
 
-    let resolved = valid.to_resolved(ServiceId::random(), ResolvedUpdateConfig::default());
+    valid.volume_graph = valid
+        .volume_graph
+        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+        .unwrap();
+    let resolved = valid
+        .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+        .expect("volume graph is scoped");
     let mut resolved_json = serde_json::to_value(&resolved).unwrap();
     set_field(&mut resolved_json, "volumes", serde_json::json!([]));
     assert_eq!(
@@ -349,11 +368,13 @@ fn requested_with_graphs(
 fn named_volume(volume: &str, name: &str) -> ServiceVolume {
     ServiceVolume {
         reference: reference(volume),
-        source: VolumeSource::Ordinary {
+        source: ployz_core::RawVolumeSource::Ordinary {
             name: DockerVolumeName::parse(name).unwrap(),
             driver: VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
-        },
+        }
+        .admit()
+        .expect("valid volume declaration"),
     }
 }
 

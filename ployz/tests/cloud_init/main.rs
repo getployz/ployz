@@ -13,7 +13,7 @@ use harness::{
 use ployz_core::{
     CloudPairing, HostBind, IngressProxyBackend, InitializeRequest, InspectRequest,
     LocalMachinePhase, PairingCredential, PortPublication, Registered, SetCloudPairingRequest,
-    TransportProtocol, VolumeSource, ingress_proxy_backend, op,
+    TransportProtocol, ingress_proxy_backend, op,
 };
 use serde_json::json;
 use std::num::NonZeroU16;
@@ -1115,12 +1115,13 @@ async fn join_places_observed_envoy_ingress_on_this_machine() {
         spec.volume_graph
             .volumes()
             .iter()
-            .filter_map(|volume| match &volume.source {
-                VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                VolumeSource::External { .. }
-                | VolumeSource::Ordinary { .. }
-                | VolumeSource::Provisioned { .. }
-                | VolumeSource::Tmpfs { .. } => None,
+            .filter_map(|volume| match volume.source.kind() {
+                ployz_core::RawVolumeSource::Bind { machine_path, .. } =>
+                    Some(machine_path.as_str()),
+                ployz_core::RawVolumeSource::External { .. }
+                | ployz_core::RawVolumeSource::Ordinary { .. }
+                | ployz_core::RawVolumeSource::Provisioned { .. }
+                | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
             })
             .eq(["/var/lib/ployz/ingress/envoy"])
     );
@@ -1496,7 +1497,8 @@ fn global_on(
         spec.to_resolved(
             ployz_core::ServiceId::parse("a".repeat(32)).unwrap(),
             ployz_core::ResolvedUpdateConfig::default(),
-        ),
+        )
+        .expect("volume graph is scoped"),
         ployz_core::ProjectName::parse(project).unwrap(),
         'b',
     )

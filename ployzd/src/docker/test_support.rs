@@ -281,17 +281,21 @@ pub(super) fn global_slot_request<'spec, Storage>(
 }
 
 pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource {
-    VolumeSource::Provisioned {
+    let mut source = ployz_core::RawVolumeSource::Provisioned {
         name: DockerVolumeName::parse(name).unwrap(),
         maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
             std::num::NonZeroU64::new(maximum_bytes).unwrap(),
         ),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
+    .admit()
+    .expect("valid volume declaration");
+    source.scope_to_project(&ProjectName::parse("app").unwrap());
+    source
 }
 
 pub(super) fn ordinary_source(name: &str) -> VolumeSource {
-    VolumeSource::Ordinary {
+    let mut source = ployz_core::RawVolumeSource::Ordinary {
         name: DockerVolumeName::parse(name).unwrap(),
         driver: ployz_core::VolumeDriver::parse(
             "example-driver",
@@ -300,6 +304,10 @@ pub(super) fn ordinary_source(name: &str) -> VolumeSource {
         .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
+    .admit()
+    .expect("valid volume declaration");
+    source.scope_to_project(&ProjectName::parse("app").unwrap());
+    source
 }
 
 pub(super) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSpec {
@@ -330,6 +338,11 @@ pub(super) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSp
             subpath: None,
         })
         .collect();
-    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
+        .unwrap()
+        .scope_to_project(&ProjectName::parse("app").unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
     spec
 }
