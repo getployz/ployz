@@ -1,6 +1,6 @@
 # T03 — Separate requested and scoped volume sources
 
-Status: in_progress
+Status: complete
 Blocking dependencies: none
 Audit scope: F02
 

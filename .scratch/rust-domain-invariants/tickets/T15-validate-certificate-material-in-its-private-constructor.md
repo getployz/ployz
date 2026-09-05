@@ -1,6 +1,6 @@
 # T15 — Validate certificate material in its private constructor
 
-Status: in_progress
+Status: complete
 Blocking dependencies: none
 Audit scope: F11 material
 

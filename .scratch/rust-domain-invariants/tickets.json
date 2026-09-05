@@ -31,7 +31,7 @@
     "depends": [],
     "finding": "F02",
     "file": "tickets/T03-separate-requested-and-scoped-volume-sources.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T04",
@@ -49,7 +49,7 @@
     ],
     "finding": "F07",
     "file": "tickets/T05-require-nonempty-pre-deploy-hook-command.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T06",
@@ -61,7 +61,7 @@
     ],
     "finding": "F08",
     "file": "tickets/T06-admit-combined-effective-mounts.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T07",
@@ -144,7 +144,7 @@
     "depends": [],
     "finding": "F11 material",
     "file": "tickets/T15-validate-certificate-material-in-its-private-constructor.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T16",

@@ -1,6 +1,6 @@
 # T05 — Require nonempty pre-deploy hook command
 
-Status: in_progress
+Status: complete
 Blocking dependencies: T04
 Audit scope: F07
 
