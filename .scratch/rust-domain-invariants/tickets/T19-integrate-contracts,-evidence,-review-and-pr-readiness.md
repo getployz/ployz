@@ -1,6 +1,6 @@
 # T19 — Integrate contracts, evidence, review and PR readiness
 
-Status: in_progress
+Status: complete
 Blocking dependencies: T01, T02, T03, T04, T05, T06, T07, T08, T09, T10, T11, T12, T13, T14, T15, T16, T17, T18
 Audit scope: All F01-F14 + A06
 
@@ -23,3 +23,11 @@ Rungs 1-3 as justified by changes; no gratuitous informing/authority escalation.
 ## Handoff
 
 Implement in your assigned isolated worktree/branch. Read applicable AGENTS.md, DESIGN.md, CONTEXT.md and implementation instructions. Finish the complete vertical change, including impacted test fixtures and SDK type generation. Commit only this ticket's changes. Return commit ID, changed representation, exact checks and rung, any product-path evidence update needed, and remaining limits. Write handoff to the shared control directory `handoffs/T19.md`; coordinator owns index/status updates and final four-axis review.
+
+## Completion evidence
+
+Integrated code head: `40b36a4210e1cde9b3a02c82b14135e12496a4a0`. All T00–T18 changes and review corrections are integrated. Final workspace run: 1,360 passed, 0 failed, 47 existing ignored. Workspace Clippy, SDK packaging/TypeScript, generated contracts, formatting, evidence/runner and shell contracts pass. Fast CI passed at this code head: https://github.com/getployz/ployz2/actions/runs/33938879730.
+
+Standards: PASS. Spec: PASS. Maintainability: PASS. Simplicity: PASS. Separate final reports and dispositions are retained in `/home/codex/.cache/ployz-domain-invariants-notes/review/`. Rungs 1–3 and exact regression evidence are recorded in ticket handoffs and `evidence/product-paths.tsv`; informing/authority tests were not run.
+
+PR https://github.com/getployz/ployz2/pull/739 is ready for review. All 20 owned implementer worktrees and the task-created target symlink have been removed. The integration worktree and original audit artifacts are preserved. No base-branch merge or deployment was performed.

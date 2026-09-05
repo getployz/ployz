@@ -27,4 +27,4 @@ PR: https://github.com/getployz/ployz2/pull/739
 | [T16](tickets/T16-validate-http-01-challenge-grammar-and-safe-rendering.md) | Validate HTTP-01 challenge grammar and safe rendering | T15 | complete |
 | [T17](tickets/T17-validate-hosted-dns-reservations.md) | Validate hosted DNS reservations | T10 | complete |
 | [T18](tickets/T18-encode-ambiguity-minimum-cardinality.md) | Encode ambiguity minimum cardinality | — | complete |
-| [T19](tickets/T19-integrate-contracts,-evidence,-review-and-pr-readiness.md) | Integrate contracts, evidence, review and PR readiness | T01, T02, T03, T04, T05, T06, T07, T08, T09, T10, T11, T12, T13, T14, T15, T16, T17, T18 | in_progress |
+| [T19](tickets/T19-integrate-contracts,-evidence,-review-and-pr-readiness.md) | Integrate contracts, evidence, review and PR readiness | T01, T02, T03, T04, T05, T06, T07, T08, T09, T10, T11, T12, T13, T14, T15, T16, T17, T18 | complete |
