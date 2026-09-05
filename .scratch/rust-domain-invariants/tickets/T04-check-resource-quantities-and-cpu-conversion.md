@@ -1,6 +1,6 @@
 # T04 — Check resource quantities and CPU conversion
 
-Status: pending
+Status: complete
 Blocking dependencies: none
 Audit scope: F06
 

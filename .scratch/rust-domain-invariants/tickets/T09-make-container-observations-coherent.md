@@ -1,6 +1,6 @@
 # T09 — Make Container observations coherent
 
-Status: pending
+Status: in_progress
 Blocking dependencies: none
 Audit scope: F05 Container
 

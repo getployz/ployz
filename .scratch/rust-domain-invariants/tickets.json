@@ -39,7 +39,7 @@
     "depends": [],
     "finding": "F06",
     "file": "tickets/T04-check-resource-quantities-and-cpu-conversion.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T05",
