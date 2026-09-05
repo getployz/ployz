@@ -352,7 +352,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert_eq!(frame.services().len(), 1);
     assert_eq!(frame.certificates.len(), 2);
     assert_eq!(
-        serde_json::to_value(&frame).unwrap(),
+        serde_json::to_value(ployz_sdk_payloads::runtime_watch_view(&frame)).unwrap(),
         *fixture(&fixtures, "runtime_watch_frame")
     );
     let text = fixture(&fixtures, "runtime_watch_frame").to_string();
@@ -408,7 +408,7 @@ fn unknown_fields_are_accepted_on_public_payloads() {
         "runtime_watch_frame_unknown_fields",
     ));
     assert_eq!(
-        serde_json::to_value(&frame).unwrap(),
+        serde_json::to_value(ployz_sdk_payloads::runtime_watch_view(&frame)).unwrap(),
         *fixture(&fixtures, "runtime_watch_frame")
     );
 }

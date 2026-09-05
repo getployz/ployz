@@ -1291,6 +1291,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             fields: &[
                 ("machines", "MachineObservation[]"),
                 ("containers", "ContainerObservation[]"),
+                ("services", "ServiceObservation[]"),
                 ("volumes", "DockerVolume[]"),
                 ("certificates", "CertificateObservation[]"),
                 ("hosted_dns_hostname", "string?"),

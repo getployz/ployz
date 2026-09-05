@@ -378,7 +378,7 @@ impl WatchStream {
     #[napi]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         match self.inner.next().await {
-            Ok(Some(frame)) => serde_json::to_value(&frame)
+            Ok(Some(frame)) => serde_json::to_value(ployz_sdk_payloads::runtime_watch_view(&frame))
                 .map(Some)
                 .map_err(|error| Error::from_reason(error.to_string())),
             Ok(None) => Ok(None),
