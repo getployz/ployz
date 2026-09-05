@@ -49,7 +49,14 @@ async fn fake_docker(
             serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         ));
     }
-    let response = if method == Method::GET && path.ends_with("/containers/json") {
+    let response = if method == Method::GET && path.contains("/networks/") {
+        (
+            StatusCode::OK,
+            serde_json::json!({
+                "IPAM": {"Config":[{"Subnet":"10.210.0.0/24","Gateway":"10.210.0.1"}]}
+            }),
+        )
+    } else if method == Method::GET && path.ends_with("/containers/json") {
         let listed = fake
                 .existing_container
                 .lock()
@@ -257,12 +264,12 @@ pub(super) fn container_request<'spec, Storage>(
     project_name: &'spec ProjectName,
     spec: &'spec ResolvedServiceSpec,
     storage: Storage,
-) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<NetworkAttachment, Error>>> {
+) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     ContainerRequest {
         kind,
         project_name,
         spec,
-        network: std::future::ready(Ok(NetworkAttachment::Host)),
+        admission: std::future::ready(Ok(())),
         storage,
     }
 }
@@ -271,11 +278,11 @@ pub(super) fn global_slot_request<'spec, Storage>(
     project_name: &'spec ProjectName,
     spec: &'spec ResolvedServiceSpec,
     storage: Storage,
-) -> GlobalSlotRequest<'spec, Storage, std::future::Ready<Result<NetworkAttachment, Error>>> {
+) -> GlobalSlotRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     GlobalSlotRequest {
         project_name,
         spec,
-        network: std::future::ready(Ok(NetworkAttachment::Host)),
+        admission: std::future::ready(Ok(())),
         storage,
     }
 }

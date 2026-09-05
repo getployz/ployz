@@ -14,9 +14,8 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CloudPairing, IngressProxyBackend, LocalMachinePhase, Machine, MachineId, MachineRuntime,
-    MachineStorageObservation, MachineUpdate, MachineUpdateError, SelectedEndpoint,
-    apply_machine_update,
+    CloudPairing, LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
+    MachineUpdate, MachineUpdateError, SelectedEndpoint, apply_machine_update,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -28,7 +27,6 @@ use crate::network::{allocate_machine_subnet, management_address};
 mod ingress;
 mod local_machine;
 
-pub use ingress::IngressRuntimeError;
 pub(crate) use local_machine::RuntimeWatchTelemetry;
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
@@ -48,8 +46,6 @@ const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct FoundingCluster {
     /// Cluster IPv4 pool selected by the founder.
     pub network: Ipv4Net,
-    /// Ingress Proxy Backend selected by the founder.
-    pub ingress_proxy_backend: IngressProxyBackend,
 }
 
 /// Whether a participating Machine founded the Cluster or joined known peers.
@@ -80,13 +76,6 @@ impl ParticipationOrigin {
         match self {
             Self::Founder { .. } => &[],
             Self::Join { bootstrap } => bootstrap,
-        }
-    }
-
-    fn founding_ingress_proxy_backend(&self) -> Option<IngressProxyBackend> {
-        match self {
-            Self::Founder { cluster } => Some(cluster.ingress_proxy_backend),
-            Self::Join { .. } => None,
         }
     }
 }
@@ -292,19 +281,6 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn cluster_network(&self) -> Option<Ipv4Net> {
         self.body.cluster_network()
-    }
-
-    /// Founder-selected backend that seeds the replicated Cluster authority.
-    #[must_use]
-    pub(crate) fn founding_ingress_proxy_backend(&self) -> Option<IngressProxyBackend> {
-        match &self.body {
-            LocalMachineBody::Participating { origin, .. } => {
-                origin.founding_ingress_proxy_backend()
-            }
-            LocalMachineBody::Uninitialized { .. }
-            | LocalMachineBody::Joining { .. }
-            | LocalMachineBody::Resetting { .. } => None,
-        }
     }
 
     /// Bootstrap Machines persisted for join and catch-up.

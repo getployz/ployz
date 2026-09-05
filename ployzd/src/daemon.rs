@@ -145,15 +145,6 @@ impl Daemon {
             }
         };
         let corrosion = start_corrosion(&config, &store).await?;
-        if let (Some(corrosion), Some(backend)) = (
-            corrosion.as_ref(),
-            local_record.founding_ingress_proxy_backend(),
-        ) {
-            corrosion
-                .store()
-                .publish_founding_ingress_proxy_backend(backend)
-                .await?;
-        }
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let containers = match (containers, replicated_store.clone()) {
@@ -216,7 +207,6 @@ impl Daemon {
                 (Some(management), Some(gateway))
             });
         let socket = config.socket.clone();
-        let ingress_docker = containers.as_ref().map(ContainerRuntime::local_docker);
         let store_for_servers = Arc::clone(&store);
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -285,7 +275,6 @@ impl Daemon {
                             replicated,
                             ingress_data_dir,
                             ingress_runtime_dir,
-                            ingress_docker,
                             shutdown.clone(),
                         )
                         .await

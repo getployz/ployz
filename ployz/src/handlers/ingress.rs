@@ -3,7 +3,7 @@
 use std::{fs, path::Path};
 
 use clap::ArgMatches;
-use ployz_core::{GetIngressProxyConfigRequest, InspectRequest, MachineTarget, op};
+use ployz_core::{GetIngressProxyConfigRequest, IngressProxyFragment, MachineTarget, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 use crate::connect::TARGET_RPC_TIMEOUT;
@@ -43,6 +43,11 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .map(|path| fs::read_to_string(Path::new(path)))
         .transpose()
         .map_err(|error| Error::usage(format!("read Caddyfile: {error}")))?;
+    let fragment = caddy_config
+        .filter(|config| !config.trim().is_empty())
+        .map(|config| IngressProxyFragment::parse(&config))
+        .transpose()
+        .map_err(|error| Error::usage(error.to_string()))?;
     let machines = string_values(matches, "machine")
         .into_iter()
         .map(MachineTarget::parse)
@@ -56,14 +61,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             .unwrap_or("default");
         let mut client =
             connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
-        let backend = client
-            .call::<op::Inspect>(InspectRequest::default(), None)
-            .await?
-            .ingress_proxy_backend
-            .ok_or_else(|| Error::usage("Cluster Ingress Proxy Backend is missing"))?;
-        let requested =
-            crate::ingress::service_spec_for_backend(backend, image, machines, caddy_config)
-                .await?;
+        let requested = crate::ingress::service_spec(image, machines, fragment).await?;
         crate::deploy::deploy_spec(
             &mut client,
             &requested,

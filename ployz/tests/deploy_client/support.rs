@@ -57,7 +57,6 @@ pub(super) struct DeployService {
     domain: Option<String>,
     exec_exit: Option<i32>,
     hold_health: bool,
-    ingress_backend: Option<ployz_core::IngressProxyBackend>,
 }
 
 impl DeployService {
@@ -81,7 +80,6 @@ impl DeployService {
             domain: None,
             exec_exit: None,
             hold_health: false,
-            ingress_backend: Some(ployz_core::IngressProxyBackend::Caddy),
         }
     }
 
@@ -105,7 +103,6 @@ impl DeployService {
             domain: None,
             exec_exit: None,
             hold_health: false,
-            ingress_backend: Some(ployz_core::IngressProxyBackend::Caddy),
         }
     }
 
@@ -139,14 +136,6 @@ impl DeployService {
 
     pub(super) fn hold_health(mut self) -> Self {
         self.hold_health = true;
-        self
-    }
-
-    pub(super) fn with_ingress_backend(
-        mut self,
-        backend: Option<ployz_core::IngressProxyBackend>,
-    ) -> Self {
-        self.ingress_backend = backend;
         self
     }
 
@@ -420,7 +409,6 @@ impl MachineRpc for DeployService {
             cloud_paired: false,
             telemetry,
             storage: self.machines.first().and_then(|machine| machine.storage),
-            ingress_proxy_backend: self.ingress_backend,
         }))
     }
     async fn machine_token(

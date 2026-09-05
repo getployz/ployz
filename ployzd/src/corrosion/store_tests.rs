@@ -6,12 +6,12 @@ use std::{
 };
 
 use ployz_core::{
-    DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IngressProxyBackend,
-    IssuanceClock, IssuanceFailure, Machine, MachineId,
+    DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, IssuanceFailure,
+    Machine, MachineId,
 };
 use serde_json::json;
 
-use super::{ReplicatedStore, fake_cluster, run_machine_publisher};
+use super::{ReplicatedStore, fake_cluster};
 use crate::corrosion::ApiClient;
 use crate::corrosion::publisher::founder_allocator_id;
 use crate::corrosion::store::{
@@ -22,7 +22,6 @@ use crate::machine::{
     ParticipationOrigin,
 };
 use crate::runtime_watch::RuntimeWatchSnapshot;
-use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn catch_up_waits_for_removal_and_rechecks_phase() {
@@ -162,13 +161,6 @@ async fn volume_store_is_an_error_when_the_store_is_unreachable() {
             .is_err()
     );
     assert!(store.allocator().await.is_err());
-    assert!(store.ingress_proxy_backend().await.is_err());
-    assert!(
-        store
-            .publish_founding_ingress_proxy_backend(IngressProxyBackend::Caddy)
-            .await
-            .is_err()
-    );
 }
 
 #[tokio::test]
@@ -291,7 +283,6 @@ fn only_a_participating_founder_claims_allocator() {
             origin: ParticipationOrigin::Founder {
                 cluster: crate::machine::FoundingCluster {
                     network: "10.210.0.0/16".parse().unwrap(),
-                    ingress_proxy_backend: IngressProxyBackend::Caddy,
                 },
             },
         },
@@ -306,7 +297,6 @@ fn only_a_participating_founder_claims_allocator() {
                 origin: ParticipationOrigin::Founder {
                     cluster: crate::machine::FoundingCluster {
                         network: "10.210.0.0/16".parse().unwrap(),
-                        ingress_proxy_backend: IngressProxyBackend::Caddy,
                     },
                 },
             }),
@@ -355,127 +345,6 @@ async fn invalid_allocator_value_is_an_error() {
     let (store, server) = fake_cluster::store_with_allocator_value("not-a-machine-id").await;
     assert!(store.allocator().await.is_err());
     server.abort();
-}
-
-#[tokio::test]
-async fn ingress_proxy_backend_is_typed_immutable_cluster_authority() {
-    let (store, server) = fake_cluster::store().await;
-    let missing = store.ingress_proxy_backend().await.unwrap_err();
-    assert!(missing.to_string().contains("missing"), "{missing}");
-
-    store
-        .publish_founding_ingress_proxy_backend(IngressProxyBackend::Caddy)
-        .await
-        .unwrap();
-    assert_eq!(
-        store.ingress_proxy_backend().await.unwrap(),
-        IngressProxyBackend::Caddy
-    );
-    store
-        .require_ingress_proxy_backend(IngressProxyBackend::Caddy)
-        .await
-        .unwrap();
-    let mismatch = store
-        .require_ingress_proxy_backend(IngressProxyBackend::Zentinel)
-        .await
-        .unwrap_err();
-    assert!(mismatch.to_string().contains("not zentinel"), "{mismatch}");
-
-    let changed = store
-        .publish_founding_ingress_proxy_backend(IngressProxyBackend::Zentinel)
-        .await
-        .unwrap_err();
-    assert!(changed.to_string().contains("caddy"), "{changed}");
-    assert_eq!(
-        store.ingress_proxy_backend().await.unwrap(),
-        IngressProxyBackend::Caddy
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn ingress_proxy_backend_refuses_unrecognized_cluster_value() {
-    let (store, server) = fake_cluster::store_with_ingress_proxy_backend_value("traefik").await;
-    let error = store.ingress_proxy_backend().await.unwrap_err();
-    assert!(error.to_string().contains("traefik"), "{error}");
-    server.abort();
-}
-
-#[tokio::test]
-async fn joining_machine_inherits_each_recognized_ingress_proxy_backend() {
-    for backend in [
-        IngressProxyBackend::Caddy,
-        IngressProxyBackend::Zentinel,
-        IngressProxyBackend::Envoy,
-    ] {
-        let (store, server) =
-            fake_cluster::store_with_ingress_proxy_backend_value(backend.as_str()).await;
-        let (data_dir, local) = joining_record();
-        let shutdown = CancellationToken::new();
-        let (participating, mut participating_rx) = tokio::sync::watch::channel(false);
-        let publisher = tokio::spawn(run_machine_publisher(
-            Some(store),
-            Arc::clone(&local),
-            participating,
-            shutdown.clone(),
-        ));
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            participating_rx.wait_for(|participating| *participating),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            local.lock().unwrap().record().phase(),
-            ployz_core::LocalMachinePhase::Participating
-        );
-
-        shutdown.cancel();
-        publisher.await.unwrap().unwrap();
-        server.abort();
-        drop(local);
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
-}
-
-#[tokio::test]
-async fn joining_machine_refuses_missing_or_unrecognized_ingress_proxy_backend() {
-    for value in [None, Some("traefik")] {
-        let (store, server) = match value {
-            Some(value) => fake_cluster::store_with_ingress_proxy_backend_value(value).await,
-            None => fake_cluster::store().await,
-        };
-        let (data_dir, local) = joining_record();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            run_machine_publisher(
-                Some(store),
-                Arc::clone(&local),
-                tokio::sync::watch::channel(false).0,
-                CancellationToken::new(),
-            ),
-        )
-        .await
-        .expect("invalid backend must refuse instead of waiting")
-        .unwrap_err();
-
-        assert!(
-            value.map_or_else(
-                || result.to_string().contains("missing"),
-                |value| result.to_string().contains(value)
-            ),
-            "{result}"
-        );
-        assert_eq!(
-            local.lock().unwrap().record().phase(),
-            ployz_core::LocalMachinePhase::Joining
-        );
-        server.abort();
-        drop(local);
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
 }
 
 #[tokio::test]
@@ -529,23 +398,4 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
         selected_endpoints: BTreeMap::new(),
     };
     (machine, local)
-}
-
-fn joining_record() -> (std::path::PathBuf, Arc<Mutex<LocalMachineStore>>) {
-    let data_dir =
-        std::env::temp_dir().join(format!("ployzd-backend-join-{}", MachineId::random()));
-    let mut local = LocalMachineStore::open(&data_dir).unwrap();
-    let public_key = local.record().wireguard_private_key.public_key();
-    let machine: Machine = serde_json::from_value(json!({
-        "id": "c".repeat(32),
-        "name": "joining",
-        "subnet": "10.210.2.0/24",
-        "management_address": "fdcc::2",
-        "public_key": public_key.0,
-    }))
-    .unwrap();
-    local
-        .join(machine.clone(), vec![machine], BTreeMap::new(), None, None)
-        .unwrap();
-    (data_dir, Arc::new(Mutex::new(local)))
 }

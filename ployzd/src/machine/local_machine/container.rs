@@ -6,6 +6,7 @@ use ployz_core::{
     ContainerCreated, ContainerKind, MachineStorageObservation, ProjectName, ResolvedServiceSpec,
 };
 
+use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
@@ -16,7 +17,7 @@ impl LocalMachine {
         local_storage(Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
     }
 
-    /// Create a container after storage admission and deferred Machine-local runtime preparation.
+    /// Create a container after storage admission and deferred Machine-local validation.
     ///
     /// # Errors
     ///
@@ -32,13 +33,13 @@ impl LocalMachine {
         let record = self.record()?;
         let machine = record.machine().ok_or(Error::NotParticipating)?;
         containers
-            .create_with_network(
+            .create_with_admission(
                 machine,
                 ContainerRequest {
                     kind,
                     project_name: project,
                     spec,
-                    network: self.prepare_service_runtime(kind, project, spec),
+                    admission: async { admit_ingress_service(project, spec) },
                     storage: self.observe_storage(),
                 },
             )
@@ -66,11 +67,7 @@ impl LocalMachine {
                 GlobalSlotRequest {
                     project_name: project,
                     spec,
-                    network: self.prepare_service_runtime(
-                        ContainerKind::ServiceContainer,
-                        project,
-                        spec,
-                    ),
+                    admission: async { admit_ingress_service(project, spec) },
                     storage: self.observe_storage(),
                 },
             )

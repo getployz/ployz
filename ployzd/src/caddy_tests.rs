@@ -188,7 +188,7 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
         vec![ingress("example.com", 8080, HttpProtocol::Http)],
     );
     local_container.created_at_unix_nanos = 1;
-    let fragment = IngressProxyFragment::parse_caddy("# selected").unwrap();
+    let fragment = IngressProxyFragment::parse("# selected").unwrap();
     local_container.resolved_spec.ingress_proxy_fragment = Some(fragment.clone());
     let mut remote_container = observation(
         2,
@@ -1300,6 +1300,6 @@ fn custom_observation(
     let mut observation = observation(suffix, machine_id, service_name, Some(address), Vec::new());
     observation.created_at_unix_nanos = created_at_unix_nanos;
     observation.resolved_spec.ingress_proxy_fragment =
-        Some(IngressProxyFragment::parse_caddy(caddy_config).expect("fixture is non-empty"));
+        Some(IngressProxyFragment::parse(caddy_config).expect("fixture is non-empty"));
     observation
 }

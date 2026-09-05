@@ -27,10 +27,6 @@ pub const IMAGE: &str = "ghcr.io/getployz/ployz2-testkit:main";
 pub const CORROSION_IMAGE: &str = "ghcr.io/unlabs-dev/corrosion:2026.6.15";
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
 pub const CADDY_IMAGE: &str = "caddy:2.10.2";
-/// Exact Zentinel artifact carried by the informing cluster image.
-pub const ZENTINEL_IMAGE: &str = "ghcr.io/zentinelproxy/zentinel@sha256:ff012547034d13a7d8e6570679c897e4bba6bc702ec5bdd7bf70a7a04b4d6604";
-/// Exact Envoy artifact carried by the informing cluster image.
-pub const ENVOY_IMAGE: &str = "docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66";
 pub const UNREGISTRY_IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
@@ -41,7 +37,7 @@ static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageTarget {
     pub platform: &'static str,
-    pub requires: [&'static str; 9],
+    pub requires: [&'static str; 7],
 }
 
 #[must_use]
@@ -53,8 +49,6 @@ pub fn image_targets() -> [ImageTarget; 2] {
         CORROSION_IMAGE,
         SERVICE_CONTAINER_IMAGE,
         CADDY_IMAGE,
-        ZENTINEL_IMAGE,
-        ENVOY_IMAGE,
         UNREGISTRY_IMAGE,
     ];
     [
@@ -404,25 +398,12 @@ impl Cluster {
         self.read_seeded_observation(index)
     }
 
-    /// Initialize the first Machine with the default Caddy backend.
+    /// Initialize the first Machine.
     ///
     /// # Errors
     ///
     /// Returns when the Machine RPC is unavailable or rejects initialization.
     pub async fn initialize_first(&self) -> Result<Machine, TestkitError> {
-        self.initialize_first_with_backend(ployz_core::IngressProxyBackend::Caddy)
-            .await
-    }
-
-    /// Initialize the first Machine with one concrete Ingress Proxy Backend.
-    ///
-    /// # Errors
-    ///
-    /// Returns when the Machine RPC is unavailable or rejects initialization.
-    pub async fn initialize_first_with_backend(
-        &self,
-        ingress_proxy_backend: ployz_core::IngressProxyBackend,
-    ) -> Result<Machine, TestkitError> {
         let mut client = self.client(0).await?;
         Ok(response(
             client
@@ -430,7 +411,6 @@ impl Cluster {
                     op::Initialize::into_request(InitializeRequest {
                         name: MachineName::parse("machine-1")?,
                         cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
-                        ingress_proxy_backend,
                         public_ip: None,
                         advertised_endpoints: vec![self.endpoint(0)?],
                         wireguard_mtu: None,
@@ -1079,8 +1059,6 @@ mod tests {
                     CORROSION_IMAGE,
                     SERVICE_CONTAINER_IMAGE,
                     CADDY_IMAGE,
-                    ZENTINEL_IMAGE,
-                    ENVOY_IMAGE,
                     UNREGISTRY_IMAGE,
                 ]
         }));
@@ -1101,15 +1079,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_first_with_backend_reports_an_unavailable_machine() {
+    async fn initialize_first_reports_an_unavailable_machine() {
         let cluster = Cluster {
             plan: ClusterPlan::new("l3-init-unavailable", 1).unwrap(),
         };
 
         assert!(matches!(
-            cluster
-                .initialize_first_with_backend(ployz_core::IngressProxyBackend::Zentinel)
-                .await,
+            cluster.initialize_first().await,
             Err(TestkitError::Rpc(_))
         ));
     }

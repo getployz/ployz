@@ -273,7 +273,11 @@ fn cloud_enroll() -> Command {
                 .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
         )
         .arg(switch("no-ingress", None))
-        .arg(ingress_backend())
+        .arg(
+            value("ingress-image", None)
+                .help("Caddy image to deploy when founding a Cluster")
+                .conflicts_with("no-ingress"),
+        )
         .arg(switch("no-dns", None))
         .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))
         .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
@@ -388,13 +392,6 @@ fn provisioning_flags(command: Command) -> Command {
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
-fn ingress_backend() -> Arg {
-    value("ingress-backend", None)
-        .default_value("caddy")
-        .value_parser(clap::value_parser!(ployz_core::IngressProxyBackend))
-        .help("Select the founding-time Ingress Proxy Backend")
-}
-
 fn machine_add() -> Command {
     provisioning_flags(base("add", "Add a remote machine")).arg(positional("destination", true))
 }
@@ -407,9 +404,7 @@ fn machine_init() -> Command {
         .arg(value("dns-endpoint", None).default_value(crate::dns::HOSTED_DNS_ENDPOINT))
         .arg(value("network", None).default_value("10.210.0.0/16"))
         .arg(switch("no-dns", None));
-    provisioning_flags(command)
-        .arg(ingress_backend())
-        .arg(positional("destination", false))
+    provisioning_flags(command).arg(positional("destination", false))
 }
 
 fn project() -> Command {

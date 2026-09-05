@@ -15,8 +15,6 @@ RUN mkdir -p /opt/ployz/images \
  && skopeo copy docker://ghcr.io/unlabs-dev/corrosion:2026.6.15 docker-archive:/opt/ployz/images/corrosion.tar:ghcr.io/unlabs-dev/corrosion:2026.6.15 \
  && skopeo copy docker://docker.io/library/alpine:3.23.3 docker-archive:/opt/ployz/images/alpine.tar:alpine:3.23.3 \
  && skopeo copy docker://docker.io/library/caddy:2.10.2 docker-archive:/opt/ployz/images/caddy.tar:caddy:2.10.2 \
- && skopeo copy docker://ghcr.io/zentinelproxy/zentinel@sha256:ff012547034d13a7d8e6570679c897e4bba6bc702ec5bdd7bf70a7a04b4d6604 docker-archive:/opt/ployz/images/zentinel.tar:ghcr.io/zentinelproxy/zentinel:26.08_5 \
- && skopeo copy docker://docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66 docker-archive:/opt/ployz/images/envoy.tar:docker.io/envoyproxy/envoy:v1.39.0 \
  && skopeo copy docker://ghcr.io/psviderski/unregistry:0.4.1 docker-archive:/opt/ployz/images/unregistry.tar:ghcr.io/psviderski/unregistry:0.4.1
 COPY ployz-testkit/prebuilt/ployz /usr/local/bin/ployz
 COPY ployz-testkit/prebuilt/ployzd /usr/local/bin/ployzd

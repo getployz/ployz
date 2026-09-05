@@ -987,11 +987,13 @@ fn peer_image_pull_contract_names_the_source_management_destination() {
 }
 
 #[test]
-fn ingress_proxy_config_contract_tags_the_exact_backend_file() {
+fn ingress_proxy_config_contract_contains_the_exact_caddyfile() {
     let request = op::GetIngressProxyConfig::into_request(GetIngressProxyConfigRequest {});
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 
-    let config = IngressProxyConfig::Caddy("example.test { respond ok }\n".into());
+    let config = IngressProxyConfig {
+        config: "example.test { respond ok }\n".into(),
+    };
     let response = RpcResponse::from(config.clone());
     assert_eq!(
         response
@@ -1005,7 +1007,7 @@ fn ingress_proxy_config_contract_tags_the_exact_backend_file() {
     );
     assert_eq!(
         serde_json::to_value(&config).unwrap(),
-        json!({ "backend": "caddy", "config": "example.test { respond ok }\n" })
+        json!({ "config": "example.test { respond ok }\n" })
     );
     assert_eq!(
         GET_INGRESS_PROXY_CONFIG_CAPABILITY,
@@ -1622,7 +1624,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             user: None,
         }),
         ingress_proxy_fragment: Some(
-            IngressProxyFragment::parse_caddy("reverse_proxy localhost:8080").unwrap(),
+            IngressProxyFragment::parse("reverse_proxy localhost:8080").unwrap(),
         ),
         update: UpdateConfig {
             order: None,
@@ -1704,41 +1706,32 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
 }
 
 #[test]
-fn service_ingress_proxy_fragment_is_backend_tagged_without_a_caddy_alias() {
+fn service_ingress_proxy_fragment_is_a_validated_caddy_string() {
     let spec: RequestedServiceSpec = serde_json::from_value(json!({
         "name": "api",
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": { "image": "api:1", "pull_policy": "missing" },
-        "ingress_proxy_fragment": {
-            "backend": "caddy",
-            "config": "  reverse_proxy localhost:8080\n"
-        }
+        "ingress_proxy_fragment": "  reverse_proxy localhost:8080\n"
     }))
     .unwrap();
 
     let value = serde_json::to_value(spec).unwrap();
     assert_eq!(
         value.get("ingress_proxy_fragment"),
-        Some(&json!({
-            "backend": "caddy",
-            "config": "reverse_proxy localhost:8080"
-        }))
+        Some(&json!("reverse_proxy localhost:8080"))
     );
     assert!(!value.as_object().unwrap().contains_key("caddy_config"));
 
     assert!(
-        IngressProxyFragment::parse_caddy(" \n ")
+        IngressProxyFragment::parse(" \n ")
             .unwrap_err()
             .to_string()
             .contains("non-empty configuration")
     );
     assert!(
-        serde_json::from_value::<IngressProxyFragment>(json!({
-            "backend": "caddy",
-            "config": ""
-        }))
-        .unwrap_err()
-        .to_string()
-        .contains("non-empty configuration")
+        serde_json::from_value::<IngressProxyFragment>(json!(""))
+            .unwrap_err()
+            .to_string()
+            .contains("non-empty configuration")
     );
 }

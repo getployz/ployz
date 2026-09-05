@@ -1,79 +1,28 @@
 //! Ingress Proxy identity and deployment boundaries.
 
 use ployz_core::{
-    ContainerObservation, IngressProxyBackend, MachineTarget, QualifiedService,
-    RequestedServiceSpec,
+    ContainerObservation, IngressProxyFragment, MachineTarget, QualifiedService,
+    RequestedServiceSpec, caddy_service_spec,
 };
-use thiserror::Error;
 
 mod caddy;
 pub use caddy::IngressImageError;
 
-/// Qualified Envoy release selected for new Clusters.
-pub const ENVOY_IMAGE: &str = "docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66";
-/// Qualified Zentinel release selected for new Clusters.
-pub const ZENTINEL_IMAGE: &str = "ghcr.io/zentinelproxy/zentinel@sha256:ff012547034d13a7d8e6570679c897e4bba6bc702ec5bdd7bf70a7a04b4d6604";
-
-/// Failure while selecting one concrete Ingress Proxy deployment.
-#[derive(Debug, Error)]
-pub enum DeploymentError {
-    /// Caddy's release image could not be discovered.
-    #[error(transparent)]
-    Image(#[from] IngressImageError),
-    /// Caddy-only configuration was supplied for a Zentinel Cluster.
-    #[error("Caddy configuration cannot be deployed to the Zentinel Ingress Proxy Backend")]
-    CaddyFragmentOnZentinel,
-    /// Caddy-only configuration was supplied for an Envoy Cluster.
-    #[error("Caddy configuration cannot be deployed to the Envoy Ingress Proxy Backend")]
-    CaddyFragmentOnEnvoy,
-}
-
-/// Build exactly one concrete spec from the immutable Cluster backend.
+/// Build the Caddy ingress Service Spec.
 ///
 /// # Errors
 ///
-/// Returns when the Caddy image cannot be discovered or Caddy-only
-/// configuration is supplied to a backend that refuses fragments.
-pub async fn service_spec_for_backend(
-    backend: IngressProxyBackend,
+/// Returns when the Caddy image cannot be discovered.
+pub async fn service_spec(
     image: Option<String>,
     machines: Vec<MachineTarget>,
-    caddy_config: Option<String>,
-) -> Result<RequestedServiceSpec, DeploymentError> {
-    Ok(match backend {
-        IngressProxyBackend::Caddy => caddy::service_spec(
-            match image {
-                Some(image) => image,
-                None => caddy::latest_image().await?,
-            },
-            machines,
-            caddy_config,
-        ),
-        IngressProxyBackend::Zentinel => {
-            if caddy_config.is_some() {
-                return Err(DeploymentError::CaddyFragmentOnZentinel);
-            }
-            IngressProxyBackend::Zentinel
-                .requested_service_spec(
-                    image.unwrap_or_else(|| ZENTINEL_IMAGE.to_owned()),
-                    machines,
-                    None,
-                )
-                .expect("Zentinel profile accepts no fragment")
-        }
-        IngressProxyBackend::Envoy => {
-            if caddy_config.is_some() {
-                return Err(DeploymentError::CaddyFragmentOnEnvoy);
-            }
-            IngressProxyBackend::Envoy
-                .requested_service_spec(
-                    image.unwrap_or_else(|| ENVOY_IMAGE.to_owned()),
-                    machines,
-                    None,
-                )
-                .expect("Envoy profile accepts no fragment")
-        }
-    })
+    fragment: Option<IngressProxyFragment>,
+) -> Result<RequestedServiceSpec, IngressImageError> {
+    let image = match image {
+        Some(image) => image,
+        None => caddy::latest_image().await?,
+    };
+    Ok(caddy_service_spec(image, machines, fragment))
 }
 
 /// True when this observation is the reserved Ingress Proxy Service.
@@ -84,34 +33,20 @@ pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU16;
-
-    use ployz_core::{
-        HostBind, IngressProxyBackend, MachineTarget, PortPublication, ServiceMode,
-        TransportProtocol, UpdateOrder, VolumeSource,
-    };
+    use ployz_core::{IngressProxyFragment, MachineTarget, ServiceMode};
 
     use super::*;
 
     #[tokio::test]
-    async fn selected_backend_builds_only_its_concrete_service_spec() {
+    async fn builds_the_caddy_service_spec() {
         let machines = vec![MachineTarget::parse("edge").unwrap()];
-        let caddy = service_spec_for_backend(
-            IngressProxyBackend::Caddy,
+        let caddy = service_spec(
             Some("registry.test/caddy@sha256:caddy".into()),
             machines.clone(),
-            Some("{ admin off }".into()),
+            Some(IngressProxyFragment::parse("{ admin off }").unwrap()),
         )
         .await
         .unwrap();
-        let zentinel =
-            service_spec_for_backend(IngressProxyBackend::Zentinel, None, machines.clone(), None)
-                .await
-                .unwrap();
-        let envoy =
-            service_spec_for_backend(IngressProxyBackend::Envoy, None, machines.clone(), None)
-                .await
-                .unwrap();
 
         assert_eq!(caddy.name, QualifiedService::system_ingress().name);
         assert_eq!(caddy.mode, ServiceMode::Global);
@@ -121,104 +56,12 @@ mod tests {
             ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
         );
         assert_eq!(caddy.ports.len(), 3);
-        assert!(caddy.ingress_proxy_fragment.is_some());
-
-        assert_eq!(zentinel.name, QualifiedService::system_ingress().name);
-        assert_eq!(zentinel.mode, ServiceMode::Global);
-        assert_eq!(zentinel.container.image, ZENTINEL_IMAGE);
-        assert_eq!(zentinel.container.command, ["-c", "/config/zentinel.kdl"]);
-        assert_eq!(zentinel.container.cap_add, ["NET_BIND_SERVICE"]);
-        assert_eq!(zentinel.container.cap_drop, ["ALL"]);
-        assert_eq!(zentinel.update.order, Some(UpdateOrder::StopFirst));
-        assert!(zentinel.ports.is_empty());
-        assert!(zentinel.ingress_proxy_fragment.is_none());
-        assert!(
-            zentinel
-                .volume_graph
-                .volumes()
-                .iter()
-                .filter_map(|volume| match &volume.source {
-                    VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::External { .. }
-                    | VolumeSource::Ordinary { .. }
-                    | VolumeSource::Provisioned { .. }
-                    | VolumeSource::Tmpfs { .. } => None,
-                })
-                .eq(["/var/lib/ployz/ingress/zentinel"])
-        );
-
-        assert_eq!(envoy.name, QualifiedService::system_ingress().name);
-        assert_eq!(envoy.mode, ServiceMode::Global);
         assert_eq!(
-            envoy.container.image,
-            "docker.io/envoyproxy/envoy@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66"
+            caddy
+                .ingress_proxy_fragment
+                .as_ref()
+                .map(IngressProxyFragment::as_str),
+            Some("{ admin off }")
         );
-        assert_eq!(
-            envoy.container.command,
-            ["envoy", "-c", "/config/bootstrap.yaml"]
-        );
-        assert!(envoy.container.cap_add.is_empty());
-        assert_eq!(envoy.update.order, None);
-        assert_eq!(
-            envoy.ports,
-            [
-                PortPublication::Host {
-                    bind: HostBind::All,
-                    published_port: NonZeroU16::new(80).unwrap(),
-                    container_port: NonZeroU16::new(8080).unwrap(),
-                    transport_protocol: TransportProtocol::Tcp,
-                },
-                PortPublication::Host {
-                    bind: HostBind::All,
-                    published_port: NonZeroU16::new(443).unwrap(),
-                    container_port: NonZeroU16::new(8443).unwrap(),
-                    transport_protocol: TransportProtocol::Tcp,
-                },
-            ]
-        );
-        assert!(envoy.ingress_proxy_fragment.is_none());
-        assert!(
-            envoy
-                .volume_graph
-                .volumes()
-                .iter()
-                .filter_map(|volume| match &volume.source {
-                    VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                    VolumeSource::External { .. }
-                    | VolumeSource::Ordinary { .. }
-                    | VolumeSource::Provisioned { .. }
-                    | VolumeSource::Tmpfs { .. } => None,
-                })
-                .eq(["/var/lib/ployz/ingress/envoy"])
-        );
-    }
-
-    #[tokio::test]
-    async fn zentinel_refuses_a_caddy_fragment_before_building_a_spec() {
-        let error = service_spec_for_backend(
-            IngressProxyBackend::Zentinel,
-            None,
-            Vec::new(),
-            Some("example.test { respond ok }".into()),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(error.to_string().contains("Caddy"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn envoy_refuses_a_caddy_fragment_before_building_a_spec() {
-        let error = service_spec_for_backend(
-            IngressProxyBackend::Envoy,
-            None,
-            Vec::new(),
-            Some("example.test { respond ok }".into()),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(error.to_string().contains("Caddy"), "{error}");
-        assert!(error.to_string().contains("Envoy"), "{error}");
     }
 }

@@ -64,7 +64,6 @@ pub(super) fn open_store(
             MachineName::parse("edge").unwrap(),
             crate::machine::FoundingCluster {
                 network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             },
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],

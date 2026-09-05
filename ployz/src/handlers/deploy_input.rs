@@ -122,7 +122,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         pre_deploy: None,
         ingress_proxy_fragment: caddy_config
             .filter(|config| !config.trim().is_empty())
-            .map(IngressProxyFragment::parse_caddy)
+            .map(|config| IngressProxyFragment::parse(&config))
             .transpose()?,
         update: UpdateConfig::default(),
     })

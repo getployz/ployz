@@ -13,11 +13,6 @@ use ployz_core::{
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
 
-#[path = "ingress_cluster/envoy.rs"]
-mod envoy;
-#[path = "ingress_cluster/zentinel.rs"]
-mod zentinel;
-
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
@@ -85,10 +80,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             "container_port": 8080,
             "http_protocol": "http"
         }],
-        "ingress_proxy_fragment": {
-            "backend": "caddy",
-            "config": "custom.example {\n\trespond \"custom\" 200\n}"
-        }
+        "ingress_proxy_fragment": "custom.example {\n\trespond \"custom\" 200\n}"
     }))
     .unwrap();
     let mut api_containers = Vec::new();
@@ -331,10 +323,7 @@ async fn assert_failed_load_retry(
             "command": ["sleep", "300"],
             "pull_policy": "missing"
         },
-        "ingress_proxy_fragment": {
-            "backend": "caddy",
-            "config": "load-failure.example {\n\ttls /missing/cert.pem /missing/key.pem\n\trespond bad\n}"
-        }
+        "ingress_proxy_fragment": "load-failure.example {\n\ttls /missing/cert.pem /missing/key.pem\n\trespond bad\n}"
     }))
     .unwrap();
     let rejected = create_and_start(client, machine, load_failure).await;
@@ -416,7 +405,7 @@ async fn assert_invalid_template(client: &mut ployz::connect::Client, machine: &
             "command": ["sleep", "300"],
             "pull_policy": "missing"
         },
-        "ingress_proxy_fragment": { "backend": "caddy", "config": "{{unknown}}" }
+        "ingress_proxy_fragment": "{{unknown}}"
     }))
     .unwrap();
     create_and_start(client, machine, broken).await;
