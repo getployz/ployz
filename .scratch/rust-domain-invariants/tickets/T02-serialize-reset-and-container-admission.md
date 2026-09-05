@@ -1,6 +1,6 @@
 # T02 — Serialize reset and container admission
 
-Status: in_progress
+Status: complete
 Blocking dependencies: T01
 Audit scope: F01
 

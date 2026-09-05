@@ -1,6 +1,6 @@
 # T12 — Derive Runtime Watch Services from Containers
 
-Status: in_progress
+Status: complete
 Blocking dependencies: T09
 Audit scope: F13
 

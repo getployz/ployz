@@ -23,7 +23,7 @@
     ],
     "finding": "F01",
     "file": "tickets/T02-serialize-reset-and-container-admission.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T03",
@@ -118,7 +118,7 @@
     ],
     "finding": "F13",
     "file": "tickets/T12-derive-runtime-watch-services-from-containers.md",
-    "status": "in_progress"
+    "status": "complete"
   },
   {
     "id": "T13",
@@ -164,7 +164,7 @@
     ],
     "finding": "F12",
     "file": "tickets/T17-validate-hosted-dns-reservations.md",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "id": "T18",
