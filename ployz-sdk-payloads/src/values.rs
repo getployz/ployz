@@ -328,7 +328,7 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         (
             "PreDeployHook",
             to_value(&PreDeployHook {
-                command: vec!["echo".into()],
+                command: vec!["echo".into()].try_into().unwrap(),
                 environment: BTreeMap::new(),
                 privileged: None,
                 timeout_millis: None,

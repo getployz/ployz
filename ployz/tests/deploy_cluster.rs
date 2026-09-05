@@ -313,7 +313,9 @@ async fn assert_failed_hooks_are_retained_and_rerun(
     let nonzero_id = ServiceId::random();
     let mut nonzero = service_spec(&nonzero_id, "hook-nonzero");
     nonzero.pre_deploy = Some(ployz_core::PreDeployHook {
-        command: vec!["sh".into(), "-c".into(), "exit 7".into()],
+        command: vec!["sh".into(), "-c".into(), "exit 7".into()]
+            .try_into()
+            .unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: Some(5_000),
@@ -334,7 +336,7 @@ async fn assert_failed_hooks_are_retained_and_rerun(
     let timeout_id = ServiceId::random();
     let mut timeout = service_spec(&timeout_id, "hook-timeout");
     timeout.pre_deploy = Some(ployz_core::PreDeployHook {
-        command: vec!["sleep".into(), "30".into()],
+        command: vec!["sleep".into(), "30".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: Some(50),

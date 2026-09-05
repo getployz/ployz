@@ -5,7 +5,7 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -80,7 +80,7 @@ fn hook_and_replacement_each_require_a_spare_endpoint() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -115,7 +115,7 @@ fn replaced_hooks_credit_all_reclaimed_endpoints() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -161,7 +161,7 @@ fn hook_capacity_is_charged_only_to_its_selected_machine() {
         replicas: NonZeroU32::new(2).unwrap(),
     });
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -192,7 +192,7 @@ fn hook_capacity_is_charged_only_to_its_selected_machine() {
 fn global_hook_uses_a_changed_machine_with_an_extra_slot() {
     let mut requested = requested(ServiceMode::Global);
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
@@ -364,7 +364,7 @@ fn force_recreate_replaces_an_otherwise_matching_container() {
 fn no_op_plan_does_not_run_a_pre_deploy_hook() {
     let mut requested = requested(ServiceMode::Global);
     requested.pre_deploy = Some(PreDeployHook {
-        command: vec!["db".into(), "migrate".into()],
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,

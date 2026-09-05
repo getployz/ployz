@@ -784,6 +784,7 @@ mod tests {
             "container": {
                 "image": "alpine:3.23.3",
                 "command": ["serve"],
+                "entrypoint": ["/entrypoint"],
                 "environment": { "TOKEN": "service" },
                 "labels": { "example.empty": "", "example.value": "unchanged" },
                 "hostname": "shared-host",
@@ -874,6 +875,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
+        assert_eq!(hook.entrypoint, Some(vec!["/entrypoint".into()]));
         assert_eq!(hook.hostname.as_deref(), Some("shared-host"));
         assert_eq!(hook.user.as_deref(), Some("1000"));
         let hook_env = hook.env.as_ref().unwrap();

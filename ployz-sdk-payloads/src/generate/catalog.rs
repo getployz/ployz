@@ -329,7 +329,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Object {
             params: "",
             fields: &[
-                ("command", "string[]"),
+                ("command", "readonly [string, ...string[]]"),
                 ("environment", "{ readonly [key: string]: string }?"),
                 ("privileged", "boolean?"),
                 ("timeout_millis", "number?"),

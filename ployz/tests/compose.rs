@@ -228,7 +228,7 @@ configs:
         } if published_port.get() == 5000 && container_port.get() == 3000
     ));
     let pre_deploy = api.pre_deploy.as_ref().unwrap();
-    assert_eq!(pre_deploy.command, ["sh", "-c", "migrate"]);
+    assert_eq!(pre_deploy.command.as_slice(), ["sh", "-c", "migrate"]);
     assert_eq!(
         pre_deploy.environment,
         BTreeMap::from([("DB_HOST".into(), "db".into())])
@@ -554,7 +554,7 @@ secrets:
         ),
         (
             "services: {app: {image: app, x-pre_deploy: {}}}",
-            "required attribute 'command'",
+            "non-empty command",
         ),
         (
             "services: {app: {image: app, configs: [settings]}}\nconfigs: {settings: {content: ok}}",

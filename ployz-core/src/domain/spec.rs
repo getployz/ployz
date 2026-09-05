@@ -352,9 +352,57 @@ pub struct ContainerResources {
     pub ulimits: BTreeMap<String, Ulimit>,
 }
 
+/// A pre-deploy hook command with at least one argument.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct PreDeployCommand(Vec<String>);
+
+impl PreDeployCommand {
+    /// Parse a hook command without applying healthcheck sentinel rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the command has no arguments.
+    pub fn parse<I, S>(command: I) -> Result<Self, ValueError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let command = command.into_iter().map(Into::into).collect::<Vec<_>>();
+        if command.is_empty() {
+            return Err(ValueError::new(
+                "pre-deploy command",
+                "",
+                "a non-empty command",
+            ));
+        }
+        Ok(Self(command))
+    }
+
+    /// Borrow the command arguments.
+    #[must_use]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl From<PreDeployCommand> for Vec<String> {
+    fn from(command: PreDeployCommand) -> Self {
+        command.0
+    }
+}
+
+impl TryFrom<Vec<String>> for PreDeployCommand {
+    type Error = ValueError;
+
+    fn try_from(command: Vec<String>) -> Result<Self, Self::Error> {
+        Self::parse(command)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PreDeployHook {
-    pub command: Vec<String>,
+    pub command: PreDeployCommand,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
     #[serde(default)]
@@ -830,6 +878,24 @@ mod tests {
             resources.device_reservations.first().unwrap().count,
             Some(-1)
         );
+    }
+
+    #[test]
+    fn pre_deploy_hook_rejects_empty_command_on_the_wire() {
+        assert!(PreDeployCommand::parse(Vec::<String>::new()).is_err());
+        assert!(serde_json::from_value::<PreDeployHook>(json!({"command": []})).is_err());
+        let mut requested = json!({
+            "name": "api", "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "alpine", "pull_policy": "missing"},
+            "pre_deploy": {"command": ["migrate"]}
+        });
+        serde_json::from_value::<RequestedServiceSpec>(requested.clone()).unwrap();
+        requested["pre_deploy"]["command"] = json!([]);
+        assert!(serde_json::from_value::<RequestedServiceSpec>(requested).is_err());
+        for command in [json!(["NONE"]), json!(["sh", "-c", "migrate"])] {
+            let hook: PreDeployHook = serde_json::from_value(json!({"command": command})).unwrap();
+            assert_eq!(serde_json::to_value(hook).unwrap()["command"], command);
+        }
     }
 
     fn configured(test: &[&str]) -> HealthcheckSpec {

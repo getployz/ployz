@@ -157,7 +157,7 @@ fn explicitly_targeted_provisioned_deploy(
     make_provisioned(&mut service, "data", 1_073_741_824);
     add_named_volume(&mut service, "cache");
     service.pre_deploy = Some(PreDeployHook {
-        command: vec!["prepare".into()],
+        command: vec!["prepare".into()].try_into().unwrap(),
         environment: Default::default(),
         privileged: None,
         timeout_millis: None,
