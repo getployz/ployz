@@ -98,7 +98,6 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
             InitializeRequest {
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
@@ -162,7 +161,6 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
             InitializeRequest {
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
@@ -203,9 +201,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
     let mut founder = founder_machine();
     founder.public_ip = Some("192.0.2.1".parse().unwrap());
     let machine_id = founder.id;
-    let requested = IngressProxyBackend::Zentinel
-        .requested_service_spec(ployz::ingress::ZENTINEL_IMAGE.to_owned(), Vec::new(), None)
-        .unwrap();
+    let requested = ployz_core::caddy_service_spec("caddy:test".into(), Vec::new(), None);
     let ingress = container_on(
         &founder,
         requested.to_resolved(
@@ -232,7 +228,6 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
             InitializeRequest {
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Zentinel,
                 public_ip: founder.public_ip,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
@@ -328,8 +323,6 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
             &enroll.url,
             "--name",
             "founder",
-            "--ingress-backend",
-            "zentinel",
             "--yes",
         ])
         .env("PLOYZ_INGRESS_VERIFY_PORT", probe_port.to_string())

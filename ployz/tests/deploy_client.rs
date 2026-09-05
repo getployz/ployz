@@ -10,9 +10,8 @@ use ployz::deploy::{
     ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal, VolumeFate,
 };
 use ployz_core::{
-    ContainerId, IngressProxyBackend, MachineId, MachineStorageObservation, OperationPhase,
-    ProjectName, ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
-    VolumeSource,
+    ContainerId, MachineId, MachineStorageObservation, OperationPhase, ProjectName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec, VolumeSource,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -50,67 +49,9 @@ async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
 }
 
 #[tokio::test]
-async fn ingress_deploy_inherits_and_cannot_change_the_cluster_backend() {
-    for (backend, image) in [
-        (IngressProxyBackend::Caddy, "caddy:test"),
-        (IngressProxyBackend::Zentinel, "zentinel:test"),
-        (IngressProxyBackend::Envoy, "envoy:test"),
-    ] {
-        let service = DeployService::new(machine('a', "one")).with_ingress_backend(Some(backend));
-        let created = service.created_specs();
-        let (address, server) = listening(service).await;
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
-        command.args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "ingress",
-            "deploy",
-            "--skip-health",
-        ]);
-        command.args(["--image", image]);
-        let output = command.output().await.unwrap();
-        assert!(
-            output.status.success(),
-            "{backend}: stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let specs = created.lock().unwrap();
-        assert_eq!(specs.len(), 1);
-        let spec = specs.first().unwrap();
-        match backend {
-            IngressProxyBackend::Caddy => {
-                assert_eq!(spec.container.image, "caddy:test");
-                assert_eq!(
-                    spec.container.command,
-                    ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
-                );
-                assert_eq!(spec.ports.len(), 3);
-            }
-            IngressProxyBackend::Zentinel => {
-                assert_eq!(spec.container.image, "zentinel:test");
-                assert_eq!(spec.container.command, ["-c", "/config/zentinel.kdl"]);
-                assert_eq!(spec.container.cap_add, ["NET_BIND_SERVICE"]);
-                assert_eq!(spec.container.cap_drop, ["ALL"]);
-                assert!(spec.ports.is_empty());
-            }
-            IngressProxyBackend::Envoy => {
-                assert_eq!(spec.container.image, "envoy:test");
-                assert_eq!(
-                    spec.container.command,
-                    ["envoy", "-c", "/config/bootstrap.yaml"]
-                );
-                assert!(spec.container.cap_add.is_empty());
-                assert_eq!(spec.ports.len(), 2);
-            }
-        }
-        server.abort();
-    }
-}
-
-#[tokio::test]
-async fn ingress_deploy_refuses_a_missing_cluster_backend_before_mutation() {
-    let service = DeployService::new(machine('a', "one")).with_ingress_backend(None);
-    let mutations = service.mutating_rpcs();
+async fn ingress_deploy_builds_the_caddy_spec() {
+    let service = DeployService::new(machine('a', "one"));
+    let created = service.created_specs();
     let (address, server) = listening(service).await;
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
@@ -119,18 +60,26 @@ async fn ingress_deploy_refuses_a_missing_cluster_backend_before_mutation() {
             "ingress",
             "deploy",
             "--image",
-            "example.test/ingress",
+            "caddy:test",
+            "--skip-health",
         ])
         .output()
         .await
         .unwrap();
 
-    assert!(!output.status.success());
     assert!(
+        output.status.success(),
+        "{}",
         String::from_utf8_lossy(&output.stderr)
-            .contains("Cluster Ingress Proxy Backend is missing")
     );
-    assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    let specs = created.lock().unwrap();
+    let spec = specs.first().unwrap();
+    assert_eq!(spec.container.image, "caddy:test");
+    assert_eq!(
+        spec.container.command,
+        ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
+    );
+    assert_eq!(spec.ports.len(), 3);
     server.abort();
 }
 

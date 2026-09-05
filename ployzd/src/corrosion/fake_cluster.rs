@@ -16,19 +16,15 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::broadcast};
 
-use super::store::{
-    AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, PUBLISH_FOUNDING_INGRESS_PROXY_BACKEND,
-    STEAL_ALLOCATOR,
-};
+use super::store::{AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, STEAL_ALLOCATOR};
 use super::{ApiClient, ReplicatedStore};
-use ployz_core::{INGRESS_PROXY_BACKEND_CLUSTER_KEY, MachineId};
+use ployz_core::MachineId;
 
 const PUSH_ALLOCATOR_READ: &str = "INSERT INTO allocator_script (value) VALUES (?)";
 
 #[derive(Clone)]
 struct ClusterKv {
     network: String,
-    ingress_proxy_backend: Option<String>,
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, String>,
     container_changes: broadcast::Sender<()>,
@@ -44,29 +40,22 @@ struct Statement {
 }
 
 pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(None, None, false).await
+    bind(None, false).await
 }
 
 pub(crate) async fn store_with_container_changes() -> (ReplicatedStore, tokio::task::JoinHandle<()>)
 {
-    bind(None, None, true).await
+    bind(None, true).await
 }
 
 pub(crate) async fn store_with_allocator_value(
     value: &str,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(Some((value.to_owned(), true)), None, false).await
-}
-
-pub(crate) async fn store_with_ingress_proxy_backend_value(
-    value: &str,
-) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(None, Some(value.to_owned()), false).await
+    bind(Some((value.to_owned(), true)), false).await
 }
 
 async fn bind(
     allocator: Option<(String, bool)>,
-    ingress_proxy_backend: Option<String>,
     container_subscriptions: bool,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -74,7 +63,6 @@ async fn bind(
     let (container_changes, _) = broadcast::channel(16);
     let kv = Arc::new(Mutex::new(ClusterKv {
         network: "10.210.0.0/16".into(),
-        ingress_proxy_backend,
         machines: BTreeMap::new(),
         containers: BTreeMap::new(),
         container_changes,
@@ -167,16 +155,6 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
-        "SELECT value FROM cluster WHERE key = ?"
-            if text_param(&statement.params, 0) == INGRESS_PROXY_BACKEND_CLUSTER_KEY =>
-        {
-            events(
-                &["value"],
-                kv.ingress_proxy_backend
-                    .iter()
-                    .map(|backend| vec![json!(backend)]),
-            )
-        }
         ALLOCATOR_ROW => {
             if let Some(row) = kv.allocator_script.pop_front() {
                 kv.allocator = Some(row);
@@ -214,15 +192,6 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             PUSH_ALLOCATOR_READ => {
                 kv.allocator_script
                     .push_back((text_param(&statement.params, 0).to_owned(), true));
-            }
-            PUBLISH_FOUNDING_INGRESS_PROXY_BACKEND => {
-                assert_eq!(
-                    text_param(&statement.params, 0),
-                    INGRESS_PROXY_BACKEND_CLUSTER_KEY
-                );
-                if kv.ingress_proxy_backend.is_none() {
-                    kv.ingress_proxy_backend = Some(text_param(&statement.params, 1).to_owned());
-                }
             }
             query if query.starts_with("INSERT INTO machines (id, info,") => {
                 kv.machines.insert(

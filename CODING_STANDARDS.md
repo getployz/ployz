@@ -10,7 +10,7 @@ Issue #664 extends that narrow Machine-local safety boundary: before any Service
 
 Issue #701 is a narrow greenfield serving-definition change: ployz-core, ployz, and ployzd switch in lockstep so Serving Containers are generation-selected. Pre-change daemons are unsupported. This exception does not relax lagged-daemon compatibility for later serving changes.
 
-Issue #616 is a narrow greenfield contract exception: the pre-release Caddy-only daemon and RPC names are replaced in lockstep by the immutable Ingress Proxy Backend contract. Clusters and daemons from before #616 are not migrated or supported through compatibility aliases. This exception does not relax lagged-daemon compatibility for later changes to the new contract.
+The Caddy-only ingress change is a narrow greenfield contract exception: client, daemon, and SDK switch in lockstep to Caddy without backend selection or replicated backend state. Ingress configuration fragments serialize as validated strings, and generated configuration carries only its text. Pre-change Clusters and clients are unsupported; there are no migrations or compatibility aliases. This exception does not relax lagged-daemon compatibility for later ingress changes.
 
 Issue #662 is a narrow greenfield contract exception: the pre-release combined named Service Volume source is replaced in lockstep by distinct External, Ordinary, and Provisioned source forms. Clients and daemons from before #662 are not migrated or supported through compatibility aliases. This exception does not relax lagged-daemon compatibility for later changes to the new contract.
 

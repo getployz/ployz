@@ -150,7 +150,8 @@ at causes, success indicators that hide unattempted work.
 **The bet.** Ployz composes boring, battle-tested components — Docker for
 containers, WireGuard for the mesh, SQLite-backed CRDT replication for state,
 Caddy for ingress, systemd for lifecycle — and writes only the thin coordination
-between them.
+between them. Caddy is the only Ingress Proxy; its implementation is not a
+Cluster setting.
 
 **Why.** Every primitive we own is a primitive we patch, secure, and debug
 forever. The maintenance budget belongs to the coordination semantics above, which

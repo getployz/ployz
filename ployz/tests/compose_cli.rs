@@ -256,7 +256,7 @@ secrets:
     assert_eq!(
         api.ingress_proxy_fragment
             .as_ref()
-            .and_then(IngressProxyFragment::as_caddy),
+            .map(IngressProxyFragment::as_str),
         Some("api.example.test { reverse_proxy api:80 }")
     );
     assert_eq!(api.configs().first().unwrap().content, b"setting=true\n");

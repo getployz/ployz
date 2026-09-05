@@ -2,15 +2,13 @@
 
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerObservation, HttpProtocol, IngressHost,
-    IngressProxyBackend, IngressProxyFragment, Machine, MachineId, PortPublication,
-    QualifiedService, ServiceContainer, hostname_owners, service_containers, serving_containers,
+    IngressProxyFragment, Machine, MachineId, PortPublication, QualifiedService, ServiceContainer,
+    hostname_owners, service_containers, serving_containers,
 };
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
-    future::Future,
-    io,
+    fs, io,
     num::NonZeroU16,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -38,60 +36,25 @@ pub(crate) fn is_system_ingress(observation: &ContainerObservation) -> bool {
 }
 
 pub(crate) mod caddy;
-pub(crate) mod envoy;
-pub(crate) mod zentinel;
 
 use caddy::CaddyAdmin;
 
-/// Run the watcher for the immutable Cluster Ingress Proxy Backend.
+/// Run the Caddy watcher.
 pub(crate) async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
     data_dir: PathBuf,
     runtime_dir: PathBuf,
-    docker: Option<crate::docker::LocalDocker>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    match replicated
-        .ingress_proxy_backend()
-        .await
-        .map_err(io::Error::other)?
-    {
-        IngressProxyBackend::Caddy => {
-            caddy::run(
-                machine,
-                replicated,
-                caddy::config_path(&data_dir),
-                runtime_dir.join("caddy/admin.sock"),
-                shutdown,
-            )
-            .await
-        }
-        IngressProxyBackend::Zentinel => {
-            let docker =
-                docker.ok_or_else(|| io::Error::other("Zentinel Ingress Proxy requires Docker"))?;
-            zentinel::watch(
-                machine,
-                replicated,
-                zentinel::config_path(&data_dir),
-                docker,
-                shutdown,
-            )
-            .await
-        }
-        IngressProxyBackend::Envoy => {
-            let docker =
-                docker.ok_or_else(|| io::Error::other("Envoy Ingress Proxy requires Docker"))?;
-            envoy::watch(
-                machine,
-                replicated,
-                envoy::config_path(&data_dir),
-                docker,
-                shutdown,
-            )
-            .await
-        }
-    }
+    caddy::run(
+        machine,
+        replicated,
+        caddy::config_path(&data_dir),
+        runtime_dir.join("caddy/admin.sock"),
+        shutdown,
+    )
+    .await
 }
 
 /// Fully derived observer-local input to ingress rendering and application.
@@ -379,7 +342,7 @@ fn creation_key(container: &ServiceContainer) -> (i64, &str) {
 fn newest_local_ingress(
     machine: &Machine,
     observations: &[ContainerObservation],
-) -> Option<ServiceContainer> {
+) -> Option<ContainerId> {
     service_containers(observations.iter().cloned())
         .into_iter()
         .filter(|container| {
@@ -387,6 +350,7 @@ fn newest_local_ingress(
             observation.machine_id == machine.id && is_system_ingress(observation)
         })
         .max_by(|left, right| creation_key(left).cmp(&creation_key(right)))
+        .map(|container| container.as_observation().container_id)
 }
 
 /// Watch replicated ingress inputs and concretely apply changed projections to Caddy.
@@ -405,51 +369,6 @@ pub(crate) async fn watch_caddy<A: CaddyAdmin, Connect, ConnectFuture>(
 where
     Connect: FnMut() -> ConnectFuture,
     ConnectFuture: Future<Output = Result<Option<A>, caddy::Error>>,
-{
-    watch(
-        machine,
-        replicated,
-        shutdown,
-        |machine, observations, certificates| {
-            let process = newest_local_ingress(machine, observations)
-                .map(|container| container.as_observation().container_id);
-            Ok((
-                IngressProjection::derive(machine, observations, certificates),
-                process,
-            ))
-        },
-        async move |(projection, _process): &(IngressProjection, Option<ContainerId>)| {
-            let applied = async {
-                let admin = connect().await.map_err(io::Error::other)?;
-                apply_caddy(projection, &config_file, admin.as_ref())
-                    .await
-                    .map_err(io::Error::other)
-            }
-            .await;
-            match applied {
-                Ok(()) => WatchApply::Applied,
-                Err(error) => WatchApply::Retry(error),
-            }
-        },
-    )
-    .await
-}
-
-async fn watch<Input, Derive, Apply>(
-    machine: Machine,
-    replicated: ReplicatedStore,
-    shutdown: CancellationToken,
-    mut derive: Derive,
-    mut apply: Apply,
-) -> io::Result<()>
-where
-    Input: Eq,
-    Derive: FnMut(
-        &Machine,
-        &[ContainerObservation],
-        &BTreeMap<IngressHost, CertificateRow>,
-    ) -> io::Result<Input>,
-    Apply: for<'input> AsyncFnMut(&'input Input) -> WatchApply,
 {
     let mut last_input = None;
     'watch: loop {
@@ -477,26 +396,32 @@ where
                 replicated.containers().await,
                 replicated.certificate_state().await,
             ) {
-                (Ok(containers), Ok(certificates)) => {
-                    derive(&machine, &containers.observations, &certificates)
-                }
+                (Ok(containers), Ok(certificates)) => Ok((
+                    IngressProjection::derive(&machine, &containers.observations, &certificates),
+                    newest_local_ingress(&machine, &containers.observations),
+                )),
                 (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
             };
             match input {
-                Ok(input) if last_input.as_ref() != Some(&input) => match apply(&input).await {
-                    WatchApply::Applied => last_input = Some(input),
-                    WatchApply::Retry(error) => {
-                        eprintln!("failed to update Ingress Proxy configuration: {error}");
-                        if wait_before_retry(&shutdown).await {
-                            continue;
+                Ok(input) if last_input.as_ref() != Some(&input) => {
+                    let result = async {
+                        let admin = connect().await.map_err(io::Error::other)?;
+                        apply_caddy(&input.0, &config_file, admin.as_ref())
+                            .await
+                            .map_err(io::Error::other)
+                    }
+                    .await;
+                    match result {
+                        Ok(()) => last_input = Some(input),
+                        Err(error) => {
+                            eprintln!("failed to update Ingress Proxy configuration: {error}");
+                            if wait_before_retry(&shutdown).await {
+                                continue;
+                            }
+                            return Ok(());
                         }
-                        return Ok(());
                     }
-                    WatchApply::WaitForChange(error) => {
-                        eprintln!("Ingress Proxy configuration awaits changed input: {error}");
-                        last_input = Some(input);
-                    }
-                },
+                }
                 Ok(_) => {}
                 Err(error) => {
                     last_input = None;
@@ -546,12 +471,6 @@ enum DebouncedChange {
     Changed,
     Resubscribe,
     Shutdown,
-}
-
-enum WatchApply {
-    Applied,
-    Retry(io::Error),
-    WaitForChange(io::Error),
 }
 
 async fn wait_for_debounced_change(

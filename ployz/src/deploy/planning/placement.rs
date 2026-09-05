@@ -3,11 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressProxyNetworkMode,
-    MachineId, MachineObservation, PortPublication, QualifiedService, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, SpecChange, UpdateOrder, VolumeSource, compare_specs,
-    requested_ingress_proxy_backend,
+    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
+    MachineObservation, PortPublication, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, SpecChange, UpdateOrder, VolumeSource, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -54,7 +53,6 @@ impl PlacementState {
 }
 
 pub(super) struct GlobalPlacement<'placement> {
-    pub(super) identity: &'placement QualifiedService,
     pub(super) service_id: &'placement ServiceId,
     pub(super) current: &'placement [ServiceContainer],
     pub(super) hooks: &'placement [HookContainer],
@@ -68,23 +66,12 @@ pub(super) fn plan_global(
     options: &PlanOptions,
 ) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
     let GlobalPlacement {
-        identity,
         service_id,
         current,
         hooks,
         machines,
     } = target;
-    let uses_bridge_endpoint = identity != &QualifiedService::system_ingress()
-        || requested_ingress_proxy_backend(requested).map_or(true, |backend| {
-            matches!(backend.network_mode(), IngressProxyNetworkMode::Bridge)
-        });
-    let endpoint_demand = |operation, hook_pending| {
-        if uses_bridge_endpoint {
-            EndpointDemand::for_operation(operation, hook_pending)
-        } else {
-            EndpointDemand::for_host_network(operation, hook_pending)
-        }
-    };
+    let endpoint_demand = EndpointDemand::for_operation;
     let has_changes = machines.iter().any(|machine| {
         !matches!(
             global_endpoint_operation(current, machine.machine.id, requested, options),

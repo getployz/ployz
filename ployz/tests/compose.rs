@@ -255,7 +255,7 @@ configs:
         service(&project, "caddy")
             .ingress_proxy_fragment
             .as_ref()
-            .and_then(IngressProxyFragment::as_caddy),
+            .map(IngressProxyFragment::as_str),
         Some("app.example { reverse_proxy :80 }")
     );
 }

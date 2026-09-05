@@ -5,7 +5,7 @@ named-volume	-	ployz/tests/compose.rs::one_named_volume_can_have_different_optio
 machine-init-ssh	-	-	-	-	scripts/qualify-release.sh
 machine-init-local	ployz/src/handlers/mod.rs::local_machine_init_requires_root_to_install	-	-	-	-
 internal-dns	-	-	-	ployz/tests/internal_dns_cluster.rs::internal_dns_tracks_healthy_replicated_containers	gap
-ingress-http	-	-	-	ployz/tests/ingress_cluster.rs::caddy_projects_and_loads_cluster_services_on_three_machines	gap
+ingress-http	ployzd/src/caddy_tests.rs::automatic_sites_match_the_frozen_caddyfile_contract	-	-	ployz/tests/ingress_cluster.rs::caddy_projects_and_loads_cluster_services_on_three_machines	gap
 acme-certs	-	-	-	ployz/tests/certificates_cluster.rs::custom_https_hostname_obtains_a_certificate_from_a_fake_ca	gap
 exec-logs	-	-	-	ployz/tests/operator_cluster.rs::exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster	gap
 installer	scripts/test-cli-installer.sh	-	-	-	-
@@ -13,3 +13,4 @@ daemon-install	scripts/test-daemon-lifecycle.sh	-	-	-	-
 sdk-payloads	scripts/check-sdk-package.sh	ployz-sdk-payloads/tests/pipeline.rs::generated_declarations_match_checked_in_file	-	-	-
 sdk-rpc-errors	scripts/check-sdk-package.sh	-	-	-	-
 sdk-runtime-watch	-	ployz/tests/connect/sdk_watch.rs::lost_relay_tunnel_asks_the_caller_to_reconnect	-	-	-
+ingress-caddy-only	ployz-core/src/domain/ingress.rs::validators_reject_noncanonical_whole_spec_fields	ployz/tests/deploy_client.rs::ingress_deploy_builds_the_caddy_spec	-	-	-

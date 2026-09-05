@@ -132,10 +132,6 @@ pub async fn run(
     admin_socket: PathBuf,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    replicated
-        .require_ingress_proxy_backend(ployz_core::IngressProxyBackend::Caddy)
-        .await
-        .map_err(io::Error::other)?;
     prepare_directory(
         admin_socket
             .parent()
@@ -202,7 +198,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     if let Some(config) = projection
         .global_fragment
         .as_ref()
-        .and_then(IngressProxyFragment::as_caddy)
+        .map(IngressProxyFragment::as_str)
     {
         match render_custom_config(
             config,
@@ -231,9 +227,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     }
 
     for (identity, fragment) in &projection.service_fragments {
-        let Some(config) = fragment.as_caddy() else {
-            continue;
-        };
+        let config = fragment.as_str();
         let rendered = match render_custom_config(config, identity, &projection.upstreams) {
             Ok(rendered) => rendered,
             Err(error) => {

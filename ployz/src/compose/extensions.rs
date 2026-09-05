@@ -35,7 +35,7 @@ pub(super) fn caddy(
     };
     let config = config.trim();
     (!config.is_empty())
-        .then(|| IngressProxyFragment::parse_caddy(config))
+        .then(|| IngressProxyFragment::parse(config))
         .transpose()
         .map_err(invalid)
 }

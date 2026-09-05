@@ -199,26 +199,14 @@ async fn enroll_founder(
     cloud_url: &str,
     token: &CloudEnrollToken,
 ) -> Result<(), Error> {
-    let selected_backend = *matches
-        .get_one::<ployz_core::IngressProxyBackend>("ingress-backend")
-        .expect("founding Ingress Proxy Backend has a default");
-    let (state, backend) = match (mode, details.phase) {
-        (InitializeMode::Resume, LocalMachinePhase::Participating) => (
-            FounderLocalState::Resume {
-                machine: Box::new(details.machine.ok_or_else(|| {
-                    Error::usage(
-                        "matching founding Machine has no participating identity".to_owned(),
-                    )
-                })?),
-            },
-            details.ingress_proxy_backend.ok_or_else(|| {
-                Error::usage("matching founding Machine has no Ingress Proxy Backend".to_owned())
-            })?,
-        ),
+    let state = match (mode, details.phase) {
+        (InitializeMode::Resume, LocalMachinePhase::Participating) => FounderLocalState::Resume {
+            machine: Box::new(details.machine.ok_or_else(|| {
+                Error::usage("matching founding Machine has no participating identity".to_owned())
+            })?),
+        },
         (InitializeMode::Resume, LocalMachinePhase::Uninitialized)
-        | (InitializeMode::New, LocalMachinePhase::Uninitialized) => {
-            (FounderLocalState::Initialize, selected_backend)
-        }
+        | (InitializeMode::New, LocalMachinePhase::Uninitialized) => FounderLocalState::Initialize,
         (InitializeMode::New, phase) => {
             return Err(Error::usage(format!(
                 "new founding claim requires an uninitialized Machine, but the local phase is {phase:?}"
@@ -235,7 +223,7 @@ async fn enroll_founder(
     let ingress = if no_ingress {
         None
     } else {
-        Some(crate::ingress::service_spec_for_backend(backend, None, Vec::new(), None).await?)
+        Some(crate::ingress::service_spec(None, Vec::new(), None).await?)
     };
     let (machine, mut ready) = match state {
         FounderLocalState::Resume { machine } => (*machine, client),
@@ -253,7 +241,6 @@ async fn enroll_founder(
                     InitializeRequest {
                         name,
                         cluster_network,
-                        ingress_proxy_backend: backend,
                         public_ip: machine_token.public_ip,
                         advertised_endpoints: machine_token.advertised_endpoints,
                         wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
