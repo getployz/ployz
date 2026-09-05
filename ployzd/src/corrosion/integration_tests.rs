@@ -436,7 +436,6 @@ async fn founder_publisher_backdates_allocator() {
                 origin: ParticipationOrigin::Founder {
                     cluster: crate::machine::FoundingCluster {
                         network: "10.210.0.0/16".parse().unwrap(),
-                        ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
                     },
                 },
             },

@@ -42,22 +42,10 @@ pub enum TransportProtocol {
     Udp,
 }
 
-/// Opaque Ingress Proxy configuration tagged with the backend that understands it.
+/// Non-empty raw Caddy configuration for the reserved Ingress Proxy Service.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-#[serde(
-    rename_all = "snake_case",
-    tag = "backend",
-    try_from = "IngressProxyFragmentWire"
-)]
-pub enum IngressProxyFragment {
-    /// Raw Caddy configuration evaluated only by the Caddy backend.
-    #[non_exhaustive]
-    Caddy {
-        /// Non-empty Caddy configuration.
-        config: String,
-    },
-}
+#[serde(try_from = "String", into = "String")]
+pub struct IngressProxyFragment(String);
 
 impl IngressProxyFragment {
     /// Parse a non-empty raw Caddy fragment.
@@ -65,7 +53,7 @@ impl IngressProxyFragment {
     /// # Errors
     ///
     /// Returns [`ValueError`] when `config` is empty after trimming.
-    pub fn parse_caddy(config: impl Into<String>) -> Result<Self, ValueError> {
+    pub fn parse(config: impl Into<String>) -> Result<Self, ValueError> {
         let config = config.into();
         let trimmed = config.trim();
         if trimmed.is_empty() {
@@ -75,33 +63,27 @@ impl IngressProxyFragment {
                 "non-empty configuration",
             ));
         }
-        Ok(Self::Caddy {
-            config: trimmed.to_owned(),
-        })
+        Ok(Self(trimmed.to_owned()))
     }
 
-    /// Borrow the raw fragment when it is for Caddy.
+    /// Borrow the raw Caddy fragment.
     #[must_use]
-    pub fn as_caddy(&self) -> Option<&str> {
-        match self {
-            Self::Caddy { config } => Some(config),
-        }
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "backend")]
-enum IngressProxyFragmentWire {
-    Caddy { config: String },
-}
-
-impl TryFrom<IngressProxyFragmentWire> for IngressProxyFragment {
+impl TryFrom<String> for IngressProxyFragment {
     type Error = ValueError;
 
-    fn try_from(fragment: IngressProxyFragmentWire) -> Result<Self, Self::Error> {
-        match fragment {
-            IngressProxyFragmentWire::Caddy { config } => Self::parse_caddy(config),
-        }
+    fn try_from(config: String) -> Result<Self, Self::Error> {
+        Self::parse(config)
+    }
+}
+
+impl From<IngressProxyFragment> for String {
+    fn from(fragment: IngressProxyFragment) -> Self {
+        fragment.0
     }
 }
 
@@ -529,7 +511,7 @@ pub struct RequestedServiceSpec {
     pub ports: Vec<PortPublication>,
     pub mount_graph: crate::ServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
-    /// Backend-tagged custom configuration for this Service.
+    /// Custom Caddy configuration for the reserved Ingress Proxy Service.
     pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: UpdateConfig,
 }
@@ -546,7 +528,7 @@ pub struct ResolvedServiceSpec {
     pub ports: Vec<PortPublication>,
     pub mount_graph: crate::ResolvedServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
-    /// Backend-tagged custom configuration for this Service.
+    /// Custom Caddy configuration for the reserved Ingress Proxy Service.
     pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: ResolvedUpdateConfig,
 }

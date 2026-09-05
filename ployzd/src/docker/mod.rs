@@ -41,7 +41,6 @@ use tokio::sync::Mutex;
 
 use observe::ObservationSink;
 
-pub(crate) use create::NetworkAttachment;
 pub(crate) use lifecycle::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest};
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
@@ -74,12 +73,6 @@ impl LocalDocker {
             client,
             endpoint_creates: Arc::new(Mutex::new(())),
         }
-    }
-
-    /// Borrow the local Docker API client for a private runtime adapter.
-    #[must_use]
-    pub(crate) fn client(&self) -> &Docker {
-        &self.client
     }
 
     #[cfg(test)]
@@ -819,7 +812,6 @@ mod tests {
             ContainerKind::ServiceContainer,
             &project_name,
             &spec,
-            NetworkAttachment::Bridge,
         )
         .unwrap();
         assert!(
@@ -832,6 +824,10 @@ mod tests {
         assert_eq!(regular.cmd, Some(vec!["serve".into()]));
         assert_eq!(regular.hostname.as_deref(), Some("shared-host"));
         let regular_host = regular.host_config.unwrap();
+        assert_eq!(
+            regular_host.network_mode.as_deref(),
+            Some(crate::network::DOCKER_NETWORK_NAME)
+        );
         assert_eq!(regular_host.dns, Some(vec![gateway.0.to_string()]));
         assert_eq!(regular_host.dns_search, Some(vec!["shop.internal".into()]));
         assert_eq!(regular_host.dns_options, Some(vec!["ndots:1".into()]));
@@ -870,7 +866,6 @@ mod tests {
             ContainerKind::PreDeployHook,
             &project_name,
             &spec,
-            NetworkAttachment::Bridge,
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
@@ -939,7 +934,6 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::ProjectName::parse("app").unwrap(),
             &spec,
-            NetworkAttachment::Bridge,
         )
         .unwrap();
         assert_eq!(body.stop_timeout, Some(1));
@@ -951,43 +945,6 @@ mod tests {
         );
         assert_eq!(restart.maximum_retry_count, Some(3));
         assert_eq!(host.pid_mode.as_deref(), Some("container:abc"));
-    }
-
-    #[test]
-    fn zentinel_ingress_uses_host_network_without_cluster_dns_or_published_ports() {
-        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
-        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
-        let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-            "service_id": "a".repeat(32),
-            "name": "ingress",
-            "mode": { "mode": "global" },
-            "container": {
-                "image": "ghcr.io/zentinelproxy/zentinel@sha256:fixture",
-                "command": ["-c", "/config/zentinel.kdl"],
-                "cap_add": ["NET_BIND_SERVICE"],
-                "cap_drop": ["ALL"],
-                "pull_policy": "missing"
-            }
-        }))
-        .unwrap();
-
-        let body = create::container_create_body(
-            &machine_id,
-            gateway,
-            ContainerKind::ServiceContainer,
-            &ployz_core::ProjectName::system(),
-            &spec,
-            NetworkAttachment::Host,
-        )
-        .unwrap();
-        let host = body.host_config.unwrap();
-
-        assert_eq!(host.network_mode.as_deref(), Some("host"));
-        assert!(host.dns.is_none());
-        assert!(host.dns_search.is_none());
-        assert!(host.dns_options.is_none());
-        assert!(host.port_bindings.is_none());
-        assert_eq!(host.cap_add, Some(vec!["NET_BIND_SERVICE".into()]));
     }
 
     #[test]
@@ -1018,7 +975,6 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::ProjectName::parse("app").unwrap(),
             &spec,
-            NetworkAttachment::Bridge,
         )
         .unwrap();
         let host = body.host_config.unwrap();

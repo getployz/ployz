@@ -1,9 +1,0 @@
-version_info: "0ff92aac8e0ffb4c7a5c0f3767729397f35b6f80a3748ebcb841a312e61707f8"
-resources:
-- "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
-  name: ployz-tls-secure.example.com
-  tls_certificate:
-    certificate_chain:
-      filename: /config/certs/secure.example.com-b1f749c1ccf5ec27eadc3e24da1e2da92c902bd706dff8d418cdefd439405aa0.crt
-    private_key:
-      filename: /config/certs/secure.example.com-b1f749c1ccf5ec27eadc3e24da1e2da92c902bd706dff8d418cdefd439405aa0.key

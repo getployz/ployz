@@ -90,24 +90,12 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             variants: &[("replicated", &[("replicas", "number")]), ("global", &[])],
         },
     ),
-    (
-        "IngressProxyFragment",
-        Shape::InternallyTagged {
-            tag: "backend",
-            params: "",
-            variants: &[("caddy", &[("config", "string")])],
-        },
-    ),
+    ("IngressProxyFragment", Shape::Alias("string")),
     (
         "IngressProxyConfig",
-        Shape::InternallyTagged {
-            tag: "backend",
+        Shape::Object {
             params: "",
-            variants: &[
-                ("caddy", &[("config", "string")]),
-                ("zentinel", &[("config", "string")]),
-                ("envoy", &[("config", "string")]),
-            ],
+            fields: &[("config", "string")],
         },
     ),
     (

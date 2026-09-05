@@ -57,7 +57,6 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
             MachineName::parse("first").unwrap(),
             ployzd::machine::FoundingCluster {
                 network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             },
             Some("203.0.113.1".parse().unwrap()),
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
@@ -73,16 +72,12 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         "10.210.0.0/16"
     );
     let LocalMachineBody::Participating {
-        origin: ParticipationOrigin::Founder { cluster: founding },
+        origin: ParticipationOrigin::Founder { cluster: _ },
         ..
     } = first.record().body()
     else {
         panic!("initialized Machine must retain its founding Cluster seed");
     };
-    assert_eq!(
-        founding.ingress_proxy_backend,
-        ployz_core::IngressProxyBackend::Caddy
-    );
     assert_eq!(first.record().cloud_pairing, None);
     assert!(
         first
@@ -90,7 +85,6 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                 MachineName::parse("again").unwrap(),
                 ployzd::machine::FoundingCluster {
                     network: "10.210.0.0/16".parse().unwrap(),
-                    ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
                 },
                 None,
                 vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
@@ -148,7 +142,6 @@ fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
         .initialize(ployz_core::InitializeRequest {
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
-            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
@@ -190,7 +183,6 @@ fn set_cloud_pairing_after_initialize_persists() {
         .initialize(ployz_core::InitializeRequest {
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
-            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
@@ -219,7 +211,6 @@ fn set_cloud_pairing_none_clears_persisted_pairing() {
         .initialize(ployz_core::InitializeRequest {
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
-            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
@@ -254,7 +245,6 @@ fn join_with_cloud_pairing_stores_the_same_two_fields() {
             MachineName::parse("first").unwrap(),
             ployzd::machine::FoundingCluster {
                 network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             },
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
@@ -310,7 +300,6 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
             MachineName::parse("machine").unwrap(),
             ployzd::machine::FoundingCluster {
                 network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             },
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
@@ -349,7 +338,6 @@ fn machine_update_is_atomic_and_durable() {
             MachineName::parse("before").unwrap(),
             ployzd::machine::FoundingCluster {
                 network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             },
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
@@ -447,7 +435,6 @@ async fn inspect_reports_stored_cloud_pairing_without_the_secret() {
         .initialize(ployz_core::InitializeRequest {
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
-            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,
@@ -690,7 +677,6 @@ fn legal_bodies_round_trip() {
                     origin: ParticipationOrigin::Founder {
                         cluster: ployzd::machine::FoundingCluster {
                             network: "10.210.0.0/16".parse().unwrap(),
-                            ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
                         },
                     },
                 },

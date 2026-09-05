@@ -693,7 +693,6 @@ fn plan_one_service(
         ServiceMode::Global => plan_global(
             requested,
             GlobalPlacement {
-                identity: &identity,
                 service_id: &service_id,
                 current,
                 hooks,

@@ -10,10 +10,9 @@ use std::{
 use ployz_core::{
     CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged, ContainerDetails,
     ContainerList, ContainerObservationMap, ContractDescription, Domain, DomainRecords,
-    ImageIngestReason, ImagePulled, IngressProxyBackend, IngressProxyConfig, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineId, MachineLogService, MachineRpc, MachineRpcClient,
-    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    VolumeRemoved, op,
+    ImageIngestReason, ImagePulled, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
+    MachineId, MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, Rpc,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::{sync::watch, time::Instant};
@@ -770,36 +769,16 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::GetIngressProxyConfig>(request)?;
-        let replicated = match self.ready_replicated() {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
-        };
-        let backend = match replicated.ingress_proxy_backend().await {
-            Ok(backend) => backend,
-            Err(error) => {
-                return respond(RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: error.to_string(),
-                    details: Value::Null,
-                });
-            }
-        };
+        if let Err(error) = self.ready_replicated() {
+            return respond(error);
+        }
         let Some(data_dir) = &self.ingress_data_dir else {
             return respond(unavailable("Ingress Proxy configuration is not available"));
         };
-        let path = match backend {
-            IngressProxyBackend::Caddy => crate::ingress::caddy::config_path(data_dir),
-            IngressProxyBackend::Zentinel => crate::ingress::zentinel::config_path(data_dir),
-            IngressProxyBackend::Envoy => crate::ingress::envoy::config_path(data_dir),
-        };
-        let generated = match backend {
-            IngressProxyBackend::Caddy | IngressProxyBackend::Zentinel => {
-                std::fs::read_to_string(&path)
-            }
-            IngressProxyBackend::Envoy => crate::ingress::envoy::read_generated_config(data_dir),
-        };
+        let path = crate::ingress::caddy::config_path(data_dir);
+        let generated = std::fs::read_to_string(&path);
         match generated {
-            Ok(config) => respond(IngressProxyConfig::for_backend(backend, config)),
+            Ok(config) => respond(IngressProxyConfig { config }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => respond(RpcError {
                 code: RpcErrorCode::NotFound,
                 message: format!(
@@ -962,17 +941,11 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         }
         LocalMachineError::OperationTask(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
-        LocalMachineError::IngressProxyBackend(error) => respond(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: error.to_string(),
-            details: Value::Null,
-        }),
         LocalMachineError::IngressProxyServiceSpec(error) => respond(RpcError {
             code: RpcErrorCode::InvalidArgument,
             message: error.to_string(),
             details: Value::Null,
         }),
-        LocalMachineError::IngressRuntime(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Network(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
         LocalMachineError::Cleanup(message) => respond(RpcError {

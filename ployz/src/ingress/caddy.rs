@@ -3,7 +3,6 @@
 use oci_client::{
     Client, ParseError, Reference, errors::OciDistributionError, secrets::RegistryAuth,
 };
-use ployz_core::{IngressProxyBackend, IngressProxyFragment, MachineTarget, RequestedServiceSpec};
 use semver::Version;
 use thiserror::Error;
 
@@ -18,7 +17,7 @@ pub enum IngressImageError {
     ListTags(#[from] OciDistributionError),
 }
 
-/// Discover the latest stable Caddy 2 image used by the current ingress backend.
+/// Discover the latest stable Caddy 2 image used for ingress.
 ///
 /// # Errors
 ///
@@ -50,27 +49,8 @@ fn select_image(tags: &[String]) -> String {
         )
 }
 
-#[must_use]
-/// Build the concrete Caddy Service Spec behind the neutral ingress identity.
-pub fn service_spec(
-    image: String,
-    machines: Vec<MachineTarget>,
-    caddy_config: Option<String>,
-) -> RequestedServiceSpec {
-    let fragment = caddy_config
-        .filter(|config| !config.trim().is_empty())
-        .map(IngressProxyFragment::parse_caddy)
-        .transpose()
-        .expect("non-empty Caddy configuration is valid");
-    IngressProxyBackend::Caddy
-        .requested_service_spec(image, machines, fragment)
-        .expect("Caddy profile accepts Caddy fragments")
-}
-
 #[cfg(test)]
 mod tests {
-    use ployz_core::{PortPublication, ServiceMode, ServiceName, TransportProtocol};
-
     use super::*;
 
     #[test]
@@ -87,49 +67,5 @@ mod tests {
             "caddy:2.10.0"
         );
         assert_eq!(select_image(&["latest".into()]), "caddy:latest");
-    }
-
-    #[test]
-    fn service_spec_uses_neutral_identity_roots_and_concrete_caddy_wiring() {
-        let spec = service_spec("caddy:2.10.0".into(), Vec::new(), None);
-
-        assert_eq!(spec.name, ServiceName::parse("ingress").unwrap());
-        assert_eq!(spec.mode, ServiceMode::Global);
-        assert_eq!(
-            spec.container.command,
-            ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
-        );
-        assert_eq!(
-            spec.container
-                .environment
-                .get("CADDY_ADMIN")
-                .map(String::as_str),
-            Some("unix//run/ingress/caddy/admin.sock")
-        );
-        assert_eq!(spec.ports.len(), 3);
-        assert!(matches!(
-            spec.ports.get(2),
-            Some(PortPublication::Host {
-                transport_protocol: TransportProtocol::Udp,
-                ..
-            })
-        ));
-        assert_eq!(spec.mounts().len(), 3);
-        assert_eq!(
-            spec.volume_graph()
-                .volumes()
-                .iter()
-                .filter_map(|volume| match volume.source.kind() {
-                    ployz_core::RawVolumeSource::Bind { machine_path, .. } =>
-                        Some(machine_path.as_str()),
-                    ployz_core::RawVolumeSource::External { .. }
-                    | ployz_core::RawVolumeSource::Ordinary { .. }
-                    | ployz_core::RawVolumeSource::Provisioned { .. }
-                    | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
-                })
-                .collect::<Vec<_>>(),
-            ["/var/lib/ployz/ingress", "/run/ployz/ingress"]
-        );
-        assert!(spec.config_graph().mounts().is_empty());
     }
 }

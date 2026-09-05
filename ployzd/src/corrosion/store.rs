@@ -21,10 +21,6 @@ use crate::{
     machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore, StoreError},
 };
 
-mod ingress;
-#[cfg(test)]
-pub(crate) use ingress::PUBLISH_FOUNDING_INGRESS_PROXY_BACKEND;
-
 #[derive(Clone)]
 pub struct ReplicatedStore {
     api: ApiClient,

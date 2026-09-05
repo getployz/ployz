@@ -83,13 +83,11 @@ export type ServiceMode =
   | { mode: "replicated"; replicas: number }
   | { mode: "global" };
 
-export type IngressProxyFragment =
-  | { backend: "caddy"; config: string };
+export type IngressProxyFragment = string;
 
-export type IngressProxyConfig =
-  | { backend: "caddy"; config: string }
-  | { backend: "zentinel"; config: string }
-  | { backend: "envoy"; config: string };
+export type IngressProxyConfig = {
+  config: string;
+};
 
 export type IngressHostname =
   | { kind: "cluster_domain"; label?: string }

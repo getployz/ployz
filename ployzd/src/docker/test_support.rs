@@ -285,12 +285,12 @@ pub(super) fn container_request<'spec, Storage>(
     project_name: &'spec ProjectName,
     spec: &'spec ResolvedServiceSpec,
     storage: Storage,
-) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<NetworkAttachment, Error>>> {
+) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     ContainerRequest {
         kind,
         project_name,
         spec,
-        network: std::future::ready(Ok(NetworkAttachment::Host)),
+        admission: std::future::ready(Ok(())),
         storage,
     }
 }
@@ -299,11 +299,11 @@ pub(super) fn global_slot_request<'spec, Storage>(
     project_name: &'spec ProjectName,
     spec: &'spec ResolvedServiceSpec,
     storage: Storage,
-) -> GlobalSlotRequest<'spec, Storage, std::future::Ready<Result<NetworkAttachment, Error>>> {
+) -> GlobalSlotRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     GlobalSlotRequest {
         project_name,
         spec,
-        network: std::future::ready(Ok(NetworkAttachment::Host)),
+        admission: std::future::ready(Ok(())),
         storage,
     }
 }

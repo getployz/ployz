@@ -7,6 +7,7 @@ use ployz_core::{
     ResolvedServiceSpec,
 };
 
+use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
@@ -17,7 +18,7 @@ impl LocalMachine {
         local_storage(Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
     }
 
-    /// Create a container after storage admission and deferred Machine-local runtime preparation.
+    /// Create a container after storage admission and deferred Machine-local validation.
     ///
     /// # Errors
     ///
@@ -56,13 +57,13 @@ impl LocalMachine {
         }
         let machine = record.machine().ok_or(Error::NotParticipating)?;
         containers
-            .create_with_network(
+            .create_with_admission(
                 machine,
                 ContainerRequest {
                     kind,
                     project_name: project,
                     spec,
-                    network: self.prepare_service_runtime(kind, project, spec),
+                    admission: async { admit_ingress_service(project, spec) },
                     storage: self.observe_storage(),
                 },
             )
@@ -107,11 +108,7 @@ impl LocalMachine {
                 GlobalSlotRequest {
                     project_name: project,
                     spec,
-                    network: self.prepare_service_runtime(
-                        ContainerKind::ServiceContainer,
-                        project,
-                        spec,
-                    ),
+                    admission: async { admit_ingress_service(project, spec) },
                     storage: self.observe_storage(),
                 },
             )
@@ -143,7 +140,6 @@ mod tests {
                     MachineName::parse("local").unwrap(),
                     crate::machine::FoundingCluster {
                         network: "10.210.0.0/16".parse().unwrap(),
-                        ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
                     },
                     None,
                     vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
@@ -295,7 +291,6 @@ mod tests {
                 MachineName::parse("local").unwrap(),
                 crate::machine::FoundingCluster {
                     network: "10.210.0.0/16".parse().unwrap(),
-                    ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
                 },
                 None,
                 vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],

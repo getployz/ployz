@@ -35,22 +35,12 @@ pub(super) enum EndpointOperation {
 
 impl EndpointDemand {
     pub(super) fn for_operation(operation: EndpointOperation, hook_pending: bool) -> Self {
-        Self::new(operation, hook_pending, true)
-    }
-
-    pub(super) fn for_host_network(operation: EndpointOperation, hook_pending: bool) -> Self {
-        Self::new(operation, hook_pending, false)
-    }
-
-    fn new(operation: EndpointOperation, hook_pending: bool, service_uses_bridge: bool) -> Self {
         let changes = !matches!(operation, EndpointOperation::Unchanged);
         let uses_hook = changes && hook_pending;
-        let uses_service_endpoint = changes && service_uses_bridge;
         Self {
-            peak: u64::from(uses_service_endpoint) + u64::from(uses_hook),
-            persistent: u64::from(
-                service_uses_bridge && matches!(operation, EndpointOperation::Create),
-            ) + u64::from(uses_hook),
+            peak: u64::from(changes) + u64::from(uses_hook),
+            persistent: u64::from(matches!(operation, EndpointOperation::Create))
+                + u64::from(uses_hook),
             uses_hook,
         }
     }

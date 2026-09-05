@@ -22,7 +22,7 @@ fn non_ensured_global_convergence_converts_to_admission_errors() {
 }
 
 #[tokio::test]
-async fn rejected_admission_does_not_poll_deferred_network() {
+async fn rejected_admission_does_not_poll_deferred_local_admission() {
     let (runtime, fake) = fake_runtime().await;
     let machine = machine();
     let project = ProjectName::parse("app").unwrap();
@@ -32,13 +32,13 @@ async fn rejected_admission_does_not_poll_deferred_network() {
     };
 
     let ordinary = runtime
-        .create_with_network(
+        .create_with_admission(
             &machine,
             ContainerRequest {
                 kind: ContainerKind::ServiceContainer,
                 project_name: &project,
                 spec: &ineligible,
-                network: async { Err(Error::EndpointCapacity) },
+                admission: async { Err(Error::EndpointCapacity) },
                 storage: std::future::ready(None),
             },
         )
@@ -52,7 +52,7 @@ async fn rejected_admission_does_not_poll_deferred_network() {
             GlobalSlotRequest {
                 project_name: &project,
                 spec: &unknown,
-                network: async { Err(Error::EndpointCapacity) },
+                admission: async { Err(Error::EndpointCapacity) },
                 storage: std::future::ready(None),
             },
         )
@@ -91,7 +91,7 @@ async fn run_replacement_hook_and_missing_global_reach_the_same_volume_ensure() 
     ] {
         assert!(matches!(
             runtime
-                .create_with_network(
+                .create_with_admission(
                     &machine,
                     container_request(kind, &project, &spec, std::future::ready(None)),
                 )

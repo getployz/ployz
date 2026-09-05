@@ -266,6 +266,12 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
     let partial = partial_result();
     BTreeMap::from([
         ("ContractDescription", to_value(&contract_description())),
+        (
+            "IngressProxyConfig",
+            to_value(&IngressProxyConfig {
+                config: "example.test { respond ok }\n".into(),
+            }),
+        ),
         ("DockerVolume", to_value(&docker_volume())),
         ("DockerVolumeId", to_value(&docker_volume().id)),
         (
@@ -431,8 +437,6 @@ pub(super) fn tagged_decoders() -> BTreeMap<&'static str, Decodes> {
             decodes::<MachineStorageObservation> as Decodes,
         ),
         ("ServiceMode", decodes::<ServiceMode>),
-        ("IngressProxyFragment", decodes::<IngressProxyFragment>),
-        ("IngressProxyConfig", decodes::<IngressProxyConfig>),
         ("IngressHostname", decodes::<IngressHostname>),
         ("HostBind", decodes::<HostBind>),
         ("PortPublication", decodes::<PortPublication>),
@@ -491,21 +495,6 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             ],
         ),
         ("DataLoss", vec![to_value(&data_loss())]),
-        (
-            "IngressProxyFragment",
-            vec![to_value(
-                &IngressProxyFragment::parse_caddy("reverse_proxy localhost:8080")
-                    .expect("fixture is non-empty"),
-            )],
-        ),
-        (
-            "IngressProxyConfig",
-            vec![
-                to_value(&IngressProxyConfig::Caddy("caddy exact\n".into())),
-                to_value(&IngressProxyConfig::Zentinel("zentinel exact\n".into())),
-                to_value(&IngressProxyConfig::Envoy("envoy exact\n".into())),
-            ],
-        ),
         (
             "CreateVolumeReport",
             vec![
@@ -1269,8 +1258,7 @@ fn configured_healthcheck() -> HealthcheckSpec {
 fn typed_requested_spec() -> RequestedServiceSpec {
     let mut spec = requested_spec();
     spec.ingress_proxy_fragment = Some(
-        IngressProxyFragment::parse_caddy("reverse_proxy localhost:8080")
-            .expect("fixture is non-empty"),
+        IngressProxyFragment::parse("reverse_proxy localhost:8080").expect("fixture is non-empty"),
     );
     spec.set_volume_graph(
         ServiceVolumeGraph::parse(vec![named_volume_with_driver()], vec![service_mount()])

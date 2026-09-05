@@ -18,7 +18,7 @@ use ployz_core::{
     synthesize_membership,
 };
 use thiserror::Error;
-use tokio::sync::{Mutex as AsyncMutex, watch};
+use tokio::sync::watch;
 
 use super::{FoundingCluster, LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 
@@ -37,8 +37,6 @@ pub struct LocalMachine {
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     participating: Option<watch::Sender<bool>>,
-    /// Serializes first-process Ingress Proxy filesystem preparation.
-    pub(super) ingress_runtime_lock: Arc<AsyncMutex<()>>,
 }
 
 mod container;
@@ -103,14 +101,8 @@ pub enum Error {
     LockPoisoned,
     #[error(transparent)]
     Cluster(#[from] crate::corrosion::Error),
-    /// The immutable Cluster Ingress Proxy Backend is unavailable or inconsistent.
-    #[error("{0}")]
-    IngressProxyBackend(#[source] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
-    /// Backend runtime preparation failed before container creation.
-    #[error(transparent)]
-    IngressRuntime(#[from] super::ingress::IngressRuntimeError),
     #[error(transparent)]
     Network(#[from] NetworkError),
     #[error(transparent)]
@@ -137,7 +129,6 @@ impl LocalMachine {
             cluster: None,
             containers: None,
             participating: None,
-            ingress_runtime_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -270,10 +261,6 @@ impl LocalMachine {
         } else {
             None
         };
-        let ingress_proxy_backend = match &self.cluster {
-            Some(cluster) => cluster.replicated.ingress_proxy_backend().await.ok(),
-            None => None,
-        };
         Ok(MachineDetails {
             id: record.id(),
             phase: record.phase(),
@@ -285,7 +272,6 @@ impl LocalMachine {
             cloud_paired: record.cloud_pairing.is_some(),
             telemetry,
             storage,
-            ingress_proxy_backend,
         })
     }
 
@@ -363,7 +349,6 @@ impl LocalMachine {
             request.name,
             FoundingCluster {
                 network: request.cluster_network,
-                ingress_proxy_backend: request.ingress_proxy_backend,
             },
             request.public_ip,
             request.advertised_endpoints,

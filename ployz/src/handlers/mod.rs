@@ -604,116 +604,20 @@ mod tests {
     }
 
     #[test]
-    fn founding_defaults_to_caddy_and_accepts_explicit_backends() {
-        for (arguments, expected) in [
-            (
-                vec!["ployz", "machine", "init", "root@host"],
-                ployz_core::IngressProxyBackend::Caddy,
-            ),
-            (
-                vec![
-                    "ployz",
-                    "machine",
-                    "init",
-                    "--ingress-backend",
-                    "caddy",
-                    "root@host",
-                ],
-                ployz_core::IngressProxyBackend::Caddy,
-            ),
-            (
-                vec![
-                    "ployz",
-                    "machine",
-                    "init",
-                    "--ingress-backend",
-                    "zentinel",
-                    "root@host",
-                ],
-                ployz_core::IngressProxyBackend::Zentinel,
-            ),
-            (
-                vec![
-                    "ployz",
-                    "machine",
-                    "init",
-                    "--ingress-backend",
-                    "envoy",
-                    "root@host",
-                ],
-                ployz_core::IngressProxyBackend::Envoy,
-            ),
+    fn founding_commands_reject_the_removed_ingress_backend_option() {
+        for arguments in [
+            ["ployz", "machine", "init", "--ingress-backend", "caddy"].as_slice(),
+            [
+                "ployz",
+                "cloud",
+                "enroll",
+                "pmet_test",
+                "--ingress-backend",
+                "caddy",
+            ]
+            .as_slice(),
         ] {
-            let matches = command().try_get_matches_from(arguments).unwrap();
-            assert_eq!(
-                leaf_matches(&matches)
-                    .get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
-                Some(&expected)
-            );
-        }
-
-        assert!(
-            command()
-                .try_get_matches_from([
-                    "ployz",
-                    "machine",
-                    "add",
-                    "--ingress-backend",
-                    "caddy",
-                    "root@host",
-                ])
-                .is_err(),
-            "joining Machines must inherit instead of choosing"
-        );
-    }
-
-    #[test]
-    fn cloud_founding_defaults_to_caddy_and_accepts_explicit_backends() {
-        for (arguments, expected) in [
-            (
-                vec!["ployz", "cloud", "enroll", "pmet_test"],
-                ployz_core::IngressProxyBackend::Caddy,
-            ),
-            (
-                vec![
-                    "ployz",
-                    "cloud",
-                    "enroll",
-                    "pmet_test",
-                    "--ingress-backend",
-                    "zentinel",
-                ],
-                ployz_core::IngressProxyBackend::Zentinel,
-            ),
-            (
-                vec![
-                    "ployz",
-                    "cloud",
-                    "enroll",
-                    "pmet_test",
-                    "--ingress-backend",
-                    "caddy",
-                ],
-                ployz_core::IngressProxyBackend::Caddy,
-            ),
-            (
-                vec![
-                    "ployz",
-                    "cloud",
-                    "enroll",
-                    "pmet_test",
-                    "--ingress-backend",
-                    "envoy",
-                ],
-                ployz_core::IngressProxyBackend::Envoy,
-            ),
-        ] {
-            let matches = command().try_get_matches_from(arguments).unwrap();
-            assert_eq!(
-                leaf_matches(&matches)
-                    .get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
-                Some(&expected)
-            );
+            assert!(command().try_get_matches_from(arguments).is_err());
         }
     }
 

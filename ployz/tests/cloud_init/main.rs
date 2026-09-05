@@ -7,16 +7,14 @@ mod harness;
 
 use harness::{
     CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, RelayListen,
-    TOKEN, assert_not_held, envoy_ingress_on, founder_machine, ingress_on, registration,
-    serve_ingress_probe, serve_machine, wait_for_held,
+    TOKEN, assert_not_held, founder_machine, ingress_on, registration, serve_ingress_probe,
+    serve_machine, wait_for_held,
 };
 use ployz_core::{
-    CloudPairing, HostBind, IngressProxyBackend, InitializeRequest, InspectRequest,
-    LocalMachinePhase, PairingCredential, PortPublication, Registered, SetCloudPairingRequest,
-    TransportProtocol, ingress_proxy_backend, op,
+    CloudPairing, InitializeRequest, InspectRequest, LocalMachinePhase, PairingCredential,
+    Registered, SetCloudPairingRequest, op,
 };
 use serde_json::json;
-use std::num::NonZeroU16;
 
 #[tokio::test]
 async fn cloud_init_join_participates_and_appears_on_list_held() {
@@ -195,10 +193,6 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     assert_eq!(initialized.name.as_str(), "founder");
     assert_eq!(initialized.cluster_network.to_string(), "10.210.0.0/16");
     assert_eq!(initialized.wireguard_mtu, Some(1400));
-    assert_eq!(
-        initialized.ingress_proxy_backend,
-        IngressProxyBackend::Caddy
-    );
     assert!(
         initialized.cloud_pairing.is_none(),
         "Cloud Pairing is published only after founder setup"
@@ -229,62 +223,6 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     );
 
     wait_for_held(&relay.url, PAIRING, machine_id).await;
-}
-
-#[tokio::test]
-async fn cloud_founding_transmits_each_selected_ingress_backend() {
-    for (selection, expected) in [
-        (None, IngressProxyBackend::Caddy),
-        (Some("caddy"), IngressProxyBackend::Caddy),
-        (Some("zentinel"), IngressProxyBackend::Zentinel),
-        (Some("envoy"), IngressProxyBackend::Envoy),
-    ] {
-        let founder = founder_machine();
-        let relay = RelayListen::start().await;
-        let pairing =
-            CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-        let enroll = EnrollListen::start(json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": pairing,
-        }))
-        .await;
-        let daemon = JoinDaemon::new(Registered {
-            assigned_machine: founder,
-            visible_peers: Vec::new(),
-            target_versions: Default::default(),
-        });
-        let machine_addr = serve_machine(daemon.clone()).await;
-        let mut arguments = vec![
-            "--connect".to_owned(),
-            format!("tcp://{machine_addr}"),
-            "cloud".to_owned(),
-            "enroll".to_owned(),
-            TOKEN.to_owned(),
-            "--cloud-url".to_owned(),
-            enroll.url.clone(),
-            "--name".to_owned(),
-            "founder".to_owned(),
-            "--no-ingress".to_owned(),
-            "--no-dns".to_owned(),
-            "--yes".to_owned(),
-        ];
-        if let Some(selection) = selection {
-            arguments.extend(["--ingress-backend".into(), selection.into()]);
-        }
-        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-            .args(arguments)
-            .output()
-            .await
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{expected}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(daemon.initialize_request().ingress_proxy_backend, expected);
-    }
 }
 
 #[tokio::test]
@@ -322,8 +260,6 @@ async fn caddy_lookup_failure_happens_before_initialize() {
             &enroll.url,
             "--name",
             "founder",
-            "--ingress-backend",
-            "caddy",
             "--no-dns",
             "--yes",
         ])
@@ -659,7 +595,6 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
             InitializeRequest {
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
@@ -715,7 +650,6 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
             InitializeRequest {
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
@@ -782,7 +716,6 @@ async fn reset_enroll_posts_the_rotated_public_key() {
             InitializeRequest {
                 name: local.assigned_machine.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: local.assigned_machine.advertised_endpoints,
                 wireguard_mtu: None,
@@ -850,7 +783,6 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
             InitializeRequest {
                 name: local.assigned_machine.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: local.assigned_machine.advertised_endpoints,
                 wireguard_mtu: None,
@@ -920,7 +852,6 @@ async fn initialize_without_pairing_stays_off_list_until_set_cloud_pairing() {
             InitializeRequest {
                 name: founder.name.clone(),
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints.clone(),
                 wireguard_mtu: None,
@@ -964,7 +895,6 @@ async fn set_cloud_pairing_none_leaves_relay_list() {
             InitializeRequest {
                 name: founder.name.clone(),
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints.clone(),
                 wireguard_mtu: None,
@@ -1041,148 +971,6 @@ async fn join_places_observed_ingress_on_this_machine() {
     assert!(stdout.contains("Joined Machine joiner"), "{stdout}");
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("ployz-system", "ingress")]);
-}
-
-#[tokio::test]
-async fn join_places_observed_envoy_ingress_on_this_machine() {
-    let founder = founder_machine();
-    let mut registration = registration();
-    registration.visible_peers = vec![founder.clone()];
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::start(json!({
-        "kind": "join",
-        "storage": "none",
-        "pairing": pairing,
-        "registration": registration,
-    }))
-    .await;
-    let daemon =
-        JoinDaemon::new(registration.clone()).with_containers(vec![envoy_ingress_on(&founder)]);
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "joiner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Joined Machine joiner"), "{stdout}");
-    let ensured = daemon.ensure_requests();
-    assert_eq!(ensure_names(&ensured), [("ployz-system", "ingress")]);
-    let spec = &ensured.first().unwrap().resolved_spec;
-    assert_eq!(
-        spec.container.command,
-        ["envoy", "-c", "/config/bootstrap.yaml"]
-    );
-    assert!(spec.container.cap_add.is_empty());
-    assert_eq!(
-        spec.ports,
-        [
-            PortPublication::Host {
-                bind: HostBind::All,
-                published_port: NonZeroU16::new(80).unwrap(),
-                container_port: NonZeroU16::new(8080).unwrap(),
-                transport_protocol: TransportProtocol::Tcp,
-            },
-            PortPublication::Host {
-                bind: HostBind::All,
-                published_port: NonZeroU16::new(443).unwrap(),
-                container_port: NonZeroU16::new(8443).unwrap(),
-                transport_protocol: TransportProtocol::Tcp,
-            },
-        ]
-    );
-    assert!(
-        spec.volume_graph()
-            .volumes()
-            .iter()
-            .filter_map(|volume| match volume.source.kind() {
-                ployz_core::RawVolumeSource::Bind { machine_path, .. } =>
-                    Some(machine_path.as_str()),
-                ployz_core::RawVolumeSource::External { .. }
-                | ployz_core::RawVolumeSource::Ordinary { .. }
-                | ployz_core::RawVolumeSource::Provisioned { .. }
-                | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
-            })
-            .eq(["/var/lib/ployz/ingress/envoy"])
-    );
-    assert_eq!(
-        ingress_proxy_backend(spec).unwrap(),
-        IngressProxyBackend::Envoy
-    );
-}
-
-#[tokio::test]
-async fn join_reconciles_noncanonical_joiner_ingress_to_observed_envoy() {
-    let founder = founder_machine();
-    let joiner = registration().assigned_machine.clone();
-    let mut registration = registration();
-    registration.visible_peers = vec![founder.clone()];
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::start(json!({
-        "kind": "join",
-        "storage": "none",
-        "pairing": pairing,
-        "registration": registration,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(registration.clone())
-        .with_containers(vec![envoy_ingress_on(&founder), ingress_on(&joiner)]);
-    let machine_addr = serve_machine(daemon.clone()).await;
-
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "joiner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let ensured = daemon.ensure_requests();
-    let spec = &ensured.first().unwrap().resolved_spec;
-    assert_eq!(
-        ingress_proxy_backend(spec).unwrap(),
-        IngressProxyBackend::Envoy
-    );
-    assert_eq!(
-        spec.container.command,
-        ["envoy", "-c", "/config/bootstrap.yaml"]
-    );
 }
 
 #[tokio::test]

@@ -2,27 +2,11 @@
 
 Apply to new and touched code. rustfmt and the workspace Clippy lints in `Cargo.toml` remain the source of truth for format and lint. New Clippy suppressions are `#[expect(clippy::lint)]` with a why, not `#[allow]`. Treat `redundant_clone` and `needless_collect` as bugs even when Clippy is quiet.
 
-Run every code change through this lens: ployz updates are cheap; ployzd daemon updates are not. A cluster that opts out of updates can leave ployzd unchanged for years, and every RPC on it is maintenance for as long as it does. Put new behavior in ployz. Latest ployz must still speak to that lagged ployzd — versions eventually drop; that is not the baseline.
-
-Issues #607 and #613 are narrow daemon-policy exceptions: ployzd owns periodic, Machine-local Global slot convergence because a Global is standing user intent. From local Replicated Observations it may ensure missing known-eligible slots, leave unknown eligibility unchanged for retry, and retire definitely ineligible existing slots; it never moves eligible slots or schedules replicated Services. Issue #613 also authorizes ployzd to enforce mounted Provisioned Volume readiness at every local Container creation entry path. Newer ployz must remain usable against a lagged ployzd that neither enforces this storage policy nor converges or emits Global reconcile observations, so new observation fields deserialize absent as empty. These exceptions do not authorize other daemon-side orchestration.
-
-Issue #664 extends that narrow Machine-local safety boundary: before any Service Container or hook mutation, ployzd may reassess the complete Resolved Service placement against fresh local evidence, ensure mounted Volumes, and reject ordinary mutations that are ineligible or unknown. Observer-side eligibility is a separate advisory consumer decision, including an Unknown safe hold; a dispatched target still performs exactly one fresh authoritative Global convergence decision, which may ensure eligible slots, retire definitely ineligible slots, or hold unknown slots. This remains admission for an already-selected target, not daemon-side scheduling, and latest ployz remains usable against lagged daemons that do not enforce it.
-
-Issue #701 is a narrow greenfield serving-definition change: ployz-core, ployz, and ployzd switch in lockstep so Serving Containers are generation-selected. Pre-change daemons are unsupported. This exception does not relax lagged-daemon compatibility for later serving changes.
-
-Issue #616 is a narrow greenfield contract exception: the pre-release Caddy-only daemon and RPC names are replaced in lockstep by the immutable Ingress Proxy Backend contract. Clusters and daemons from before #616 are not migrated or supported through compatibility aliases. This exception does not relax lagged-daemon compatibility for later changes to the new contract.
-
-Issue #662 is a narrow greenfield contract exception: the pre-release combined named Service Volume source is replaced in lockstep by distinct External, Ordinary, and Provisioned source forms. Clients and daemons from before #662 are not migrated or supported through compatibility aliases. This exception does not relax lagged-daemon compatibility for later changes to the new contract.
-
-Issue #666 is a narrow greenfield contract exception: ployzd closes an exec session when Docker reports that the remote process exited, even if the hijacked stream remains open. Pre-change daemons are unsupported. This exception does not relax lagged-daemon compatibility for later changes.
-
-Issue #668 is a narrow greenfield contract exception: the Ployz-owned ports move from `51000`/`51001`/`51002`/`51500` to `7569`/`7570`/`7571`/`7572`, with client, daemon, and testkit switching in lockstep and beta Machines re-initializing. This exception does not relax lagged-daemon compatibility for later changes.
-
-Runtime Watch's pre-release normalized transport is a narrow greenfield exception: ployz and ployzd switch in lockstep to direct `RuntimeWatchFrame` JSON with negotiated gzip. Pre-change daemon/client pairs are unsupported, and clients derive Services from the transmitted Containers. This exception does not relax lagged-daemon compatibility for later Runtime Watch changes.
+Architecture and the current compatibility policy live in [DESIGN.md](DESIGN.md).
 
 ## Names
 
-Accessors omit `get_`: `name()`, `as_str()`. Wire RPC method names that already exist on the contract (`get_ingress_proxy_config`) stay as they are.
+Accessors omit `get_`: `name()`, `as_str()`.
 
 Conversion prefixes:
 

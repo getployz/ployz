@@ -318,13 +318,6 @@ impl MachineRpc for JoinDaemon {
         };
         let joined = self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
-        let ingress_proxy_backend = self
-            .inner
-            .initialize_requests
-            .lock()
-            .unwrap()
-            .last()
-            .map(|request| request.ingress_proxy_backend);
         rpc_ok(MachineDetails {
             id: self.inner.registration.assigned_machine.id,
             phase: if joined {
@@ -345,7 +338,6 @@ impl MachineRpc for JoinDaemon {
             cloud_paired: self.inner.cloud_paired.load(Ordering::SeqCst),
             telemetry,
             storage: None,
-            ingress_proxy_backend,
         })
     }
 
@@ -904,33 +896,6 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         container_id: ContainerId::parse("a".repeat(64)).unwrap(),
         display_name: "ingress-a".into(),
         created_at_unix_nanos: 1,
-        machine_id: machine.id,
-        project_name: ployz_core::ProjectName::system(),
-        kind: ContainerKind::ServiceContainer,
-        runtime: ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        },
-        effective_healthcheck: None,
-        resolved_spec: spec,
-        address: None,
-        labels: Default::default(),
-    })
-    .unwrap()
-}
-
-pub fn envoy_ingress_on(machine: &Machine) -> ContainerObservation {
-    let spec = ployz_core::IngressProxyBackend::Envoy
-        .requested_service_spec("envoy:test".into(), Vec::new(), None)
-        .unwrap()
-        .to_resolved(
-            ployz_core::ServiceId::parse("e".repeat(32)).unwrap(),
-            ployz_core::ResolvedUpdateConfig::default(),
-        )
-        .expect("volume graph is scoped");
-    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-        container_id: ContainerId::parse("b".repeat(64)).unwrap(),
-        display_name: "ingress-envoy".into(),
-        created_at_unix_nanos: 2,
         machine_id: machine.id,
         project_name: ployz_core::ProjectName::system(),
         kind: ContainerKind::ServiceContainer,

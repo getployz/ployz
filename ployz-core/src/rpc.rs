@@ -11,8 +11,8 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
-    ContainerObservation, DockerVolume, IngressProxyBackend, Machine, MachineId, MachineLogService,
-    MachineName, MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
+    ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
+    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
     PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
@@ -217,8 +217,6 @@ pub(super) fn default_wireguard_port() -> u16 {
 pub struct InitializeRequest {
     pub name: MachineName,
     pub cluster_network: Ipv4Net,
-    /// Immutable Ingress Proxy Backend selected for the new Cluster.
-    pub ingress_proxy_backend: IngressProxyBackend,
     #[serde(default)]
     pub public_ip: Option<IpAddr>,
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
@@ -420,7 +418,7 @@ pub struct PullImageFromMachineRequest {
 pub struct ImagePulled {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-/// Request the selected Ingress Proxy backend's exact generated configuration.
+/// Request the exact generated Caddy configuration.
 pub struct GetIngressProxyConfigRequest {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -692,38 +690,17 @@ pub struct MachineImages {
     pub images: Vec<ImageSummary>,
 }
 
+/// Exact Caddyfile consumed by the Ingress Proxy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "backend", content = "config", rename_all = "snake_case")]
-/// Exact generated configuration, tagged by the backend that consumes it.
-///
-/// The enum prevents a backend tag from disagreeing with the configuration
-/// variant carried by the response.
-pub enum IngressProxyConfig {
-    /// Exact Caddyfile consumed by Caddy.
-    Caddy(String),
-    /// Exact KDL configuration consumed by Zentinel.
-    Zentinel(String),
-    /// Exact bootstrap YAML consumed by Envoy.
-    Envoy(String),
+pub struct IngressProxyConfig {
+    pub config: String,
 }
 
 impl IngressProxyConfig {
-    /// Tag an exact generated configuration with its selected backend.
-    #[must_use]
-    pub fn for_backend(backend: IngressProxyBackend, config: String) -> Self {
-        match backend {
-            IngressProxyBackend::Caddy => Self::Caddy(config),
-            IngressProxyBackend::Zentinel => Self::Zentinel(config),
-            IngressProxyBackend::Envoy => Self::Envoy(config),
-        }
-    }
-
-    /// Borrow the backend's exact generated configuration.
+    /// Borrow the exact generated Caddyfile.
     #[must_use]
     pub fn config(&self) -> &str {
-        match self {
-            Self::Caddy(config) | Self::Zentinel(config) | Self::Envoy(config) => config,
-        }
+        &self.config
     }
 }
 
