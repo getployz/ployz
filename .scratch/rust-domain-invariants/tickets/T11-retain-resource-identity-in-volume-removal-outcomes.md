@@ -1,6 +1,6 @@
 # T11 — Retain resource identity in volume removal outcomes
 
-Status: in_progress
+Status: complete
 Blocking dependencies: none
 Audit scope: F03
 
