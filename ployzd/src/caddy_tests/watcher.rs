@@ -581,14 +581,14 @@ impl WatchState {
             .expect("watch fixture has an API container") = container;
     }
 
-    fn mutate(&self, mutate: impl FnOnce(&mut ContainerObservation)) {
-        mutate(
-            self.containers
-                .lock()
-                .unwrap()
-                .first_mut()
-                .expect("watch fixture has an API container"),
-        );
+    fn mutate(&self, mutate: impl FnOnce(&mut ployz_core::ContainerObservationParts)) {
+        self.containers
+            .lock()
+            .unwrap()
+            .first_mut()
+            .expect("watch fixture has an API container")
+            .try_update(mutate)
+            .unwrap();
     }
 
     fn replace_ingress_id(&self, container_id: ContainerId) {
@@ -597,7 +597,8 @@ impl WatchState {
             .unwrap()
             .get_mut(1)
             .expect("watch fixture has an ingress container")
-            .container_id = container_id;
+            .try_update(|parts| parts.container_id = container_id)
+            .unwrap();
     }
 
     fn send(&self, event: &'static [u8]) {

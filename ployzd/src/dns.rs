@@ -139,7 +139,7 @@ impl Projection {
             let address = serving.address();
             let identity = observation.identity();
             service_ids
-                .entry(observation.service_id)
+                .entry(observation.service_id())
                 .or_default()
                 .push(address.0);
             identities

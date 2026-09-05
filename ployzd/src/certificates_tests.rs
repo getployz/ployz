@@ -70,7 +70,8 @@ fn wanted_hosts_are_https_ingress_only() {
                 "api",
                 vec![ingress("hook.example.com", HttpProtocol::Https)],
             );
-            hook.kind = ContainerKind::PreDeployHook;
+            hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+                .unwrap();
             hook
         },
     ];
@@ -375,16 +376,24 @@ fn ingress_challenge_ips_come_from_running_ingress_machines() {
     let local = machine_with_endpoint("a", "192.0.2.1");
     let remote = machine_with_endpoint("b", "192.0.2.2");
     let mut ingress = observation(1, "ingress", Vec::new());
-    ingress.machine_id = local.id;
-    ingress.service_name = ServiceName::parse("ingress").unwrap();
-    ingress.project_name = ProjectName::system();
+    ingress
+        .try_update(|parts| {
+            parts.machine_id = local.id;
+            parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+            parts.project_name = ProjectName::system();
+        })
+        .unwrap();
     let mut down = observation(2, "ingress", Vec::new());
-    down.machine_id = remote.id;
-    down.service_name = ServiceName::parse("ingress").unwrap();
-    down.project_name = ProjectName::system();
-    down.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+    down.try_update(|parts| {
+        parts.machine_id = remote.id;
+        parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+        parts.project_name = ProjectName::system();
+        parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+    })
+    .unwrap();
     let mut user = observation(3, "caddy", Vec::new());
-    user.machine_id = remote.id;
+    user.try_update(|parts| parts.machine_id = remote.id)
+        .unwrap();
     assert_eq!(
         ingress_challenge_ips(&[local, remote], &[ingress, down, user]),
         BTreeSet::from([ip("192.0.2.1")])
@@ -672,14 +681,12 @@ fn observation(
         "ports": ports,
     }))
     .unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("a".repeat(32)).unwrap(),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -688,5 +695,6 @@ fn observation(
         resolved_spec,
         address: Some(ContainerAddress([10, 210, 1, 2].into())),
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }

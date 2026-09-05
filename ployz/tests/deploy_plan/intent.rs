@@ -336,7 +336,9 @@ fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
     shop_caddy.mode = ServiceMode::Global;
     shop_caddy.container.image = "caddy:2.10.2".into();
     let mut system_container = container('c', '1', &system_ingress, &service_id('a'));
-    system_container.project_name = ProjectName::system();
+    system_container
+        .try_update(|parts| parts.project_name = ProjectName::system())
+        .unwrap();
 
     let shop = preview_deploy(
         &DeployIntent::apply_one(
@@ -357,7 +359,9 @@ fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
 
     let web = spec("web");
     let mut leftover = container('c', '1', &system_ingress, &service_id('a'));
-    leftover.project_name = ProjectName::system();
+    leftover
+        .try_update(|parts| parts.project_name = ProjectName::system())
+        .unwrap();
     let full = preview_deploy(
         &DeployIntent::apply_all(
             ProjectName::parse("shop").unwrap(),
@@ -383,7 +387,9 @@ fn run_in_a_named_project_replaces_that_projects_matching_service() {
     let mut requested = spec("web");
     requested.container.image = "nginx:2".into();
     let mut owned = container('c', '1', &current, &service_id('a'));
-    owned.project_name = ProjectName::parse("shop").unwrap();
+    owned
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
+        .unwrap();
 
     let plan = preview_deploy(
         &DeployIntent::apply_one(
@@ -415,7 +421,9 @@ fn run_in_a_named_project_does_not_take_over_another_projects_service() {
     let mut requested = spec("web");
     requested.container.image = "nginx:2".into();
     let mut other = container('c', '1', &current, &service_id('a'));
-    other.project_name = ProjectName::parse("default").unwrap();
+    other
+        .try_update(|parts| parts.project_name = ProjectName::parse("default").unwrap())
+        .unwrap();
 
     let plan = preview_deploy(
         &DeployIntent::apply_one(
@@ -440,9 +448,13 @@ fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
     let web = spec("web");
     let debug = spec("debug");
     let mut web_container = container('c', '1', &web, &service_id('a'));
-    web_container.project_name = ProjectName::parse("shop").unwrap();
+    web_container
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
+        .unwrap();
     let mut debug_container = container('d', '1', &debug, &service_id('b'));
-    debug_container.project_name = ProjectName::parse("shop").unwrap();
+    debug_container
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
+        .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![web_container, debug_container],
@@ -484,7 +496,9 @@ fn system_project_deploy_still_replaces_its_own_ingress() {
     requested.mode = ServiceMode::Global;
     requested.container.image = "caddy:2.10.2".into();
     let mut system_container = container('c', '1', &current, &service_id('a'));
-    system_container.project_name = ProjectName::system();
+    system_container
+        .try_update(|parts| parts.project_name = ProjectName::system())
+        .unwrap();
 
     let plan = preview_deploy(
         &DeployIntent::apply_one(ProjectName::system(), requested, PlanOptions::default()),

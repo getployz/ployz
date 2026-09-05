@@ -352,7 +352,8 @@ async fn service_lifecycle_commands_wait_for_their_successful_service_containers
             service = service.with_dropped_observations();
         }
         let mut api = running_container(&machine, &spec("api"));
-        api.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+        api.try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
+            .unwrap();
         service
             .listed_containers()
             .lock()
@@ -782,7 +783,9 @@ async fn preview_rejects_a_visible_owner_of_an_expanded_chosen_label() {
     }))
     .unwrap();
     let mut owner = running_container(&machine, &owner_spec);
-    owner.project_name = ProjectName::parse("blog").unwrap();
+    owner
+        .try_update(|parts| parts.project_name = ProjectName::parse("blog").unwrap())
+        .unwrap();
     service.listed_containers().lock().unwrap().push(owner);
     let (mut client, server) = connected(service).await;
     owner_spec.name = ployz_core::ServiceName::parse("api").unwrap();
@@ -950,7 +953,9 @@ async fn full_preview_confirms_prune_operations_without_replanning() {
     let machine = machine('a', "one");
     let service = DeployService::new(machine.clone());
     let mut debug = running_container(&machine, &spec("debug"));
-    debug.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+    debug
+        .try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
+        .unwrap();
     service.listed_containers().lock().unwrap().push(debug);
     let (mut client, server) = connected(service).await;
     let preview = client
@@ -990,7 +995,9 @@ async fn partial_preview_does_not_prune_an_unselected_imperative_service() {
     let machine = machine('a', "one");
     let service = DeployService::new(machine.clone());
     let mut debug = running_container(&machine, &spec("debug"));
-    debug.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+    debug
+        .try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
+        .unwrap();
     service.listed_containers().lock().unwrap().push(debug);
     let (mut client, server) = connected(service).await;
     let preview = client

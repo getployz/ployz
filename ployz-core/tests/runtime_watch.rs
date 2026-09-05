@@ -290,14 +290,12 @@ fn container_observation() -> ContainerObservation {
         "container": { "image": "api:1", "pull_policy": "missing" }
     }))
     .unwrap();
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(CONTAINER_ID).unwrap(),
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -306,5 +304,6 @@ fn container_observation() -> ContainerObservation {
         resolved_spec,
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }

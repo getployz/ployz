@@ -583,8 +583,6 @@ export type ContainerObservation = {
   created_at_unix_nanos: number;
   machine_id: MachineId;
   project_name: ProjectName;
-  service_id: ServiceId;
-  service_name: ServiceName;
   kind: ContainerKind;
   runtime: ContainerRuntimeObservation;
   effective_healthcheck: HealthcheckSpec | null;

@@ -104,7 +104,9 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     let mut duplicate_names = service.clone();
     if let Some(slot) = duplicate_names.containers.get_mut(1) {
         let mut observation = slot.clone().into_observation();
-        observation.display_name = "api-one".into();
+        observation
+            .try_update(|parts| parts.display_name = "api-one".into())
+            .unwrap();
         *slot = ServiceContainer::try_from(observation).unwrap();
     }
     assert!(matches!(
@@ -595,14 +597,12 @@ fn container(
     service_id: ServiceId,
     kind: ContainerKind,
 ) -> ContainerObservation {
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse(id).unwrap(),
         display_name: name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
         project_name: ProjectName::parse("app").unwrap(),
-        service_id,
-        service_name: ServiceName::parse("api").unwrap(),
         kind,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -649,5 +649,6 @@ fn container(
         },
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }

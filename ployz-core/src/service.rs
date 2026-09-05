@@ -39,7 +39,7 @@ impl ServiceObservation {
     #[must_use]
     pub fn has_service_id(&self, service_id: &ServiceId) -> bool {
         self.members()
-            .any(|container| container.as_observation().service_id == *service_id)
+            .any(|container| container.as_observation().service_id() == *service_id)
     }
 
     /// Every role-proven member of this Service.
@@ -184,7 +184,7 @@ pub fn derive_services(
             .entry(identity.clone())
             .or_insert_with(|| ServiceObservation {
                 identity,
-                service_id: observation.service_id,
+                service_id: observation.service_id(),
                 containers: Vec::new(),
                 hook_containers: Vec::new(),
             });
@@ -201,7 +201,7 @@ pub fn derive_services(
                 observation.container_id.as_str(),
             )
         }) {
-            service.service_id = newest.as_observation().service_id;
+            service.service_id = newest.as_observation().service_id();
         }
     }
     services.into_values().collect()
@@ -690,8 +690,8 @@ mod tests {
             "/containers/0/container_id",
             "/containers/0/display_name",
             "/containers/0/machine_id",
-            "/containers/0/service_id",
-            "/containers/0/service_name",
+            "/containers/0/resolved_spec/service_id",
+            "/containers/0/resolved_spec/name",
             "/containers/0/runtime",
             "/containers/0/resolved_spec",
             "/hook_containers/0/container_id",
@@ -812,25 +812,26 @@ mod tests {
             "container": { "image": image, "pull_policy": "missing" }
         }))
         .unwrap();
-        ContainerObservation {
+        ContainerObservation::try_from(crate::ContainerObservationParts {
             container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: format!("{name}-{id}"),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
             project_name: ProjectName::parse("app").unwrap(),
-            service_id: *service_id,
-            service_name,
             kind,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
-        }
+        })
+        .unwrap()
     }
 
     fn in_project(mut observation: ContainerObservation, project: &str) -> ContainerObservation {
-        observation.project_name = ProjectName::parse(project).unwrap();
+        observation
+            .try_update(|parts| parts.project_name = ProjectName::parse(project).unwrap())
+            .unwrap();
         observation
     }
 }

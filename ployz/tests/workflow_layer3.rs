@@ -87,7 +87,7 @@ async fn run_deploy_and_scale_execute_through_the_real_cli() {
             service.containers.first().is_some_and(|container| {
                 container
                     .as_observation()
-                    .service_name
+                    .service_name()
                     .as_str()
                     .starts_with("alpine-")
             })
@@ -378,7 +378,7 @@ async fn wait_for_services(
         let observed = services
             .iter()
             .flat_map(|service| &service.containers)
-            .map(|container| container.as_observation().service_name.as_str())
+            .map(|container| container.as_observation().resolved_spec.name.as_str())
             .collect::<BTreeSet<_>>();
         let count = services
             .iter()
@@ -398,7 +398,7 @@ async fn wait_for_hook_only(
         live.services().into_iter().find(|service| {
             service.containers.is_empty()
                 && service.hook_containers.first().is_some_and(|container| {
-                    container.as_observation().service_name.as_str() == name
+                    container.as_observation().resolved_spec.name.as_str() == name
                 })
         })
     })
@@ -423,7 +423,7 @@ fn service_ids_from(
                 .containers
                 .first()?
                 .as_observation()
-                .service_name
+                .service_name()
                 .to_string();
             names.contains(&name.as_str()).then(|| {
                 (

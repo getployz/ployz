@@ -474,25 +474,26 @@ impl MachineRpc for DeployService {
             },
         );
         encoded(RpcResponse::from(ContainerDetails {
-            container: ployz_core::ContainerObservation {
-                container_id: inspect.container_id,
-                display_name: "web-1".into(),
-                created_at_unix_nanos: 0,
-                machine_id: self
-                    .machines
-                    .first()
-                    .map(|machine| machine.machine.id)
-                    .unwrap_or_else(MachineId::random),
-                project_name: ProjectName::parse("app").unwrap(),
-                service_id: spec.service_id,
-                service_name: spec.name.clone(),
-                kind: ContainerKind::ServiceContainer,
-                runtime: ContainerRuntimeObservation::Running { health },
-                effective_healthcheck: None,
-                resolved_spec: spec,
-                address: None,
-                labels: BTreeMap::new(),
-            },
+            container: ployz_core::ContainerObservation::try_from(
+                ployz_core::ContainerObservationParts {
+                    container_id: inspect.container_id,
+                    display_name: "web-1".into(),
+                    created_at_unix_nanos: 0,
+                    machine_id: self
+                        .machines
+                        .first()
+                        .map(|machine| machine.machine.id)
+                        .unwrap_or_else(MachineId::random),
+                    project_name: ProjectName::parse("app").unwrap(),
+                    kind: ContainerKind::ServiceContainer,
+                    runtime: ContainerRuntimeObservation::Running { health },
+                    effective_healthcheck: None,
+                    resolved_spec: spec,
+                    address: None,
+                    labels: BTreeMap::new(),
+                },
+            )
+            .unwrap(),
         }))
     }
     async fn get_container_observations(
@@ -542,24 +543,26 @@ impl MachineRpc for DeployService {
             .map(|container_id| {
                 (
                     container_id,
-                    self.observation_serving
-                        .then(|| ployz_core::ContainerObservation {
-                            container_id,
-                            display_name: "web-1".into(),
-                            created_at_unix_nanos: 0,
-                            machine_id,
-                            project_name: ProjectName::parse("app").unwrap(),
-                            service_id: spec.service_id,
-                            service_name: spec.name.clone(),
-                            kind: ContainerKind::ServiceContainer,
-                            runtime: ContainerRuntimeObservation::Running {
-                                health: HealthObservation::Healthy,
+                    self.observation_serving.then(|| {
+                        ployz_core::ContainerObservation::try_from(
+                            ployz_core::ContainerObservationParts {
+                                container_id,
+                                display_name: "web-1".into(),
+                                created_at_unix_nanos: 0,
+                                machine_id,
+                                project_name: ProjectName::parse("app").unwrap(),
+                                kind: ContainerKind::ServiceContainer,
+                                runtime: ContainerRuntimeObservation::Running {
+                                    health: HealthObservation::Healthy,
+                                },
+                                effective_healthcheck: None,
+                                resolved_spec: spec.clone(),
+                                address: ready.then_some(ContainerAddress([10, 210, 1, 2].into())),
+                                labels: BTreeMap::new(),
                             },
-                            effective_healthcheck: None,
-                            resolved_spec: spec.clone(),
-                            address: ready.then_some(ContainerAddress([10, 210, 1, 2].into())),
-                            labels: BTreeMap::new(),
-                        }),
+                        )
+                        .unwrap()
+                    }),
                 )
             })
             .collect();
@@ -836,14 +839,12 @@ pub(super) fn running_container(
             monitor_millis: spec.update.monitor_millis,
         },
     );
-    ployz_core::ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("1".repeat(64)).unwrap(),
         display_name: format!("{}-1", spec.name),
         created_at_unix_nanos: 0,
         machine_id: machine.machine.id,
         project_name: ProjectName::parse("app").unwrap(),
-        service_id: resolved.service_id,
-        service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
@@ -852,7 +853,8 @@ pub(super) fn running_container(
         resolved_spec: resolved,
         address: None,
         labels: BTreeMap::new(),
-    }
+    })
+    .unwrap()
 }
 
 pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {

@@ -592,25 +592,22 @@ impl MachineRpc for JoinDaemon {
         let n = self.inner.containers.lock().unwrap().len() + 1;
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         let display_name = format!("{}-{n}", create.resolved_spec.name);
-        self.inner
-            .containers
-            .lock()
-            .unwrap()
-            .push(ContainerObservation {
+        self.inner.containers.lock().unwrap().push(
+            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id,
                 display_name: display_name.clone(),
                 created_at_unix_nanos: n as i64,
                 machine_id: self.inner.registration.assigned_machine.id,
                 project_name: create.project_name,
-                service_id: create.resolved_spec.service_id,
-                service_name: create.resolved_spec.name.clone(),
                 kind: create.kind,
                 runtime: ContainerRuntimeObservation::Created,
                 effective_healthcheck: None,
                 resolved_spec: create.resolved_spec,
                 address: None,
                 labels: Default::default(),
-            });
+            })
+            .unwrap(),
+        );
         rpc_ok(ContainerCreated {
             container_id,
             display_name,
@@ -646,18 +643,13 @@ impl MachineRpc for JoinDaemon {
         let n = self.inner.ensure_requests.lock().unwrap().len();
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         let machine_id = self.inner.registration.assigned_machine.id;
-        self.inner
-            .containers
-            .lock()
-            .unwrap()
-            .push(ContainerObservation {
+        self.inner.containers.lock().unwrap().push(
+            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id,
                 display_name: format!("{}-slot", ensure.resolved_spec.name),
                 created_at_unix_nanos: n as i64,
                 machine_id,
                 project_name: ensure.project_name,
-                service_id: ensure.resolved_spec.service_id,
-                service_name: ensure.resolved_spec.name.clone(),
                 kind: ContainerKind::ServiceContainer,
                 runtime: ContainerRuntimeObservation::Running {
                     health: HealthObservation::NotConfigured,
@@ -666,7 +658,9 @@ impl MachineRpc for JoinDaemon {
                 resolved_spec: ensure.resolved_spec,
                 address: None,
                 labels: Default::default(),
-            });
+            })
+            .unwrap(),
+        );
         self.record("deploy_ingress");
         rpc_ok(ContainerCreated {
             container_id,
@@ -695,9 +689,13 @@ impl MachineRpc for JoinDaemon {
             .iter_mut()
             .find(|container| container.container_id == start.container_id)
             .ok_or_else(|| Status::not_found("container not found"))?;
-        container.runtime = ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        };
+        container
+            .try_update(|parts| {
+                parts.runtime = ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                }
+            })
+            .unwrap();
         drop(containers);
         self.record("deploy_ingress");
         rpc_ok(ContainerChanged {
@@ -900,14 +898,12 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
         ployz_core::ResolvedUpdateConfig::default(),
     );
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("a".repeat(64)).unwrap(),
         display_name: "ingress-a".into(),
         created_at_unix_nanos: 1,
         machine_id: machine.id,
         project_name: ployz_core::ProjectName::system(),
-        service_id: spec.service_id,
-        service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -916,7 +912,8 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }
 
 pub fn envoy_ingress_on(machine: &Machine) -> ContainerObservation {
@@ -927,14 +924,12 @@ pub fn envoy_ingress_on(machine: &Machine) -> ContainerObservation {
             ployz_core::ServiceId::parse("e".repeat(32)).unwrap(),
             ployz_core::ResolvedUpdateConfig::default(),
         );
-    ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         container_id: ContainerId::parse("b".repeat(64)).unwrap(),
         display_name: "ingress-envoy".into(),
         created_at_unix_nanos: 2,
         machine_id: machine.id,
         project_name: ployz_core::ProjectName::system(),
-        service_id: spec.service_id,
-        service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -943,7 +938,8 @@ pub fn envoy_ingress_on(machine: &Machine) -> ContainerObservation {
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
-    }
+    })
+    .unwrap()
 }
 
 fn up_machine(machine: Machine) -> MachineObservation {

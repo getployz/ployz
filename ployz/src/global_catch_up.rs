@@ -375,7 +375,9 @@ mod tests {
         let envoy_spec = canonical_envoy_spec('e');
         let drifted = observed_caddy_ingress(&joiner, 'd');
         let mut founder_envoy = running_on(&founder, 'e');
-        founder_envoy.created_at_unix_nanos = 2;
+        founder_envoy
+            .try_update(|parts| parts.created_at_unix_nanos = 2)
+            .unwrap();
         let current = grouped(identity.clone(), envoy_spec.clone(), founder_envoy);
         let target = grouped(identity, envoy_spec, running_on(&joiner, 'b'));
         let mut client = FakeCatchUpClient {
@@ -454,7 +456,8 @@ mod tests {
             .expect("test Global has one Service container")
             .clone()
             .into_observation();
-        hook.kind = ContainerKind::PreDeployHook;
+        hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+            .unwrap();
         let hook_only = ServiceObservation {
             identity: service.identity.clone(),
             service_id: service.service_id,
@@ -687,7 +690,9 @@ mod tests {
         let joiner = machine('1', "joiner");
         let identity = QualifiedService::system_ingress();
         let mut founder_envoy = running_on(&founder, 'e');
-        founder_envoy.created_at_unix_nanos = 2;
+        founder_envoy
+            .try_update(|parts| parts.created_at_unix_nanos = 2)
+            .unwrap();
         let mut observed = grouped(identity, canonical_envoy_spec('e'), founder_envoy);
         observed
             .containers
@@ -912,7 +917,9 @@ mod tests {
             .unwrap()
             .to_resolved(service_id(id), ResolvedUpdateConfig::default());
         let mut container = running_on(machine, id);
-        container.created_at_unix_nanos = 1;
+        container
+            .try_update(|parts| parts.created_at_unix_nanos = 1)
+            .unwrap();
         grouped(QualifiedService::system_ingress(), spec, container)
     }
 
@@ -1065,10 +1072,12 @@ mod tests {
         spec: ResolvedServiceSpec,
         mut container: ContainerObservation,
     ) -> ServiceObservation {
-        container.project_name = identity.project.clone();
-        container.service_name = identity.name.clone();
-        container.service_id = spec.service_id;
-        container.resolved_spec = spec.clone();
+        container
+            .try_update(|parts| {
+                parts.project_name = identity.project.clone();
+                parts.resolved_spec = spec.clone();
+            })
+            .unwrap();
         ServiceObservation {
             identity,
             service_id: spec.service_id,
@@ -1096,14 +1105,12 @@ mod tests {
         hex: char,
         runtime: ContainerRuntimeObservation,
     ) -> ContainerObservation {
-        ContainerObservation {
+        ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
             container_id: container_id(hex),
             display_name: format!("slot-{hex}"),
             created_at_unix_nanos: 0,
             machine_id: machine.id,
             project_name: ProjectName::parse("app").unwrap(),
-            service_id: service_id('a'),
-            service_name: ServiceName::parse("api").unwrap(),
             kind: ContainerKind::ServiceContainer,
             runtime,
             effective_healthcheck: None,
@@ -1111,6 +1118,7 @@ mod tests {
                 .to_resolved(service_id('a'), ResolvedUpdateConfig::default()),
             address: None,
             labels: Default::default(),
-        }
+        })
+        .unwrap()
     }
 }

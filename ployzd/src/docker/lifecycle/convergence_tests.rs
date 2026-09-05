@@ -268,6 +268,42 @@ async fn observer_ineligible_target_eligible_ensures_and_starts_the_existing_glo
     assert!(requests.iter().all(|(method, _)| method != Method::DELETE));
 }
 
+#[tokio::test]
+async fn inspection_rejects_labels_from_a_different_service_spec() {
+    let (runtime, fake) = fake_runtime().await;
+    let spec = spec_with_sources(Vec::new());
+    let container_id = ContainerId::parse("a".repeat(64)).unwrap();
+    let machine = machine();
+    install_existing_global_slot(&runtime, &fake, &spec, "future-state").await;
+    let observed = runtime
+        .inspect_managed(&container_id, &machine.id)
+        .await
+        .unwrap();
+    assert_eq!(observed.identity().to_string(), "app/api");
+    assert!(matches!(
+        observed.runtime,
+        ployz_core::ContainerRuntimeObservation::Unknown { .. }
+    ));
+    for (label, value) in [
+        ("ployz.service.name", "web".to_owned()),
+        ("ployz.service.id", "b".repeat(32)),
+    ] {
+        install_existing_global_slot(&runtime, &fake, &spec, "running").await;
+        *fake
+            .existing_container
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .pointer_mut(&format!("/Config/Labels/{label}"))
+            .unwrap() = value.into();
+        assert!(matches!(
+            runtime.inspect_managed(&container_id, &machine.id).await,
+            Err(Error::Observation(error)) if error.label == label
+        ));
+    }
+}
+
 async fn install_existing_global_slot(
     runtime: &ContainerRuntime,
     fake: &FakeDocker,

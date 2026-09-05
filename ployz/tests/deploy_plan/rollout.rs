@@ -15,13 +15,23 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
     current.container.image = "ghcr.io/getployz/api:old".into();
     let current_service_id = service_id('a');
     let mut running_hook = container('c', '1', &current, &current_service_id);
-    running_hook.kind = ContainerKind::PreDeployHook;
+    running_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let mut stopped_hook = container('d', '1', &current, &current_service_id);
-    stopped_hook.kind = ContainerKind::PreDeployHook;
-    stopped_hook.runtime = ContainerRuntimeObservation::Exited { code: 0 };
+    stopped_hook
+        .try_update(|parts| {
+            parts.kind = ContainerKind::PreDeployHook;
+            parts.runtime = ContainerRuntimeObservation::Exited { code: 0 };
+        })
+        .unwrap();
     let mut paused_hook = container('e', '1', &current, &current_service_id);
-    paused_hook.kind = ContainerKind::PreDeployHook;
-    paused_hook.runtime = ContainerRuntimeObservation::Paused;
+    paused_hook
+        .try_update(|parts| {
+            parts.kind = ContainerKind::PreDeployHook;
+            parts.runtime = ContainerRuntimeObservation::Paused;
+        })
+        .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![
@@ -125,9 +135,13 @@ fn replaced_hooks_credit_all_reclaimed_endpoints() {
     current.container.image = "ghcr.io/getployz/api:old".into();
     let current_service_id = service_id('a');
     let mut old_hook = container('c', '1', &current, &current_service_id);
-    old_hook.kind = ContainerKind::PreDeployHook;
+    old_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let mut other_old_hook = container('d', '1', &current, &current_service_id);
-    other_old_hook.kind = ContainerKind::PreDeployHook;
+    other_old_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let plan = plan_deploy(
         [&requested],
         &DeploySnapshot {
@@ -251,7 +265,8 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
     });
     let current_service_id = service_id('a');
     let mut hook = container('c', '1', &requested, &current_service_id);
-    hook.kind = ContainerKind::PreDeployHook;
+    hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &requested, &current_service_id), hook],
@@ -267,7 +282,9 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
 fn two_projects_can_each_own_the_same_service_name() {
     let requested = requested(ServiceMode::Global);
     let mut other = container('c', '1', &requested, &service_id('d'));
-    other.project_name = ProjectName::parse("shop-prod").unwrap();
+    other
+        .try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+        .unwrap();
     let plan = plan_deploy(
         [&requested],
         &DeploySnapshot {

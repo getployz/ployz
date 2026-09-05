@@ -183,7 +183,7 @@ impl ContainerRuntime {
             .filter(|observation| {
                 observation.kind == ContainerKind::ServiceContainer
                     && &observation.project_name == project_name
-                    && observation.service_name == spec.name
+                    && observation.resolved_spec.name == spec.name
             })
             .collect::<Vec<_>>();
         match self
@@ -208,7 +208,7 @@ impl ContainerRuntime {
                 }
                 return Ok(GlobalSlotConvergence::Ensured(ContainerCreated {
                     container_id: slot.container_id,
-                    display_name: slot.display_name,
+                    display_name: slot.into_parts().display_name,
                 }));
             }
             SlotOccupancy::OtherShape | SlotOccupancy::Empty => {}
@@ -295,7 +295,7 @@ impl ContainerRuntime {
                             }
                             return Ok(ContainerCreated {
                                 container_id: existing.container_id,
-                                display_name: existing.display_name,
+                                display_name: existing.into_parts().display_name,
                             });
                         }
                         Err(error) => return Err(error),

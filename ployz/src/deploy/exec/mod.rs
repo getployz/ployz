@@ -157,7 +157,7 @@ impl MachineOperations for Client {
             .filter(|container| {
                 container.kind == ContainerKind::ServiceContainer
                     && container.project_name == service.project
-                    && container.service_name == service.name
+                    && container.resolved_spec.name == service.name
             })
             .collect())
     }

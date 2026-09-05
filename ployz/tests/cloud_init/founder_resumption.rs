@@ -347,7 +347,10 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
     assert_eq!(daemon.founder_tail_attempts(), [2, 2, 2, 2]);
     let containers = daemon.containers();
     assert_eq!(containers.len(), 1);
-    assert_eq!(containers.first().unwrap().service_name.as_str(), "ingress");
+    assert_eq!(
+        containers.first().unwrap().service_name().as_str(),
+        "ingress"
+    );
     assert_eq!(
         serde_json::to_value(daemon.domain_record_requests()).unwrap(),
         json!([{

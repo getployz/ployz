@@ -170,9 +170,10 @@ pub enum ContainerKind {
     PreDeployHook,
 }
 
-/// A local observation of one managed container. Replication redacts it at the store boundary.
+/// Raw facts for admitting one Container observation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ContainerObservation {
+#[serde(deny_unknown_fields)]
+pub struct ContainerObservationParts {
     pub container_id: ContainerId,
     /// Generated Docker name for display, never identity or selection.
     pub display_name: String,
@@ -181,8 +182,6 @@ pub struct ContainerObservation {
     pub created_at_unix_nanos: i64,
     pub machine_id: MachineId,
     pub project_name: ProjectName,
-    pub service_id: ServiceId,
-    pub service_name: ServiceName,
     pub kind: ContainerKind,
     pub runtime: ContainerRuntimeObservation,
     /// Effective Docker health check, including image-inherited configuration.
@@ -196,11 +195,104 @@ pub struct ContainerObservation {
     pub labels: BTreeMap<String, String>,
 }
 
+/// A coherent observation of one managed Container, retaining its historical spec.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    try_from = "ContainerObservationParts",
+    into = "ContainerObservationParts"
+)]
+pub struct ContainerObservation {
+    parts: ContainerObservationParts,
+}
+
+/// A Docker identity label disagrees with this Container's retained facts.
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
+#[error("container label {label} disagrees with retained observation")]
+pub struct ContainerObservationError {
+    pub label: &'static str,
+}
+
+impl TryFrom<ContainerObservationParts> for ContainerObservation {
+    type Error = ContainerObservationError;
+
+    fn try_from(parts: ContainerObservationParts) -> Result<Self, Self::Error> {
+        for (label, expected) in [
+            ("ployz.service.id", parts.resolved_spec.service_id.as_str()),
+            ("ployz.service.name", parts.resolved_spec.name.as_str()),
+            ("ployz.project.name", parts.project_name.as_str()),
+        ] {
+            if parts
+                .labels
+                .get(label)
+                .is_some_and(|value| value != expected)
+            {
+                return Err(ContainerObservationError { label });
+            }
+        }
+        if (parts.labels.contains_key("ployz.managed")
+            || parts.labels.contains_key("ployz.service.hook"))
+            && parts.labels.contains_key("ployz.service.hook")
+                != (parts.kind == ContainerKind::PreDeployHook)
+        {
+            return Err(ContainerObservationError {
+                label: "ployz.service.hook",
+            });
+        }
+        Ok(Self { parts })
+    }
+}
+
+impl std::ops::Deref for ContainerObservation {
+    type Target = ContainerObservationParts;
+
+    fn deref(&self) -> &Self::Target {
+        &self.parts
+    }
+}
+
+impl From<ContainerObservation> for ContainerObservationParts {
+    fn from(observation: ContainerObservation) -> Self {
+        observation.parts
+    }
+}
+
 impl ContainerObservation {
+    /// Update observed facts atomically, retaining the previous observation on rejection.
+    ///
+    /// # Errors
+    /// Returns an error if the edited facts disagree with retained identity labels.
+    pub fn try_update(
+        &mut self,
+        update: impl FnOnce(&mut ContainerObservationParts),
+    ) -> Result<(), ContainerObservationError> {
+        let mut parts = self.parts.clone();
+        update(&mut parts);
+        *self = Self::try_from(parts)?;
+        Ok(())
+    }
+
+    /// Release the facts for editing; admission must be checked again afterwards.
+    #[must_use]
+    pub fn into_parts(self) -> ContainerObservationParts {
+        self.parts
+    }
+
+    /// Service deployment identity carried by this Container's retained spec.
+    #[must_use]
+    pub fn service_id(&self) -> ServiceId {
+        self.resolved_spec.service_id
+    }
+
+    /// Service name carried by this Container's retained spec.
+    #[must_use]
+    pub fn service_name(&self) -> &ServiceName {
+        &self.resolved_spec.name
+    }
+
     /// Logical Service identity carried by this Container.
     #[must_use]
     pub fn identity(&self) -> QualifiedService {
-        QualifiedService::new(self.project_name.clone(), self.service_name.clone())
+        QualifiedService::new(self.project_name.clone(), self.service_name().clone())
     }
 }
 
@@ -544,12 +636,12 @@ mod tests {
     }
 
     #[test]
-    fn mixed_container_observation_keeps_project_and_service_name_on_the_wire() {
+    fn mixed_container_observation_keeps_project_and_retained_service_name_on_the_wire() {
         let service = observation(ContainerKind::ServiceContainer);
         let json = serde_json::to_value(&service).unwrap();
 
         assert_eq!(json.get("project_name"), Some(&json!("app")));
-        assert_eq!(json.get("service_name"), Some(&json!("api")));
+        assert_eq!(json.pointer("/resolved_spec/name"), Some(&json!("api")));
         assert_eq!(
             serde_json::from_value::<ContainerObservation>(json).unwrap(),
             service
@@ -584,6 +676,106 @@ mod tests {
         ContainerId::parse("2".repeat(64)).unwrap()
     }
 
+    #[test]
+    fn admission_rejects_conflicting_labels_and_preserves_previous_observation() {
+        let mut observed = observation(ContainerKind::ServiceContainer);
+        observed
+            .try_update(|parts| {
+                parts
+                    .labels
+                    .insert("ployz.service.name".into(), "api".into());
+                parts
+                    .labels
+                    .insert("ployz.service.id".into(), "a".repeat(32));
+                parts
+                    .labels
+                    .insert("ployz.project.name".into(), "app".into());
+            })
+            .unwrap();
+        for (label, value) in [
+            ("ployz.service.name", "web".to_owned()),
+            ("ployz.service.id", "b".repeat(32)),
+            ("ployz.project.name", "other".to_owned()),
+            ("ployz.service.hook", "pre-deploy".to_owned()),
+        ] {
+            let mut raw = serde_json::to_value(&observed).unwrap();
+            raw.get_mut("labels")
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(label.into(), value.into());
+            let parts: crate::ContainerObservationParts =
+                serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(
+                ContainerObservation::try_from(parts).unwrap_err().label,
+                label
+            );
+            assert!(
+                serde_json::from_value::<ContainerObservation>(raw).is_err(),
+                "{label}"
+            );
+        }
+        let mut duplicated = serde_json::to_value(&observed).unwrap();
+        duplicated
+            .as_object_mut()
+            .unwrap()
+            .insert("service_name".into(), "web".into());
+        assert!(serde_json::from_value::<ContainerObservation>(duplicated).is_err());
+        let previous = observed.clone();
+        assert!(
+            observed
+                .try_update(|parts| {
+                    parts.resolved_spec.name = ServiceName::parse("web").unwrap();
+                })
+                .is_err()
+        );
+        assert_eq!(observed, previous);
+    }
+
+    #[test]
+    fn wire_identity_and_grouping_come_from_each_retained_spec() {
+        let mut old = observation(ContainerKind::ServiceContainer);
+        old.try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Unknown {
+                raw: json!({"state": "future"}),
+            };
+            parts.resolved_spec.mode = crate::ServiceMode::Global;
+        })
+        .unwrap();
+        let mut newer = old.clone();
+        newer
+            .try_update(|parts| {
+                parts.container_id = ContainerId::parse("3".repeat(64)).unwrap();
+                parts.created_at_unix_nanos = 1;
+                parts.resolved_spec.container.image = "api:new".into();
+                parts.resolved_spec.service_id = ServiceId::parse("b".repeat(32)).unwrap();
+            })
+            .unwrap();
+        let wire = serde_json::to_value(&newer).unwrap();
+        assert!(wire.get("service_name").is_none());
+        assert!(wire.get("service_id").is_none());
+        assert_eq!(
+            serde_json::from_value::<ContainerObservation>(wire).unwrap(),
+            newer
+        );
+        let mut hook = observation(ContainerKind::PreDeployHook);
+        hook.try_update(|parts| {
+            parts
+                .labels
+                .insert("ployz.service.hook".into(), "future-hook".into());
+        })
+        .unwrap();
+        let grouped = crate::derive_services([old, newer, hook]);
+        assert_eq!(grouped.len(), 1);
+        let group = grouped.first().unwrap();
+        assert_eq!(group.identity.to_string(), "app/api");
+        assert_eq!(group.containers.len(), 2);
+        assert_eq!(group.hook_containers.len(), 1);
+        let slot = group.observed_global_slot().unwrap();
+        assert_eq!(slot.identity().to_string(), "app/api");
+        assert_eq!(slot.resolved_spec().container.image, "api:new");
+    }
+
     fn observation(kind: ContainerKind) -> ContainerObservation {
         let (id, image) = match kind {
             ContainerKind::ServiceContainer => ('1', "api"),
@@ -598,20 +790,19 @@ mod tests {
             "container": { "image": image, "pull_policy": "missing" }
         }))
         .unwrap();
-        ContainerObservation {
+        ContainerObservation::try_from(crate::ContainerObservationParts {
             container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: format!("api-{id}"),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
             project_name: ProjectName::parse("app").unwrap(),
-            service_id,
-            service_name,
             kind,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
-        }
+        })
+        .unwrap()
     }
 }

@@ -179,21 +179,20 @@ mod tests {
             "container": { "image": "nginx", "pull_policy": "missing" }
         }))
         .unwrap();
-        ContainerObservation {
+        ContainerObservation::try_from(crate::ContainerObservationParts {
             container_id: ContainerId::parse("c".repeat(64)).unwrap(),
             display_name: format!("{service}-c"),
             created_at_unix_nanos: 0,
             machine_id: machine_id(),
             project_name: ProjectName::parse(project).unwrap(),
-            service_id,
-            service_name,
             kind: ContainerKind::ServiceContainer,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
-        }
+        })
+        .unwrap()
     }
 
     fn as_volume(
