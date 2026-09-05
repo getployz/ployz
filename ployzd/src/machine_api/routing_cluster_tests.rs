@@ -1,5 +1,3 @@
-#[path = "../../tests/echo_service/mod.rs"]
-mod echo_service;
 #[path = "../../tests/test_dir/mod.rs"]
 mod test_dir;
 
@@ -28,7 +26,7 @@ use tonic::{
     transport::{Error as TransportError, Server},
 };
 
-use echo_service::EchoService;
+use super::echo_service::EchoService;
 use test_dir::TestDir;
 
 #[tokio::test]
