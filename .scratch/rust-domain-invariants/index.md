@@ -10,7 +10,7 @@ PR: https://github.com/getployz/ployz2/pull/739
 |---|---|---|---|
 | [T00](tickets/T00-decide-effective-mount-destination-admission.md) | Decide effective mount destination admission | — | complete |
 | [T01](tickets/T01-derive-machine-identity-and-validate-local-lifecycle-payloads.md) | Derive Machine identity and validate local lifecycle payloads | — | in_progress |
-| [T02](tickets/T02-serialize-reset-and-container-admission.md) | Serialize reset and container admission | T01 | pending |
+| [T02](tickets/T02-serialize-reset-and-container-admission.md) | Serialize reset and container admission | T01 | in_progress |
 | [T03](tickets/T03-separate-requested-and-scoped-volume-sources.md) | Separate requested and scoped volume sources | — | in_progress |
 | [T04](tickets/T04-check-resource-quantities-and-cpu-conversion.md) | Check resource quantities and CPU conversion | — | complete |
 | [T05](tickets/T05-require-nonempty-pre-deploy-hook-command.md) | Require nonempty pre-deploy hook command | T04 | in_progress |
