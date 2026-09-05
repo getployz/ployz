@@ -64,8 +64,6 @@ pub struct RuntimeWatchFrame {
     #[serde(default)]
     pub containers: Vec<ContainerObservation>,
     #[serde(default)]
-    pub services: Vec<ServiceObservation>,
-    #[serde(default)]
     pub volumes: Vec<DockerVolume>,
     #[serde(default)]
     pub certificates: Vec<CertificateObservation>,
@@ -78,16 +76,12 @@ pub struct RuntimeWatchFrame {
     pub observed_at: String,
 }
 
-#[derive(Serialize)]
-struct RuntimeWatchPayload<'frame> {
-    machines: &'frame [MachineObservation],
-    containers: &'frame [ContainerObservation],
-    volumes: &'frame [DockerVolume],
-    certificates: &'frame [CertificateObservation],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hosted_dns_hostname: Option<&'frame str>,
-    incomplete_ids: &'frame RuntimeWatchIncompleteIds,
-    observed_at: &'frame str,
+impl RuntimeWatchFrame {
+    /// Derive Services from this frame's current Container observations.
+    #[must_use]
+    pub fn services(&self) -> Vec<ServiceObservation> {
+        derive_services(self.containers.iter().cloned())
+    }
 }
 
 /// Runtime Watch JSON could not be encoded, decoded, or admitted under its size ceiling.
@@ -109,30 +103,12 @@ pub enum RuntimeWatchPayloadError {
 pub fn encode_runtime_watch_frame(
     frame: &RuntimeWatchFrame,
 ) -> Result<OpaquePayload, RuntimeWatchPayloadError> {
-    let RuntimeWatchFrame {
-        machines,
-        containers,
-        services: _,
-        volumes,
-        certificates,
-        hosted_dns_hostname,
-        incomplete_ids,
-        observed_at,
-    } = frame;
-    let payload = OpaquePayload::from_json(&RuntimeWatchPayload {
-        machines,
-        containers,
-        volumes,
-        certificates,
-        hosted_dns_hostname: hosted_dns_hostname.as_deref(),
-        incomplete_ids,
-        observed_at,
-    })?;
+    let payload = OpaquePayload::from_json(frame)?;
     validate_runtime_watch_payload_size(&payload)?;
     Ok(payload)
 }
 
-/// Decode a frame and derive its Service view from the transmitted Containers.
+/// Decode a frame whose Service view is derived on access from its Containers.
 ///
 /// # Errors
 ///
@@ -141,9 +117,7 @@ pub fn decode_runtime_watch_frame(
     payload: &OpaquePayload,
 ) -> Result<RuntimeWatchFrame, RuntimeWatchPayloadError> {
     validate_runtime_watch_payload_size(payload)?;
-    let mut frame = payload.decode_json::<RuntimeWatchFrame>()?;
-    frame.services = derive_services(frame.containers.iter().cloned());
-    Ok(frame)
+    Ok(payload.decode_json::<RuntimeWatchFrame>()?)
 }
 
 fn validate_runtime_watch_payload_size(

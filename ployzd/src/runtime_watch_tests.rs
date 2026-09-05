@@ -100,7 +100,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
     );
     assert_eq!(frame.containers, vec![service.clone(), hook.clone()]);
     assert_eq!(
-        frame.services,
+        frame.services(),
         derive_services(frame.containers.iter().cloned())
     );
     assert_eq!(frame.volumes, vec![volume]);

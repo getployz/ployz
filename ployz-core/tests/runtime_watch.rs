@@ -8,8 +8,8 @@ use ployz_core::{
     MachineObservation, MachineRuntime, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
     ProjectName, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError, RuntimeWatchRequest,
-    SelectedEndpoint, ServiceContainer, ServiceId, ServiceName, ServiceObservation,
-    WireGuardPublicKey, decode_runtime_watch_frame, encode_runtime_watch_frame, op,
+    SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
+    encode_runtime_watch_frame, op,
 };
 use serde_json::{Value, json};
 
@@ -61,6 +61,20 @@ fn frozen_runtime_watch_frame_round_trips_complete_observations() {
     let wire: Value = encoded.decode_json().unwrap();
     assert!(wire.get("services").is_none());
     assert_eq!(decode_runtime_watch_frame(&encoded).unwrap(), frame);
+}
+
+#[test]
+fn runtime_watch_services_follow_container_mutations() {
+    let mut frame: RuntimeWatchFrame = serde_json::from_str(FROZEN_FRAME).unwrap();
+    assert_eq!(frame.services().len(), 1);
+    frame.containers.clear();
+    assert!(frame.services().is_empty());
+    assert!(
+        serde_json::to_value(&frame)
+            .unwrap()
+            .get("services")
+            .is_none()
+    );
 }
 
 #[test]
@@ -119,7 +133,7 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
     .unwrap();
     assert!(defaults.machines.is_empty());
     assert!(defaults.containers.is_empty());
-    assert!(defaults.services.is_empty());
+    assert!(defaults.services().is_empty());
     assert!(defaults.volumes.is_empty());
     assert!(defaults.certificates.is_empty());
     assert_eq!(defaults.hosted_dns_hostname, None);
@@ -215,13 +229,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                 MembershipObservation::Up,
             )
         }],
-        containers: vec![container.clone()],
-        services: vec![ServiceObservation {
-            identity: container.identity(),
-            service_id: ServiceId::parse(SERVICE_ID).unwrap(),
-            containers: vec![ServiceContainer::try_from(container).unwrap()],
-            hook_containers: Vec::new(),
-        }],
+        containers: vec![container],
         volumes: vec![DockerVolume {
             id: DockerVolumeId {
                 machine_id: MachineId::parse(MACHINE_ID).unwrap(),

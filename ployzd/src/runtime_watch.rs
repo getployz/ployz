@@ -12,7 +12,7 @@ use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
     IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError, derive_services,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
     encode_runtime_watch_frame,
 };
 use tokio::sync::mpsc;
@@ -233,7 +233,6 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
     let RuntimeWatchFrame {
         machines,
         containers,
-        services: _,
         volumes,
         certificates,
         hosted_dns_hostname,
@@ -243,7 +242,6 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
     let RuntimeWatchFrame {
         machines: next_machines,
         containers: next_containers,
-        services: _,
         volumes: next_volumes,
         certificates: next_certificates,
         hosted_dns_hostname: next_hosted_dns_hostname,
@@ -260,7 +258,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
 
 /// Assemble one complete Runtime Watch frame.
 ///
-/// Service observations are derived from replicated Containers. Certificate Material,
+/// Services can be derived from the replicated Containers. Certificate Material,
 /// HTTP-01 challenge bytes, hosted DNS token/endpoint, Relay credentials, and Pairing
 /// credentials are not copied onto the frame. Incomplete IDs are preserved as IDs.
 ///
@@ -286,7 +284,6 @@ pub(crate) fn assemble_runtime_watch_frame(
     }
     let mut containers = snapshot.containers.observations;
     containers.sort_by_key(|container| container.container_id);
-    let services = derive_services(containers.iter().cloned());
     let certificates = snapshot
         .certificates
         .observations
@@ -296,7 +293,6 @@ pub(crate) fn assemble_runtime_watch_frame(
     RuntimeWatchFrame {
         machines,
         containers,
-        services,
         volumes: snapshot.volumes.observations,
         certificates,
         hosted_dns_hostname: snapshot.hosted_dns.map(|reservation| reservation.name),

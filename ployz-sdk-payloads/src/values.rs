@@ -16,9 +16,9 @@ use ployz_core::{
     DeployOutcome, DeployPreview, DeployWarning, DeviceMapping, DeviceReservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, ExecutionError,
     FailedOperation, GlobalReconcileFailureObservation, HealthFailure, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol,
-    IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved,
-    LogDriver, Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
+    HealthcheckCommand, HealthcheckSpec, HookFailure, HostBind, HttpProtocol, IngressHost,
+    IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved, LogDriver,
+    Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
     MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, MembershipObservation,
     ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
     PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
@@ -26,12 +26,11 @@ use ployz_core::{
     QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest, ReplacementCompensation,
     ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
     RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
-    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceConfigGraph,
-    ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StopAttempt, StopContainerPurpose,
-    StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder,
-    VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeSource, VolumeToCreate,
-    WireGuardPublicKey,
+    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceConfigGraph, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, StopAttempt, StopContainerPurpose, StorageChoice, TransportProtocol,
+    Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver, VolumeInventory,
+    VolumeObservationFailure, VolumeSource, VolumeToCreate, WireGuardPublicKey,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -245,8 +244,8 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         .containers
         .first()
         .expect("RuntimeWatchFrame fixture includes a Container Observation");
-    let service = frame
-        .services
+    let services = frame.services();
+    let service = services
         .first()
         .expect("RuntimeWatchFrame fixture includes a Service Observation");
     let certificate = frame
@@ -1288,14 +1287,7 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
                 observed_at: "2024-01-01T00:00:00Z".into(),
             }],
         }],
-        containers: vec![container.clone()],
-        services: vec![ServiceObservation {
-            identity: container.identity(),
-            service_id: service_id(),
-            containers: vec![ServiceContainer::try_from(container)
-                .expect("fixture container is a Service Container")],
-            hook_containers: Vec::<HookContainer>::new(),
-        }],
+        containers: vec![container],
         volumes: vec![docker_volume()],
         certificates: vec![
             CertificateObservation {
