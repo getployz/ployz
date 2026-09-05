@@ -2220,6 +2220,7 @@ dependencies = [
  "napi-derive",
  "ployz",
  "ployz-core",
+ "ployz-sdk-payloads",
  "serde_json",
 ]
 

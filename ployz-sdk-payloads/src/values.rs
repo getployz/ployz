@@ -227,12 +227,12 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert(
         "runtime_watch_frame".into(),
-        to_value(&runtime_watch_frame()),
+        to_value(&crate::runtime_watch_view(&runtime_watch_frame())),
     );
     fixtures.insert(
         "runtime_watch_frame_unknown_fields".into(),
         with_unknown_field(
-            to_value(&runtime_watch_frame()),
+            to_value(&crate::runtime_watch_view(&runtime_watch_frame())),
             "future_lens",
             json!({ "vendor": true }),
         ),
@@ -418,7 +418,10 @@ pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
         ),
         ("CertificateObservation", to_value(certificate)),
         ("RuntimeWatchIncompleteIds", to_value(&frame.incomplete_ids)),
-        ("RuntimeWatchFrame", to_value(&frame)),
+        (
+            "RuntimeWatchFrame",
+            to_value(&crate::runtime_watch_view(&frame)),
+        ),
     ])
 }
 

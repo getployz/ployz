@@ -38,8 +38,16 @@ function assertFrame(frame, label) {
   if (frame.machines[0]?.storage?.state !== "ready") {
     throw new Error(`${label} must expose Machine storage readiness`);
   }
-  if (frame.specs || frame.containers[0].spec_index != null || frame.services) {
+  if (frame.specs || frame.containers[0].spec_index != null) {
     throw new Error(`${label} leaked the normalized transport graph`);
+  }
+  if (!Array.isArray(frame.services) || frame.services.length !== 1) {
+    throw new Error(`${label} must expose the derived Service view`);
+  }
+  const service = frame.services[0];
+  if (service.identity !== "app/api" || service.containers.length !== 1 ||
+      service.containers[0].container_id !== frame.containers[0].container_id) {
+    throw new Error(`${label} Service view must come from this frame's Containers`);
   }
   const text = JSON.stringify(frame);
   if (Buffer.byteLength(text) <= 4 * 1024 * 1024) {

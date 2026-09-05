@@ -23,6 +23,7 @@ import type {
   VolumeSource,
   ServiceMode,
   ServiceName,
+  ServiceObservation,
   RuntimeWatchFrame,
   Ulimit,
   VolumeDriver,
@@ -220,3 +221,6 @@ client.destroyCluster({ confirmed: [] }) satisfies Promise<ClusterTeardown>;
 client.removeMachine("machine", []);
 // @ts-expect-error MachineId is branded; a plain string cannot cross the facade
 connect({ ...connectOptions, machineId: "machine" });
+
+declare const watchFrame: RuntimeWatchFrame;
+watchFrame.services satisfies ServiceObservation[];

@@ -95,6 +95,7 @@ impl HostSockets {
         requested: &RequestedServiceSpec,
         existing: Option<&ServiceContainer>,
         operation: EndpointOperation,
+        pre_stops: &[ContainerId],
     ) -> bool {
         if matches!(operation, EndpointOperation::Unchanged) {
             return true;
@@ -108,6 +109,7 @@ impl HostSockets {
         !self.claims.iter().any(|(owner_machine, owner, ports)| {
             *owner_machine == machine
                 && (released.is_none() || *owner != released)
+                && !owner.is_some_and(|owner| pre_stops.contains(&owner))
                 && ports.iter().any(|old| {
                     requested
                         .ports
@@ -124,7 +126,7 @@ impl HostSockets {
         existing: Option<&ServiceContainer>,
         operation: EndpointOperation,
     ) -> Result<(), PlanError> {
-        if !self.fits(machine, requested, existing, operation) {
+        if !self.fits(machine, requested, existing, operation, &[]) {
             return Err(socket_error(requested));
         }
         if !matches!(operation, EndpointOperation::Unchanged) {
@@ -444,10 +446,22 @@ pub(super) fn plan_replicated(
                     .copied();
                 let operation = replicated_operation(existing, requested, options);
                 let demand = EndpointDemand::for_operation(operation, hook_pending);
-                if !placement
-                    .sockets
-                    .fits(machine.machine.id, requested, existing, operation)
-                {
+                let pre_stops = conflicting_siblings(
+                    requested,
+                    existing,
+                    operation,
+                    by_machine
+                        .get(&machine.machine.id)
+                        .map_or(&[], Vec::as_slice),
+                );
+                // A rejected candidate must not release claims or schedule stops.
+                if !placement.sockets.fits(
+                    machine.machine.id,
+                    requested,
+                    existing,
+                    operation,
+                    &pre_stops,
+                ) {
                     socket_blocked = true;
                     continue;
                 }
@@ -473,12 +487,20 @@ pub(super) fn plan_replicated(
             }
         }
         *placement.occupancy.entry(machine.machine.id).or_default() += 1;
-        let existing = by_machine
-            .get_mut(&machine.machine.id)
-            .and_then(Vec::pop)
-            .inspect(|container| {
-                used.insert(container.as_observation().container_id);
+        let remaining = by_machine.entry(machine.machine.id).or_default();
+        let existing = remaining.pop().inspect(|container| {
+            used.insert(container.as_observation().container_id);
+        });
+        let pre_stops = conflicting_siblings(requested, existing, operation, remaining);
+        for container_id in &pre_stops {
+            placement.sockets.release(machine.machine.id, *container_id);
+            operations.push(DeployOperation::StopContainer {
+                machine_id: machine.machine.id,
+                container_id: *container_id,
+                purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
             });
+        }
+        remaining.retain(|container| !pre_stops.contains(&container.as_observation().container_id));
         placement
             .sockets
             .admit(machine.machine.id, requested, existing, operation)?;
@@ -511,6 +533,35 @@ pub(super) fn plan_replicated(
     }
     remove_unused(&mut operations, current, &used, placement);
     Ok((operations, hook_machine))
+}
+
+// Only unselected same-Service siblings can be retired to free a replacement's ports.
+// Stopping does not release endpoint capacity; removal still happens at the service tail.
+fn conflicting_siblings(
+    requested: &RequestedServiceSpec,
+    existing: Option<&ServiceContainer>,
+    operation: EndpointOperation,
+    remaining: &[&ServiceContainer],
+) -> Vec<ContainerId> {
+    let Some(existing) = existing.filter(|_| matches!(operation, EndpointOperation::Replace))
+    else {
+        return Vec::new();
+    };
+    remaining
+        .iter()
+        .filter_map(|container| {
+            let observation = container.as_observation();
+            (observation.container_id != existing.as_observation().container_id
+                && super::super::is_active_runtime(&observation.runtime)
+                && observation.resolved_spec.ports.iter().any(|old| {
+                    requested
+                        .ports
+                        .iter()
+                        .any(|new| host_ports_conflict(old, new))
+                }))
+            .then_some(observation.container_id)
+        })
+        .collect()
 }
 
 fn remove_unused(
@@ -589,6 +640,11 @@ pub(super) fn reserve_replicated_service_demand(
     for _ in 0..replicas.get() {
         let container = existing.pop();
         let operation = replicated_operation(container, requested, options);
+        let pre_stops = conflicting_siblings(requested, container, operation, &existing);
+        for container_id in &pre_stops {
+            sockets.release(machine_id, *container_id);
+        }
+        existing.retain(|container| !pre_stops.contains(&container.as_observation().container_id));
         sockets.admit(machine_id, requested, container, operation)?;
         let demand = EndpointDemand::for_operation(operation, hook_pending);
         if !capacity.reserve(&machine_id, demand) {
